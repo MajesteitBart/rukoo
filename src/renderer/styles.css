@@ -2936,6 +2936,7 @@ body:has(.page) .titlebar-actions {
   font-size: 12.5px;
   color: var(--text-2);
 }
+.mt-title-input,
 .form input[type='text'],
 .form input[type='email'],
 .form input[type='password'],
@@ -2954,6 +2955,7 @@ body:has(.page) .titlebar-actions {
   user-select: text;
   color: var(--text);
 }
+.mt-title-input:focus,
 .form input:focus,
 .form textarea:focus,
 .form select:focus {
@@ -8302,6 +8304,8 @@ body.meeting-mode .titlebar-search {
   min-width: 0;
 }
 .mt-title {
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   font-family: var(--font-display);
   font-size: 18px;
@@ -8310,6 +8314,23 @@ body.meeting-mode .titlebar-search {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.mt-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 28px;
+}
+.mt-title-row > .icon-btn {
+  flex: none;
+}
+.mt-title-input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
 }
 .mt-meta {
   display: flex;

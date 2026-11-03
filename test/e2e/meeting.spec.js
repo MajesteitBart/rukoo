@@ -84,6 +84,16 @@ const frameId = (at) => `f-${String(at).padStart(9, '0')}`;
 
 // Voice 0.1 has no pause handler in the fixture; these answer as Voice does.
 function voiceHandlers(v) {
+  v.handlers['screen.get'] = function (args) {
+    const started = this.events.find((e) => e.event === 'meeting.started' && e.meeting === args.meeting)?.data;
+    const mode = this.events.filter((e) => e.event === 'mark' && e.meeting === args.meeting && e.data.kind === 'screen_mode').at(-1)?.data.label || started?.screen || 'off';
+    return { screen: mode, state: mode === 'off' ? 'off' : 'recording', frames: mode !== 'off', video: mode === 'video', monitor: 'demo', monitors: [{ id: 'demo', name: 'Demo monitor', width: 1920, height: 1080, primary: true }] };
+  };
+  v.handlers['screen.set'] = function (args) {
+    const at = this.events.filter((e) => e.meeting === args.meeting).reduce((at, e) => Math.max(at, e.data.at || e.data.end || 0), 0) + 1000;
+    this.append('mark', args.meeting, { id: `screen-mode-${at}`, kind: 'screen_mode', at, until: null, track: 'screen', detail: 'user', label: args.screen });
+    return { screen: args.screen };
+  };
   v.handlers['meeting.pause'] = function (args) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     this.append('meeting.state', args.meeting, { state: 'paused', at: 5000 });
@@ -205,6 +215,166 @@ async function shot(name) {
 }
 
 // ---------- tests ----------
+
+test('rename keeps a local title across restart, validates length, and deletion keeps the chat', async () => {
+  const id = voiceStarts({ title: 'Launch review' });
+  say(id, 'call', 1000, 'We agreed to ship on Thursday.');
+  await openMeetings();
+  await win.keyboard.press('Control+j');
+  await chip('Catch me up').click();
+  await expect(transcript().locator('.bui-ub')).toHaveText('Catch me up');
+  await expect(transcript().locator('[data-type="assistant"]').last()).toBeVisible();
+  await win.keyboard.press('Control+j');
+  await view().locator('[data-mt="rename"]').click();
+  const title = () => view().locator('.mt-title-input');
+  await title().fill('Cancelled title');
+  await win.keyboard.press('Escape');
+  await expect(view().locator('h1')).toHaveText('Launch review');
+  await view().locator('[data-mt="rename"]').click();
+  await title().fill('x'.repeat(201));
+  await win.keyboard.press('Enter');
+  await expect(title()).toBeVisible();
+  await expect(win.locator('#toast')).toHaveText('Use a title of 1 to 200 characters.');
+  await title().fill('Thursday launch');
+  await win.keyboard.press('Enter');
+  await expect(view().locator('h1')).toHaveText('Thursday launch');
+  await expect(win.locator('.sidebar [data-mt-open]', { hasText: 'Thursday launch' })).toBeVisible();
+  await view().locator('[data-mt="more"]').click();
+  await expect(menu().getByText('Delete meeting')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
+  await closeApp(app);
+  await launch();
+  await expect.poll(connected).toBe(true);
+  await openMeetings();
+  await expect(view().locator('h1')).toHaveText('Thursday launch');
+  const row = win.locator('.sidebar [data-mt-open]', { hasText: 'Thursday launch' });
+  await row.click({ button: 'right' });
+  await menu().getByText('Rename meeting', { exact: true }).click();
+  await expect(title()).toBeFocused();
+  await win.keyboard.press('Escape');
+  await view().locator('[data-mt="more"]').click();
+  await menu().getByText('Delete meeting', { exact: true }).click();
+  await expect(win.locator('.dialog')).toContainText('Thursday launch');
+  await expect(win.locator('.dialog')).toContainText('audio');
+  await shot('meeting-delete-confirmation');
+  await win.locator('.dialog .buttons button').first().click();
+  await expect(view().locator('h1')).toHaveText('Thursday launch');
+  await view().locator('[data-mt="more"]').click();
+  await menu().getByText('Delete meeting', { exact: true }).click();
+  await win.locator('.dialog .buttons .danger').click();
+  await expect.poll(() => voice.commands.filter((c) => c.command === 'meeting.delete').length).toBe(1);
+  await expect(win.locator('.sidebar [data-mt-open]')).toHaveCount(0);
+  const retained = await app.evaluate(() => global.__semAgents.list().filter((c) => c.meeting));
+  expect(retained).toHaveLength(1);
+  expect(retained[0].meeting).toEqual({ id, title: 'Thursday launch', deleted: true });
+  await win.keyboard.press('Control+j');
+  await expect(pane().locator('.bui-entity__sub')).toHaveText('Meeting deleted');
+  await shot('deleted-meeting-chat');
+  await win.keyboard.press('Control+j');
+  await closeApp(app);
+  await launch();
+  await expect.poll(connected).toBe(true);
+  await openMeetings();
+  await expect(win.locator('.sidebar [data-mt-open]')).toHaveCount(0);
+});
+
+test('screenshots: meeting rename, deletion and live screen menu in both languages and themes', async () => {
+  const id = voiceStarts({ title: 'Thursday launch', screen: 'off' });
+  say(id, 'call', 1000, 'The launch checklist is ready.');
+  await openMeetings();
+  for (const language of ['en', 'nl']) {
+    await setLanguage(language);
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      await view().locator('[data-mt="rename"]').click();
+      await view().locator('.mt-title-input').fill(language === 'en' ? 'Thursday launch planning' : 'Planning lancering donderdag');
+      await shot(`rename-${theme}-${language}`);
+      await win.keyboard.press('Escape');
+      await view().locator('[data-mt="screen"]').click();
+      await expect(menu().locator('button').first()).toHaveAttribute('aria-checked', 'true');
+      await shot(`live-screen-off-${theme}-${language}`);
+      await win.keyboard.press('Escape');
+    }
+  }
+  await setLanguage('en');
+  await setSize(980, 760);
+  for (const zoom of [0.8, 2]) {
+    await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+    await view().locator('[data-mt="rename"]').click();
+    await expect(view().locator('.mt-title-input')).toBeFocused();
+    const bounds = await view().locator('.mt-title-input').evaluate((el) => ({ right: el.getBoundingClientRect().right, width: innerWidth }));
+    expect(bounds.right).toBeLessThanOrEqual(bounds.width);
+    // Electron's DevTools page screenshot can crop at non-default zoom; capture the whole window.
+    await win.waitForTimeout(400);
+    const bytes = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'));
+    fs.writeFileSync(path.join(SHOTS, `rename-narrow-zoom-${zoom}.png`), Buffer.from(bytes, 'base64'));
+    await win.keyboard.press('Escape');
+    await view().locator('[data-mt="screen"]').click();
+    await expect(menu().locator('button').first()).toHaveAttribute('aria-checked', 'true');
+    await win.keyboard.press('Escape');
+  }
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+  await setSize(1500, 950);
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
+  for (const language of ['en', 'nl']) {
+    await setLanguage(language);
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      await view().locator('[data-mt="more"]').click();
+      await menu().getByText(language === 'en' ? 'Delete meeting' : 'Meeting verwijderen', { exact: true }).click();
+      await shot(`delete-${theme}-${language}`);
+      await win.keyboard.press('Escape');
+    }
+  }
+});
+
+test('screen modes can be enabled from an audio-only meeting, turned off and resumed while paused', async () => {
+  const id = voiceStarts({ title: 'Weekly planning', screen: 'off' });
+  await openMeetings();
+  const state = () => app.evaluate(() => global.__semVoice.screenRecording());
+  await expect.poll(state).toBe(false);
+  for (const [mode, label] of [['frames', 'Frames'], ['off', 'Off'], ['video', 'Video']]) {
+    await view().locator('[data-mt="screen"]').click();
+    await menu().getByText(label, { exact: true }).click();
+    await expect.poll(() => voice.commands.filter((c) => c.command === 'screen.set').at(-1)?.args.screen).toBe(mode);
+    await expect.poll(state).toBe(mode !== 'off');
+    if (mode === 'off') {
+      await view().locator('[data-mt="pause"]').click();
+      await expect(view().locator('[data-mt="resume"]')).toBeVisible();
+    }
+  }
+  await expect(view().locator('.mt-mark .mt-line')).toHaveText(['Screen recording on · Frames', 'Screen recording off', 'Screen recording on · Video']);
+  const saved = await win.evaluate((id) => window.mail.call('meetingGet', id), id);
+  expect(saved.meeting.initialScreen).toBe('off');
+  expect(saved.meeting.screen).toBe('video');
+});
+
+test('older Voice hides live screen controls and an unsupported deletion keeps the meeting and notes', async () => {
+  const id = voiceStarts({ title: 'Retained notes', screen: 'off' });
+  await openMeetings();
+  await view().locator('.mt-notes-input').fill('Keep these decisions.');
+  await expect.poll(async () => (await win.evaluate((id) => window.mail.call('meetingGet', id), id)).notes.text).toBe('Keep these decisions.');
+  voice.protocol = 1;
+  voice.writeDiscovery();
+  voice.drop();
+  await expect.poll(() => app.evaluate(() => global.__semVoice.state().protocol)).toBe(1);
+  await expect(view().locator('[data-mt="screen"]')).toHaveCount(0);
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  voice.handlers['meeting.delete'] = () => ({ error: { code: 'unknown_command', message: 'Unknown command.' } });
+  await expect(view().locator('[data-mt="stop"]')).toHaveCount(0);
+  await view().locator('[data-mt="more"]').click();
+  await menu().getByText('Delete meeting', { exact: true }).click();
+  await win.locator('.dialog .buttons .danger').click();
+  await expect(win.locator('#toast')).toHaveText('Update Rukoo Voice to delete meetings.');
+  await expect(view().locator('h1')).toHaveText('Retained notes');
+  expect((await win.evaluate((id) => window.mail.call('meetingGet', id), id)).notes.text).toBe('Keep these decisions.');
+});
 
 test('similar screen frames fold across speech, open as a strip, and the Screen toggle persists after restart', async () => {
   const id = voiceStarts({ title: 'Launch review', screen: 'frames' });
@@ -1380,18 +1550,18 @@ test('the Screen button moves the recording to another monitor; a Voice that can
   ];
   let screen = { screen: 'frames', state: 'recording', video: false, frames: true, monitor: DISPLAY1, monitors };
   voice.handlers['screen.get'] = () => screen;
-  voice.handlers['screen.select'] = (args) => ({ monitor: args.monitor });
+  voice.handlers['screen.set'] = (args) => ({ screen: args.screen });
   const id = voiceStarts({ title: 'Demo for the board', screen: 'frames' });
   say(id, 'call', 1000, 'Can you show the second screen?');
   await openMeetings();
   await view().locator('[data-mt="screen"]').click();
-  await expect(menu().locator('.menu-heading')).toHaveText('Record this monitor');
-  await expect(menu().locator('button')).toHaveText([/DELL S3220DGF\s*2560 × 1440\s*Main display/, /PHL 275V8\s*1440 × 2560/]);
-  await expect(menu().locator('button').first()).toHaveAttribute('aria-checked', 'true');
-  await expect(menu().locator('button').nth(1)).toHaveAttribute('aria-checked', 'false');
+  await expect(menu().locator('.menu-heading')).toHaveText(['Screen recording', 'Record this monitor']);
+  await expect(menu().locator('button')).toHaveText(['Off', 'Frames', 'Video', /DELL S3220DGF\s*2560 × 1440\s*Main display/, /PHL 275V8\s*1440 × 2560/]);
+  await expect(menu().locator('button', { hasText: 'DELL S3220DGF' })).toHaveAttribute('aria-checked', 'true');
+  await expect(menu().locator('button', { hasText: 'PHL 275V8' })).toHaveAttribute('aria-checked', 'false');
   await shot('screen-menu');
   await menu().locator('button', { hasText: 'PHL 275V8' }).click();
-  await expect.poll(() => voice.commands.filter((c) => c.command === 'screen.select').map((c) => c.args)).toEqual([{ meeting: id, monitor: DISPLAY2 }]);
+  await expect.poll(() => voice.commands.filter((c) => c.command === 'screen.set').map((c) => c.args)).toEqual([{ meeting: id, screen: 'frames', monitor: DISPLAY2 }]);
   voice.append('mark', id, { id: 'monitor-000015000', kind: 'monitor', at: 15000, until: null, track: 'screen', detail: 'user', label: 'PHL 275V8' });
   await expect(view().locator('.mt-mark .mt-line')).toHaveText(['Screen recording moved to PHL 275V8']);
 
@@ -1464,12 +1634,12 @@ test('screenshots: screen frames, the record and screen menus and the chips, in 
       await setTheme(theme);
       await shot(`frames-wide-${theme}-${language}`);
       await view().locator('[data-mt="screen"]').click();
-      await expect(menu().locator('button')).toHaveCount(2);
+      await expect(menu().locator('button')).toHaveCount(5);
       await shot(`screen-menu-${theme}-${language}`);
       await win.keyboard.press('Escape');
     }
   }
-  await expect(view().locator('.mt-screen')).toHaveText('Scherm: video');
+  await expect(view().locator('.mt-screen')).toHaveText('Scherm: beelden');
 
   // Narrow, with Rukoo visible in screen recordings: the chip warns.
   await win.evaluate(() => window.mail.call('updateSettings', { meetingHideWindow: false }));

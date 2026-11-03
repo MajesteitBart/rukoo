@@ -1,12 +1,12 @@
 'use strict';
 
-// The bridge protocol with Rukoo Voice, version 1: voice/PROTOCOL.md is the contract, and
+// The bridge protocol with Rukoo Voice, version 2: voice/PROTOCOL.md is the contract, and
 // voice/fixtures/protocol-vectors.json holds the examples both sides test against. Pure, no Electron.
 //
 // validate() implements "Checking messages". A message that breaks a rule is dropped; the result names the field,
 // as the fixture's "reason" does, so both sides can be held to the same examples.
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 const MIN_PROTOCOL = 1;
 
 // Voice sends at most 8 MiB in one message, Rukoo at most 1 MiB.
@@ -125,6 +125,7 @@ const COMMAND_ARGS = {
     if (given(a, 'context')) check(isObj(a.context) && Buffer.byteLength(JSON.stringify(a.context), 'utf8') <= CONTEXT_MAX, 'context');
   },
   'meeting.stop': (a) => pattern(a, 'meeting', MEETING_ID),
+  'meeting.delete': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.pause': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.resume': (a) => pattern(a, 'meeting', MEETING_ID),
   'meeting.mark': (a) => {
@@ -146,7 +147,15 @@ const COMMAND_ARGS = {
     const end = int(a, 'end', 0);
     check(end >= start, 'end');
   },
-  'meeting.protected': (a) => pattern(a, 'meeting', MEETING_ID),
+  'meeting.protected': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    if (given(a, 'request')) str(a, 'request', { min: 1, max: 64 });
+  },
+  'screen.set': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    oneOf(a, 'screen', SCREENS);
+    if (given(a, 'monitor')) str(a, 'monitor', { min: 1, max: 64 });
+  },
   'screen.get': (a) => pattern(a, 'meeting', MEETING_ID),
   'screen.select': (a) => {
     pattern(a, 'meeting', MEETING_ID);
@@ -207,7 +216,10 @@ const EVENT_DATA = {
     oneOf(d, 'startedBy', ['voice', 'rukoo']);
     check(has(d, 'context') && (d.context === null || isObj(d.context)), 'context');
   },
-  'meeting.starting': (d) => oneOf(d, 'screen', SCREENS),
+  'meeting.starting': (d) => {
+    oneOf(d, 'screen', SCREENS);
+    if (given(d, 'request')) str(d, 'request', { min: 1, max: 64 });
+  },
   'meeting.state': (d) => {
     const state = oneOf(d, 'state', STATES);
     int(d, 'at', 0);
@@ -250,7 +262,7 @@ const EVENT_DATA = {
     int(d, 'height', 0);
     str(d, 'text');
   },
-  'meeting.removed': () => {}
+  'meeting.removed': (d) => { if (d.reason != null) str(d, 'reason', { min: 1, max: 64 }); }
 };
 
 function event(m) {

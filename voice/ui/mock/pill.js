@@ -60,6 +60,8 @@ export const STATES = {
   'meeting-screen-failed': { phase: 'meeting', notice: 'pill.screenFailed', meeting: meeting({ screen: 'frames' }) },
   'meeting-screen-moved': { phase: 'meeting', notice: 'pill.screenMoved', args: { name: 'DELL U2720Q' }, meeting: meeting({ screen: 'frames', screenSwitch: true }) },
   'meeting-screen-button': { phase: 'meeting', meeting: meeting({ screen: 'frames', screenSwitch: true }) },
+  'meeting-screen-off': { phase: 'meeting', meeting: meeting({ screen: 'off', screenSwitch: true }) },
+  'meeting-screen-change-failed': { phase: 'meeting', notice: 'pill.screenChangeFailed', meeting: meeting({ screen: 'off', screenSwitch: true }) },
   'meeting-screen-hover': { phase: 'meeting', meeting: meeting({ screen: 'video', screenSwitch: true, compact: true }), pointer: { hover: true, pressed: false, target: 'screen' } },
   'meeting-dictating': { phase: 'listening', level: true, meeting: meeting({ stopEnabled: false, compact: true }) },
   hidden: { phase: 'hidden', visible: false }
@@ -148,22 +150,12 @@ export function createMock(params) {
   document.addEventListener('pointerout', (e) => targetOf(e) && emit('pill://pointer', { hover: false, pressed: false, target: targetOf(e) }));
   document.addEventListener('pointerdown', (e) => targetOf(e) && emit('pill://pointer', { hover: true, pressed: true, target: targetOf(e) }));
 
-  // A click on the monitor button moves to the next of two demo monitors, as the engine's next_monitor does, and
-  // says so for 2200 ms (pill.rs MOVED_HOLD).
-  const MONITORS = ['DELL U2720Q', 'Display 2'];
-  let monitor = 0;
-  let movedTimer = 0;
+  // Native menu choices are tested in Rust. The mock records opening the menu without changing capture.
+  const screenMenu = { opened: 0 };
   document.addEventListener('pointerup', (e) => {
     if (targetOf(e) !== 'screen' || !current?.meeting) return;
     emit('pill://pointer', { hover: true, pressed: false, target: 'screen' });
-    monitor = (monitor + 1) % MONITORS.length;
-    clearTimeout(movedTimer);
-    current = { ...current, seq: ++seq, notice: { key: 'pill.screenMoved', args: { name: MONITORS[monitor] } }, meeting: { ...current.meeting, compact: false } };
-    emit('pill://snapshot', current);
-    movedTimer = setTimeout(() => {
-      current = { ...current, seq: ++seq, notice: null };
-      emit('pill://snapshot', current);
-    }, 2200);
+    screenMenu.opened += 1;
   });
 
   document.addEventListener('pointerup', (e) => {
@@ -184,7 +176,7 @@ export function createMock(params) {
   });
 
   // For dev/check.js: send any payload as if the app had sent it.
-  window.__pillMock = { emit };
+  window.__pillMock = { emit, screenMenu };
 
   const hits = {};
   function drawHit(layout) {

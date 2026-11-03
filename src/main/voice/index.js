@@ -32,7 +32,7 @@ const EVENT_ID_MAX = 4000;
 const STARTING_HOLD_MS = 10000;
 // meeting.protected answers quickly or not at all: Voice stops waiting for it after 500 ms.
 const PROTECTED_TIMEOUT_MS = 2000;
-const SCREEN_STATES = ['starting', 'recording', 'paused', 'locked', 'stopped'];
+const SCREEN_STATES = ['off', 'starting', 'recording', 'paused', 'locked', 'stopped'];
 const ENDED_STATES = ['processing', 'done', 'failed'];
 const MONITOR_MAX = 64;
 const MONITOR_NAME_MAX = 200;
@@ -64,6 +64,7 @@ function summary(e, now = Date.now()) {
     reason: e.reason,
     tracks: e.tracks,
     screen: e.screen,
+    initialScreen: e.initialScreen ?? e.screen,
     startedBy: e.startedBy,
     eventId: e.eventId,
     removed: e.removed,
@@ -134,9 +135,13 @@ class VoiceService extends EventEmitter {
     // The meeting.starting holds still counting in starting, by meeting id: their timers. heldOver: how many of them
     // ran out of time while the connection was down, and still count until the next welcome.
     this.holds = new Map();
+    this.screenHolds = new Set();
     this.heldOver = 0;
     // The screen the last start from Rukoo asked for, until Voice's meeting.started says what it records.
     this.startScreen = null;
+    this.screenKnown = new Map();
+    this.screenUncertain = null;
+    this.screenGeneration = 0;
     // clip.get goes one at a time on a connection (voice/PROTOCOL.md): Voice runs a connection's commands in turn, and
     // a cut can take 4 s, so a second one in the queue would hold up the heartbeat behind both.
     this.clipChain = null;
@@ -190,6 +195,9 @@ class VoiceService extends EventEmitter {
     if (this.starting > 0) return true;
     const id = this.recording();
     if (!id) return false;
+    // Another connected Rukoo can enable capture while this connection is down.
+    if (!this.connected || this.screenUncertain === id) return true;
+    if (this.screenKnown.has(id)) return this.screenKnown.get(id) !== 'off';
     const e = this.store.entry(id);
     if (e && e.startedAt !== null) return e.screen !== 'off' && !this.store.screenDropped(id);
     const asked = this.startScreen && this.startScreen.id === id ? this.startScreen.screen : null;
@@ -250,6 +258,19 @@ class VoiceService extends EventEmitter {
   onWelcome(msg) {
     this.clipChain = null;
     const { reset, gap } = this.store.welcome(msg);
+    this.screenKnown.clear();
+    const id = this.recording();
+    this.screenUncertain = msg.protocol >= 2 ? id : null;
+    if (id && msg.protocol >= 2) {
+      const generation = ++this.screenGeneration;
+      this.screenInfo(id).then((info) => {
+        if (this.recording() === id && generation === this.screenGeneration) this.screenKnown.set(id, info.screen);
+        if (generation === this.screenGeneration && this.screenUncertain === id) this.screenUncertain = null;
+        this.statusChanged();
+      }).catch((err) => {
+        if (generation === this.screenGeneration && ['not_found', 'not_recording', 'not_available'].includes(err.code) && this.screenUncertain === id) this.screenUncertain = null;
+      });
+    }
     this.statusChanged();
     this.endHeldOver();
     if (reset) this.emit('meeting', { kind: 'list' });
@@ -323,10 +344,18 @@ class VoiceService extends EventEmitter {
     // A meeting.starting in the replay is history: Voice stopped waiting for it long ago.
     if (ev.event === 'meeting.starting' && live) {
       this.startedByVoice(ev.meeting);
-      this.onStarting(ev.meeting).catch(() => {});
+      this.onStarting(ev.meeting, ev.data.request).catch(() => {});
     }
-    // The meeting's state took over from the hold of its meeting.starting.
-    if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting);
+    // The meeting's state takes over the initial start hold. A live screen change still needs
+    // its own hold until capture starts, even if another client pauses or resumes the audio.
+    if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting, !ENDED_STATES.includes(ev.data.state));
+    const screenChange = ev.event === 'mark' && (ev.data.kind === 'screen_mode' || (ev.data.track === 'screen' && ['dropped', 'video_dropped'].includes(ev.data.kind)));
+    if (screenChange && live) {
+      this.screenGeneration += 1;
+      if (this.screenUncertain === ev.meeting) this.screenUncertain = null;
+      this.screenKnown.set(ev.meeting, this.store.entry(ev.meeting)?.screen || 'off');
+      if (this.store.entry(ev.meeting)?.screen !== 'off') this.releaseStarting(ev.meeting);
+    }
     // meeting.started already marks the entry recording, so the meeting.state that follows can change only the
     // status: protection and the windows must still hear that a meeting records.
     const now = this.store.status();
@@ -335,7 +364,7 @@ class VoiceService extends EventEmitter {
       if (moved) this.statusChanged();
       return;
     }
-    if (moved || change.kind === 'status' || ev.event === 'meeting.state' || ev.event === 'meeting.removed') this.statusChanged();
+    if (moved || screenChange || change.kind === 'status' || ev.event === 'meeting.state' || ev.event === 'meeting.removed') this.statusChanged();
     if (change.meeting) this.note(change, before);
     if (ev.event === 'meeting.started') this.linkEvent(ev.meeting).catch(() => {});
     if (ev.event === 'speaker') this.autoName(ev.meeting);
@@ -377,7 +406,7 @@ class VoiceService extends EventEmitter {
     for (const [id, d] of list) {
       const full = this.store.meeting(id);
       if (!full) {
-        this.emit('meeting', { kind: 'removed', id });
+        this.emit('meeting', { kind: 'removed', id, purge: this.isDeleted(id) });
         continue;
       }
       const payload = { kind: 'meeting', id, from: d.from, rev: full.rev, meeting: summary(full.meeting, this.now()) };
@@ -423,6 +452,10 @@ class VoiceService extends EventEmitter {
   // The raw store view, for the agent's tools.
   meeting(id) {
     return this.store.meeting(id);
+  }
+
+  isDeleted(id) {
+    return this.store.index.deleted[id] === true;
   }
 
   // The meeting a tool means without an id: the one recording, else the newest.
@@ -482,6 +515,29 @@ class VoiceService extends EventEmitter {
   async stop(id) {
     this.mustConnect();
     await this.bridge.command('meeting.stop', { meeting: id });
+    return true;
+  }
+
+  rename(id, title) {
+    if (typeof title !== 'string' || !title.trim() || Array.from(title.trim()).length > TITLE_MAX) throw new VoiceError('bad_request', 'Give the meeting a title of 1 to 200 characters.');
+    if (!this.change(id, 'meeting', () => this.store.setTitle(id, title))) throw new VoiceError('not_found', 'No such meeting.');
+    return this.get(id).meeting;
+  }
+
+  async delete(id) {
+    this.mustConnect();
+    const e = this.store.entry(id);
+    if (this.recording() === id || (e && ['recording', 'paused', 'processing'].includes(e.state))) throw new VoiceError('busy', 'Stop the meeting and let it finish saving before deleting it.');
+    try {
+      await this.bridge.command('meeting.delete', { meeting: id }, { timeoutMs: 60000 });
+    } catch (err) {
+      // A meeting already gone from Voice can still have Rukoo-owned notes to erase.
+      if (err.code !== 'not_found') throw err;
+    }
+    const before = this.revOf(id);
+    this.store.remove(id, { purge: true });
+    this.store.flush();
+    this.note({ meeting: id, kind: 'removed' }, before);
     return true;
   }
 
@@ -552,6 +608,29 @@ class VoiceService extends EventEmitter {
     return res.monitor;
   }
 
+  async setScreen(id, screen, monitor = null) {
+    this.mustConnect();
+    if (!SCREENS.includes(screen)) throw new VoiceError('bad_request', 'Choose off, frames or video.');
+    const generation = ++this.screenGeneration;
+    this.starting += 1;
+    try {
+      if (screen !== 'off' && this.shouldProtect()) {
+        if (!this.refreshProtection()) throw new VoiceError('failed', 'Rukoo could not hide its windows.');
+        await delay(this.protectDelayMs);
+      }
+      const result = await this.bridge.command('screen.set', { meeting: id, screen, ...(monitor ? { monitor } : {}) }, { timeoutMs: 20000 });
+      if (!result || !SCREENS.includes(result.screen)) throw badReply('a screen mode');
+      if (generation === this.screenGeneration) {
+        this.screenKnown.set(id, result.screen);
+        if (this.screenUncertain === id) this.screenUncertain = null;
+      }
+      return result;
+    } finally {
+      this.endStarting();
+      this.emit('state', this.state());
+    }
+  }
+
   // ---------- the start handshake of a meeting Voice started ----------
 
   // Voice records the audio when it says meeting.starting, and its status may still be on its way: the meeting
@@ -564,11 +643,10 @@ class VoiceService extends EventEmitter {
     this.store.setStatus({ ...this.store.status(), recording: id });
   }
 
-  // Voice waits up to 500 ms for this before it captures the screen. starting counts from the moment the event
-  // arrives, so protection is on before the ack and stays on until the meeting's state says it records. The ack
-  // says the windows are hidden, so it goes only once every window took it: otherwise Voice stops waiting and
-  // starts as without a confirmation, while Rukoo keeps trying to hide them.
-  async onStarting(id) {
+  // Protection starts as soon as this event arrives. The ack goes only after every window is hidden.
+  // Initial recording has Voice's bounded start wait; a live screen change requires the current request's ack
+  // and leaves capture unchanged if it is missing. The hold bridges the ack and the subsequent state/mode event.
+  async onStarting(id, request = null) {
     this.starting += 1;
     try {
       if (this.shouldProtect()) {
@@ -576,18 +654,17 @@ class VoiceService extends EventEmitter {
         await delay(this.protectDelayMs);
         if (this.shouldProtect() && this.protectedNow !== true) return;
       }
-      await this.bridge.command('meeting.protected', { meeting: id }, { timeoutMs: PROTECTED_TIMEOUT_MS });
+      await this.bridge.command('meeting.protected', { meeting: id, ...(request ? { request } : {}) }, { timeoutMs: PROTECTED_TIMEOUT_MS });
     } finally {
-      this.holdStarting(id);
+      this.holdStarting(id, this.startingHoldMs, Boolean(request));
     }
   }
 
-  // Keeps one count of starting for the meeting until its meeting.state arrives or ms pass. When that state came
-  // during the wait for the composition, there is nothing to hold: the status keeps the windows hidden while the
-  // meeting records, and a meeting that ended no longer needs them hidden.
-  holdStarting(id, ms = this.startingHoldMs) {
+  // Keep one starting count until state takes over, or until the bounded hold expires. Live screen changes wait
+  // for a screen mode rather than an audio state, since audio can keep recording while the screen is Off.
+  holdStarting(id, ms = this.startingHoldMs, screenChange = false) {
     const e = this.store.entry(id);
-    if (this.closed || this.recording() === id || (e && ENDED_STATES.includes(e.state))) {
+    if (this.closed || (this.recording() === id && (!screenChange || e?.screen !== 'off')) || (e && ENDED_STATES.includes(e.state))) {
       this.endStarting();
       return;
     }
@@ -598,6 +675,7 @@ class VoiceService extends EventEmitter {
     }
     const timer = setTimeout(() => {
       timers.delete(timer);
+      this.screenHolds.delete(timer);
       if (!timers.size) this.holds.delete(id);
       // Without a connection nothing can say whether Voice still records: the hold lasts until the next welcome.
       if (this.connected || this.closed) this.endStarting();
@@ -605,16 +683,20 @@ class VoiceService extends EventEmitter {
     }, ms);
     if (timer.unref) timer.unref();
     timers.add(timer);
+    if (screenChange) this.screenHolds.add(timer);
   }
 
-  releaseStarting(id) {
+  releaseStarting(id, keepScreen = false) {
     const timers = this.holds.get(id);
     if (!timers) return;
-    this.holds.delete(id);
-    for (const timer of timers) {
+    for (const timer of [...timers]) {
+      if (keepScreen && this.screenHolds.has(timer)) continue;
       clearTimeout(timer);
+      timers.delete(timer);
+      this.screenHolds.delete(timer);
       this.endStarting();
     }
+    if (!timers.size) this.holds.delete(id);
   }
 
   endStarting() {
@@ -749,6 +831,7 @@ class VoiceService extends EventEmitter {
     this.protectRetry = null;
     for (const timers of this.holds.values()) for (const timer of timers) clearTimeout(timer);
     this.holds.clear();
+    this.screenHolds.clear();
     this.bridge.close();
     this.store.close();
   }

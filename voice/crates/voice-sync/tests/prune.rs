@@ -150,6 +150,39 @@ fn forget_meeting_removes_every_object_and_marks_it_deleted() {
 }
 
 #[test]
+fn a_user_deletion_survives_disconnect_and_cannot_be_restored() {
+    let fake = fake();
+    let data = scratch("prune-user-delete");
+    let _c = Cleanup(data.clone());
+    let voice = Voice::open(&data);
+    let (gone, _) = finished(&voice.meetings(), "Deleted offline", 2);
+    voice.connect(&fake.endpoint());
+    voice.settle(&fake, WAIT);
+    let key = voice.key();
+    let before = objects(&fake).len();
+    voice.sync.configure(None);
+    voice.sync.mark_deleted(&gone.id).unwrap();
+    std::fs::remove_dir_all(&gone.dir).unwrap();
+    assert_eq!(
+        objects(&fake).len(),
+        before,
+        "encrypted objects follow the bucket lifecycle"
+    );
+    voice.connect(&fake.endpoint());
+    assert!(wait_for(WAIT, || indexes(&fake, &key)
+        .into_iter()
+        .flat_map(|i| i.meetings)
+        .any(|e| e.id == gone.id && e.deleted)));
+    assert!(voice
+        .sync
+        .remote_meetings()
+        .unwrap()
+        .iter()
+        .all(|m| m.id != gone.id));
+    assert!(!gone.dir.exists());
+}
+
+#[test]
 fn a_new_bucket_gets_media_the_old_buckets_retention_removed() {
     let (first, second) = (fake(), fake());
     let data = scratch("prune-move");

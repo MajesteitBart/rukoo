@@ -32,6 +32,7 @@ pub struct Control {
     frames: Mutex<HashMap<String, (u64, Arc<FrameIndex>)>>,
     /// `media.open` and `media.read`.
     pub media: Arc<MediaService>,
+    deleting: Mutex<()>,
 }
 
 impl Control {
@@ -49,7 +50,83 @@ impl Control {
             screen,
             frames: Mutex::new(HashMap::new()),
             media,
+            deleting: Mutex::new(()),
         }
+    }
+
+    /// A folder renamed out of the library is a durable deletion intent. Finish it after a
+    /// crash before the bridge accepts clients; only validated ids under the library qualify.
+    pub fn recover_deletions(&self) {
+        let Ok(entries) = fs::read_dir(self.controller.library().root()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(id) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(".deleted-"))
+            else {
+                continue;
+            };
+            if MeetingId::parse(id).is_some() {
+                if let Err(error) = self.delete_meeting(id) {
+                    log::warn!("meeting: {id}: couldn't finish deletion: {}", error.message);
+                }
+            }
+        }
+    }
+
+    fn delete_meeting(&self, id: &str) -> Result<(), ControlError> {
+        let _deleting = self.deleting.lock().unwrap_or_else(PoisonError::into_inner);
+        if MeetingId::parse(id).is_none() {
+            return Err(ControlError::not_found("There is no meeting with that id."));
+        }
+        let root = self.controller.library().root();
+        let source = root.join(id);
+        let pending = root.join(format!(".deleted-{id}"));
+        if !pending.is_dir() {
+            let snapshot = self
+                .controller
+                .library()
+                .get(id, &self.log)
+                .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))?;
+            if self.controller.current().is_some_and(|r| r.id == id)
+                || !matches!(
+                    snapshot["meeting"]["state"].as_str(),
+                    Some("done" | "failed")
+                )
+            {
+                return Err(ControlError::new(
+                    voice_protocol::ErrorCode::Busy,
+                    "Stop the meeting and let it finish saving before deleting it.",
+                ));
+            }
+        }
+        if !media::forget_meeting(&source, || self.media.forget_meeting(id))? {
+            return Err(ControlError::new(voice_protocol::ErrorCode::Busy, "A video clip is still being prepared. Try deleting the meeting again when it finishes."));
+        }
+        if let Some(sync) = self.media.bucket_sync() {
+            sync.mark_deleted(id)
+                .map_err(|e| ControlError::failed(e.message))?;
+        }
+        if !pending.is_dir() {
+            fs::rename(&source, &pending).map_err(|e| {
+                ControlError::failed(format!(
+                    "Voice couldn't remove the meeting from its library: {e}"
+                ))
+            })?;
+        }
+        self.log
+            .remove_meeting_by_user(id)
+            .map_err(|e| ControlError::failed(e.to_string()))?;
+        fs::remove_dir_all(&pending).map_err(|e| {
+            ControlError::failed(format!("Voice couldn't finish deleting the meeting: {e}"))
+        })?;
+        self.frames
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
+        Ok(())
     }
 
     pub fn status(&self) -> Status {
@@ -102,6 +179,9 @@ fn media_error(error: MediaError) -> ControlError {
 }
 
 impl MeetingControl for Control {
+    fn delete(&self, id: &str) -> Result<(), ControlError> {
+        self.delete_meeting(id)
+    }
     fn start(&self, args: StartArgs) -> Result<String, ControlError> {
         self.controller.start(args, StartedBy::Rukoo)
     }
@@ -127,10 +207,15 @@ impl MeetingControl for Control {
     }
 
     fn get(&self, id: &str) -> Result<Value, ControlError> {
-        self.controller
+        let mut snapshot = self
+            .controller
             .library()
             .get(id, &self.log)
-            .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))
+            .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))?;
+        snapshot["meeting"]["initialScreen"] = snapshot["meeting"]["screen"].clone();
+        snapshot["meeting"]["screen"] =
+            serde_json::to_value(self.screen.mode_of(id)).unwrap_or(Value::Null);
+        Ok(snapshot)
     }
 
     fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError> {
@@ -173,6 +258,30 @@ impl MeetingControl for Control {
         self.meeting_dir(id)?;
         self.screen.ack(id);
         Ok(())
+    }
+
+    fn protected_for(
+        &self,
+        id: &str,
+        request: Option<&str>,
+        connection: u64,
+    ) -> Result<(), ControlError> {
+        self.meeting_dir(id)?;
+        match request {
+            Some(request) => self.screen.ack_mode(id, request, connection),
+            None => self.screen.ack(id),
+        }
+        Ok(())
+    }
+
+    fn set_screen(
+        &self,
+        id: &str,
+        mode: voice_protocol::ScreenMode,
+        monitor: Option<&str>,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        self.screen.set_mode(id, mode, monitor, deadline)
     }
 
     fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
@@ -287,6 +396,13 @@ pub struct Bridge {
 }
 
 impl Bridge {
+    pub fn protection_clients(&self) -> Vec<u64> {
+        self.handle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(Vec::new, Handle::protection_clients)
+    }
     pub fn start(log: EventLog, control: Arc<Control>, path: PathBuf, version: &str) -> Bridge {
         let bridge = Bridge {
             log,
@@ -463,13 +579,17 @@ mod tests {
 
         clients.refused = refused(Refusal::BadToken, Some(1), 20);
         assert_eq!(rukoo_info(&clients, 10).state, "refused");
-        clients.refused = refused(Refusal::UnsupportedProtocol, Some(2), 20);
+        clients.refused = refused(
+            Refusal::UnsupportedProtocol,
+            Some(u64::from(voice_protocol::PROTOCOL) + 1),
+            20,
+        );
         let newer = rukoo_info(&clients, 10);
         assert_eq!(
             (newer.state, newer.client_version.as_deref()),
             ("voiceOutdated", Some("2.3.0"))
         );
-        clients.refused = refused(Refusal::UnsupportedProtocol, Some(0), 20);
+        clients.refused = refused(Refusal::UnsupportedProtocol, Some(1), 20);
         assert_eq!(rukoo_info(&clients, 10).state, "rukooOutdated");
         // Once a client got in after the refusal, the refusal is history.
         clients.last_admitted_at = Some(25);

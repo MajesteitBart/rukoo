@@ -491,7 +491,7 @@ impl Client {
     }
 
     pub fn hello(&mut self, token: &str, instance: Option<&str>, after: u64) {
-        self.send(json!({ "type": "hello", "protocol": 1, "token": token, "client": "rukoo", "clientVersion": "2.2.0", "instance": instance, "after": after }));
+        self.send(json!({ "type": "hello", "protocol": voice_protocol::PROTOCOL, "token": token, "client": "rukoo", "clientVersion": "2.3.0", "instance": instance, "after": after }));
     }
 
     pub fn command(&mut self, id: &str, command: &str, args: Value) {

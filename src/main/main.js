@@ -1363,6 +1363,8 @@ Object.assign(api, {
     });
   },
   meetingStop: (id) => voiceService().stop(meetingId(id)),
+  meetingRename: (id, title) => voiceService().rename(meetingId(id), title),
+  meetingDelete: (id) => voiceService().delete(meetingId(id)),
   meetingPause: (id) => voiceService().pause(meetingId(id)),
   meetingResume: (id) => voiceService().resume(meetingId(id)),
   meetingMark: (id, label) => voiceService().mark(meetingId(id), meetingText(label, 200) || null).then(() => true),
@@ -1387,6 +1389,7 @@ Object.assign(api, {
   },
   // The meeting's screen recording and the monitors it can move to (voice/index.js screenInfo).
   meetingScreen: (id) => voiceService().screenInfo(meetingId(id)),
+  meetingScreenSet: (id, screen, monitor = null) => voiceService().setScreen(meetingId(id), screen, typeof monitor === 'string' ? monitor : null),
   // monitor: an id from meetingScreen's monitors. The id of the monitor Voice records now.
   meetingScreenSelect: (id, monitor) => {
     if (typeof monitor !== 'string' || !monitor || Array.from(monitor).length > 64) throw new Error('invalid');

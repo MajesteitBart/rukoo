@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented } from './ui.js';
+import { api, esc, $, hhmm, hue, initials, readerDate, groupLabel, toast, showMenu, closeMenu, menuOpen, menuCount, segmented, setSegmented, confirmDialog } from './ui.js';
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { markdownToNotes, notesToMarkdown } from './notes-markdown.js';
 import { foldFrames } from './meeting-frames.js';
@@ -51,10 +51,15 @@ const M = {
   tab: 'transcript',
   starting: false,
   confirmStop: null,
+  renaming: null,
+  renameBusy: false,
+  deleting: new Set(),
+  deleted: new Set(),
   // The passage whose text the user is correcting; changes to it wait until the editor closes.
   editing: null,
   // The Voice that answered screen.get with unknown_command: its meetings show no Screen button.
   noScreenSwitch: null,
+  monitors: new Map(),
   // Frames the user opened: a large image and all of their text.
   frameOpen: new Set(),
   groupOpen: new Set(),
@@ -147,6 +152,19 @@ function notReadyText(v = M.voice) {
 
 export function init(context) {
   ctx = context;
+  document.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('[data-mt-open]');
+    if (!row) return;
+    e.preventDefault();
+    meetingMenu(row, row.dataset.mtOpen, { at: { x: e.clientX, y: e.clientY } });
+  });
+  document.addEventListener('keydown', (e) => {
+    const row = e.target.closest('[data-mt-open]');
+    if (row && (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey))) {
+      e.preventDefault();
+      meetingMenu(row, row.dataset.mtOpen);
+    }
+  });
   Promise.all([api('voiceState').catch(() => null), api('meetingList').catch(() => null)]).then(([state, list]) => {
     if (state) M.voice = state;
     if (Array.isArray(list)) M.list = list;
@@ -205,6 +223,7 @@ export function open(id) {
     return;
   }
   flushNotes();
+  M.renaming = null;
   closeEditor(false);
   M.id = id;
   M.data = null;
@@ -216,8 +235,9 @@ export function open(id) {
   saveId(id);
   renderView();
   redrawSide();
-  fetchMeeting(id);
+  const fetched = fetchMeeting(id);
   ctx.agentSync?.();
+  return fetched;
 }
 
 // Starts a recording through Rukoo Voice: from the sidebar, the empty view or a calendar event's card. opts:
@@ -287,6 +307,15 @@ export function onEvent(p) {
   if (p.kind === 'list') return reloadList().then(() => redrawSide());
   // Voice deleted a meeting. Main keeps it only for the notes the user wrote, marked removed.
   if (p.kind === 'removed') {
+    if (p.purge) {
+      M.deleted.add(p.id);
+      N.queued.delete(p.id);
+      N.blocked.delete(p.id);
+      if (N.id === p.id) {
+        clearTimeout(N.timer);
+        N.dirty = false;
+      }
+    }
     M.list = M.list.filter((m) => m.id !== p.id);
     if (p.id === M.id) {
       M.data = null;
@@ -398,7 +427,7 @@ function setVoice(state) {
 
 function busyHere() {
   const el = document.activeElement;
-  return Boolean(M.editing) || Boolean(el && el.closest && el.closest('.mt-notes-input'));
+  return Boolean(M.renaming || M.editing) || Boolean(el && el.closest && el.closest('.mt-notes-input'));
 }
 
 // A change to one meeting, batched by main. from is the meeting's rev before it: a view that holds another rev
@@ -604,6 +633,7 @@ function renderHead() {
   const d = M.data;
   if (!head || !d) return;
   const s = d.meeting;
+  if (M.renaming === s.id && head.querySelector('.mt-title-input')) return;
   const connected = M.voice.status === 'connected';
   const disabled = connected ? '' : `disabled title="${esc(notReadyText() || '')}"`;
   const ms = elapsed(s);
@@ -623,7 +653,7 @@ function renderHead() {
     .join('');
   const confirming = M.confirmStop === s.id;
   // A Voice that can't switch monitors (Voice 0.1) answered unknown_command once; its meetings get no button.
-  const canSwitch = screen && M.noScreenSwitch !== voiceKey();
+  const canSwitch = M.voice.protocol >= 2 && M.noScreenSwitch !== voiceKey();
   const screenLabel = esc(t('meeting.actions.screen'));
   const actions = live(s)
     ? `${canSwitch ? `<button class="tbtn" data-mt="screen" aria-haspopup="menu" title="${screenLabel}" ${disabled}>${icons.monitor}<span>${screenLabel}</span></button>` : ''}
@@ -632,9 +662,89 @@ function renderHead() {
        <button class="tbtn primary ${confirming ? 'is-confirm' : ''}" data-mt="stop" ${disabled}>${icons.stop}<span>${esc(t(confirming ? 'meeting.actions.stopConfirm' : 'meeting.actions.stop'))}</span></button>`
     : '';
   const focused = head.contains(document.activeElement) ? document.activeElement.dataset.mt : null;
-  head.innerHTML = `<div class="mt-titles"><h1 class="mt-title sel" title="${esc(titleOf(s, d.event))}">${esc(titleOf(s, d.event))}</h1><div class="mt-meta">${meta}</div></div><div class="mt-actions">${actions}</div>`;
+  const title = titleOf(s, d.event);
+  const titleHtml = M.renaming === s.id
+    ? `<input class="mt-title-input" aria-label="${esc(t('meeting.actions.rename'))}" value="${esc(title)}" />`
+    : `<h1 class="mt-title sel" title="${esc(title)}">${esc(title)}</h1>${!s.removed ? `<button class="icon-btn xs" data-mt="rename" title="${esc(t('meeting.actions.rename'))}" aria-label="${esc(t('meeting.actions.rename'))}">${icons.edit}</button>` : ''}`;
+  head.innerHTML = `<div class="mt-titles"><div class="mt-title-row">${titleHtml}</div><div class="mt-meta">${meta}</div></div><div class="mt-actions">${actions}<button class="icon-btn sm" data-mt="more" aria-haspopup="menu" aria-label="${esc(t('meeting.actions.more'))}" title="${esc(t('meeting.actions.more'))}">${icons.more}</button></div>`;
   // A redraw keeps the keyboard where it was; Pause becomes Resume in the same place.
   if (focused) (head.querySelector(`[data-mt="${focused}"]`) || head.querySelector(`[data-mt="${focused === 'pause' ? 'resume' : focused === 'resume' ? 'pause' : ''}"]`))?.focus();
+}
+
+function canDelete(s) {
+  return s && !['recording', 'paused', 'processing'].includes(s.state) && s.id !== M.voice.recording;
+}
+
+function meetingMenu(anchor, id, opts = {}) {
+  const s = summaryOf(id);
+  if (!s) return;
+  showMenu(anchor, [
+    !s.removed ? { label: t('meeting.actions.rename'), icon: 'edit', action: async () => { await open(id); beginRename(id); } } : null,
+    canDelete(s) ? { label: t('meeting.actions.delete'), icon: 'trash', danger: true, disabled: M.deleting.has(id), action: () => deleteMeeting(id) } : null
+  ], opts);
+}
+
+function beginRename(id) {
+  if (!M.data || M.data.meeting.id !== id || M.data.meeting.removed) return;
+  M.renaming = id;
+  renderHead();
+  const input = $('.meeting .mt-title-input');
+  input?.focus();
+  input?.select();
+}
+
+async function finishRename(save) {
+  const id = M.renaming;
+  const input = $('.meeting .mt-title-input');
+  if (!id || !input || M.renameBusy) return;
+  if (!save) {
+    M.renaming = null;
+    renderHead();
+    $('.meeting [data-mt="rename"]')?.focus();
+    return;
+  }
+  const title = input.value.trim();
+  if (!title || Array.from(title).length > 200) {
+    input.setAttribute('aria-invalid', 'true');
+    return toast(t('meeting.rename.invalid'), { ms: 5000 });
+  }
+  M.renameBusy = true;
+  input.disabled = true;
+  try {
+    const summary = await api('meetingRename', id, title);
+    if (M.data?.meeting.id === id) M.data.meeting = summary;
+    upsertSummary(summary);
+    M.renaming = null;
+    renderHead();
+    redrawSide();
+    ctx.agentSync?.();
+    $('.meeting [data-mt="rename"]')?.focus();
+  } catch (err) {
+    input.disabled = false;
+    input.focus();
+    toast(voiceError(err), { ms: 5000 });
+  } finally {
+    M.renameBusy = false;
+  }
+}
+
+async function deleteMeeting(id) {
+  const s = summaryOf(id);
+  if (!canDelete(s) || M.deleting.has(id)) return;
+  const yes = await confirmDialog(t('meeting.delete.title', { title: titleOf(s) }), t('meeting.delete.body'), t('meeting.actions.delete'), true);
+  if (!yes || !canDelete(summaryOf(id))) return;
+  M.deleting.add(id);
+  try {
+    await api('meetingDelete', id);
+    N.queued.delete(id);
+    N.blocked.delete(id);
+    M.renaming = null;
+    toast(t('meeting.delete.done'), { ms: 4000 });
+  } catch (err) {
+    toast(err.voice === 'unknown_command' ? t('meeting.delete.updateVoice') : voiceError(err), { ms: 6000 });
+  } finally {
+    M.deleting.delete(id);
+  }
 }
 
 // A line under the header when something about the meeting needs saying.
@@ -662,7 +772,7 @@ async function monitorMenu(btn) {
   const d = M.data;
   if (!d) return;
   const id = d.meeting.id;
-  const heading = { heading: t('meeting.monitor.heading') };
+  const heading = { heading: t('meeting.screen.liveChoose') };
   showMenu(btn, [heading, { label: t('meeting.monitor.loading'), disabled: true, action: () => {} }], { align: 'right' });
   const opened = menuCount();
   const stillOpen = () => menuOpen() && menuCount() === opened && btn.isConnected && M.data && M.data.meeting.id === id;
@@ -679,30 +789,51 @@ async function monitorMenu(btn) {
   }
   if (!stillOpen()) return;
   const monitors = info && Array.isArray(info.monitors) ? info.monitors.filter((m) => m && typeof m.id === 'string') : [];
-  const stopped = !info || info.state === 'stopped' || (info.video === false && info.frames === false);
+  const stopped = !info || info.state === 'stopped';
+  const selected = M.monitors.get(id) || info.monitor;
   showMenu(
     btn,
     [
       heading,
+      ...SCREENS.map((mode) => ({
+        label: t(`meeting.screen.control.${mode}`),
+        checked: info.screen === mode,
+        disabled: stopped,
+        action: () => setScreenMode(id, mode, selected)
+      })),
+      { separator: true },
+      { heading: t('meeting.monitor.heading') },
       stopped ? { label: t('meeting.monitor.stopped'), disabled: true, action: () => {} } : null,
       ...monitors.map((m) => ({
         label: m.name || m.id,
         sub: Number.isInteger(m.width) && Number.isInteger(m.height) ? t('meeting.monitor.size', { width: m.width, height: m.height }) : '',
         hint: m.primary ? t('meeting.monitor.primary') : '',
-        checked: m.id === info.monitor,
+        checked: m.id === selected,
         disabled: stopped,
-        action: () => m.id !== info.monitor && selectMonitor(id, m.id)
+        action: () => {
+          M.monitors.set(id, m.id);
+          if (m.id !== info.monitor) setScreenMode(id, info.screen, m.id);
+        }
       }))
     ],
     { align: 'right' }
   );
 }
 
-async function selectMonitor(id, monitor) {
+async function setScreenMode(id, mode, monitor) {
   try {
-    await api('meetingScreenSelect', id, monitor);
+    const result = await api('meetingScreenSet', id, mode, monitor);
+    if (M.data?.meeting.id === id) {
+      M.data.meeting.screen = result.screen;
+      upsertSummary(M.data.meeting);
+      renderHead();
+    }
   } catch (err) {
-    toast(voiceError(err), 5000);
+    if (err.voice === 'unknown_command') {
+      M.noScreenSwitch = voiceKey();
+      renderHead();
+    }
+    toast(voiceError(err), { ms: 6000 });
   }
 }
 
@@ -768,6 +899,8 @@ function markText(k) {
   const span = Number.isFinite(k.until) ? length(k.until - k.at) : null;
   const track = trackName(k.track);
   switch (k.kind) {
+    case 'screen_mode':
+      return t(`meeting.mark.screen.${SCREENS.includes(k.label) ? k.label : 'off'}`);
     case 'user':
       return k.label ? t('meeting.mark.userLabel', { label: k.label }) : t('meeting.mark.user');
     case 'dictation':
@@ -805,7 +938,7 @@ function markText(k) {
       return k.label ? t('meeting.mark.userLabel', { label: k.label }) : t('meeting.mark.user');
   }
 }
-const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning', video_dropped: 'warning', screen_gap: 'warning', monitor: 'monitor' };
+const MARK_ICONS = { user: 'flag', gap: 'warning', device: 'mic', dictation: 'edit', dropped: 'warning', video_dropped: 'warning', screen_gap: 'warning', screen_mode: 'monitor', monitor: 'monitor' };
 
 function markHtml(k) {
   const kind = Object.hasOwn(MARK_ICONS, k.kind) ? k.kind : 'user';
@@ -1094,7 +1227,7 @@ function framesSeen(seen) {
 async function loadFrame(frameId) {
   const d = M.data;
   const f = d && (d.frames || []).find((x) => x.id === frameId);
-  if (!f || F.loading.has(frameId) || F.meeting !== d.meeting.id) return;
+  if (!f || F.loading.has(frameId) || F.cache.has(frameId) || F.meeting !== d.meeting.id) return;
   const meetingId = d.meeting.id;
   F.loading.add(frameId);
   let entry;
@@ -1461,6 +1594,7 @@ async function drainNotes() {
         }
         if (N.id === id) notesStatus(N.dirty || N.queued.has(id) ? '' : t('meeting.notes.saved'));
       } catch (_) {
+        if (M.deleted.has(id)) continue;
         // Kept for the next try, unless something newer for that meeting is queued already.
         if (!N.queued.has(id)) N.queued.set(id, job);
         if (N.id === id) notesStatus(t('meeting.notes.failed'), true);
@@ -1500,6 +1634,10 @@ async function onClick(e) {
   const d = M.data;
   const id = d && d.meeting.id;
   switch (b.dataset.mt) {
+    case 'rename':
+      return beginRename(id);
+    case 'more':
+      return meetingMenu(b, id);
     case 'record':
       return record();
     case 'record-menu':
@@ -1576,6 +1714,14 @@ async function command(run, done = null) {
 // The transcript is one tab stop: arrows move between its lines, Enter corrects a passage. In the editor Enter saves
 // and Escape cancels.
 function onViewKey(e) {
+  if (e.target.matches('.mt-title-input')) {
+    if (e.key === 'Enter' || e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      finishRename(e.key === 'Enter');
+    }
+    return;
+  }
   if (e.target.closest('button')) return;
   if (e.target.matches && e.target.matches('.mt-edit')) {
     if (e.key === 'Escape') {

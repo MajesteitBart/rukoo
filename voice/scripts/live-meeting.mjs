@@ -995,6 +995,7 @@ const rukoo = {
   frame: (id, at) => win.evaluate(([m, a]) => window.mail.call('meetingFrame', m, a), [id, at]),
   screen: (id) => win.evaluate((m) => window.mail.call('meetingScreen', m), id),
   select: (id, monitor) => win.evaluate(([m, s]) => window.mail.call('meetingScreenSelect', m, s), [id, monitor]),
+  setScreen: (id, mode, monitor = null) => win.evaluate(([m, s, d]) => window.mail.call('meetingScreenSet', m, s, d), [id, mode, monitor]),
   settings: (patch) => win.evaluate((p) => window.mail.call('updateSettings', p), patch),
   voiceGet: (id) => app.evaluate((_, m) => global.__semVoice.bridge.command('meeting.get', { meeting: m }), id),
   protectedWindows: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected())),
@@ -1349,7 +1350,7 @@ async function pair(monitor) {
     const s = await hook('status');
     return s.settings.rukoo.state === 'connected' && s.settings.rukoo;
   }, 15000);
-  check('Settings > Rukoo shows the connected client from its hello', settled.clientVersion && settled.protocol === 1, settled);
+  check('Settings > Rukoo shows the connected client from its hello', settled.clientVersion && settled.protocol === 2, settled);
   const caps = await until('the screen probe', async () => (await hook('status')).settings.screen, 30000);
   report.screen.capabilities = caps;
   check('Voice found its screen process and can record the screen', caps.available === true, caps);
@@ -1439,6 +1440,21 @@ async function standardRun(voice, offsets) {
       check('screen.json names a live screen process', alive(live.pid), { pid: live.pid });
       if (ARGS.realScreen) await guardMonitor(id, report.screen.slideDisplay);
       await checkFrames(id, { realOffsets: ARGS.realScreen ? offsets : null });
+    }
+
+    if (!ARGS.realScreen) {
+      const recorderPid = recorderOf(id).pid;
+      await rukoo.setScreen(id, 'off');
+      await until('notifications released with screen Off', () => app.evaluate(() => !global.__semVoice.screenRecording()), 5000);
+      await hook('pill_screen_set', { meeting: id, mode: 'frames' });
+      const enabled = await until('a screen mode mark from the pill', async () => (await rukoo.get(id)).marks?.some((k) => k.kind === 'screen_mode' && k.label === 'frames'), 15000);
+      check('the pill enables frames and Rukoo receives its timestamped mode mark', enabled);
+      check('windows are protected before enabled capture', (await rukoo.protectedWindows()).every(Boolean));
+      await rukoo.setScreen(id, 'video');
+      await until('video after changing mode', () => journal(id).some((l) => l.kind === 'video'), 30000);
+      await rukoo.setScreen(id, ARGS.screen);
+      check('screen mode changes keep the same audio recorder', recorderOf(id).pid === recorderPid);
+      check('the initial screen mode remains historical', (await rukoo.get(id)).meeting.initialScreen === ARGS.screen);
     }
 
     // 3. Passages on both tracks, while it records.
@@ -1604,13 +1620,14 @@ async function standardRun(voice, offsets) {
 
   // 9. Rukoo asks for video once, whatever Voice's default.
   if (ARGS.screen !== 'video') {
-    const { meetingId: vid } = await rukoo.start({ title: 'Live run: video from Rukoo', screen: 'video' });
+    const { meetingId: vid } = await rukoo.start({ title: 'Live run: audio only, then video', screen: 'off' });
     await until('the recording status in Rukoo', async () => (await rukoo.state()).recording === vid, 15000);
+    await rukoo.setScreen(vid, 'video');
     if (ARGS.realScreen) await guardMonitor(vid, report.screen.slideDisplay);
     const session = await until('the screen journal\'s session line', () => journal(vid).find((l) => l.kind === 'session'), 30000, 100);
     const video = await until('a video file', () => journal(vid).find((l) => l.kind === 'video' || l.kind === 'dropped'), 30000, 100);
     const m = await rukoo.get(vid);
-    check('a meeting Rukoo starts with screen video records video', m.meeting.screen === 'video' && session.mode === 'video' && video.kind === 'video', { screen: m.meeting.screen, mode: session.mode, encoder: video.encoder, hardware: video.hardware });
+    check('an audio-only meeting can enable screen video on the same clock', m.meeting.screen === 'video' && m.meeting.initialScreen === 'off' && session.mode === 'off' && video.kind === 'video', { screen: m.meeting.screen, mode: session.mode, encoder: video.encoder, hardware: video.hardware });
     await sleep(5000);
     await rukoo.stop(vid);
     await until('done', async () => (await rukoo.get(vid)).meeting.state === 'done', 120000, 300);
@@ -1672,10 +1689,10 @@ async function chooseRun(offsets) {
     const users = () => journal(id).filter((l) => l.kind === 'monitor' && l.reason === 'user');
     const userMarks = async () => ((await rukoo.get(id)).marks || []).filter((k) => k.kind === 'monitor' && k.detail === 'user');
 
-    // From the pill: the next monitor, left to right.
-    await hook('pill_screen_click');
-    const viaPill = await until('a monitor line after the pill click', () => users()[0], 15000, 100);
+    // The pill menu selects another monitor without changing the screen mode.
     const others = displays.filter((d) => d.id !== target).map((d) => d.id);
+    await hook('pill_screen_set', { meeting: id, mode: ARGS.screen, monitor: others[0] });
+    const viaPill = await until('a monitor line after the pill click', () => users()[0], 15000, 100);
     check('the pill moved the recording to the next monitor, with reason user', others.includes(viaPill.id), { id: viaPill.id });
     const mark1 = await until('a monitor mark in Rukoo', async () => (await userMarks())[0], 20000, 500);
     check('Rukoo shows the move from the pill as a monitor mark with detail user', Boolean(mark1), { at: mark1.at, label: mark1.label });

@@ -354,6 +354,14 @@ const DEFAULTS = {
     this.append('status', null, { ...this.status, recording: null, dictating: false });
     return {};
   },
+  'meeting.delete'(args) {
+    const snap = this.snapshot(args.meeting);
+    if (!snap) return { error: { code: 'not_found', message: 'No such meeting.' } };
+    if (this.status.recording === args.meeting || ['recording', 'paused', 'processing'].includes(snap.meeting.state)) return { error: { code: 'busy', message: 'The meeting is still recording or saving.' } };
+    this.events = this.events.filter((e) => e.meeting !== args.meeting);
+    this.append('meeting.removed', args.meeting, { reason: 'user' });
+    return {};
+  },
   'meeting.mark'(args) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     const n = this.events.filter((e) => e.event === 'mark').length + 1;

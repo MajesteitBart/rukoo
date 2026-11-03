@@ -378,7 +378,7 @@ export function mountAgentPanel(ctx) {
     return open ? { m: open, add: true } : null;
   };
   const contextKey = (s) =>
-    s && s.meeting ? ['meeting', s.meeting.id, s.meeting.title || ''].join('\n') : s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from), s.newer ? `${s.newer.m.id}\n${s.newer.m.subject}\n${s.newer.pending}` : ''].join('\n') : '';
+    s && s.meeting ? ['meeting', s.meeting.id, s.meeting.title || '', s.meeting.deleted === true].join('\n') : s ? [s.add ? 'add' : s.fixed ? 'fixed' : 'open', s.m.id, s.m.subject, person(s.m.from), s.newer ? `${s.newer.m.id}\n${s.newer.m.subject}\n${s.newer.pending}` : ''].join('\n') : '';
   const contextChip = (s) => {
     if (!s) return null;
     // A meeting stays with its chat: no x, as for an email once the chat started.
@@ -387,7 +387,7 @@ export function mountAgentPanel(ctx) {
       badge.className = 'bui-entity__badge';
       badge.setAttribute('aria-hidden', 'true');
       badge.append(B.icon('mic', 10, 2.2));
-      return elOf(B.entityChip({ label: s.meeting.title || t('meeting.untitledNoTime'), sub: t('agent.panel.meetingChip'), monogram: badge }));
+      return elOf(B.entityChip({ label: s.meeting.title || t('meeting.untitledNoTime'), sub: t(s.meeting.deleted ? 'agent.panel.meetingDeleted' : 'agent.panel.meetingChip'), monogram: badge }));
     }
     const m = s.m;
     const subject = m.subject || t('mailbox.message.noSubject');

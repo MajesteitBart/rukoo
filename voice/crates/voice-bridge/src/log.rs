@@ -308,9 +308,18 @@ impl EventLog {
     ///
     /// The numbers of the deleted events are never given out again.
     pub fn remove_meeting(&self, meeting: &str) -> Result<u64, LogError> {
+        self.remove_meeting_with_data(meeting, Value::Object(Map::new()))
+    }
+
+    /// Explicit user deletion also removes the personal notes Rukoo normally keeps.
+    pub fn remove_meeting_by_user(&self, meeting: &str) -> Result<u64, LogError> {
+        self.remove_meeting_with_data(meeting, serde_json::json!({ "reason": "user" }))
+    }
+
+    fn remove_meeting_with_data(&self, meeting: &str, value: Value) -> Result<u64, LogError> {
         let created_at = now_ms();
         let event = events::MEETING_REMOVED;
-        let (data, data_json) = check(event, Some(meeting), created_at, Value::Object(Map::new()))?;
+        let (data, data_json) = check(event, Some(meeting), created_at, value)?;
         let mut db = self.lock();
         let head = db.head;
         let tx = db

@@ -27,12 +27,15 @@ Voice has no meeting screens of its own. During a meeting the pill shows that it
 - Voice publishes its address and token in a file that only your user account can read. That's how Rukoo finds it.
 - You can start and stop a meeting from either app. Voice keeps recording when Rukoo isn't running.
 - Voice owns the media: audio tracks, screen frames, video and the transcript as it was recognized. Rukoo owns what you work with: notes, corrections, speaker names, the agent chat and the agent's output. Rukoo uses the calendar event's attendees to turn "Speaker 2" into a name.
+- Rename or delete meetings in Rukoo. Renamed titles stay in Rukoo. Deleting a finished meeting permanently removes its local media and owned data and queues a bucket index tombstone, including while offline. Encrypted bucket objects follow the bucket's lifecycle rules. Chats stay with a deleted-meeting label.
 - Your agent never talks to Voice. It reaches the meeting through Rukoo's MCP tools. Everyone in the call is a third party, so Rukoo hands the transcript to the agent as untrusted content.
 - Voice captures the microphone once, for dictation and the meeting together. If you dictate during a meeting, your words also reach the call. Voice marks those stretches, so the agent knows they weren't part of the conversation.
 
 ## Screen recording
 
 Each meeting can record the screen in one of three ways: off, frames only, or the full video. Settings has the default, and Rukoo can pick another one for a meeting it starts.
+
+While recording or paused, the pill's screen button and Rukoo's meeting header offer Off, Frames, Video and a monitor. Off releases capture while audio continues. Capture can start again on the same clock, including after an audio-only start. The transcript marks each mode change. Before enabling capture, Voice waits for every connected Rukoo to confirm its window protection; a missing confirmation leaves the previous mode unchanged. These live controls use bridge protocol 2 and require updated copies of both apps. Updated Rukoo still connects to older Voice with the live controls hidden.
 
 - A process of its own, `rukoo-voice-screen`, records the screen, so a crash in the graphics driver, the encoder or the text reader never costs audio.
 - Voice records one monitor at most. It starts with the monitor of the frontmost window, skipping hidden and minimized windows and windows kept out of screen capture, such as Rukoo's. You can switch monitors with the pill's screen button or from the meeting in Rukoo. Recording a single window doesn't work when you share your own screen, because you keep switching windows.

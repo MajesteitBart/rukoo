@@ -120,8 +120,12 @@ fn main() {
         ("drops_reach_the_pill", drops_reach_the_pill),
         ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
         (
-            "pill_screen_click_moves_to_the_next_monitor",
+            "pill_screen_menu_changes_modes_and_monitors",
             pill_screen_click_moves_to_the_next_monitor,
+        ),
+        (
+            "screen_mode_changes_require_each_clients_current_ack",
+            screen_mode_changes_require_each_clients_current_ack,
         ),
     ];
     let filters: Vec<String> = std::env::args()
@@ -655,10 +659,10 @@ fn screen_off_sends_no_meeting_starting() {
     assert!(rig.journal(&id).is_empty(), "no screen process ran");
     assert_eq!(rig.screen().mode_of(&id), ScreenMode::Off);
     let control = rig.control();
-    assert_eq!(
-        control.screen(&id, in_time()).unwrap_err().code,
-        ErrorCode::NotAvailable
-    );
+    let info = control.screen(&id, in_time()).unwrap();
+    assert_eq!(info["screen"], "off");
+    assert_eq!(info["state"], "off");
+    assert_eq!(info["frames"], false);
     assert_eq!(
         control.frame(&id, 0).unwrap_err().code,
         ErrorCode::NotAvailable
@@ -963,9 +967,8 @@ fn clip_get_refuses_near_the_video_floor() {
     assert_eq!(refused.code, ErrorCode::Failed);
     // Exactly enough, and with 8 GiB free, it cuts, also while a meeting records.
     roomy.free.store(6 * GIB + input, Ordering::SeqCst);
-    assert!(control
-        .clip(&id, 500, 2_500, Instant::now() + Duration::from_secs(4))
-        .is_ok());
+    let enough = control.clip(&id, 500, 2_500, Instant::now() + Duration::from_secs(4));
+    assert!(enough.is_ok(), "{enough:?}");
     roomy.free.store(8 * GIB, Ordering::SeqCst);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -1413,6 +1416,18 @@ fn pill_screen_click_moves_to_the_next_monitor() {
     });
     let first = first.unwrap();
     engine.pill_screen_clicked();
+    wait_for("the screen menu", || !lock(&h.sink.screen_menus).is_empty());
+    let info = lock(&h.sink.screen_menus).last().cloned().unwrap();
+    assert_eq!(info["meeting"], id);
+    let other = info["monitors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] != first)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    engine.pill_screen_set(&id, "frames", Some(other)).unwrap();
     wait_for("a monitor line from the user", || {
         journal::read_all(&dir).unwrap_or_default().iter().any(
             |l| matches!(l, Line::Monitor { id, reason, .. } if *id != first && reason == "user"),
@@ -1420,8 +1435,14 @@ fn pill_screen_click_moves_to_the_next_monitor() {
     });
     let moved = wait_notice(&h, "pill.screenMoved");
     assert!(moved.notice.unwrap().args["name"].is_string());
-    // A second click goes back to the first, left to right and around.
-    engine.pill_screen_clicked();
+    engine.pill_screen_set(&id, "off", None).unwrap();
+    wait_for("Off in the pill", || {
+        h.sink
+            .last_pill()
+            .and_then(|p| p.meeting)
+            .is_some_and(|m| m.screen == "off" && m.screen_switch)
+    });
+    engine.pill_screen_set(&id, "frames", Some(&first)).unwrap();
     wait_for("back to the first monitor", || {
         journal::read_all(&dir)
             .unwrap_or_default()
@@ -1430,6 +1451,110 @@ fn pill_screen_click_moves_to_the_next_monitor() {
             .count()
             == 2
     });
+    let modes: Vec<_> = journal::read_all(&dir)
+        .unwrap()
+        .into_iter()
+        .filter_map(|line| match line {
+            Line::Mode { mode, .. } => Some(mode),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        ["off", "frames"],
+        "monitor-only changes do not add screen-mode marks"
+    );
     engine.stop_meeting(voice_engine::StopReason::User).unwrap();
     engine.shutdown();
+}
+
+fn screen_mode_changes_require_each_clients_current_ack() {
+    let rig = Rig::new("mode-protection", &format!("{SCREEN},{VIDEO}"));
+    let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Off));
+    let screen = rig.screen();
+    // These clients connect only after the inert process has started. Protection must include
+    // them rather than using a client list from before the potentially slow process startup.
+    let screen_file = rig.dir(&id).join("screen").join("screen.json");
+    screen.set_protection_clients(Box::new(move || {
+        if screen_file.is_file() {
+            vec![11, 22]
+        } else {
+            Vec::new()
+        }
+    }));
+    let change = {
+        let screen = Arc::clone(&screen);
+        let id = id.clone();
+        thread::spawn(move || {
+            screen.set_mode(
+                &id,
+                ScreenMode::Frames,
+                None,
+                Instant::now() + Duration::from_secs(15),
+            )
+        })
+    };
+    let mut request = None;
+    wait_for("a mode protection request", || {
+        request = rig
+            .starting_events(&id)
+            .last()
+            .and_then(|e| e.data["request"].as_str())
+            .map(str::to_owned);
+        request.is_some()
+    });
+    let request = request.unwrap();
+    screen.ack_mode(&id, "old-round", 22);
+    screen.ack_mode(&id, &request, 11);
+    screen.ack_mode(&id, &request, 11);
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !change.is_finished(),
+        "duplicate or stale acknowledgements cannot protect the second client"
+    );
+    assert!(
+        !rig.journal(&id).iter().any(|line| matches!(
+            line,
+            Line::Capture { .. } | Line::Frame { .. } | Line::Video { .. }
+        )),
+        "no capture before every client protects its windows"
+    );
+    screen.ack_mode(&id, &request, 22);
+    assert_eq!(change.join().unwrap().unwrap()["screen"], "frames");
+    rig.wait_line(&id, "capture after protection", |l| {
+        matches!(l, Line::Frame { .. })
+    });
+    screen
+        .set_mode(
+            &id,
+            ScreenMode::Off,
+            None,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(screen.mode_of(&id), ScreenMode::Off);
+    let before = rig
+        .journal(&id)
+        .iter()
+        .filter(|l| matches!(l, Line::Frame { .. }))
+        .count();
+    // Nobody acknowledges this new round: it must leave capture Off.
+    let error = screen
+        .set_mode(
+            &id,
+            ScreenMode::Video,
+            None,
+            Instant::now() + Duration::from_secs(3),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Failed);
+    assert_eq!(screen.mode_of(&id), ScreenMode::Off);
+    assert_eq!(
+        rig.journal(&id)
+            .iter()
+            .filter(|l| matches!(l, Line::Frame { .. }))
+            .count(),
+        before
+    );
+    rig.stop(&id);
 }

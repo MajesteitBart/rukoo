@@ -60,6 +60,10 @@ impl UiSink for AppSink {
         self.refresh_ui();
     }
 
+    fn screen_menu(&self, info: Value) {
+        self.pill.screen_menu(info);
+    }
+
     fn pill_repair(&self, seq: u64, repair: PillRepair) {
         self.pill.engine_repair(seq, repair);
     }

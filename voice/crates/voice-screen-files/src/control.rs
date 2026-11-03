@@ -22,7 +22,9 @@ pub const FIRST_REQUEST: Duration = Duration::from_secs(5);
 /// The longest request line, in bytes.
 pub const MAX_LINE: usize = 64 * 1024;
 /// The commands the port knows; anything else is `unknown_command`.
-pub const COMMANDS: [&str; 6] = ["status", "monitors", "monitor", "pause", "resume", "stop"];
+pub const COMMANDS: [&str; 7] = [
+    "status", "monitors", "monitor", "pause", "resume", "stop", "mode",
+];
 /// The longest monitor id `monitor` takes, as `screen.select` in the bridge.
 pub const MAX_MONITOR_ID: usize = 64;
 
@@ -155,6 +157,17 @@ fn check(request: &Value) -> Result<(), &'static str> {
         if id.is_empty() || id.chars().count() > MAX_MONITOR_ID {
             return Err("bad_request");
         }
+    }
+    if cmd == "mode" && !matches!(request["mode"].as_str(), Some("off" | "frames" | "video")) {
+        return Err("bad_request");
+    }
+    if cmd == "mode"
+        && !request["monitor"].is_null()
+        && request["monitor"]
+            .as_str()
+            .is_none_or(|id| id.is_empty() || id.chars().count() > MAX_MONITOR_ID)
+    {
+        return Err("bad_request");
     }
     Ok(())
 }

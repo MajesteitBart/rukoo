@@ -73,7 +73,7 @@ test('the first hello carries the token, no cursor and no Origin, and the welcom
   const welcome = await new Promise((resolve) => bridge.once('welcome', resolve));
   assert.equal(welcome.instance, voice.instance);
   assert.equal(welcome.replay, 'full');
-  assert.deepEqual(voice.hellos[0], { type: 'hello', protocol: 1, token: voice.token, client: 'rukoo', clientVersion: '2.2.0', instance: null, after: 0 });
+  assert.deepEqual(voice.hellos[0], { type: 'hello', protocol: 2, token: voice.token, client: 'rukoo', clientVersion: '2.2.0', instance: null, after: 0 });
   assert.equal(voice.upgrades[0].url, '/bridge');
   assert.equal(voice.upgrades[0].headers.origin, undefined, "Rukoo's main process sends no Origin");
   assert.equal(bridge.state().status, 'connected');
@@ -351,7 +351,7 @@ test('a missing file, a damaged one and a Voice that speaks only newer versions 
   // Only the owner may read it, as Voice writes it: otherwise macOS and Linux refuse the file for its permissions first.
   fs.writeFileSync(file, '{"port":', { mode: 0o600 });
   await until(() => bridge.state().reason === 'invalid', 'the invalid state');
-  voice.writeDiscovery({ protocol: 3, minProtocol: 2 });
+  voice.writeDiscovery({ protocol: 3, minProtocol: 3 });
   await until(() => bridge.state().status === 'incompatible', 'the incompatible state');
   assert.equal(bridge.state().older, 'rukoo');
   assert.equal(voice.upgrades.length, 0);
@@ -742,6 +742,46 @@ test("screenRecording: a meeting Rukoo has no meeting.started for counts as reco
   voice.append('meeting.started', M1, { ...started('Board review'), screen: 'off' });
   await until(() => s.store.entry(M1), 'the meeting');
   assert.equal(s.screenRecording(), false, 'audio only');
+});
+
+test('pause and resume do not release the notification hold of a pending screen change', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.append('meeting.started', M1, started('Pending screen change'));
+  voice.append('status', null, { recording: M1, dictating: false });
+  voice.writeDiscovery();
+  const s = service(t, dir, file, { hide: () => false }).init();
+  await until(() => s.connected && s.store.entry(M1), 'the meeting');
+  voice.append('meeting.starting', M1, { screen: 'frames', request: 'mode-round' });
+  await until(() => s.holds.has(M1), 'the screen protection hold');
+  for (const state of ['paused', 'recording']) {
+    voice.append('meeting.state', M1, { state, at: 1000 });
+    await until(() => s.store.entry(M1).state === state, state);
+    assert.equal(s.screenRecording(), true, 'notifications remain held before the first frame');
+    assert.ok(s.starting > 0);
+  }
+  voice.append('mark', M1, { id: 'mode-frames', kind: 'screen_mode', at: 2000, until: null, track: 'screen', detail: 'user', label: 'frames' });
+  await until(() => s.starting === 0, 'capture to take over the hold');
+  voice.append('mark', M1, { id: 'mode-off', kind: 'screen_mode', at: 3000, until: null, track: 'screen', detail: 'user', label: 'off' });
+  await until(() => !s.screenRecording(), 'Off to release notifications');
+});
+
+test('a live mode mark resolves reconnect uncertainty and a late screen reply cannot override it', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.append('meeting.started', M1, { ...started('Mode changes'), screen: 'frames' });
+  voice.append('status', null, { recording: M1, dictating: false });
+  voice.writeDiscovery();
+  const s = service(t, dir, file, { hide: () => false }).init();
+  await until(() => s.connected && s.store.entry(M1), 'the meeting');
+  let resolve;
+  s.screenInfo = () => new Promise((r) => { resolve = r; });
+  s.onWelcome({ protocol: 2, instance: voice.instance, head: voice.head, oldest: 1, replay: 'partial', status: voice.status });
+  assert.equal(s.screenRecording(), true);
+  voice.append('mark', M1, { id: 'mode-off', kind: 'screen_mode', at: 1000, until: null, track: 'screen', detail: 'user', label: 'off' });
+  await until(() => s.store.entry(M1).screen === 'off', 'the Off mark');
+  assert.equal(s.screenRecording(), false, 'the live mark resolves uncertainty');
+  resolve({ screen: 'frames' });
+  await pause(10);
+  assert.equal(s.screenRecording(), false, 'a stale screen.get cannot turn notifications off again');
 });
 
 test('screenRecording: not after a dropped mark says the screen recording stopped for good', async (t) => {

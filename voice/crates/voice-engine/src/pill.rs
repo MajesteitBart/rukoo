@@ -48,6 +48,7 @@ pub mod notices {
     pub const VIDEO_DROPPED_DEVICE: &str = "pill.videoDropped.device";
     pub const FRAMES_DROPPED_DISK: &str = "pill.framesDropped.disk";
     pub const SCREEN_FAILED: &str = "pill.screenFailed";
+    pub const SCREEN_CHANGE_FAILED: &str = "pill.screenChangeFailed";
     /// `{name}`: the monitor's name.
     pub const SCREEN_MOVED: &str = "pill.screenMoved";
 }
@@ -367,7 +368,7 @@ impl Pill {
     pub fn meeting_screen(&mut self, mode: &str, can_switch: bool) {
         if let Some(m) = self.meeting.as_mut() {
             m.screen = mode.to_string();
-            m.screen_switch = can_switch && mode != "off";
+            m.screen_switch = can_switch;
         }
     }
 
@@ -1056,11 +1057,10 @@ mod tests {
         assert_eq!(notice.key, "pill.screenMoved");
         assert_eq!(notice.args["name"], "DELL U2720Q");
 
-        // With the screen off there is no button, and a stopped meeting shows none either.
+        // Off keeps the button so capture can be enabled again; a stopped meeting shows none.
         pill.meeting_screen("off", true);
         assert!(
-            !pill
-                .take(t2 + ms(1))
+            pill.take(t2 + ms(1))
                 .unwrap()
                 .meeting
                 .unwrap()

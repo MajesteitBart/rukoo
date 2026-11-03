@@ -286,6 +286,16 @@ pub struct Handle {
 }
 
 impl Handle {
+    pub fn protection_clients(&self) -> Vec<u64> {
+        lock(&self.registry)
+            .connected
+            .iter()
+            .filter(|(_, entry)| {
+                entry.client.client == "rukoo" && entry.welcomed.load(Ordering::SeqCst)
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
     /// The clients connected now, and the newest hello refused for its token or version.
     pub fn clients(&self) -> Clients {
         let registry = lock(&self.registry);
@@ -471,7 +481,7 @@ async fn connection(
         }
         Ok((hello, _slot)) => {
             let (entry, _registered) = shared.register(&hello);
-            Session::new(shared, sink, quit, entry)
+            Session::new(shared, sink, quit, entry, _registered.id)
                 .run(hello, source)
                 .await
         }
@@ -599,6 +609,7 @@ struct Session {
     /// The highest sequence number sent on this connection.
     last: u64,
     client: Arc<Entry>,
+    connection: u64,
 }
 
 impl Session {
@@ -607,6 +618,7 @@ impl Session {
         sink: Sink,
         quit: watch::Receiver<bool>,
         client: Arc<Entry>,
+        connection: u64,
     ) -> Session {
         Session {
             shared,
@@ -614,6 +626,7 @@ impl Session {
             quit,
             last: 0,
             client,
+            connection,
         }
     }
 
@@ -714,7 +727,19 @@ impl Session {
                         // counts the time it spends behind earlier ones.
                         let received = std::time::Instant::now();
                         if let Some(job) = read_command(&text, received) {
-                            jobs.send(job).await.map_err(|_| End::Dropped)?;
+                            // screen.set waits for all clients, including this one. An ack
+                            // behind it in the ordinary queue would deadlock that protection.
+                            match job {
+                                Job::Run(Command { id, body: CommandBody::MeetingProtected { meeting, request } }, _) => {
+                                    let answer = self.shared.control.protected_for(meeting.as_str(), request.as_deref(), self.connection);
+                                    let reply = match answer {
+                                        Ok(()) => Reply::ok(id, Object::new()),
+                                        Err(error) => Reply::error(id, reply_error(error)),
+                                    };
+                                    self.send(within_limit(reply)).await?;
+                                }
+                                job => jobs.send(job).await.map_err(|_| End::Dropped)?,
+                            }
                         }
                     }
                     Some(Ok(Frame::Pong(_))) => pong_due = None,
@@ -874,6 +899,10 @@ fn dispatch(
             control.stop(meeting.as_str())?;
             json!({})
         }
+        CommandBody::MeetingDelete { meeting } => {
+            control.delete(meeting.as_str())?;
+            json!({})
+        }
         CommandBody::MeetingPause { meeting } => {
             control.pause(meeting.as_str())?;
             json!({})
@@ -904,7 +933,7 @@ fn dispatch(
             start,
             end,
         } => control.clip(meeting.as_str(), start, end, deadline)?,
-        CommandBody::MeetingProtected { meeting } => {
+        CommandBody::MeetingProtected { meeting, .. } => {
             control.protected(meeting.as_str())?;
             json!({})
         }
@@ -912,6 +941,16 @@ fn dispatch(
         CommandBody::ScreenSelect { meeting, monitor } => {
             json!({ "monitor": control.select_monitor(meeting.as_str(), &monitor, deadline)? })
         }
+        CommandBody::ScreenSet {
+            meeting,
+            screen,
+            monitor,
+        } => control.set_screen(
+            meeting.as_str(),
+            screen,
+            monitor.as_deref(),
+            received + std::time::Duration::from_secs(15),
+        )?,
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(
                 ErrorCode::UnknownCommand,

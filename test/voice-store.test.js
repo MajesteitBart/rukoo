@@ -23,6 +23,46 @@ function store(dir = tempDir('rukoo-voice-store-'), opts = {}) {
   return new VoiceStore({ dataDir: dir, saveMs: 20, now: () => 1793000500000, ...opts }).load();
 }
 
+test('a renamed meeting keeps its title across Voice replay, snapshots and restart', () => {
+  const dir = tempDir('rukoo-meeting-title-');
+  const s = store(dir);
+  s.apply(started());
+  const snapshot = { ...s.meeting(M), head: 10 };
+  assert.equal(s.setTitle(M, '  Design review 🚀  '), true);
+  assert.equal(s.setTitle(M, ' '), false);
+  assert.equal(s.setTitle(M, 'a'.repeat(201)), false);
+  s.apply(started());
+  s.applySnapshot(M, snapshot);
+  assert.equal(s.meeting(M).meeting.title, 'Design review 🚀');
+  assert.equal(s.list()[0].title, 'Design review 🚀');
+  s.close();
+  const restarted = store(dir);
+  assert.equal(restarted.meeting(M).meeting.title, 'Design review 🚀');
+  restarted.close();
+});
+
+test('a user deletion removes owned data permanently and ignores stale Voice data', () => {
+  const dir = tempDir('rukoo-meeting-delete-');
+  const s = store(dir);
+  for (const event of script()) s.apply(event);
+  s.saveNotes(M, 'Private notes to remove', 0);
+  s.setTitle(M, 'Private meeting title');
+  const snapshot = { ...s.meeting(M), head: 10 };
+  s.flush();
+  assert.equal(s.remove(M, { purge: true }), true);
+  s.flush();
+  assert.equal(s.meeting(M), null);
+  assert.equal(s.list().length, 0);
+  assert.equal(fs.existsSync(s.meetingFile(M)), false);
+  assert.equal(fs.readFileSync(s.file, 'utf8').includes('Private'), false);
+  s.close();
+  const restarted = store(dir);
+  restarted.apply(started());
+  restarted.applySnapshot(M, snapshot);
+  assert.equal(restarted.meeting(M), null);
+  restarted.close();
+});
+
 test('oversized notes leave the saved text and revision untouched, including after restart', () => {
   const dir = tempDir('rukoo-notes-limit-');
   const s = store(dir);

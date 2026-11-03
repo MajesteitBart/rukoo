@@ -28,6 +28,12 @@ Voice keeps recording when Rukoo quits or loses the connection. When Rukoo comes
 
 ## The meeting view
 
+Use the edit button beside the title, or **Rename meeting** in the sidebar's right-click menu, to rename a meeting. Enter saves, Escape cancels; titles have 1 to 200 characters. Rukoo keeps the title across restarts and uses it in meeting search and transcript tools. Voice and the bucket retain their original title.
+
+The header menu and sidebar offer **Delete meeting** once recording and processing have finished. The confirmation names the data being removed: audio, screen recordings, transcript, notes, speaker names and corrections. Deletion is permanent on this computer. Voice queues a bucket index tombstone, including while offline, so the meeting cannot be restored after the next connection; encrypted objects remain subject to the bucket's lifecycle rules. Chats stay and show **Meeting deleted**. An older Voice needs an update before it can delete a meeting.
+
+While recording or paused, **Screen** in the header and the pill's screen button offer **Off**, **Frames**, **Video** and a monitor. These choices affect the current meeting. Off stops screen capture while audio continues; selecting Frames or Video starts it again, including in a meeting that began with audio only. The transcript marks each change. Before capture starts, every connected Rukoo must confirm its windows are protected. A failed confirmation leaves the previous mode unchanged. Live mode controls require the updated Voice; older Voice keeps the existing recording behavior.
+
 The transcript fills the view. Each line has its meeting time in the margin, and the voice's name shows once per stretch. Lines you dictated into another app during the meeting are greyed out and tagged Dictation: the call heard them, but they weren't part of the conversation. Gaps in the audio, a device that came back and your marks sit between the lines.
 
 In a meeting that records the screen, each frame sits at the moment the screen changed: a thumbnail with the first line of the text on it. A click on the thumbnail, or Enter on the row, opens it at the transcript's width with all of its text, which you can select and copy; **Text on screen** does the same. Rukoo asks Voice for an image when its row comes into view and keeps the last 60 of the meeting on screen. Marks say when Voice stopped the video or the whole screen recording to keep the audio, when it moved to another monitor, and when there were no frames for a while, for example while the computer was locked.
@@ -70,7 +76,7 @@ Settings → Meetings shows whether Rukoo Voice is connected, and has two switch
   - Linux has no way to hide a window. Keep Rukoo on a monitor you don't share or record.
 - **Agents can read meetings.** Off, the meeting tools give agents nothing from your meetings, and a new chat about a meeting is named after your first message instead of the meeting.
 
-While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. It also holds them back while it doesn't know yet what a recording meeting records, as when it connects to Voice mid-meeting. The badge still counts new mail. When Voice stops recording the screen for good, for example because the disk is nearly full, the notifications come back for the rest of the meeting; the ones held until then aren't shown later. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
+While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. It also holds them back while the mode is uncertain, including during reconnection or a switch. The badge still counts new mail. Off allows notifications again; enabling capture holds them back before the first frame. Notifications held earlier are not shown later. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
 
 In meeting mode, the status line at the bottom of the sidebar says how Voice is, and opens these settings.
 
@@ -78,7 +84,7 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 
 - Rukoo shows the meetings of the Rukoo Voice on this computer. The phone has no meetings.
 - Speaker labels tell voices apart, not people. Voice can hear one person as two voices or two similar voices as one, and it doesn't label people who share your microphone.
-- Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Rukoo deletes that copy when Voice deletes the meeting. Your notes stay.
+- Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Voice's automatic media retention leaves transcripts and notes intact. An explicit meeting deletion also removes your notes and other owned data.
 - Frame images stay with Voice. Rukoo keeps their text, so while Voice isn't running a frame's row shows its text, and an image only when Rukoo loaded it before. After Voice removed the meeting's screen media with its audio, the rows keep their text and say the image is gone.
 - Rukoo doesn't play a meeting's video. Agents can get a clip or a link to it (see [the meeting tools](agents.md#rukoos-tools)).
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.

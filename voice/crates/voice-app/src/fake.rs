@@ -84,6 +84,7 @@ struct Meeting {
     resend_at: Instant,
     /// The fake monitor the screen records, an index into [`MONITORS`].
     monitor: usize,
+    screen: String,
     /// The pill's notice and when it ends.
     notice: Option<(Notice, Instant)>,
 }
@@ -604,10 +605,7 @@ impl State {
         let dictating =
             self.script.is_some() && self.pill.phase != PillPhase::Meeting && self.pill.visible;
         let live = matches!(m.run, Run::Recording | Run::Paused);
-        let screen = self.settings["config"]["meetings"]["screen"]
-            .as_str()
-            .unwrap_or("off")
-            .to_string();
+        let screen = m.screen.clone();
         let meeting = MeetingPill {
             state: match m.run {
                 Run::Recording => "recording",
@@ -616,7 +614,7 @@ impl State {
             }
             .to_string(),
             at_ms: m.started.elapsed().as_millis() as u64,
-            screen_switch: live && screen != "off" && MONITORS.len() > 1,
+            screen_switch: live,
             screen,
             compact: m.compact && m.run == Run::Recording && m.notice.is_none(),
             confirm_stop: m.confirm_until.is_some(),
@@ -874,27 +872,50 @@ impl EngineApi for FakeEngine {
     }
 
     fn pill_screen_clicked(&self) {
-        let notice = self.timing.notice;
-        self.apply(|st, out| {
+        let info = self.apply(|st, _| {
             st.screen_clicks += 1;
-            let Some(m) = st.meeting.as_mut() else {
-                return;
-            };
-            if !matches!(m.run, Run::Recording | Run::Paused) {
-                return;
-            }
-            m.monitor = (m.monitor + 1) % MONITORS.len();
-            let mut args = Map::new();
-            args.insert("name".into(), json!(MONITORS[m.monitor]));
-            m.notice = Some((
-                Notice {
-                    key: "pill.screenMoved".into(),
-                    args,
-                },
-                Instant::now() + notice,
-            ));
-            st.meeting_pill(out);
+            st.meeting.as_ref().filter(|m| matches!(m.run, Run::Recording | Run::Paused)).map(|m| json!({
+                "meeting": m.id, "screen": m.screen, "monitor": MONITORS[m.monitor],
+                "monitors": MONITORS.iter().map(|name| json!({"id": name, "name": name})).collect::<Vec<_>>()
+            }))
         });
+        if let Some(info) = info {
+            self.sink.screen_menu(info);
+        }
+    }
+
+    fn pill_screen_set(
+        &self,
+        meeting: &str,
+        mode: &str,
+        monitor: Option<&str>,
+    ) -> Result<(), ApiError> {
+        if !matches!(mode, "off" | "frames" | "video") {
+            return Err(ApiError::new("bad_args", "Unknown screen mode."));
+        }
+        self.apply(|st, out| {
+            let m = st
+                .meeting
+                .as_mut()
+                .filter(|m| m.id == meeting && matches!(m.run, Run::Recording | Run::Paused))
+                .ok_or_else(|| ApiError::new("not_recording", "The meeting stopped."))?;
+            if let Some(monitor) = monitor {
+                m.monitor = MONITORS
+                    .iter()
+                    .position(|name| *name == monitor)
+                    .ok_or_else(|| ApiError::new("bad_args", "Unknown monitor."))?;
+                m.notice = Some((
+                    Notice {
+                        key: "pill.screenMoved".into(),
+                        args: Map::from_iter([("name".into(), json!(MONITORS[m.monitor]))]),
+                    },
+                    Instant::now() + self.timing.notice,
+                ));
+            }
+            m.screen = mode.into();
+            st.meeting_pill(out);
+            Ok(())
+        })
     }
 
     fn pill_stop_clicked(&self) {
@@ -1424,6 +1445,10 @@ impl EngineApi for FakeEngine {
                 compact: false,
                 resend_at: now + timing.resend,
                 monitor: 0,
+                screen: st.settings["config"]["meetings"]["screen"]
+                    .as_str()
+                    .unwrap_or("off")
+                    .into(),
                 notice: None,
             });
             st.meeting_pill(out);
@@ -1649,7 +1674,7 @@ pub mod tests {
     }
 
     #[test]
-    fn the_meeting_records_frames_and_the_screen_button_cycles_two_monitors() {
+    fn the_screen_menu_changes_the_current_meeting_without_changing_defaults() {
         let (engine, recorder) = engine("meeting");
         let first = recorder.last_pill().meeting.unwrap();
         assert_eq!(first.screen, "frames");
@@ -1662,19 +1687,21 @@ pub mod tests {
         assert_eq!(state["config"]["meetings"]["screen"], "frames");
 
         engine.pill_screen_clicked();
-        let moved = recorder.last_pill().notice.unwrap();
-        assert_eq!(moved.key, "pill.screenMoved");
-        assert_eq!(moved.args["name"], "Display 2");
-        engine.pill_screen_clicked();
+        let id = engine.lock().meeting.as_ref().unwrap().id.clone();
+        engine.pill_screen_set(&id, "off", None).unwrap();
+        assert_eq!(recorder.last_pill().meeting.unwrap().screen, "off");
+        engine
+            .pill_screen_set(&id, "video", Some("Display 2"))
+            .unwrap();
+        assert_eq!(engine.lock().meeting.as_ref().unwrap().monitor, 1);
+        assert_eq!(recorder.last_pill().meeting.unwrap().screen, "video");
         assert_eq!(
-            recorder.last_pill().notice.unwrap().args["name"],
-            "DELL U2720Q",
-            "it wraps around"
+            engine.settings_state()["config"]["meetings"]["screen"],
+            "frames"
         );
-        wait_for("the notice to go", || recorder.last_pill().notice.is_none());
-        assert_eq!(engine.screen_clicks(), 2);
+        assert_eq!(engine.screen_clicks(), 1);
 
-        // Off in Settings: no screen and no button for the next meeting.
+        // An audio-only meeting still offers the menu.
         engine.stop_meeting(StopReason::User).unwrap();
         wait_for("the pill to hide", || !recorder.last_pill().visible);
         engine
@@ -1682,7 +1709,7 @@ pub mod tests {
             .unwrap();
         engine.start_meeting().unwrap();
         let off = recorder.last_pill().meeting.unwrap();
-        assert_eq!((off.screen.as_str(), off.screen_switch), ("off", false));
+        assert_eq!((off.screen.as_str(), off.screen_switch), ("off", true));
         engine.shutdown();
     }
 

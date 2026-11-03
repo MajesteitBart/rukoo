@@ -60,7 +60,7 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
 | `meeting.state` | string | `recording`, `paused`, `processing` (shows "Saving"), `done` (not shown) or `failed` |
 | `meeting.atMs` | integer | Meeting time when the app sent the snapshot. The page adds the time since it received the snapshot and ticks every second, also while paused, because the meeting clock keeps running (PROTOCOL.md). Resend every 60 s to correct drift. |
 | `meeting.screen` | string | `off`, `frames` or `video`: what the meeting records of the screen. Optional: an app from before screen recording leaves it out. |
-| `meeting.screenSwitch` | bool, optional | Draw the monitor button left of the stop button: the meeting records the screen, Voice still captures it and this computer has more than one monitor. Missing means `false`. |
+| `meeting.screenSwitch` | bool, optional | Draw the screen button left of Stop while live screen controls are available, including when the current mode is Off or there is only one monitor. Missing means `false`. |
 | `meeting.compact` | bool | Hide the label and show the time only. The app sets it 4000 ms after the last meeting change, never while paused or while a notice shows. |
 | `meeting.confirmStop` | bool | The stop button shows "Stop?" after the first click. The app clears it after 3000 ms. |
 | `meeting.stopEnabled` | bool | Draw the stop button. `false` during a dictation in a meeting and in `processing` and `failed`. |
@@ -100,7 +100,7 @@ What the page shows:
 
 ### Event `pill://pointer`
 
-`{ "hover": true, "pressed": false, "target": "stop" }`, from a native button window: hover on `WM_MOUSEMOVE`, pressed between `WM_LBUTTONDOWN` and `WM_LBUTTONUP`, both false on `WM_MOUSELEAVE`. `target` is `stop` for the stop window or `screen` for the monitor window; without it the page takes `stop`. The page only colours the button `target` names; Rust handles the click, and a click on the monitor window moves the screen recording to the next monitor (`EngineApi::pill_screen_clicked`).
+`{ "hover": true, "pressed": false, "target": "stop" }`, from a native button window: hover on `WM_MOUSEMOVE`, pressed between `WM_LBUTTONDOWN` and `WM_LBUTTONUP`, both false on `WM_MOUSELEAVE`. `target` is `stop` for the stop window or `screen` for the monitor window; without it the page takes `stop`. The page only colours the button `target` names; Rust handles the click, and a click on the screen window opens the native mode and monitor menu (`EngineApi::pill_screen_clicked`).
 
 ### Command `pill_snapshot`
 
@@ -130,6 +130,7 @@ What the page shows:
 The app has text of its own and reads it from `i18n/en.json` (the `message` field) and `i18n/nl.json`, in the language Settings resolves:
 
 - `pill.stopButton`: the title of the native stop window, which screen readers announce.
+- `app.pill.screenOff`, `app.pill.screenFrames`, `app.pill.screenVideo`, `app.pill.screenMonitor`: labels in the pill's native screen menu. It offers Off, Frames, Video and the available monitors. Opening it calls `EngineApi::pill_screen_clicked`; selecting calls `pill_screen_set` with the meeting id so a stale menu cannot change the next meeting.
 - `pill.screenButton`: the title of the native monitor window, which screen readers announce.
 - `settings.title`: the Settings window's title.
 - `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`. Settings 0.1 asks only for `models` (see the command below).

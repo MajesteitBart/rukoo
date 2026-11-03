@@ -60,6 +60,25 @@ const failure = (res) => {
   return res.content[0].text;
 };
 const meetingTag = (v, source = 'meeting') => `<unsafe_content source="${source}">${v}</unsafe_content>`;
+
+test('meeting chats follow renamed titles and keep a deleted-meeting label without losing messages', async (t) => {
+  const { voice, hub, feed, call } = await setup(t);
+  feed([startedEv(), passage('call', 1000, 'Review the planning decisions.')]);
+  const c = hub.create({ agent: 'claude', meeting: { id: M, title: 'Weekly with Anna' } });
+  voice.rename(M, 'Planning review');
+  voice.flushDeltas();
+  assert.equal(hub.forPanel(c.id).meeting.title, 'Planning review');
+  const found = data(await call('search_meetings', { query: 'Planning review' }));
+  assert.ok(JSON.stringify(found).includes('Planning review'));
+  voice.store.remove(M, { purge: true });
+  voice.emit('meeting', { kind: 'removed', id: M });
+  assert.equal(hub.forPanel(c.id).meeting.deleted, true);
+  assert.equal(hub.forPanel(c.id).meeting.title, 'Planning review');
+  hub.flush();
+  const stored = JSON.parse(fs.readFileSync(hub.file, 'utf8')).conversations.find((item) => item.id === c.id);
+  assert.equal(stored.meeting.deleted, true);
+  assert.deepEqual(stored.items, c.items);
+});
 // Reads on as each note says until there is no more, for at most 10 pages. done: the last page said there was no more.
 async function readOn(call, args, cid = null) {
   const seen = [];
@@ -506,6 +525,23 @@ const frameEv = (at, text, id = M) => ev('frame', id, { id: `f-${String(at).padS
 // A meeting that records the screen, with a frame every 10 s from 60 to 100 s.
 const screenEvents = (screen, id = M) => [startedEv(id, { screen }), ev('meeting.state', id, { state: 'recording', at: 0 }), ...[60, 70, 80, 90, 100].map((s) => frameEv(s * 1000, `Slide at ${s}`, id))];
 const online = (voice) => Object.defineProperty(voice, 'connected', { get: () => true });
+
+test('screen tools respect capture intervals in a meeting that began with audio only', async (t) => {
+  const { feed, call, voice } = await setup(t);
+  const mode = (at, label) => ev('mark', M, { id: `mode-${at}`, kind: 'screen_mode', at, until: null, track: 'screen', detail: 'user', label });
+  feed([startedEv(M, { screen: 'off' }), mode(60000, 'frames'), frameEv(70000, 'Slide one'), mode(80000, 'off'), mode(90000, 'video'), frameEv(100000, 'Slide two'), frameEv(110100, 'Final slide'), mode(110500, 'off'), ev('meeting.state', M, { state: 'done', at: 120000, endedAt: T0 + 120000 })]);
+  online(voice);
+  const asked = stubFrames(voice);
+  assert.match(failure(await call('get_meeting_frame', { meeting_id: M, at_seconds: 85 })), /did not record the screen at 85 seconds/i);
+  assert.equal(asked.length, 0, 'Off is rejected before asking Voice');
+  assert.match(failure(await call('get_meeting_frame', { meeting_id: M, at_seconds: 90 })), /frame/i, 'an older frame cannot cross the Off interval');
+  assert.equal((await call('get_meeting_frame', { meeting_id: M, at_seconds: 101 })).content[1].type, 'image');
+  assert.equal((await call('get_meeting_frame', { meeting_id: M, at_seconds: 110 })).content[1].type, 'image', 'a saved frame remains reachable when Off begins in the same displayed second');
+  assert.match(failure(await call('get_meeting_media_link', { meeting_id: M, kind: 'video', from_seconds: 60, to_seconds: 79 })), /video/i);
+  const transcript = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.match(transcript.transcript, /Screen recording off/);
+  assert.equal(transcript.meeting.screen, 'off');
+});
 // frame.get as Voice answers it: the frame at or before at, its text trying to close the tag.
 function stubFrames(voice) {
   const asked = [];
@@ -759,9 +795,9 @@ test('the transcript says where the screen changed, folds a run of changes into 
   ]);
   assert.doesNotMatch(res.transcript, /Secret|Slide|answers/);
   assert.equal(res.count, 13);
-  assert.deepEqual([res.meeting.screen, res.meeting.frames], ['frames', 6]);
+  assert.deepEqual([res.meeting.screen, res.meeting.frames], ['off', 6]);
   const listed = data(await call('search_meetings')).meetings[0];
-  assert.deepEqual([listed.screen, listed.frames], ['frames', 6]);
+  assert.deepEqual([listed.screen, listed.frames], ['off', 6]);
   // A stretch holds only its own frames.
   const stretch = data(await call('read_meeting_transcript', { meeting_id: M, from_seconds: 19, to_seconds: 31 }));
   assert.deepEqual(untag(stretch.transcript).trim().split('\n'), ['[00:00:20] [Screen changed 2 times until 00:00:30; get_meeting_clip shows them]']);

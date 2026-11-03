@@ -125,6 +125,21 @@ impl ScreenFollower {
             self.seen_lines = true;
         }
         match line {
+            Line::Mode {
+                t,
+                id,
+                mode,
+                reason,
+            } => {
+                out.push(ScreenDerived::Mark(mark(
+                    id.clone(),
+                    MarkKind::Other("screen_mode".into()),
+                    *t,
+                    None,
+                    Some(reason.clone()),
+                    Some(mode.clone()),
+                )));
+            }
             Line::Frame {
                 t,
                 id,
@@ -269,7 +284,9 @@ impl ScreenFollower {
     /// timeline's stop was first seen while no screen process answers. `None` while it waits.
     /// Call [`ScreenFollower::poll`] first; this reads nothing new.
     pub fn settle(&mut self, timeline_stop_t: u64) -> Option<Vec<ScreenDerived>> {
-        if self.finished || self.stopped.is_some() {
+        let no_screen =
+            !self.seen_lines && !voice_screen_files::paths::journal_path(&self.meeting).exists();
+        if self.finished || self.stopped.is_some() || no_screen {
             return Some(self.finish(timeline_stop_t));
         }
         let now = Instant::now();
@@ -632,6 +649,13 @@ mod tests {
         let closing = follower.settle(3000).expect("settled after the wait");
         assert_eq!(marks(&closing)[0].id, "gap-screen-500");
         assert_eq!(follower.settle(3000), Some(Vec::new()));
+
+        let mut audio_only = ScreenFollower::new(&tmp.path().join("audio-only"));
+        assert_eq!(
+            audio_only.settle(3000),
+            Some(Vec::new()),
+            "an audio-only meeting has no screen process to wait for"
+        );
 
         let stopped = tmp.path().join("stopped");
         write(

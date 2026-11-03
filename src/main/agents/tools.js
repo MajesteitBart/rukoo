@@ -22,6 +22,7 @@ const { calendarKey } = require('../calendar');
 const { zonedParts, zonedInstant, addDays, isZone, pcZone } = require('../calendar/zone');
 const { slugProblem } = require('../booking/rules');
 const { needsApproval } = require('./permission');
+const { screenAt, screenSpans } = require('../voice/screen');
 
 const TEXT_MAX = 20000;
 // The most formatted text a draft may have; the renderer's sanitizeAgentHtml takes no more.
@@ -2403,6 +2404,8 @@ function markLine(k) {
         : `${at} [Rukoo Voice stopped the screen video to keep the audio; frames go on]`;
     case 'monitor':
       return `${at} [The screen recording moved to ${line(k.label) || 'another monitor'}]`;
+    case 'screen_mode':
+      return `${at} [Screen recording ${k.label === 'off' ? 'off' : k.label === 'video' ? 'on: video and frames' : 'on: frames'}]`;
     case 'screen_gap': {
       const secs = Number.isInteger(k.until) ? Math.max(1, Math.round((k.until - k.at) / 1000)) : null;
       return `${at} [No screen${secs ? ` for ${secs} s` : ''}${SCREEN_GAP_WHY[k.detail] ? `: ${SCREEN_GAP_WHY[k.detail]}` : ''}]`;
@@ -2642,7 +2645,16 @@ async function readMeetingNotes(hub, args, call) {
 async function getMeetingFrame(hub, args, call) {
   const voice = meetingSource(hub);
   const { id, m } = whichMeeting(voice, args, call);
-  if (m.meeting.screen === 'off' && !m.frames.length) {
+  let requestedAt = args.at_seconds * 1000 + 999;
+  let capture = screenAt(m.meeting, m.marks, requestedAt);
+  // A transcript frame can share its displayed second with the following Off mark. Keep that
+  // exact saved frame reachable without carrying an earlier image through the Off interval.
+  if (capture.screen === 'off') {
+    const saved = m.frames.filter((f) => f.at >= args.at_seconds * 1000 && f.at <= requestedAt && screenAt(m.meeting, m.marks, f.at).screen !== 'off').at(-1);
+    if (saved) { requestedAt = saved.at; capture = screenAt(m.meeting, m.marks, requestedAt); }
+  }
+  if (capture.screen === 'off') {
+    if (m.frames.length || m.marks.some((k) => k.kind === 'screen_mode')) throw new ToolError(`The meeting ${id} did not record the screen at ${args.at_seconds} seconds.`);
     throw new ToolError(`The meeting ${id} did not record the screen, so it has no frames. read_meeting_transcript has what was said.`);
   }
   if (!voice.connected) throw new ToolError('Rukoo Voice is not running, and it keeps the screen frames. Ask the user to start Rukoo Voice, or use read_meeting_transcript.');
@@ -2650,7 +2662,7 @@ async function getMeetingFrame(hub, args, call) {
   try {
     // The end of that second: the transcript gives a frame's time in whole seconds, rounded down, so the frame it
     // shows at 00:06:52 is anywhere in 412,000 to 412,999 ms.
-    res = await voice.frame(id, args.at_seconds * 1000 + 999);
+    res = await voice.frame(id, requestedAt);
   } catch (err) {
     if (err.code === 'not_found') throw new ToolError(`The meeting ${id} has no frame at or before ${args.at_seconds} seconds.`);
     if (err.code === 'not_available') throw new ToolError(`Rukoo Voice has no frames of the meeting ${id}. read_meeting_transcript has what was said.`);
@@ -2658,6 +2670,7 @@ async function getMeetingFrame(hub, args, call) {
   }
   const { frame, image } = checkedImage(res);
   const frameAt = Number.isInteger(frame.at) ? frame.at : null;
+  if (frameAt !== null && frameAt < capture.since) throw new ToolError(`The meeting ${id} has no frame since screen recording began at ${Math.floor(capture.since / 1000)} seconds. Try a later moment.`);
   const info = {
     meeting_id: id,
     at_seconds: args.at_seconds,
@@ -2754,11 +2767,15 @@ async function getMeetingClip(hub, args, call) {
   const toS = args.to_seconds;
   if (toS < fromS) throw new ToolError('to_seconds must not be before from_seconds.');
   if (toS - fromS > CLIP_SPAN_MAX_S) throw new ToolError(`A stretch is at most ${CLIP_SPAN_MAX_S} seconds: ask for to_seconds up to ${fromS + CLIP_SPAN_MAX_S}, then go on from there.`);
-  if (m.meeting.screen === 'off' && !m.frames.length) {
+  const spans = screenSpans(m.meeting, m.marks, fromS * 1000, toS * 1000);
+  if (spans.every((span) => span.screen === 'off')) {
+    if (m.frames.length || m.marks.some((k) => k.kind === 'screen_mode')) throw new ToolError(`The meeting ${id} did not record the screen during ${fromS} to ${toS} seconds.`);
     throw new ToolError(`The meeting ${id} did not record the screen, so it has no frames. read_meeting_transcript has what was said.`);
   }
   if (!voice.connected) throw new ToolError('Rukoo Voice is not running, and it keeps the screen frames. Ask the user to start Rukoo Voice, or use read_meeting_transcript.');
-  const picked = pickFrames(m.frames, fromS * 1000, toS * 1000, args.max_frames || CLIP_FRAMES);
+  const first = screenAt(m.meeting, m.marks, fromS * 1000);
+  const eligible = m.frames.filter((f) => screenAt(m.meeting, m.marks, f.at).screen !== 'off' && (f.at >= fromS * 1000 || (first.screen !== 'off' && f.at >= first.since)));
+  const picked = pickFrames(eligible, fromS * 1000, toS * 1000, args.max_frames || CLIP_FRAMES);
   const frames = [];
   const images = [];
   const notes = [];
@@ -2800,7 +2817,7 @@ async function getMeetingClip(hub, args, call) {
   let video = null;
   if (args.video) {
     if (call.remote) notes.push('The video clip path is only for agents on this computer. get_meeting_media_link with kind video gives a link to it.');
-    else if (m.meeting.screen !== 'video') notes.push(`The meeting ${id} recorded ${m.meeting.screen === 'frames' ? 'screen frames without video' : 'no video'}, so there is no clip.`);
+    else if (!spans.some((span) => span.screen === 'video')) notes.push(m.marks.some((k) => k.kind === 'screen_mode') ? `The meeting ${id} recorded no video during this stretch, so there is no clip.` : `The meeting ${id} recorded ${m.meeting.initialScreen === 'frames' ? 'screen frames without video' : 'no video'}, so there is no clip.`);
     else {
       const clip = await meetingClip(voice, id, fromS, toS);
       video = clip.video;
@@ -2872,8 +2889,9 @@ async function getMeetingMediaLink(hub, args, call) {
   if (lengthMs !== null && (kind === 'frame' ? from * 1000 > lengthMs : from * 1000 >= lengthMs)) {
     throw new ToolError(`The meeting ${id} is ${Math.round(lengthMs / 1000)} seconds long.`);
   }
-  if (kind !== 'audio' && e.screen === 'off' && !m.frames.length) throw new ToolError(`The meeting ${id} did not record the screen. kind audio gives what was said.`);
-  if (kind === 'video' && e.screen === 'frames') throw new ToolError(`The meeting ${id} recorded screen frames, not video. kind frame gives one frame.`);
+  const changedScreen = m.marks.some((k) => k.kind === 'screen_mode');
+  if (!changedScreen && kind !== 'audio' && e.initialScreen === 'off' && !m.frames.length) throw new ToolError(`The meeting ${id} did not record the screen. kind audio gives what was said.`);
+  if (!changedScreen && kind === 'video' && e.initialScreen === 'frames') throw new ToolError(`The meeting ${id} recorded screen frames, not video. kind frame gives one frame.`);
   let to = null;
   if (kind !== 'frame') {
     const span = MEDIA_SPAN[kind];
@@ -2882,6 +2900,9 @@ async function getMeetingMediaLink(hub, args, call) {
     if (to <= from) throw new ToolError('to_seconds must be after from_seconds.');
     if (to - from > span) throw new ToolError(`One link holds at most ${span} seconds of ${kind}. Ask for the next stretch with another link.`);
   }
+  const spans = kind === 'audio' ? [] : screenSpans(e, m.marks, from * 1000, (kind === 'frame' ? from : to) * 1000);
+  if (kind !== 'audio' && !spans.some((span) => span.screen !== 'off')) throw new ToolError(`The meeting ${id} did not record the screen at the requested time. kind audio gives what was said.`);
+  if (kind === 'video' && !spans.some((span) => span.screen === 'video')) throw new ToolError(`The meeting ${id} recorded no video during this stretch. kind frame gives a screen frame where available.`);
   if (!voice.connected) throw new ToolError("Rukoo Voice is not running, and it keeps the meeting's media. Ask the user to start Rukoo Voice.");
   // While the meeting records, Voice cuts audio at what it has recorded so far, which Rukoo only estimates from the
   // clock: the tool waits for the mix, as for video, to say where the WAV really ends.

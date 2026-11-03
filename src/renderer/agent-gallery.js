@@ -85,6 +85,7 @@ a.append(
     bui.monogram({ label: 'ANWB', size: 20, src: 'assets/rukoo-icon.svg' }),
     bui.entityChip({ label: 'Sanne de Vries', sub: 'Call on Thursday', monogram: 'Sanne de Vries', onRemove: noop, removeLabel: 'Remove' }),
     bui.entityChip({ label: 'Joris Bakker', monogram: { label: 'Joris Bakker' } }),
+    bui.entityChip({ label: 'Thursday launch', sub: 'Meeting deleted', monogram: 'Thursday launch' }),
     bui.addChip({ label: 'Add this email', title: 'Call on Thursday', onClick: noop })
   )
 );

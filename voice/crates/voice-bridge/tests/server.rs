@@ -54,6 +54,20 @@ fn read_until_status_reply(client: &mut Client, id: &str) -> Vec<Value> {
 }
 
 #[test]
+fn protection_waits_for_rukoo_windows_but_not_diagnostic_clients() {
+    let bridge = Bridge::start("server-protection-clients");
+    let handle = bridge.handle.as_ref().unwrap();
+    let (mut rukoo, _) = bridge.client(None, 0);
+    assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
+    let mut probe = Client::connect(bridge.port());
+    probe.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"probe", "instance":null, "after":0}));
+    assert_eq!(probe.read()["type"], "welcome");
+    assert!(read_until_status_reply(&mut probe, "probe-ready").is_empty());
+    assert_eq!(handle.clients().connected.len(), 2);
+    assert_eq!(handle.protection_clients().len(), 1);
+}
+
+#[test]
 fn the_discovery_file_describes_the_server_and_goes_on_shutdown() {
     let mut bridge = Bridge::start("server-discovery");
     let text = std::fs::read_to_string(&bridge.discovery_path).unwrap();
@@ -61,7 +75,10 @@ fn the_discovery_file_describes_the_server_and_goes_on_shutdown() {
     assert_eq!(file.port, bridge.handle.as_ref().unwrap().port());
     assert_eq!(file.instance, bridge.log.instance());
     assert_eq!(file.pid, std::process::id());
-    assert_eq!((file.protocol, file.min_protocol), (1, 1));
+    assert_eq!(
+        (file.protocol, file.min_protocol),
+        (voice_protocol::PROTOCOL, voice_protocol::MIN_PROTOCOL)
+    );
     assert_eq!(file.voice_version, "0.1.0");
     assert_eq!(
         bridge.handle.as_ref().unwrap().discovery_path(),
@@ -95,7 +112,7 @@ fn a_first_connection_gets_every_stored_event() {
     assert_eq!(welcome["replay"], "full");
     assert_eq!(welcome["head"], 3);
     assert_eq!(welcome["oldest"], 1);
-    assert_eq!(welcome["protocol"], 1);
+    assert_eq!(welcome["protocol"], voice_protocol::PROTOCOL);
     assert_eq!(welcome["voiceVersion"], "0.1.0");
     assert_eq!(welcome["instance"], bridge.log.instance());
     assert_eq!(
@@ -256,7 +273,7 @@ fn a_wrong_token_is_refused_with_4001() {
 fn an_unsupported_protocol_is_refused_with_4002() {
     let bridge = Bridge::start("server-protocol");
     let mut client = Client::connect(bridge.port());
-    client.send(json!({ "type": "hello", "protocol": 2, "token": bridge.token(), "client": "rukoo", "instance": null, "after": 0 }));
+    client.send(json!({ "type": "hello", "protocol": 1, "token": bridge.token(), "client": "rukoo", "instance": null, "after": 0 }));
     assert_eq!(
         client.read_refusal(),
         ("unsupported_protocol".into(), Some(4002))
@@ -979,7 +996,7 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
             rukoo.sent,
             rukoo.welcomed
         ),
-        ("rukoo", Some("2.2.0"), 1, 1, 3, true)
+        ("rukoo", Some("2.3.0"), voice_protocol::PROTOCOL, 1, 3, true)
     );
     bridge
         .log
@@ -1005,9 +1022,9 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
         ),
         (
             voice_protocol::Refusal::BadToken,
-            Some(1),
+            Some(u64::from(voice_protocol::PROTOCOL)),
             Some("rukoo"),
-            Some("2.2.0")
+            Some("2.3.0")
         )
     );
     let mut newer = Client::connect(bridge.port());

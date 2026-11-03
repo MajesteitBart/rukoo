@@ -244,7 +244,7 @@ The screen process writes it after its `session` line, to a temporary name that 
 
 | `kind` | Fields | When |
 |---|---|---|
-| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on other platforms |
+| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on other platforms |
 | `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the Windows device name, such as `\\.\DISPLAY1` |
 | `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
@@ -314,7 +314,7 @@ When both parts are dropped, the process writes `stop` with reason `dropped` and
 ### `rukoo-voice-screen`
 
 ```
-rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--test <spec>]
+rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
 rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 rukoo-voice-screen probe
 rukoo-voice-screen inspect <file.mp4>
@@ -359,6 +359,10 @@ rukoo-voice-screen inspect <file.mp4>
 | `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
 
 ### The screen control port
+
+`mode` changes capture with `mode: "off" | "frames" | "video"` and an optional `monitor` id. Monitor selection happens before capture starts. Off releases capture and closes the current video with reason `mode`, without ending the process or permanently dropping a part. `status.state` is `off` while disabled. Capture can be enabled again on the same recorder clock, including in a meeting that began with audio only.
+
+Each change writes a journal line `{ "kind": "mode", "t", "id", "mode", "reason": "user" }`. Its unique id and exact meeting time become a `screen_mode` transcript mark. Readers follow a newly appearing `screen/` folder and never reuse a frame across an Off interval. The command returns `{ "ok": true, "mode": "…" }` after journaling, or `unknown_monitor`, `not_available` or `journal` on failure.
 
 The screen process listens on `127.0.0.1` at the port in `screen.json` and speaks the recorder's line protocol: one JSON object per line, each with the token, several requests per connection, the first within 5 s. It serves at most 8 connections at a time, and a request line is at most 64 KiB.
 

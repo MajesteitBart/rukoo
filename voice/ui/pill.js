@@ -34,6 +34,7 @@ const NOTICES = new Set([
   'pill.videoDropped.device',
   'pill.framesDropped.disk',
   'pill.screenFailed',
+  'pill.screenChangeFailed',
   'pill.screenMoved'
 ]);
 // The screen notices of a meeting, with the screen glyph's tone: orange when Voice stopped recording part of the
@@ -44,6 +45,7 @@ const SCREEN_NOTICES = {
   'pill.videoDropped.device': 'orange',
   'pill.framesDropped.disk': 'orange',
   'pill.screenFailed': 'orange',
+  'pill.screenChangeFailed': 'orange',
   'pill.screenMoved': 'text2'
 };
 const SCREENS = new Set(['off', 'frames', 'video']);
@@ -211,7 +213,7 @@ function meetingView(m, notice, view, args) {
   const paused = m.state === 'paused';
   view.time = { paused };
   view.stop = m.stopEnabled ? { confirm: m.confirmStop } : null;
-  // The monitor button, while the meeting records the screen on a computer with more than one monitor.
+  // Available even when capture is off, so an audio-only meeting can start screen recording.
   view.screen = m.screenSwitch === true ? {} : null;
   if (notice === 'pill.micLost') {
     view.indicator = glyph('mic', 14, 'orange');

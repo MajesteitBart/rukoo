@@ -12,6 +12,10 @@ use voice_engine::Locale;
 pub const APP_KEYS: &[&str] = &[
     keys::STOP_BUTTON,
     keys::SCREEN_BUTTON,
+    keys::SCREEN_OFF,
+    keys::SCREEN_FRAMES,
+    keys::SCREEN_VIDEO,
+    keys::SCREEN_MONITOR,
     keys::SETTINGS_TITLE,
     keys::FOLDER_MODELS,
     keys::FOLDER_RECORDINGS,
@@ -29,6 +33,10 @@ pub mod keys {
     pub const STOP_BUTTON: &str = "pill.stopButton";
     /// The title of the native window over the pill's screen button.
     pub const SCREEN_BUTTON: &str = "pill.screenButton";
+    pub const SCREEN_OFF: &str = "app.pill.screenOff";
+    pub const SCREEN_FRAMES: &str = "app.pill.screenFrames";
+    pub const SCREEN_VIDEO: &str = "app.pill.screenVideo";
+    pub const SCREEN_MONITOR: &str = "app.pill.screenMonitor";
     pub const SETTINGS_TITLE: &str = "settings.title";
     pub const FOLDER_MODELS: &str = "settings.model.folder";
     pub const FOLDER_RECORDINGS: &str = "settings.storage.folder";

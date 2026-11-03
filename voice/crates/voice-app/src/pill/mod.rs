@@ -12,12 +12,14 @@ pub mod window;
 #[cfg(windows)]
 pub mod hit;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{json, Value};
+use tauri::menu::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -104,6 +106,15 @@ pub struct Pill {
     catalog: Arc<Catalog>,
     webview_dir: PathBuf,
     inner: Mutex<Inner>,
+    screen_actions: Mutex<HashMap<String, ScreenChoice>>,
+    screen_menu: Mutex<Option<Menu<tauri::Wry>>>,
+}
+
+#[derive(Clone)]
+struct ScreenChoice {
+    meeting: String,
+    mode: String,
+    monitor: Option<String>,
 }
 
 #[cfg(windows)]
@@ -136,7 +147,7 @@ fn has_stop(s: &PillSnapshot) -> bool {
     s.visible && s.meeting.as_ref().is_some_and(|m| m.stop_enabled)
 }
 
-/// The pill draws its screen button: a meeting records the screen and there is another monitor.
+/// The pill draws its screen button while screen controls are available.
 fn has_screen(s: &PillSnapshot) -> bool {
     s.visible
         && s.phase == PillPhase::Meeting
@@ -151,8 +162,8 @@ impl Pill {
         webview_dir: PathBuf,
         ui: UiOptions,
     ) -> Arc<Pill> {
-        Arc::new(Pill {
-            app,
+        let pill = Arc::new(Pill {
+            app: app.clone(),
             engine,
             catalog,
             webview_dir,
@@ -176,7 +187,117 @@ impl Pill {
                 monitor: None,
                 repaired: (0, Repair::None),
             }),
-        })
+            screen_actions: Mutex::new(HashMap::new()),
+            screen_menu: Mutex::new(None),
+        });
+        let weak = Arc::downgrade(&pill);
+        app.on_menu_event(move |_, event| {
+            let Some(pill) = weak.upgrade() else { return };
+            let choice = pill
+                .screen_actions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(event.id().as_ref())
+                .cloned();
+            if let (Some(choice), Some(engine)) = (choice, pill.engine.get()) {
+                thread::spawn(move || {
+                    if let Err(error) = engine.pill_screen_set(
+                        &choice.meeting,
+                        &choice.mode,
+                        choice.monitor.as_deref(),
+                    ) {
+                        log::warn!("screen: pill selection failed: {error}");
+                    }
+                });
+            }
+        });
+        pill
+    }
+
+    pub fn screen_menu(self: &Arc<Self>, info: Value) {
+        let pill = Arc::clone(self);
+        let _ = self.app.run_on_main_thread(move || {
+            if let Err(error) = pill.show_screen_menu(info) {
+                log::warn!("screen: could not show the pill menu: {error}");
+            }
+        });
+    }
+
+    fn show_screen_menu(&self, info: Value) -> tauri::Result<()> {
+        let Some(window) = self.window() else {
+            return Ok(());
+        };
+        let Some(meeting) = info["meeting"].as_str() else {
+            return Ok(());
+        };
+        if !self.lock().snapshot.as_ref().is_some_and(has_screen) {
+            return Ok(());
+        }
+        let locale = self.lock().ui.locale;
+        let current = info["screen"].as_str().unwrap_or("off");
+        let menu = Menu::new(&self.app)?;
+        let mut actions = HashMap::new();
+        for (mode, key) in [
+            ("off", keys::SCREEN_OFF),
+            ("frames", keys::SCREEN_FRAMES),
+            ("video", keys::SCREEN_VIDEO),
+        ] {
+            let id = format!("pill-screen-{meeting}-{mode}");
+            menu.append(&CheckMenuItem::with_id(
+                &self.app,
+                &id,
+                self.catalog.text(locale, key),
+                true,
+                mode == current,
+                None::<&str>,
+            )?)?;
+            actions.insert(
+                id,
+                ScreenChoice {
+                    meeting: meeting.into(),
+                    mode: mode.into(),
+                    monitor: None,
+                },
+            );
+        }
+        if let Some(monitors) = info["monitors"].as_array().filter(|m| !m.is_empty()) {
+            menu.append(&PredefinedMenuItem::separator(&self.app)?)?;
+            menu.append(&MenuItem::new(
+                &self.app,
+                self.catalog.text(locale, keys::SCREEN_MONITOR),
+                false,
+                None::<&str>,
+            )?)?;
+            for (i, monitor) in monitors.iter().enumerate() {
+                let Some(value) = monitor["id"].as_str() else {
+                    continue;
+                };
+                let id = format!("pill-monitor-{meeting}-{i}");
+                let name = monitor["name"].as_str().unwrap_or(value).replace('&', "&&");
+                menu.append(&CheckMenuItem::with_id(
+                    &self.app,
+                    &id,
+                    name,
+                    true,
+                    info["monitor"] == value,
+                    None::<&str>,
+                )?)?;
+                actions.insert(
+                    id,
+                    ScreenChoice {
+                        meeting: meeting.into(),
+                        mode: current.into(),
+                        monitor: Some(value.into()),
+                    },
+                );
+            }
+        }
+        *self
+            .screen_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = actions;
+        *self.screen_menu.lock().unwrap_or_else(|e| e.into_inner()) = Some(menu.clone());
+        menu.popup(window.as_ref().window())
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {

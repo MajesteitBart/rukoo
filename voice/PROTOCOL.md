@@ -1,4 +1,4 @@
-# Rukoo Voice bridge protocol, version 1
+# Rukoo Voice bridge protocol, version 2
 
 Rukoo Voice records meetings and Rukoo shows them. This document is the contract between the two: how Rukoo finds Voice, how it connects, and the events and commands they exchange. Voice implements it in `voice/crates/voice-protocol` and `voice/crates/voice-bridge`, Rukoo in `src/main/voice/`. A change here needs the matching change on both sides in the same pull request, and both sides test against the same examples in [fixtures/protocol-vectors.json](fixtures/protocol-vectors.json).
 
@@ -19,8 +19,8 @@ Voice writes a discovery file when it starts and removes it when it quits:
 
 ```json
 {
-  "protocol": 1,
-  "minProtocol": 1,
+  "protocol": 2,
+  "minProtocol": 2,
   "port": 49821,
   "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o",
   "pid": 12345,
@@ -54,7 +54,7 @@ Rukoo opens `ws://127.0.0.1:<port>/bridge` and sends `hello` as its first messag
 At most 16 connections wait for their upgrade or `hello` at a time. A new connection closes the oldest of them, so connections that never say `hello` can't keep Rukoo out: Rukoo sends `hello` as soon as the upgrade is done.
 
 ```json
-{ "type": "hello", "protocol": 1, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
+{ "type": "hello", "protocol": 2, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
 ```
 
 - `protocol` is the highest version Rukoo speaks that is also within the file's `minProtocol` to `protocol`.
@@ -63,7 +63,7 @@ At most 16 connections wait for their upgrade or `hello` at a time. A new connec
 Voice compares the token in constant time and answers with `welcome`:
 
 ```json
-{ "type": "welcome", "protocol": 1, "voiceVersion": "0.1.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "head": 1052, "oldest": 1, "replay": "partial", "status": { "recording": null, "dictating": false } }
+{ "type": "welcome", "protocol": 2, "voiceVersion": "0.1.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "head": 1052, "oldest": 1, "replay": "partial", "status": { "recording": null, "dictating": false } }
 ```
 
 Then Voice sends the events Rukoo missed, oldest first, and after them every new event as it happens. `replay` says which events follow:
@@ -242,7 +242,7 @@ A moment the screen changed noticeably, in a meeting that records the screen.
 
 ### `meeting.removed`
 
-Voice deleted the meeting and its events. `data` is `{}`.
+Voice removed the meeting and its events. `data` is `{}` for retention or an ordinary removal. An explicit user deletion sends `{ "reason": "user" }`; every connected Rukoo then purges its notes, names, corrections and cached transcript, and remembers the deleted id so stale replay cannot restore it. Chats remain, with a deleted-meeting label.
 
 ## Commands
 
@@ -260,7 +260,7 @@ Rukoo sends commands; Voice answers each with one reply.
 { "type": "reply", "id": "c-18", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-20261030-171203-4f2a" } }
 ```
 
-`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in the order it gets them, and the events a command causes may arrive before its reply.
+`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply.
 
 | Command | `args` | `result` | Errors |
 |---|---|---|---|
@@ -271,11 +271,13 @@ Rukoo sends commands; Voice answers each with one reply.
 | `meeting.mark` | `meeting`, `label`? | `{ "mark", "at" }` | `not_found`, `not_recording` |
 | `meeting.list` | `limit`?, default 50 | `{ "meetings": [ … ] }` | |
 | `meeting.get` | `meeting` | a snapshot, see below | `not_found` |
+| `meeting.delete` | `meeting` | `{}` | `not_found`, `busy`, `failed` |
 | `frame.get` | `meeting`, `at` | `{ "frame", "image" }` | `not_found`, `not_available` |
 | `clip.get` | `meeting`, `start`, `end` | `{ "clips": [ … ] }` | `not_found`, `not_available`, `failed` |
-| `meeting.protected` | `meeting` | `{}` | `not_found` |
+| `meeting.protected` | `meeting`, `request`? | `{}` | `not_found` |
 | `screen.get` | `meeting` | the screen recording, see below | `not_found`, `not_recording`, `not_available` |
 | `screen.select` | `meeting`, `monitor` | `{ "monitor" }` | `not_found`, `not_recording`, `not_available` |
+| `screen.set` | `meeting`, `screen`, `monitor`? | `{ "screen" }` | `not_found`, `not_recording`, `not_available`, `failed` |
 | `media.open` | `meeting`, `kind`, `start`, `end`? | `{ "media", "ready", … }` | `not_found`, `not_available`, `bad_request`, `failed` |
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `status.get` | | the `status` object | |
@@ -285,8 +287,10 @@ Rukoo sends commands; Voice answers each with one reply.
 - `meeting.get` returns `{ "meeting", "speakers", "passages", "marks", "frames", "head" }`. `meeting` holds the fields of `meeting.started` plus `id`, `state` and `endedAt`. The lists hold the current version of everything, and `head` is the sequence number the snapshot is complete up to. `frames` holds the data of the meeting's `frame` events, oldest first; an older Voice leaves it out. To keep the reply small, older frames can come with `"text": ""` and `"textOmitted": true`; `frame.get` returns their text.
 - `frame.get` returns the frame at or before `at` as `{ "frame", "image" }`: `frame` is the data of its `frame` event, `image` is `{ "type": "image/jpeg", "data": "<base64>" }` in standard base64 with padding. Once Voice removed the meeting's screen media with its audio, `image` is `null` and `frame` still carries the text read from the screen, so a frame a snapshot sent with `textOmitted` keeps its text. It answers `not_found` when no frame is at or before `at`, and `not_available` when the meeting didn't record the screen.
 - `clip.get` cuts the meeting's video between `start` and `end` without encoding it again; `end` ≥ `start`. `clips` lists one file for each stretch of continuous video, oldest first: `{ "path", "start", "end", "width", "height", "bytes" }`. `path` is the full path of an MP4 file on this computer, which Voice deletes after an hour; copy it to keep it. A clip starts at a keyframe at or before `start` and ends at or after `end`, so its own `start` and `end` say what it holds. Voice cuts at most 5 minutes from `start` and answers within 4 seconds of receiving the command with the clips it finished by then. A longer cut goes on: `clips` is empty when nothing was finished yet, and the same command a little later returns the files. It answers `not_found` when the meeting has no video between `start` and `end`, `not_available` when the meeting didn't record video or its video was removed, and `failed` when the disk is too full to cut a clip. Rukoo sends one `clip.get` at a time on a connection.
-- `meeting.protected` answers `meeting.starting`: Rukoo applied its window protection.
-- `screen.get` returns `{ "screen", "state", "video", "frames", "monitor", "monitors" }`. `screen` is as in `meeting.started`. `state` is `starting`, `recording`, `paused`, `locked` or `stopped`. `video` and `frames` say whether each part still records. `monitor` is the id of the monitor Voice records, or `null`. `monitors` lists `{ "id", "name", "width", "height", "primary" }` for every monitor, left to right. It answers `not_recording` for a meeting that doesn't record now and `not_available` for one that records no screen. Like `clip.get`, it answers within 4 seconds of receiving the command; when the screen recorder doesn't answer by then, the state is what Voice knew last.
+- `meeting.delete` accepts only finished or failed meetings. Recording, paused or processing meetings and active media preparation return `busy`. Voice removes the meeting folder and prepared media, writes a durable encrypted-bucket index tombstone even when offline, and emits `meeting.removed` with reason `user`. Encrypted bucket objects remain subject to the bucket's lifecycle rules. Interrupted local deletions finish on startup. Rukoo owns renamed titles locally; no rename or delete MCP tool is added.
+- `meeting.protected` answers `meeting.starting`: Rukoo applied its window protection. A mid-meeting announcement carries a unique `request` (1 to 64 characters); the acknowledgement must echo it. Each connected client must acknowledge that round. Duplicate or stale acknowledgements cannot stand in for another client.
+- `screen.set` chooses `off`, `frames` or `video` during recording or pause; an optional monitor is selected before capture starts. Off releases capture and closes the current video without ending the process or permanently dropping either part. Enabling from an audio-only meeting starts the screen process on the existing recorder clock. Before enabling capture, Voice sends `meeting.starting` with a request id and waits up to 2 seconds for every connected Rukoo to protect its windows. Failure leaves the previous mode unchanged. The command deadline is 15 seconds. Every actual mode change adds a `screen_mode` mark with `track: "screen"`, `detail: "user"` and the mode as `label`, at the journal's exact meeting time. `meeting.started.screen` stays historical; `meeting.get.meeting.initialScreen` holds that value and `meeting.get.meeting.screen` reports the current mode. Frame lookup never crosses an Off interval, and video clips contain only the recorded stretches.
+- `screen.get` returns `{ "screen", "state", "video", "frames", "monitor", "monitors" }`. `screen` is the current mode. `state` is `off`, `starting`, `recording`, `paused`, `locked` or `stopped`. `video` and `frames` say whether each part still records. `monitor` is the id of the monitor Voice records, or `null`. `monitors` lists `{ "id", "name", "width", "height", "primary" }` for every monitor, left to right. It answers `not_recording` for a meeting that doesn't record now and `not_available` when screen recording is unavailable on this computer. Audio-only live meetings return Off and the available monitors. Like `clip.get`, it answers within 4 seconds of receiving the command; when the screen recorder doesn't answer by then, the state is what Voice knew last.
 - `screen.select` moves the screen recording to the monitor with that id from `screen.get`, and returns the id. It answers `not_found` for a monitor that isn't there, and `not_available` when the screen recording stopped. It answers within 4 seconds of receiving the command, `failed` when the screen recorder is still starting or didn't switch by then; Rukoo can ask again.
 - `media.open` prepares a file of a meeting's media that Rukoo can hand to an agent, and names it with an id. `kind` is `audio`, `frame` or `video`:
   - `audio`: a WAV file of all the meeting's tracks mixed into one, 16 kHz mono 16-bit PCM with the 44-byte header, from `start` to `end`. Gaps are silence.
@@ -329,7 +333,7 @@ Everyone in a call is a third party. Passage text, speaker labels, titles, marks
 
 ## Versioning
 
-`protocol` is an integer, and this document describes version 1.
+`protocol` is an integer, and this document describes version 2. New Voice requires version 2 because older Rukoo assumes a meeting's screen mode cannot change. New Rukoo still accepts version 1 Voice and hides the live screen controls for it. Unknown deletion commands show an update-Voice message.
 
 - New optional fields, new event types, new commands and new values for `kind`, `detail` and `reason` keep the version. Peers ignore what they don't know, as described above.
 - Anything an older peer would misread raises the version: a removed or renamed field, a changed meaning or unit, or a new field the other side must understand.

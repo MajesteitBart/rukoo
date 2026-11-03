@@ -59,6 +59,8 @@ const PILL_STATES = [
   'meeting-screen-failed',
   'meeting-screen-moved',
   'meeting-screen-button',
+  'meeting-screen-off',
+  'meeting-screen-change-failed',
   'meeting-screen-hover',
   'meeting-dictating'
 ];

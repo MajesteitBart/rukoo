@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::{close, MeetingId};
 
@@ -45,6 +45,7 @@ pub mod events {
 pub mod commands {
     pub const MEETING_START: &str = "meeting.start";
     pub const MEETING_STOP: &str = "meeting.stop";
+    pub const MEETING_DELETE: &str = "meeting.delete";
     pub const MEETING_PAUSE: &str = "meeting.pause";
     pub const MEETING_RESUME: &str = "meeting.resume";
     pub const MEETING_MARK: &str = "meeting.mark";
@@ -56,6 +57,7 @@ pub mod commands {
     pub const MEETING_PROTECTED: &str = "meeting.protected";
     pub const SCREEN_GET: &str = "screen.get";
     pub const SCREEN_SELECT: &str = "screen.select";
+    pub const SCREEN_SET: &str = "screen.set";
     pub const MEDIA_OPEN: &str = "media.open";
     pub const MEDIA_READ: &str = "media.read";
 }
@@ -458,7 +460,9 @@ pub enum EventBody {
     Mark(Mark),
     Frame(Frame),
     /// Voice deleted the meeting and its events.
-    MeetingRemoved,
+    MeetingRemoved {
+        reason: Option<String>,
+    },
     /// An event type this version doesn't know. Rukoo ignores it.
     Unknown {
         event: String,
@@ -479,7 +483,7 @@ impl EventBody {
             EventBody::PassageRemoved(_) => events::PASSAGE_REMOVED,
             EventBody::Mark(_) => events::MARK,
             EventBody::Frame(_) => events::FRAME,
-            EventBody::MeetingRemoved => events::MEETING_REMOVED,
+            EventBody::MeetingRemoved { .. } => events::MEETING_REMOVED,
             EventBody::Unknown { event, .. } => event,
         }
     }
@@ -496,7 +500,10 @@ impl EventBody {
             EventBody::PassageRemoved(removed) => serde_json::to_value(removed),
             EventBody::Mark(mark) => serde_json::to_value(mark),
             EventBody::Frame(frame) => serde_json::to_value(frame),
-            EventBody::MeetingRemoved => Ok(Value::Object(Object::new())),
+            EventBody::MeetingRemoved { reason } => Ok(match reason {
+                Some(reason) => json!({"reason": reason}),
+                None => json!({}),
+            }),
             EventBody::Unknown { data, .. } => Ok(Value::Object(data.clone())),
         };
         data.expect("event data serializes to JSON")
@@ -529,9 +536,11 @@ pub struct MeetingStarted {
 /// `meeting.starting`: Voice is about to record the screen in a meeting it started itself, and
 /// waits up to [`STARTING_WAIT`](crate::STARTING_WAIT) for every connected Rukoo to answer with
 /// `meeting.protected`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeetingStarting {
     pub screen: ScreenMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
 }
 
 /// `meeting.state`.
@@ -628,6 +637,9 @@ pub enum CommandBody {
     MeetingStop {
         meeting: MeetingId,
     },
+    MeetingDelete {
+        meeting: MeetingId,
+    },
     MeetingPause {
         meeting: MeetingId,
     },
@@ -659,6 +671,7 @@ pub enum CommandBody {
     /// Rukoo applied its window protection after `meeting.starting`.
     MeetingProtected {
         meeting: MeetingId,
+        request: Option<String>,
     },
     ScreenGet {
         meeting: MeetingId,
@@ -667,6 +680,11 @@ pub enum CommandBody {
     ScreenSelect {
         meeting: MeetingId,
         monitor: String,
+    },
+    ScreenSet {
+        meeting: MeetingId,
+        screen: ScreenMode,
+        monitor: Option<String>,
     },
     MediaOpen(MediaOpenArgs),
     MediaRead {
@@ -689,6 +707,7 @@ impl CommandBody {
         match self {
             CommandBody::MeetingStart(_) => commands::MEETING_START,
             CommandBody::MeetingStop { .. } => commands::MEETING_STOP,
+            CommandBody::MeetingDelete { .. } => commands::MEETING_DELETE,
             CommandBody::MeetingPause { .. } => commands::MEETING_PAUSE,
             CommandBody::MeetingResume { .. } => commands::MEETING_RESUME,
             CommandBody::MeetingMark { .. } => commands::MEETING_MARK,
@@ -700,6 +719,7 @@ impl CommandBody {
             CommandBody::MeetingProtected { .. } => commands::MEETING_PROTECTED,
             CommandBody::ScreenGet { .. } => commands::SCREEN_GET,
             CommandBody::ScreenSelect { .. } => commands::SCREEN_SELECT,
+            CommandBody::ScreenSet { .. } => commands::SCREEN_SET,
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::Unknown { command, .. } => command,
@@ -714,12 +734,29 @@ impl CommandBody {
                 return serde_json::to_value(start).expect("start args serialize to JSON")
             }
             CommandBody::MeetingStop { meeting }
+            | CommandBody::MeetingDelete { meeting }
             | CommandBody::MeetingPause { meeting }
             | CommandBody::MeetingResume { meeting }
             | CommandBody::MeetingGet { meeting }
-            | CommandBody::MeetingProtected { meeting }
             | CommandBody::ScreenGet { meeting } => {
                 args.insert("meeting".into(), meeting.as_str().into());
+            }
+            CommandBody::MeetingProtected { meeting, request } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                if let Some(request) = request {
+                    args.insert("request".into(), request.as_str().into());
+                }
+            }
+            CommandBody::ScreenSet {
+                meeting,
+                screen,
+                monitor,
+            } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("screen".into(), screen.as_str().into());
+                if let Some(monitor) = monitor {
+                    args.insert("monitor".into(), monitor.as_str().into());
+                }
             }
             CommandBody::MeetingMark { meeting, label } => {
                 args.insert("meeting".into(), meeting.as_str().into());
@@ -1021,7 +1058,7 @@ mod tests {
         .into_parts();
         assert_eq!(name, "passage.removed");
         assert_eq!(data, json!({ "id": "mic-000000000" }));
-        let (name, data) = EventBody::MeetingRemoved.into_parts();
+        let (name, data) = EventBody::MeetingRemoved { reason: None }.into_parts();
         assert_eq!((name.as_str(), data), ("meeting.removed", json!({})));
     }
 

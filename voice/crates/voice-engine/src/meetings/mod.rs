@@ -66,6 +66,9 @@ impl Meetings {
                 media,
             ))
         });
+        if let Some(control) = &control {
+            control.recover_deletions();
+        }
         let bridge = match (&log, &control, discovery_path) {
             (Some(log), Some(control), Some(path)) => Some(Arc::new(Bridge::start(
                 log.clone(),
@@ -83,6 +86,12 @@ impl Meetings {
                 .map_or((0, false), |bridge| {
                     (bridge.rukoo_clients(), bridge.rukoo_seen())
                 })
+        }));
+        let weak = bridge.as_ref().map(Arc::downgrade);
+        screen.set_protection_clients(Box::new(move || {
+            weak.as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .map_or_else(Vec::new, |bridge| bridge.protection_clients())
         }));
         Meetings {
             controller,

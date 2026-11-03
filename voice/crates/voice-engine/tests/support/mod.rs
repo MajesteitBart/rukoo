@@ -137,6 +137,7 @@ pub struct FakeSink {
     pub notes: Mutex<Vec<Notification>>,
     pub trays: Mutex<Vec<TrayState>>,
     pub ui_changes: AtomicUsize,
+    pub screen_menus: Mutex<Vec<Value>>,
 }
 
 impl UiSink for FakeSink {
@@ -162,6 +163,10 @@ impl UiSink for FakeSink {
 
     fn ui_changed(&self) {
         self.ui_changes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn screen_menu(&self, info: Value) {
+        lock(&self.screen_menus).push(info);
     }
 }
 

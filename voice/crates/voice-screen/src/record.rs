@@ -229,6 +229,22 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     journal
         .write(&line)
         .map_err(|e| ExitError::failed(format!("can't write the screen journal: {e}")))?;
+    if !resumed
+        && opts.mode != Mode::Off
+        && fs::read(dir.join("meeting.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|meeting| meeting["screen"] == "off")
+    {
+        journal
+            .write(&Line::Mode {
+                t: t0,
+                id: format!("screen-mode-{session}-0"),
+                mode: opts.mode.as_str().into(),
+                reason: "user".into(),
+            })
+            .map_err(|e| ExitError::failed(format!("can't write the screen mode: {e}")))?;
+    }
     if resumed {
         let _ = journal.write(&Line::Crash {
             t: t0,
@@ -265,7 +281,13 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     )
     .map_err(|e| ExitError::failed(format!("can't write screen.json: {e}")))?;
 
-    let monitor = pinned.unwrap_or_else(|| choose_monitor(opts.test.as_ref(), &monitor_list));
+    let previous_monitor = lines.iter().rev().find_map(|line| match line {
+        Line::Monitor { id, .. } => monitor_list.iter().find(|m| m.id == *id).cloned(),
+        _ => None,
+    });
+    let monitor = pinned
+        .or(previous_monitor)
+        .unwrap_or_else(|| choose_monitor(opts.test.as_ref(), &monitor_list));
     let video_seq = history
         .last_video_seq
         .max(finalize::highest_video_seq(&dir));
@@ -328,6 +350,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         next_lock_check: Instant::now(),
         next_memory_log: Instant::now() + MEMORY_LOG,
         session,
+        mode_changes: 0,
     };
     log(format_args!(
         "session {session}: recording {} of {} ({}x{}){}",
@@ -475,6 +498,7 @@ struct Screen {
     /// A development copy logs the GPU memory it uses once a minute, for the measurements.
     next_memory_log: Instant,
     session: u64,
+    mode_changes: u64,
 }
 
 impl Screen {
@@ -604,7 +628,8 @@ impl Screen {
 
     /// Starts capturing unless paused, locked, stopping or with nothing left to record.
     fn start_capture(&mut self) {
-        if self.capturing
+        if self.mode == Mode::Off
+            || self.capturing
             || self.paused
             || self.locked
             || self.stop.is_some()
@@ -650,10 +675,71 @@ impl Screen {
         self.d3d = None;
     }
 
+    fn change_mode(&mut self, mode: Mode, monitor: Option<&str>) -> Result<(), &'static str> {
+        let next_monitor = match monitor {
+            Some(id) => Some(
+                self.monitors(true)
+                    .into_iter()
+                    .find(|m| m.id == id)
+                    .ok_or("unknown_monitor")?,
+            ),
+            None => None,
+        };
+        let moved = next_monitor
+            .as_ref()
+            .is_some_and(|m| m.id != self.monitor.id);
+        let mode_changed = self.mode != mode;
+        if self.mode == mode && !moved {
+            return Ok(());
+        }
+        if mode != Mode::Off && self.drops.frames.is_some() {
+            return Err("not_available");
+        }
+        self.stop_capture();
+        self.end_video(if mode_changed { "mode" } else { "monitor" });
+        self.release_device();
+        // A failed journal write must never restart the old capture mode through a retry.
+        self.mode = Mode::Off;
+        self.rebuild_at = None;
+        self.capture_retry_at = None;
+        if let Some(monitor) = next_monitor.filter(|_| moved) {
+            self.monitor = monitor;
+            let line = self.monitor_line("user");
+            self.journal.write(&line).map_err(|_| "journal")?;
+        }
+        if mode_changed {
+            let t = self.now_t();
+            self.mode_changes += 1;
+            self.journal
+                .write(&Line::Mode {
+                    t,
+                    id: format!("screen-mode-{}-{}", self.session, self.mode_changes),
+                    mode: mode.as_str().into(),
+                    reason: "user".into(),
+                })
+                .map_err(|_| "journal")?;
+        }
+        self.journal.sync();
+        self.mode = mode;
+        self.drops.set_video(mode == Mode::Video);
+        self.rebuild_at = None;
+        self.capture_retry_at = None;
+        if mode != Mode::Off {
+            self.check_disk();
+        }
+        self.start_capture();
+        Ok(())
+    }
+
     fn write_monitor(&mut self, reason: &str) {
+        let line = self.monitor_line(reason);
+        self.write(&line);
+    }
+
+    fn monitor_line(&mut self, reason: &str) -> Line {
         let t = self.now_t();
         let m = self.monitor.clone();
-        self.write(&Line::Monitor {
+        Line::Monitor {
             t,
             id: m.id,
             name: m.name,
@@ -661,7 +747,7 @@ impl Screen {
             height: m.height,
             primary: m.primary,
             reason: reason.into(),
-        });
+        }
     }
 
     /// The monitors this process may record: every one, or with `--monitor` only that one. So
@@ -1367,7 +1453,7 @@ impl Screen {
             self.next_heartbeat = now + HEARTBEAT;
             self.heartbeat();
         }
-        if now >= self.next_disk_check {
+        if self.mode != Mode::Off && now >= self.next_disk_check {
             self.check_disk();
         }
         if self.test.is_none() && now >= self.next_lock_check {
@@ -1549,6 +1635,13 @@ impl Screen {
                 let list = monitors::ordered(&self.monitors(true));
                 json!({ "ok": true, "monitors": list })
             }
+            Some("mode") => match request.body["mode"].as_str().and_then(Mode::parse) {
+                Some(mode) => match self.change_mode(mode, request.body["monitor"].as_str()) {
+                    Ok(()) => json!({ "ok": true, "mode": mode.as_str(), "t": self.now_t() }),
+                    Err(code) => error(code),
+                },
+                None => error("bad_request"),
+            },
             Some("monitor") => match request.body["id"].as_str() {
                 Some(id) => match self.switch_monitor(id, "user") {
                     Ok(id) => json!({ "ok": true, "monitor": id }),
@@ -1592,6 +1685,8 @@ impl Screen {
         let t = self.now_t();
         let state = if self.stop.is_some() {
             "stopped"
+        } else if self.mode == Mode::Off {
+            "off"
         } else if self.paused {
             "paused"
         } else if self.locked {
@@ -1608,7 +1703,7 @@ impl Screen {
             "t": t,
             "mode": self.mode.as_str(),
             "video": self.mode == Mode::Video && self.drops.video.is_none(),
-            "frames": self.drops.frames.is_none(),
+            "frames": self.mode != Mode::Off && self.drops.frames.is_none(),
             "monitor": self.monitor.id,
             "monitors": monitors,
             "dropped": {

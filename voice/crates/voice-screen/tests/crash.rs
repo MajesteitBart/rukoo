@@ -930,6 +930,53 @@ mod tests {
         assert_frames_open(&m, &lines);
     }
 
+    pub fn screen_modes_can_stop_and_restart_without_interrupting_audio() {
+        let m = TempMeeting::new("modes", "off");
+        let mut recorder = m.recorder(&[]);
+        m.wait_recorder(1);
+        let mut screen = m.screen("off", Some(&spec("monitors=2")), &[]);
+        m.wait_journal("the inert screen session", |l| {
+            first(l, "session").is_some()
+        });
+        assert!(first(&m.journal(), "capture").is_none());
+        let set = |mode| {
+            let reply = m.screen_request(
+                1,
+                json!({"cmd": "mode", "mode": mode, "monitor": r"\\.\SYNTHETIC2"}),
+            );
+            assert_eq!(reply["ok"], true, "{reply}");
+        };
+        set("frames");
+        m.wait_journal("a frame after enabling capture", |l| {
+            first(l, "frame").is_some()
+        });
+        set("off");
+        let off_at = t(of_kind(&m.journal(), "mode").last().unwrap());
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(!of_kind(&m.journal(), "frame").iter().any(|f| t(f) > off_at));
+        assert_eq!(m.recorder_request(json!({"cmd": "pause"}))["ok"], true);
+        set("video");
+        assert_eq!(m.recorder_request(json!({"cmd": "resume"}))["ok"], true);
+        m.wait_journal("video after capture resumes", |l| {
+            first(l, "video").is_some()
+        });
+        std::thread::sleep(Duration::from_secs(3));
+        let lines = stop(&m, &mut recorder, &mut screen);
+        assert_eq!(
+            of_kind(&lines, "mode")
+                .iter()
+                .map(|l| l["mode"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["frames", "off", "video"]
+        );
+        assert!(of_kind(&lines, "capture")
+            .iter()
+            .all(|l| l["monitor"] == r"\\.\SYNTHETIC2"));
+        assert_frames_open(&m, &lines);
+        assert_video_ends_cover(&m, &lines);
+        assert_timeline_continuous(&m);
+    }
+
     pub fn monitor_switch_starts_a_new_file() {
         let m = TempMeeting::new("switch", "video");
         let test = spec("monitors=2");
@@ -1334,6 +1381,11 @@ fn main() {
     common::play_role();
     use common::Test;
     common::run_tests(&[
+        Test {
+            name: "screen_modes_can_stop_and_restart_without_interrupting_audio",
+            ignored: false,
+            run: tests::screen_modes_can_stop_and_restart_without_interrupting_audio,
+        },
         Test {
             name: "hard_kill_keeps_video_and_frames",
             ignored: false,
