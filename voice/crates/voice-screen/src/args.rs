@@ -37,14 +37,16 @@ impl Mode {
     }
 }
 
-/// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,software-encoder]
-/// [,no-hardware][,free-bytes-file=<path>][,encoder-fail-at=<ms>][,write-fail=<video|frames>@<ms>]
-/// [,device-lost-at=<ms>[x<n>]][,no-video-device=<n>][,monitor-gone-at=<ms>][,warp]`: a synthetic
-/// screen instead of the real monitors, and the faults the tests need. Times are meeting time in
-/// ms. `warp` makes the graphics device Microsoft's software rasterizer, as on a CI runner
-/// without a GPU. `no-video-device` gives the next `n` graphics devices after the
-/// `device-lost-at` loss no video support, as a basic display driver has while the real one
-/// restarts.
+/// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,type-every=<ms>]
+/// [,dirty][,software-encoder][,no-hardware][,free-bytes-file=<path>][,encoder-fail-at=<ms>]
+/// [,write-fail=<video|frames>@<ms>][,device-lost-at=<ms>[x<n>]][,no-video-device=<n>]
+/// [,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the real monitors, and the
+/// faults the tests need. Times are meeting time in ms, except `type-every`, which counts from
+/// the start of capture. `type-every` types a small mark every so often, as a keystroke does.
+/// `dirty` gives each frame the dirty regions Windows reports; without it frames have none.
+/// `warp` makes the graphics device Microsoft's software rasterizer, as on a CI runner without
+/// a GPU. `no-video-device` gives the next `n` graphics devices after the `device-lost-at` loss
+/// no video support, as a basic display driver has while the real one restarts.
 /// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
 /// capture's `Closed` notice, as when that notice is lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,6 +56,8 @@ pub struct TestSpec {
     pub change_every_ms: Option<u64>,
     pub text: Option<String>,
     pub monitors: u32,
+    pub type_every_ms: Option<u64>,
+    pub dirty: bool,
     pub software_encoder: bool,
     pub no_hardware: bool,
     pub free_bytes_file: Option<PathBuf>,
@@ -110,6 +114,10 @@ impl TestSpec {
                         .filter(|n| (1..=8).contains(n))
                         .ok_or_else(|| format!("monitors takes 1 to 8, got {v:?}"))?
                 }
+                ("type-every", Some(v)) => {
+                    test.type_every_ms = Some(ms(v, key)?).filter(|&ms| ms > 0)
+                }
+                ("dirty", None) => test.dirty = true,
                 ("software-encoder", None) => test.software_encoder = true,
                 ("no-hardware", None) => test.no_hardware = true,
                 ("warp", None) => test.warp = true,
@@ -337,8 +345,9 @@ mod tests {
     #[test]
     fn parses_every_synthetic_option() {
         let test = TestSpec::parse(
-            "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,software-encoder,\
-             no-hardware,free-bytes-file=C:\\tmp\\free.txt,encoder-fail-at=3000,write-fail=frames@4000,\
+            "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,type-every=150,\
+             dirty,software-encoder,no-hardware,free-bytes-file=C:\\tmp\\free.txt,\
+             encoder-fail-at=3000,write-fail=frames@4000,\
              device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp",
         )
         .unwrap();
@@ -350,6 +359,8 @@ mod tests {
                 change_every_ms: Some(10_000),
                 text: Some("RUKOO DEMO 42".into()),
                 monitors: 2,
+                type_every_ms: Some(150),
+                dirty: true,
                 software_encoder: true,
                 no_hardware: true,
                 free_bytes_file: Some(PathBuf::from("C:\\tmp\\free.txt")),

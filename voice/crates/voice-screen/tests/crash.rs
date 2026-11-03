@@ -1100,6 +1100,30 @@ mod tests {
         assert!(log.contains("frame f-"), "{log}");
     }
 
+    /// Typing on one slide: every keystroke's dirty regions cover 0.03% of the screen, far under
+    /// the 0.25% that makes the screen process read a thumbnail, but together they change more
+    /// than the 1% that saves a frame. Their dirty regions add up, so the change against the last
+    /// saved frame is seen and saved. Before, each keystroke counted as no change on its own and
+    /// the first frame stayed the only one.
+    pub fn typing_adds_up_to_a_saved_frame() {
+        let m = TempMeeting::new("typing", "frames");
+        let test = with_extra("synthetic:1280x720,text=Notes,type-every=100,dirty", "");
+        let (mut recorder, mut screen) = start(&m, "frames", &test, &[]);
+        let capture_t = t(first(&m.journal(), "capture").unwrap());
+        // 36 keystrokes change 1% of the thumbnail; typing never settles, so the change is saved
+        // 3 s after it was first seen. Twelve seconds type 120.
+        m.wait_screen_t(1, capture_t + 12_000);
+        let lines = stop(&m, &mut recorder, &mut screen);
+        let frames = of_kind(&lines, "frame");
+        assert!(
+            frames.len() >= 2,
+            "typing saved no frame after the first:\n{}",
+            show(&lines)
+        );
+        assert!(t(frames[1]) >= capture_t + 3_000, "{}", show(&lines));
+        assert_frames_open(&m, &lines);
+    }
+
     /// Spike 2 (spec 4.2), on a PC with a hardware encoder: a monitor over 4096 per side or
     /// 36,864 macroblocks is scaled by the sink writer's video processor, and one at 3840 x 2160
     /// keeps its size. The synthetic screen, so nothing real is captured.
@@ -1319,6 +1343,11 @@ fn main() {
             name: "ocr_reads_demo_text",
             ignored: false,
             run: tests::ocr_reads_demo_text,
+        },
+        Test {
+            name: "typing_adds_up_to_a_saved_frame",
+            ignored: false,
+            run: tests::typing_adds_up_to_a_saved_frame,
         },
     ]);
 }

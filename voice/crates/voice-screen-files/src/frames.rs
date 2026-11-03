@@ -5,6 +5,11 @@
 //! or `MAX_PENDING_MS` after the change began, at most one per `MIN_GAP_MS`, backing off to one
 //! per `BUSY_GAP_MS` after `BUSY_AFTER` saves in a row at the short pace. Always one at capture
 //! start, after a monitor switch, an unlock and a resume (`Saver::reset`).
+//!
+//! A frame whose dirty regions cover less than `DIRTY_SKIP` of the screen needs no thumbnail: it
+//! counts as the picture last looked at. Its dirty regions add up with those of the frames after
+//! it, and once they cover `DIRTY_SKIP` the next frame is looked at again. So small changes in
+//! different places, such as typing, add up against the last saved frame.
 
 use std::io;
 use std::path::Path;
@@ -22,7 +27,8 @@ pub const MAX_PENDING_MS: u64 = 3_000;
 pub const MIN_GAP_MS: u64 = 2_000;
 pub const BUSY_GAP_MS: u64 = 10_000;
 pub const BUSY_AFTER: u32 = 10;
-/// Dirty regions covering less than this fraction of the screen skip the thumbnail.
+/// Dirty regions covering less than this fraction of the screen, added up since the last
+/// thumbnail, skip the thumbnail.
 pub const DIRTY_SKIP: f32 = 0.0025;
 /// The most characters of text kept with a frame; `voice_protocol::MAX_FRAME_TEXT_CHARS`.
 pub const MAX_TEXT_CHARS: usize = 8_000;
@@ -65,16 +71,21 @@ pub enum Decision {
 /// Decides which captured frames to save. Pure: times are meeting ms.
 ///
 /// Call `offer` for every frame the capture hands over, also for a still screen re-offered on a
-/// timer, because a pending change is saved only once an offer finds the screen settled. Call
-/// `saved` when a `Save` was saved.
+/// timer, because a pending change is saved only once an offer finds the screen settled. Give it
+/// the frame's thumbnail whenever `needs_thumb` asks for one. Call `saved` with the saved
+/// frame's own thumbnail when a `Save` was saved.
 #[derive(Debug)]
 pub struct Saver {
     /// The last saved frame: what a change is measured against. `None` after `reset`.
     last_saved: Option<(u64, Thumb)>,
     /// When the last save happened, kept across `reset` for the pace.
     last_save_t: Option<u64>,
-    /// The last offered thumbnail, for telling a still screen.
+    /// The last thumbnail looked at, for telling a still screen.
     previous: Option<Thumb>,
+    /// The dirty regions of the frames offered without a thumbnail since `previous`, added up.
+    unseen: f32,
+    /// A frame that needed its thumbnail came without one, so the next offer needs one.
+    stale: bool,
     /// When a change against the last saved frame was first seen.
     pending_since: Option<u64>,
     /// When the screen last moved between two offers.
@@ -89,6 +100,8 @@ impl Saver {
             last_saved: None,
             last_save_t: None,
             previous: None,
+            unseen: 0.0,
+            stale: false,
             pending_since: None,
             still_since: None,
             streak: 0,
@@ -99,30 +112,51 @@ impl Saver {
     pub fn reset(&mut self) {
         self.last_saved = None;
         self.previous = None;
+        self.unseen = 0.0;
+        self.stale = false;
         self.pending_since = None;
         self.still_since = None;
     }
 
-    /// A captured frame at `t`. `dirty` is the fraction of the screen its dirty regions cover,
-    /// when the capture reports them; below `DIRTY_SKIP` the frame counts as the previous one
-    /// and `thumb` isn't looked at.
-    pub fn offer(&mut self, t: u64, thumb: &Thumb, dirty: Option<f32>) -> Decision {
-        let unchanged = dirty.is_some_and(|d| d < DIRTY_SKIP) && self.previous.is_some();
-        if !unchanged {
-            let moved = self
-                .previous
-                .as_ref()
-                .map_or(1.0, |p| changed_fraction(p, thumb));
-            if moved >= STILL {
-                self.still_since = Some(t);
+    /// Whether `offer` needs the thumbnail of a frame whose dirty regions cover `dirty` of the
+    /// screen: without dirty regions, before the first thumbnail, after a frame that needed one
+    /// and came without it, and once the dirty regions of the frames offered without one add up
+    /// to `DIRTY_SKIP`.
+    pub fn needs_thumb(&self, dirty: Option<f32>) -> bool {
+        self.previous.is_none() || self.stale || dirty.is_none_or(|d| self.unseen + d >= DIRTY_SKIP)
+    }
+
+    /// A captured frame at `t`, with its thumbnail when the caller read one. `dirty` is the
+    /// fraction of the screen its dirty regions cover, when the capture reports them. A frame
+    /// offered without a thumbnail counts as the picture last looked at, and its dirty regions
+    /// add up; one that `needs_thumb` wanted a thumbnail for is left for the next offer.
+    pub fn offer(&mut self, t: u64, thumb: Option<&Thumb>, dirty: Option<f32>) -> Decision {
+        match thumb {
+            Some(thumb) => {
+                let moved = self
+                    .previous
+                    .as_ref()
+                    .map_or(1.0, |p| changed_fraction(p, thumb));
+                if moved >= STILL {
+                    self.still_since = Some(t);
+                }
+                self.previous = Some(thumb.clone());
+                self.unseen = 0.0;
+                self.stale = false;
             }
-            self.previous = Some(thumb.clone());
+            None if self.needs_thumb(dirty) => {
+                self.stale = true;
+                return Decision::Skip;
+            }
+            None => self.unseen += dirty.unwrap_or(0.0),
         }
         let still_since = *self.still_since.get_or_insert(t);
         let Some((saved_t, saved)) = &self.last_saved else {
             return Decision::Save;
         };
-        let current = self.previous.as_ref().unwrap_or(thumb);
+        let Some(current) = self.previous.as_ref() else {
+            return Decision::Skip;
+        };
         if changed_fraction(saved, current) < CHANGE {
             // Back to what was saved: nothing to save, and a later change starts afresh.
             self.pending_since = None;
@@ -139,7 +173,8 @@ impl Saver {
         }
     }
 
-    /// The frame offered at `t` was saved.
+    /// The frame offered at `t` was saved. `thumb` is its own thumbnail: later changes are
+    /// measured against it.
     pub fn saved(&mut self, t: u64, thumb: Thumb) {
         // A save that came within a short pace of the one before keeps the streak going; one
         // after a quiet stretch ends it, and the short pace comes back.
@@ -152,6 +187,8 @@ impl Saver {
         self.last_save_t = Some(t);
         self.pending_since = None;
         self.previous = Some(thumb.clone());
+        self.unseen = 0.0;
+        self.stale = false;
         self.last_saved = Some((t, thumb));
     }
 
@@ -327,7 +364,7 @@ mod tests {
     fn run(saver: &mut Saver, frames: impl IntoIterator<Item = (u64, Thumb)>) -> Vec<u64> {
         let mut saved = Vec::new();
         for (t, thumb) in frames {
-            if saver.offer(t, &thumb, None) == Decision::Save {
+            if saver.offer(t, Some(&thumb), None) == Decision::Save {
                 saver.saved(t, thumb);
                 saved.push(t);
             }
@@ -477,27 +514,93 @@ mod tests {
         let mut saver = Saver::new();
         run(&mut saver, every_100ms(0, 1_000, |_| 1));
         saver.reset();
-        assert_eq!(saver.offer(1_000, &noise(1), None), Decision::Save);
+        assert!(saver.needs_thumb(Some(0.0)));
+        assert_eq!(saver.offer(1_000, Some(&noise(1)), None), Decision::Save);
         saver.saved(1_000, noise(1));
-        assert_eq!(saver.offer(1_100, &noise(2), None), Decision::Skip);
+        assert_eq!(saver.offer(1_100, Some(&noise(2)), None), Decision::Skip);
     }
 
     #[test]
     fn small_dirty_regions_count_as_no_change() {
         let mut saver = Saver::new();
-        assert_eq!(saver.offer(0, &noise(1), None), Decision::Save);
+        assert!(saver.needs_thumb(Some(0.001)), "nothing looked at yet");
+        assert_eq!(saver.offer(0, Some(&noise(1)), None), Decision::Save);
         saver.saved(0, noise(1));
-        // The capture says almost nothing changed, whatever the thumbnail says.
-        for t in (100..3_000).step_by(100) {
-            assert_eq!(
-                saver.offer(t, &noise(t as u32), Some(0.001)),
-                Decision::Skip
-            );
+        // The capture says almost nothing changed: no thumbnail, no save.
+        assert!(
+            saver.needs_thumb(None),
+            "without dirty regions it must look"
+        );
+        for t in [100, 200] {
+            assert!(!saver.needs_thumb(Some(0.001)));
+            assert_eq!(saver.offer(t, None, Some(0.001)), Decision::Skip);
         }
         // A real change, then a still screen reported through dirty regions.
-        assert_eq!(saver.offer(3_000, &noise(2), Some(0.3)), Decision::Skip);
-        assert_eq!(saver.offer(3_500, &noise(99), Some(0.0)), Decision::Skip);
-        assert_eq!(saver.offer(3_700, &noise(99), Some(0.0)), Decision::Save);
+        assert!(saver.needs_thumb(Some(0.3)));
+        assert_eq!(
+            saver.offer(3_000, Some(&noise(2)), Some(0.3)),
+            Decision::Skip
+        );
+        assert!(!saver.needs_thumb(Some(0.0)));
+        assert_eq!(saver.offer(3_500, None, Some(0.0)), Decision::Skip);
+        assert_eq!(saver.offer(3_700, None, Some(0.0)), Decision::Save);
+
+        // A frame that needed its thumbnail came without one, as when thumbnails are paced: the
+        // next one must be looked at, however small its dirty regions.
+        let mut saver = Saver::new();
+        saver.offer(0, Some(&noise(1)), None);
+        saver.saved(0, noise(1));
+        assert_eq!(saver.offer(100, None, Some(0.3)), Decision::Skip);
+        assert!(saver.needs_thumb(Some(0.0)));
+    }
+
+    /// Typing in different places: each keystroke's dirty regions cover far less than
+    /// `DIRTY_SKIP`, but together they change more than `CHANGE` of the screen. They add up, so
+    /// the saver looks again now and then, sees the change against the last saved frame and
+    /// saves it, with few thumbnails read.
+    #[test]
+    fn small_changes_add_up_against_the_last_saved_frame() {
+        // The thumbnail of a white 1920 x 1080 screen. Each keystroke darkens a 2 x 2 block of
+        // its own: 16 x 16 screen pixels, 4 of the thumbnail's 32,400 pixels.
+        let (w, h) = (240usize, 135usize);
+        let mut screen = Thumb {
+            width: w as u32,
+            height: h as u32,
+            luma: vec![255; w * h],
+        };
+        let key = 256.0 / (1920.0 * 1080.0);
+        assert!(key * 10.0 < DIRTY_SKIP);
+        let mut saver = Saver::new();
+        assert_eq!(saver.offer(0, Some(&screen), Some(1.0)), Decision::Save);
+        saver.saved(0, screen.clone());
+        let mut last_saved = screen.clone();
+        let (mut saves, mut thumbs, mut furthest) = (Vec::new(), 0, 0f32);
+        // A keystroke every 100 ms for 20 s, three rows of 80.
+        for k in 0..200usize {
+            let t = (k as u64 + 1) * 100;
+            let (x, y) = ((k % 80) * 3, 10 + (k / 80) * 4);
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                screen.luma[(y + dy) * w + x + dx] = 0;
+            }
+            furthest = furthest.max(changed_fraction(&last_saved, &screen));
+            let thumb = saver.needs_thumb(Some(key)).then(|| screen.clone());
+            thumbs += usize::from(thumb.is_some());
+            if saver.offer(t, thumb.as_ref(), Some(key)) == Decision::Save {
+                saver.saved(t, screen.clone());
+                last_saved = screen.clone();
+                saves.push(t);
+            }
+        }
+        // 200 keystrokes change 2.5% of the screen. Typing never settles, so a change is saved
+        // once it is pending for MAX_PENDING_MS; the screen strays from the last saved frame by
+        // what 3 s of typing adds to the 1% that makes a save.
+        assert!(saves.len() >= 2, "saved at {saves:?}");
+        assert!(
+            furthest < CHANGE * 2.0,
+            "the screen moved {furthest} from the last saved frame"
+        );
+        // About one thumbnail per twenty keystrokes, as their dirty regions add up to DIRTY_SKIP.
+        assert!(thumbs <= 200 / 15, "{thumbs} thumbnails read");
     }
 
     #[test]

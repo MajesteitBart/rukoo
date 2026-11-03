@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
 use voice_screen_files::control::{self, Request};
-use voice_screen_files::frames::{Decision, Saver, Thumb, DIRTY_SKIP};
+use voice_screen_files::frames::{Decision, Saver, Thumb};
 use voice_screen_files::journal::{self, History, JournalWriter, Line, OpenError, FORMAT_VERSION};
 use voice_screen_files::monitors::{self, MonitorInfo};
 use voice_screen_files::paths;
@@ -859,24 +859,35 @@ impl Screen {
             return;
         }
         let now = Instant::now();
-        let still = frame.dirty.is_some_and(|d| d < DIRTY_SKIP);
-        let previous = self.last.as_ref().and_then(|l| l.thumb.clone());
-        let thumb = if still && previous.is_some() {
-            previous
-        } else if self.last_thumb_at.is_none_or(|at| now - at >= THUMB_GAP) {
+        let thumb = if self.saver.needs_thumb(frame.dirty)
+            && self.last_thumb_at.is_none_or(|at| now - at >= THUMB_GAP)
+        {
             self.last_thumb_at = Some(now);
             self.thumb(&frame)
         } else {
             None
         };
+        // The thumbnail of this frame's own picture: the one just read, or the last frame's when
+        // nothing on the screen changed since. A frame with small changes has none; a re-offer
+        // reads it, so a change never stays measured on an older picture.
+        let own = match &thumb {
+            Some(thumb) => Some(thumb.clone()),
+            None if frame.dirty == Some(0.0) => self.last.as_ref().and_then(|l| l.thumb.clone()),
+            None => None,
+        };
         self.last = Some(Last {
             frame: frame.clone(),
-            thumb: thumb.clone(),
+            thumb: own.clone(),
             offered_t: t,
         });
-        if let Some(thumb) = thumb {
-            if self.saver.offer(t, &thumb, frame.dirty) == Decision::Save {
-                self.save(&frame, t, thumb);
+        if self.saver.offer(t, thumb.as_ref(), frame.dirty) == Decision::Save {
+            // Later changes are measured against the saved frame's own thumbnail.
+            let own = match own {
+                Some(own) => Some(own),
+                None => self.thumb(&frame),
+            };
+            if let Some(own) = own {
+                self.save(&frame, t, own);
             }
         }
     }
@@ -914,6 +925,7 @@ impl Screen {
     }
 
     /// Offers the last frame again while the screen is still, so a change that settled saves.
+    /// It goes with its own thumbnail, read once when the frame came without one.
     fn reoffer(&mut self) {
         if !self.capturing || self.paused || self.locked || self.drops.frames.is_some() {
             return;
@@ -937,7 +949,7 @@ impl Screen {
             last.thumb = Some(thumb.clone());
             last.offered_t = t;
         }
-        if self.saver.offer(t, &thumb, None) == Decision::Save {
+        if self.saver.offer(t, Some(&thumb), None) == Decision::Save {
             self.save(&frame, t, thumb);
         }
     }

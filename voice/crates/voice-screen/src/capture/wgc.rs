@@ -119,6 +119,7 @@ impl Source for WgcSource {
             last_boot: 0,
             throttle: !self.features.min_update_interval,
             dirty_regions: self.features.dirty_regions,
+            carried: 0.0,
             lost: false,
             stopped: false,
         }));
@@ -182,6 +183,9 @@ struct Handler {
     last_boot: u64,
     throttle: bool,
     dirty_regions: bool,
+    /// The dirty regions of frames that never reached the main thread, throttled or dropped on
+    /// a full queue. They go with the next frame, so what changed is never lost (spec 2.5).
+    carried: f32,
     lost: bool,
     stopped: bool,
 }
@@ -225,10 +229,17 @@ impl Handler {
             return Ok(());
         }
         let boot = clockwin::frame_boot(frame.SystemRelativeTime()?.Duration);
+        let dirty = if self.dirty_regions {
+            dirty_fraction(frame, content.Width as u32, content.Height as u32)
+                .map(|d| carry(&mut self.carried, d))
+        } else {
+            None
+        };
         if self.throttle
             && self.last_boot != 0
             && (boot as i64 - self.last_boot as i64) < MIN_INTERVAL_100NS
         {
+            self.carried = dirty.unwrap_or(0.0);
             return Ok(());
         }
         let surface = frame.Surface()?;
@@ -238,6 +249,8 @@ impl Handler {
         unsafe { source.GetDesc(&mut desc) };
         let width = even((content.Width as u32).min(desc.Width));
         let height = even((content.Height as u32).min(desc.Height));
+        // Until the copy is handed over, this frame's changes go with the next one.
+        self.carried = dirty.unwrap_or(0.0);
         let texture = self.d3d.texture(width, height)?;
         unsafe {
             self.d3d.context.CopySubresourceRegion(
@@ -258,15 +271,10 @@ impl Handler {
                 }),
             );
         }
-        let dirty = if self.dirty_regions {
-            dirty_fraction(frame, width, height)
-        } else {
-            None
-        };
         self.last_boot = boot;
         // A full queue means the main thread is behind: drop this frame rather than block a
-        // thread-pool thread.
-        let _ = self.to_main.try_send(Ev::Frame(CapturedFrame {
+        // thread-pool thread. Its changes go with the next one.
+        let sent = self.to_main.try_send(Ev::Frame(CapturedFrame {
             texture,
             boot,
             width,
@@ -274,8 +282,17 @@ impl Handler {
             dirty,
             generation: self.generation,
         }));
+        if sent.is_ok() {
+            self.carried = 0.0;
+        }
         Ok(())
     }
+}
+
+/// A frame's dirty share with what the frames before it left: added up, at most the whole screen.
+/// Empties `carried`.
+fn carry(carried: &mut f32, dirty: f32) -> f32 {
+    (std::mem::take(carried) + dirty).min(1.0)
 }
 
 /// The fraction of the frame the dirty rectangles cover, capped at 1 (they may overlap).
