@@ -251,10 +251,9 @@ impl DiarStream for ScriptedStream {
         }
         self.buffer.extend_from_slice(pcm);
         self.take_frames();
-        let upto = if chunk > 0 {
-            self.frames.len().saturating_sub(right) / chunk * chunk
-        } else {
-            self.frames.len().saturating_sub(lag)
+        let upto = match self.frames.len().saturating_sub(right).checked_div(chunk) {
+            Some(chunks) => chunks * chunk,
+            None => self.frames.len().saturating_sub(lag),
         };
         Ok(self.commit(upto))
     }

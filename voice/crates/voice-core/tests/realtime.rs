@@ -133,6 +133,8 @@ impl Fake {
         let thread = thread::spawn(move || {
             let (tcp, _) = listener.accept().unwrap();
             let mut seen = Seen::default();
+            // tungstenite's handshake callback fixes the error type to its `ErrorResponse`.
+            #[allow(clippy::result_large_err)]
             let callback = |request: &Request, response: Response| {
                 seen.uri = request.uri().to_string();
                 seen.authorization = request
