@@ -9,7 +9,8 @@
 //!
 //! Audio mixes live in `<data>/media/`, which is emptied at start and capped at 2 GiB; each goes
 //! 10 minutes after its last read. Frames and clips are read where the screen recording keeps them
-//! and are never deleted here.
+//! and are never deleted here: clips are the ones `clip.get` cuts too, and the engine's sweep
+//! deletes them an hour after their last use.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
@@ -18,22 +19,23 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_bridge::ControlError;
 use voice_meetings::reader::{segment_samples, PER_MS};
 use voice_meetings::{MeetingDir, TrackReader};
-use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MAX_MEDIA_READ};
+use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MAX_CLIP_MS, MAX_MEDIA_READ};
 use voice_recorder::timeline::{History, SegmentRecord};
+use voice_screen_files::frames::FrameIndex;
+use voice_screen_files::media::{self as screen_files, MediaError, ScreenFileKind};
+use voice_screen_files::paths as screen_paths;
+use voice_screen_files::policy::reserve_ok;
 use voice_sync::manifest::is_segment_file;
-use voice_sync::{BucketSync, SyncError, SyncErrorKind};
+use voice_sync::{BucketSync, ScreenFile, ScreenFiles, SyncError, SyncErrorKind};
 
 use crate::meetings::controller::Controller;
 
-/// The longest video one link serves, in ms: the limit of RUK-108's `clip.get`.
-/// Stand-in until `voice_protocol::MAX_CLIP_MS` is on this branch.
-pub const MAX_CLIP_MS: u64 = 300_000;
 /// Prepared audio mixes: `<data>/media/<media id>.wav`.
 pub const MEDIA_DIR: &str = "media";
 /// A prepared file goes this long after its last read.
@@ -42,19 +44,29 @@ pub const KEEP_AFTER_READ: Duration = Duration::from_secs(10 * 60);
 pub const MEDIA_CAP: u64 = 2 << 30;
 /// Jobs that prepare at the same time; more wait.
 const PREPARE_THREADS: usize = 2;
-/// How long a link's cut may take: `RecordedScreen::cut` gives RUK-108's `cut_clips` this long.
+/// How long a link's cut may take: `RecordedScreen::cut` waits this long for `cut_clips`.
 pub const CLIP_WAIT: Duration = Duration::from_secs(60);
 /// Audio mixes are written ten seconds at a time.
 const MIX_BLOCK: u64 = 10 * 1000 * PER_MS;
 
-/// RUK-108's screen recording, for media links.
+/// The screen recording, for media links.
 pub trait ScreenMedia: Send + Sync {
     /// The frame at or before `at`: its path relative to the meeting folder and its `at`.
     fn frame_at(&self, meeting_dir: &Path, at: u64) -> io::Result<Option<(String, u64)>>;
     /// The video files a clip of [start, end) is cut from, relative paths, to fetch back first.
     fn clip_inputs(&self, meeting_dir: &Path, start: u64, end: u64) -> io::Result<Vec<String>>;
-    /// Cuts the first stretch of continuous video in [start, end] (RUK-108's `cut_clips`); its
-    /// path and the range it covers.
+    /// An upper bound on the bytes a clip of [start, end] writes, for the free-space rule. By
+    /// default the size of its input files, which are on disk by then.
+    fn clip_bytes(&self, meeting_dir: &Path, start: u64, end: u64) -> io::Result<u64> {
+        Ok(self
+            .clip_inputs(meeting_dir, start, end)?
+            .iter()
+            .filter_map(|p| fs::metadata(meeting_dir.join(p)).ok())
+            .map(|m| m.len())
+            .sum())
+    }
+    /// Cuts the first stretch of continuous video in [start, end]; its path and the range it
+    /// covers.
     fn cut(
         &self,
         meeting_dir: &Path,
@@ -65,7 +77,7 @@ pub trait ScreenMedia: Send + Sync {
     fn recorded(&self, meeting_dir: &Path) -> (bool, bool);
 }
 
-/// No screen recording: `recorded()` is `(false, false)`. Voice before RUK-108, and tests.
+/// No screen recording: `recorded()` is `(false, false)`. For tests.
 pub struct NoScreenMedia;
 
 impl ScreenMedia for NoScreenMedia {
@@ -96,14 +108,94 @@ const NO_FRAMES: &str = "This meeting didn't record the screen.";
 const NO_VIDEO: &str = "This meeting didn't record video.";
 const NO_DISK: &str = "Not enough free disk space to prepare the media.";
 
-/// Whether `bytes` may be written now: what stays free must cover the floor of the screen
-/// recording that could be running plus 2 GiB, 6 GiB in all while a meeting records and 4 GiB
-/// otherwise. RUK-108's floors copied as constants until `voice_screen_files::policy::reserve_ok`
-/// is on this branch.
-pub fn reserve_ok(free: u64, bytes: u64, meeting_live: bool) -> bool {
-    const GIB: u64 = 1 << 30;
-    let need = if meeting_live { 6 * GIB } else { 4 * GIB };
-    free >= bytes.saturating_add(need)
+/// The screen folder the screen process writes (voice/RECORDING.md, "The screen folder"), for
+/// bucket sync and media links. It reads closed files only and writes nothing but the clips
+/// `cut_clips` makes.
+#[derive(Default)]
+pub struct RecordedScreen {
+    /// Each meeting folder's frame index, read again when its journal changed length.
+    frames: Mutex<HashMap<PathBuf, (u64, Arc<FrameIndex>)>>,
+}
+
+impl RecordedScreen {
+    fn frame_index(&self, meeting_dir: &Path) -> io::Result<Arc<FrameIndex>> {
+        let length = match fs::metadata(screen_paths::journal_path(meeting_dir)) {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e),
+        };
+        let mut frames = self.frames.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((known, index)) = frames.get(meeting_dir) {
+            if *known == length {
+                return Ok(Arc::clone(index));
+            }
+        }
+        let index = Arc::new(FrameIndex::load(meeting_dir)?);
+        frames.insert(meeting_dir.to_path_buf(), (length, Arc::clone(&index)));
+        Ok(index)
+    }
+}
+
+impl ScreenFiles for RecordedScreen {
+    /// Every closed screen file: a frame once the journal names it, a video file after its
+    /// `video_end`, the journal after its own `stop`. Never clips, `screen.json` or `*.tmp`.
+    fn list(&self, meeting_dir: &Path, _stopped: bool) -> io::Result<Vec<ScreenFile>> {
+        Ok(screen_files::closed_files(meeting_dir)?
+            .into_iter()
+            .map(|(path, kind)| ScreenFile {
+                path,
+                kind: match kind {
+                    ScreenFileKind::Journal => voice_sync::ScreenFileKind::Journal,
+                    ScreenFileKind::Frame => voice_sync::ScreenFileKind::Frame,
+                    ScreenFileKind::Video => voice_sync::ScreenFileKind::Video,
+                },
+                closed: true,
+            })
+            .collect())
+    }
+}
+
+impl ScreenMedia for RecordedScreen {
+    fn frame_at(&self, meeting_dir: &Path, at: u64) -> io::Result<Option<(String, u64)>> {
+        let index = self.frame_index(meeting_dir)?;
+        Ok(index
+            .at_or_before(at)
+            .filter(|frame| screen_paths::frame_path(meeting_dir, &frame.file).is_some())
+            .map(|frame| (frame.file.clone(), frame.t)))
+    }
+
+    fn clip_inputs(&self, meeting_dir: &Path, start: u64, end: u64) -> io::Result<Vec<String>> {
+        screen_files::video_inputs(meeting_dir, start, end)
+    }
+
+    fn clip_bytes(&self, meeting_dir: &Path, start: u64, end: u64) -> io::Result<u64> {
+        screen_files::clip_input_bytes(meeting_dir, start, end)
+    }
+
+    fn cut(
+        &self,
+        meeting_dir: &Path,
+        start: u64,
+        end: u64,
+    ) -> Result<(PathBuf, u64, u64), ControlError> {
+        let cut = screen_files::cut_clips(meeting_dir, start, end, Instant::now() + CLIP_WAIT)
+            .map_err(|e| match e {
+                MediaError::NotFound(m) => ControlError::not_found(m),
+                MediaError::NotAvailable(m) => ControlError::not_available(m),
+                MediaError::Failed(m) => ControlError::failed(m),
+            })?;
+        match cut.clips.into_iter().next() {
+            Some(clip) => Ok((clip.path, clip.start, clip.end)),
+            None if cut.complete => Err(ControlError::not_found("There is no video at that time.")),
+            None => Err(ControlError::failed(
+                "Voice couldn't cut the video in time. Try again in a moment.",
+            )),
+        }
+    }
+
+    fn recorded(&self, meeting_dir: &Path) -> (bool, bool) {
+        screen_files::recorded(meeting_dir)
+    }
 }
 
 /// What one `media.open` asks for; the same arguments find the same job.
@@ -141,7 +233,8 @@ struct Ready {
     end: u64,
     /// In `<data>/media/`: ours to delete.
     owned: bool,
-    /// A clip of RUK-108's: answering `ready` touches it so its sweep keeps it for an hour.
+    /// A clip of the screen recording's: answering `ready` touches it so the sweep keeps it for
+    /// another hour.
     clip: bool,
 }
 
@@ -346,11 +439,11 @@ impl MediaService {
             State::Ready(ready) if ready.path.is_file() => {
                 job.used = Instant::now();
                 if ready.clip {
-                    touch(&ready.path);
+                    let _ = screen_files::touch_clip(&ready.path);
                 }
                 Ok(Some(ready_answer(&id, ready)))
             }
-            // The file went, for instance a clip RUK-108's sweep removed: prepare it again.
+            // The file went, for instance a clip the sweep removed: prepare it again.
             State::Ready(_) => {
                 let job = inner.jobs.remove(&id).expect("found above");
                 drop(inner);
@@ -595,11 +688,9 @@ impl MediaService {
                     self.fetch(&meeting, &absent)?;
                 }
                 // The clip is at most as large as the fragments it is cut from.
-                let input_bytes: u64 = inputs
-                    .iter()
-                    .filter_map(|p| fs::metadata(dir.join(p)).ok())
-                    .map(|m| m.len())
-                    .sum();
+                let input_bytes = self.screen.clip_bytes(&dir, start, end).map_err(|e| {
+                    ControlError::failed(format!("Voice couldn't read the video: {e}"))
+                })?;
                 if !self.may_write(input_bytes) {
                     return Err(ControlError::failed(NO_DISK));
                 }
@@ -607,7 +698,7 @@ impl MediaService {
                 let size = fs::metadata(&path)
                     .map_err(|e| ControlError::failed(format!("The clip is missing: {e}")))?
                     .len();
-                touch(&path);
+                let _ = screen_files::touch_clip(&path);
                 Ok(Ready {
                     path,
                     kind: "video/mp4",
@@ -883,13 +974,6 @@ fn forget_file(job: &Job) {
     }
 }
 
-/// Sets a file's modification time to now.
-fn touch(path: &Path) {
-    if let Ok(file) = File::options().write(true).open(path) {
-        let _ = file.set_modified(SystemTime::now());
-    }
-}
-
 /// The files among `paths` (relative to `dir`) that aren't on disk.
 fn missing(dir: &Path, paths: &[String]) -> Vec<String> {
     paths
@@ -928,19 +1012,6 @@ fn read_at(path: &Path, offset: u64, length: u64) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_free_space_rule_keeps_the_screen_floors() {
-        const GIB: u64 = 1 << 30;
-        assert!(reserve_ok(5 * GIB, GIB, false));
-        assert!(!reserve_ok(5 * GIB, GIB + 1, false));
-        assert!(
-            !reserve_ok(5 * GIB, 0, true),
-            "6 GiB while a meeting records"
-        );
-        assert!(reserve_ok(7 * GIB, GIB, true));
-        assert!(!reserve_ok(0, u64::MAX, false), "no overflow");
-    }
 
     #[test]
     fn a_mix_clips_instead_of_wrapping() {

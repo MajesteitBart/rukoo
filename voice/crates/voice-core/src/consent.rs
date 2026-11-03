@@ -2,15 +2,20 @@
 //!
 //! Ownkey asked in its meeting window before the first upload. Voice has no meeting window, so
 //! Settings shows the disclosure when the user picks a cloud provider and stores the agreement
-//! as `{provider, host}`. Without it a meeting still records; transcription waits.
+//! as `{provider, host, mode}`. Without it a meeting still records; transcription waits.
+//!
+//! The mode is how the audio goes: recorded windows, or a continuous stream to a realtime model.
+//! An agreement covers one provider, one host and one mode, so agreeing to windows never covers
+//! streaming, and the other way round.
 
 use serde::Serialize;
 
+use crate::providers::stream;
 use crate::providers::{
     endpoint_host, is_local_host, normalize_provider, ProviderConfig, ProviderId,
 };
 
-use crate::config::Consent;
+use crate::config::{Consent, ConsentMode};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -18,11 +23,13 @@ pub enum ConsentState {
     /// Audio stays on this computer: Orukeet, or a server on a local host.
     NotNeeded,
     Granted,
-    /// Transcription waits until the user agrees to send audio to this provider and host.
+    /// Transcription waits until the user agrees to send audio to this provider and host, in
+    /// this mode.
     Required {
         provider: String,
         label: String,
         host: String,
+        mode: ConsentMode,
     },
 }
 
@@ -34,6 +41,8 @@ pub struct Disclosure {
     pub label: String,
     pub model: String,
     pub host: String,
+    /// How the audio would go; an agreement stores it.
+    pub mode: ConsentMode,
     pub title: String,
     pub intro: String,
     pub sent: Vec<String>,
@@ -46,7 +55,8 @@ pub struct Disclosure {
 /// Ownkey's `CLOUD_WINDOW_NOTE`.
 pub const CLOUD_WINDOW_NOTE: &str = "windows of up to 28 seconds";
 
-fn cloud_target(cfg: &ProviderConfig) -> Option<(ProviderId, String)> {
+/// The provider, host and mode meeting audio would go to; None when it stays on this computer.
+fn cloud_target(cfg: &ProviderConfig) -> Option<(ProviderId, String, ConsentMode)> {
     let id = ProviderId::parse(&normalize_provider(&cfg.provider, ""))?;
     if id == ProviderId::Orukeet || !id.supports_audio() {
         return None;
@@ -55,40 +65,71 @@ fn cloud_target(cfg: &ProviderConfig) -> Option<(ProviderId, String)> {
     if is_local_host(&host) {
         return None;
     }
-    Some((id, host))
+    let mode = if stream::streams(cfg) {
+        ConsentMode::Stream
+    } else {
+        ConsentMode::Windows
+    };
+    Some((id, host, mode))
 }
 
 pub fn state(cfg: &ProviderConfig, consent: Option<&Consent>) -> ConsentState {
-    let Some((id, host)) = cloud_target(cfg) else {
+    let Some((id, host, mode)) = cloud_target(cfg) else {
         return ConsentState::NotNeeded;
     };
     match consent {
-        Some(consent) if consent.provider == id.as_str() && consent.host == host => {
+        Some(consent)
+            if consent.provider == id.as_str() && consent.host == host && consent.mode == mode =>
+        {
             ConsentState::Granted
         }
         _ => ConsentState::Required {
             provider: id.as_str().to_string(),
             label: id.label().to_string(),
             host,
+            mode,
         },
     }
 }
 
 pub fn disclosure(cfg: &ProviderConfig) -> Option<Disclosure> {
-    let (id, host) = cloud_target(cfg)?;
+    let (id, host, mode) = cloud_target(cfg)?;
     let label = id.label();
+    let keep_here = "Choose On this computer (Orukeet) in Settings > Meetings > Transcription to keep the audio here.";
+    let (title, intro, sent, agree) = match mode {
+        ConsentMode::Windows => (
+            format!("Voice will send meeting audio to {label}"),
+            format!(
+                "Voice transcribes a meeting while it records, with the provider you chose in Settings. The recorded tracks go to {label} in {CLOUD_WINDOW_NOTE}, over your own key. Pausing stops sending new audio. {keep_here}"
+            ),
+            format!("Every recorded track, microphone and call audio, as WAV in {CLOUD_WINDOW_NOTE}"),
+            format!("Send meeting audio to {label} at {host}"),
+        ),
+        ConsentMode::Stream => (
+            format!("Voice will stream meeting audio to {label}"),
+            format!(
+                "Voice streams the recorded tracks to {label} continuously while the meeting records, over your own key, and {label} returns the text. After a dropped connection, Voice also sends clips of up to 15 seconds of each voice heard so far, so their speaker labels stay the same. Pausing stops the stream. {keep_here}"
+            ),
+            "Microphone and call audio as a continuous stream, and clips of up to 15 seconds per voice after a reconnect".to_string(),
+            format!("Stream meeting audio to {label} at {host}"),
+        ),
+    };
     Some(Disclosure {
         provider: id.as_str().to_string(),
         label: label.to_string(),
         model: cfg.model.trim().to_string(),
-        host: host.clone(),
-        title: format!("Voice will send meeting audio to {label}"),
-        intro: format!(
-            "Voice transcribes a meeting while it records, with the provider you chose in Settings. The recorded tracks go to {label} in {CLOUD_WINDOW_NOTE}, over your own key. Pausing stops sending new audio. Choose On this computer (Orukeet) in Settings > Meetings > Transcription to keep the audio here."
-        ),
-        sent: vec![format!("Every recorded track, microphone and call audio, as WAV in {CLOUD_WINDOW_NOTE}")],
-        not_sent: vec!["Screen recordings".to_string(), "Your notes and agent chats in Rukoo".to_string()],
-        retention: "What the provider keeps is set by its data policy; Voice has no control after upload.".to_string(),
-        agree: format!("Send meeting audio to {label} at {host}"),
+        host,
+        mode,
+        title,
+        intro,
+        sent: vec![sent],
+        not_sent: vec![
+            "Screen recordings".to_string(),
+            "Your notes and agent chats in Rukoo".to_string(),
+        ],
+        retention:
+            "What the provider keeps is set by its data policy; Voice has no control after upload."
+                .to_string(),
+        agree,
     })
 }

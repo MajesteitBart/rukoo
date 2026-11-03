@@ -106,6 +106,18 @@ const ORUKEET_MODEL = 'orukeet-onnx-int8';
 // Ownkey never asks before sending to these hosts: they are this computer.
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
 const PROVIDER_FORMS = ['transcription', 'rewriting', 'meetings'];
+// Why speaker labels are off, by the engine's reason code (API.md, SpeakersState).
+const SPEAKER_REASONS = {
+  off: 'settings.speakers.reason.off',
+  platform: 'settings.speakers.reason.platform',
+  cpu: 'settings.speakers.reason.cpu',
+  runtime: 'settings.speakers.reason.runtime',
+  runtimeFailed: 'settings.speakers.reason.runtimeFailed',
+  model: 'settings.speakers.reason.model',
+  modelDamaged: 'settings.speakers.reason.modelDamaged',
+  key: 'settings.speakers.reason.key',
+  consent: 'settings.speakers.reason.consent'
+};
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
 const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'about'];
 
@@ -266,14 +278,57 @@ function consentNeeded(provider, endpoint) {
   return !host || !LOCAL_HOSTS.has(host);
 }
 
-function savedConsentFor(provider, endpoint) {
+// Whether this is a realtime model (API.md, providers.audio[].streamingPrefix). It streams meetings and does nothing
+// else, so the engine refuses it for dictation and rewriting.
+function streams(provider, model) {
+  const prefix = state.providers.audio.find((p) => p.id === provider)?.streamingPrefix;
+  return Boolean(prefix) && String(model || '').trim().startsWith(prefix);
+}
+
+// Whether a model's name is a realtime model's, whatever the provider: an OpenAI-compatible proxy can list Mistral's
+// ids too, and the engine refuses such a name for dictation and rewriting from any provider (API.md,
+// settings_save_provider).
+function realtimeName(model) {
+  const id = String(model || '').trim();
+  return state.providers.audio.some((p) => p.streamingPrefix && id.startsWith(p.streamingPrefix));
+}
+
+// How meeting audio goes to the provider: `stream` for a realtime model, else recorded windows. An agreement covers
+// one of the two.
+function consentMode(provider, model) {
+  return streams(provider, model) ? 'stream' : 'windows';
+}
+
+function savedConsentFor(provider, endpoint, model) {
   const consent = state.config.meetings.consent;
-  return !!consent && consent.provider === provider && consent.host === hostOf(endpoint);
+  return !!consent && consent.provider === provider && consent.host === hostOf(endpoint) && (consent.mode || 'windows') === consentMode(provider, model);
 }
 
 function meetingsWaitForConsent() {
   const m = state.config.meetings;
-  return consentNeeded(m.provider, m.endpoint) && !savedConsentFor(m.provider, m.endpoint);
+  return consentNeeded(m.provider, m.endpoint) && !savedConsentFor(m.provider, m.endpoint, m.model);
+}
+
+// The sentence that says why speaker labels are off, or null when they're ready.
+function speakersReason() {
+  const s = state.speakers;
+  if (!s || s.ready) return null;
+  const key = SPEAKER_REASONS[s.reason];
+  if (!key) return t('settings.meetings.speakersUnavailable');
+  const missing = (s.missing?.length ? s.missing : Object.keys(s.cpu || {}).filter((name) => s.cpu[name] === false)).map((name) => name.toUpperCase());
+  return t(key, { missing: list(missing), provider: providerLabel(state.config.meetings.provider, 'meetings') });
+}
+
+// The Meetings card's row: On, Unavailable with the reason, or Off.
+function speakersRow() {
+  const on = state.config.meetings.liveSpeakers;
+  const ready = Boolean(state.speakers?.ready);
+  return row({
+    title: t('settings.meetings.speakers'),
+    desc: on && !ready ? speakersReason() : '',
+    value: t(!on ? 'common.off' : ready ? 'common.on' : 'settings.meetings.speakersUnavailable'),
+    action: 'go:speakers'
+  });
 }
 
 // ---------- pages ----------
@@ -320,11 +375,19 @@ function mainPage() {
       row({ title: t('settings.dictation.rewriting'), value: rewritingValue(), action: 'go:rewriting' })
   );
 
-  const screenRow = LATER
+  // state.screen is null until the screen process answered its probe. A Windows that can't capture disables the
+  // choice; a computer without a hardware encoder or an OCR language records less than the choice says.
+  const screen = state.screen;
+  const screenOff = screen?.available === false;
+  const screenNotes = screenOff
+    ? [t('settings.meetings.screenUnavailable')]
+    : [screen?.hardwareEncoder === null ? t('settings.meetings.screenNoEncoder') : '', Array.isArray(screen?.ocr) && !screen.ocr.length ? t('settings.meetings.screenNoOcr') : ''].filter(Boolean);
+  const screenRow = feature('screen')
     ? row({
         title: t('settings.meetings.screen'),
         desc: t('settings.meetings.screenHelp'),
-        side: segmented('meetings.screen', SCREEN, c.meetings.screen, t('settings.meetings.screen'))
+        below: screenNotes.map((note) => `<div class="desc note">${icons.info}<span>${esc(note)}</span></div>`).join(''),
+        side: segmented('meetings.screen', SCREEN, c.meetings.screen, t('settings.meetings.screen'), { disabled: screenOff })
       })
     : '';
   const meetingsCard = card(
@@ -337,7 +400,7 @@ function mainPage() {
       }) +
       row({ title: t('settings.meetings.retention'), desc: t('settings.meetings.retentionHelp'), value: labelOf(RETENTION, c.meetings.retention), action: 'choose:meetings.retention' }) +
       row({ title: t('settings.meetings.stopKey'), desc: t('settings.meetings.stopKeyHelp'), value: keyName(c.meetings.stopKey), action: 'choose:meetings.stopKey' }) +
-      (LATER ? row({ title: t('settings.meetings.speakers'), value: t(c.meetings.liveSpeakers ? 'common.on' : 'common.off'), action: 'go:speakers' }) : '') +
+      (feature('speakers') ? speakersRow() : '') +
       row({
         title: t('settings.meetings.storage'),
         value: t('settings.meetings.storageValue', { free: bytes(state.storage.freeBytes), size: bytes(state.storage.usedBytes) }),
@@ -378,11 +441,12 @@ function mainPage() {
   };
 }
 
-function segmented(key, options, value, label) {
+function segmented(key, options, value, label, { disabled = false } = {}) {
   const index = Math.max(0, options.findIndex(([v]) => v === value));
-  return `<div class="segmented" role="tablist" aria-label="${esc(label)}" style="--n:${options.length};--i:${index}">
+  const off = disabled ? 'disabled' : '';
+  return `<div class="segmented ${disabled ? 'is-disabled' : ''}" role="tablist" aria-label="${esc(label)}" ${disabled ? 'aria-disabled="true"' : ''} style="--n:${options.length};--i:${index}">
     <span class="seg-thumb" aria-hidden="true"></span>${options
-      .map(([v, labelKey]) => `<button role="tab" aria-selected="${v === value}" data-a="seg:${esc(key)}:${esc(v)}">${esc(t(labelKey))}</button>`)
+      .map(([v, labelKey]) => `<button role="tab" aria-selected="${v === value}" data-a="seg:${esc(key)}:${esc(v)}" ${off}>${esc(t(labelKey))}</button>`)
       .join('')}</div>`;
 }
 
@@ -408,6 +472,8 @@ function providerForm(target) {
   const keySaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
   const presets = presetEndpoints(target, provider);
   const models = modelLists[target];
+  // Only the meetings form offers realtime models; the other two would refuse them on Save.
+  const offered = (models?.list || []).filter((id) => target === 'meetings' || !realtimeName(id));
   const fs = formStatus[target];
 
   const options = ids.map((id) => `<option value="${esc(id)}" ${id === provider ? 'selected' : ''}>${esc(providerLabel(id, target))}</option>`).join('');
@@ -427,7 +493,7 @@ function providerForm(target) {
       : models.status === 'failed'
         ? `<span class="field-help bad">${esc(t('settings.provider.modelsFailed', { error: models.error }))}</span>`
         : models.status === 'done'
-          ? `<span class="field-help">${esc(models.list.length ? t('settings.provider.modelsFound', { count: models.list.length }) : t('settings.provider.noModels', { provider: providerLabel(provider, target) }))}</span>`
+          ? `<span class="field-help">${esc(offered.length ? t('settings.provider.modelsFound', { count: offered.length }) : t('settings.provider.noModels', { provider: providerLabel(provider, target) }))}</span>`
           : '';
     fields += `${key}
       <label>${esc(t('settings.provider.endpoint'))}<input type="text" inputmode="url" list="endpoints-${target}" data-field="${target}.endpoint" spellcheck="false" autocomplete="off" />
@@ -437,7 +503,7 @@ function providerForm(target) {
       )}" /><button class="btn secondary" data-a="refresh:${target}" ${models?.status === 'loading' ? 'disabled' : ''}>${esc(
         models?.status === 'loading' ? t('common.loading') : t('common.refresh')
       )}</button></div>
-        <datalist id="models-${target}">${(models?.list || []).map((id) => `<option value="${esc(id)}"></option>`).join('')}</datalist>${modelHelp}</label>`;
+        <datalist id="models-${target}">${offered.map((id) => `<option value="${esc(id)}"></option>`).join('')}</datalist>${modelHelp}</label>`;
   }
 
   if (target === 'transcription') {
@@ -448,7 +514,7 @@ function providerForm(target) {
       <span class="field-help">${esc(local ? t('settings.transcription.languageOrukeet') : t('settings.transcription.languageHelp'))}</span></label>`;
   }
 
-  if (target === 'meetings') fields += consentBlock(provider, formValue('meetings', 'endpoint'), formValue('meetings', 'model'));
+  if (target === 'meetings') fields += consentBlock(provider, formValue('meetings', 'endpoint'), String(formValue('meetings', 'model')).trim());
 
   const statusHtml = !fs
     ? ''
@@ -461,34 +527,39 @@ function providerForm(target) {
 }
 
 // Decision 10: a cloud provider for meetings shows what goes where, with a checkbox. Consent is saved as
-// {provider, host}, so another provider or server asks again. Without it a meeting still records and its
-// transcription waits.
+// {provider, host, mode}, so another provider, server or way of sending asks again. A realtime model streams the
+// meeting, which the disclosure says. Without consent a meeting still records and its transcription waits.
 function consentBlock(provider, endpoint, model) {
   if (!consentNeeded(provider, endpoint)) return '';
   const host = hostOf(endpoint);
   const name = providerLabel(provider, 'meetings');
-  const checked = consentValue(provider, endpoint);
+  const stream = consentMode(provider, model) === 'stream';
+  const checked = consentValue(provider, endpoint, model);
   return `<div class="consent">
     <h3>${esc(t('settings.consent.title', { provider: name }))}</h3>
-    <p>${esc(t('settings.consent.intro', { provider: name }))}</p>
+    <p>${esc(stream ? t('settings.consent.introStream', { provider: name }) : t('settings.consent.intro', { provider: name }))}</p>
     <dl class="facts">
       <dt>${esc(t('settings.consent.provider'))}</dt><dd>${esc(model ? `${name} · ${model}` : name)}</dd>
       <dt>${esc(t('settings.consent.server'))}</dt><dd class="mono">${esc(host || '–')}</dd>
-      <dt>${esc(t('settings.consent.sent'))}</dt><dd>${esc(t('settings.consent.sentValue'))}</dd>
+      <dt>${esc(t('settings.consent.sent'))}</dt><dd>${esc(stream ? t('settings.consent.sentValueStream') : t('settings.consent.sentValue'))}</dd>
       <dt>${esc(t('settings.consent.notSent'))}</dt><dd>${esc(t('settings.consent.notSentValue'))}</dd>
       <dt>${esc(t('settings.consent.kept'))}</dt><dd>${esc(t('settings.consent.keptValue'))}</dd>
     </dl>
     <label class="check-row"><input type="checkbox" data-field="meetings.consent" ${checked ? 'checked' : ''} ${host ? '' : 'disabled'} />
-      <span>${esc(t('settings.consent.agree', { provider: name, host: host || '–' }))}</span></label>
+      <span>${esc(
+        stream ? t('settings.consent.agreeStream', { provider: name, host: host || '–' }) : t('settings.consent.agree', { provider: name, host: host || '–' })
+      )}</span></label>
     <span class="field-help">${esc(checked ? t('settings.consent.again') : t('settings.consent.waiting'))}</span>
   </div>`;
 }
 
-function consentValue(provider, endpoint) {
+// What a ticked box is for: the provider, the host and the way of sending.
+const consentKey = (provider, endpoint, model) => `${provider}|${hostOf(endpoint)}|${consentMode(provider, model)}`;
+
+function consentValue(provider, endpoint, model) {
   const d = drafts.meetings;
-  const forKey = `${provider}|${hostOf(endpoint)}`;
-  if (d && d.consentFor === forKey && typeof d.consent === 'boolean') return d.consent;
-  return savedConsentFor(provider, endpoint);
+  if (d && d.consentFor === consentKey(provider, endpoint, model) && typeof d.consent === 'boolean') return d.consent;
+  return savedConsentFor(provider, endpoint, model);
 }
 
 function providerIds(target) {
@@ -522,6 +593,8 @@ function modelStatus(m) {
   if (m.active === 'error') return { tone: 'bad', text: t('settings.model.loadFailed') };
   if (m.active === 'loading') return { tone: 'busy', text: t('settings.model.loading') };
   if (m.active) return { tone: m.active === 'loaded' ? 'ok' : 'off', text: t('settings.model.active', { state: t(MODEL_ACTIVE[m.active]) }) };
+  // Nemotron is never chosen or loaded like Orukeet; the status card above it says whether it labels.
+  if (m.id === 'nemotron') return { tone: 'off', text: t('settings.speakers.modelInstalled') };
   return { tone: 'off', text: t('settings.model.installed') };
 }
 
@@ -690,17 +763,52 @@ function meetingTranscriptionPage() {
   };
 }
 
+// The reasons whose error text Error details shows.
+const SPEAKER_DETAILS = new Set(['runtimeFailed', 'modelDamaged']);
+
+// Whether labels are on and why not, where the labels come from, then the Nemotron model with the switch. The switch
+// stays usable without the model: it decides what new meetings do once labels can run.
 function speakersPage() {
   const m = state.models.nemotron;
+  const s = state.speakers || {};
+  const on = state.config.meetings.liveSpeakers;
+  const mistral = s.engine === 'mistral';
+  const ready = Boolean(s.ready);
+  const pill = ready
+    ? status('ok', t('common.on'))
+    : on
+      ? status('bad', t('settings.meetings.speakersUnavailable'))
+      : status('off', t('common.off'));
+  const details =
+    !ready && s.detail && SPEAKER_DETAILS.has(s.reason)
+      ? `<div class="desc"><button class="link-btn" data-a="speakers-details">${esc(t('common.errorDetails'))}</button></div>`
+      : '';
+  const stopped = (s.live || []).some((entry) => entry.state === 'failed');
+  const statusCard = card(
+    row({
+      title: t('settings.speakers.status'),
+      desc: ready ? t(mistral ? 'settings.speakers.readyMistral' : 'settings.speakers.ready') : speakersReason(),
+      below: details,
+      side: pill
+    }) +
+      row({
+        title: t('settings.speakers.engine'),
+        value: t(mistral ? 'settings.speakers.engineMistral' : 'settings.speakers.engineLocal'),
+        valueClass: mistral ? '' : 'plain',
+        action: mistral ? 'go:meetingTranscription' : null
+      }) +
+      (stopped ? row({ lead: `<span class="lead warn top">${icons.warning}</span>`, title: t('settings.speakers.stopped') }) : '')
+  );
   return {
     title: t('settings.meetings.speakers'),
     sections: [
+      section('status', groupTitle('') + statusCard),
       section(
         'model',
         groupTitle('Nemotron 3 Diarization') +
           card(
             `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${modelRows(m)}` +
-              row({ title: t('settings.speakers.live'), toggle: state.config.meetings.liveSpeakers, action: 'toggle:meetings.liveSpeakers', disabled: m.stage !== 'installed' }) +
+              row({ title: t('settings.speakers.live'), desc: t('settings.speakers.liveHelp'), toggle: on, action: 'toggle:meetings.liveSpeakers' }) +
               `<div class="card-foot">${esc(t('settings.speakers.licence'))} <button class="link-btn" data-a="link:nemotron">${icons.link}${esc(t('settings.model.page'))}</button></div>`
           )
       )
@@ -717,7 +825,7 @@ function storagePage() {
     // Voice 0.1 keeps meetings in its data folder, so there is no Browse here (API.md, settings_choose_folder).
     side: `<div class="side"><button class="btn sm secondary" data-a="open:recordings">${esc(t('common.openFolder'))}</button></div>`
   });
-  const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (LATER ? paragraph(t('settings.storage.disk')) : ''))];
+  const sections = [section('local', groupTitle(t('settings.storage.local')) + card(folderRow) + (feature('screen') ? paragraph(t('settings.storage.disk')) : ''))];
   if (feature('sync')) sections.push(...syncSections());
   else if (state.config.storage.sync?.enabled) sections.push(section('sync', groupTitle(t('settings.sync.inBucket')) + syncUnavailableCard()));
   return { title: t('settings.meetings.storage'), sections };
@@ -1267,7 +1375,7 @@ async function saveProvider(target) {
   const showingSaved = saved.keySaved && provider === saved.provider && !d.replacingKey;
   values.apiKey = local ? '' : typed ? typed : showingSaved || (saved.keySaved && provider === saved.provider) ? null : '';
   if (target === 'transcription') values.language = local ? 'auto' : formValue('transcription', 'language') || 'auto';
-  if (target === 'meetings') values.consent = consentNeeded(provider, values.endpoint) ? consentValue(provider, values.endpoint) : false;
+  if (target === 'meetings') values.consent = consentNeeded(provider, values.endpoint) ? consentValue(provider, values.endpoint, values.model) : false;
   formStatus[target] = { kind: local ? 'loading' : 'saving', message: t(local ? 'settings.provider.loadingOrukeet' : 'settings.provider.saving') };
   render();
   try {
@@ -1407,6 +1515,8 @@ async function act(action, button) {
       return;
     case 'details':
       return showError(formStatus[arg]?.message || '', formStatus[arg]?.detail);
+    case 'speakers-details':
+      return showError(speakersReason() || '', state.speakers?.detail);
     case 'model': {
       const [id, what] = arg.split(':');
       const m = state.models[id];
@@ -1792,7 +1902,7 @@ function licensesDialog() {
   const items = [
     esc(t('settings.licenses.inter')),
     `${esc(t('settings.licenses.orukeet'))} <button class="link-btn" data-link="orukeet">${icons.link}huggingface.co/oruk/orukeet</button>`,
-    LATER ? `${esc(t('settings.licenses.nemotron'))} <button class="link-btn" data-link="nemotron">${icons.link}huggingface.co/nvidia</button>` : '',
+    feature('speakers') ? `${esc(t('settings.licenses.nemotron'))} <button class="link-btn" data-link="nemotron">${icons.link}huggingface.co/nvidia</button>` : '',
     esc(t('settings.licenses.beautifulUi'))
   ].filter(Boolean);
   return dialog({
@@ -1949,7 +2059,7 @@ page.addEventListener('change', (e) => {
   if (field === 'meetings.consent') {
     const d = draft('meetings');
     d.consent = e.target.checked;
-    d.consentFor = `${formValue('meetings', 'provider')}|${hostOf(formValue('meetings', 'endpoint'))}`;
+    d.consentFor = consentKey(formValue('meetings', 'provider'), formValue('meetings', 'endpoint'), formValue('meetings', 'model'));
     render();
     return;
   }

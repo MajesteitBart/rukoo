@@ -11,6 +11,9 @@ members = [
   "crates/voice-meetings",
   "crates/voice-engine",
   "crates/voice-app",
+  "crates/voice-speakers",
+  "crates/voice-screen-files",
+  "crates/voice-screen",
   "crates/voice-sync",
   "crates/voice-s3-fake",
 ]

@@ -443,7 +443,7 @@ impl Meeting {
 pub struct TestScreen;
 
 impl ScreenFiles for TestScreen {
-    fn list(&self, meeting_dir: &Path, _stopped: bool) -> Vec<ScreenFile> {
+    fn list(&self, meeting_dir: &Path, _stopped: bool) -> std::io::Result<Vec<ScreenFile>> {
         let mut out = Vec::new();
         let names = |rel: &str| -> Vec<String> {
             let mut v: Vec<String> = fs::read_dir(meeting_dir.join(rel))
@@ -482,7 +482,7 @@ impl ScreenFiles for TestScreen {
                 closed: text.lines().last().is_some_and(|l| l.contains("\"stop\"")),
             });
         }
-        out
+        Ok(out)
     }
 }
 

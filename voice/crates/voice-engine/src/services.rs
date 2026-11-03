@@ -12,16 +12,19 @@ use std::time::Duration;
 use voice_core::local::{
     LocalEngine, LocalOptions, LocalStatus, Located, ModelError, ModelRegistry, ModelSpec, Progress,
 };
+use voice_core::providers::stream::{self, StreamingSpeech};
 use voice_core::providers::{Activity, ProviderConfig};
+use voice_core::speakers::{Diarizer, RuntimeInfo, SpeakerLabels, SpeakerOptions, Unavailable};
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_meetings::PipelineOptions;
 use voice_sync::protect::Protector;
-use voice_sync::{NoScreen, ScreenFiles, SyncTiming};
+use voice_sync::{ScreenFiles, SyncTiming};
 
 use crate::api::{EngineOptions, Locale, Theme};
-use crate::media::{NoScreenMedia, ScreenMedia};
+use crate::media::{RecordedScreen, ScreenMedia};
 use crate::meetings::controller::ControllerTiming;
+use crate::meetings::screen::{ScreenTiming, SCREEN_EXE};
 
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
@@ -74,7 +77,8 @@ pub trait Microphone: Send + Sync {
 pub trait Speech: Send + Sync {
     fn recognizer(&self, cfg: &ProviderConfig) -> Result<Arc<dyn SpeechToText>, ProviderError>;
     /// How a meeting with this provider is transcribed. Orukeet also times its words, which
-    /// lets passages split at pauses; any other recognizer gives one passage per window.
+    /// lets passages split at pauses; any other recognizer gives one passage per window. A
+    /// provider that streams transcribes through [`Speech::streaming`] instead.
     fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
         self.recognizer(cfg).map(PipelineOptions::new)
     }
@@ -100,6 +104,20 @@ pub trait Speech: Send + Sync {
         cancel: &AtomicBool,
     ) -> Result<Located, ModelError>;
     fn shutdown(&self);
+    /// Nemotron on this computer, for one meeting. Never a cloud provider.
+    fn diarizer(&self) -> Result<Arc<dyn Diarizer>, Unavailable> {
+        Err(Unavailable::Platform)
+    }
+    /// Whether Nemotron can run now, for Settings. Starts no process.
+    fn speaker_availability(&self) -> Result<RuntimeInfo, Unavailable> {
+        Err(Unavailable::Platform)
+    }
+    /// The realtime stream for a provider that streams.
+    fn streaming(&self, _cfg: &ProviderConfig) -> Result<Arc<dyn StreamingSpeech>, ProviderError> {
+        Err(ProviderError::provider(
+            "Streaming transcription isn't available.",
+        ))
+    }
 }
 
 pub trait Chime: Send + Sync {
@@ -143,9 +161,12 @@ pub struct Services {
     /// Ownkey's model folder, read only.
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
+    /// `rukoo-voice-screen`. A path that doesn't exist means this Voice records no screen.
+    pub screen_exe: PathBuf,
     /// `None`: PROTOCOL.md's path for this data folder (`RUKOO_VOICE_BRIDGE` still wins).
     pub discovery_path: Option<PathBuf>,
     pub controller: ControllerTiming,
+    pub screen_timing: ScreenTiming,
     /// What the screen recording left in a meeting folder, for bucket sync.
     pub screen_files: Arc<dyn ScreenFiles>,
     /// The same, for media links: frames and video clips.
@@ -162,11 +183,16 @@ impl Services {
         let ownkey_models = voice_core::paths::ownkey_models();
         let registry =
             ModelRegistry::new(&options.data_dir).with_ownkey_models(ownkey_models.clone());
-        let mut local = LocalOptions::new(registry);
+        let mut local = LocalOptions::new(registry.clone());
         let worker = options.exe_dir.join(voice_core::paths::LOCAL_EXE_NAME);
         if worker.is_file() {
             local.worker_exe = Some(worker);
         }
+        // The speaker label worker sits next to the app too; voice-core finds it, and its
+        // runtime in `nemo_speech\` next to the exe.
+        let mut speakers = SpeakerOptions::new(&options.exe_dir, registry);
+        speakers.dev_mode = options.dev_mode;
+        let screen = Arc::new(RecordedScreen::default());
         Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
@@ -174,6 +200,7 @@ impl Services {
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {
                 local: LocalEngine::new(local),
+                speakers: SpeakerLabels::new(speakers),
             }),
             chime: Arc::new(crate::platform::SystemChime),
             autostart: Arc::new(crate::autostart::RunValue::for_current_exe()),
@@ -182,12 +209,13 @@ impl Services {
             ownkey_config: voice_core::paths::ownkey_config(),
             ownkey_models,
             recorder_exe: options.exe_dir.join(RECORDER_EXE),
+            screen_exe: options.exe_dir.join(SCREEN_EXE),
             discovery_path: None,
             controller: ControllerTiming::default(),
-            // Stand-ins until screen recording (RUK-108) is on this branch: a meeting records no
-            // screen, so there are no frames or video to sync or serve.
-            screen_files: Arc::new(NoScreen),
-            screen_media: Arc::new(NoScreenMedia),
+            screen_timing: ScreenTiming::default(),
+            // The screen folder for both, sharing one frame index cache.
+            screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
+            screen_media: screen,
             protector: voice_sync::protect::system(),
             sync_timing: SyncTiming::default(),
         }
@@ -238,6 +266,8 @@ impl TextInput for SystemInput {
 
 struct SystemSpeech {
     local: LocalEngine,
+    /// Nemotron on this computer: whether it can run, and a diarizer per meeting.
+    speakers: SpeakerLabels,
 }
 
 impl Speech for SystemSpeech {
@@ -246,6 +276,16 @@ impl Speech for SystemSpeech {
     }
 
     fn meeting_recognizer(&self, cfg: &ProviderConfig) -> Result<PipelineOptions, ProviderError> {
+        if stream::streams(cfg) {
+            // A realtime model has no endpoint for recorded windows; the meeting's stream
+            // transcribes it, so no window ever goes out this way. A window only asks for this
+            // when a meeting that started with another provider keeps its way of transcribing
+            // (voice-meetings stores it at the first start) after Settings switched to a
+            // realtime model mid-meeting.
+            return Err(ProviderError::config(
+                "A realtime model only transcribes meetings that start with it. Choose the meeting provider this meeting started with to transcribe the rest of it.",
+            ));
+        }
         if cfg.provider == "orukeet" {
             // The same worker as dictation: one model in memory, one request at a time.
             return Ok(PipelineOptions::local(self.local.clone()));
@@ -284,6 +324,8 @@ impl Speech for SystemSpeech {
     }
 
     fn local_configure(&self, registry: ModelRegistry, idle: Duration) {
+        // Nemotron is looked for in the same places as Orukeet.
+        self.speakers.set_registry(registry.clone());
         self.local.set_registry(registry);
         self.local.set_idle_timeout(idle);
     }
@@ -304,6 +346,18 @@ impl Speech for SystemSpeech {
 
     fn shutdown(&self) {
         self.local.shutdown();
+    }
+
+    fn diarizer(&self) -> Result<Arc<dyn Diarizer>, Unavailable> {
+        self.speakers.diarizer()
+    }
+
+    fn speaker_availability(&self) -> Result<RuntimeInfo, Unavailable> {
+        self.speakers.availability()
+    }
+
+    fn streaming(&self, cfg: &ProviderConfig) -> Result<Arc<dyn StreamingSpeech>, ProviderError> {
+        voice_core::providers::streaming_speech(cfg).map(Arc::from)
     }
 }
 

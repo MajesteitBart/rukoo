@@ -6,13 +6,16 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Wea
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use voice_bridge::ControlError;
 use voice_core::config::{self as core_config, Config};
 use voice_core::local::ModelRegistry;
+use voice_core::providers::stream;
 use voice_core::{Hints, ProviderError, Recognized, SpeechToText};
 use voice_input::Key;
-use voice_protocol::{StartArgs, StartedBy};
+use voice_meetings::{Labels, StreamOptions};
+use voice_protocol::{ScreenMode, StartArgs, StartedBy};
+use voice_screen_files::policy::{Part, Reason};
 
 use crate::api::{
     ApiError, EngineApi, EngineOptions, Folder, Locale, Notification, PillSnapshot, StopReason,
@@ -20,16 +23,14 @@ use crate::api::{
 };
 use crate::dictation::Dictation;
 use crate::media::MediaService;
-use crate::meetings::controller::Change;
+use crate::meetings::controller::{Change, NOTIFY_MEETING};
+use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
-use crate::pill::{Looks, MeetingPhase, PillDriver};
+use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
-use crate::services::Services;
+use crate::services::{Services, Speech};
 use crate::settings::SettingsRuntime;
 use crate::sync::SyncRuntime;
-
-/// Whether a meeting records the screen now (contract 2.7).
-pub type ScreenRecording = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub(crate) struct Core {
     pub opts: EngineOptions,
@@ -47,12 +48,12 @@ pub(crate) struct Core {
     pub sync_rt: SyncRuntime,
     /// `media.open` and `media.read` for the bridge.
     pub media: Arc<MediaService>,
-    /// A stand-in that answers `false` until screen recording (RUK-108) is on this branch.
-    pub screen_recording: ScreenRecording,
     shutting_down: AtomicBool,
     last_chime: Mutex<Option<Instant>>,
     /// What Settings > Rukoo last showed, to tell when it changes.
     rukoo: Mutex<Value>,
+    /// What Settings > Speaker labels last showed about running meetings.
+    labels: Mutex<Value>,
     pub settings_seq: AtomicU64,
     /// Settings states go out one at a time, each built after its `seq` was given.
     emitting: Mutex<()>,
@@ -67,7 +68,6 @@ pub(crate) struct Parts {
     pub settings: SettingsRuntime,
     pub sync: Option<Arc<voice_sync::BucketSync>>,
     pub media: Arc<MediaService>,
-    pub screen_recording: ScreenRecording,
 }
 
 impl Core {
@@ -78,7 +78,6 @@ impl Core {
             settings,
             sync,
             media,
-            screen_recording,
         } = parts;
         let looks = looks(&opts, &svc, &config);
         Core {
@@ -91,13 +90,13 @@ impl Core {
             sync,
             sync_rt: SyncRuntime::default(),
             media,
-            screen_recording,
             opts,
             svc,
             sink,
             shutting_down: AtomicBool::new(false),
             last_chime: Mutex::new(None),
             rukoo: Mutex::new(Value::Null),
+            labels: Mutex::new(Value::Null),
             settings_seq: AtomicU64::new(1),
             emitting: Mutex::new(()),
             this: OnceLock::new(),
@@ -209,6 +208,13 @@ impl Core {
         self.meetings
             .library()
             .set_retention(new.meetings_retention);
+        // So does the screen; Rukoo learns the new default from the next status.
+        if old.meetings_screen != new.meetings_screen {
+            self.meetings
+                .controller
+                .set_screen(screen_mode(new), self.meetings.screen.available());
+            self.meetings.publish_status();
+        }
         if old.extra.get(crate::sync::SYNC_KEY) != new.extra.get(crate::sync::SYNC_KEY) {
             crate::sync::configure_sync(self, new);
             // Held media may go once the user switches sync off. A changed field or secret only
@@ -273,7 +279,8 @@ impl Core {
     }
 
     /// How meetings are transcribed with the current Settings: the meeting provider (Orukeet
-    /// with word timings), the dictionary as hints, and decision 10's consent gate.
+    /// with word timings, or a realtime model's stream), the dictionary as hints, who labels
+    /// the speakers on the call, and decision 10's consent gate.
     pub fn pipeline_options(self: &Arc<Self>) -> PipelineOptions {
         let cfg = self.config();
         let audio = cfg.meeting_audio();
@@ -284,6 +291,22 @@ impl Core {
             Err(error) => PipelineOptions::new(Arc::new(Unavailable(error))),
         };
         opts.hints = cfg.meeting_hints();
+        // A development copy logs how long the speaker worker's calls take (spec 7).
+        opts.speakers.log_calls = self.opts.dev_mode;
+        let labels = meeting_labels(&cfg, self.svc.speech.as_ref());
+        opts.labels = labels.labels;
+        opts.live_speakers = labels.live_speakers;
+        match labels.stream {
+            Some(Ok(stream)) => opts.stream = Some(stream),
+            // The stream can't be built (no key): the windows fail with that reason, the way a
+            // recognizer that can't be built does, and never fall back to another provider. The
+            // meeting keeps its label mode open, so a key added later still streams it.
+            Some(Err(error)) => {
+                opts.stt = Arc::new(Unavailable(error));
+                opts.timed = None;
+            }
+            None => {}
+        }
         let weak = Arc::downgrade(self);
         opts.transcription_allowed = Arc::new(move || {
             let Some(core) = weak.upgrade() else {
@@ -311,6 +334,10 @@ impl Core {
             Change::Started { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
+                // The recorder runs; the screen process follows on its own thread, after the
+                // start handshake for a meeting Voice started.
+                self.meetings.screen.begin(&id);
+                self.pill_screen(&id);
                 self.follow(&id);
                 self.nudge_sync();
                 self.meeting_changed();
@@ -322,17 +349,21 @@ impl Core {
                     MeetingPhase::Recording
                 };
                 self.pill.update(|p, now| p.meeting(&id, phase, at_ms, now));
+                self.meetings.screen.reattach(&id);
+                self.pill_screen(&id);
                 self.follow(&id);
                 self.meeting_changed();
             }
             Change::Paused { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Paused, at_ms, now));
+                self.screen_paused(&id, true);
                 self.meeting_changed();
             }
             Change::Resumed { id, at_ms } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Recording, at_ms, now));
+                self.screen_paused(&id, false);
                 self.meeting_changed();
             }
             Change::Clock { at_ms, mic_ok, .. } => {
@@ -346,12 +377,21 @@ impl Core {
             Change::Ended { id, at_ms, .. } => {
                 self.pill
                     .update(|p, now| p.meeting(&id, MeetingPhase::Processing, at_ms, now));
+                // The screen process stops at the timeline's stop; waiting for it takes up to
+                // 15 s, so it happens off this thread.
+                let screen = Arc::clone(&self.meetings.screen);
+                let ended = id.clone();
+                let _ = thread::Builder::new()
+                    .name("screen-end".into())
+                    .spawn(move || screen.end(&ended));
                 // The last segments and the timeline closed.
                 self.nudge_sync();
                 self.meeting_changed();
             }
             Change::Finalized { id } => {
                 // Cut off while Voice wasn't running: what was recorded still gets transcribed.
+                // `ScreenSupervisor::recover`, right after the controller's, gives its screen
+                // journal the `stop` it lacks.
                 self.follow(&id);
                 self.notify(
                     crate::meetings::controller::NOTIFY_MEETING,
@@ -361,6 +401,93 @@ impl Core {
             }
             Change::Notify { title_key, body } => self.notify(title_key, body),
         }
+    }
+
+    /// Forwards a pause or resume to the screen process, off the event thread.
+    fn screen_paused(&self, id: &str, paused: bool) {
+        let screen = Arc::clone(&self.meetings.screen);
+        let id = id.to_string();
+        let _ = thread::Builder::new()
+            .name("screen-pause".into())
+            .spawn(move || screen.pause(&id, paused));
+    }
+
+    /// What the pill shows of the meeting's screen recording.
+    fn pill_screen(&self, id: &str) {
+        let (mode, switch) = self.meetings.screen.pill_state(id);
+        let current = self.meetings.controller.current().map(|r| r.id);
+        if current.as_deref() == Some(id) {
+            self.pill
+                .update(|p, _| p.meeting_screen(mode.as_str(), switch));
+        }
+    }
+
+    /// What the screen supervisor reports: drops and give-ups become pill notices and tray
+    /// notifications, a move shows the monitor's name.
+    pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
+        match change {
+            ScreenChange::Dropped { id, what, reason } => {
+                self.screen_notice(&id, Some(drop_notice(what, reason)), Map::new(), DROP_HOLD);
+                if let Some(body) = drop_text(what, reason) {
+                    self.notify(NOTIFY_MEETING, body.to_string());
+                }
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
+            ScreenChange::GaveUp { id } => {
+                self.screen_notice(&id, Some(notices::SCREEN_FAILED), Map::new(), DROP_HOLD);
+                self.notify(
+                    NOTIFY_MEETING,
+                    "Voice's screen recorder stopped 5 times in a row, so the screen isn't recorded any more. The audio goes on.".to_string(),
+                );
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
+            ScreenChange::Moved { id, name } => {
+                let mut args = Map::new();
+                args.insert("name".into(), Value::String(name));
+                self.screen_notice(&id, Some(notices::SCREEN_MOVED), args, MOVED_HOLD);
+            }
+            ScreenChange::Monitors { .. } => {
+                // The probe answered or a monitor came or went: Settings shows it, a computer
+                // that can't capture starts meetings with `off`, and the pill's screen button
+                // shows when there is another monitor.
+                let cfg = self.config();
+                self.meetings
+                    .controller
+                    .set_screen(screen_mode(&cfg), self.meetings.screen.available());
+                if let Some(id) = self.meetings.controller.current().map(|r| r.id) {
+                    self.pill_screen(&id);
+                }
+                self.meetings.publish_status();
+                self.settings_changed();
+            }
+        }
+    }
+
+    /// A pill notice about the meeting that records now.
+    fn screen_notice(&self, id: &str, key: Option<&str>, args: Map<String, Value>, hold: Duration) {
+        let Some(key) = key else {
+            return;
+        };
+        if self.meetings.controller.current().map(|r| r.id).as_deref() != Some(id) {
+            return;
+        }
+        self.pill
+            .update(|p, now| p.meeting_notice(key, args, hold, now));
+    }
+
+    /// The pill's screen button: the screen recording moves to the next monitor.
+    pub fn screen_clicked(self: &Arc<Self>) {
+        // Talks to the screen process; the click comes from the app's window thread.
+        let screen = Arc::clone(&self.meetings.screen);
+        let _ = thread::Builder::new()
+            .name("screen-next".into())
+            .spawn(move || {
+                if let Err(e) = screen.next_monitor() {
+                    log::info!("screen: the pill's switch did nothing: {e}");
+                }
+            });
     }
 
     /// Tells Settings and the pill when Rukoo connects, leaves or is refused.
@@ -393,9 +520,31 @@ impl Core {
         changed
     }
 
-    /// Removes meeting audio whose retention ran out. Each meeting keeps the Settings > Meetings >
-    /// Keep audio it started with; the current choice counts only for meetings from before Voice
-    /// stored it.
+    /// Tells Settings when speaker labels start, stop or fail in a meeting, or find another voice.
+    pub fn labels_changed(&self) {
+        let key = Value::Array(
+            self.meetings
+                .labels()
+                .into_iter()
+                .map(|(id, s)| {
+                    serde_json::json!([id, s.mode, s.state, s.reason, s.speakers, s.worker_pid])
+                })
+                .collect(),
+        );
+        let changed = {
+            let mut last = lock(&self.labels);
+            let changed = *last != key;
+            *last = key;
+            changed
+        };
+        if changed {
+            self.settings_changed();
+        }
+    }
+
+    /// Removes meeting audio, with the screen media, whose retention ran out, and clips an hour
+    /// after their last use. Each meeting keeps the Settings > Meetings > Keep audio it started
+    /// with; the current choice counts only for meetings from before Voice stored it.
     ///
     /// While bucket sync is on, media that hasn't reached the bucket stays, and with the switch on
     /// but sync's queue unreadable, all of it stays (spec 2.10). Below 10 GiB free that gives way:
@@ -407,9 +556,15 @@ impl Core {
         let swept = self.meetings.sweep(cfg.meetings_retention, |id| {
             crate::sync::holds(sync, switch_on, id)
         });
+        // Clips are copies made on request, kept an hour after their last use.
+        let clips = voice_screen_files::media::sweep_clips(
+            self.meetings.library().root(),
+            now_ms(),
+            CLIP_LIFETIME_MS,
+        );
         if !swept.removed.is_empty() {
             log::info!(
-                "retention: removed the audio of {}",
+                "retention: removed the media of {}",
                 swept.removed.join(", ")
             );
         }
@@ -421,7 +576,7 @@ impl Core {
         }
         let released = crate::sync::release_below_floor(self, &swept.held);
         crate::sync::note_held(self, !swept.held.is_empty());
-        if !swept.removed.is_empty() || released {
+        if !swept.removed.is_empty() || released || clips > 0 {
             self.settings.forget_storage();
             self.settings_changed();
         }
@@ -453,6 +608,15 @@ impl Core {
         if let Some(sync) = &self.sync {
             sync.nudge();
         }
+    }
+
+    /// Whether a meeting records the screen now (frames or video): the key dialogs refuse to
+    /// open then, and an open one closes, because the screen recording could capture the code.
+    pub fn screen_recording(&self) -> bool {
+        self.meetings
+            .controller
+            .current()
+            .is_some_and(|r| self.meetings.screen.mode_of(&r.id) != ScreenMode::Off)
     }
 
     fn meeting_changed(&self) {
@@ -496,6 +660,49 @@ impl Core {
     }
 }
 
+/// How long a clip `clip.get` cut stays after its last use.
+const CLIP_LIFETIME_MS: u64 = 3_600_000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Settings > Meetings > Screen as the protocol names it.
+pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
+    match cfg.meetings_screen {
+        core_config::ScreenMode::Off => ScreenMode::Off,
+        core_config::ScreenMode::Frames => ScreenMode::Frames,
+        core_config::ScreenMode::Video => ScreenMode::Video,
+    }
+}
+
+/// The pill notice for a part of the screen recording that stopped.
+fn drop_notice(what: Part, reason: Reason) -> &'static str {
+    match (what, reason) {
+        (Part::Video, Reason::Disk) => notices::VIDEO_DROPPED_DISK,
+        (Part::Video, Reason::Encoder) => notices::VIDEO_DROPPED_ENCODER,
+        (Part::Video, Reason::Device) => notices::VIDEO_DROPPED_DEVICE,
+        (Part::Frames, Reason::Disk) => notices::FRAMES_DROPPED_DISK,
+        (Part::Frames, _) => notices::SCREEN_FAILED,
+    }
+}
+
+/// The tray notification for a part of the screen recording that stopped.
+fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
+    Some(match (what, reason) {
+        (Part::Video, Reason::Disk) => "Voice stopped the screen video to keep recording audio: the disk is almost full. Frames go on.",
+        (Part::Video, Reason::Encoder) => "Voice records the screen as frames only: no video encoder on this computer worked.",
+        // The frames go on with a device without video support. When no device came back at
+        // all, the frames stop right after and their notification says so.
+        (Part::Video, Reason::Device) => "Voice stopped the screen video: the graphics device didn't come back with video support.",
+        (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
+        (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
+        (Part::Frames, Reason::Encoder) => return None,
+    })
+}
+
 /// How long quitting waits for the local model to stop. Longer than its own 2 s quit grace, so a
 /// worker that is merely idle always gets to quit cleanly.
 const SPEECH_SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
@@ -509,9 +716,62 @@ const RESWEEP_AFTER: Duration = Duration::from_secs(5);
 /// How often prepared media is swept and bucket sync's notifications are checked.
 const MINUTE: Duration = Duration::from_secs(60);
 
+/// How far behind the audio Mistral's realtime model may answer, in ms: its default.
+pub(crate) const STREAM_DELAY_MS: u32 = 480;
+
+/// Who labels a meeting's call speakers, and the realtime stream when the provider streams.
+pub(crate) struct MeetingLabels {
+    pub labels: Labels,
+    /// The Settings switch, which only a meeting that chooses its label mode now reads.
+    pub live_speakers: bool,
+    /// `Some` only when the meeting provider streams: the stream, or why it can't be built.
+    pub stream: Option<Result<StreamOptions, ProviderError>>,
+}
+
+/// The label choice for a meeting started now. The meeting provider alone decides whether
+/// Mistral's stream transcribes and labels it; otherwise Nemotron labels on this computer when
+/// the switch is on and it can run, and else the whole call is one speaker. Neither engine
+/// ever stands in for the other. Nemotron's diarizer comes with the switch off too: a meeting
+/// that started with labels keeps them when its pipeline starts again (Settings: "Applies to
+/// meetings you start from now on"), and the pipeline gives a new meeting none.
+pub(crate) fn meeting_labels(cfg: &Config, speech: &dyn Speech) -> MeetingLabels {
+    let audio = cfg.meeting_audio();
+    if stream::streams(&audio) {
+        let hints = cfg.meeting_hints();
+        let stream = speech.streaming(&audio).map(|speech| StreamOptions {
+            speech,
+            diarize: cfg.meetings_live_speakers,
+            delay_ms: STREAM_DELAY_MS,
+            language: hints.language,
+            context_bias: hints.vocabulary,
+        });
+        return MeetingLabels {
+            // The stream labels the call, not Nemotron. Without a stream, the pipeline waits
+            // with its choice until there is one.
+            labels: Labels::Off {
+                reason: voice_meetings::STREAM_REASON.into(),
+            },
+            live_speakers: cfg.meetings_live_speakers,
+            stream: Some(stream),
+        };
+    }
+    let labels = match speech.diarizer() {
+        Ok(diarizer) => Labels::Local { diarizer },
+        Err(unavailable) => Labels::Off {
+            reason: unavailable.code().into(),
+        },
+    };
+    MeetingLabels {
+        labels,
+        live_speakers: cfg.meetings_live_speakers,
+        stream: None,
+    }
+}
+
 /// The engine's slow loop. Shows a meeting whose transcription failed and lets a finished one
 /// go (`meeting.state` `failed` and `done` come from the pipeline long after the recorder
-/// stopped), keeps Settings > Rukoo current, runs the retention sweep, and lets prepared media go.
+/// stopped), keeps Settings > Rukoo and Speaker labels current, runs the retention sweep, and lets
+/// prepared media go.
 pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
     let mut swept = Instant::now();
     let mut minute = Instant::now();
@@ -524,6 +784,7 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
             return;
         }
         core.rukoo_changed();
+        core.labels_changed();
         if swept.elapsed() >= SWEEP_EVERY
             || (swept.elapsed() >= RESWEEP_AFTER && core.sync_rt.take_resweep())
         {
@@ -617,6 +878,10 @@ impl EngineApi for EngineImpl {
 
     fn pill_stop_clicked(&self) {
         self.0.stop_clicked();
+    }
+
+    fn pill_screen_clicked(&self) {
+        self.0.screen_clicked();
     }
 
     fn settings_state(&self) -> Value {
@@ -769,5 +1034,234 @@ struct Unavailable(ProviderError);
 impl SpeechToText for Unavailable {
     fn transcribe(&self, _pcm: &[i16], _hints: &Hints) -> Result<Recognized, ProviderError> {
         Err(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// Every drop the screen process can journal reaches the pill, and every one but a frames
+    /// drop for the encoder, which never happens, the tray.
+    #[test]
+    fn every_drop_has_a_notice_and_a_notification() {
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Disk),
+            "pill.videoDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Encoder),
+            "pill.videoDropped.encoder"
+        );
+        assert_eq!(
+            drop_notice(Part::Video, Reason::Device),
+            "pill.videoDropped.device"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Disk),
+            "pill.framesDropped.disk"
+        );
+        assert_eq!(
+            drop_notice(Part::Frames, Reason::Device),
+            "pill.screenFailed"
+        );
+        assert!(drop_text(Part::Video, Reason::Encoder)
+            .unwrap()
+            .contains("frames only"));
+        assert!(drop_text(Part::Video, Reason::Device)
+            .unwrap()
+            .contains("video support"));
+        assert!(drop_text(Part::Video, Reason::Disk)
+            .unwrap()
+            .contains("Frames go on"));
+        assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        assert!(drop_text(Part::Frames, Reason::Disk).is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use voice_core::local::{
+        LocalStatus, Located, ModelError, ModelErrorKind, ModelSpec, Progress,
+    };
+    use voice_core::providers::stream::{SpeechStream, StreamSession, StreamingSpeech};
+    use voice_core::providers::{Activity, ProviderConfig};
+    use voice_core::speakers::{
+        DiarError, DiarErrorKind, DiarStream, Diarizer, RuntimeInfo, Unavailable as NotAvailable,
+    };
+    use voice_core::Rewriter;
+
+    use super::*;
+
+    struct NoDiarizer;
+
+    impl Diarizer for NoDiarizer {
+        fn open(&self) -> Result<Box<dyn DiarStream>, DiarError> {
+            Err(DiarError::new(DiarErrorKind::Runtime, "not in this test"))
+        }
+    }
+
+    struct NoStream;
+
+    impl StreamingSpeech for NoStream {
+        fn connect(&self, _: &StreamSession) -> Result<Box<dyn SpeechStream>, ProviderError> {
+            Err(ProviderError::provider("not in this test"))
+        }
+    }
+
+    /// Speech that only answers the label questions, and counts them.
+    #[derive(Default)]
+    struct Labelling {
+        refuse: Option<NotAvailable>,
+        diarizers: AtomicUsize,
+        streams: AtomicUsize,
+    }
+
+    impl Speech for Labelling {
+        fn recognizer(&self, _: &ProviderConfig) -> Result<Arc<dyn SpeechToText>, ProviderError> {
+            Err(ProviderError::config("not in this test"))
+        }
+        fn rewriter(&self, _: &ProviderConfig) -> Result<Arc<dyn Rewriter>, ProviderError> {
+            Err(ProviderError::config("not in this test"))
+        }
+        fn list_models(
+            &self,
+            _: Activity,
+            _: &ProviderConfig,
+        ) -> Result<Vec<String>, ProviderError> {
+            Ok(Vec::new())
+        }
+        fn local_preload(&self) {}
+        fn local_status(&self) -> LocalStatus {
+            LocalStatus::default()
+        }
+        fn local_load(&self, _: ModelRegistry) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn local_configure(&self, _: ModelRegistry, _: Duration) {}
+        fn local_unload(&self) {}
+        fn download(
+            &self,
+            _: &ModelRegistry,
+            _: &ModelSpec,
+            _: &mut dyn FnMut(Progress),
+            _: &AtomicBool,
+        ) -> Result<Located, ModelError> {
+            Err(ModelError::new(
+                ModelErrorKind::Cancelled,
+                "not in this test",
+            ))
+        }
+        fn shutdown(&self) {}
+        fn diarizer(&self) -> Result<Arc<dyn Diarizer>, NotAvailable> {
+            self.diarizers.fetch_add(1, Ordering::SeqCst);
+            match &self.refuse {
+                Some(why) => Err(why.clone()),
+                None => Ok(Arc::new(NoDiarizer)),
+            }
+        }
+        fn speaker_availability(&self) -> Result<RuntimeInfo, NotAvailable> {
+            Err(NotAvailable::Runtime)
+        }
+        fn streaming(&self, _: &ProviderConfig) -> Result<Arc<dyn StreamingSpeech>, ProviderError> {
+            self.streams.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(NoStream))
+        }
+    }
+
+    fn off_reason(labels: &Labels) -> Option<&str> {
+        match labels {
+            Labels::Off { reason } => Some(reason),
+            Labels::Local { .. } => None,
+        }
+    }
+
+    fn realtime(cfg: &mut Config) {
+        cfg.switch_meeting_provider("mistral");
+        cfg.meetings_audio_api_key = "sk-test".into();
+        cfg.meetings_audio_model = "voxtral-mini-transcribe-realtime-3".into();
+    }
+
+    #[test]
+    fn nemotron_labels_when_the_switch_is_on_and_it_can_run() {
+        let speech = Labelling::default();
+        let cfg = Config::defaults(false);
+        assert!(cfg.meetings_live_speakers, "on by default");
+        let chosen = meeting_labels(&cfg, &speech);
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_switch_off_keeps_the_diarizer_for_meetings_that_label() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        assert!(meeting_labels(&cfg, &speech).live_speakers);
+        cfg.meetings_live_speakers = false;
+        let chosen = meeting_labels(&cfg, &speech);
+        // A meeting that started with labels gets its diarizer again after a restart; the
+        // pipeline gives a new meeting none, by the switch.
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(!chosen.live_speakers);
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nemotron_that_can_t_run_leaves_the_call_one_speaker_and_never_streams() {
+        let speech = Labelling {
+            refuse: Some(NotAvailable::Cpu {
+                missing: vec!["bmi2".into()],
+            }),
+            ..Labelling::default()
+        };
+        // A Mistral key for dictation changes nothing: only the meeting provider streams.
+        let mut cfg = Config::defaults(false);
+        cfg.switch_audio_provider("mistral");
+        cfg.audio_api_key = "sk-test".into();
+        let chosen = meeting_labels(&cfg, &speech);
+        assert_eq!(off_reason(&chosen.labels), Some("cpu"));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_realtime_meeting_provider_streams_and_labels_without_nemotron() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        realtime(&mut cfg);
+        cfg.language = "nl".into();
+        cfg.vocabulary = vec!["Rukoo".into()];
+        let chosen = meeting_labels(&cfg, &speech);
+        assert_eq!(off_reason(&chosen.labels), Some("stream"));
+        let stream = chosen
+            .stream
+            .expect("streams")
+            .expect("the stream is built");
+        assert!(stream.diarize);
+        assert_eq!(stream.delay_ms, 480);
+        assert_eq!(stream.language.as_deref(), Some("nl"));
+        assert_eq!(stream.context_bias, ["Rukoo"]);
+        assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+        // With the switch off the stream still transcribes, without labels.
+        cfg.meetings_live_speakers = false;
+        let stream = meeting_labels(&cfg, &speech).stream.unwrap().unwrap();
+        assert!(!stream.diarize);
+        assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_batch_mistral_model_is_labelled_by_nemotron() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        realtime(&mut cfg);
+        cfg.meetings_audio_model = "voxtral-mini-latest".into();
+        let chosen = meeting_labels(&cfg, &speech);
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
     }
 }

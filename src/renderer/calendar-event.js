@@ -276,7 +276,11 @@ function popHtml(e, booking) {
     if (booking.customLength) rows.push(cardRow('clock', esc(t('calendar.booking.customLength'))));
   }
   if (e.seriesId) rows.push(cardRow('repeat', esc(t('calendar.event.series'))));
-  const record = canRecord(e) ? `<button class="link-btn" data-pop="record">${esc(t('calendar.event.record'))}</button>` : '';
+  // Record uses Voice's default for the screen; the arrow beside it chooses first (meeting.js screenMenu).
+  const screenLabel = esc(t('meeting.screen.menu'));
+  const record = canRecord(e)
+    ? `<span class="cal-record"><button class="link-btn" data-pop="record">${esc(t('calendar.event.record'))}</button><button class="link-btn cal-record-more" data-pop="record-menu" aria-haspopup="menu" aria-label="${screenLabel}" title="${screenLabel}">${icons.chevronDown}</button></span>`
+    : '';
   if (e.meeting) rows.push(cardRow('video', `<div class="cal-pop-links"><button class="link-btn" data-href="${esc(e.meeting)}">${esc(t('calendar.event.join'))}</button>${record}</div>`));
   else if (record) rows.push(cardRow('mic', record));
   if (e.location) rows.push(cardRow('pin', /^https?:\/\//.test(e.location) ? linkify(e.location) : `<span class="sel">${esc(e.location)}</span>`));
@@ -406,6 +410,16 @@ function popClick(ev) {
   if (btn.dataset.pop === 'record') {
     closePop();
     return ctx.recordMeeting({ title: e.title || '', eventId: e.id });
+  }
+  // The card stays open while the menu does; a pick closes it and records.
+  if (btn.dataset.pop === 'record-menu') {
+    const opts = { title: e.title || '', eventId: e.id };
+    return ctx.recordMeetingMenu(btn, {
+      onPick: (screen) => {
+        closePop();
+        ctx.recordMeeting({ ...opts, screen });
+      }
+    });
   }
   if (btn.dataset.pop === 'edit') return editEvent(e);
   if (btn.dataset.pop === 'duplicate') return duplicateEvent(e);

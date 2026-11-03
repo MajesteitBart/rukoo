@@ -1,8 +1,9 @@
-//! A kill-on-close job object for the local speech worker on Windows.
+//! A kill-on-close job object for Voice's workers on Windows: the local speech worker and the
+//! speaker label worker.
 //!
 //! When Voice exits or crashes, Windows closes the job handle and ends the worker with it, so a
-//! 1 GB model never lingers in a process nobody talks to. Only the worker goes in here: the
-//! meeting recorder must outlive the app.
+//! 1 GB model never lingers in a process nobody talks to. Only workers go in here: the meeting
+//! recorder must outlive the app.
 
 use std::process::Child;
 

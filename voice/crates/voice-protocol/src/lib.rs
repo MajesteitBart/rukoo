@@ -53,6 +53,18 @@ pub const MAX_LABEL_CHARS: usize = 200;
 pub const MAX_CONTEXT_BYTES: usize = 16 * 1024;
 /// The longest command id and `client` name, in characters.
 pub const MAX_ID_CHARS: usize = 64;
+/// The most characters of screen text a `frame` carries.
+pub const MAX_FRAME_TEXT_CHARS: usize = 8_000;
+/// The longest stretch `clip.get` cuts, in ms from `start`. RUK-110's video media links share it.
+pub const MAX_CLIP_MS: u64 = 300_000;
+/// How long Voice waits after `meeting.starting` for every connected Rukoo to send
+/// `meeting.protected` before it captures the screen.
+pub const STARTING_WAIT: Duration = Duration::from_millis(500);
+/// Voice answers `clip.get` within this time of reading the command, with the clips it cut by then.
+pub const CLIP_WAIT: Duration = Duration::from_secs(4);
+/// The most bytes of serialized frames in a `meeting.get` snapshot that keep their `text`, newest
+/// first; older frames come with `"text": ""` and `"textOmitted": true`.
+pub const SNAPSHOT_FRAME_TEXT: usize = 4 << 20;
 /// The longest range `media.open` accepts, `end - start` in ms.
 pub const MAX_MEDIA_SPAN_MS: u64 = 3_600_000;
 /// The most bytes one `media.read` returns.

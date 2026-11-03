@@ -38,6 +38,24 @@ test('a command without args gets {} and a message from the wrong side is refuse
   assert.deepEqual(validate('voice', 'not an object'), { ok: false, reason: 'type' });
 });
 
+test('the screen commands and screenDefault have the limits Voice checks', () => {
+  const meeting = 'm-20261030-171203-4f2a';
+  const command = (name, args) => validate('rukoo', { type: 'command', id: 'c-1', command: name, args });
+  assert.equal(command('clip.get', { meeting, start: 5, end: 5 }).ok, true);
+  assert.deepEqual(command('clip.get', { meeting, start: 6, end: 5 }), { ok: false, reason: 'end' });
+  // A monitor id counts characters, as Voice does: 64 emoji fit, 65 letters don't.
+  assert.equal(command('screen.select', { meeting, monitor: '😀'.repeat(64) }).ok, true);
+  assert.deepEqual(command('screen.select', { meeting, monitor: 'm'.repeat(65) }), { ok: false, reason: 'monitor' });
+  assert.deepEqual(command('meeting.protected', { meeting: 'meeting-1' }), { ok: false, reason: 'meeting' });
+
+  const status = (data) => validate('voice', { type: 'event', seq: 5, event: 'status', createdAt: 0, data });
+  // An older Voice leaves screenDefault out; null counts as left out.
+  assert.equal(status({ recording: null, dictating: false }).ok, true);
+  assert.equal(status({ recording: null, dictating: false, screenDefault: null }).ok, true);
+  const starting = { type: 'event', seq: 5, event: 'meeting.starting', meeting, createdAt: 0, data: {} };
+  assert.deepEqual(validate('voice', starting), { ok: false, reason: 'screen' });
+});
+
 test('media.open takes a range of an hour at most and checks its fields in Voice\'s order', () => {
   assert.deepEqual(MEDIA_KINDS, ['audio', 'frame', 'video']);
   assert.equal(MEDIA_SPAN_MAX, 3600000);

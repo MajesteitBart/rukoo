@@ -15,6 +15,10 @@ const { EventEmitter } = require('events');
 const { PROTOCOL, MIN_PROTOCOL, VOICE_MESSAGE_MAX, RUKOO_MESSAGE_MAX, DISCOVERY_MAX, validate, validateDiscovery, negotiate } = require('./protocol');
 
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+// The longest wait while the discovery file names a Voice that runs. A meeting Voice starts itself waits up to 5 s
+// for a Rukoo it saw before to come back, so Rukoo can hide its windows before the first frame (voice/PROTOCOL.md
+// "meeting.starting").
+const LIVE_RETRY_MS = 2000;
 const COMMAND_TIMEOUT_MS = 10000;
 const WELCOME_TIMEOUT_MS = 10000;
 // Voice pings every 20 s, but a browser-style WebSocket can't see pings, so Rukoo asks for the status now and then:
@@ -57,6 +61,7 @@ class VoiceBridge extends EventEmitter {
     cursor = () => ({ instance: null, after: 0 }),
     WebSocket = globalThis.WebSocket,
     backoffMs = BACKOFF_MS,
+    liveRetryMs = LIVE_RETRY_MS,
     commandTimeoutMs = COMMAND_TIMEOUT_MS,
     welcomeTimeoutMs = WELCOME_TIMEOUT_MS,
     heartbeatMs = HEARTBEAT_MS,
@@ -71,6 +76,7 @@ class VoiceBridge extends EventEmitter {
     this.cursor = cursor;
     this.WebSocket = WebSocket;
     this.backoffMs = backoffMs;
+    this.liveRetryMs = liveRetryMs;
     this.commandTimeoutMs = commandTimeoutMs;
     this.welcomeTimeoutMs = welcomeTimeoutMs;
     this.heartbeatMs = heartbeatMs;
@@ -86,6 +92,7 @@ class VoiceBridge extends EventEmitter {
     this.parked = null;
     this.attempt = 0;
     this.retryTimer = null;
+    this.retryWait = null;
     this.pollTimer = null;
     this.heartbeatTimer = null;
     this.welcomeTimer = null;
@@ -306,7 +313,13 @@ class VoiceBridge extends EventEmitter {
 
   retry() {
     if (this.closed) return;
-    const wait = this.backoffMs[Math.min(this.attempt, this.backoffMs.length - 1)];
+    let wait = this.backoffMs[Math.min(this.attempt, this.backoffMs.length - 1)];
+    // Voice runs, so it is starting its side or got stuck for a moment, and it may be waiting for Rukoo to hide its
+    // windows. A Voice that turned Rukoo down (a wrong token, too many clients) keeps the backoff: asking sooner won't
+    // change its answer.
+    if (wait > this.liveRetryMs && !this.lastError && this.voiceRuns()) wait = this.liveRetryMs;
+    // For the tests: how long the next attempt waits.
+    this.retryWait = wait;
     this.attempt += 1;
     if (this.current.status !== 'connecting') this.setState({ ...this.current, status: 'connecting' });
     clearTimeout(this.retryTimer);
@@ -322,6 +335,12 @@ class VoiceBridge extends EventEmitter {
       this.connect(d);
     }, wait);
     if (this.retryTimer.unref) this.retryTimer.unref();
+  }
+
+  // Whether the discovery file names a process that runs. pid 0 names none.
+  voiceRuns() {
+    const d = this.readDiscovery();
+    return d.status === 'ok' && d.discovery.pid > 0 && this.alive(d.discovery.pid);
   }
 
   startHeartbeat() {
@@ -426,4 +445,4 @@ class VoiceBridge extends EventEmitter {
   }
 }
 
-module.exports = { VoiceBridge, VoiceError, pidAlive, BACKOFF_MS };
+module.exports = { VoiceBridge, VoiceError, pidAlive, BACKOFF_MS, LIVE_RETRY_MS };

@@ -38,6 +38,7 @@ const RUKOO_TOOLS = {
   search_meetings: 'search',
   read_meeting_notes: 'meeting',
   get_meeting_frame: 'meeting',
+  get_meeting_clip: 'meeting',
   get_meeting_media_link: 'meeting'
 };
 const CHOICES = new Set(['allow', 'deny', 'once', 'session', 'always', 'approve', 'decline', 'accept', 'acceptForSession', 'cancel']);

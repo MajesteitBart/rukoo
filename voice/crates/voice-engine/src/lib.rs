@@ -22,6 +22,7 @@ use voice_bridge::EventLog;
 use voice_core::config::{Config, ConfigError};
 use voice_protocol::paths::{bridge_path, Platform};
 use voice_protocol::Side;
+use voice_screen_files::policy::reserve_ok;
 
 pub use api::{
     Activity, ApiError, Edge, Engine, EngineApi, EngineOptions, Folder, Locale, MeetingPill,
@@ -34,6 +35,7 @@ use crate::dictation::Dictation;
 use crate::engine::{Core, EngineImpl, Parts};
 use crate::media::MediaService;
 use crate::meetings::controller::{self, Controller, ControllerOptions};
+use crate::meetings::screen::{ScreenOptions, ScreenSupervisor};
 use crate::meetings::Meetings;
 use crate::settings::SettingsRuntime;
 
@@ -54,8 +56,8 @@ pub const NOTIFY_TITLES: &[&str] = &[
 ];
 
 /// Starts Voice: loads Settings (running the first-run Ownkey import when it applies), starts the
-/// hotkeys, reattaches to a recorder that is still recording, finishes meetings that were cut off,
-/// and opens the bridge for Rukoo. Output goes to `sink` from here on.
+/// hotkeys, reattaches to a recorder and a screen process that are still recording, finishes
+/// meetings that were cut off, and opens the bridge for Rukoo. Output goes to `sink` from here on.
 pub fn start(options: EngineOptions, sink: Arc<dyn UiSink>) -> Result<Engine, ApiError> {
     let services = Services::system(&options);
     start_with(options, sink, services)
@@ -177,8 +179,39 @@ pub fn start_with(
             format!("Voice couldn't open its meetings folder: {e}"),
         )
     })?;
-    // Before the bridge opens, so a meeting Rukoo starts at once keeps it too.
+    // The screen supervisor reports to the engine the same way.
+    let screen = ScreenSupervisor::new(
+        ScreenOptions {
+            data_dir: data_dir.clone(),
+            exe: services.screen_exe.clone(),
+            // Development copies only, like RUKOO_VOICE_TEST_SOURCES.
+            test: options.test_screen.clone().filter(|_| dev_mode),
+            test_monitor: options.test_monitor.clone().filter(|_| dev_mode),
+            timing: services.screen_timing.clone(),
+            free_bytes: Some({
+                let system = Arc::clone(&services.system);
+                Arc::new(move |path: &std::path::Path| system.free_bytes(path))
+            }),
+        },
+        log.clone(),
+        {
+            let engine = Arc::clone(&engine);
+            move |change| {
+                if let Some(core) = engine.get().and_then(Weak::upgrade) {
+                    core.on_screen(change);
+                }
+            }
+        },
+    )
+    .map_err(|e| {
+        ApiError::new(
+            "failed",
+            format!("Voice couldn't open its meetings folder: {e}"),
+        )
+    })?;
+    // Before the bridge opens, so a meeting Rukoo starts at once keeps them too.
     controller.library().set_retention(cfg.meetings_retention);
+    controller.set_screen(engine::screen_mode(&cfg), screen.available());
 
     // Bucket sync. When its store doesn't open (locked, damaged, or from a newer Voice), Voice
     // runs without it, and retention keeps every meeting's media while the switch is on.
@@ -216,6 +249,7 @@ pub fn start_with(
     );
     let meetings = Meetings::new(
         controller,
+        screen,
         log,
         discovery,
         &options.version,
@@ -231,9 +265,6 @@ pub fn start_with(
             settings: SettingsRuntime::new(start_page),
             sync,
             media,
-            // Stand-in until screen recording (RUK-108) is on this branch: no meeting records the
-            // screen, so the key dialogs are never refused for it.
-            screen_recording: Arc::new(|| false),
         },
     ));
     let _ = engine.set(Arc::downgrade(&core));
@@ -254,8 +285,13 @@ pub fn start_with(
         ));
     }
     // Reattaches to a recorder that still records and finalizes meetings that were cut off;
-    // both start a pipeline. Then meetings whose transcription didn't finish get one too.
+    // both start a pipeline. The screen supervisor then finishes the screen journals of the
+    // meetings that don't record any more. Then meetings whose transcription didn't finish get
+    // a pipeline too.
     core.meetings.controller.recover();
+    let live = core.meetings.controller.current().map(|r| r.id);
+    core.meetings.screen.recover(live.as_deref());
+    core.meetings.screen.probe_async();
     for id in core.meetings.unfinished() {
         core.follow(&id);
     }
@@ -305,7 +341,7 @@ fn sync_options(
         move |bytes: u64| {
             system
                 .free_bytes(&root)
-                .is_none_or(|free| media::reserve_ok(free, bytes, controller.current().is_some()))
+                .is_none_or(|free| reserve_ok(free, bytes, controller.current().is_some()))
         }
     };
     let on_change = {

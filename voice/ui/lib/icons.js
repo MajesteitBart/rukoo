@@ -1,7 +1,9 @@
 // Static icon markup only; never pass user or app text through here.
 
 // The pill's icons: Beautiful UI's set from Rukoo's src/renderer/agent/bui.js, on a 24 grid, as
-// [paths, default stroke width]. Width 0 means a filled shape. pause and screen are new, drawn in that style.
+// [paths, default stroke width]. Width 0 means a filled shape. pause, screen and monitor are new, drawn in that
+// style: screen marks the screen notices, monitor (a screen with a chevron to the next one) the button that moves
+// the screen recording to the next monitor.
 // Beautiful UI (beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
 const PILL = {
   stop: ['<rect x="4.5" y="4.5" width="15" height="15" rx="3" fill="currentColor" stroke="none"/>', 0],
@@ -10,7 +12,8 @@ const PILL = {
   info: ['<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.2"/>', 2],
   mic: ['<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/>', 2],
   pause: ['<g fill="currentColor" stroke="none"><rect x="6" y="4.5" width="4" height="15" rx="1.5"/><rect x="14" y="4.5" width="4" height="15" rx="1.5"/></g>', 0],
-  screen: ['<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 20.5h7M12 16.5v4"/>', 1.8]
+  screen: ['<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 20.5h7M12 16.5v4"/>', 1.8],
+  monitor: ['<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 20.5h7M12 16.5v4M10.8 7.8l2.6 2.45-2.6 2.45"/>', 1.8]
 };
 
 export function pillIcon(name, size, strokeWidth) {

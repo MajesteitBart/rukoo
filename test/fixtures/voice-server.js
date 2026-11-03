@@ -271,18 +271,21 @@ class FakeVoice {
     const speakers = new Map();
     const passages = new Map();
     const marks = new Map();
+    const frames = new Map();
     for (const e of own) {
       if (e.event === 'meeting.state') state = e.data;
       if (e.event === 'speaker') speakers.set(e.data.id, e.data);
       if (e.event === 'passage') passages.set(e.data.id, e.data);
       if (e.event === 'passage.removed') passages.delete(e.data.id);
       if (e.event === 'mark') marks.set(e.data.id, e.data);
+      if (e.event === 'frame') frames.set(e.data.id, e.data);
     }
     return {
       meeting: { ...started.data, id, state: state.state, endedAt: state.endedAt || null },
       speakers: [...speakers.values()],
       passages: [...passages.values()],
       marks: [...marks.values()],
+      frames: [...frames.values()].sort((a, b) => a.at - b.at),
       head: this.head
     };
   }
@@ -338,15 +341,17 @@ const DEFAULTS = {
     if (this.status.recording) return { error: { code: 'busy', message: 'A meeting is already recording.', meeting: this.status.recording } };
     const id = this.meetingId();
     const startedAt = Date.now();
-    this.append('meeting.started', id, { title: args.title || '', startedAt, tracks: args.tracks || ['mic', 'call'], screen: args.screen || 'off', startedBy: 'rukoo', context: args.context || null });
+    const screen = args.screen || this.status.screenDefault || 'off';
+    this.append('meeting.started', id, { title: args.title || '', startedAt, tracks: args.tracks || ['mic', 'call'], screen, startedBy: 'rukoo', context: args.context || null });
     this.append('meeting.state', id, { state: 'recording', at: 0 });
-    this.append('status', null, { recording: id, dictating: false });
+    // A status keeps the fields it had, screenDefault among them, as Voice's does.
+    this.append('status', null, { ...this.status, recording: id, dictating: false });
     return { meeting: id };
   },
   'meeting.stop'(args) {
     if (this.status.recording !== args.meeting) return { error: { code: 'not_recording', message: 'Not recording.' } };
     this.append('meeting.state', args.meeting, { state: 'processing', at: 1000, endedAt: Date.now(), reason: 'rukoo' });
-    this.append('status', null, { recording: null, dictating: false });
+    this.append('status', null, { ...this.status, recording: null, dictating: false });
     return {};
   },
   'meeting.mark'(args) {
@@ -356,7 +361,20 @@ const DEFAULTS = {
     return { mark: `k-${n}`, at: 1000 };
   },
   'frame.get'() {
-    return { error: { code: 'not_available', message: 'Voice 0.1 does not record the screen.' } };
+    return { error: { code: 'not_available', message: "The meeting didn't record the screen." } };
+  },
+  // The screen commands answer as for a meeting that records no screen; tests set handlers for the rest.
+  'clip.get'() {
+    return { error: { code: 'not_available', message: "The meeting didn't record video." } };
+  },
+  'meeting.protected'() {
+    return {};
+  },
+  'screen.get'() {
+    return { error: { code: 'not_available', message: 'The meeting records no screen.' } };
+  },
+  'screen.select'() {
+    return { error: { code: 'not_available', message: 'The meeting records no screen.' } };
   },
   // The first media.open for new arguments answers ready: false and the next one ready: true, so every test goes
   // through Rukoo's polling. The same arguments keep their id; a frame ignores `end`.

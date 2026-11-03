@@ -422,6 +422,7 @@ test('end to end: a real hub on a demo engine answers initialize, tools/list and
         'search_meetings',
         'read_meeting_notes',
         'get_meeting_frame',
+        'get_meeting_clip',
         'get_meeting_media_link'
       ]
     );

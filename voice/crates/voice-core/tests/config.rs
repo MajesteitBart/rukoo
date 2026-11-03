@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use support::TempDir;
 use voice_core::cleanup::Correction;
 use voice_core::config::{
-    provider_form_problem, Config, ConfigError, Consent, PillEdge, Retention, RewriteTone,
-    ScreenMode, Theme, UiLanguage,
+    provider_form_problem, Config, ConfigError, Consent, ConsentMode, PillEdge, Retention,
+    RewriteTone, ScreenMode, Theme, UiLanguage,
 };
 use voice_core::consent::ConsentState;
 use voice_core::providers::Purpose;
@@ -106,6 +106,7 @@ fn save_and_load_round_trip() {
     cfg.meetings_transcription_consent = Some(Consent {
         provider: "mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     });
     cfg.meetings_retention = Retention::AfterTranscription;
     cfg.meetings_screen = ScreenMode::Frames;
@@ -485,6 +486,7 @@ fn meeting_consent_follows_provider_and_host() {
         provider: "mistral".into(),
         label: "Mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     };
     assert_eq!(cfg.meeting_consent(), required);
     let disclosure = cfg.meeting_disclosure().unwrap();
@@ -507,7 +509,8 @@ fn meeting_consent_follows_provider_and_host() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
 
@@ -535,7 +538,8 @@ fn meeting_consent_follows_provider_and_host() {
         kept.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let dropped =
@@ -581,6 +585,7 @@ fn same_as_dictation_resolves_to_the_dictation_provider() {
     cfg.meetings_transcription_consent = Some(Consent {
         provider: "mistral".into(),
         host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
     });
     assert!(cfg.resolve_same_meeting_provider());
     assert_eq!(cfg.meetings_audio_provider, "mistral");
@@ -601,4 +606,212 @@ fn same_as_dictation_resolves_to_the_dictation_provider() {
     assert_eq!(local.meetings_audio_provider, "orukeet");
     assert_eq!(local.meetings_audio_endpoint, "");
     assert_eq!(local.meetings_audio_model, "orukeet-onnx-int8");
+}
+
+#[test]
+fn live_speaker_labels_are_on_unless_turned_off() {
+    assert!(Config::defaults(false).meetings_live_speakers);
+    // A config from before the setting existed, and Ownkey's own config, load with labels on.
+    assert!(load(json!({})).meetings_live_speakers);
+    let off = load(json!({"meetings_live_speakers": false}));
+    assert!(!off.meetings_live_speakers);
+    assert!(load(json!({"meetings_live_speakers": 1})).meetings_live_speakers);
+    assert!(!load(json!({"meetings_live_speakers": ""})).meetings_live_speakers);
+    // Ownkey's "label after Stop" is another setting: it never turns live labels on or off.
+    let after_stop = load(json!({"meetings_auto_speakers": true}));
+    assert!(after_stop.meetings_auto_speakers);
+    assert!(after_stop.meetings_live_speakers);
+    let both_off = load(json!({"meetings_auto_speakers": false, "meetings_live_speakers": false}));
+    assert!(!both_off.meetings_live_speakers);
+
+    let dir = TempDir::new("config-live-speakers");
+    off.save(dir.path()).unwrap();
+    assert!(
+        !Config::load_as(dir.path(), false)
+            .unwrap()
+            .meetings_live_speakers
+    );
+}
+
+#[test]
+fn the_ownkey_import_leaves_live_speaker_labels_alone() {
+    let dir = TempDir::new("config-import-speakers");
+    let path = dir.join("ownkey.json");
+    let write = |value: Value| std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+    write(json!({"meetings_auto_speakers": true}));
+    let mut cfg = Config::defaults(false);
+    cfg.meetings_live_speakers = false;
+    voice_core::ownkey::import(&path)
+        .unwrap()
+        .apply(&mut cfg, false);
+    assert!(
+        cfg.meetings_auto_speakers,
+        "the import keeps Ownkey's value"
+    );
+    assert!(
+        !cfg.meetings_live_speakers,
+        "and doesn't read it as live labels"
+    );
+
+    write(json!({"meetings_auto_speakers": false}));
+    let mut on = Config::defaults(false);
+    voice_core::ownkey::import(&path)
+        .unwrap()
+        .apply(&mut on, false);
+    assert!(on.meetings_live_speakers);
+}
+
+#[test]
+fn consent_mode_round_trips_and_old_agreements_mean_windows() {
+    let stored = |consent: Value| load(json!({ "meetings_transcription_consent": consent }));
+    let stream = stored(json!({"provider": "mistral", "host": "api.mistral.ai", "mode": "stream"}));
+    assert_eq!(
+        stream.meetings_transcription_consent,
+        Some(Consent {
+            provider: "mistral".into(),
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Stream,
+        })
+    );
+    assert_eq!(
+        stored(json!({"provider": "mistral", "host": "api.mistral.ai", "mode": " STREAM "}))
+            .meetings_transcription_consent
+            .unwrap()
+            .mode,
+        ConsentMode::Stream
+    );
+    // Stored before streaming existed, or anything else: an agreement for recorded windows.
+    for mode in [Value::Null, json!("windows"), json!("websocket"), json!(1)] {
+        let mut consent = json!({"provider": "mistral", "host": "api.mistral.ai"});
+        if !mode.is_null() {
+            consent["mode"] = mode;
+        }
+        assert_eq!(
+            stored(consent).meetings_transcription_consent.unwrap().mode,
+            ConsentMode::Windows
+        );
+    }
+
+    let dir = TempDir::new("config-consent-mode");
+    stream.save(dir.path()).unwrap();
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        saved["meetings_transcription_consent"],
+        json!({"provider": "mistral", "host": "api.mistral.ai", "mode": "stream"})
+    );
+    assert_eq!(Config::load_as(dir.path(), false).unwrap(), stream);
+}
+
+/// A meeting provider on Mistral's realtime model, at `host`.
+fn realtime(host: &str) -> Config {
+    let mut cfg = Config::defaults(false);
+    cfg.switch_meeting_provider("mistral");
+    cfg.meetings_audio_endpoint = format!("https://{host}/v1/audio/transcriptions");
+    cfg.meetings_audio_model = "voxtral-mini-transcribe-realtime-3".into();
+    cfg
+}
+
+#[test]
+fn streaming_needs_its_own_agreement() {
+    // A realtime model with only an agreement for recorded windows asks again, for streaming.
+    let mut cfg = realtime("api.mistral.ai");
+    cfg.meetings_transcription_consent = Some(Consent {
+        provider: "mistral".into(),
+        host: "api.mistral.ai".into(),
+        mode: ConsentMode::Windows,
+    });
+    assert_eq!(
+        cfg.meeting_consent(),
+        ConsentState::Required {
+            provider: "mistral".into(),
+            label: "Mistral".into(),
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Stream,
+        }
+    );
+    assert!(cfg.grant_meeting_consent());
+    assert_eq!(cfg.meeting_consent(), ConsentState::Granted);
+    assert_eq!(
+        cfg.meetings_transcription_consent.as_ref().unwrap().mode,
+        ConsentMode::Stream
+    );
+
+    // A stream agreement for one host doesn't cover another.
+    let mut eu = realtime("api.eu.mistral.ai");
+    eu.meetings_transcription_consent = cfg.meetings_transcription_consent.clone();
+    assert!(matches!(
+        eu.meeting_consent(),
+        ConsentState::Required { ref host, mode: ConsentMode::Stream, .. } if host == "api.eu.mistral.ai"
+    ));
+
+    // The batch model with a stream agreement asks again too, for recorded windows.
+    let mut batch = realtime("api.mistral.ai");
+    batch.meetings_audio_model = "voxtral-mini-latest".into();
+    batch.meetings_transcription_consent = cfg.meetings_transcription_consent.clone();
+    assert!(matches!(
+        batch.meeting_consent(),
+        ConsentState::Required {
+            mode: ConsentMode::Windows,
+            ..
+        }
+    ));
+
+    // Audio that stays on this computer needs no agreement, whatever is stored.
+    let mut local = Config::defaults(false);
+    local.meetings_transcription_consent = cfg.meetings_transcription_consent.clone();
+    assert_eq!(local.meeting_consent(), ConsentState::NotNeeded);
+    assert_eq!(local.meeting_disclosure(), None);
+
+    // A realtime model name on another provider doesn't stream.
+    let mut other = realtime("api.openai.com");
+    other.meetings_audio_provider = "openai".into();
+    assert!(matches!(
+        other.meeting_consent(),
+        ConsentState::Required {
+            mode: ConsentMode::Windows,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn the_stream_disclosure_says_what_streaming_sends() {
+    let cfg = realtime("api.mistral.ai");
+    let disclosure = cfg.meeting_disclosure().unwrap();
+    assert_eq!(disclosure.mode, ConsentMode::Stream);
+    assert_eq!(
+        disclosure.title,
+        "Voice will stream meeting audio to Mistral"
+    );
+    assert_eq!(
+        disclosure.agree,
+        "Stream meeting audio to Mistral at api.mistral.ai"
+    );
+    assert_eq!(
+        disclosure.sent,
+        vec!["Microphone and call audio as a continuous stream, and clips of up to 15 seconds per voice after a reconnect"]
+    );
+    assert!(disclosure
+        .intro
+        .contains("continuously while the meeting records"));
+    assert!(disclosure
+        .intro
+        .contains("clips of up to 15 seconds of each voice heard so far"));
+    assert!(!disclosure.intro.contains("28 seconds"));
+    assert_eq!(
+        disclosure.not_sent,
+        vec!["Screen recordings", "Your notes and agent chats in Rukoo"]
+    );
+    assert_eq!(
+        disclosure.retention,
+        "What the provider keeps is set by its data policy; Voice has no control after upload."
+    );
+
+    let mut batch = cfg.clone();
+    batch.meetings_audio_model = "voxtral-mini-latest".into();
+    let windows = batch.meeting_disclosure().unwrap();
+    assert_eq!(windows.mode, ConsentMode::Windows);
+    assert!(windows.intro.contains("windows of up to 28 seconds"));
 }

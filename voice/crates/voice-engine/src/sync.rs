@@ -202,7 +202,7 @@ pub(crate) fn sync_view(core: &Core) -> Value {
     if let Some(id) = view["key"]["id"].as_str() {
         view["key"]["id"] = json!(short_id(id));
     }
-    view["screenRecording"] = json!((core.screen_recording)());
+    view["screenRecording"] = json!(core.screen_recording());
     view
 }
 

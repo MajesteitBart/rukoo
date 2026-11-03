@@ -1,9 +1,11 @@
-//! Downloading a pinned model archive into Voice's own `models/` (`local_models.py:198-337`).
+//! Downloading a pinned model into Voice's own `models/` (`local_models.py:198-337`).
 //!
-//! The archive goes to a temporary folder next to the install folder, is checked against its
-//! pinned size and SHA-256, and is extracted with strict rules: every entry must be one of the
-//! pinned files, at exactly one level under the archive's root folder, with its pinned size.
-//! The finished folder replaces the old one in one rename.
+//! An archive model (Orukeet) goes to a temporary folder next to the install folder, is checked
+//! against its pinned size and SHA-256, and is extracted with strict rules: every entry must be
+//! one of the pinned files, at exactly one level under the archive's root folder, with its
+//! pinned size. A file model (Nemotron) downloads each pinned file from its own URL into that
+//! temporary folder, checking size and SHA-256 while it streams. Either way the finished folder
+//! replaces the old one in one rename.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -96,13 +98,32 @@ fn check_replaceable(spec: &ModelSpec, dir: &Path) -> Result<(), ModelError> {
     Ok(())
 }
 
+/// How a model's files arrive.
+enum Source<'a> {
+    Archive(&'a super::registry::Archive),
+    /// Every pinned file has its own URL.
+    Files,
+}
+
+impl Source<'_> {
+    fn of(spec: &ModelSpec) -> Option<Source<'_>> {
+        match &spec.archive {
+            Some(archive) => Some(Source::Archive(archive)),
+            None if !spec.files.is_empty() && spec.files.iter().all(|f| f.url.is_some()) => {
+                Some(Source::Files)
+            }
+            None => None,
+        }
+    }
+}
+
 pub(crate) fn download(
     registry: &ModelRegistry,
     spec: &ModelSpec,
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<Located, ModelError> {
-    let Some(archive) = &spec.archive else {
+    let Some(source) = Source::of(spec) else {
         return Err(ModelError::new(
             ModelErrorKind::Refused,
             format!(
@@ -140,12 +161,19 @@ pub(crate) fn download(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| registry.own_root());
     fs::create_dir_all(&parent).map_err(ModelError::io)?;
-    let needed = archive.size + spec.extracted_size() + SPARE_BYTES;
+    let needed = match source {
+        Source::Archive(archive) => archive.size + spec.extracted_size() + SPARE_BYTES,
+        Source::Files => spec.extracted_size() + SPARE_BYTES,
+    };
     if super::disk::free_space(&parent).is_some_and(|free| free < needed) {
+        let what = match source {
+            Source::Archive(_) => "the download and extraction",
+            Source::Files => "the download",
+        };
         return Err(ModelError::new(
             ModelErrorKind::Disk,
             format!(
-                "Not enough disk space. Free at least {:.1} GB for the download and extraction.",
+                "Not enough disk space. Free at least {:.1} GB for {what}.",
                 needed as f64 / 1e9
             ),
         ));
@@ -153,7 +181,10 @@ pub(crate) fn download(
 
     let temp = parent.join(fsutil::unique_name(".download-", ""));
     fs::create_dir(&temp).map_err(ModelError::io)?;
-    let result = install_from(spec, archive, &install, &temp, progress, cancel);
+    let result = match source {
+        Source::Archive(archive) => install_from(spec, archive, &install, &temp, progress, cancel),
+        Source::Files => install_files(spec, &install, &temp, progress, cancel),
+    };
     remove_temp(&registry.own_root(), &temp);
     result?;
     progress(Progress {
@@ -176,22 +207,68 @@ fn install_from(
     cancel: &AtomicBool,
 ) -> Result<(), ModelError> {
     let archive_path = temp.join("model.tar.bz2");
-    fetch(archive, &archive_path, progress, cancel)?;
+    let pin = Pin {
+        url: &archive.url,
+        size: archive.size,
+        sha256: &archive.sha256,
+        file: None,
+    };
+    fetch(&pin, &archive_path, (0, archive.size), progress, cancel)?;
 
     let staging = temp.join("staging");
     fs::create_dir(&staging).map_err(ModelError::io)?;
     let input = File::open(&archive_path).map_err(ModelError::io)?;
     extract(spec, &archive.root, input, &staging, progress, cancel)?;
     validate(spec, &staging, cancel)?;
+    swap_in(spec, &staging, install, temp)
+}
 
-    // Swap the finished folder in; put the old one back if the rename fails.
+/// File mode: every pinned file from its own URL into the staging folder, each checked against
+/// its size and SHA-256 while it streams in.
+fn install_files(
+    spec: &ModelSpec,
+    install: &Path,
+    temp: &Path,
+    progress: &mut dyn FnMut(Progress),
+    cancel: &AtomicBool,
+) -> Result<(), ModelError> {
+    let staging = temp.join("staging");
+    fs::create_dir(&staging).map_err(ModelError::io)?;
+    let total = spec.extracted_size();
+    let mut before = 0;
+    for file in &spec.files {
+        let pin = Pin {
+            url: file.url.as_deref().unwrap_or_default(),
+            size: file.size,
+            sha256: &file.sha256,
+            file: Some(&file.name),
+        };
+        fetch(
+            &pin,
+            &staging.join(&file.name),
+            (before, total),
+            progress,
+            cancel,
+        )?;
+        before += file.size;
+    }
+    swap_in(spec, &staging, install, temp)
+}
+
+/// Swaps the finished folder in; puts the old one back if the rename fails.
+fn swap_in(
+    spec: &ModelSpec,
+    staging: &Path,
+    install: &Path,
+    temp: &Path,
+) -> Result<(), ModelError> {
     check_replaceable(spec, install)?;
     let previous = temp.join("previous");
     let had_previous = install.exists();
     if had_previous {
         fs::rename(install, &previous).map_err(ModelError::io)?;
     }
-    if let Err(error) = fs::rename(&staging, install) {
+    if let Err(error) = fs::rename(staging, install) {
         if had_previous {
             let _ = fs::rename(&previous, install);
         }
@@ -200,9 +277,39 @@ fn install_from(
     Ok(())
 }
 
+/// One download and what it must be.
+struct Pin<'a> {
+    url: &'a str,
+    size: u64,
+    sha256: &'a str,
+    /// The model file's name in file mode; `None` for an archive.
+    file: Option<&'a str>,
+}
+
+impl Pin<'_> {
+    fn too_big(&self) -> ModelError {
+        archive_error(match self.file {
+            None => "Model archive exceeds its pinned size.".to_string(),
+            Some(name) => format!("Model file exceeds its pinned size: {name}."),
+        })
+    }
+
+    fn mismatch(&self) -> ModelError {
+        archive_error(match self.file {
+            None => "Model archive checksum does not match. Try downloading again.".to_string(),
+            Some(name) => {
+                format!("Model file checksum does not match: {name}. Try downloading again.")
+            }
+        })
+    }
+}
+
+/// Downloads one pinned file to `path`. `(before, total)` places it in the whole download for
+/// progress: bytes of earlier files, and the size of all of them.
 fn fetch(
-    archive: &super::registry::Archive,
+    pin: &Pin,
     path: &Path,
+    (before, total): (u64, u64),
     progress: &mut dyn FnMut(Progress),
     cancel: &AtomicBool,
 ) -> Result<(), ModelError> {
@@ -220,7 +327,7 @@ fn fetch(
         )
     };
     let mut response = agent
-        .get(&archive.url)
+        .get(pin.url)
         .call()
         .map_err(|error| download_error(error.to_string()))?;
     if !response.status().is_success() {
@@ -232,7 +339,7 @@ fn fetch(
     let mut body = response
         .body_mut()
         .with_config()
-        .limit(archive.size + 1)
+        .limit(pin.size + 1)
         .reader();
     let mut output = fsutil::create_new(path).map_err(ModelError::io)?;
     let mut hasher = Sha256::new();
@@ -240,17 +347,17 @@ fn fetch(
     let mut done = 0u64;
     progress(Progress {
         stage: Stage::Downloading,
-        done,
-        total: Some(archive.size),
+        done: before,
+        total: Some(total),
     });
     loop {
         check_cancel(cancel)?;
         let read = match body.read(&mut buffer) {
             Ok(read) => read,
             Err(error) => {
-                if done >= archive.size {
+                if done >= pin.size {
                     // The reader refuses to read past its limit: the server sent too much.
-                    return Err(archive_error("Model archive exceeds its pinned size."));
+                    return Err(pin.too_big());
                 }
                 return Err(download_error(error.to_string()));
             }
@@ -259,15 +366,15 @@ fn fetch(
             break;
         }
         done += read as u64;
-        if done > archive.size {
-            return Err(archive_error("Model archive exceeds its pinned size."));
+        if done > pin.size {
+            return Err(pin.too_big());
         }
         hasher.update(&buffer[..read]);
         output.write_all(&buffer[..read]).map_err(ModelError::io)?;
         progress(Progress {
             stage: Stage::Downloading,
-            done,
-            total: Some(archive.size),
+            done: before + done,
+            total: Some(total),
         });
     }
     output.sync_all().map_err(ModelError::io)?;
@@ -276,10 +383,8 @@ fn fetch(
         done: 0,
         total: None,
     });
-    if done != archive.size || hex(&hasher.finalize()) != archive.sha256 {
-        return Err(archive_error(
-            "Model archive checksum does not match. Try downloading again.",
-        ));
+    if done != pin.size || !hex(&hasher.finalize()).eq_ignore_ascii_case(pin.sha256) {
+        return Err(pin.mismatch());
     }
     Ok(())
 }

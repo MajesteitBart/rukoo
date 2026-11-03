@@ -1,5 +1,6 @@
 //! Meetings in Rukoo Voice: the library of meeting folders, `transcript.db`, live transcription
-//! from the recorded files, the events Rukoo gets, and audio retention.
+//! from the recorded files, the frames and screen marks from the screen journal, the events Rukoo
+//! gets, and media retention.
 //!
 //! The recorder (`rukoo-voice-recorder`) writes each meeting folder; this crate only reads the
 //! audio and the timeline, so it can crash or restart while the recording goes on. The folder
@@ -24,7 +25,9 @@ mod library;
 mod pipeline;
 pub mod reader;
 mod retention;
+pub mod screen;
 pub mod segmentation;
+mod speakers;
 mod stt;
 pub mod transcript;
 pub mod watcher;
@@ -35,12 +38,17 @@ mod test_support;
 pub use library::{CreateMeeting, Library, MeetingDir, MeetingFile, MEETINGS, MEETING_FILE};
 pub use pipeline::{
     speaker_of, ConsentCheck, Pipeline, PipelineHandle, PipelineOptions, PipelineState, Timing,
+    STREAM_REASON,
 };
 pub use reader::TrackReader;
 pub use retention::{
     release_held, retention_sweep, retention_sweep_at, retention_sweep_holding, MediaPart, Swept,
     WEEK_MS,
 };
+pub use screen::{derived_key, ScreenDerived, ScreenFollower};
+pub use speakers::follower::FollowerTiming;
+pub use speakers::turns::Turn;
+pub use speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 pub use stt::{TimedSpeechToText, TimedText};
 pub use transcript::Transcript;
 pub use voice_core::config::Retention;

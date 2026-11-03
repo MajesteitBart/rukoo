@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { VoiceStore } = require('../src/main/voice/store');
-const { suggest, candidateEvents, attendeeCandidates } = require('../src/main/voice/speakers');
+const { suggest, candidateEvents, attendeeCandidates, compareSpeakers, speakerOrder } = require('../src/main/voice/speakers');
 
 const M = 'm-20261030-171203-4f2a';
 const OTHER = 'm-20261030-090000-00ff';
@@ -81,7 +81,7 @@ test('recording follows the status and the meeting state, and an ended meeting n
   s.apply(ev('meeting.state', M, { state: 'recording', at: 0 }));
   assert.equal(s.status().recording, M, 'known the moment Voice says the meeting records');
   s.apply(ev('status', null, { recording: M, dictating: true }));
-  assert.deepEqual(s.status(), { recording: M, dictating: true });
+  assert.deepEqual(s.status(), { recording: M, dictating: true, screenDefault: null });
   s.apply(ev('meeting.state', M, { state: 'done', at: 5000, endedAt: 1793000005000 }));
   assert.equal(s.status().recording, null);
 });
@@ -303,7 +303,7 @@ test('a replay whose numbers skip, because Voice keeps only the newest status, a
   s.apply({ ...passage('call', 1000, 'First.'), seq: 7 });
   s.apply({ ...ev('status', null, { recording: null, dictating: true }), seq: 9 });
   assert.equal(s.cursor().after, 9);
-  assert.deepEqual(s.status(), { recording: null, dictating: true });
+  assert.deepEqual(s.status(), { recording: null, dictating: true, screenDefault: null });
   assert.deepEqual(s.meeting(M).passages.map((p) => p.text), ['First.']);
 });
 
@@ -348,4 +348,173 @@ test('speaker names from the calendar: the matching event, the guests to offer, 
   const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
   assert.equal(suggest(speakers, oneOnOne).auto['call-1'].name, 'Sanne');
   assert.deepEqual(suggest([...speakers, { id: 'call-2', track: 'call' }], oneOnOne).auto, {}, 'two voices: the user picks');
+});
+
+const frameEv = (at, text, extra = {}) => ev('frame', M, { id: `f-${String(at).padStart(9, '0')}`, at, width: 1920, height: 1080, text, ...extra });
+
+test('a frame sent twice is one change, and it takes a tick like a passage', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(started(M, { screen: 'frames' }));
+  s.apply(passage('call', 1000, 'Before the slide.'));
+  const tickBefore = s.meeting(M).passages[0].changed;
+  const first = frameEv(412000, 'Q3 roadmap');
+  assert.deepEqual(s.apply(first), { meeting: M, kind: 'frame', id: 'f-000412000' });
+  assert.equal(s.apply({ ...first, seq: ++seq }), null, 'Voice sends a frame again with the same id');
+  const f = s.meeting(M).frames[0];
+  assert.deepEqual({ ...f, changed: undefined }, { id: 'f-000412000', at: 412000, width: 1920, height: 1080, text: 'Q3 roadmap', changed: undefined });
+  assert.ok(f.changed > tickBefore, `${f.changed} > ${tickBefore}`);
+  s.apply(passage('call', 420000, 'After the slide.'));
+  assert.ok(s.meeting(M).passages[1].changed > f.changed);
+  s.apply(frameEv(430000, 'The newest change is a frame'));
+  const top = s.meeting(M).frames.at(-1).changed;
+  // After a restart without voice.json the meeting's next change still counts above that frame's tick.
+  s.close();
+  fs.rmSync(path.join(dir, 'voice.json'));
+  const again = store(dir);
+  again.apply(passage('call', 500000, 'Said after the restart.'));
+  const p = again.meeting(M).passages.find((x) => x.start === 500000);
+  assert.ok(p.changed > top, `${p.changed} > ${top}`);
+});
+
+test("a snapshot replaces the frames, keeps the newer ones, and keeps the text Rukoo had for a frame it left without", () => {
+  const s = store();
+  const at = (e, n) => ({ ...e, seq: n });
+  s.apply(at(started(M, { screen: 'frames' }), 1));
+  s.apply(at(frameEv(10000, 'Agenda'), 2));
+  s.apply(at(frameEv(20000, 'Gone from Voice'), 3));
+  const newer = at(frameEv(40000, 'After the head'), 9);
+  s.apply(newer);
+  const newerTick = s.meeting(M).frames.find((f) => f.id === 'f-000040000').changed;
+  const snap = {
+    meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'frames', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
+    speakers: [],
+    passages: [],
+    marks: [],
+    frames: [
+      { id: 'f-000010000', at: 10000, width: 1920, height: 1080, text: '', textOmitted: true },
+      { id: 'f-000030000', at: 30000, width: 1920, height: 1080, text: '', textOmitted: true },
+      { id: 'f-000035000', at: 35000, width: 2560, height: 1440, text: 'Slide 2' },
+      { id: 'bad', at: -1, width: 1, height: 1, text: '' }
+    ],
+    head: 8
+  };
+  assert.equal(s.applySnapshot(M, snap, [newer]).kind, 'snapshot');
+  const frames = s.meeting(M).frames;
+  assert.deepEqual(
+    frames.map((f) => [f.id, f.text, f.textOmitted === true]),
+    [
+      ['f-000010000', 'Agenda', false],
+      ['f-000030000', '', true],
+      ['f-000035000', 'Slide 2', false],
+      ['f-000040000', 'After the head', false]
+    ]
+  );
+  // Not a new change: a meeting chat that read it doesn't hear of it again.
+  assert.equal(frames[3].changed, newerTick, 'the frame newer than the snapshot keeps its tick');
+  // frame.get brings the text later; it moves the meeting's rev for the renderer, but not the frame's tick.
+  const rev = s.meeting(M).rev;
+  const tick = frames[1].changed;
+  assert.deepEqual(s.frameText(M, { id: 'f-000030000', at: 30000, width: 1920, height: 1080, text: 'Budget' }), { meeting: M, kind: 'frame', id: 'f-000030000' });
+  const filled = s.meeting(M).frames[1];
+  assert.deepEqual([filled.text, filled.textOmitted, filled.changed], ['Budget', undefined, tick]);
+  assert.ok(s.meeting(M).rev > rev);
+  assert.equal(s.frameText(M, { id: 'f-000030000', text: 'Again' }), null, 'only a frame without its text');
+  assert.equal(s.frameText(M, null), null);
+  // A second snapshot that leaves the text out again keeps it, and an older Voice's snapshot keeps every frame.
+  s.applySnapshot(M, { ...snap, head: 9 });
+  assert.equal(s.meeting(M).frames.find((f) => f.id === 'f-000030000').text, 'Budget');
+  assert.deepEqual(s.meeting(M).frames.map((f) => f.id), ['f-000010000', 'f-000030000', 'f-000035000'], 'gone after the head that covers it');
+  const { frames: _, ...older } = snap;
+  s.applySnapshot(M, { ...older, head: 10 });
+  assert.equal(s.meeting(M).frames.length, 3);
+});
+
+test("Voice's screen default is kept with the status, and anything but a screen mode reads as unknown", () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  assert.deepEqual(s.status(), { recording: null, dictating: false, screenDefault: null });
+  assert.equal(s.setStatus({ recording: null, dictating: false, screenDefault: 'frames' }), true, 'a new default alone is a change');
+  assert.equal(s.setStatus({ recording: null, dictating: false, screenDefault: 'frames' }), false);
+  assert.equal(s.status().screenDefault, 'frames');
+  // A recording keeps the default it had.
+  s.apply(started());
+  s.apply(ev('meeting.state', M, { state: 'recording', at: 0 }));
+  assert.deepEqual(s.status(), { recording: M, dictating: false, screenDefault: 'frames' });
+  s.close();
+  assert.equal(store(dir).status().screenDefault, 'frames', 'saved in voice.json');
+  const odd = store();
+  odd.setStatus({ recording: null, dictating: false, screenDefault: '4k' });
+  assert.equal(odd.status().screenDefault, null);
+  // An older Voice says nothing about it.
+  odd.welcome({ type: 'welcome', protocol: 1, voiceVersion: '0.1.0', instance: 'Vb3kQ9m2X7pL1sR4tY8wZQ', head: 1, oldest: 1, replay: 'full', status: { recording: null, dictating: false } });
+  assert.equal(odd.status().screenDefault, null);
+  assert.equal(odd.isReplay(1), true);
+  assert.equal(odd.isReplay(2), false);
+  assert.equal(odd.isReplay(undefined), false);
+});
+
+test('three voices on the call keep their names by id, through a snapshot, a restart and a passage that gets its voice later', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(started());
+  for (const [id, track, label] of [['mic', 'mic', 'You'], ['call-1', 'call', 'Speaker 1'], ['call-10', 'call', 'Speaker 10'], ['call-2', 'call', 'Speaker 2']]) s.apply(ev('speaker', M, { id, track, label }));
+  s.setName(M, 'call-1', { name: 'Anna de Vries', address: 'anna@example.com', from: 'calendar' });
+  s.setName(M, 'call-2', { name: 'Sanne de Vries', address: 'sanne@example.com', from: 'user' });
+  s.apply(passage('call', 101000, "Okay, let's look at the numbers.", 1, { speaker: null }));
+  const names = (x) => Object.fromEntries(x.meeting(M).speakers.map((v) => [v.id, v.name]));
+  const whose = (x) => {
+    const m = x.meeting(M);
+    const p = m.passages.find((q) => q.id === 'call-000101000');
+    return p.speaker === null ? null : m.speakers.find((v) => v.id === p.speaker).name;
+  };
+  assert.equal(whose(s), null, 'Voice does not know yet');
+  // Voice settles the speaker: the same passage, a new revision.
+  s.apply(passage('call', 101000, "Okay, let's look at the numbers.", 2, { speaker: 'call-2' }));
+  assert.equal(whose(s), 'Sanne de Vries');
+  // A snapshot lists the speakers in another order; the names stay on their ids.
+  s.applySnapshot(M, {
+    meeting: { id: M, title: 'Weekly with Anna', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'rukoo', context: null, state: 'recording', endedAt: null },
+    speakers: [{ id: 'call-2', track: 'call', label: 'Speaker 2' }, { id: 'call-10', track: 'call', label: 'Speaker 10' }, { id: 'mic', track: 'mic', label: 'You' }, { id: 'call-1', track: 'call', label: 'Speaker 1' }],
+    passages: [{ ...passage('call', 101000, "Okay, let's look at the numbers.", 2, { speaker: 'call-2' }).data }],
+    marks: [],
+    head: 99
+  });
+  assert.deepEqual(names(s), { 'call-2': 'Sanne de Vries', 'call-10': null, mic: null, 'call-1': 'Anna de Vries' });
+  assert.equal(whose(s), 'Sanne de Vries');
+  s.close();
+  const again = store(dir);
+  assert.deepEqual(names(again), { 'call-2': 'Sanne de Vries', 'call-10': null, mic: null, 'call-1': 'Anna de Vries' });
+  assert.equal(whose(again), 'Sanne de Vries');
+});
+
+test('the order of speakers: the microphone, then the call by number, so call-2 comes before call-10', () => {
+  const list = [{ id: 'call-10', track: 'call' }, { id: 'call-2', track: 'call' }, { id: 'mic', track: 'mic' }, { id: 'call-x', track: 'call' }, { id: 'call-1', track: 'call' }];
+  assert.deepEqual([...list].sort(compareSpeakers).map((x) => x.id), ['mic', 'call-1', 'call-2', 'call-10', 'call-x']);
+  assert.equal(speakerOrder('call-10'), 10);
+  assert.equal(speakerOrder('call-01'), Infinity, 'not a number Voice gives');
+  assert.equal(speakerOrder('mic'), Infinity);
+});
+
+test('with three voices on the call, a guest one of them already has is marked for the others and offered last', () => {
+  const standup = { id: 'e1', start: 0, end: 900000, meeting: 'x', attendees: [{ name: 'Demo User', address: 'demo@example.com', response: 'accepted', self: true }, { name: 'Joris Bakker', address: 'joris@example.com', response: 'tentative' }, { name: 'Sanne de Vries', address: 'sanne@example.com', response: 'accepted' }] };
+  const speakers = [
+    { id: 'call-10', track: 'call', name: null, address: null },
+    { id: 'mic', track: 'mic', name: null, address: null },
+    { id: 'call-2', track: 'call', name: 'Sanne de Vries', address: 'sanne@example.com' },
+    { id: 'call-1', track: 'call', name: null, address: null }
+  ];
+  const offered = (out, id) => out.suggestions[id].map((c) => [c.name, c.takenBy]);
+  const out = suggest(speakers, standup);
+  assert.deepEqual(Object.keys(out.suggestions), ['call-1', 'call-2', 'call-10'], 'the call only, in order');
+  assert.deepEqual(offered(out, 'call-1'), [['Joris Bakker', []], ['Sanne de Vries', ['call-2']]]);
+  assert.deepEqual(offered(out, 'call-10'), [['Joris Bakker', []], ['Sanne de Vries', ['call-2']]]);
+  assert.deepEqual(offered(out, 'call-2'), [['Sanne de Vries', []], ['Joris Bakker', []]], 'its own name is not taken from itself');
+  assert.deepEqual(out.auto, {});
+  // A typed name without an address matches by name; addresses match whatever their case.
+  const typed = suggest([{ id: 'call-1', track: 'call', name: 'joris bakker', address: null }, { id: 'call-2', track: 'call', name: 'S. de Vries', address: 'SANNE@example.com' }, { id: 'call-3', track: 'call', name: null }], standup);
+  assert.deepEqual(offered(typed, 'call-3'), [['Sanne de Vries', ['call-2']], ['Joris Bakker', ['call-1']]]);
+  // One guest and three voices: nobody gets a name by itself.
+  const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
+  assert.deepEqual(suggest(speakers.map((x) => ({ ...x, name: null, address: null })), oneOnOne).auto, {}, 'three voices: the user picks');
 });

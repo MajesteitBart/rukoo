@@ -28,16 +28,40 @@ function attendeeCandidates(event) {
     .map(({ i, ...a }) => a);
 }
 
-// Per speaker, the names to offer. The microphone is the user. A name is only filled in by itself for a 1:1: one
-// voice on the call and one guest who can be it. Returns {suggestions: {speakerId: [candidate]}, auto: {speakerId:
-// candidate} | {}}.
+// The N of a call speaker's id `call-N`, the order in which Voice first heard that voice; Infinity for any other id.
+function speakerOrder(id) {
+  const m = /^call-([1-9]\d*)$/.exec(typeof id === 'string' ? id : '');
+  return m ? Number(m[1]) : Infinity;
+}
+
+// The microphone first, then the call's voices by their number (call-2 before call-10), then by id.
+function compareSpeakers(a, b) {
+  const mic = (s) => (s.track === 'mic' ? 0 : 1);
+  return mic(a) - mic(b) || speakerOrder(a.id) - speakerOrder(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+const same = (x, y) => String(x || '').trim().toLowerCase() === String(y || '').trim().toLowerCase();
+
+// Whether a speaker carries this guest's name: the same address when both have one, else the same name.
+function namedAs(s, candidate) {
+  if (!s.name) return false;
+  return s.address && candidate.address ? same(s.address, candidate.address) : same(s.name, candidate.name);
+}
+
+// Per speaker, the names to offer. The microphone is the user. A guest another voice already carries is marked with
+// that voice's id in takenBy and comes after the free ones; it stays on offer, since one person can sound like two
+// voices. A name is only filled in by itself for a 1:1: one voice on the call and one guest who can be it. Returns
+// {suggestions: {speakerId: [candidate]}, auto: {speakerId: candidate} | {}}.
 function suggest(speakers, event) {
-  const call = (Array.isArray(speakers) ? speakers : []).filter((s) => s.track === 'call');
+  const call = (Array.isArray(speakers) ? speakers : []).filter((s) => s.track === 'call').sort(compareSpeakers);
   const candidates = event ? attendeeCandidates(event) : [];
   const suggestions = {};
-  for (const s of call) suggestions[s.id] = candidates;
+  for (const s of call) {
+    const list = candidates.map((c) => ({ ...c, takenBy: call.filter((o) => o.id !== s.id && namedAs(o, c)).map((o) => o.id) }));
+    suggestions[s.id] = [...list.filter((c) => !c.takenBy.length), ...list.filter((c) => c.takenBy.length)];
+  }
   const auto = call.length === 1 && candidates.length === 1 ? { [call[0].id]: candidates[0] } : {};
   return { suggestions, auto };
 }
 
-module.exports = { candidateEvents, attendeeCandidates, suggest, WINDOW_MS };
+module.exports = { candidateEvents, attendeeCandidates, suggest, speakerOrder, compareSpeakers, WINDOW_MS };

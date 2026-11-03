@@ -20,6 +20,7 @@ mod log;
 mod server;
 
 use std::fmt;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -53,12 +54,56 @@ pub trait MeetingControl: Send + Sync {
     /// The newest meetings first, at most `limit` of them.
     fn list(&self, limit: usize) -> Vec<MeetingSummary>;
 
-    /// The snapshot of `meeting.get`: `{ meeting, speakers, passages, marks, head }`, where
-    /// `head` is the log's sequence number the snapshot is complete up to.
+    /// The snapshot of `meeting.get`: `{ meeting, speakers, passages, marks, frames, head }`,
+    /// where `head` is the log's sequence number the snapshot is complete up to. Older frames
+    /// may carry `"text": ""` and `"textOmitted": true` to keep the reply under the size limit.
     fn get(&self, id: &str) -> Result<Value, ControlError>;
 
-    /// The result of `frame.get`: `{ frame, image }`. Voice 0.1 answers `not_available`.
+    /// The result of `frame.get`: `{ frame, image }` for the frame at or before `at`.
     fn frame(&self, id: &str, at: u64) -> Result<Value, ControlError>;
+
+    /// The result of `clip.get`: `{ clips: [...] }` with the clips cut by `deadline`, which is
+    /// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after the server read the command. It answers
+    /// by then and lets a longer cut go on, because the connection's later commands wait for it.
+    fn clip(
+        &self,
+        id: &str,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        let _ = (id, start, end, deadline);
+        Err(ControlError::not_available("This Voice doesn't cut clips."))
+    }
+
+    /// `meeting.protected`: a Rukoo hid its windows after `meeting.starting`.
+    fn protected(&self, id: &str) -> Result<(), ControlError> {
+        let _ = id;
+        Ok(())
+    }
+
+    /// The result of `screen.get`: `{ screen, state, video, frames, monitor, monitors }`. It
+    /// answers by `deadline`, as `clip`, however slow the screen recorder is to start or answer.
+    fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        let _ = (id, deadline);
+        Err(ControlError::not_available(
+            "This Voice doesn't record the screen.",
+        ))
+    }
+
+    /// `screen.select`: records the monitor with that id. Returns the id. It answers by
+    /// `deadline`, as `clip`: `failed` when the screen recorder couldn't switch by then.
+    fn select_monitor(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
+        let _ = (id, monitor, deadline);
+        Err(ControlError::not_available(
+            "This Voice doesn't record the screen.",
+        ))
+    }
 
     /// `media.open`: `{ media, ready: false }` while preparing, then `{ media, ready: true, type, size,
     /// start, end }`. Must answer quickly; prepare on another thread. The same arguments give the

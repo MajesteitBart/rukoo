@@ -115,10 +115,10 @@ Voice sends events. Every event has a sequence number, and Voice stores events, 
 What Voice is doing right now. `welcome` carries the same object. Every dictation sends two, so Voice stores only the newest.
 
 ```json
-{ "recording": "m-20261030-171203-4f2a", "dictating": false }
+{ "recording": "m-20261030-171203-4f2a", "dictating": false, "screenDefault": "frames" }
 ```
 
-`recording` is the meeting being recorded or paused, or `null`. `dictating` is true while the user holds a dictation key.
+`recording` is the meeting being recorded or paused, or `null`. `dictating` is true while the user holds a dictation key. `screenDefault` is optional: the `screen` a meeting gets when `meeting.start` leaves it out, one of the values of `meeting.started`. Voice sends a new `status` when it changes.
 
 ### `meeting.started`
 
@@ -127,9 +127,21 @@ What Voice is doing right now. `welcome` carries the same object. Every dictatio
 ```
 
 - `tracks` are the audio tracks Voice records: `mic` is the user's microphone, `call` the computer's audio output, which holds the other people in a call.
-- `screen` is `off`, `frames` or `video`. Voice 0.1 always records with `off`.
+- `screen` is `off`, `frames` or `video`: what Voice records of the screen in this meeting, from `meeting.start` or else Voice's Settings. A Voice that can't record the screen on this computer starts the meeting with `off`. A `video_dropped` mark says when Voice stopped the video, and a `dropped` mark when it stopped recording the screen.
 - `startedBy` is `voice` or `rukoo`.
 - `context` is the object `meeting.start` passed, unchanged, or `null`. Voice stores it and doesn't read it.
+
+### `meeting.starting`
+
+Voice is about to record the screen in a meeting it started itself, from its pill, its tray or a key.
+
+```json
+{ "screen": "frames" }
+```
+
+Voice records the audio already. Before it captures the first frame, it waits up to 500 ms for every connected Rukoo to send `meeting.protected`, so Rukoo can hide its windows first. A Rukoo that hides its windows during meetings does so, waits for the next desktop composition and then sends `meeting.protected`; a Rukoo that doesn't hide them sends it at once. With no Rukoo connected, Voice doesn't wait, unless a Rukoo was connected earlier while Voice ran: then Voice waits up to 5 seconds for one to connect, sends it a new `meeting.starting` after its `welcome`, and waits up to 500 ms for its answer.
+
+Voice sends no `meeting.starting` for a meeting Rukoo started, because Rukoo hides its windows before it sends `meeting.start`, nor for a meeting that records no screen. A `meeting.starting` that comes in a replay, up to the `head` of `welcome`, is history, and Rukoo doesn't answer it. `meeting.get` leaves it out.
 
 ### `meeting.state`
 
@@ -157,7 +169,16 @@ A voice in the meeting, as Voice labels it.
 { "id": "call-1", "track": "call", "label": "Speaker 1" }
 ```
 
-The user's microphone is the speaker `mic` with the label `You`. Voice 0.1 labels the whole call track as one speaker, `call-1`. With speaker labels, the call gets `call-1`, `call-2` and so on. Rukoo owns the names people give speakers; Voice never learns them.
+The user's microphone is always the speaker `mic` with the label `You`. Voice doesn't tell apart people who share the microphone.
+
+The call track's speakers depend on speaker labels in Voice's Settings:
+
+- Without labels, the whole call is one speaker, `call-1`, labelled `Speaker 1`. Voice sends it when the meeting starts.
+- With labels, each voice Voice tells apart gets its own id, `call-1`, `call-2` and so on, labelled `Speaker 1`, `Speaker 2` with the same number. Voice sends a speaker right before the first passage that names it, so a meeting can show only `You` until someone on the call speaks. Numbers follow the order in which Voice first heard each voice; a number can be missing when a voice never got a passage.
+- An id belongs to one voice for the whole meeting, also when Voice's labelling restarts during the meeting, and Voice never gives it to another voice. Voice can still hear one person as two voices, and Rukoo then shows two speakers.
+- A `speaker` event for an id Rukoo already has carries the same `track` and `label`.
+
+Rukoo owns the names people give speakers; Voice never learns them. Rukoo keeps a name on the speaker id, so it follows every passage that has that id.
 
 ### `passage`
 
@@ -169,7 +190,7 @@ A stretch of transcript.
 
 - `id` is the track, a dash and the start in milliseconds as nine digits. It stays the same when Voice transcribes the passage again.
 - A passage with a higher `revision` replaces the one Rukoo has. Voice sends a new revision when a better transcript or a settled speaker arrives.
-- `speaker` is a speaker id, or `null` while Voice doesn't know.
+- `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another.
 - `dictation` is true when the user was dictating into another app while the meeting recorded. Those words reached the call, but weren't part of the conversation.
 - `language` is a BCP 47 code when the recognizer reports one, otherwise `null`.
 
@@ -195,22 +216,29 @@ Something that happened at a moment in the meeting.
 | `dictation` | The user dictated into another app | end of the dictation | `null` |
 | `gap` | The track has no audio | end of the gap | `crash`, `device` or `suspend` |
 | `device` | The track moved to another device; `label` is its name | `null` | `default`, `reconnected` or `lost` |
-| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk` or `encoder` |
+| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk`, `encoder`, `device` or `crash` |
+| `video_dropped` | Voice stopped the screen video, to keep recording audio; the frames go on | `null` | `disk`, `encoder` or `device` |
+| `screen_gap` | The screen has no frames | end of the gap | `locked`, `crash`, `device` or `monitor` |
+| `monitor` | Voice moved the screen recording to another monitor; `label` is its name | `null` | `user` or `lost` |
 
-- `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting.
-- `label` is the text the user gave a `user` mark, or the device name of a `device` mark.
-- Voice sends a mark once it is complete. A gap is sent when the audio comes back or the meeting ends.
+- `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting. `dropped`, `video_dropped`, `screen_gap` and `monitor` come with `screen`; `gap` never does.
+- `label` is the text the user gave a `user` mark, the device name of a `device` mark or the monitor name of a `monitor` mark.
+- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, `device` that the graphics device was reset, and `monitor` that no monitor was left to record. On `dropped`, `device` means the graphics device couldn't be started again, and `crash` that Voice's screen recorder stopped five times in a row, so Voice gave up on it for this meeting. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
+- Voice sends a mark once it is complete. A gap is sent when the audio or the screen comes back, or the meeting ends.
 - Rukoo shows a mark of a `kind` it doesn't know as a plain mark.
 
 ### `frame`
 
-A moment the screen changed noticeably. Voice 0.1 doesn't record the screen and never sends this.
+A moment the screen changed noticeably, in a meeting that records the screen.
 
 ```json
 { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": "Q3 roadmap" }
 ```
 
-`text` is the text Voice read on the screen. Rukoo fetches the image with `frame.get`.
+- `id` is `f-` and `at` as nine digits. A frame Voice sends again has the same `id`.
+- `width` and `height` are the size of the image in pixels.
+- `text` is the text Voice read on the screen, on this computer: at most 8,000 characters, lines separated by `\n`, or `""` when it read nothing.
+- Voice sends a frame once its text is read, which can be a few seconds after `at`. Rukoo fetches the image with `frame.get`.
 
 ### `meeting.removed`
 
@@ -244,14 +272,22 @@ Rukoo sends commands; Voice answers each with one reply.
 | `meeting.list` | `limit`?, default 50 | `{ "meetings": [ … ] }` | |
 | `meeting.get` | `meeting` | a snapshot, see below | `not_found` |
 | `frame.get` | `meeting`, `at` | `{ "frame", "image" }` | `not_found`, `not_available` |
+| `clip.get` | `meeting`, `start`, `end` | `{ "clips": [ … ] }` | `not_found`, `not_available`, `failed` |
+| `meeting.protected` | `meeting` | `{}` | `not_found` |
+| `screen.get` | `meeting` | the screen recording, see below | `not_found`, `not_recording`, `not_available` |
+| `screen.select` | `meeting`, `monitor` | `{ "monitor" }` | `not_found`, `not_recording`, `not_available` |
 | `media.open` | `meeting`, `kind`, `start`, `end`? | `{ "media", "ready", … }` | `not_found`, `not_available`, `bad_request`, `failed` |
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
 - `meeting.list` returns the newest meetings first: `{ "id", "title", "startedAt", "endedAt", "state", "duration" }`, with `endedAt` `null` while recording and `duration` in milliseconds.
-- `meeting.get` returns `{ "meeting", "speakers", "passages", "marks", "head" }`. `meeting` holds the fields of `meeting.started` plus `id`, `state` and `endedAt`. The lists hold the current version of everything, and `head` is the sequence number the snapshot is complete up to.
-- `frame.get` returns the frame closest before `at` and the image as `{ "type": "image/jpeg", "data": "<base64>" }`. It answers `not_available` when the meeting didn't record the screen.
+- `meeting.get` returns `{ "meeting", "speakers", "passages", "marks", "frames", "head" }`. `meeting` holds the fields of `meeting.started` plus `id`, `state` and `endedAt`. The lists hold the current version of everything, and `head` is the sequence number the snapshot is complete up to. `frames` holds the data of the meeting's `frame` events, oldest first; an older Voice leaves it out. To keep the reply small, older frames can come with `"text": ""` and `"textOmitted": true`; `frame.get` returns their text.
+- `frame.get` returns the frame at or before `at` as `{ "frame", "image" }`: `frame` is the data of its `frame` event, `image` is `{ "type": "image/jpeg", "data": "<base64>" }` in standard base64 with padding. It answers `not_found` when no frame is at or before `at`, and `not_available` when the meeting didn't record the screen or Voice removed its screen media with its audio.
+- `clip.get` cuts the meeting's video between `start` and `end` without encoding it again; `end` ≥ `start`. `clips` lists one file for each stretch of continuous video, oldest first: `{ "path", "start", "end", "width", "height", "bytes" }`. `path` is the full path of an MP4 file on this computer, which Voice deletes after an hour; copy it to keep it. A clip starts at a keyframe at or before `start` and ends at or after `end`, so its own `start` and `end` say what it holds. Voice cuts at most 5 minutes from `start` and answers within 4 seconds of receiving the command with the clips it finished by then. A longer cut goes on: `clips` is empty when nothing was finished yet, and the same command a little later returns the files. It answers `not_found` when the meeting has no video between `start` and `end`, `not_available` when the meeting didn't record video or its video was removed, and `failed` when the disk is too full to cut a clip. Rukoo sends one `clip.get` at a time on a connection.
+- `meeting.protected` answers `meeting.starting`: Rukoo applied its window protection.
+- `screen.get` returns `{ "screen", "state", "video", "frames", "monitor", "monitors" }`. `screen` is as in `meeting.started`. `state` is `starting`, `recording`, `paused`, `locked` or `stopped`. `video` and `frames` say whether each part still records. `monitor` is the id of the monitor Voice records, or `null`. `monitors` lists `{ "id", "name", "width", "height", "primary" }` for every monitor, left to right. It answers `not_recording` for a meeting that doesn't record now and `not_available` for one that records no screen. Like `clip.get`, it answers within 4 seconds of receiving the command; when the screen recorder doesn't answer by then, the state is what Voice knew last.
+- `screen.select` moves the screen recording to the monitor with that id from `screen.get`, and returns the id. It answers `not_found` for a monitor that isn't there, and `not_available` when the screen recording stopped. It answers within 4 seconds of receiving the command, `failed` when the screen recorder is still starting or didn't switch by then; Rukoo can ask again.
 - `media.open` prepares a file of a meeting's media that Rukoo can hand to an agent, and names it with an id. `kind` is `audio`, `frame` or `video`:
   - `audio`: a WAV file of all the meeting's tracks mixed into one, 16 kHz mono 16-bit PCM with the 44-byte header, from `start` to `end`. Gaps are silence.
   - `frame`: the JPEG of the frame at or before `start`. `end` is ignored.
@@ -267,7 +303,7 @@ Errors carry a `code` and an English `message` for logs. Rukoo shows its own tex
 |---|---|
 | `bad_request` | The command or its arguments don't match this document |
 | `unknown_command` | Voice doesn't know the command; a newer Rukoo may send commands an older Voice lacks |
-| `not_found` | No meeting, frame or prepared media with that id or time |
+| `not_found` | No meeting, frame, monitor or prepared media with that id or time |
 | `not_recording` | The meeting isn't recording, or isn't paused for `meeting.resume` |
 | `busy` | A meeting is already recording; `meeting` says which |
 | `not_available` | Voice can't do this for this meeting or in this version |
@@ -282,6 +318,7 @@ Both sides check what they receive with the same rules and drop a message that b
 - `hello` needs `protocol`, `token`, `client` (1 to 64 characters), `instance` (an instance or `null`) and `after`. `clientVersion` is optional.
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
+- `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.
 - An unknown event type or command name is not an error in itself.

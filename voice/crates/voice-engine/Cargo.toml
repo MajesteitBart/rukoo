@@ -15,6 +15,7 @@ voice-input = { path = "../voice-input" }
 voice-meetings = { path = "../voice-meetings" }
 voice-protocol = { path = "../voice-protocol" }
 voice-recorder = { path = "../voice-recorder" }
+voice-screen-files = { path = "../voice-screen-files" }
 voice-sync = { path = "../voice-sync" }
 base64 = "0.22"
 log = "0.4"
@@ -38,6 +39,9 @@ windows = { version = "=0.62.2", features = [
 ] }
 
 [dev-dependencies]
+# The screen tests run the screen process from their own test binary, as the controller tests run
+# the recorder.
+voice-screen = { path = "../voice-screen" }
 voice-s3-fake = { path = "../voice-s3-fake" }
 
 # The controller tests run the recorder from this test binary (it calls the same
@@ -49,6 +53,12 @@ harness = false
 # The same, for meetings through the whole engine: the pill, dictation during a meeting, retention.
 [[test]]
 name = "meetings"
+harness = false
+
+# The screen supervisor, `frame.get`, `clip.get` and the start handshake: this test binary is also
+# the recorder and the screen process.
+[[test]]
+name = "screen"
 harness = false
 
 # Sync through the whole engine against the real recorder and the fake bucket.

@@ -1,6 +1,7 @@
 //! Which files of a meeting may upload now (spec 2.8).
 
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -25,17 +26,19 @@ pub struct ScreenFile {
     pub closed: bool,
 }
 
-/// What RUK-108 recorded of the screen, for sync. `stopped`: the timeline has `stop`.
+/// What the screen recording left in a meeting folder, for sync. `stopped`: the timeline has
+/// `stop`. An error (a screen journal that can't be read) keeps the meeting from counting as
+/// synced until a later scan reads it.
 pub trait ScreenFiles: Send + Sync {
-    fn list(&self, meeting_dir: &Path, stopped: bool) -> Vec<ScreenFile>;
+    fn list(&self, meeting_dir: &Path, stopped: bool) -> io::Result<Vec<ScreenFile>>;
 }
 
-/// Lists nothing: Voice without screen recording.
+/// Lists nothing: a meeting folder without screen files, for tests.
 pub struct NoScreen;
 
 impl ScreenFiles for NoScreen {
-    fn list(&self, _meeting_dir: &Path, _stopped: bool) -> Vec<ScreenFile> {
-        Vec::new()
+    fn list(&self, _meeting_dir: &Path, _stopped: bool) -> io::Result<Vec<ScreenFile>> {
+        Ok(Vec::new())
     }
 }
 
@@ -86,6 +89,13 @@ pub fn scan(dir: &voice_meetings::MeetingDir, screen: &dyn ScreenFiles, backfill
     let lane = |normal: u8| if backfill && !live { 2 } else { normal };
     let mut found = Vec::new();
     let mut unreadable = false;
+    let (screen_files, screen_unreadable) = match screen.list(root, history.stopped) {
+        Ok(files) => (files, false),
+        Err(e) => {
+            log::warn!("sync: a meeting's screen journal couldn't be read: {e}");
+            (Vec::new(), true)
+        }
+    };
     let mut push =
         |path: &str, kind: &'static str, lane: u8, audio: Option<(&str, u64, u64, u64)>| {
             if !is_meeting_path(path) {
@@ -134,7 +144,7 @@ pub fn scan(dir: &voice_meetings::MeetingDir, screen: &dyn ScreenFiles, backfill
             );
         }
     }
-    for file in screen.list(root, history.stopped) {
+    for file in screen_files {
         if !file.closed {
             continue;
         }
@@ -169,7 +179,7 @@ pub fn scan(dir: &voice_meetings::MeetingDir, screen: &dyn ScreenFiles, backfill
     Scan {
         live,
         found,
-        unreadable,
+        unreadable: unreadable || screen_unreadable,
     }
 }
 

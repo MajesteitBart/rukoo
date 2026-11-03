@@ -1,6 +1,7 @@
 // Settings > Meetings: whether Rukoo Voice is connected, hiding Rukoo from screen recordings during a meeting
 // (meetingHideWindow) and whether agents can read meetings (meetingAgentsCanRead). Both settings live in main's
-// settings and default to on; main hides the windows (main.js protectWindows) and the meeting tools ask it.
+// settings and default to on; main hides the windows (main.js protectWindows) and the meeting tools ask it. A line
+// under them says that main holds back mail and booking notifications while a meeting records the screen.
 import { t } from './i18n.js';
 import { api, esc } from './ui.js';
 
@@ -67,6 +68,7 @@ export function meetingSettingsPages({ row, go, rerender, current }) {
           ${hide}
           ${row({ title: esc(t('settings.meetings.agents')), desc: esc(t('settings.meetings.agentsHelp')), action: 'toggle:meetingAgentsCanRead', toggle: s.meetingAgentsCanRead !== false })}
         </div>
+        <p class="settings-text">${esc(t('settings.meetings.notices'))}</p>
         ${hiddenNow}`
     };
   }

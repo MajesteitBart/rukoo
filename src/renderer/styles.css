@@ -8367,6 +8367,32 @@ body.meeting-mode .titlebar-search {
   width: 14px;
   height: 14px;
 }
+/* What Voice records of the screen; a warning tint when Rukoo itself can show in those frames. */
+.mt-screen {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.mt-screen svg {
+  width: 14px;
+  height: 14px;
+}
+.mt-visible {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px 0 7px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 500;
+}
+.mt-visible svg {
+  width: 14px;
+  height: 14px;
+}
 .mt-actions {
   display: flex;
   align-items: center;
@@ -8594,8 +8620,150 @@ body.meeting-mode .titlebar-search {
   font-weight: 500;
 }
 .mt-mark.is-gap .mt-line svg,
-.mt-mark.is-dropped .mt-line svg {
+.mt-mark.is-dropped .mt-line svg,
+.mt-mark.is-video_dropped .mt-line svg,
+.mt-mark.is-screen_gap .mt-line svg {
   color: var(--warn);
+}
+
+/* A screen frame at its moment: a 16:9 thumbnail where a passage's text starts, and beside it the first line Voice
+   read on the screen. Open, the image takes the row's width at its own shape and all of the text shows. */
+.mt-frame {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.mt-frame .mt-main {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 12px;
+  padding-left: 28px;
+}
+.mt-shot {
+  position: relative;
+  width: 112px;
+  height: 63px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-3);
+  transition: border-color 120ms ease;
+}
+.mt-shot:hover {
+  border-color: var(--border-strong);
+}
+.mt-shot:focus-visible {
+  outline-offset: 1px;
+}
+.mt-shot > svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.4;
+}
+.mt-shot img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mt-frame.has-image .mt-shot > svg {
+  display: none;
+}
+.mt-frame.is-open .mt-main {
+  grid-template-columns: minmax(0, 1fr);
+}
+.mt-frame.is-open .mt-shot {
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--ar);
+  max-height: 72vh;
+}
+.mt-frame.is-open .mt-shot img {
+  object-fit: contain;
+}
+.mt-frame-body {
+  min-width: 0;
+}
+.mt-frame-line {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+.mt-frame.is-open .mt-frame-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mt-frame-line.is-none,
+.mt-frame-note {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-3);
+  user-select: none;
+}
+.mt-frame-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  margin: 2px 0 0 -4px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.mt-frame-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.mt-frame-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.mt-frame.is-open .mt-frame-toggle svg {
+  transform: rotate(180deg);
+}
+/* The rest of the text opens and closes in place. */
+.mt-frame-rest {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 320ms cubic-bezier(0.23, 1, 0.32, 1), opacity 320ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s linear 320ms;
+}
+.mt-frame.is-open .mt-frame-rest {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.mt-frame-full {
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-frame-rest,
+  .mt-frame-toggle svg {
+    transition: none;
+  }
 }
 
 .mt-live {
@@ -8835,6 +9003,22 @@ button.mt-person:disabled {
 .mt-person-sub.is-ask {
   color: var(--text-2);
 }
+/* A name Rukoo filled in for a 1:1 that a second voice on the call put in doubt: an orange dot asks for a look. The
+   line wraps rather than cut off its last words, which say what to do ("controleer het" in Dutch). */
+.mt-person-sub.is-check {
+  color: var(--text-2);
+  white-space: normal;
+}
+.mt-person-sub.is-check::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  vertical-align: 1px;
+}
 .mt-person > svg {
   width: 16px;
   height: 16px;
@@ -8914,6 +9098,39 @@ button.mt-person:disabled {
 .mt-empty .btn svg {
   color: var(--danger);
 }
+.mt-empty .mt-record-split {
+  margin-top: 10px;
+}
+.mt-empty .mt-record-split .btn {
+  margin-top: 0;
+}
+.mt-empty .mt-record-more svg {
+  color: inherit;
+}
+
+/* Record with a choice: the main part records with Voice's default, the arrow beside it opens what to record of
+   the screen. One hairline of the surface between them. */
+.mt-record-split {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+}
+.mt-record-split > .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.mt-record-split > .mt-record-more {
+  flex: none;
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.mt-record-more svg {
+  width: 15px;
+  height: 15px;
+}
 .mt-empty-hint {
   max-width: 380px;
   margin-top: 2px;
@@ -8963,11 +9180,41 @@ button.mt-person:disabled {
 .mt-record-btn svg {
   color: var(--danger);
 }
-.mt-record-btn.is-off {
+.mt-record-btn.is-off,
+.mt-record-split.is-side .mt-record-more.is-off {
   color: var(--text-2);
 }
 .mt-record-btn.is-off svg {
   color: var(--text-3);
+}
+.mt-record-split.is-side {
+  margin: 6px 0 12px;
+}
+.mt-record-split.is-side > .compose-btn {
+  margin: 0;
+}
+.mt-record-split.is-side > .mt-record-btn {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+.mt-record-btn span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-record-split.is-side > .mt-record-more {
+  width: 30px;
+}
+.mt-record-split.is-side > .mt-record-more svg {
+  color: var(--text-3);
+}
+.shell.collapsed .mt-record-split.is-side > .mt-record-more {
+  display: none;
+}
+.shell.collapsed .mt-record-split.is-side > .mt-record-btn {
+  flex: none;
+  border-radius: var(--radius);
 }
 .mt-nav .ic.mdot b {
   display: none;
@@ -9056,6 +9303,19 @@ button.mt-person:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 14px;
+}
+/* Record with Rukoo Voice and, beside it, the arrow that chooses what to record of the screen. */
+.cal-record {
+  display: inline-flex;
+  align-items: center;
+}
+.cal-record-more {
+  margin-left: 1px;
+  padding: 2px;
+}
+.cal-record-more:hover {
+  text-decoration: none;
+  background: var(--hover);
 }
 
 /* Settings > Meetings: Rukoo Voice's status as a pill with a dot, tinted when it says something. */

@@ -61,6 +61,7 @@ object ToolNames {
         "search_meetings" to ToolChipKind.SEARCH,
         "read_meeting_notes" to ToolChipKind.MEETING,
         "get_meeting_frame" to ToolChipKind.MEETING,
+        "get_meeting_clip" to ToolChipKind.MEETING,
         "get_meeting_media_link" to ToolChipKind.MEETING,
     )
 

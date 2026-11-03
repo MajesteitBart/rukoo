@@ -114,6 +114,7 @@ fn assert_data_deserializes_alike(name: &str, message: &Message, input: &Value) 
     match &event.body {
         EventBody::Status(v) => same(name, v, data),
         EventBody::MeetingStarted(v) => same(name, v, data),
+        EventBody::MeetingStarting(v) => same(name, v, data),
         EventBody::MeetingState(v) => same(name, v, data),
         EventBody::Speaker(v) => same(name, v, data),
         EventBody::Passage(v) => same(name, v, data),

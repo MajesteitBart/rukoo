@@ -18,6 +18,7 @@ use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
 use voice_engine::media::{NoScreenMedia, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
+use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
 use voice_engine::services::{
     AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
@@ -707,6 +708,9 @@ pub struct Harness {
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
     pub timing: ControllerTiming,
+    /// `rukoo-voice-screen`; a path that doesn't exist (the default) records no screen.
+    pub screen_exe: PathBuf,
+    pub screen_timing: ScreenTiming,
     pub dev_mode: bool,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
@@ -717,6 +721,8 @@ pub struct Harness {
     pub sync_timing: SyncTiming,
     /// The stand-in protector works on every platform; a test of DPAPI itself sets `Dpapi`.
     pub protector: Arc<dyn Protector>,
+    pub test_screen: Option<String>,
+    pub test_monitor: Option<String>,
 }
 
 impl Harness {
@@ -731,6 +737,8 @@ impl Harness {
             sync_timing: SyncTiming::default(),
             protector: Arc::new(TestProtector),
             recorder_exe: dir.join("no-recorder.exe"),
+            screen_exe: dir.join("no-screen.exe"),
+            screen_timing: ScreenTiming::default(),
             dir,
             input: Arc::new(FakeInput::new(keys.clone())),
             keys,
@@ -746,6 +754,8 @@ impl Harness {
             dev_mode: true,
             import_from: None,
             test_sources: None,
+            test_screen: None,
+            test_monitor: None,
         }
     }
 
@@ -788,8 +798,10 @@ impl Harness {
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
+            screen_exe: self.screen_exe.clone(),
             discovery_path: Some(self.dir.join("bridge.json")),
             controller: self.timing.clone(),
+            screen_timing: self.screen_timing.clone(),
             screen_files: Arc::clone(&self.screen_files),
             screen_media: Arc::clone(&self.screen_media),
             protector: Arc::clone(&self.protector),
@@ -808,6 +820,8 @@ impl Harness {
             dev_mode: self.dev_mode,
             exe_dir: self.dir.path().to_path_buf(),
             test_sources: self.test_sources.clone(),
+            test_screen: self.test_screen.clone(),
+            test_monitor: self.test_monitor.clone(),
             import_ownkey_from: self.import_from.clone(),
             version: "0.1.0-test".into(),
         }

@@ -54,9 +54,15 @@ const PILL_STATES = [
   'meeting-mic-lost',
   'meeting-mic-back',
   'meeting-video-dropped',
+  'meeting-video-dropped-encoder',
+  'meeting-frames-dropped',
+  'meeting-screen-failed',
+  'meeting-screen-moved',
+  'meeting-screen-button',
+  'meeting-screen-hover',
   'meeting-dictating'
 ];
-const SETTINGS_PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'storage', 'rukoo', 'import'];
+const SETTINGS_PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
 // Other states worth seeing: [file name, query].
 const SCENARIOS = [
   ['main-fresh', 'page=main&scenario=fresh'],
@@ -75,6 +81,24 @@ const SCENARIOS = [
   ['import-never', 'page=import&scenario=fresh'],
   ['import-dev', 'page=import&scenario=dev'],
   ['import-cloud', 'page=import&scenario=cloud'],
+  ['main-screen', 'page=meetings&features=screen'],
+  ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
+  ['main-screen-unavailable', 'page=meetings&screenUnavailable=1'],
+  ['storage-screen', 'page=storage&features=screen'],
+  ['main-speakers-cpu', 'page=meetings&speakers=cpu'],
+  ['speakers-ready', 'page=speakers&speakers=ready'],
+  ['speakers-off', 'page=speakers&speakers=off'],
+  ['speakers-cpu', 'page=speakers&speakers=cpu'],
+  ['speakers-model', 'page=speakers&speakers=model'],
+  ['speakers-modelDamaged', 'page=speakers&speakers=modelDamaged'],
+  ['speakers-runtime', 'page=speakers&speakers=runtime'],
+  ['speakers-runtimeFailed', 'page=speakers&speakers=runtimeFailed'],
+  ['speakers-platform', 'page=speakers&speakers=platform'],
+  ['speakers-key', 'page=speakers&speakers=key'],
+  ['speakers-consent', 'page=speakers&speakers=consent'],
+  ['speakers-mistral', 'page=speakers&speakers=mistral'],
+  ['speakers-stopped', 'page=speakers&speakers=stopped'],
+  ['meetingTranscription-stream', 'page=meetingTranscription&speakers=consent'],
   ['later-main', 'page=meetings&later=1'],
   ['later-speakers', 'page=speakers&later=1'],
   // Settings > Storage with bucket sync in each of its states (mock/settings.js, &sync=).
@@ -110,8 +134,8 @@ async function main() {
             await page.waitForTimeout(650);
             await shot(path.join(out, 'pill', `${theme}-${lang}`, `${state}.png`));
           }
-          // Where the app puts the native stop window, from the page's own pill_layout report.
-          for (const state of ['meeting-recording', 'meeting-confirm']) {
+          // Where the app puts the native stop and monitor windows, from the page's own pill_layout report.
+          for (const state of ['meeting-recording', 'meeting-confirm', 'meeting-screen-button']) {
             await page.goto(`${base}pill.html?mock=${state}&theme=${theme}&lang=${lang}&backdrop=1&hit=1`);
             await page.waitForTimeout(700);
             await shot(path.join(out, 'pill', `${theme}-${lang}`, `${state}-hit.png`));
@@ -153,8 +177,12 @@ async function main() {
       ]) {
         for (const [name, query] of [
           ['main', 'page=main&scenario=busy'],
+          ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
           ['transcription', 'page=transcription&scenario=busy'],
           ['meeting-transcription', 'page=meetingTranscription&scenario=cloud'],
+          ['meeting-transcription-stream', 'page=meetingTranscription&speakers=consent'],
+          ['speakers-cpu', 'page=speakers&speakers=cpu'],
+          ['speakers-mistral', 'page=speakers&speakers=mistral'],
           ['dictionary', 'page=dictionary'],
           ['rukoo', 'page=rukoo'],
           ['import', 'page=import&scenario=cloud'],
@@ -180,6 +208,13 @@ async function main() {
         await page.click('[data-a="licenses"]');
         await page.waitForTimeout(300);
         await shot(path.join(dir, 'licenses.png'));
+        await page.keyboard.press('Escape');
+        // Why the speaker label runtime didn't start.
+        await page.goto(`${base}settings.html?mock=1&page=speakers&speakers=runtimeFailed&theme=${theme}&lang=${lang}`);
+        await page.waitForSelector('[data-a="speakers-details"]');
+        await page.click('[data-a="speakers-details"]');
+        await page.waitForTimeout(300);
+        await shot(path.join(dir, 'speakers-error-details.png'));
         await page.keyboard.press('Escape');
         await page.goto(`${base}settings.html?mock=1&page=import&theme=${theme}&lang=${lang}`);
         await page.waitForSelector('.page-inner .card');

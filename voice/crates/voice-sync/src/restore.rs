@@ -60,6 +60,7 @@ pub fn synthesize_timeline(created_at: u64, files: &[ManifestFile]) -> String {
     let mut lines = vec![Line::Session {
         t: 0,
         wall: created_at,
+        boot: None,
         session: 1,
         pid: 0,
         resumed: false,

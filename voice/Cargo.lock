@@ -4394,8 +4394,11 @@ dependencies = [
  "httparse",
  "log",
  "rand",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4625,6 +4628,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tar",
+ "tungstenite",
  "ureq 3.5.0",
  "windows",
 ]
@@ -4646,6 +4650,8 @@ dependencies = [
  "voice-protocol",
  "voice-recorder",
  "voice-s3-fake",
+ "voice-screen",
+ "voice-screen-files",
  "voice-sync",
  "windows",
 ]
@@ -4680,6 +4686,7 @@ dependencies = [
  "voice-core",
  "voice-protocol",
  "voice-recorder",
+ "voice-screen-files",
 ]
 
 [[package]]
@@ -4709,6 +4716,40 @@ name = "voice-s3-fake"
 version = "0.1.0"
 dependencies = [
  "ureq 3.5.0",
+]
+
+[[package]]
+name = "voice-screen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "voice-recorder",
+ "voice-screen-files",
+ "windows",
+]
+
+[[package]]
+name = "voice-screen-files"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "voice-protocol",
+ "voice-recorder",
+]
+
+[[package]]
+name = "voice-speakers"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "windows",
 ]
 
 [[package]]

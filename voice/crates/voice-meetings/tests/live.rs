@@ -127,6 +127,7 @@ impl MeetingControl for LibraryControl {
                 .as_deref()
                 .and_then(MeetingId::parse),
             dictating: false,
+            screen_default: None,
         }
     }
 }

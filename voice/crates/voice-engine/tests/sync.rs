@@ -912,7 +912,7 @@ fn stand_in_mp4() -> Vec<u8> {
 }
 
 impl ScreenFiles for StandInScreen {
-    fn list(&self, meeting_dir: &Path, stopped: bool) -> Vec<ScreenFile> {
+    fn list(&self, meeting_dir: &Path, stopped: bool) -> std::io::Result<Vec<ScreenFile>> {
         let mut files = Vec::new();
         if meeting_dir.join(FRAME).is_file() {
             files.push(ScreenFile {
@@ -928,7 +928,7 @@ impl ScreenFiles for StandInScreen {
                 closed: stopped,
             });
         }
-        files
+        Ok(files)
     }
 }
 

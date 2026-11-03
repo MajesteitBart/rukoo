@@ -10,9 +10,9 @@ use serde_json::Value;
 
 use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
-    Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingState,
-    MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply, ReplyError,
-    ScreenMode, Speaker, StartArgs, StartedBy, Status, Track, Welcome,
+    Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
+    MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
+    ReplyError, ScreenMode, Speaker, StartArgs, StartedBy, Status, Track, Welcome,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
@@ -152,9 +152,19 @@ fn error(f: &Fields) -> Checked<ErrorMessage> {
 }
 
 fn status(f: &Fields) -> Checked<Status> {
+    let recording = f.nullable_meeting("recording")?;
+    let dictating = f.boolean("dictating")?;
+    let screen_default = match f.optional_string("screenDefault")? {
+        None => None,
+        Some(screen) => match ScreenMode::parse(&screen) {
+            Some(screen) => Some(screen),
+            None => return invalid("screenDefault"),
+        },
+    };
     Ok(Status {
-        recording: f.nullable_meeting("recording")?,
-        dictating: f.boolean("dictating")?,
+        recording,
+        dictating,
+        screen_default,
     })
 }
 
@@ -173,6 +183,9 @@ fn event(f: &Fields) -> Checked<Event> {
     let body = match name {
         events::STATUS => EventBody::Status(status(&data)?),
         events::MEETING_STARTED => EventBody::MeetingStarted(meeting_started(&data)?),
+        events::MEETING_STARTING => EventBody::MeetingStarting(MeetingStarting {
+            screen: data.named("screen", ScreenMode::parse)?,
+        }),
         events::MEETING_STATE => EventBody::MeetingState(meeting_state(&data)?),
         events::SPEAKER => EventBody::Speaker(Speaker {
             id: data.id_text("id")?,
@@ -343,6 +356,29 @@ fn command(f: &Fields) -> Checked<Command> {
             at: a.uint("at")?,
         },
         commands::STATUS_GET => CommandBody::StatusGet,
+        commands::CLIP_GET => {
+            let meeting = a.meeting("meeting")?;
+            let start = a.uint("start")?;
+            let end = a.uint("end")?;
+            if end < start {
+                return invalid("end");
+            }
+            CommandBody::ClipGet {
+                meeting,
+                start,
+                end,
+            }
+        }
+        commands::MEETING_PROTECTED => CommandBody::MeetingProtected {
+            meeting: a.meeting("meeting")?,
+        },
+        commands::SCREEN_GET => CommandBody::ScreenGet {
+            meeting: a.meeting("meeting")?,
+        },
+        commands::SCREEN_SELECT => CommandBody::ScreenSelect {
+            meeting: a.meeting("meeting")?,
+            monitor: a.short_text("monitor")?,
+        },
         commands::MEDIA_OPEN => {
             let meeting = a.meeting("meeting")?;
             let kind = a.named("kind", MediaKind::parse)?;
@@ -689,6 +725,89 @@ mod tests {
     }
 
     #[test]
+    fn screen_commands_have_limits() {
+        let meeting = "m-20261030-171203-4f2a";
+        let check = |name: &str, args: Value| {
+            validate_incoming(Side::Rukoo, &command("c-1", name, args)).map(|m| match m {
+                Message::Command(Command { body, .. }) => body,
+                other => panic!("not a command: {other:?}"),
+            })
+        };
+        let clip = check(
+            "clip.get",
+            json!({ "meeting": meeting, "start": 5, "end": 5 }),
+        )
+        .unwrap();
+        assert_eq!(
+            clip.args(),
+            json!({ "meeting": meeting, "start": 5, "end": 5 })
+        );
+        let reason = |name: &str, args: Value| check(name, args).unwrap_err().reason;
+        assert_eq!(
+            reason(
+                "clip.get",
+                json!({ "meeting": meeting, "start": 6, "end": 5 })
+            ),
+            "end"
+        );
+        assert_eq!(
+            reason(
+                "clip.get",
+                json!({ "meeting": meeting, "start": 1.5, "end": 5 })
+            ),
+            "start"
+        );
+        assert_eq!(
+            reason("clip.get", json!({ "start": 1, "end": 5 })),
+            "meeting"
+        );
+        assert_eq!(reason("meeting.protected", json!({})), "meeting");
+        assert_eq!(reason("screen.get", json!({})), "meeting");
+        let select = |monitor: Value| {
+            check(
+                "screen.select",
+                json!({ "meeting": meeting, "monitor": monitor }),
+            )
+        };
+        assert_eq!(
+            select(json!(r"\\.\DISPLAY2")).unwrap().args()["monitor"],
+            r"\\.\DISPLAY2"
+        );
+        assert!(select(json!("m".repeat(64))).is_ok());
+        // Characters, as Rukoo counts them: 64 emoji fit.
+        assert!(select(json!("😀".repeat(64))).is_ok());
+        assert_eq!(select(json!("")).unwrap_err().reason, "monitor");
+        assert_eq!(select(json!("m".repeat(65))).unwrap_err().reason, "monitor");
+    }
+
+    #[test]
+    fn status_screen_default_is_optional() {
+        let status = |data: Value| json!({ "type": "event", "seq": 5, "event": "status", "createdAt": 0, "data": data });
+        let read = |data: Value| match validate_incoming(Side::Voice, &status(data)).unwrap() {
+            Message::Event(Event {
+                body: EventBody::Status(status),
+                ..
+            }) => status,
+            other => panic!("not a status: {other:?}"),
+        };
+        let given =
+            read(json!({ "recording": null, "dictating": false, "screenDefault": "video" }));
+        assert_eq!(given.screen_default, Some(ScreenMode::Video));
+        let null = read(json!({ "recording": null, "dictating": false, "screenDefault": null }));
+        assert_eq!(null.screen_default, None);
+        assert_eq!(
+            reason(
+                Side::Voice,
+                status(json!({ "recording": null, "dictating": false, "screenDefault": "4k" }))
+            ),
+            "screenDefault"
+        );
+        let starting = json!({ "type": "event", "seq": 5, "event": "meeting.starting", "createdAt": 0,
+            "data": { "screen": "frames" } });
+        assert_eq!(reason(Side::Voice, starting), "meeting");
+    }
+
+    #[test]
     fn list_fills_in_the_default_limit() {
         let list = command("c-1", "meeting.list", json!({}));
         let Message::Command(Command { body, .. }) = validate_incoming(Side::Rukoo, &list).unwrap()
@@ -700,12 +819,13 @@ mod tests {
 
     #[test]
     fn unknown_commands_keep_their_arguments() {
-        let clip = command("c-1", "clip.get", json!({ "from": 1 }));
-        let Message::Command(Command { body, .. }) = validate_incoming(Side::Rukoo, &clip).unwrap()
+        let unknown = command("c-1", "example.unknown", json!({ "from": 1 }));
+        let Message::Command(Command { body, .. }) =
+            validate_incoming(Side::Rukoo, &unknown).unwrap()
         else {
             panic!("not a command");
         };
-        assert_eq!(body.name(), "clip.get");
+        assert_eq!(body.name(), "example.unknown");
         assert_eq!(body.args(), json!({ "from": 1 }));
     }
 
