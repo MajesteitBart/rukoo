@@ -1,7 +1,8 @@
 //! One encoder thread per video file. The main thread hands it frames through a queue of four;
-//! when the encoder falls behind, the oldest frame goes. The sink writer lives and dies on this
-//! thread, and a `Finalize` that hangs costs only this thread: `end` gives up after its timeout
-//! and the file stays readable to its last fragment.
+//! when the encoder falls behind, the oldest frame goes. Frames held back on a still screen
+//! (`hold`) replace each other; the writer puts the newest in at its next re-submit. The sink
+//! writer lives and dies on this thread, and a `Finalize` that hangs costs only this thread: `end`
+//! gives up after its timeout and the file stays readable to its last fragment.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -39,6 +40,7 @@ pub struct VideoStart {
 #[derive(Default)]
 struct State {
     frames: VecDeque<(ID3D11Texture2D, u64)>,
+    held: Option<(ID3D11Texture2D, u64)>,
     tick: Option<u64>,
     end: bool,
     dropped: u64,
@@ -151,13 +153,14 @@ fn run(
 ) {
     let mut failed = false;
     loop {
-        let (frames, tick, end) = {
+        let (frames, held, tick, end) = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
             while state.frames.is_empty() && state.tick.is_none() && !state.end {
                 state = shared.ready.wait(state).unwrap_or_else(|e| e.into_inner());
             }
             (
                 std::mem::take(&mut state.frames),
+                state.held.take(),
                 state.tick.take(),
                 state.end,
             )
@@ -170,8 +173,15 @@ fn run(
                     break;
                 }
             }
+            if let Some((texture, boot)) = held {
+                writer.hold(&texture, boot);
+            }
             if let (Ok(()), Some(boot)) = (&result, tick) {
                 result = writer.tick(boot);
+            }
+            // The file ends on the newest picture, and `end_t` covers it.
+            if result.is_ok() && end {
+                result = writer.flush();
             }
             end_t.store(writer.end_t(), Ordering::SeqCst);
             if let Err(error) = result {
@@ -216,11 +226,22 @@ impl VideoThread {
             state.frames.pop_front();
             state.dropped += 1;
         }
+        if state.held.as_ref().is_some_and(|(_, at)| *at <= boot) {
+            state.held = None;
+        }
         state.frames.push_back((texture, boot));
         self.shared.ready.notify_one();
     }
 
-    /// Lets the writer re-submit its last frame after a quarter second of still screen.
+    /// Keeps a frame of a still screen as the newest picture, for the writer's next re-submit.
+    /// It isn't a sample of its own, and a newer one replaces it.
+    pub fn hold(&self, texture: ID3D11Texture2D, boot: u64) {
+        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.held = Some((texture, boot));
+    }
+
+    /// Lets the writer put in the held frame, or its last frame again, after a quarter second
+    /// without a sample.
     pub fn tick(&self, boot_now: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         state.tick = Some(boot_now);

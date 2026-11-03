@@ -1,7 +1,9 @@
 //! The synthetic screen of tests and live runs (`--test synthetic:…`): numbered slides drawn
 //! with GDI into memory, so nothing of the real desktop is ever captured. Like Windows.Graphics
-//! Capture it sends frames only when the picture changes: a short burst at each new slide, then
-//! nothing until the next.
+//! Capture it sends frames only when the picture changes: a short burst at each new slide, one
+//! frame per keystroke with `type-every`, and nothing in between, unless `idle-every` sends the
+//! unchanged picture again as Windows can on a still screen. With `dirty` each frame says what
+//! share of the screen changed since the frame before, as Windows' dirty regions do.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
@@ -28,6 +30,13 @@ use crate::record::Ev;
 
 /// Frames sent after each change, 66 ms apart, as a real screen sends while a slide draws.
 const BURST: u32 = 5;
+/// A keystroke's mark: a dark square this many pixels wide, on the 8-pixel grid of the 1/8-scale
+/// thumbnail, so it darkens two by two thumbnail pixels.
+const KEY: u32 = 16;
+/// The distance from one mark to the next, and between rows.
+const KEY_STEP: u32 = 24;
+/// Rows of marks before typing starts again at the first.
+const KEY_ROWS: u32 = 4;
 const FRAME_GAP: Duration = Duration::from_millis(66);
 /// Without `text=`, slides read "Screen <n>".
 const DEFAULT_WORD: &str = "Screen";
@@ -136,16 +145,41 @@ fn run(
     };
     let mut shown = 0u64;
     let mut burst = 0u32;
+    // Keystrokes typed on this slide, when the next is due, and the share of the screen that
+    // changed since the last frame sent.
+    let mut typed = 0u32;
+    let mut next_key = spec
+        .type_every_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+    let mut dirty = 0f32;
+    let mut last_sent: Option<Instant> = None;
     while !stop.load(Ordering::SeqCst) {
         let now = Instant::now();
         let slide = slide_at(now);
         if slide != shown {
             shown = slide;
             canvas.draw(&format!("{word} {slide}"), slide, monitor);
+            typed = 0;
             burst = BURST;
+            dirty = 1.0;
+        }
+        if let (Some(every), Some(at)) = (spec.type_every_ms, next_key) {
+            if now >= at {
+                next_key = Some(at + Duration::from_millis(every));
+                dirty = (dirty + canvas.type_key(typed)).min(1.0);
+                typed += 1;
+                burst = burst.max(1);
+            }
+        }
+        let idle = spec.idle_every_ms.is_some_and(|every| {
+            last_sent.is_some_and(|at| now - at >= Duration::from_millis(every))
+        });
+        if burst == 0 && idle {
+            burst = 1;
         }
         if burst > 0 {
             burst -= 1;
+            last_sent = Some(now);
             match d3d.upload(width, height, canvas.pixels()) {
                 Ok(texture) => {
                     let frame = CapturedFrame {
@@ -153,9 +187,10 @@ fn run(
                         boot: clockwin::boot_100ns(),
                         width,
                         height,
-                        dirty: None,
+                        dirty: spec.dirty.then_some(dirty),
                         generation,
                     };
+                    dirty = 0.0;
                     let _ = to_main.try_send(Ev::Frame(frame));
                 }
                 Err(_) => {
@@ -292,6 +327,40 @@ impl Canvas {
                 *alpha = 255;
             }
         }
+    }
+
+    /// Types keystroke `n` of the slide: a dark square in a row under the text, the next one
+    /// along. Returns the share of the screen it covers.
+    fn type_key(&mut self, n: u32) -> f32 {
+        let per_row = (self.width.saturating_sub(2 * 40) / KEY_STEP).max(1);
+        let left = 40 + (n % per_row) * KEY_STEP;
+        let top = ((self.height * 2 / 3) & !7) + (n / per_row % KEY_ROWS) * KEY_STEP;
+        let (right, bottom) = ((left + KEY).min(self.width), (top + KEY).min(self.height));
+        if right <= left || bottom <= top {
+            return 0.0;
+        }
+        unsafe {
+            let dark = CreateSolidBrush(COLORREF(0x0020_2020));
+            let mark = RECT {
+                left: left as i32,
+                top: top as i32,
+                right: right as i32,
+                bottom: bottom as i32,
+            };
+            FillRect(self.dc, &mark, dark);
+            let _ = DeleteObject(dark.into());
+            let _ = GdiFlush();
+            let pixels = std::slice::from_raw_parts_mut(
+                self.bits,
+                self.width as usize * self.height as usize * 4,
+            );
+            for y in top..bottom {
+                for x in left..right {
+                    pixels[(y as usize * self.width as usize + x as usize) * 4 + 3] = 255;
+                }
+            }
+        }
+        ((right - left) * (bottom - top)) as f32 / (self.width * self.height) as f32
     }
 
     fn pixels(&self) -> &[u8] {
