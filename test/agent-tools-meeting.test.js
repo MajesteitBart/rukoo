@@ -397,6 +397,18 @@ test('a frame comes as an image after a note that it is untrusted, with no struc
   assert.equal(info.note, `The image follows. ${IMAGE_DATA}`);
   assert.ok(info.text.startsWith(`<unsafe_content source="screen" meeting_id="${M}" at_seconds="412">`));
   assert.equal(info.text.match(/<\/unsafe_content>/g).length, 1);
+  // Retention removed the image: the text still comes, tagged, and no image follows.
+  voice.frame = async () => ({ frame: { id: 'f-000412000', at: 412000, width: 1920, height: 1080, text: 'Q3 roadmap' }, image: null });
+  const textOnly = await call('get_meeting_frame', { meeting_id: M, at_seconds: 413 });
+  assert.equal(textOnly.isError, undefined);
+  assert.equal(textOnly.content.length, 1, 'no image item');
+  const onlyText = JSON.parse(textOnly.content[0].text);
+  assert.ok(onlyText.text.startsWith(`<unsafe_content source="screen" meeting_id="${M}" at_seconds="412">`));
+  assert.match(onlyText.text, /Q3 roadmap/);
+  assert.match(onlyText.note, /removed this meeting's screen images/);
+  // Anything else that isn't a plain image is still refused.
+  voice.frame = async () => ({ frame: {}, image: { type: 'text/html', data: 'PGI+' } });
+  assert.match(failure(await call('get_meeting_frame', { meeting_id: M, at_seconds: 413 })), /cannot pass on/);
   // A meeting without the screen says so before asking Voice.
   const { feed: feed2, call: call2 } = await setup(t);
   feed2([startedEv()]);
@@ -561,6 +573,19 @@ test('get_meeting_clip skips a frame Voice no longer finds, and says so when Voi
   const cut = clipInfo(await call('get_meeting_clip', { meeting_id: M, from_seconds: 60, to_seconds: 100 }));
   assert.equal(cut.frames.length, 1);
   assert.match(cut.note, /Rukoo Voice stopped giving frames after 1 \(offline\)\./);
+  // Retention removed some images: those frames keep their text and say they have no image, and the images that
+  // come still line up with the frames that have one.
+  voice.frame = async (id, at) => (at === 90000 ? { frame: { ...image(at).frame, text: 'Agenda' }, image: null } : image(at));
+  const mixed = await call('get_meeting_clip', { meeting_id: M, from_seconds: 60, to_seconds: 100, max_frames: 8 });
+  const mixedInfo = clipInfo(mixed);
+  assert.deepEqual(mixedInfo.frames.map((f) => [f.at_seconds, f.image === false]), [[60, false], [70, false], [80, false], [90, true], [100, false]]);
+  assert.match(mixedInfo.frames[3].text, /Agenda/);
+  assert.equal(mixed.content.length, 5, 'four images');
+  assert.match(mixedInfo.note, /One frame has "image": false/);
+  voice.frame = async (id, at) => ({ frame: image(at).frame, image: null });
+  const none = clipInfo(await call('get_meeting_clip', { meeting_id: M, from_seconds: 60, to_seconds: 100, max_frames: 8 }));
+  assert.equal(none.frames.length, 5);
+  assert.match(none.note, /^There are no images\. 5 frames have "image": false/);
   // Big images: the answer stops at 12 MB of them.
   const big = 'A'.repeat(6 * 1000 * 1000);
   voice.frame = async (id, at) => image(at, big);
