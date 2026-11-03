@@ -15,6 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use common::{assert_failure, probs, TempDir, Worker, EXE};
 use serde_json::{json, Value};
@@ -26,6 +27,14 @@ const AMI_FRAMES: i64 = 6_000;
 /// One chunk of the live geometry: 38 encoder frames of 80 ms.
 const CHUNK: i64 = 38 * 8;
 const SPEAKERS: usize = 8;
+
+/// One test with the runtime at a time. NeMo-Speech.cpp runs four compute threads that wait
+/// for each other at every step, so two workers on a four-core CI runner starve each other: the
+/// self-test ran at 0.16 times real time next to another worker, against 6.8 alone.
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    static RUNTIME: Mutex<()> = Mutex::new(());
+    RUNTIME.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 struct Assets {
     runtime: PathBuf,
@@ -86,6 +95,7 @@ fn check_frames(response: &Value, expected_first: i64) -> i64 {
 #[test]
 fn labels_the_ami_excerpt_in_one_second_pushes() {
     let Some(assets) = assets() else { return };
+    let _one = one_at_a_time();
     let mut worker = Worker::spawn();
     let loaded = worker.request(&load(&assets));
     assert_eq!(loaded["ok"], json!(true), "{loaded}\n{}", worker.stderr());
@@ -153,6 +163,7 @@ fn labels_the_ami_excerpt_in_one_second_pushes() {
 #[test]
 fn a_second_load_is_refused() {
     let Some(assets) = assets() else { return };
+    let _one = one_at_a_time();
     let mut worker = Worker::spawn();
     assert_eq!(worker.request(&load(&assets))["ok"], json!(true));
     assert_failure(&worker.request(&load(&assets)), "bad_request");
@@ -161,6 +172,7 @@ fn a_second_load_is_refused() {
 #[test]
 fn a_bad_model_is_refused_without_crashing() {
     let Some(assets) = assets() else { return };
+    let _one = one_at_a_time();
     let temp = TempDir::new("model");
     let mut worker = Worker::spawn();
 
@@ -189,6 +201,7 @@ fn a_bad_model_is_refused_without_crashing() {
 #[test]
 fn the_self_test_hears_at_least_three_speakers() {
     let Some(assets) = assets() else { return };
+    let _one = one_at_a_time();
     let temp = TempDir::new("report");
     let report_path = temp.path().join("report.json");
     let output = Command::new(EXE)
@@ -228,6 +241,7 @@ fn the_self_test_hears_at_least_three_speakers() {
 #[test]
 fn the_runtime_takes_its_system_dlls_from_system32_even_with_copies_beside_it() {
     let Some(assets) = assets() else { return };
+    let _one = one_at_a_time();
     let temp = TempDir::new("planted");
     let runtime = temp.path().join("nemo_speech");
     fs::create_dir(&runtime).unwrap();

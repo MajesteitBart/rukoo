@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use common::score::{accuracy, mapping, Span};
@@ -42,6 +42,15 @@ use voice_recorder::meeting::read_recorder_file;
 
 const WAIT: Duration = Duration::from_secs(180);
 const EXCERPT_MS: u64 = 60_000;
+/// One AMI test at a time. Each plays the excerpt through the real recorder in real time, and
+/// two of them run a speaker worker whose four NeMo threads wait for each other at every step:
+/// side by side on a four-core CI runner the labels came too late, and only `call-1` arrived
+/// before the stop.
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    static AMI: Mutex<()> = Mutex::new(());
+    AMI.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The three reference speakers with 8 s or more in the excerpt.
 const MAIN: [&str; 3] = ["MEE071", "FEO070", "MEE073"];
 
@@ -459,6 +468,7 @@ fn ami_oracle_hears_the_excerpt_through_the_recorder() {
         eprintln!("skipped: set RUKOO_VOICE_TEST_AMI to check the AMI oracle");
         return;
     };
+    let _one = one_at_a_time();
     let expected: Vec<String> = AmiOracle::new(&ami)
         .words
         .into_iter()
@@ -506,6 +516,7 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
     let Some(assets) = assets() else {
         return;
     };
+    let _one = one_at_a_time();
     let mut run = Run::start("ami-score", &assets.ami, false, Some(&assets));
     run.wait_for(EXCERPT_MS + 4_000);
     let reference = reference(&assets.ami.rttm, run.call_start(), 1);
@@ -544,6 +555,7 @@ fn ami_ids_survive_a_killed_worker() {
     let Some(assets) = assets() else {
         return;
     };
+    let _one = one_at_a_time();
     let mut run = Run::start("ami-kill", &assets.ami, true, Some(&assets));
     let kill_at = EXCERPT_MS + 30_000;
     run.wait_for(kill_at);
