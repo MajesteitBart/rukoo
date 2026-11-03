@@ -292,11 +292,12 @@ test('notes share composer formatting, save Markdown and survive a restart, with
     await shot(`notes-tab-${theme}-${language}`);
   }
   await setSize(860, 900);
-  for (const theme of ['dark', 'light']) {
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
     await setTheme(theme);
-    await shot(`notes-narrow-${theme}-nl`);
+    await shot(`notes-narrow-${theme}-${language}`);
     await view().locator('[data-mt-tab="transcript"]').click();
-    await shot(`folded-frames-narrow-${theme}-nl`);
+    await shot(`folded-frames-narrow-${theme}-${language}`);
     await view().locator('[data-mt-tab="notes"]').click();
   }
   await app.evaluate(({ webContents }) => webContents.getAllWebContents().find((w) => w.getType() === 'window').setZoomFactor(2));
