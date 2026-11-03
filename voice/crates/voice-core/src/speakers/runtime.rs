@@ -517,13 +517,22 @@ mod tests {
             .collect();
         assert!(verify_ownkey_with(&ownkey, &known, &crt));
         // A C runtime DLL that isn't the known one, at the same size: the worker would load it
-        // while the five still match, so the folder doesn't count.
-        fs::write(internal.join(CRT_DLLS[1]), "crt 9").unwrap();
+        // while the five still match, so the folder doesn't count. Each rewrite gets its own
+        // modification time, as a real one would: the hash cache keys on size and time, and a
+        // coarse file system clock can give two quick writes the same time.
+        let rewrite = |bytes: &str, later: u64| {
+            let path = internal.join(CRT_DLLS[1]);
+            fs::write(&path, bytes).unwrap();
+            let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.set_modified(SystemTime::now() + Duration::from_secs(later))
+                .unwrap();
+        };
+        rewrite("crt 9", 30);
         assert!(
             !verify_ownkey_with(&ownkey, &known, &crt),
             "a changed C runtime DLL"
         );
-        fs::write(internal.join(CRT_DLLS[1]), "crt 1").unwrap();
+        rewrite("crt 1", 60);
         assert!(verify_ownkey_with(&ownkey, &known, &crt));
         // Nothing the DLLs import is there.
         fs::remove_file(internal.join(CRT_DLLS[2])).unwrap();
