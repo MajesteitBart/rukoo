@@ -4,7 +4,7 @@
 
 Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex or OpenClaw.
 
-The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
+The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, with the voices on the call named and the screen recorded if you want, backs meetings up encrypted to a bucket you own, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
 
 ## Install
 
@@ -16,6 +16,8 @@ Download Rukoo from [GitHub Releases](https://github.com/MajesteitBart/rukoo/rel
 | Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions |
 | macOS 13 or newer | Experimental | DMG or ZIP, `arm64` for Apple Silicon or `x64` for Intel |
 | Android 12 or newer | Experimental | `Rukoo-Android-<version>.apk`, built for the Galaxy Z Fold7 |
+
+Rukoo Voice, the Windows companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. Meetings need it next to Rukoo 2.2.0 or newer.
 
 The builds aren't signed yet, so Windows SmartScreen warns before the first start: choose "More info", then "Run anyway". `SHA256SUMS.txt` in each release has the checksums of the desktop packages, and the release notes give the APK's.
 
