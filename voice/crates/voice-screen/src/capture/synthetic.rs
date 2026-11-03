@@ -1,8 +1,9 @@
 //! The synthetic screen of tests and live runs (`--test synthetic:…`): numbered slides drawn
 //! with GDI into memory, so nothing of the real desktop is ever captured. Like Windows.Graphics
 //! Capture it sends frames only when the picture changes: a short burst at each new slide, one
-//! frame per keystroke with `type-every`, and nothing in between. With `dirty` each frame says
-//! what share of the screen changed since the frame before, as Windows' dirty regions do.
+//! frame per keystroke with `type-every`, and nothing in between, unless `idle-every` sends the
+//! unchanged picture again as Windows can on a still screen. With `dirty` each frame says what
+//! share of the screen changed since the frame before, as Windows' dirty regions do.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
@@ -151,6 +152,7 @@ fn run(
         .type_every_ms
         .map(|ms| Instant::now() + Duration::from_millis(ms));
     let mut dirty = 0f32;
+    let mut last_sent: Option<Instant> = None;
     while !stop.load(Ordering::SeqCst) {
         let now = Instant::now();
         let slide = slide_at(now);
@@ -169,8 +171,15 @@ fn run(
                 burst = burst.max(1);
             }
         }
+        let idle = spec.idle_every_ms.is_some_and(|every| {
+            last_sent.is_some_and(|at| now - at >= Duration::from_millis(every))
+        });
+        if burst == 0 && idle {
+            burst = 1;
+        }
         if burst > 0 {
             burst -= 1;
+            last_sent = Some(now);
             match d3d.upload(width, height, canvas.pixels()) {
                 Ok(texture) => {
                     let frame = CapturedFrame {

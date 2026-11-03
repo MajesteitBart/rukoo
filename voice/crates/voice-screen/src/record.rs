@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
 use voice_screen_files::control::{self, Request};
 use voice_screen_files::frames::{Decision, Saver, Thumb};
+use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{self, History, JournalWriter, Line, OpenError, FORMAT_VERSION};
 use voice_screen_files::monitors::{self, MonitorInfo};
 use voice_screen_files::paths;
@@ -64,7 +65,7 @@ pub enum Ev {
 const TICK: Duration = Duration::from_millis(250);
 const HEARTBEAT: Duration = Duration::from_secs(2);
 const LOCK_CHECK: Duration = Duration::from_secs(1);
-/// At most five thumbnails a second.
+/// At most five thumbnails a second, for the saver and the video gate together.
 const THUMB_GAP: Duration = Duration::from_millis(200);
 /// A still screen sends no frames, so the last one is offered again this often, letting the
 /// saver see that the screen settled.
@@ -298,6 +299,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         monitor,
         pinned: opts.monitor,
         video: None,
+        gate: VideoGate::new(),
         video_seq,
         video_bytes_closed: 0,
         encoder: None,
@@ -434,6 +436,8 @@ struct Screen {
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pinned: Option<String>,
     video: Option<VideoThread>,
+    /// Which frames of the open video file go to the encoder.
+    gate: VideoGate,
     video_seq: u64,
     video_bytes_closed: u64,
     encoder: Option<(String, bool)>,
@@ -850,23 +854,32 @@ impl Screen {
                 return;
             }
         }
-        self.video_frame(&frame, t);
-        self.frames_frame(frame, t);
-    }
-
-    fn frames_frame(&mut self, frame: CapturedFrame, t: u64) {
-        if self.drops.frames.is_some() {
-            return;
-        }
+        let video = self.open_video(&frame, t);
+        let frames = self.drops.frames.is_none();
+        // One thumbnail serves the video gate and the saver, at most five a second.
+        let wanted = (video && self.gate.wants_thumb(frame.dirty))
+            || (frames && self.saver.needs_thumb(frame.dirty));
         let now = Instant::now();
-        let thumb = if self.saver.needs_thumb(frame.dirty)
-            && self.last_thumb_at.is_none_or(|at| now - at >= THUMB_GAP)
-        {
+        let thumb = if wanted && self.last_thumb_at.is_none_or(|at| now - at >= THUMB_GAP) {
             self.last_thumb_at = Some(now);
             self.thumb(&frame)
         } else {
             None
         };
+        // Reading it lost the graphics device: the capture starts over without this frame.
+        if frame.generation != self.generation {
+            return;
+        }
+        if video {
+            self.video_frame(&frame, thumb.as_ref());
+        }
+        if frames {
+            self.frames_frame(frame, t, thumb);
+        }
+    }
+
+    /// `thumb` is this frame's thumbnail, when one was read.
+    fn frames_frame(&mut self, frame: CapturedFrame, t: u64, thumb: Option<Thumb>) {
         // The thumbnail of this frame's own picture: the one just read, or the last frame's when
         // nothing on the screen changed since. A frame with small changes has none; a re-offer
         // reads it, so a change never stays measured on an older picture.
@@ -1026,9 +1039,11 @@ impl Screen {
             && self.stop.is_none()
     }
 
-    fn video_frame(&mut self, frame: &CapturedFrame, t: u64) {
+    /// Makes sure a video file at the frame's size is open when the video records; whether one
+    /// is.
+    fn open_video(&mut self, frame: &CapturedFrame, t: u64) -> bool {
         if !self.video_wanted() {
-            return;
+            return false;
         }
         if let Some(video) = &self.video {
             if (video.width, video.height) != (frame.width, frame.height) {
@@ -1038,8 +1053,18 @@ impl Screen {
         if self.video.is_none() {
             self.start_video(frame, t);
         }
+        self.video.is_some()
+    }
+
+    /// Sends the frame to the encoder while the screen moves, and otherwise keeps it as the
+    /// newest picture for the next re-submit (`voice_screen_files::gate`).
+    fn video_frame(&mut self, frame: &CapturedFrame, thumb: Option<&Thumb>) {
+        let gate = self.gate.frame(frame.dirty, thumb);
         if let Some(video) = &self.video {
-            video.send(frame.texture.clone(), frame.boot);
+            match gate {
+                Gate::Send => video.send(frame.texture.clone(), frame.boot),
+                Gate::Hold => video.hold(frame.texture.clone(), frame.boot),
+            }
         }
     }
 
@@ -1105,6 +1130,7 @@ impl Screen {
                 self.write(&line);
                 self.encoder = Some((video.encoder.clone(), video.hardware));
                 self.video = Some(video);
+                self.gate = VideoGate::new();
             }
             Err(VideoError::Software) => self.drop_video_encoder("no hardware H.264 encoder runs"),
             Err(VideoError::Disk(e)) => {

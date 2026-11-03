@@ -1124,6 +1124,116 @@ mod tests {
         assert_frames_open(&m, &lines);
     }
 
+    /// A still screen that Windows keeps handing over at 15 frames a second, with a keystroke
+    /// every second, once with dirty regions and once without. Before, every frame went to the
+    /// encoder: 15 samples a second while nothing changed. Now frames that changed next to nothing
+    /// are held, so the file holds about the four a second of the quarter-second re-submit, and the
+    /// typed marks, too small to send a frame of their own, reach the video with the held frame.
+    pub fn a_still_screen_records_few_frames() {
+        for extra in ["", "dirty"] {
+            let m = TempMeeting::new("still", "video");
+            let test = with_extra(
+                "synthetic:1280x720,text=Notes,idle-every=66,type-every=1000,software-encoder",
+                extra,
+            );
+            let (mut recorder, mut screen) = start(&m, "video", &test, &[]);
+            let lines = m.wait_journal("a video file", |l| first(l, "video").is_some());
+            let video = first(&lines, "video").unwrap().clone();
+            m.wait_screen_t(1, t(&video) + 8_000);
+            let lines = stop(&m, &mut recorder, &mut screen);
+            assert_video_ends_cover(&m, &lines);
+            let path = video_path(&m, &video);
+            let report = assert_video_reads(&path);
+            let samples = report["samples"].as_u64().unwrap();
+            let ms = report["durationMs"].as_u64().unwrap().max(1);
+            let rate = samples as f64 * 1000.0 / ms as f64;
+            let marks = marks_in_video(&path, 1280, 720);
+            println!(
+                "    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second; marks {:?}",
+                marks.iter().map(|m| m.1).collect::<Vec<_>>()
+            );
+            assert!(rate <= 6.0, "{rate:.1} samples a second on a still screen");
+            assert_eq!(marks.first().map(|m| m.1), Some(0), "{marks:?}");
+            let typed = marks.last().unwrap().1;
+            assert!(
+                typed >= 5,
+                "the video ends with {typed} typed marks: {marks:?}"
+            );
+            assert!(marks.windows(2).all(|w| w[0].1 <= w[1].1), "{marks:?}");
+            // Samples are never more than a re-submit and a tick apart, so each mark shows
+            // within about half a second of its keystroke.
+            let gaps = marks.windows(2).map(|w| w[1].0 - w[0].0);
+            assert!(gaps.clone().all(|g| g <= 600), "{marks:?}");
+        }
+    }
+
+    /// Decodes a video file through Media Foundation and counts in each sample the synthetic
+    /// screen's typed marks, the dark squares `type-every` draws in a row under the text. Returns
+    /// each sample's media time in ms with the marks shown.
+    fn marks_in_video(path: &std::path::Path, width: u32, height: u32) -> Vec<(u64, u32)> {
+        use windows::core::{Interface, HSTRING};
+        use windows::Win32::Media::MediaFoundation::*;
+
+        /// `MF_SOURCE_READER_FIRST_VIDEO_STREAM`.
+        const FIRST_VIDEO: u32 = 0xFFFF_FFFC;
+        let mf = voice_screen::video::mf::shared().expect("Media Foundation");
+        let reader = mf
+            .create_source_reader(&HSTRING::from(path.as_os_str()))
+            .unwrap();
+        let nv12 = mf.create_media_type().unwrap();
+        unsafe {
+            nv12.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).unwrap();
+            nv12.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).unwrap();
+            reader
+                .SetCurrentMediaType(FIRST_VIDEO, None, &nv12)
+                .unwrap();
+        }
+        // Where `synthetic::Canvas::type_key` puts mark `n`: its centre.
+        let per_row = (width - 80) / 24;
+        let centre = |n: u32| {
+            let x = 40 + (n % per_row) * 24 + 8;
+            let y = ((height * 2 / 3) & !7) + (n / per_row % 4) * 24 + 8;
+            (x as usize, y as usize)
+        };
+        let mut out = Vec::new();
+        loop {
+            let (mut flags, mut time) = (0u32, 0i64);
+            let mut sample: Option<IMFSample> = None;
+            unsafe {
+                reader
+                    .ReadSample(
+                        FIRST_VIDEO,
+                        0,
+                        None,
+                        Some(&mut flags),
+                        Some(&mut time),
+                        Some(&mut sample),
+                    )
+                    .unwrap();
+            }
+            if let Some(sample) = sample {
+                let buffer = unsafe { sample.GetBufferByIndex(0) }.unwrap();
+                let planes: IMF2DBuffer = buffer.cast().unwrap();
+                let (mut scan0, mut pitch) = (std::ptr::null_mut(), 0i32);
+                unsafe { planes.Lock2D(&mut scan0, &mut pitch) }.unwrap();
+                // The luma plane comes first; limited range, so white is 235 and a mark near 43.
+                let luma = |(x, y): (usize, usize)| unsafe {
+                    *scan0.offset(y as isize * pitch as isize + x as isize)
+                };
+                let shown = (0..per_row * 4)
+                    .take_while(|&n| luma(centre(n)) < 128)
+                    .count() as u32;
+                unsafe { planes.Unlock2D() }.unwrap();
+                out.push(((time / 10_000) as u64, shown));
+            }
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                break;
+            }
+            assert_eq!(flags & MF_SOURCE_READERF_ERROR.0 as u32, 0);
+        }
+        out
+    }
+
     /// Spike 2 (spec 4.2), on a PC with a hardware encoder: a monitor over 4096 per side or
     /// 36,864 macroblocks is scaled by the sink writer's video processor, and one at 3840 x 2160
     /// keeps its size. The synthetic screen, so nothing real is captured.
@@ -1348,6 +1458,11 @@ fn main() {
             name: "typing_adds_up_to_a_saved_frame",
             ignored: false,
             run: tests::typing_adds_up_to_a_saved_frame,
+        },
+        Test {
+            name: "a_still_screen_records_few_frames",
+            ignored: false,
+            run: tests::a_still_screen_records_few_frames,
         },
     ]);
 }

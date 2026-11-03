@@ -8,10 +8,13 @@
 //! encoder takes on a CI runner that has only WARP.
 //!
 //! A frame is written when the next one arrives, so each sample's duration is the real gap to
-//! the next: the capture rate varies. A still screen re-submits its last frame every quarter
-//! second, and the sample after the first one a second into a fragment is a forced keyframe, which
-//! starts the next fragment, so fragments stay 1 to 2 s long and a hard kill loses at most the open
-//! one.
+//! the next: the capture rate varies. Frames the screen process holds back because the screen is
+//! still (`voice_screen_files::gate`) aren't samples; the newest of them waits in `held`. After a
+//! quarter second without a sample the held frame goes in at its own capture time, or else the
+//! last frame again, so a small change reaches the file within half a second and a still screen
+//! still gets a sample every quarter second. The sample after the first one a second into a
+//! fragment is a forced keyframe, which starts the next fragment, so fragments stay 1 to 2 s long
+//! and a hard kill loses at most the open one.
 //!
 //! The file's media time is the capture time, so `video` line `t` plus media time is meeting time
 //! (spec 2.4) and `clip.get` cuts by one offset per file. Two things in Media Foundation would
@@ -149,7 +152,10 @@ pub struct VideoWriter {
     fragment_full: bool,
     pending: Option<(ID3D11Texture2D, i64)>,
     last_time: Option<i64>,
-    last_texture: Option<ID3D11Texture2D>,
+    /// The last frame written, and its capture time.
+    last_texture: Option<(ID3D11Texture2D, u64)>,
+    /// The newest frame held back, newer than `last_texture`, and its capture time.
+    held: Option<(ID3D11Texture2D, u64)>,
     path: PathBuf,
     encoder: String,
     hardware: bool,
@@ -204,6 +210,7 @@ impl VideoWriter {
             pending: None,
             last_time: None,
             last_texture: None,
+            held: None,
             path: path.to_path_buf(),
             encoder: String::new(),
             hardware: false,
@@ -462,6 +469,25 @@ impl VideoWriter {
     /// The frame captured at `boot` (interrupt time). It goes into the file when the next frame,
     /// a re-submit or the end gives its duration.
     pub fn write(&mut self, texture: &ID3D11Texture2D, boot: u64) -> Result<(), VideoError> {
+        self.submit(texture, boot, boot)
+    }
+
+    /// Keeps the frame captured at `boot` for the next re-submit, unless the last frame written is
+    /// newer. A newer held frame replaces it; a written one drops it.
+    pub fn hold(&mut self, texture: &ID3D11Texture2D, boot: u64) {
+        if self.last_texture.as_ref().is_none_or(|(_, at)| boot > *at) {
+            self.held = Some((texture.clone(), boot));
+        }
+    }
+
+    /// A sample of `texture` at media time `boot`; `captured` is when the picture was captured,
+    /// earlier than `boot` for a re-submit.
+    fn submit(
+        &mut self,
+        texture: &ID3D11Texture2D,
+        boot: u64,
+        captured: u64,
+    ) -> Result<(), VideoError> {
         let start = *self.start_boot.get_or_insert(boot);
         let time = sample_time(boot.saturating_sub(start) as i64, self.last_time);
         let at = self.options.start_t + time as u64 / 10_000;
@@ -477,23 +503,39 @@ impl VideoWriter {
         }
         self.pending = Some((texture.clone(), time));
         self.last_time = Some(time);
-        self.last_texture = Some(texture.clone());
+        self.last_texture = Some((texture.clone(), captured));
+        if self.held.as_ref().is_some_and(|(_, at)| *at <= captured) {
+            self.held = None;
+        }
         Ok(())
     }
 
-    /// After a quarter second without a new frame, the last one goes in again at `boot_now`, so a
-    /// still screen still gets a keyframe and a fragment boundary every 1 to 2 s.
+    /// After a quarter second without a new sample, the held frame goes in at its capture time,
+    /// or the last one again at `boot_now`, so a still screen still gets a keyframe and a fragment
+    /// boundary every 1 to 2 s.
     pub fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {
-        let (Some(start), Some(last), Some(texture)) =
-            (self.start_boot, self.last_time, self.last_texture.clone())
-        else {
+        let (Some(start), Some(last)) = (self.start_boot, self.last_time) else {
             return Ok(());
         };
         let now = boot_now.saturating_sub(start) as i64;
-        if now - last >= RESUBMIT {
-            self.write(&texture, boot_now)?;
+        if now - last < RESUBMIT {
+            return Ok(());
         }
-        Ok(())
+        if let Some((texture, boot)) = self.held.take() {
+            return self.write(&texture, boot);
+        }
+        match self.last_texture.clone() {
+            Some((texture, captured)) => self.submit(&texture, boot_now, captured),
+            None => Ok(()),
+        }
+    }
+
+    /// Writes the held frame, as at the end of the file, so the file ends on the newest picture.
+    pub fn flush(&mut self) -> Result<(), VideoError> {
+        match self.held.take() {
+            Some((texture, boot)) => self.write(&texture, boot),
+            None => Ok(()),
+        }
     }
 
     fn emit(
@@ -596,6 +638,7 @@ impl VideoWriter {
     /// Drops the sink writer without `Finalize`, as after an error; returns the bytes on disk.
     pub fn abandon(&mut self) -> u64 {
         self.pending = None;
+        self.held = None;
         self.writer = None;
         self.codec = None;
         std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0)
@@ -756,6 +799,65 @@ mod tests {
             assert_eq!(units as i64, to_units(last) + LAST_UNITS, "{name}");
             assert_eq!(end_t, 1_000 + index.to_ms(units), "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Held frames: the newest goes in at its own capture time with the next re-submit or at the
+    /// end, one older than a frame written is dropped, and one older than the last frame written
+    /// isn't taken. Software encoder on WARP, as on a CI runner.
+    #[test]
+    fn held_frames_go_in_at_their_capture_time() {
+        crate::com::init_mta();
+        let mf = super::super::mf::shared().expect("Media Foundation");
+        let dir = std::env::temp_dir().join(format!(
+            "voice-screen-held-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let device = d3d::create(false, true).unwrap();
+        let (width, height) = (320, 180);
+        let path = dir.join("held.mp4");
+        let options = WriterOptions {
+            allow_software: true,
+            start_t: 1_000,
+            ..Default::default()
+        };
+        let mut writer = VideoWriter::create(mf, &device, &path, width, height, options).unwrap();
+        let texture = |v: u8| {
+            device
+                .upload(width, height, &vec![v; (width * height * 4) as usize])
+                .unwrap()
+        };
+        let ms = |n: u64| 7_000_000_000u64 + n * 10_000;
+        writer.write(&texture(10), ms(0)).unwrap();
+        writer.hold(&texture(20), ms(100));
+        // Not a quarter second yet: nothing goes in.
+        writer.tick(ms(200)).unwrap();
+        assert_eq!(writer.last_time, Some(0));
+        writer.tick(ms(300)).unwrap();
+        assert_eq!(writer.last_time, Some(sample_time(100 * 10_000, Some(0))));
+        writer.hold(&texture(30), ms(350));
+        writer.write(&texture(40), ms(400)).unwrap();
+        assert!(
+            writer.held.is_none(),
+            "a frame written drops an older held one"
+        );
+        writer.hold(&texture(50), ms(390));
+        assert!(writer.held.is_none(), "older than the last frame written");
+        writer.hold(&texture(60), ms(450));
+        writer.flush().unwrap();
+        let (end_t, last) = (writer.end_t(), writer.last_time.unwrap());
+        assert_eq!(last, sample_time(450 * 10_000, None));
+        writer.finish().unwrap();
+        let index = voice_screen_files::mp4::index_path(&path).unwrap();
+        let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+        assert_eq!(samples, 4, "the first frame, two held ones and one written");
+        let units = index.fragments.last().unwrap().end();
+        assert_eq!(units as i64, to_units(last) + LAST_UNITS);
+        assert_eq!(end_t, 1_000 + index.to_ms(units));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

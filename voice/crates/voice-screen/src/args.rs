@@ -38,11 +38,13 @@ impl Mode {
 }
 
 /// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,type-every=<ms>]
-/// [,dirty][,software-encoder][,no-hardware][,free-bytes-file=<path>][,encoder-fail-at=<ms>]
-/// [,write-fail=<video|frames>@<ms>][,device-lost-at=<ms>[x<n>]][,no-video-device=<n>]
-/// [,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the real monitors, and the
-/// faults the tests need. Times are meeting time in ms, except `type-every`, which counts from
-/// the start of capture. `type-every` types a small mark every so often, as a keystroke does.
+/// [,idle-every=<ms>][,dirty][,software-encoder][,no-hardware][,free-bytes-file=<path>]
+/// [,encoder-fail-at=<ms>][,write-fail=<video|frames>@<ms>][,device-lost-at=<ms>[x<n>]]
+/// [,no-video-device=<n>][,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the real
+/// monitors, and the faults the tests need. Times are meeting time in ms, except `type-every` and
+/// `idle-every`, which count from the start of capture. `type-every` types a small mark every so
+/// often, as a keystroke does. `idle-every` sends the unchanged picture again that often, as
+/// Windows can on a still screen.
 /// `dirty` gives each frame the dirty regions Windows reports; without it frames have none.
 /// `warp` makes the graphics device Microsoft's software rasterizer, as on a CI runner without
 /// a GPU. `no-video-device` gives the next `n` graphics devices after the `device-lost-at` loss
@@ -57,6 +59,7 @@ pub struct TestSpec {
     pub text: Option<String>,
     pub monitors: u32,
     pub type_every_ms: Option<u64>,
+    pub idle_every_ms: Option<u64>,
     pub dirty: bool,
     pub software_encoder: bool,
     pub no_hardware: bool,
@@ -116,6 +119,9 @@ impl TestSpec {
                 }
                 ("type-every", Some(v)) => {
                     test.type_every_ms = Some(ms(v, key)?).filter(|&ms| ms > 0)
+                }
+                ("idle-every", Some(v)) => {
+                    test.idle_every_ms = Some(ms(v, key)?).filter(|&ms| ms > 0)
                 }
                 ("dirty", None) => test.dirty = true,
                 ("software-encoder", None) => test.software_encoder = true,
@@ -346,7 +352,7 @@ mod tests {
     fn parses_every_synthetic_option() {
         let test = TestSpec::parse(
             "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,type-every=150,\
-             dirty,software-encoder,no-hardware,free-bytes-file=C:\\tmp\\free.txt,\
+             idle-every=66,dirty,software-encoder,no-hardware,free-bytes-file=C:\\tmp\\free.txt,\
              encoder-fail-at=3000,write-fail=frames@4000,\
              device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp",
         )
@@ -360,6 +366,7 @@ mod tests {
                 text: Some("RUKOO DEMO 42".into()),
                 monitors: 2,
                 type_every_ms: Some(150),
+                idle_every_ms: Some(66),
                 dirty: true,
                 software_encoder: true,
                 no_hardware: true,
