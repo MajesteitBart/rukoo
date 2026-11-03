@@ -103,6 +103,10 @@ fn main() {
             "clip_get_refuses_near_the_video_floor",
             clip_get_refuses_near_the_video_floor,
         ),
+        (
+            "clip_get_answers_by_its_deadline_while_its_check_runs",
+            clip_get_answers_by_its_deadline_while_its_check_runs,
+        ),
         ("screen_get_and_select", screen_get_and_select),
         ("drops_reach_the_pill", drops_reach_the_pill),
         ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
@@ -194,6 +198,8 @@ struct Rig {
     started_at: Arc<AtomicU64>,
     /// What the supervisor's free-space stand-in says, when the rig has one.
     free: Arc<AtomicU64>,
+    /// How long, in ms, the free-space stand-in takes to answer, as a slow disk can.
+    free_wait: Arc<AtomicU64>,
 }
 
 type Slot = Arc<OnceLock<Mutex<Weak<ScreenSupervisor>>>>;
@@ -243,13 +249,14 @@ impl Rig {
         let changes: Arc<Mutex<Vec<ScreenChange>>> = Arc::default();
         let rukoo: Arc<(AtomicUsize, AtomicBool)> = Arc::default();
         let free = Arc::new(AtomicU64::new(free_bytes.unwrap_or(0)));
+        let free_wait = Arc::new(AtomicU64::new(0));
         let screen = supervisor(
             &data,
             &log,
             test,
             &changes,
             &rukoo,
-            free_bytes.map(|_| Arc::clone(&free)),
+            free_bytes.map(|_| (Arc::clone(&free), Arc::clone(&free_wait))),
         );
         let _ = slot.set(Mutex::new(Arc::downgrade(&screen)));
         controller.set_screen(ScreenMode::Frames, screen.available());
@@ -264,6 +271,7 @@ impl Rig {
             rukoo,
             started_at,
             free,
+            free_wait,
         }
     }
 
@@ -407,7 +415,8 @@ fn supervisor(
     test: &str,
     changes: &Arc<Mutex<Vec<ScreenChange>>>,
     rukoo: &Arc<(AtomicUsize, AtomicBool)>,
-    free_bytes: Option<Arc<AtomicU64>>,
+    // What the free-space stand-in says, and how many ms it takes.
+    free_bytes: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
 ) -> Arc<ScreenSupervisor> {
     let screen = ScreenSupervisor::new(
         ScreenOptions {
@@ -416,9 +425,11 @@ fn supervisor(
             test: Some(test.to_string()),
             test_monitor: None,
             timing: screen_timing(),
-            free_bytes: free_bytes.map(|free| {
-                Arc::new(move |_: &Path| Some(free.load(Ordering::SeqCst)))
-                    as voice_engine::meetings::screen::FreeBytes
+            free_bytes: free_bytes.map(|(free, wait)| {
+                Arc::new(move |_: &Path| {
+                    thread::sleep(Duration::from_millis(wait.load(Ordering::SeqCst)));
+                    Some(free.load(Ordering::SeqCst))
+                }) as voice_engine::meetings::screen::FreeBytes
             }),
         },
         Some(log.clone()),
@@ -943,6 +954,40 @@ fn clip_get_refuses_near_the_video_floor() {
         thread::sleep(Duration::from_millis(200));
     }
     roomy.stop(&live);
+}
+
+/// The free-space check needs the clip's input, which a long meeting on a slow disk takes a
+/// while to read: `clip.get` still answers by its deadline, and the cut goes on after the check.
+fn clip_get_answers_by_its_deadline_while_its_check_runs() {
+    const GIB: u64 = 1 << 30;
+    let rig = Rig::with("clip-slow-check", &video_spec(), Some(8 * GIB));
+    let id = recorded_video(&rig, 4);
+    let control = rig.control();
+    rig.free_wait.store(6_000, Ordering::SeqCst);
+    let asked = Instant::now();
+    let reply = control
+        .clip(&id, 500, 2_500, asked + Duration::from_secs(1))
+        .unwrap();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "clip.get answered {took:?} after it came"
+    );
+    assert_eq!(reply, json!({ "clips": [] }));
+    rig.free_wait.store(0, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let asked = Instant::now();
+        let reply = control
+            .clip(&id, 500, 2_500, asked + Duration::from_secs(1))
+            .unwrap();
+        assert!(asked.elapsed() < Duration::from_secs(2));
+        if !reply["clips"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the clip never came");
+        thread::sleep(Duration::from_millis(200));
+    }
 }
 
 fn screen_get_and_select() {
