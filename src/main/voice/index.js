@@ -22,6 +22,8 @@ const { candidateEvents, suggest, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
 const PROTECT_DELAY_MS = 100;
+// How often Rukoo tries again to hide or show its windows after a window didn't take it.
+const PROTECT_RETRY_MS = 1000;
 const EMIT_MS = 150;
 const LINK_WITHIN_MS = 12 * 60 * 60 * 1000;
 const EVENT_ID_MAX = 4000;
@@ -104,8 +106,9 @@ function checkScreen(result) {
 class VoiceService extends EventEmitter {
   // discovery: the discovery file (paths.bridgePathHere), or null for a profile that never looks for Voice.
   // hide(): whether the user wants Rukoo hidden from screen capture during a meeting. protect(on): hides or shows
-  // every window. calendars, engine: for the linked event and the names of its guests.
-  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, startingHoldMs = STARTING_HOLD_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
+  // every window, and returns false or throws when a window didn't take it. calendars, engine: for the linked event
+  // and the names of its guests.
+  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, protectRetryMs = PROTECT_RETRY_MS, startingHoldMs = STARTING_HOLD_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
     super();
     this.store = new VoiceStore({ dataDir, now, log });
     // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
@@ -115,6 +118,8 @@ class VoiceService extends EventEmitter {
     this.protect = protect;
     this.calendars = calendars;
     this.protectDelayMs = protectDelayMs;
+    this.protectRetryMs = protectRetryMs;
+    this.protectRetry = null;
     this.startingHoldMs = startingHoldMs;
     this.emitMs = emitMs;
     this.now = now;
@@ -193,16 +198,35 @@ class VoiceService extends EventEmitter {
     return Boolean(this.hide()) && (Boolean(this.recording()) || this.starting > 0);
   }
 
-  // Also for main when the user changes the setting.
+  // Also for main when the user changes the setting. Returns whether the windows are as they should be. protect(on)
+  // fails by throwing or by returning false when a window didn't take it: then Rukoo doesn't know what the windows
+  // show, confirms nothing to Voice, and tries again every protectRetryMs until it works.
   refreshProtection() {
+    clearTimeout(this.protectRetry);
+    this.protectRetry = null;
     const on = this.shouldProtect();
-    if (on === this.protectedNow) return;
-    this.protectedNow = on;
+    if (on === this.protectedNow) return true;
+    let ok = false;
     try {
-      this.protect(on);
+      ok = this.protect(on) !== false;
+      if (!ok) this.log('voice', `${on ? 'hiding' : 'showing'} the windows failed`);
     } catch (err) {
       this.log('voice', `protecting the windows failed: ${err.message}`);
     }
+    if (ok) {
+      this.protectedNow = on;
+      return true;
+    }
+    this.protectedNow = null;
+    if (!this.closed) {
+      this.protectRetry = setTimeout(() => {
+        this.protectRetry = null;
+        // main reports the windows hidden only once they are.
+        if (this.refreshProtection()) this.emit('state', this.state());
+      }, this.protectRetryMs);
+      if (this.protectRetry.unref) this.protectRetry.unref();
+    }
+    return false;
   }
 
   statusChanged() {
@@ -535,13 +559,16 @@ class VoiceService extends EventEmitter {
   }
 
   // Voice waits up to 500 ms for this before it captures the screen. starting counts from the moment the event
-  // arrives, so protection is on before the ack and stays on until the meeting's state says it records.
+  // arrives, so protection is on before the ack and stays on until the meeting's state says it records. The ack
+  // says the windows are hidden, so it goes only once every window took it: otherwise Voice stops waiting and
+  // starts as without a confirmation, while Rukoo keeps trying to hide them.
   async onStarting(id) {
     this.starting += 1;
     try {
       if (this.shouldProtect()) {
-        this.refreshProtection();
+        if (!this.refreshProtection()) return;
         await delay(this.protectDelayMs);
+        if (this.shouldProtect() && this.protectedNow !== true) return;
       }
       await this.bridge.command('meeting.protected', { meeting: id }, { timeoutMs: PROTECTED_TIMEOUT_MS });
     } finally {
@@ -694,6 +721,8 @@ class VoiceService extends EventEmitter {
     this.closed = true;
     clearTimeout(this.deltaTimer);
     this.deltaTimer = null;
+    clearTimeout(this.protectRetry);
+    this.protectRetry = null;
     for (const timers of this.holds.values()) for (const timer of timers) clearTimeout(timer);
     this.holds.clear();
     this.bridge.close();

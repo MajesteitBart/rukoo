@@ -765,6 +765,40 @@ test('a meeting Rukoo Voice starts gets Rukoo hidden before Voice captures the s
   expect(voice.commands.filter((c) => c.command === 'meeting.protected').length).toBe(1);
 });
 
+test("a window that doesn't take the protection: Rukoo confirms nothing to Voice, says it shows, and hides it once it can", async () => {
+  test.skip(!CAN_HIDE, 'Electron hides windows from capture only on Windows and macOS');
+  voice.handlers['meeting.protected'] = () => ({});
+  // Every window refuses: setContentProtection does nothing, as when Windows doesn't take it.
+  await app.evaluate(({ BrowserWindow }) => {
+    global.__refuse = true;
+    for (const w of BrowserWindow.getAllWindows()) {
+      const set = w.setContentProtection.bind(w);
+      w.setContentProtection = (on) => (global.__refuse ? undefined : set(on));
+    }
+  });
+  const id = voice.meetingId();
+  voice.append('meeting.started', id, { title: 'From the pill', startedAt: Date.now(), tracks: ['mic', 'call'], screen: 'frames', startedBy: 'voice', context: null });
+  voice.append('meeting.state', id, { state: 'recording', at: 0 });
+  voice.append('meeting.starting', id, { screen: 'frames' });
+  await openMeetings();
+  await expect(view().locator('.mt-visible')).toHaveText('Visible in screen recordings');
+  // Voice stops waiting after 500 ms.
+  await win.waitForTimeout(1000);
+  expect(voice.commands.filter((c) => c.command === 'meeting.protected')).toEqual([]);
+  expect(await isProtected()).toEqual([false]);
+  expect((await win.evaluate(() => window.mail.call('voiceState'))).hidden).toBe(false);
+
+  // The windows take it again: Rukoo's next try hides them, and the header says so.
+  await app.evaluate(() => {
+    global.__refuse = false;
+  });
+  await expect.poll(isProtected, { timeout: 5000 }).toEqual([true]);
+  await expect(view().locator('.mt-hidden')).toBeVisible();
+  await expect(view().locator('.mt-visible')).toHaveCount(0);
+  expect((await win.evaluate(() => window.mail.call('voiceState'))).hidden).toBe(true);
+  expect(voice.commands.filter((c) => c.command === 'meeting.protected')).toEqual([]);
+});
+
 test('the Screen button moves the recording to another monitor; a Voice that can\'t do that loses the button', async () => {
   const DISPLAY1 = '\\\\.\\DISPLAY1';
   const DISPLAY2 = '\\\\.\\DISPLAY2';

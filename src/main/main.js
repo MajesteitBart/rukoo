@@ -137,8 +137,10 @@ let invitations = null;
 // Rukoo Voice's meetings and the bridge to it (voice/index.js). Made before the windows, so a meeting that records
 // hides them from the start.
 let voice = null;
-// Whether Rukoo's windows are left out of screen capture now; new windows follow it.
+// Whether Rukoo's windows should be left out of screen capture now; new windows follow it. windowsHidden: whether
+// every window took it, which the meeting view and Settings report.
 let captureHidden = false;
+let windowsHidden = false;
 // ---- /voice ----
 
 if (!process.env.SEM_DATA_DIR && !app.requestSingleInstanceLock()) {
@@ -164,18 +166,29 @@ function broadcast(type, payload) {
 // Every Rukoo window while Rukoo Voice records a meeting, when the user wants that (Settings > Meetings). Windows 10
 // 2004 and later leave the window out of capture and screen shares; macOS leaves it out of capture by Rukoo Voice
 // and older screen recorders. Linux has no way to, so nothing changes there. Every BrowserWindow, not only
-// windows(): a window that isn't listed must not end up in a recording either.
+// windows(): a window that isn't listed must not end up in a recording either. false when a window didn't take it:
+// setContentProtection doesn't say when Windows refused, so each window is asked what it has now. VoiceService then
+// tells Voice nothing and tries again.
 function protectWindows(on) {
   captureHidden = Boolean(on) && (process.platform === 'win32' || process.platform === 'darwin');
+  let ok = true;
   for (const w of BrowserWindow.getAllWindows()) {
-    if (!w.isDestroyed()) w.setContentProtection(captureHidden);
+    if (w.isDestroyed()) continue;
+    try {
+      w.setContentProtection(captureHidden);
+      if (w.isContentProtected() !== captureHidden) ok = false;
+    } catch (_) {
+      ok = false;
+    }
   }
+  windowsHidden = ok && captureHidden;
+  return ok;
 }
 
 // What the meeting view and Settings show about Voice. Never the discovery file: its token stays in main.
 function voiceState() {
   const base = voice ? voice.state() : { status: 'absent', reason: 'none', voiceVersion: null, protocol: null, older: null, recording: null, dictating: false, screenDefault: null };
-  return { ...base, hidden: captureHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
+  return { ...base, hidden: windowsHidden, canHide: process.platform === 'win32' || process.platform === 'darwin' };
 }
 
 // While Rukoo Voice records the screen, Rukoo's own mail and booking notifications would land in its frames, and

@@ -655,6 +655,49 @@ test("with hiding off Rukoo confirms at once and hides nothing, but still holds 
   assert.equal(s.screenRecording(), true);
 });
 
+test("windows that don't take the protection get no meeting.protected, and Rukoo keeps trying until they do", async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const sent = arrivals(voice);
+  // How hiding the windows fails: false is how main says a window didn't take it, a throw is the other way.
+  let failure = false;
+  const tries = [];
+  const applied = [];
+  const s = service(t, dir, file, {
+    protectRetryMs: 40,
+    protect: (on) => {
+      tries.push({ on, failure });
+      if (on && failure === 'throw') throw new Error('SetWindowDisplayAffinity failed');
+      if (on && failure === 'false') return false;
+      applied.push(on);
+      return true;
+    }
+  }).init();
+  const states = [];
+  s.on('state', (x) => states.push(x));
+  await until(() => s.connected, 'the connection');
+  failure = 'false';
+  voice.append('meeting.started', M1, { ...started('From the pill'), screen: 'frames' });
+  voice.append('meeting.starting', M1, { screen: 'frames' });
+  await pause(700);
+  assert.equal(sent('meeting.protected').length, 0, 'Voice stops waiting after 500 ms and starts as without Rukoo');
+  assert.equal(s.protectedNow, null, "Rukoo doesn't know what the windows show");
+  assert.ok(tries.filter((x) => x.on && x.failure === 'false').length >= 3, 'it tries again');
+  failure = 'throw';
+  await until(() => tries.filter((x) => x.on && x.failure === 'throw').length >= 2, 'tries that throw');
+  assert.ok(!applied.includes(true));
+  // The windows take it at last: they stay hidden, and the renderer hears of it.
+  const before = states.length;
+  failure = false;
+  await until(() => applied.at(-1) === true, 'the windows hidden');
+  assert.equal(s.protectedNow, true);
+  await until(() => states.length > before, 'a state for the renderer');
+  const settled = tries.length;
+  await pause(200);
+  assert.equal(tries.length, settled, 'no more tries once it worked');
+  assert.equal(sent('meeting.protected').length, 0, 'Voice stopped waiting long ago');
+});
+
 test('screenRecording: a recording meeting that records the screen, by what meeting.started said or else what the start asked', async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.writeDiscovery();
