@@ -2,6 +2,10 @@
 // shared sanitizer sees it; pasted HTML goes through the same serializer before it is saved.
 import { sanitizeAgentHtml } from './agent/richtext.js';
 
+// The store limits Markdown to 100,000 characters. Escaping and editor wrappers can
+// expand valid notes beyond the mail HTML budget; sanitize them without clipping.
+const sanitizeNotes = (html) => sanitizeAgentHtml(html, { maxInput: Infinity });
+
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const safeHref = (s) => /^(https?:|mailto:)/i.test(s);
 
@@ -42,8 +46,16 @@ export function markdownToNotes(text) {
       out.push(`<li>${inline(li[3])}`);
       continue;
     }
-    if (lists.length && line.trim() && /^\s*/.exec(line)[0].length > lists.at(-1).indent) {
-      out.push(`<br>${inline(line.trimStart())}`);
+    const indent = /^\s*/.exec(line)[0].length;
+    if (lists.length && indent > lists[0].indent) {
+      let closed = false;
+      while (lists.length > 1 && indent <= lists.at(-1).indent) {
+        close(lists.at(-1).indent);
+        closed = true;
+      }
+      // Indented blank lines belong to the item too. Returning from a nested list
+      // already starts a line, while an explicit blank continuation still needs BR.
+      out.push(`${closed && line.trim() ? '' : '<br>'}${inline(line.trimStart())}`);
       continue;
     }
     close();
@@ -61,7 +73,7 @@ export function markdownToNotes(text) {
     }
   }
   close();
-  return sanitizeAgentHtml(out.join(''));
+  return sanitizeNotes(out.join(''));
 }
 
 const escapeMarkdown = (s) => s.replace(/([\\`*_\[\]<>~])/g, '\\$1').replace(/^(\s*)([#>+\-])/gm, '$1\\$2').replace(/^(\s*\d+)\./gm, '$1\\.');
@@ -69,7 +81,7 @@ const ticksFor = (text, min = 1) => '`'.repeat(Math.max(min, ...[...text.matchAl
 
 export function notesToMarkdown(editor) {
   // Parse inertly and strip controls and styles before serializing a paste.
-  const doc = new DOMParser().parseFromString(sanitizeAgentHtml(editor.innerHTML), 'text/html');
+  const doc = new DOMParser().parseFromString(sanitizeNotes(editor.innerHTML), 'text/html');
   const blocks = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'UL', 'OL', 'BLOCKQUOTE', 'PRE', 'HR']);
   const children = (el) => {
     let text = '';

@@ -347,7 +347,10 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
       '<div><a href="https://example.com">First<br>Second</a></div>',
       '<div><b><u>First<br><br>Second</u></b></div>',
       '<div><code>First\nSecond</code></div>',
-      '<h2>First<br>Second</h2>'
+      '<h2>First<br>Second</h2>',
+      '<ul><li>First<br><br>Second</li><li>Third</li></ul>',
+      '<ol><li>First<br><br>Second</li><li>Third</li></ol>',
+      '<ul><li>Parent<ul><li>Nested<br><br>Continuation</li></ul>Back at parent</li><li>Sibling</li></ul>'
     ].map((html) => {
       editor.innerHTML = html;
       const first = notesToMarkdown(editor);
@@ -370,6 +373,63 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   for (const [first, second] of result.variants) expect(second).toBe(first);
   expect(result.blocks).toEqual(['First\nSecond', 'First\nSecond', 'First\nSecond', 'First\n\nThird']);
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
+});
+
+test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Notes at their limits' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().evaluate((el) => {
+    el.innerHTML = '<ol><li>First<br><br>Second</li><li>Third</li></ol>';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await setLanguage('nl');
+  await expect(notes().locator('ol')).toHaveCount(1);
+  await expect(notes().locator('li')).toHaveCount(2);
+  expect(await notes().locator('li').first().innerText()).toBe('First\n\nSecond');
+  await shot('notes-blank-list-preserved');
+  // Valid persisted Markdown can expand beyond the mail sanitizer's 200 KB HTML budget.
+  const original = '&'.repeat(50000) + '\nEnd marker';
+  await app.evaluate((_e, { id, original }) => {
+    const v = global.__semVoice;
+    v.saveNotes(id, original, v.get(id).notes.rev);
+  }, { id, original });
+  await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(50010);
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
+  await notes().press('Control+End');
+  await win.keyboard.type(' revised');
+  await notes().blur();
+  const expected = original + ' revised';
+  await expect.poll(() => app.evaluate((_e, { id, expected }) => global.__semVoice.get(id).notes.text === expected, { id, expected })).toBe(true);
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Notes at their limits');
+  expect(await notes().evaluate((el) => el.textContent.length)).toBe(50018);
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker revised'))).toBe(true);
+});
+
+test('notes sanitize complete valid content while mail keeps its default HTML budget', async () => {
+  const result = await win.evaluate(async () => {
+    const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
+    const { sanitizeAgentHtml } = await import('./agent/richtext.js');
+    const editor = document.createElement('div');
+    const cases = ['&'.repeat(50000) + '\nEnd marker', '"'.repeat(99990) + '\nLast line'];
+    const complete = cases.map((text) => {
+      editor.innerHTML = markdownToNotes(text);
+      return notesToMarkdown(editor) === text;
+    });
+    const html = '<div>' + '&amp;'.repeat(50000) + '<script>alert(1)</script><a href="javascript:alert(1)">End marker</a></div>';
+    editor.innerHTML = html;
+    const serialized = notesToMarkdown(editor);
+    return { complete, serializedLength: serialized.length, tail: serialized.slice(-10), defaultTail: sanitizeAgentHtml(html).includes('End marker'), unsafe: serialized.includes('alert') };
+  });
+  expect(result.complete).toEqual([true, true]);
+  expect(result.serializedLength).toBe(50010);
+  expect(result.tail).toBe('End marker');
+  expect(result.defaultTail).toBe(false);
+  expect(result.unsafe).toBe(false);
 });
 
 test('soft breaks preserve note formatting and linked labels after restart', async () => {
