@@ -227,7 +227,9 @@ fn capped(start: u64, end: u64) -> (u64, u64) {
 }
 
 /// Joins the cut of the range that runs, or starts one with `check`. Only a map lookup happens
-/// before the wait.
+/// before the wait, and the map's lock is let go before it: every request for any meeting goes
+/// through that lock, so a caller waiting on a slow cut while holding it would keep others past
+/// their own deadlines.
 fn cut_clips_within(
     meeting: &Path,
     start: u64,
@@ -238,24 +240,27 @@ fn cut_clips_within(
 ) -> Result<ClipCut, MediaError> {
     let (start, end) = capped(start, end);
     let key = (meeting.to_path_buf(), start, end);
-    let mut running = lock(jobs());
-    let job = match running.get(&key) {
-        Some(job) => job.clone(),
-        None => {
-            let job = Arc::new(Job::default());
-            running.insert(key.clone(), job.clone());
-            drop(running);
-            let worker = job.clone();
-            let spawned = std::thread::Builder::new()
-                .name("clip-cut".into())
-                .spawn(move || run_job(&worker, key, check, budget));
-            if let Err(e) = spawned {
-                lock(jobs()).remove(&(meeting.to_path_buf(), start, end));
-                return Err(MediaError::Failed(format!("Can't start the cut: {e}")));
+    let (job, new) = {
+        let mut running = lock(jobs());
+        match running.get(&key) {
+            Some(job) => (job.clone(), false),
+            None => {
+                let job = Arc::new(Job::default());
+                running.insert(key.clone(), job.clone());
+                (job, true)
             }
-            job
         }
     };
+    if new {
+        let worker = job.clone();
+        let spawned = std::thread::Builder::new()
+            .name("clip-cut".into())
+            .spawn(move || run_job(&worker, key, check, budget));
+        if let Err(e) = spawned {
+            lock(jobs()).remove(&(meeting.to_path_buf(), start, end));
+            return Err(MediaError::Failed(format!("Can't start the cut: {e}")));
+        }
+    }
     job.wait(wait_until)
 }
 
@@ -892,6 +897,44 @@ mod tests {
                 .any(|n| n.starts_with("c-000005000")),
             "a refused cut writes nothing"
         );
+    }
+
+    /// A caller that joins a slow cut and waits with a long deadline doesn't keep other requests,
+    /// for another meeting with a shorter deadline, past theirs.
+    #[test]
+    fn a_caller_waiting_on_a_slow_cut_doesn_t_hold_other_requests() {
+        let slow = two_stretches("clip-joined-slow");
+        let other = two_stretches("clip-joined-other");
+        slow_plans().insert(slow.path().to_path_buf(), Duration::from_millis(2_500));
+        // Starts the slow cut and goes, then a second caller joins it with a long deadline.
+        let first = cut_clips(slow.path(), 2_000, 12_000, Instant::now()).unwrap();
+        assert_eq!(first.clips, Vec::new());
+        let joined_path = slow.path().to_path_buf();
+        let joiner = std::thread::spawn(move || {
+            cut_clips(
+                &joined_path,
+                2_000,
+                12_000,
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let asked = Instant::now();
+        cut_clips(
+            other.path(),
+            2_000,
+            12_000,
+            asked + Duration::from_millis(300),
+        )
+        .unwrap();
+        let took = asked.elapsed();
+        assert!(
+            took < Duration::from_millis(1_000),
+            "a request for another meeting answered after {took:?}"
+        );
+        let joined = joiner.join().unwrap().unwrap();
+        assert_eq!(joined.clips.len(), 2, "{joined:?}");
+        slow_plans().remove(slow.path());
     }
 
     #[test]
