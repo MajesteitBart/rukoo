@@ -1247,9 +1247,14 @@ impl Worker {
         Ok(())
     }
 
-    /// A labelled meeting whose labeller failed before any call speaker reached Rukoo goes on
+    /// A Nemotron meeting whose labeller failed before any call speaker reached Rukoo goes on
     /// as a meeting without labels. The gate held the call's windows, so usually no call passage
     /// exists yet; those a stalled labeller let through without a speaker get `call-1` too.
+    ///
+    /// A Mistral meeting never switches: its stream transcribes as well as labels, and the
+    /// recorded windows can't go to a realtime model. One whose stream can't be set up now, as
+    /// without an API key, keeps its mode, its windows wait, and a pipeline that has the stream
+    /// again streams the rest.
     fn switch_to_off_if_failed(&mut self, shared: &Shared) -> Result<(), Error> {
         let failed = match &self.run {
             Run::Nemotron {
@@ -1258,7 +1263,7 @@ impl Worker {
                 .snapshot
                 .as_ref()
                 .is_some_and(|s| s.state == LabelState::Failed),
-            Run::Nemotron { lost, .. } | Run::Mistral { lost, .. } => *lost,
+            Run::Nemotron { lost, .. } => *lost,
             _ => false,
         };
         if !failed || self.call_emitted() {
@@ -1266,7 +1271,6 @@ impl Worker {
         }
         let reason = match (&self.run, &self.labels) {
             (Run::Nemotron { lost: true, .. }, Labels::Off { reason }) => reason.clone(),
-            (Run::Mistral { .. }, _) => "stream".to_owned(),
             _ => "runtimeFailed".to_owned(),
         };
         if let Some(error) = self.snapshot.as_ref().and_then(|s| s.error.clone()) {

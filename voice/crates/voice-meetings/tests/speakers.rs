@@ -1913,6 +1913,73 @@ fn a_stream_without_its_key_yet_streams_once_it_has_one() {
     assert_eq!(numbers, ["call-1", "call-2", "call-3"]);
 }
 
+/// 11h: a meeting that already streams to Mistral keeps that mode when a pipeline starts
+/// without the stream, as after the API key was removed, also before any call speaker reached
+/// Rukoo. With the key back, the next pipeline streams and labels the rest, instead of leaving
+/// a meeting no recorded-window recognizer can transcribe.
+#[test]
+fn a_mistral_meeting_keeps_its_mode_while_its_stream_is_missing() {
+    let tmp = TempDir::new("speakers-mistral-key-gone");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = three_voices(3, 3.5);
+    let rec = finished_call(&lib, &pieces);
+    // The stream takes the meeting but never answers, so no call speaker reaches Rukoo.
+    let mute = FakeStreaming::default();
+    mute.state().mute_all = true;
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&mute, true));
+    wait_until("the stream to give up", WAIT, || {
+        handle.state().is_final().then_some(())
+    });
+    handle.shutdown();
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("mistral"));
+
+    let without = PipelineOptions {
+        timing: fast(),
+        labels: Labels::Off {
+            reason: voice_meetings::STREAM_REASON.into(),
+        },
+        stream: None,
+        ..PipelineOptions::new(Arc::new(Offline))
+    };
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), without);
+    wait_until("the keyless pipeline to settle", WAIT, || {
+        (handle.labels().mode == "mistral" && handle.labels().state == LabelState::Failed)
+            .then_some(())
+    });
+    // Long enough for the switch to labels off, which runs on every step.
+    std::thread::sleep(Duration::from_millis(500));
+    handle.shutdown();
+    assert_eq!(
+        meta(&rec.dir, MODE_KEY).as_deref(),
+        Some("mistral"),
+        "the stored mode stays while the stream is missing"
+    );
+    assert!(
+        !speakers(&events(&log, &rec.id()))
+            .iter()
+            .any(|(id, _)| id.starts_with("call-")),
+        "no call speaker without the stream"
+    );
+
+    let fake = FakeStreaming::default();
+    let handle = Pipeline::start(rec.dir.clone(), log.clone(), mistral_options(&fake, true));
+    wait_done(&handle);
+    handle.shutdown();
+    assert_eq!(meta(&rec.dir, MODE_KEY).as_deref(), Some("mistral"));
+    // Three voices, each with words. Where the passages sit isn't checked: the first session
+    // answered nothing, so the cut it estimated runs ahead of the words (RUK-125).
+    let call = last_revisions(&events(&log, &rec.id()), "call");
+    let mut numbers: Vec<String> = call
+        .iter()
+        .filter(|p| !p.text.trim().is_empty())
+        .filter_map(|p| p.speaker.clone())
+        .collect();
+    numbers.sort();
+    numbers.dedup();
+    assert_eq!(numbers, ["call-1", "call-2", "call-3"], "{call:#?}");
+}
+
 /// 12: Nemotron never falls back to Mistral: without a diarizer and without a stream, the call
 /// is one speaker and no stream is reached.
 #[test]
