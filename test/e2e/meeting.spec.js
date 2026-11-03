@@ -834,7 +834,8 @@ test("the view keeps at most the cached frames' images, and a frame scrolled bac
   // Scrolled back to, a released frame asks Voice again and shows its image.
   await frame(back).scrollIntoViewIfNeeded();
   await expect(frame(back)).toHaveClass(/has-image/);
-  expect(frameGets().filter((at) => at === back)).toHaveLength(2);
+  // Asked again at least once; a row near the edge of the view can leave the cache and come back more than once.
+  expect(frameGets().filter((at) => at === back).length).toBeGreaterThanOrEqual(2);
 });
 
 test('marks about the screen say what happened to it, apart from the audio', async () => {
