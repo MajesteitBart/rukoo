@@ -8,7 +8,7 @@ use crate::ExitError;
 
 pub const USAGE: &str = "\
 usage:
-  rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--test <spec>]
+  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
   rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
   rukoo-voice-screen probe
   rukoo-voice-screen inspect <file.mp4>";
@@ -16,6 +16,7 @@ usage:
 /// What a meeting records of the screen, besides `off`, which never starts this process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    Off,
     Frames,
     Video,
 }
@@ -23,6 +24,7 @@ pub enum Mode {
 impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Mode::Off => "off",
             Mode::Frames => "frames",
             Mode::Video => "video",
         }
@@ -30,6 +32,7 @@ impl Mode {
 
     pub fn parse(mode: &str) -> Option<Mode> {
         match mode {
+            "off" => Some(Mode::Off),
             "frames" => Some(Mode::Frames),
             "video" => Some(Mode::Video),
             _ => None,
@@ -222,7 +225,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
             "--mode" => {
                 let v = value()?;
                 mode = Some(Mode::parse(v).ok_or_else(|| {
-                    ExitError::usage(format!("--mode takes frames or video, got {v:?}"))
+                    ExitError::usage(format!("--mode takes off, frames or video, got {v:?}"))
                 })?);
             }
             "--resume" => resume = true,

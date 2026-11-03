@@ -587,6 +587,23 @@ impl BucketSync {
         crate::prune::forget(&self.shared, meeting, delete_objects)
     }
 
+    /// A durable deletion, also offline: the next index tombstones the meeting. Encrypted
+    /// objects remain subject to the bucket's lifecycle rules; restore cannot select them.
+    pub fn mark_deleted(&self, meeting: &str) -> Result<(), SyncError> {
+        if voice_protocol::MeetingId::parse(meeting).is_none() {
+            return Err(SyncError::new(SyncErrorKind::Local, "Invalid meeting id."));
+        }
+        let shared = &self.shared;
+        let _busy = shared.busy();
+        shared.queue.drop_meeting(meeting, true)?;
+        shared
+            .queue
+            .set_meta("index_due", Some(&shared.now().to_string()))?;
+        shared.changed();
+        shared.poke();
+        Ok(())
+    }
+
     /// Stops the worker between two requests and waits for it at most 2 s. An unfinished request
     /// is resumed next time.
     pub fn shutdown(&self) {

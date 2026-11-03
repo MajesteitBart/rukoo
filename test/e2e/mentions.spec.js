@@ -52,6 +52,7 @@ async function newMessage() {
 async function addRecipient(page, field, address) {
   if (field !== 'to') await page.click(`[data-c="${field}"]`);
   await page.fill(`[data-rinput="${field}"]`, address);
+  await expect(page.locator(`[data-rfield="${field}"] .suggest [role="option"]`).first()).toContainText(address);
   await page.keyboard.press('Enter');
 }
 

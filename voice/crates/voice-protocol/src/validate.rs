@@ -48,6 +48,17 @@ fn invalid<T>(reason: &str) -> Checked<T> {
     Err(Invalid::new(reason))
 }
 
+fn optional_short(fields: &Fields, key: &str) -> Checked<Option<String>> {
+    let value = fields.optional_string(key)?;
+    if value
+        .as_ref()
+        .is_some_and(|v| v.is_empty() || v.chars().count() > MAX_ID_CHARS)
+    {
+        return invalid(key);
+    }
+    Ok(value)
+}
+
 /// Checks a message that `from` sent and builds the typed message.
 ///
 /// Rukoo sends `hello` and `command`; Voice sends `welcome`, `error`, `event` and `reply`.
@@ -185,6 +196,7 @@ fn event(f: &Fields) -> Checked<Event> {
         events::MEETING_STARTED => EventBody::MeetingStarted(meeting_started(&data)?),
         events::MEETING_STARTING => EventBody::MeetingStarting(MeetingStarting {
             screen: data.named("screen", ScreenMode::parse)?,
+            request: optional_short(&data, "request")?,
         }),
         events::MEETING_STATE => EventBody::MeetingState(meeting_state(&data)?),
         events::SPEAKER => EventBody::Speaker(Speaker {
@@ -204,7 +216,9 @@ fn event(f: &Fields) -> Checked<Event> {
             height: data.u32("height")?,
             text: data.string("text")?.to_owned(),
         }),
-        events::MEETING_REMOVED => EventBody::MeetingRemoved,
+        events::MEETING_REMOVED => EventBody::MeetingRemoved {
+            reason: optional_short(&data, "reason")?,
+        },
         unknown => EventBody::Unknown {
             event: unknown.to_owned(),
             data: data.0.clone(),
@@ -328,6 +342,9 @@ fn command(f: &Fields) -> Checked<Command> {
         commands::MEETING_STOP => CommandBody::MeetingStop {
             meeting: a.meeting("meeting")?,
         },
+        commands::MEETING_DELETE => CommandBody::MeetingDelete {
+            meeting: a.meeting("meeting")?,
+        },
         commands::MEETING_PAUSE => CommandBody::MeetingPause {
             meeting: a.meeting("meeting")?,
         },
@@ -371,6 +388,7 @@ fn command(f: &Fields) -> Checked<Command> {
         }
         commands::MEETING_PROTECTED => CommandBody::MeetingProtected {
             meeting: a.meeting("meeting")?,
+            request: optional_short(&a, "request")?,
         },
         commands::SCREEN_GET => CommandBody::ScreenGet {
             meeting: a.meeting("meeting")?,
@@ -378,6 +396,11 @@ fn command(f: &Fields) -> Checked<Command> {
         commands::SCREEN_SELECT => CommandBody::ScreenSelect {
             meeting: a.meeting("meeting")?,
             monitor: a.short_text("monitor")?,
+        },
+        commands::SCREEN_SET => CommandBody::ScreenSet {
+            meeting: a.meeting("meeting")?,
+            screen: a.named("screen", ScreenMode::parse)?,
+            monitor: optional_short(&a, "monitor")?,
         },
         commands::MEDIA_OPEN => {
             let meeting = a.meeting("meeting")?;

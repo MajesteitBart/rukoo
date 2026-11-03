@@ -94,13 +94,17 @@ pub fn manifest_for(
     })
 }
 
-/// Every index under `rkv1/<kid>/index/`, keeping the entry with the highest `gen` per meeting.
+/// Every index under `rkv1/<kid>/index/`, keeping permanent deletions or the highest `gen`.
 /// Sorted by meeting id, newest first.
 pub fn merge_indexes(indexes: Vec<Index>) -> Vec<IndexEntry> {
     let mut by_id: BTreeMap<String, IndexEntry> = BTreeMap::new();
     for index in indexes {
         for entry in index.meetings {
             match by_id.get(&entry.id) {
+                Some(have) if have.deleted && !entry.deleted => {}
+                Some(have) if !have.deleted && entry.deleted => {
+                    by_id.insert(entry.id.clone(), entry);
+                }
                 Some(have) if have.gen > entry.gen => {}
                 // An equal gen from another writer: a deletion wins, so a forgotten meeting stays
                 // forgotten.
@@ -255,6 +259,24 @@ mod tests {
                 ("m-1".into(), 3, false)
             ]
         );
+    }
+
+    #[test]
+    fn a_deletion_wins_over_a_newer_manifest_from_another_writer() {
+        let index = |writer: &str, gen, deleted| Index {
+            v: 1,
+            writer: writer.into(),
+            updated_at: gen,
+            meetings: vec![entry("m-1", gen, deleted)],
+        };
+        for indexes in [
+            vec![index("a", 2, true), index("b", 99, false)],
+            vec![index("b", 99, false), index("a", 2, true)],
+        ] {
+            let merged = merge_indexes(indexes);
+            assert_eq!(merged.len(), 1);
+            assert!(merged[0].deleted);
+        }
     }
 
     #[test]

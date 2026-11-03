@@ -8817,6 +8817,22 @@
     "message": "Stop",
     "description": "Meeting view header button while recording: the first click asks Stop recording?, the second stops. src/renderer/meeting.js (renderHead)"
   },
+  "meeting.screen.liveChoose": { "message": "Screen recording", "description": "Meeting header menu heading for changing screen recording during a live or paused meeting. src/renderer/meeting.js" },
+  "meeting.screen.control.off": { "message": "Off", "description": "Live meeting screen menu: stop capturing the screen while audio continues. src/renderer/meeting.js" },
+  "meeting.screen.control.frames": { "message": "Frames", "description": "Live meeting screen menu: record screen images and their text. src/renderer/meeting.js" },
+  "meeting.screen.control.video": { "message": "Video", "description": "Live meeting screen menu: record video and screen frames. src/renderer/meeting.js" },
+  "meeting.mark.screen.off": { "message": "Screen recording off", "description": "Transcript timestamp marker when the user disables screen capture. src/renderer/meeting.js" },
+  "meeting.mark.screen.frames": { "message": "Screen recording on · Frames", "description": "Transcript timestamp marker when the user selects screen frames. src/renderer/meeting.js" },
+  "meeting.mark.screen.video": { "message": "Screen recording on · Video", "description": "Transcript timestamp marker when the user selects screen video. src/renderer/meeting.js" },
+  "agent.panel.meetingDeleted": { "message": "Meeting deleted", "description": "Context chip subtitle in a retained chat whose meeting was deleted; the conversation itself remains. src/renderer/agent/panel.js" },
+  "meeting.actions.rename": { "message": "Rename meeting", "description": "Header edit button and sidebar menu action; opens the meeting title field. src/renderer/meeting.js" },
+  "meeting.actions.more": { "message": "Meeting actions", "description": "Accessible label for the meeting header menu containing rename and delete. src/renderer/meeting.js" },
+  "meeting.actions.delete": { "message": "Delete meeting", "description": "Destructive action in the meeting menu and delete confirmation. src/renderer/meeting.js" },
+  "meeting.rename.invalid": { "message": "Use a title of 1 to 200 characters.", "description": "Validation error for the inline meeting title editor. src/renderer/meeting.js" },
+  "meeting.delete.title": { "message": "Delete “{title}”?", "description": "Confirmation heading before permanently deleting a meeting; title is the meeting name. src/renderer/meeting.js" },
+  "meeting.delete.body": { "message": "This permanently deletes the audio, screen recording, transcript, notes, speaker names and corrections from this computer. Synced copies are marked deleted when Voice next connects; encrypted bucket files follow the bucket's lifecycle rules. Chats about the meeting stay. This cannot be undone.", "description": "Explains local deletion, the queued bucket tombstone, retained encrypted bucket objects and retained chats. src/renderer/meeting.js" },
+  "meeting.delete.done": { "message": "Meeting deleted", "description": "Toast after Voice and Rukoo accept a meeting deletion. src/renderer/meeting.js" },
+  "meeting.delete.updateVoice": { "message": "Update Rukoo Voice to delete meetings.", "description": "Error when an older Voice does not implement meeting.delete. src/renderer/meeting.js" },
   "meeting.actions.stopConfirm": {
     "message": "Stop recording?",
     "description": "Meeting view header button after the first click on Stop; a second click within 3 seconds stops the recording. src/renderer/meeting.js (renderHead)"

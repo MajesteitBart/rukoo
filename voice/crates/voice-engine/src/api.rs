@@ -48,6 +48,8 @@ pub trait UiSink: Send + Sync + 'static {
     fn notify(&self, notification: Notification);
     /// Theme, language or pill options changed; the app re-reads [`EngineApi::ui`].
     fn ui_changed(&self);
+    /// Show the pill's native screen mode and monitor menu for this live meeting.
+    fn screen_menu(&self, _info: Value) {}
     /// The pill didn't ack snapshot `seq` after a show or a phase change: 500 ms after it the
     /// app nudges the window (resize by a pixel and raise it), after 2 s it builds a new window
     /// and replays [`EngineApi::pill_snapshot`] (pill-settings-design.md 3.2, step 5).
@@ -120,7 +122,7 @@ pub struct MeetingPill {
     pub at_ms: u64,
     /// What the meeting records of the screen now: `off`, `frames` or `video`.
     pub screen: String,
-    /// The pill shows its screen button: the screen records and there is another monitor.
+    /// The pill offers screen mode and monitor controls for this live meeting.
     pub screen_switch: bool,
     pub compact: bool,
     pub confirm_stop: bool,
@@ -226,9 +228,14 @@ pub trait EngineApi: Send + Sync + 'static {
     fn pill_ack(&self, seq: u64);
     /// The native stop window took a click: the first asks "Stop?", a second within 3 s stops.
     fn pill_stop_clicked(&self);
-    /// The native screen window took a click: the screen recording moves to the next monitor,
-    /// left to right.
+    /// The native screen window took a click: open the screen menu.
     fn pill_screen_clicked(&self);
+    fn pill_screen_set(
+        &self,
+        meeting: &str,
+        mode: &str,
+        monitor: Option<&str>,
+    ) -> Result<(), ApiError>;
 
     // Settings (API.md "Settings"). Values are the JSON shapes API.md defines.
     fn settings_state(&self) -> Value;

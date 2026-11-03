@@ -5,7 +5,8 @@
 //!
 //! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window and the whole Settings
 //! state), `start_meeting` and `stop_meeting` (what the tray's items call), `pill_screen_click` (what
-//! a click on the pill's screen button does: the screen recording moves to the next monitor), and
+//! a click on the pill's screen button does: opens its menu), `pill_screen_set` with meeting, mode
+//! and optional monitor (the selected menu action), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
 //! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from
 //! WebView2. Nothing here sends input or reads the screen.
@@ -95,6 +96,18 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
             engine.pill_screen_clicked();
             Ok(json!({}))
         }
+        "pill_screen_set" => engine
+            .pill_screen_set(
+                request["meeting"]
+                    .as_str()
+                    .ok_or("pill_screen_set needs a meeting")?,
+                request["mode"]
+                    .as_str()
+                    .ok_or("pill_screen_set needs a mode")?,
+                request["monitor"].as_str(),
+            )
+            .map(|()| json!({}))
+            .map_err(|e| e.to_string()),
         "capture" => {
             let dir = request["dir"]
                 .as_str()

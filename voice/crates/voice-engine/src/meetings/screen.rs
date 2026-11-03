@@ -9,7 +9,7 @@
 //! restarts; forwards pause, resume and monitor switches; and stops it when the meeting ends. It
 //! never stops a screen process because the app is quitting, and it never touches the recorder.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -97,6 +97,7 @@ pub type FreeBytes = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// How many Rukoo clients are connected now, and whether one completed `hello` earlier in this
 /// app run.
 pub type RukooClients = Box<dyn Fn() -> (usize, bool) + Send + Sync>;
+pub type ProtectionClients = Box<dyn Fn() -> Vec<u64> + Send + Sync>;
 
 pub struct ScreenOptions {
     pub data_dir: PathBuf,
@@ -113,6 +114,9 @@ pub struct ScreenOptions {
 /// What the supervisor tells the engine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScreenChange {
+    Mode {
+        id: String,
+    },
     /// A part of the screen recording stopped for the rest of the meeting.
     Dropped {
         id: String,
@@ -120,11 +124,18 @@ pub enum ScreenChange {
         reason: Reason,
     },
     /// The screen recording moved to another monitor.
-    Moved { id: String, name: String },
+    Moved {
+        id: String,
+        name: String,
+    },
     /// The screen process died five times in a row; the screen isn't recorded any more.
-    GaveUp { id: String },
+    GaveUp {
+        id: String,
+    },
     /// The number of monitors is known or changed.
-    Monitors { count: usize },
+    Monitors {
+        count: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +201,16 @@ impl ScreenLive {
         let lines = self.journal.poll().unwrap_or_default();
         for line in lines {
             match line {
+                Line::Mode { mode, .. } => {
+                    if let Some(mode) = ScreenMode::parse(&mode) {
+                        self.mode = mode;
+                        if report {
+                            changes.push(ScreenChange::Mode {
+                                id: self.id.clone(),
+                            });
+                        }
+                    }
+                }
                 Line::Dropped { what, reason, .. } => {
                     let (Some(part), Some(reason)) = (Part::parse(&what), Reason::parse(&reason))
                     else {
@@ -250,7 +271,8 @@ impl ScreenLive {
 
     /// Whether the screen is still recorded: not stopped, dropped or given up.
     fn recording(&self) -> bool {
-        self.phase != Phase::Stopped
+        self.mode != ScreenMode::Off
+            && self.phase != Phase::Stopped
             && !self.gave_up
             && self.dropped_frames.is_none()
             && self.stopped.is_none()
@@ -300,10 +322,21 @@ pub struct ScreenSupervisor {
     acks: Mutex<HashMap<String, u32>>,
     acked: Condvar,
     clients: Mutex<Option<RukooClients>>,
+    protection_clients: Mutex<Option<ProtectionClients>>,
+    mode_change: Mutex<()>,
+    mode_acks: Mutex<Option<ModeProtection>>,
+    mode_acked: Condvar,
     caps: OnceLock<Capabilities>,
     on_change: Box<dyn Fn(ScreenChange) + Send + Sync>,
     stopped: AtomicBool,
     watchdog: Mutex<Option<JoinHandle<()>>>,
+}
+
+struct ModeProtection {
+    meeting: String,
+    request: String,
+    pending: HashSet<u64>,
+    acked: HashSet<u64>,
 }
 
 impl ScreenSupervisor {
@@ -327,6 +360,10 @@ impl ScreenSupervisor {
             acks: Mutex::new(HashMap::new()),
             acked: Condvar::new(),
             clients: Mutex::new(None),
+            protection_clients: Mutex::new(None),
+            mode_change: Mutex::new(()),
+            mode_acks: Mutex::new(None),
+            mode_acked: Condvar::new(),
             caps: OnceLock::new(),
             on_change: Box::new(on_change),
             stopped: AtomicBool::new(false),
@@ -344,6 +381,195 @@ impl ScreenSupervisor {
     /// this app run. Without it, the handshake never waits.
     pub fn set_rukoo_clients(&self, clients: RukooClients) {
         *lock(&self.clients) = Some(clients);
+    }
+
+    pub fn set_protection_clients(&self, clients: ProtectionClients) {
+        *lock(&self.protection_clients) = Some(clients);
+    }
+
+    fn protection_clients(&self) -> HashSet<u64> {
+        lock(&self.protection_clients)
+            .as_ref()
+            .map_or_else(HashSet::new, |clients| clients().into_iter().collect())
+    }
+
+    pub fn ack_mode(&self, id: &str, request: &str, connection: u64) {
+        let mut round = lock(&self.mode_acks);
+        if let Some(round) = round
+            .as_mut()
+            .filter(|round| round.meeting == id && round.request == request)
+        {
+            if round.pending.remove(&connection) {
+                round.acked.insert(connection);
+            }
+        }
+        self.mode_acked.notify_all();
+    }
+
+    fn protect_mode(
+        &self,
+        id: &str,
+        mode: ScreenMode,
+        deadline: Instant,
+    ) -> Result<(), ControlError> {
+        let clients = self.protection_clients();
+        if clients.is_empty() {
+            return Ok(());
+        }
+        let log = self
+            .log
+            .as_ref()
+            .ok_or_else(|| ControlError::failed("Voice cannot request window protection."))?;
+        let request =
+            voice_protocol::new_instance().map_err(|e| ControlError::failed(e.to_string()))?;
+        *lock(&self.mode_acks) = Some(ModeProtection {
+            meeting: id.into(),
+            request: request.clone(),
+            pending: clients,
+            acked: HashSet::new(),
+        });
+        let until =
+            deadline.min(Instant::now() + self.timing.handshake.max(Duration::from_secs(2)));
+        let result = (|| {
+            log.append(
+                events::MEETING_STARTING,
+                Some(id),
+                json!({ "screen": mode, "request": request }),
+            )
+            .map_err(|e| ControlError::failed(e.to_string()))?;
+            loop {
+                let connected = self.protection_clients();
+                let mut locked = lock(&self.mode_acks);
+                let round = locked.as_mut().expect("mode changes are serialized");
+                round
+                    .pending
+                    .retain(|connection| connected.contains(connection));
+                let joined: Vec<u64> = connected
+                    .difference(&round.acked)
+                    .filter(|connection| !round.pending.contains(connection))
+                    .copied()
+                    .collect();
+                if !joined.is_empty() {
+                    round.pending.extend(joined);
+                    drop(locked);
+                    // A client's welcome may include the previous announcement as history.
+                    log.append(
+                        events::MEETING_STARTING,
+                        Some(id),
+                        json!({ "screen": mode, "request": request }),
+                    )
+                    .map_err(|e| ControlError::failed(e.to_string()))?;
+                    continue;
+                }
+                if round.pending.is_empty() {
+                    return Ok(());
+                }
+                if Instant::now() >= until {
+                    return Err(ControlError::failed("Rukoo could not protect all its windows. The screen recording was not changed."));
+                }
+                let _wait = self
+                    .mode_acked
+                    .wait_timeout(locked, Duration::from_millis(25))
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        })();
+        *lock(&self.mode_acks) = None;
+        result
+    }
+
+    pub fn set_mode(
+        self: &Arc<Self>,
+        id: &str,
+        mode: ScreenMode,
+        monitor: Option<&str>,
+        deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        let _change = loop {
+            if let Ok(change) = self.mode_change.try_lock() {
+                break change;
+            }
+            if Instant::now() >= deadline {
+                return Err(ControlError::failed(
+                    "Another screen change is still in progress.",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        if Instant::now() >= deadline {
+            return Err(ControlError::failed("The screen change deadline elapsed."));
+        }
+        let dir = self
+            .lib
+            .dir(id)
+            .ok_or_else(|| ControlError::not_found("There is no meeting with that id."))?;
+        if !self.recording_now(dir.path()) {
+            return Err(ControlError::not_recording(
+                "The meeting does not record now.",
+            ));
+        }
+        if !self.available() {
+            return Err(ControlError::not_available(
+                "This computer cannot record the screen.",
+            ));
+        }
+        let needs_launch = self.lock().as_ref().is_none_or(|live| live.id != id);
+        if needs_launch {
+            if mode == ScreenMode::Off && monitor.is_none() {
+                return Ok(json!({ "screen": mode }));
+            }
+            *self.lock() = Some(ScreenLive::new(
+                id,
+                dir.path(),
+                ScreenMode::Off,
+                Phase::Starting,
+            ));
+            // Start inert, so a requested monitor is selected before the first capture.
+            self.first_launch(
+                id,
+                dir.path(),
+                ScreenMode::Off,
+                journal_has_content(dir.path()),
+            );
+        }
+        let view = self.live_of(id, deadline)?;
+        let file = view
+            .file
+            .filter(|_| view.phase == Phase::Running)
+            .ok_or_else(|| ControlError::not_available("The screen recorder is not available."))?;
+        if !self.recording_now(dir.path()) {
+            return Err(ControlError::not_recording(
+                "The meeting stopped while the screen recorder was starting.",
+            ));
+        }
+        // Starting the inert process can take seconds. Include clients that connected during
+        // that startup, then acknowledge protection immediately before enabling capture.
+        if mode != ScreenMode::Off {
+            self.protect_mode(id, mode, deadline)?;
+        }
+        let reply = request_until(
+            &file,
+            json!({ "cmd": "mode", "mode": mode, "monitor": monitor }),
+            deadline,
+        )
+        .map_err(|e| ControlError::failed(e.to_string()))?;
+        if reply["ok"] != true {
+            return Err(ControlError::not_available(
+                "The screen recording could not be changed.",
+            ));
+        }
+        let (changes, actual) = {
+            let mut slot = self.lock();
+            let live = slot
+                .as_mut()
+                .filter(|live| live.id == id)
+                .ok_or_else(|| ControlError::not_recording("The meeting stopped."))?;
+            let changes = live.read_journal(true);
+            live.mode = mode;
+            live.status = None;
+            (changes, live.shown_mode())
+        };
+        self.emit_all(changes);
+        Ok(json!({ "screen": actual }))
     }
 
     fn rukoo_clients(&self) -> (usize, bool) {
@@ -436,10 +662,7 @@ impl ScreenSupervisor {
             if Some(id) == live {
                 continue;
             }
-            if dir
-                .meeting()
-                .map_or(true, |meeting| meeting.screen == ScreenMode::Off)
-            {
+            if !paths::journal_path(dir.path()).is_file() {
                 continue;
             }
             let Some(history) = journal_history(dir.path()) else {
@@ -512,7 +735,7 @@ impl ScreenSupervisor {
         let Ok(meeting) = dir.meeting() else {
             return;
         };
-        if meeting.screen == ScreenMode::Off {
+        if meeting.screen == ScreenMode::Off && !paths::journal_path(dir.path()).is_file() {
             return;
         }
         let mut live = ScreenLive::new(id, dir.path(), meeting.screen, Phase::Running);
@@ -548,7 +771,16 @@ impl ScreenSupervisor {
         let resume = journal_has_content(&path);
         let _ = thread::Builder::new()
             .name("screen-begin".into())
-            .spawn(move || this.first_launch(&id, &path, meeting.screen, resume));
+            .spawn(move || {
+                let mode = journal_history(&path)
+                    .and_then(|h| h.mode)
+                    .and_then(|m| ScreenMode::parse(&m))
+                    .unwrap_or(meeting.screen);
+                if mode != ScreenMode::Off {
+                    this.handshake(&id, mode);
+                }
+                this.first_launch(&id, &path, mode, resume);
+            });
     }
 
     /// Launches the first screen process of a meeting, unless the meeting ended meanwhile. A
@@ -828,6 +1060,20 @@ impl ScreenSupervisor {
     /// The meeting's screen recording as `screen.get` answers it, by `deadline`: without time
     /// left to ask the screen process, from the status the watchdog had last.
     pub fn describe(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        if self.lock().as_ref().is_none_or(|live| live.id != id) {
+            if let Some(dir) = self
+                .lib
+                .dir(id)
+                .filter(|dir| self.recording_now(dir.path()))
+            {
+                if self.available() {
+                    let _ = dir;
+                    return Ok(
+                        json!({ "screen": "off", "state": "off", "video": false, "frames": false, "monitor": null, "monitors": self.monitor_list(&Value::Null) }),
+                    );
+                }
+            }
+        }
         let view = self.live_of(id, deadline)?;
         let fresh = match (&view.file, view.phase) {
             (Some(file), Phase::Running) => request_until(
@@ -841,6 +1087,7 @@ impl ScreenSupervisor {
         };
         let status = fresh.or(view.status).unwrap_or(Value::Null);
         let state = match view.phase {
+            Phase::Running if view.mode == ScreenMode::Off => "off",
             Phase::Starting | Phase::Restarting => "starting",
             Phase::Running if view.frames => match status["state"].as_str() {
                 Some(state @ ("starting" | "recording" | "paused" | "locked")) => state,
@@ -1032,8 +1279,23 @@ impl ScreenSupervisor {
         }
         self.lib
             .dir(id)
-            .and_then(|dir| dir.meeting().ok())
-            .map(|meeting| meeting.screen)
+            .map(|dir| {
+                let history = journal_history(dir.path());
+                let mut mode = history
+                    .as_ref()
+                    .and_then(|h| h.mode.as_deref())
+                    .and_then(ScreenMode::parse)
+                    .or_else(|| dir.meeting().ok().map(|m| m.screen))
+                    .unwrap_or_default();
+                if let Some(history) = history {
+                    if history.dropped_frames.is_some() {
+                        mode = ScreenMode::Off;
+                    } else if mode == ScreenMode::Video && history.dropped_video.is_some() {
+                        mode = ScreenMode::Frames;
+                    }
+                }
+                mode
+            })
             .unwrap_or_default()
     }
 
@@ -1042,14 +1304,18 @@ impl ScreenSupervisor {
     pub fn pill_state(&self, id: &str) -> (ScreenMode, bool) {
         let known = {
             let slot = self.lock();
-            slot.as_ref()
-                .filter(|l| l.id == id)
-                .map(|live| (live.shown_mode(), live.monitors))
+            slot.as_ref().filter(|l| l.id == id).map(|live| {
+                (
+                    live.shown_mode(),
+                    !live.gave_up
+                        && live.dropped_frames.is_none()
+                        && live.stopped.is_none()
+                        && live.phase != Phase::Stopped,
+                )
+            })
         };
-        let (mode, monitors) = known.unwrap_or_else(|| (self.mode_of(id), None));
-        let monitors = monitors.or_else(|| self.caps.get().map(|c| c.monitors.len()));
-        let switch = mode != ScreenMode::Off && monitors.unwrap_or(0) > 1;
-        (mode, switch)
+        let (mode, usable) = known.unwrap_or_else(|| (self.mode_of(id), true));
+        (mode, usable && self.available())
     }
 
     /// The free space on the meetings volume, when known.

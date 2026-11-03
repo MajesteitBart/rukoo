@@ -148,7 +148,7 @@ impl Rukoo {
             tcp.set_read_timeout(Some(Duration::from_millis(100)))
                 .unwrap();
         }
-        let hello = json!({"type":"hello","protocol":1,"token":discovery.token,"client":"rukoo","instance":null,"after":0});
+        let hello = json!({"type":"hello","protocol":voice_protocol::PROTOCOL,"token":discovery.token,"client":"rukoo","instance":null,"after":0});
         socket.send(Frame::text(hello.to_string())).unwrap();
         let mut rukoo = Rukoo {
             socket,

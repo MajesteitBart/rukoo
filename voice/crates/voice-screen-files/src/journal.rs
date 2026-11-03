@@ -24,7 +24,7 @@ pub const FORMAT_VERSION: u32 = 1;
     rename_all_fields = "camelCase"
 )]
 pub enum Line {
-    /// The process starts recording into the meeting. `mode` is `frames` or `video`; `anchor`
+    /// The process starts recording into the meeting. `mode` is `off`, `frames` or `video`; `anchor`
     /// is `boot` or `wall`, the clock the mapping uses; `screen` is the crate version.
     Session {
         t: u64,
@@ -38,6 +38,13 @@ pub enum Line {
         mode: String,
         anchor: String,
         screen: String,
+    },
+    /// A user changes capture without ending the screen process or dropping a part.
+    Mode {
+        t: u64,
+        id: String,
+        mode: String,
+        reason: String,
     },
     /// Capture moves to a monitor. `reason`: `start`, `resume`, `user`, `lost`.
     Monitor {
@@ -125,6 +132,7 @@ impl Line {
     pub fn t(&self) -> Option<u64> {
         match self {
             Line::Session { t, .. }
+            | Line::Mode { t, .. }
             | Line::Monitor { t, .. }
             | Line::Capture { t, .. }
             | Line::Video { t, .. }
@@ -284,6 +292,7 @@ impl History {
                     h.sessions = h.sessions.max(*session);
                     h.mode = Some(mode.clone());
                 }
+                Line::Mode { mode, .. } => h.mode = Some(mode.clone()),
                 Line::Video { seq, file, .. } => {
                     h.last_video_seq = h.last_video_seq.max(*seq);
                     h.open_video = Some((*seq, file.clone()));

@@ -652,6 +652,7 @@ fn rukoo_commands_go_through_meeting_control() {
     assert_eq!(meeting["context"]["calendarEvent"], "abc");
     wait_clock(&c, 300);
     control.pause(&id).unwrap();
+    assert_eq!(control.delete(&id).unwrap_err().code, ErrorCode::Busy);
     control.resume(&id).unwrap();
     assert_eq!(control.mark(&id, Some("x")).unwrap().0, "k-1");
     // Nothing follows this meeting here, so its snapshot is what meeting.json says.
@@ -675,6 +676,27 @@ fn rukoo_commands_go_through_meeting_control() {
         matches!(wait_change(&changes, "the end", |c| matches!(c, Change::Ended { .. })), Change::Ended { reason, .. } if reason == "rukoo")
     );
     assert_eq!(control.stop(&id).unwrap_err().code, ErrorCode::NotRecording);
+    assert_eq!(
+        control.delete(&id).unwrap_err().code,
+        ErrorCode::Busy,
+        "processing data cannot be deleted while a pipeline may write it"
+    );
+    control
+        .log
+        .append(
+            "meeting.state",
+            Some(&id),
+            json!({"state": "done", "at": 1000, "endedAt": 1793003605120_u64}),
+        )
+        .unwrap();
+    control.delete(&id).unwrap();
+    assert!(!meeting_dir(&data, &id).exists());
+    assert!(!c.library().root().join(format!(".deleted-{id}")).exists());
+    let (_, removed) = control.log.meeting_events(&id).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].event, "meeting.removed");
+    assert_eq!(removed[0].data["reason"], "user");
+    assert_eq!(control.get(&id).unwrap_err().code, ErrorCode::NotFound);
     c.shutdown();
 }
 

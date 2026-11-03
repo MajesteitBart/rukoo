@@ -34,6 +34,21 @@ use voice_sync::{ScreenFile, ScreenFileKind, ScreenFiles};
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 
 fn main() {
+    struct Warnings;
+    impl log::Log for Warnings {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("{}: {}", record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static WARNINGS: Warnings = Warnings;
+    let _ = log::set_logger(&WARNINGS);
+    log::set_max_level(log::LevelFilter::Warn);
     if std::env::var(ROLE).as_deref() == Ok("recorder") {
         let args: Vec<String> = std::env::args().skip(1).collect();
         // Only the recorder takes `--track`; the screen process never does.

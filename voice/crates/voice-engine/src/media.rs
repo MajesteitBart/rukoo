@@ -160,6 +160,9 @@ impl ScreenMedia for RecordedScreen {
         let index = self.frame_index(meeting_dir)?;
         Ok(index
             .at_or_before(at)
+            .filter(|frame| {
+                screen_files::capture_since(meeting_dir, at).is_some_and(|since| frame.t >= since)
+            })
             .filter(|frame| screen_paths::frame_path(meeting_dir, &frame.file).is_some())
             .map(|frame| (frame.file.clone(), frame.t)))
     }
@@ -251,6 +254,8 @@ struct Job {
     used: Instant,
     /// Bytes this job will put in `<data>/media/`.
     reserved: u64,
+    /// At least one open delivered this completed file before a growing live range replaces it.
+    answered_ready: bool,
 }
 
 /// What a `media-prepare` thread does for a job.
@@ -291,6 +296,7 @@ impl AudioPlan {
 #[derive(Default)]
 struct Inner {
     jobs: HashMap<String, Job>,
+    deleted: std::collections::HashSet<String>,
     queue: VecDeque<(String, Work)>,
     threads: usize,
     spawned: u64,
@@ -312,6 +318,38 @@ pub struct MediaService {
 }
 
 impl MediaService {
+    pub(crate) fn bucket_sync(&self) -> Option<Arc<BucketSync>> {
+        self.sync.clone()
+    }
+
+    /// Revoke prepared media links before deleting their meeting. A running preparation must
+    /// finish first, so a late bucket fetch cannot recreate the meeting folder afterwards.
+    pub(crate) fn forget_meeting(&self, meeting: &str) -> Result<(), ControlError> {
+        let mut inner = self.lock();
+        if inner
+            .jobs
+            .values()
+            .any(|job| job.key.meeting == meeting && matches!(job.state, State::Preparing))
+        {
+            return Err(ControlError::new(
+                ErrorCode::Busy,
+                "Voice is still preparing this meeting's media. Try deleting it again in a moment.",
+            ));
+        }
+        let ids: Vec<String> = inner
+            .jobs
+            .iter()
+            .filter(|(_, job)| job.key.meeting == meeting)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(job) = inner.jobs.remove(&id) {
+                forget_file(&job);
+            }
+        }
+        inner.deleted.insert(meeting.to_owned());
+        Ok(())
+    }
     /// Empties `<data>/media/`: nothing prepared before this start is still asked for.
     pub fn new(
         data_dir: &Path,
@@ -341,6 +379,9 @@ impl MediaService {
     /// `{ media, ready: false }` while the file is prepared, then `{ media, ready: true, type,
     /// size, start, end }`. Answers within milliseconds: anything slow runs as a job.
     pub fn open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        if self.lock().deleted.contains(args.meeting.as_str()) {
+            return Err(ControlError::not_found(NO_MEETING));
+        }
         self.sweep();
         let key = JobKey::of(args);
         self.rekey_grown_audio(&key, args);
@@ -436,7 +477,9 @@ impl MediaService {
             .jobs
             .iter()
             .find_map(|(id, job)| match &job.state {
-                State::Ready(ready) if job.key == *key && ready.end < wanted => {
+                State::Ready(ready)
+                    if job.answered_ready && job.key == *key && ready.end < wanted =>
+                {
                     Some((id.clone(), ready.end))
                 }
                 _ => None,
@@ -474,6 +517,7 @@ impl MediaService {
             State::Preparing => Ok(Some(json!({ "media": id, "ready": false }))),
             State::Ready(ready) if ready.path.is_file() => {
                 job.used = Instant::now();
+                job.answered_ready = true;
                 if ready.clip {
                     let _ = screen_files::touch_clip(&ready.path);
                 }
@@ -615,13 +659,18 @@ impl MediaService {
     fn insert_ready(&self, key: JobKey, ready: Ready) -> Result<Value, ControlError> {
         let id = new_id()?;
         let answer = ready_answer(&id, &ready);
-        self.lock().jobs.insert(
+        let mut inner = self.lock();
+        if inner.deleted.contains(&key.meeting) {
+            return Err(ControlError::not_found(NO_MEETING));
+        }
+        inner.jobs.insert(
             id,
             Job {
                 key,
                 state: State::Ready(ready),
                 used: Instant::now(),
                 reserved: 0,
+                answered_ready: true,
             },
         );
         Ok(answer)
@@ -632,6 +681,9 @@ impl MediaService {
         let id = new_id()?;
         let spawn = {
             let mut inner = self.lock();
+            if inner.deleted.contains(&key.meeting) {
+                return Err(ControlError::not_found(NO_MEETING));
+            }
             // Another open of the same arguments got here first.
             if let Some(other) = inner
                 .jobs
@@ -646,6 +698,7 @@ impl MediaService {
                 Job {
                     key,
                     state: State::Preparing,
+                    answered_ready: false,
                     used: Instant::now(),
                     reserved,
                 },

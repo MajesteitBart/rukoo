@@ -408,10 +408,19 @@ pub(crate) fn list_remote(
             Err(_) => log::warn!("sync: an index in the bucket is unreadable"),
         }
     }
-    let local: HashSet<String> = crate::worker::meeting_dirs(&shared.opts.meetings_dir)
+    let mut local: HashSet<String> = crate::worker::meeting_dirs(&shared.opts.meetings_dir)
         .into_iter()
         .map(|d| d.id().as_str().to_owned())
         .collect();
+    // An offline deletion may not have reached the bucket index yet.
+    local.extend(
+        shared
+            .queue
+            .meetings()?
+            .into_iter()
+            .filter(|m| m.phase == "forgotten")
+            .map(|m| m.id),
+    );
     Ok(merge_indexes(indexes)
         .into_iter()
         .filter(|e| !e.deleted && MeetingId::parse(&e.id).is_some() && !local.contains(&e.id))

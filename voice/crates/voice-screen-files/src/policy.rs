@@ -126,6 +126,10 @@ impl DropState {
         self.video_on && self.video.is_none()
     }
 
+    pub fn set_video(&mut self, on: bool) {
+        self.video_on = on;
+    }
+
     /// Whether frames still record.
     pub fn frames_recording(&self) -> bool {
         self.frames.is_none()

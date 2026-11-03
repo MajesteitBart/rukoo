@@ -43,6 +43,12 @@ pub trait MeetingControl: Send + Sync {
     /// `meeting.stop` from Rukoo, which ends the meeting with the reason `rukoo`.
     fn stop(&self, id: &str) -> Result<(), ControlError>;
 
+    fn delete(&self, _id: &str) -> Result<(), ControlError> {
+        Err(ControlError::not_available(
+            "This Voice cannot delete meetings.",
+        ))
+    }
+
     fn pause(&self, id: &str) -> Result<(), ControlError>;
 
     /// `not_recording` unless the meeting is paused.
@@ -80,6 +86,28 @@ pub trait MeetingControl: Send + Sync {
     fn protected(&self, id: &str) -> Result<(), ControlError> {
         let _ = id;
         Ok(())
+    }
+
+    /// A protection ack must stay nonblocking: the bridge handles it ahead of queued commands.
+    fn protected_for(
+        &self,
+        id: &str,
+        _request: Option<&str>,
+        _connection: u64,
+    ) -> Result<(), ControlError> {
+        self.protected(id)
+    }
+
+    fn set_screen(
+        &self,
+        _id: &str,
+        _mode: voice_protocol::ScreenMode,
+        _monitor: Option<&str>,
+        _deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice cannot change screen recording.",
+        ))
     }
 
     /// The result of `screen.get`: `{ screen, state, video, frames, monitor, monitors }`. It

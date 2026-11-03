@@ -931,7 +931,7 @@ check('the pill reports the stop button for the native window, and null without 
   assert.equal(layout.button, null);
 });
 
-check('the monitor button sits before stop, is reported for its own native window, and moves to the next monitor', async ({ open, page }) => {
+check('the screen button sits before stop and opens its native menu even with capture Off', async ({ open, page }) => {
   await open('pill.html?mock=meeting-recording&lang=en');
   await page.waitForTimeout(400);
   assert.equal((await page.evaluate(() => window.__pillLayout)).screenButton, null, 'no screenSwitch, no monitor button');
@@ -943,7 +943,7 @@ check('the monitor button sits before stop, is reported for its own native windo
   assert.equal(layout.screenButton.y, layout.button.y, 'on one line with stop');
   assert.ok(layout.button.x - (layout.screenButton.x + layout.screenButton.width) <= 5, 'right before the stop button');
   assert.ok(layout.screenButton.x > layout.pill.x, 'inside the pill');
-  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Record another monitor');
+  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Screen recording');
   // The pointer colours the button it is over, and only that one.
   await page.evaluate(() => window.__pillMock.emit('pill://pointer', { hover: true, pressed: false, target: 'screen' }));
   assert.equal(await page.locator('.screen-btn.hover').count(), 1);
@@ -951,9 +951,11 @@ check('the monitor button sits before stop, is reported for its own native windo
   await page.evaluate(() => window.__pillMock.emit('pill://pointer', { hover: true, pressed: false }));
   assert.equal(await page.locator('.stop.hover').count(), 1, 'no target means the stop window, as before');
   await page.click('.screen-btn');
-  await page.waitForSelector('.label:not(.out):text("Screen: Display 2")');
-  await open('pill.html?mock=meeting-screen-button&lang=nl');
-  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Ander beeldscherm opnemen');
+  assert.equal(await page.evaluate(() => window.__pillMock.screenMenu.opened), 1);
+  await open('pill.html?mock=meeting-screen-off&lang=nl');
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator('.screen-btn').getAttribute('aria-label'), 'Schermopname');
+  assert.ok((await page.evaluate(() => window.__pillLayout)).screenButton);
 });
 
 check('the screen notices read right in both languages, with the screen glyph', async ({ open, page }) => {

@@ -1,7 +1,42 @@
 {
-  "note": "Examples for voice/PROTOCOL.md, version 1. Voice (voice/crates/voice-protocol) and Rukoo (src/main/voice/) must both accept every message under valid, reject every message under invalid, compute every path under paths, and agree on negotiation and replay. Paths are written with the separators of their platform, whatever system runs the test.",
-  "protocol": 1,
+  "note": "Examples for voice/PROTOCOL.md, version 2. Voice (voice/crates/voice-protocol) and Rukoo (src/main/voice/) must both accept every message under valid, reject every message under invalid, compute every path under paths, and agree on negotiation and replay. Paths are written with the separators of their platform, whatever system runs the test.",
+  "protocol": 2,
   "valid": [
+    {
+      "name": "protocol 2 hello",
+      "from": "rukoo",
+      "message": { "type": "hello", "protocol": 2, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": null, "after": 0 }
+    },
+    {
+      "name": "permanent meeting deletion",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "delete-1", "command": "meeting.delete", "args": { "meeting": "m-20261030-090000-00ff" } }
+    },
+    {
+      "name": "explicit user removal",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1055, "event": "meeting.removed", "meeting": "m-20261030-090000-00ff", "createdAt": 1793100000000, "data": { "reason": "user" } }
+    },
+    {
+      "name": "enable video on a chosen monitor",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "screen-1", "command": "screen.set", "args": { "meeting": "m-20261030-090000-00ff", "screen": "video", "monitor": "display-2" } }
+    },
+    {
+      "name": "mid-meeting protection round",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1056, "event": "meeting.starting", "meeting": "m-20261030-090000-00ff", "createdAt": 1793100000000, "data": { "screen": "frames", "request": "mode-round-2" } }
+    },
+    {
+      "name": "per-client protection acknowledgement",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "protect-1", "command": "meeting.protected", "args": { "meeting": "m-20261030-090000-00ff", "request": "mode-round-2" } }
+    },
+    {
+      "name": "screen mode timeline mark",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1057, "event": "mark", "meeting": "m-20261030-090000-00ff", "createdAt": 1793100000000, "data": { "id": "screen-mode-1-2", "kind": "screen_mode", "at": 2500, "until": null, "track": "screen", "detail": "user", "label": "off" } }
+    },
     {
       "name": "first hello",
       "from": "rukoo",
@@ -379,6 +414,24 @@
     }
   ],
   "invalid": [
+    {
+      "name": "screen set rejects an invalid mode",
+      "from": "rukoo",
+      "reason": "screen",
+      "message": { "type": "command", "id": "screen-bad", "command": "screen.set", "args": { "meeting": "m-20261030-090000-00ff", "screen": "hologram" } }
+    },
+    {
+      "name": "deletion needs a valid meeting id",
+      "from": "rukoo",
+      "reason": "meeting",
+      "message": { "type": "command", "id": "delete-bad", "command": "meeting.delete", "args": { "meeting": "../other" } }
+    },
+    {
+      "name": "protection round id cannot be empty",
+      "from": "rukoo",
+      "reason": "request",
+      "message": { "type": "command", "id": "protect-bad", "command": "meeting.protected", "args": { "meeting": "m-20261030-090000-00ff", "request": "" } }
+    },
     { "name": "unknown message type", "from": "rukoo", "reason": "type", "message": { "type": "greeting", "protocol": 1 } },
     { "name": "hello with a short token", "from": "rukoo", "reason": "token", "message": { "type": "hello", "protocol": 1, "token": "abc", "client": "rukoo", "instance": null, "after": 0 } },
     { "name": "hello without after", "from": "rukoo", "reason": "after", "message": { "type": "hello", "protocol": 1, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "client": "rukoo", "instance": null } },

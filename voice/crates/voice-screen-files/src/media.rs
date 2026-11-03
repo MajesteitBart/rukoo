@@ -64,6 +64,7 @@ pub fn frame_reply(
     }
     let frame = index
         .at_or_before(at)
+        .filter(|frame| capture_since(meeting, at).is_some_and(|since| frame.t >= since))
         .ok_or_else(|| MediaError::NotFound(NO_FRAME.into()))?;
     let path = paths::frame_path(meeting, &frame.file).ok_or_else(|| {
         MediaError::Failed("The screen journal names a file that isn't a frame.".into())
@@ -244,8 +245,14 @@ fn cut_clips_within(
     let (start, end) = capped(start, end);
     let key = (meeting.to_path_buf(), start, end);
     let (job, new) = {
-        let mut running = lock(jobs());
-        match running.get(&key) {
+        let mut jobs = lock(jobs());
+        if jobs.deleted.contains(meeting) {
+            return Err(MediaError::NotFound("The meeting was deleted.".into()));
+        }
+        let running = &mut jobs.running;
+        // Completion wakes waiters before the worker removes its map entry. A retry must not
+        // rejoin that completed failure after the user has freed disk space.
+        match running.get(&key).filter(|job| !lock(&job.state).done) {
             Some(job) => (job.clone(), false),
             None => {
                 let job = Arc::new(Job::default());
@@ -260,7 +267,9 @@ fn cut_clips_within(
             .name("clip-cut".into())
             .spawn(move || run_job(&worker, key, check, budget));
         if let Err(e) = spawned {
-            lock(jobs()).remove(&(meeting.to_path_buf(), start, end));
+            lock(jobs())
+                .running
+                .remove(&(meeting.to_path_buf(), start, end));
             return Err(MediaError::Failed(format!("Can't start the cut: {e}")));
         }
     }
@@ -306,11 +315,50 @@ pub fn recorded(meeting: &Path) -> (bool, bool) {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|m| m["screen"].as_str().map(str::to_string));
-    match screen.as_deref() {
+    let mut recorded = match screen.as_deref() {
         Some("frames") => (true, false),
         Some("video") => (true, true),
         _ => (false, false),
+    };
+    for line in journal::read_all(meeting).unwrap_or_default() {
+        match line {
+            Line::Session { mode, .. } | Line::Mode { mode, .. } => {
+                recorded.0 |= mode == "frames" || mode == "video";
+                recorded.1 |= mode == "video";
+            }
+            Line::Frame { .. } => recorded.0 = true,
+            Line::Video { .. } => recorded.1 = true,
+            _ => {}
+        }
     }
+    recorded
+}
+
+/// Start of the capture stretch containing `at`. A frame from before an Off interval cannot
+/// describe a later instant, even if no new frame has arrived after capture was enabled again.
+pub fn capture_since(meeting: &Path, at: u64) -> Option<u64> {
+    let initial = std::fs::read(meeting.join("meeting.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|m| m["screen"].as_str().map(str::to_string));
+    let mut mode = initial.unwrap_or_else(|| "frames".into());
+    let mut since = 0;
+    let mut lines = journal::read_all(meeting).unwrap_or_default();
+    lines.sort_by_key(|line| line.t().unwrap_or(0));
+    for line in lines {
+        if line.t().is_some_and(|t| t > at) {
+            break;
+        }
+        match line {
+            Line::Mode { t, mode: next, .. } => {
+                mode = next;
+                since = t;
+            }
+            Line::Dropped { what, .. } if what == "frames" => mode = "off".into(),
+            _ => {}
+        }
+    }
+    matches!(mode.as_str(), "frames" | "video").then_some(since)
 }
 
 /// The kind of a closed screen file, for bucket sync.
@@ -562,8 +610,32 @@ impl Job {
 
 type JobKey = (PathBuf, u64, u64);
 
-fn jobs() -> &'static Mutex<HashMap<JobKey, Arc<Job>>> {
-    static JOBS: OnceLock<Mutex<HashMap<JobKey, Arc<Job>>>> = OnceLock::new();
+#[derive(Default)]
+struct Jobs {
+    running: HashMap<JobKey, Arc<Job>>,
+    deleted: HashSet<PathBuf>,
+}
+
+/// Refuse deletion while a cut still writes files, then prevent later cuts from recreating them.
+pub fn forget_meeting<E>(
+    meeting: &Path,
+    commit: impl FnOnce() -> Result<(), E>,
+) -> Result<bool, E> {
+    let mut jobs = lock(jobs());
+    if jobs
+        .running
+        .iter()
+        .any(|(key, job)| key.0 == meeting && !lock(&job.state).done)
+    {
+        return Ok(false);
+    }
+    commit()?;
+    jobs.deleted.insert(meeting.to_path_buf());
+    Ok(true)
+}
+
+fn jobs() -> &'static Mutex<Jobs> {
+    static JOBS: OnceLock<Mutex<Jobs>> = OnceLock::new();
     JOBS.get_or_init(Mutex::default)
 }
 
@@ -594,8 +666,8 @@ fn run_job(job: &Arc<Job>, key: JobKey, check: Option<ClipCheck>, budget: Durati
     }
     job.changed.notify_all();
     let mut jobs = lock(jobs());
-    if jobs.get(&key).is_some_and(|j| Arc::ptr_eq(j, job)) {
-        jobs.remove(&key);
+    if jobs.running.get(&key).is_some_and(|j| Arc::ptr_eq(j, job)) {
+        jobs.running.remove(&key);
     }
 }
 
@@ -994,6 +1066,48 @@ mod tests {
             frame_reply(m.path(), false, 12_000, &index),
             Err(MediaError::NotAvailable(NO_SCREEN.into()))
         );
+    }
+
+    #[test]
+    fn frames_do_not_cross_screen_off_intervals() {
+        let m = meeting("frame-mode-stretches", "off");
+        let mode = |t, mode: &str| Line::Mode {
+            t,
+            id: format!("mode-{t}"),
+            mode: mode.into(),
+            reason: "user".into(),
+        };
+        journal(
+            m.path(),
+            &[
+                mode(1_000, "frames"),
+                frame(1_100, "First"),
+                mode(2_000, "off"),
+                mode(3_000, "video"),
+                frame(3_100, "Second"),
+            ],
+        );
+        write_frame(m.path(), 1_100, b"one");
+        write_frame(m.path(), 3_100, b"two");
+        let index = FrameIndex::load(m.path()).unwrap();
+        for at in [999, 2_000, 2_999, 3_000, 3_099] {
+            assert!(
+                matches!(
+                    frame_reply(m.path(), true, at, &index),
+                    Err(MediaError::NotFound(_))
+                ),
+                "at {at}"
+            );
+        }
+        assert_eq!(
+            frame_reply(m.path(), true, 1_999, &index).unwrap()["frame"]["at"],
+            1_100
+        );
+        assert_eq!(
+            frame_reply(m.path(), true, 3_100, &index).unwrap()["frame"]["at"],
+            3_100
+        );
+        assert_eq!(recorded(m.path()), (true, true));
     }
 
     #[test]

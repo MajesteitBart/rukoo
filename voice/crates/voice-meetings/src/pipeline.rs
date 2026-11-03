@@ -24,9 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use voice_bridge::{EventLog, LogError};
 use voice_core::{Hints, LocalEngine, ProviderError, SpeechToText};
-use voice_protocol::{
-    events, MeetingState, MeetingStateChange, Passage, ScreenMode, Speaker, Track,
-};
+use voice_protocol::{events, MeetingState, MeetingStateChange, Passage, Speaker, Track};
 
 use crate::library::{MeetingDir, MeetingFile};
 use crate::reader::{segment_samples, TrackReader, PER_MS};
@@ -51,6 +49,8 @@ use crate::transcript::{
 use crate::watcher::{
     mark_key, state_key, tracks_of, Derived, Mapper, Stop, Stretch, TimelineWatcher,
 };
+#[cfg(test)]
+use voice_protocol::ScreenMode;
 
 /// A track without an open segment may still get a segment that starts this far before the
 /// timeline's latest time: a padded loopback writes its `segment` line up to 0.5 s late.
@@ -755,7 +755,8 @@ impl Worker {
         if transcript.emitted()? != keys {
             transcript.set_emitted(&keys)?;
         }
-        let screen = (file.screen != ScreenMode::Off).then(|| ScreenFollower::new(dir.path()));
+        // The screen folder may first appear after an audio-only meeting is already running.
+        let screen = Some(ScreenFollower::new(dir.path()));
         let recognizer = match &opts.timed {
             Some(timed) => Recognizer::Timed(timed.clone()),
             None => Recognizer::Text(opts.stt.clone()),

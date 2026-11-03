@@ -744,6 +744,11 @@ impl Worker {
             let id = dir.id().as_str().to_owned();
             present.insert(id.clone());
             let row = rows.get(&id);
+            // Explicit deletion survives a full rescan, including the short interval before
+            // the engine renames the local folder out of the library.
+            if row.is_some_and(|r| r.phase == "forgotten") {
+                continue;
+            }
             if !all
                 && row.is_some_and(|r| {
                     matches!(r.phase.as_str(), "synced" | "restored" | "forgotten")

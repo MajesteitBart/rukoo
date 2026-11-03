@@ -109,7 +109,8 @@ function meetingRef(m) {
     id: m.id,
     title: clip(typeof m.title === 'string' ? m.title : '', 300),
     eventId: typeof m.eventId === 'string' && m.eventId ? clip(m.eventId, 4000) : null,
-    readSeq: Number.isInteger(m.readSeq) && m.readSeq >= 0 ? m.readSeq : 0
+    readSeq: Number.isInteger(m.readSeq) && m.readSeq >= 0 ? m.readSeq : 0,
+    ...(m.deleted === true ? { deleted: true } : {})
   };
 }
 
@@ -241,6 +242,9 @@ class AgentHub extends EventEmitter {
     this.cfg.load();
     this.phoneHost = new PhoneHost(this, this.deps.phone);
     this.load();
+    this.meetingListener = (payload) => this.updateMeetingRefs(payload);
+    this.deps.voice?.on?.('meeting', this.meetingListener);
+    this.updateMeetingRefs();
     this.refreshRemoteHash();
     this.sweepTemp();
     this.registerAdapters();
@@ -413,6 +417,7 @@ class AgentHub extends EventEmitter {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.meetingListener) this.deps.voice?.off?.('meeting', this.meetingListener);
     clearInterval(this.remoteTimer);
     // PDF reads still running end now, so no reader process outlives Rukoo; their turns stop below.
     this.pdf.dispose();
@@ -603,6 +608,26 @@ class AgentHub extends EventEmitter {
     this.emitEvent({ kind: 'conversation', conversation: c });
   }
 
+  updateMeetingRefs(payload = null) {
+    const voice = this.deps.voice;
+    if (!voice) return;
+    const id = payload?.id || payload?.meeting?.id;
+    let changed = false;
+    for (const c of this.conversations.values()) {
+      if (!c.meeting || (id && c.meeting.id !== id)) continue;
+      const m = voice.meeting?.(c.meeting.id);
+      const title = m?.meeting.title || c.meeting.title;
+      const deleted = voice.isDeleted?.(c.meeting.id) === true || m?.meeting.removed === true || (payload?.kind === 'removed' && id === c.meeting.id);
+      if (c.meeting.title === title && (c.meeting.deleted === true) === deleted) continue;
+      c.meeting = { ...c.meeting, title };
+      if (deleted) c.meeting.deleted = true;
+      else delete c.meeting.deleted;
+      this.emitEvent({ kind: 'conversation', conversation: { id: c.id, meeting: c.meeting } });
+      changed = true;
+    }
+    if (changed) this.scheduleSave();
+  }
+
   touch(c) {
     c.updatedAt = Date.now();
     this.scheduleSave();
@@ -675,7 +700,7 @@ class AgentHub extends EventEmitter {
           agent: c.agent,
           title: c.title,
           message: c.message,
-          meeting: c.meeting ? { id: c.meeting.id, title: c.meeting.title } : null,
+          meeting: c.meeting ? { id: c.meeting.id, title: c.meeting.title, ...(c.meeting.deleted ? { deleted: true } : {}) } : null,
           origin: c.origin,
           updatedAt: c.updatedAt,
           lastAt,

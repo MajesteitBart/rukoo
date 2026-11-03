@@ -22,6 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const { validate, isMeetingId, STATES, SCREENS } = require('./protocol');
+const { screenAt } = require('./screen');
 
 const VERSION = 1;
 const SAVE_MS = 400;
@@ -49,7 +50,7 @@ function writeAtomic(file, data) {
 const screenDefault = (v) => (SCREENS.includes(v) ? v : null);
 
 function emptyIndex() {
-  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, status: { recording: null, dictating: false, screenDefault: null }, meetings: {} };
+  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, status: { recording: null, dictating: false, screenDefault: null }, meetings: {}, deleted: {} };
 }
 
 // A frame as Rukoo keeps it. textOmitted: Voice left the text out of a snapshot, and Rukoo doesn't have it yet.
@@ -68,6 +69,7 @@ function indexEntry(id, v = {}) {
   return {
     id,
     title: typeof v.title === 'string' ? v.title : '',
+    ownTitle: typeof v.ownTitle === 'string' ? Array.from(v.ownTitle).slice(0, 200).join('') : null,
     startedAt: Number.isInteger(v.startedAt) ? v.startedAt : null,
     endedAt: Number.isInteger(v.endedAt) ? v.endedAt : null,
     state: STATES.includes(v.state) ? v.state : null,
@@ -75,6 +77,7 @@ function indexEntry(id, v = {}) {
     at: int(v.at, 0),
     tracks: Array.isArray(v.tracks) ? v.tracks.filter((t) => t === 'mic' || t === 'call') : [],
     screen: typeof v.screen === 'string' ? v.screen : 'off',
+    currentScreen: SCREENS.includes(v.currentScreen) ? v.currentScreen : SCREENS.includes(v.screen) ? v.screen : 'off',
     startedBy: v.startedBy === 'rukoo' ? 'rukoo' : 'voice',
     context: isObj(v.context) ? v.context : null,
     eventId: typeof v.eventId === 'string' && v.eventId ? v.eventId.slice(0, EVENT_ID_MAX) : null,
@@ -157,9 +160,10 @@ class VoiceStore {
       index.instance = typeof raw.instance === 'string' ? raw.instance : null;
       index.lastSeq = int(raw.lastSeq, 0);
       index.tick = int(raw.tick, 0);
+      if (isObj(raw.deleted)) for (const [id, deleted] of Object.entries(raw.deleted)) if (isMeetingId(id) && deleted === true) index.deleted[id] = true;
       const st = isObj(raw.status) ? raw.status : {};
       index.status = { recording: isMeetingId(st.recording) ? st.recording : null, dictating: st.dictating === true, screenDefault: screenDefault(st.screenDefault) };
-      for (const [id, v] of Object.entries(raw.meetings)) if (isMeetingId(id) && isObj(v)) index.meetings[id] = indexEntry(id, v);
+      for (const [id, v] of Object.entries(raw.meetings)) if (isMeetingId(id) && isObj(v) && !index.deleted[id]) index.meetings[id] = indexEntry(id, v);
     } else if (raw) {
       this.keepAside(this.file);
     }
@@ -347,6 +351,8 @@ class VoiceStore {
       this.touchIndex();
     }
     const id = ev.meeting;
+    // A user deletion is permanent. Replays and snapshots already in flight cannot put its data back.
+    if (id && this.index.deleted[id]) return null;
     const d = ev.data;
     const live = !this.isReplay(ev.seq);
     switch (ev.event) {
@@ -367,7 +373,7 @@ class VoiceStore {
       case 'frame':
         return this.frame(id, d);
       case 'meeting.removed':
-        return this.remove(id) ? { meeting: id, kind: 'removed' } : null;
+        return this.remove(id, { purge: d.reason === 'user' }) ? { meeting: id, kind: 'removed' } : null;
       default:
         return null;
     }
@@ -377,6 +383,7 @@ class VoiceStore {
     const e = this.ensureEntry(id);
     const before = JSON.stringify(e);
     Object.assign(e, { title: d.title, startedAt: d.startedAt, tracks: d.tracks.slice(), screen: d.screen, startedBy: d.startedBy, context: d.context });
+    e.currentScreen = screenAt(e, Object.values(this.data(id)?.marks || {})).screen;
     // A meeting Rukoo started from a calendar event carries it in context; the user can link another later.
     if (!e.eventId && d.context && typeof d.context.calendarEvent === 'string' && d.context.calendarEvent) e.eventId = d.context.calendarEvent.slice(0, EVENT_ID_MAX);
     if (!e.state) e.state = 'recording';
@@ -449,6 +456,10 @@ class VoiceStore {
     if (old && JSON.stringify({ ...old, changed: undefined }) === JSON.stringify({ ...next, changed: undefined })) return null;
     const tick = this.nextTick();
     m.marks[d.id] = { ...next, changed: tick };
+    if (d.kind === 'screen_mode' || (d.track === 'screen' && ['dropped', 'video_dropped'].includes(d.kind))) {
+      const entry = this.ensureEntry(id);
+      entry.currentScreen = screenAt(entry, Object.values(m.marks)).screen;
+    }
     this.meetingChanged(id, tick);
     return { meeting: id, kind: 'mark', id: d.id };
   }
@@ -482,6 +493,7 @@ class VoiceStore {
   // later: the events for this meeting Rukoo applied while the answer was on its way. Voice sends its replies and its
   // events separately, so those past head can come first: they are newer than the snapshot and apply again on top.
   applySnapshot(id, snap, later = []) {
+    if (this.index.deleted[id]) return null;
     if (!isMeetingId(id) || !isObj(snap)) return null;
     const head = Number.isInteger(snap.head) ? snap.head : Infinity;
     const newer = later.filter((ev) => ev.meeting === id && ev.seq > head);
@@ -492,7 +504,7 @@ class VoiceStore {
     const meeting = isObj(snap.meeting) ? snap.meeting : {};
     const e = this.ensureEntry(id);
     const before = JSON.stringify(e);
-    if (ok('meeting.started', meeting)) Object.assign(e, { title: meeting.title, startedAt: meeting.startedAt, tracks: meeting.tracks.slice(), screen: meeting.screen, startedBy: meeting.startedBy, context: meeting.context });
+    if (ok('meeting.started', meeting)) Object.assign(e, { title: meeting.title, startedAt: meeting.startedAt, tracks: meeting.tracks.slice(), screen: SCREENS.includes(meeting.initialScreen) ? meeting.initialScreen : meeting.screen, startedBy: meeting.startedBy, context: meeting.context });
     // The snapshot's meeting has state and endedAt, not always the reason or the moment of the change.
     if (STATES.includes(meeting.state) && (!ENDED.has(meeting.state) || Number.isInteger(meeting.endedAt))) {
       Object.assign(e, {
@@ -557,6 +569,7 @@ class VoiceStore {
         }
       }
     }
+    e.currentScreen = SCREENS.includes(meeting.initialScreen) ? meeting.screen : screenAt(e, Object.values(m.marks)).screen;
     // Applying an event twice gives the same result, so what Rukoo had from them comes back as it was.
     for (const ev of newer) if (this.apply(ev)) touched = true;
     this.damaged.delete(id);
@@ -566,13 +579,17 @@ class VoiceStore {
   }
 
   // Voice removed the meeting: its transcript goes. Notes the user wrote stay, with the meeting marked removed.
-  remove(id) {
+  remove(id, { purge = false } = {}) {
     if (!isMeetingId(id)) return false;
     const e = this.index.meetings[id];
     const m = this.data(id);
-    if (!e && !m) return false;
+    if (purge) this.index.deleted[id] = true;
+    if (!e && !m) {
+      if (purge) this.touchIndex();
+      return purge;
+    }
     if (this.index.status.recording === id) this.setStatus({ ...this.index.status, recording: null });
-    if (m && m.notes && m.notes.text.trim()) {
+    if (!purge && m && m.notes && m.notes.text.trim()) {
       const kept = emptyMeeting(id);
       kept.notes = m.notes;
       this.cache.set(id, kept);
@@ -590,6 +607,17 @@ class VoiceStore {
   }
 
   // ---------- what Rukoo owns ----------
+
+  setTitle(id, value) {
+    const e = this.index.meetings[id];
+    if (!e || e.removed || typeof value !== 'string') return false;
+    const title = value.trim();
+    if (!title || Array.from(title).length > 200) return false;
+    const before = JSON.stringify(e);
+    e.ownTitle = title;
+    this.entryChanged(e, before);
+    return true;
+  }
 
   // value: {name, address, from} or null to forget the name. Returns false for an unknown meeting or speaker.
   setName(id, speakerId, value) {
@@ -642,7 +670,8 @@ class VoiceStore {
   // ---------- reading ----------
 
   entry(id) {
-    return isMeetingId(id) ? this.index.meetings[id] || null : null;
+    const e = isMeetingId(id) ? this.index.meetings[id] : null;
+    return e ? { ...e, title: e.ownTitle ?? e.title, initialScreen: e.screen, screen: e.currentScreen } : null;
   }
 
   // Whether Voice stopped recording the meeting's screen for good: it sends a dropped mark on the screen track then.
@@ -653,7 +682,7 @@ class VoiceStore {
 
   // Newest first.
   list() {
-    return Object.values(this.index.meetings).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || (a.id < b.id ? 1 : -1));
+    return Object.keys(this.index.meetings).map((id) => this.entry(id)).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || (a.id < b.id ? 1 : -1));
   }
 
   // Everything about one meeting, with the names and corrections applied; null when Rukoo doesn't have it.

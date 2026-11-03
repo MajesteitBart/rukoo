@@ -426,6 +426,10 @@ impl Core {
     /// notifications, a move shows the monitor's name.
     pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
         match change {
+            ScreenChange::Mode { id } => {
+                self.pill_screen(&id);
+                self.settings_changed();
+            }
             ScreenChange::Dropped { id, what, reason } => {
                 self.screen_notice(&id, Some(drop_notice(what, reason)), Map::new(), DROP_HOLD);
                 if let Some(body) = drop_text(what, reason) {
@@ -477,15 +481,25 @@ impl Core {
             .update(|p, now| p.meeting_notice(key, args, hold, now));
     }
 
-    /// The pill's screen button: the screen recording moves to the next monitor.
+    /// The pill's screen button opens a menu without changing the recording.
     pub fn screen_clicked(self: &Arc<Self>) {
-        // Talks to the screen process; the click comes from the app's window thread.
-        let screen = Arc::clone(&self.meetings.screen);
+        let core = Arc::clone(self);
         let _ = thread::Builder::new()
-            .name("screen-next".into())
+            .name("screen-menu".into())
             .spawn(move || {
-                if let Err(e) = screen.next_monitor() {
-                    log::info!("screen: the pill's switch did nothing: {e}");
+                let Some(meeting) = core.meetings.controller.current() else {
+                    return;
+                };
+                match core
+                    .meetings
+                    .screen
+                    .describe(&meeting.id, Instant::now() + Duration::from_secs(4))
+                {
+                    Ok(mut info) => {
+                        info["meeting"] = Value::String(meeting.id);
+                        core.sink.screen_menu(info);
+                    }
+                    Err(e) => log::info!("screen: could not open the pill menu: {e}"),
                 }
             });
     }
@@ -882,6 +896,43 @@ impl EngineApi for EngineImpl {
 
     fn pill_screen_clicked(&self) {
         self.0.screen_clicked();
+    }
+
+    fn pill_screen_set(
+        &self,
+        meeting: &str,
+        mode: &str,
+        monitor: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let mode = match mode {
+            "off" => ScreenMode::Off,
+            "frames" => ScreenMode::Frames,
+            "video" => ScreenMode::Video,
+            _ => return Err(ApiError::new("bad_args", "Choose off, frames or video.")),
+        };
+        self.0
+            .meetings
+            .screen
+            .set_mode(
+                meeting,
+                mode,
+                monitor,
+                Instant::now() + Duration::from_secs(15),
+            )
+            .map(|_| ())
+            .map_err(|e| {
+                self.0.screen_notice(
+                    meeting,
+                    Some(notices::SCREEN_CHANGE_FAILED),
+                    Map::new(),
+                    DROP_HOLD,
+                );
+                self.0.sink.notify(Notification {
+                    title_key: NOTIFY_MEETING.into(),
+                    body: e.message.clone(),
+                });
+                ApiError::new(e.code.as_str(), e.message)
+            })
     }
 
     fn settings_state(&self) -> Value {

@@ -24,9 +24,9 @@ pub use paths::Platform;
 pub use validate::{validate_discovery, validate_incoming, Invalid};
 
 /// The newest protocol version this crate speaks.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 /// The oldest protocol version this crate speaks.
-pub const MIN_PROTOCOL: u32 = 1;
+pub const MIN_PROTOCOL: u32 = 2;
 
 /// The WebSocket path on `127.0.0.1:<port>`.
 pub const BRIDGE_PATH: &str = "/bridge";

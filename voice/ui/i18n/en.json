@@ -194,6 +194,7 @@
     "message": "Screen recording stopped",
     "description": "Pill notice: Voice's screen recorder stopped five times in a row, so Voice no longer records the screen in this meeting; the audio goes on. voice/ui/pill.js (meetingView)."
   },
+  "pill.screenChangeFailed": { "message": "Screen change failed", "description": "Pill notice when a selected screen mode or monitor could not be applied. The previous mode remains. Full details appear in a notification." },
   "pill.screenMoved": {
     "message": "Screen: {name}",
     "description": "Pill notice: Voice now records another monitor. {name} is the monitor's name from Windows, such as \"DELL U2720Q\". voice/ui/pill.js (meetingView)."
@@ -203,9 +204,13 @@
     "description": "Pill: accessible name of the stop button. The app also uses it as the title of the native window over the button. voice/ui/pill.js (renderButton)."
   },
   "pill.screenButton": {
-    "message": "Record another monitor",
-    "description": "Pill: accessible name of the monitor button left of the stop button, which moves the screen recording to the next monitor. The app also uses it as the title of the native window over the button. voice/ui/pill.js (setScreen)."
+    "message": "Screen recording",
+    "description": "Pill: opens the native screen mode and monitor menu. Also the title of its native hit window. voice/ui/pill.js (setScreen)."
   },
+  "app.pill.screenOff": { "message": "Off", "description": "Pill screen menu: stop capturing the screen; audio continues." },
+  "app.pill.screenFrames": { "message": "Frames", "description": "Pill screen menu: capture still frames." },
+  "app.pill.screenVideo": { "message": "Video", "description": "Pill screen menu: capture video and still frames." },
+  "app.pill.screenMonitor": { "message": "Monitor", "description": "Pill screen menu: heading above the available monitors." },
   "pill.dev": {
     "message": "Dev",
     "description": "Pill: small tag after the label in a development copy, so testers can tell it from the installed app. voice/ui/pill.js (render)."
