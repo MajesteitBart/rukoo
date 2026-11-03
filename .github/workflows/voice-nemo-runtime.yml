@@ -2,8 +2,8 @@ name: Voice NeMo runtime
 
 # Builds the NeMo-Speech.cpp runtime that Rukoo Voice's speaker worker loads, checks it on the AMI excerpt and
 # uploads the zip and its manifest as an artifact. Publishing the artifact as a release is a separate, manual step
-# (voice/nemo-runtime/README.md). It runs when its own files change, on any branch, so a branch can produce the
-# artifact without a dispatch from main.
+# (voice/nemo-runtime/README.md). It runs when its own files change, on any branch but not on tags, so a branch
+# can produce the artifact without a dispatch from main.
 
 on:
   pull_request:
@@ -11,6 +11,8 @@ on:
       - 'voice/nemo-runtime/**'
       - '.github/workflows/voice-nemo-runtime.yml'
   push:
+    # Branches only: a release tag such as v2.2.0 or voice-v0.1.0 would otherwise start a full runtime build.
+    branches: ['**']
     paths:
       - 'voice/nemo-runtime/**'
       - '.github/workflows/voice-nemo-runtime.yml'
