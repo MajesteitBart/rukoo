@@ -790,7 +790,10 @@ async function monitorMenu(btn) {
   if (!stillOpen()) return;
   const monitors = info && Array.isArray(info.monitors) ? info.monitors.filter((m) => m && typeof m.id === 'string') : [];
   const stopped = !info || info.state === 'stopped';
-  const selected = M.monitors.get(id) || info.monitor;
+  const remembered = M.monitors.get(id);
+  if (remembered && !monitors.some((m) => m.id === remembered)) M.monitors.delete(id);
+  // Voice may have switched from its pill or fallen back after a display disconnected.
+  const selected = info.monitor || M.monitors.get(id);
   showMenu(
     btn,
     [
@@ -799,7 +802,7 @@ async function monitorMenu(btn) {
         label: t(`meeting.screen.control.${mode}`),
         checked: info.screen === mode,
         disabled: stopped,
-        action: () => setScreenMode(id, mode, selected)
+        action: () => setScreenMode(id, mode, mode === 'off' ? null : selected)
       })),
       { separator: true },
       { heading: t('meeting.monitor.heading') },

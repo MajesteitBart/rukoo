@@ -354,6 +354,78 @@ test('screen modes can be enabled from an audio-only meeting, turned off and res
   expect(saved.meeting.screen).toBe('video');
 });
 
+for (const [language, theme, zoom] of [['en', 'dark', 0.8], ['en', 'light', 1], ['nl', 'dark', 1], ['nl', 'light', 2]]) {
+  test(`screen controls follow Voice after monitor changes and can turn Off after disconnection: ${language} ${theme}`, async () => {
+    const first = { id: 'demo-first', name: 'Demo display 1', width: 1920, height: 1080, primary: true };
+    const second = { id: 'demo-second', name: 'Demo display 2', width: 1920, height: 1080, primary: false };
+    let info = { screen: 'frames', state: 'recording', video: false, frames: true, monitor: first.id, monitors: [first, second] };
+    voice.handlers['screen.get'] = () => info;
+    const changeMode = voice.handlers['screen.set'];
+    voice.handlers['screen.set'] = function (args) {
+      if (args.monitor && !info.monitors.some((m) => m.id === args.monitor)) return { error: { code: 'unknown_monitor', message: 'That monitor was disconnected.' } };
+      const result = args.screen === info.screen ? { screen: args.screen } : changeMode.call(this, args);
+      info = { ...info, screen: args.screen, state: args.screen === 'off' ? 'off' : 'recording', frames: args.screen !== 'off', video: args.screen === 'video', monitor: args.monitor || info.monitor };
+      return result;
+    };
+    const id = voiceStarts({ title: 'Monitor disconnect demo', screen: 'frames' });
+    say(id, 'call', 1000, 'The presentation can move to the remaining display.');
+    await openMeetings();
+    await setLanguage(language);
+    await setTheme(theme);
+    await setSize(1060, 860);
+    await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+    const openScreen = () => view().locator('[data-mt="screen"]').click();
+    const monitorRow = (m) => menu().locator('button', { hasText: m.name });
+    const lastChange = () => voice.commands.filter((c) => c.command === 'screen.set').at(-1)?.args;
+    const recording = () => app.evaluate(() => global.__semVoice.screenRecording());
+    const capture = async (suffix) => {
+      fs.mkdirSync(SHOTS, { recursive: true });
+      await win.waitForTimeout(400);
+      const bytes = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'));
+      fs.writeFileSync(path.join(SHOTS, `screen-monitor-${suffix}-${theme}-${language}.png`), Buffer.from(bytes, 'base64'));
+    };
+
+    await openScreen();
+    await monitorRow(second).click();
+    await expect.poll(lastChange).toEqual({ meeting: id, screen: 'frames', monitor: second.id });
+
+    // Voice's pill selects another display while the old cached selection is still connected.
+    info = { ...info, monitor: first.id };
+    await openScreen();
+    await expect(monitorRow(first)).toHaveAttribute('aria-checked', 'true');
+    await expect(monitorRow(second)).toHaveAttribute('aria-checked', 'false');
+    await menu().getByText('Video', { exact: true }).click();
+    await expect.poll(lastChange).toEqual({ meeting: id, screen: 'video', monitor: first.id });
+    await expect.poll(() => info.screen).toBe('video');
+
+    // The cached display disappears; mode changes must use Voice's remaining display.
+    info = { ...info, monitors: [first] };
+    await openScreen();
+    await expect(monitorRow(first)).toHaveAttribute('aria-checked', 'true');
+    await expect(monitorRow(second)).toHaveCount(0);
+    await capture('fallback');
+    await menu().getByText(language === 'nl' ? 'Beelden' : 'Frames', { exact: true }).click();
+    await expect.poll(lastChange).toEqual({ meeting: id, screen: 'frames', monitor: first.id });
+    await expect.poll(() => info.screen).toBe('frames');
+
+    // Unplug the active display after opening the menu. Off must not depend on its old ID.
+    await openScreen();
+    info = { ...info, monitor: second.id, monitors: [second] };
+    await menu().getByText(language === 'nl' ? 'Uit' : 'Off', { exact: true }).click();
+    await expect.poll(lastChange).toEqual({ meeting: id, screen: 'off' });
+    await expect.poll(recording).toBe(false);
+    await openScreen();
+    await expect(menu().getByRole('menuitemcheckbox', { name: language === 'nl' ? 'Uit' : 'Off', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(monitorRow(second)).toHaveAttribute('aria-checked', 'true');
+    await capture('off');
+    await win.keyboard.press('Escape');
+    info = { ...info, monitor: null, monitors: [first, second] };
+    await openScreen();
+    await expect(monitorRow(first)).toHaveAttribute('aria-checked', 'false');
+    await expect(monitorRow(second)).toHaveAttribute('aria-checked', 'false');
+  });
+}
+
 test('older Voice hides live screen controls and an unsupported deletion keeps the meeting and notes', async () => {
   const id = voiceStarts({ title: 'Retained notes', screen: 'off' });
   await openMeetings();
