@@ -8985,6 +8985,18 @@
     "message": "Someone",
     "description": "Meeting view: name of a voice Rukoo Voice has no label for yet. src/renderer/meeting.js (speakerName)"
   },
+  "meeting.speakers.numbered": {
+    "message": "Speaker {n}",
+    "description": "Meeting view: name of an unnamed voice on the call in the transcript, the people list and the name picker; n is the number Rukoo Voice gave the voice in the order it first heard it, such as 2. src/renderer/meeting.js (speakerLabel)"
+  },
+  "meeting.speakers.taken": {
+    "message": "Already chosen for {name}",
+    "description": "Meeting view name picker: second line under a guest who is already the name of another voice on the call; it can still be chosen. name is that other voice's name. src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.speakers.autoCheck": {
+    "message": "Guessed from the invitation; check it",
+    "description": "Meeting view people list: second line under a name Rukoo filled in by itself when the call had one voice and the event one guest, shown once a second voice is on the call. src/renderer/meeting.js (renderPeople)"
+  },
   "meeting.speakers.microphone": {
     "message": "Your microphone",
     "description": "Meeting view people list: second line under You. src/renderer/meeting.js (renderPeople)"

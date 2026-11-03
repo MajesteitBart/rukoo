@@ -6,7 +6,8 @@
 //! Scenarios: `idle` (nothing shows until the tray starts a meeting), `meeting` (a meeting records the
 //! audio and screen frames from the start, with a screen button that cycles two fake monitors),
 //! `dictation` (a dictation every 8 s), `cycle` (every pill state in turn) and `first-run` (Settings
-//! opens at the Ownkey import).
+//! opens at the Ownkey import). A meeting that records shows in Settings > Speaker labels,
+//! labelled once the Nemotron model is "downloaded".
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +34,8 @@ const KEYS: &[&str] = &[
     "scroll lock",
 ];
 const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
+/// Mistral's realtime models stream meetings; nothing else does.
+const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
 const TICK: Duration = Duration::from_millis(20);
 /// The fake meeting's monitors, which the pill's screen button cycles.
 const MONITORS: &[&str] = &["DELL U2720Q", "Display 2"];
@@ -207,7 +210,8 @@ struct State {
     meetings_started: u32,
     script: Option<Script>,
     sound: bool,
-    download: Option<Instant>,
+    /// The model a simulated download fetches, and since when.
+    download: Option<(&'static str, Instant)>,
     start_page: Option<String>,
     stop_clicks: u32,
     screen_clicks: u32,
@@ -302,6 +306,18 @@ impl FakeEngine {
                 engine.apply(|st, out| {
                     st.settings["config"]["meetings"]["screen"] = json!("frames");
                     st.settings_changed(out);
+                });
+                // Nemotron shared from Ownkey's folder, so the meeting labels its speakers.
+                let path = options
+                    .data_dir
+                    .join("ownkey-models")
+                    .join("nemotron-3-diarization");
+                engine.apply(|st, _| {
+                    st.settings["models"]["nemotron"] = json!({
+                        "id": "nemotron", "name": "Nemotron 3 Diarization", "sizeBytes": 107_000_000u64,
+                        "stage": "installed", "percent": null, "location": "ownkey", "path": path,
+                        "removable": false, "active": null, "error": null
+                    });
                 });
                 engine.start_meeting()?;
             }
@@ -411,6 +427,7 @@ impl FakeEngine {
                             p.notice = None;
                         });
                         out.push(Out::Tray(st.tray()));
+                        st.settings_changed(out);
                         changed = false;
                     }
                 }
@@ -428,9 +445,9 @@ impl FakeEngine {
                 };
                 out.push(Out::Level(level));
             }
-            if let Some(started) = st.download {
+            if let Some((id, started)) = st.download {
                 let percent = (started.elapsed().as_millis() / 30).min(100) as u64;
-                let model = &mut st.settings["models"]["orukeet"];
+                let model = &mut st.settings["models"][id];
                 if percent < 100 {
                     if model["percent"] != json!(percent) {
                         model["stage"] = json!("downloading");
@@ -438,7 +455,7 @@ impl FakeEngine {
                         st.settings_changed(out);
                     }
                 } else {
-                    *model = installed_model(&self.data_dir);
+                    *model = installed_model(id, &self.data_dir);
                     st.download = None;
                     st.settings_changed(out);
                 }
@@ -489,7 +506,67 @@ impl State {
     fn settings_changed(&mut self, out: &mut Vec<Out>) {
         self.settings_seq += 1;
         self.settings["seq"] = json!(self.settings_seq);
+        self.settings["speakers"] = self.speakers();
         out.push(Out::Settings(self.settings.clone()));
+    }
+
+    /// Settings > Speaker labels as the real engine reports it, for a computer that can run
+    /// Nemotron once its model is there.
+    fn speakers(&self) -> Value {
+        let meetings = &self.settings["config"]["meetings"];
+        let on = meetings["liveSpeakers"].as_bool().unwrap_or(true);
+        let mistral = meetings["provider"] == "mistral"
+            && meetings["model"]
+                .as_str()
+                .is_some_and(|m| m.starts_with(REALTIME_PREFIX));
+        let installed = self.settings["models"]["nemotron"]["stage"] == "installed";
+        let reason = if !on {
+            Some("off")
+        } else if mistral {
+            (meetings["consent"]["mode"] != "stream").then_some("consent")
+        } else if !installed {
+            Some("model")
+        } else {
+            None
+        };
+        let ready = reason.is_none();
+        let live: Vec<Value> = self
+            .meeting
+            .iter()
+            .map(|m| {
+                let (mode, state) = match (mistral, ready) {
+                    (true, true) => ("mistral", "listening"),
+                    (true, false) => ("mistral", "starting"),
+                    (false, true) => ("nemotron", "listening"),
+                    (false, false) => ("off", "off"),
+                };
+                json!({
+                    "meeting": m.id,
+                    "mode": mode,
+                    "state": state,
+                    "speakers": if ready { 2 } else { 0 },
+                    "reason": if mode == "off" { reason } else { None },
+                    "workerPid": null,
+                })
+            })
+            .collect();
+        json!({
+            "engine": if mistral { "mistral" } else { "nemotron" },
+            "ready": ready,
+            "reason": reason,
+            "detail": null,
+            "missing": [],
+            "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true },
+            "runtime": installed.then(|| json!({ "location": "voice", "commit": "97a15af" })),
+            "live": live,
+        })
+    }
+
+    /// Whether the meeting that records labels its speakers with Nemotron.
+    fn labelling(&self) -> bool {
+        self.speakers()["live"]
+            .as_array()
+            .is_some_and(|live| live.iter().any(|l| l["mode"] == "nemotron"))
     }
 
     fn tray(&self) -> TrayState {
@@ -650,7 +727,15 @@ fn set_path(root: &mut Value, dotted: &str, value: Value) {
     }
 }
 
-fn installed_model(data_dir: &Path) -> Value {
+fn installed_model(id: &str, data_dir: &Path) -> Value {
+    if id == "nemotron" {
+        return json!({
+            "id": "nemotron", "name": "Nemotron 3 Diarization", "sizeBytes": 107_000_000u64,
+            "stage": "installed", "percent": null,
+            "location": "voice", "path": data_dir.join("models").join("nemotron-3-diarization"),
+            "removable": true, "active": null, "error": null
+        });
+    }
     json!({
         "id": "orukeet", "name": "Orukeet", "sizeBytes": 487_000_000u64,
         "stage": "installed", "percent": null,
@@ -672,7 +757,7 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
-        "features": { "screen": true, "speakers": false, "sync": false },
+        "features": { "screen": true, "speakers": true, "sync": false },
         "theme": "dark",
         "locale": "en",
         "config": {
@@ -682,18 +767,18 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
             "dictionary": { "vocabulary": ["Rukoo", "Orukeet"], "corrections": [{ "from": "rocco", "to": "Rukoo" }] },
             "fillers": { "enabled": true, "languages": ["en", "nl"], "custom": "" },
             "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": false, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
-            "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": false },
+            "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
             "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
             "updates": { "check": false },
             "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "secret": "" } }
         },
         "providers": {
             "audio": [
-                { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"] },
-                { "id": "google", "endpoints": ["https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"] },
-                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"] },
-                { "id": "custom", "endpoints": ["http://localhost:1234/v1/audio/transcriptions"] },
-                { "id": "orukeet", "endpoints": [] }
+                { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"], "streamingPrefix": null },
+                { "id": "google", "endpoints": ["https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"], "streamingPrefix": null },
+                { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": REALTIME_PREFIX },
+                { "id": "custom", "endpoints": ["http://localhost:1234/v1/audio/transcriptions"], "streamingPrefix": null },
+                { "id": "orukeet", "endpoints": [], "streamingPrefix": null }
             ],
             "rewrite": [
                 { "id": "openai", "endpoints": ["https://api.openai.com/v1/responses", "https://api.openai.com/v1/chat/completions"] },
@@ -708,9 +793,11 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "dictation": { "status": "ready" },
         "rukoo": { "state": "notRunning", "clientVersion": null, "protocol": null, "port": null, "discoveryPath": discovery, "behind": null },
         "models": {
-            "orukeet": installed_model(data_dir),
+            "orukeet": installed_model("orukeet", data_dir),
             "nemotron": { "id": "nemotron", "name": "Nemotron 3 Diarization", "sizeBytes": 107_000_000u64, "stage": "missing", "percent": null, "location": null, "path": null, "removable": false, "active": null, "error": null }
         },
+        // Filled in from the rest of the state each time it goes out (State::speakers).
+        "speakers": null,
         "storage": { "folder": data_dir.join("meetings"), "usedBytes": 0, "freeBytes": null },
         "screen": { "available": true, "hardwareEncoder": "NVIDIA H.264 Encoder MFT", "ocr": ["en-US", "nl-NL"], "monitors": MONITORS.len() },
         "updates": { "state": "idle", "version": null },
@@ -724,6 +811,7 @@ fn models_for(provider: &str) -> Option<Vec<&'static str>> {
         "mistral" => vec![
             "mistral-small-latest",
             "voxtral-mini-latest",
+            "voxtral-mini-transcribe-realtime-3",
             "mistral-medium-latest",
             "voxtral-small-latest",
         ],
@@ -950,6 +1038,11 @@ impl EngineApi for FakeEngine {
                 }
                 (endpoint, model)
             };
+            if target != "meetings" && model.starts_with(REALTIME_PREFIX) {
+                return Err(invalid(
+                    "Realtime models work for meeting transcription only.",
+                ));
+            }
             let form = &mut st.settings["config"][target];
             let same = form["provider"] == provider.as_str();
             let key_saved = match &save["apiKey"] {
@@ -971,7 +1064,13 @@ impl EngineApi for FakeEngine {
             }
             if target == "meetings" {
                 form["consent"] = if save["consent"] == true && provider != "orukeet" {
-                    json!({ "provider": provider, "host": host_of(&endpoint) })
+                    // Always with `mode`, as the real engine sends it (API.md, `meetings.consent`).
+                    let mode = if model.starts_with(REALTIME_PREFIX) {
+                        "stream"
+                    } else {
+                        "windows"
+                    };
+                    json!({ "provider": provider, "host": host_of(&endpoint), "mode": mode })
                 } else {
                     Value::Null
                 };
@@ -1012,28 +1111,34 @@ impl EngineApi for FakeEngine {
 
     fn settings_model(&self, model: &str, action: &str) -> Result<(), ApiError> {
         self.apply(|st, out| {
-            if !matches!(model, "orukeet" | "nemotron") {
-                return Err(ApiError::new("not_found", format!("Unknown model {model}")));
-            }
-            let state = &mut st.settings["models"][model];
+            let id = match model {
+                "orukeet" => "orukeet",
+                "nemotron" => "nemotron",
+                _ => return Err(ApiError::new("not_found", format!("Unknown model {model}"))),
+            };
+            let labelling = id == "nemotron" && st.labelling();
+            let downloading = st.download.is_some_and(|(d, _)| d == id);
+            let state = &mut st.settings["models"][id];
             match action {
-                "download" if model == "orukeet" => {
-                    if state["stage"] == "installed" {
+                "download" => {
+                    if state["stage"] == "installed" || downloading {
                         return Ok(());
                     }
-                    st.download = Some(Instant::now());
+                    st.download = Some((id, Instant::now()));
                 }
-                "download" => return Err(ApiError::new("failed", "Nemotron comes later than Voice 0.1.")),
                 "cancel" => {
-                    if model == "orukeet" {
-                        st.download = None;
-                    }
                     state["stage"] = json!("missing");
                     state["percent"] = Value::Null;
+                    if downloading {
+                        st.download = None;
+                    }
                 }
                 "remove" => {
                     if state["removable"] != true {
                         return Err(ApiError::new("not_removable", "This model isn't in Voice's own folder."));
+                    }
+                    if labelling {
+                        return Err(ApiError::new("busy", "A meeting is labelling speakers with this model."));
                     }
                     *state = json!({ "id": model, "name": state["name"], "sizeBytes": state["sizeBytes"], "stage": "missing", "percent": null,
                         "location": null, "path": null, "removable": false, "active": null, "error": null });
@@ -1153,6 +1258,8 @@ impl EngineApi for FakeEngine {
             });
             st.meeting_pill(out);
             out.push(Out::Tray(st.tray()));
+            // Settings > Speaker labels lists the meeting.
+            st.settings_changed(out);
             Ok(id)
         })
     }
@@ -1416,6 +1523,97 @@ pub mod tests {
         let pills = recorder.pills.lock().unwrap().clone();
         assert!(pills.windows(2).all(|w| w[1].seq > w[0].seq));
         assert!(pills.iter().all(|p| p.dev));
+        engine.shutdown();
+    }
+
+    #[test]
+    fn nemotron_downloads_and_speaker_labels_follow() {
+        let (engine, _recorder) = engine("idle");
+        let state = engine.settings_state();
+        assert_eq!(state["features"]["speakers"], true);
+        assert_eq!(state["speakers"]["reason"], "model");
+        assert_eq!(state["speakers"]["live"], json!([]));
+        engine.settings_model("nemotron", "download").unwrap();
+        wait_for("Nemotron to install", || {
+            engine.settings_state()["models"]["nemotron"]["stage"] == "installed"
+        });
+        let state = engine.settings_state();
+        assert_eq!(state["models"]["nemotron"]["removable"], true);
+        assert_eq!(
+            state["models"]["orukeet"]["id"], "orukeet",
+            "Orukeet is untouched"
+        );
+        assert_eq!(state["speakers"]["ready"], true);
+        assert_eq!(state["speakers"]["runtime"]["commit"], "97a15af");
+        engine
+            .settings_set("meetings.liveSpeakers", json!(false))
+            .unwrap();
+        assert_eq!(engine.settings_state()["speakers"]["reason"], "off");
+        engine
+            .settings_set("meetings.liveSpeakers", json!(true))
+            .unwrap();
+        // A meeting labels with the model, so it stays until the meeting is saved.
+        let id = engine.start_meeting().unwrap();
+        let live = engine.settings_state()["speakers"]["live"].clone();
+        assert_eq!(live[0]["meeting"], id.as_str());
+        assert_eq!(live[0]["state"], "listening");
+        assert_eq!(
+            engine
+                .settings_model("nemotron", "remove")
+                .unwrap_err()
+                .code,
+            "busy"
+        );
+        engine.stop_meeting(StopReason::User).unwrap();
+        wait_for("the meeting to be saved", || {
+            engine.settings_state()["speakers"]["live"] == json!([])
+        });
+        engine.settings_model("nemotron", "remove").unwrap();
+        assert_eq!(engine.settings_state()["speakers"]["reason"], "model");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_meeting_scenario_labels_its_meeting() {
+        let (engine, _recorder) = engine("meeting");
+        let state = engine.settings_state();
+        assert_eq!(state["models"]["nemotron"]["location"], "ownkey");
+        assert_eq!(state["speakers"]["ready"], true);
+        assert_eq!(state["speakers"]["live"][0]["mode"], "nemotron");
+        assert_eq!(state["speakers"]["live"][0]["speakers"], 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn realtime_models_stream_meetings_only() {
+        let (engine, _recorder) = engine("idle");
+        let realtime = "voxtral-mini-transcribe-realtime-3";
+        let form = |target: &str, consent: bool| {
+            json!({
+                "target": target, "provider": "mistral",
+                "endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+                "model": realtime, "apiKey": "sk-test", "consent": consent
+            })
+        };
+        assert_eq!(
+            engine
+                .settings_save_provider(form("transcription", true))
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        engine
+            .settings_save_provider(form("meetings", false))
+            .unwrap();
+        let state = engine.settings_state();
+        assert_eq!(state["speakers"]["engine"], "mistral");
+        assert_eq!(state["speakers"]["reason"], "consent");
+        engine
+            .settings_save_provider(form("meetings", true))
+            .unwrap();
+        let state = engine.settings_state();
+        assert_eq!(state["config"]["meetings"]["consent"]["mode"], "stream");
+        assert_eq!(state["speakers"]["ready"], true);
         engine.shutdown();
     }
 

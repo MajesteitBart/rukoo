@@ -138,11 +138,25 @@ pub enum PillEdge {
 }
 
 /// The user's agreement to send meeting audio to one cloud provider at one host. A different
-/// provider or host needs a new agreement.
+/// provider or host needs a new agreement, and so does another way of sending.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consent {
     pub provider: String,
     pub host: String,
+    /// An agreement stored before streaming existed reads as `windows`.
+    #[serde(default)]
+    pub mode: ConsentMode,
+}
+
+/// How meeting audio goes to the provider.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentMode {
+    /// Recorded windows of up to 28 seconds, one request each.
+    #[default]
+    Windows,
+    /// A continuous stream to a realtime model while the meeting records.
+    Stream,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +213,9 @@ pub struct Config {
     /// "off" or one of HOTKEYS, never equal to the dictation or rewrite key.
     pub meetings_stop_key: String,
     pub meetings_auto_speakers: bool,
+    /// Speaker labels while a meeting records. `meetings_auto_speakers` is Ownkey's "label after
+    /// Stop", which the import keeps filling but nothing reads.
+    pub meetings_live_speakers: bool,
 
     // General
     pub ui_language: UiLanguage,
@@ -290,6 +307,7 @@ impl Config {
             meetings_screen: ScreenMode::Off,
             meetings_stop_key: "off".into(),
             meetings_auto_speakers: false,
+            meetings_live_speakers: true,
             ui_language: UiLanguage::System,
             ui_theme: Theme::System,
             updates_check: false,
@@ -460,8 +478,17 @@ impl Config {
         match self.meeting_consent() {
             ConsentState::NotNeeded => false,
             ConsentState::Granted => true,
-            ConsentState::Required { provider, host, .. } => {
-                self.meetings_transcription_consent = Some(Consent { provider, host });
+            ConsentState::Required {
+                provider,
+                host,
+                mode,
+                ..
+            } => {
+                self.meetings_transcription_consent = Some(Consent {
+                    provider,
+                    host,
+                    mode,
+                });
                 true
             }
         }
@@ -631,7 +658,14 @@ fn consent_value(value: Option<&Value>) -> Value {
     {
         return Value::Null;
     }
-    json!({ "provider": provider, "host": host })
+    // Only an explicit stream agreement covers streaming; anything else, including an agreement
+    // stored before streaming existed, is one for recorded windows.
+    let mode = if text(map.get("mode")).trim().eq_ignore_ascii_case("stream") {
+        ConsentMode::Stream
+    } else {
+        ConsentMode::Windows
+    };
+    json!({ "provider": provider, "host": host, "mode": mode })
 }
 
 /// Ownkey's `load_config` migrations and checks, then Voice's own, producing a complete object.
@@ -797,6 +831,10 @@ pub(crate) fn normalize(value: &Value, dev_mode: bool) -> Map<String, Value> {
         let flag = truthy(cfg.get(key));
         cfg.insert(key.into(), json!(flag));
     }
+    let live_speakers = cfg
+        .get("meetings_live_speakers")
+        .is_none_or(|v| truthy(Some(v)));
+    cfg.insert("meetings_live_speakers".into(), json!(live_speakers));
     for key in [
         "audio_api_key",
         "audio_model",

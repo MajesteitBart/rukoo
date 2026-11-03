@@ -10,8 +10,10 @@ use serde_json::{Map, Value};
 use voice_bridge::ControlError;
 use voice_core::config::{self as core_config, Config};
 use voice_core::local::ModelRegistry;
+use voice_core::providers::stream;
 use voice_core::{Hints, ProviderError, Recognized, SpeechToText};
 use voice_input::Key;
+use voice_meetings::{Labels, StreamOptions};
 use voice_protocol::{ScreenMode, StartArgs, StartedBy};
 use voice_screen_files::policy::{Part, Reason};
 
@@ -25,7 +27,7 @@ use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
 use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
-use crate::services::Services;
+use crate::services::{Services, Speech};
 use crate::settings::SettingsRuntime;
 
 pub(crate) struct Core {
@@ -43,6 +45,8 @@ pub(crate) struct Core {
     last_chime: Mutex<Option<Instant>>,
     /// What Settings > Rukoo last showed, to tell when it changes.
     rukoo: Mutex<Value>,
+    /// What Settings > Speaker labels last showed about running meetings.
+    labels: Mutex<Value>,
     pub settings_seq: AtomicU64,
     /// Settings states go out one at a time, each built after its `seq` was given.
     emitting: Mutex<()>,
@@ -73,6 +77,7 @@ impl Core {
             shutting_down: AtomicBool::new(false),
             last_chime: Mutex::new(None),
             rukoo: Mutex::new(Value::Null),
+            labels: Mutex::new(Value::Null),
             settings_seq: AtomicU64::new(1),
             emitting: Mutex::new(()),
             this: OnceLock::new(),
@@ -247,7 +252,8 @@ impl Core {
     }
 
     /// How meetings are transcribed with the current Settings: the meeting provider (Orukeet
-    /// with word timings), the dictionary as hints, and decision 10's consent gate.
+    /// with word timings, or a realtime model's stream), the dictionary as hints, who labels
+    /// the speakers on the call, and decision 10's consent gate.
     pub fn pipeline_options(self: &Arc<Self>) -> PipelineOptions {
         let cfg = self.config();
         let audio = cfg.meeting_audio();
@@ -258,6 +264,22 @@ impl Core {
             Err(error) => PipelineOptions::new(Arc::new(Unavailable(error))),
         };
         opts.hints = cfg.meeting_hints();
+        // A development copy logs how long the speaker worker's calls take (spec 7).
+        opts.speakers.log_calls = self.opts.dev_mode;
+        let labels = meeting_labels(&cfg, self.svc.speech.as_ref());
+        opts.labels = labels.labels;
+        opts.live_speakers = labels.live_speakers;
+        match labels.stream {
+            Some(Ok(stream)) => opts.stream = Some(stream),
+            // The stream can't be built (no key): the windows fail with that reason, the way a
+            // recognizer that can't be built does, and never fall back to another provider. The
+            // meeting keeps its label mode open, so a key added later still streams it.
+            Some(Err(error)) => {
+                opts.stt = Arc::new(Unavailable(error));
+                opts.timed = None;
+            }
+            None => {}
+        }
         let weak = Arc::downgrade(self);
         opts.transcription_allowed = Arc::new(move || {
             let Some(core) = weak.upgrade() else {
@@ -457,6 +479,28 @@ impl Core {
         }
     }
 
+    /// Tells Settings when speaker labels start, stop or fail in a meeting, or find another voice.
+    pub fn labels_changed(&self) {
+        let key = Value::Array(
+            self.meetings
+                .labels()
+                .into_iter()
+                .map(|(id, s)| {
+                    serde_json::json!([id, s.mode, s.state, s.reason, s.speakers, s.worker_pid])
+                })
+                .collect(),
+        );
+        let changed = {
+            let mut last = lock(&self.labels);
+            let changed = *last != key;
+            *last = key;
+            changed
+        };
+        if changed {
+            self.settings_changed();
+        }
+    }
+
     /// Removes meeting audio whose retention ran out. Each meeting keeps the Settings > Meetings >
     /// Keep audio it started with; the current choice counts only for meetings from before Voice
     /// stored it.
@@ -565,9 +609,61 @@ const WATCH_POLL: Duration = Duration::from_secs(1);
 /// How often retention runs besides at start and after a meeting is done.
 const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
 
+/// How far behind the audio Mistral's realtime model may answer, in ms: its default.
+pub(crate) const STREAM_DELAY_MS: u32 = 480;
+
+/// Who labels a meeting's call speakers, and the realtime stream when the provider streams.
+pub(crate) struct MeetingLabels {
+    pub labels: Labels,
+    /// The Settings switch, which only a meeting that chooses its label mode now reads.
+    pub live_speakers: bool,
+    /// `Some` only when the meeting provider streams: the stream, or why it can't be built.
+    pub stream: Option<Result<StreamOptions, ProviderError>>,
+}
+
+/// The label choice for a meeting started now. The meeting provider alone decides whether
+/// Mistral's stream transcribes and labels it; otherwise Nemotron labels on this computer when
+/// the switch is on and it can run, and else the whole call is one speaker. Neither engine
+/// ever stands in for the other. Nemotron's diarizer comes with the switch off too: a meeting
+/// that started with labels keeps them when its pipeline starts again (Settings: "Applies to
+/// meetings you start from now on"), and the pipeline gives a new meeting none.
+pub(crate) fn meeting_labels(cfg: &Config, speech: &dyn Speech) -> MeetingLabels {
+    let audio = cfg.meeting_audio();
+    if stream::streams(&audio) {
+        let hints = cfg.meeting_hints();
+        let stream = speech.streaming(&audio).map(|speech| StreamOptions {
+            speech,
+            diarize: cfg.meetings_live_speakers,
+            delay_ms: STREAM_DELAY_MS,
+            language: hints.language,
+            context_bias: hints.vocabulary,
+        });
+        return MeetingLabels {
+            // The stream labels the call, not Nemotron. Without a stream, the pipeline waits
+            // with its choice until there is one.
+            labels: Labels::Off {
+                reason: voice_meetings::STREAM_REASON.into(),
+            },
+            live_speakers: cfg.meetings_live_speakers,
+            stream: Some(stream),
+        };
+    }
+    let labels = match speech.diarizer() {
+        Ok(diarizer) => Labels::Local { diarizer },
+        Err(unavailable) => Labels::Off {
+            reason: unavailable.code().into(),
+        },
+    };
+    MeetingLabels {
+        labels,
+        live_speakers: cfg.meetings_live_speakers,
+        stream: None,
+    }
+}
+
 /// The engine's slow loop. Shows a meeting whose transcription failed and lets a finished one
 /// go (`meeting.state` `failed` and `done` come from the pipeline long after the recorder
-/// stopped), keeps Settings > Rukoo current, and runs the retention sweep.
+/// stopped), keeps Settings > Rukoo and Speaker labels current, and runs the retention sweep.
 pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
     let mut swept = Instant::now();
     loop {
@@ -579,6 +675,7 @@ pub(crate) fn watch(core: Weak<Core>, mut seq: u64) {
             return;
         }
         core.rukoo_changed();
+        core.labels_changed();
         if swept.elapsed() >= SWEEP_EVERY {
             swept = Instant::now();
             core.sweep();
@@ -832,5 +929,192 @@ mod drop_tests {
             .contains("Frames go on"));
         assert!(drop_text(Part::Frames, Reason::Device).is_some());
         assert!(drop_text(Part::Frames, Reason::Disk).is_some());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use voice_core::local::{
+        LocalStatus, Located, ModelError, ModelErrorKind, ModelSpec, Progress,
+    };
+    use voice_core::providers::stream::{SpeechStream, StreamSession, StreamingSpeech};
+    use voice_core::providers::{Activity, ProviderConfig};
+    use voice_core::speakers::{
+        DiarError, DiarErrorKind, DiarStream, Diarizer, RuntimeInfo, Unavailable as NotAvailable,
+    };
+    use voice_core::Rewriter;
+
+    use super::*;
+
+    struct NoDiarizer;
+
+    impl Diarizer for NoDiarizer {
+        fn open(&self) -> Result<Box<dyn DiarStream>, DiarError> {
+            Err(DiarError::new(DiarErrorKind::Runtime, "not in this test"))
+        }
+    }
+
+    struct NoStream;
+
+    impl StreamingSpeech for NoStream {
+        fn connect(&self, _: &StreamSession) -> Result<Box<dyn SpeechStream>, ProviderError> {
+            Err(ProviderError::provider("not in this test"))
+        }
+    }
+
+    /// Speech that only answers the label questions, and counts them.
+    #[derive(Default)]
+    struct Labelling {
+        refuse: Option<NotAvailable>,
+        diarizers: AtomicUsize,
+        streams: AtomicUsize,
+    }
+
+    impl Speech for Labelling {
+        fn recognizer(&self, _: &ProviderConfig) -> Result<Arc<dyn SpeechToText>, ProviderError> {
+            Err(ProviderError::config("not in this test"))
+        }
+        fn rewriter(&self, _: &ProviderConfig) -> Result<Arc<dyn Rewriter>, ProviderError> {
+            Err(ProviderError::config("not in this test"))
+        }
+        fn list_models(
+            &self,
+            _: Activity,
+            _: &ProviderConfig,
+        ) -> Result<Vec<String>, ProviderError> {
+            Ok(Vec::new())
+        }
+        fn local_preload(&self) {}
+        fn local_status(&self) -> LocalStatus {
+            LocalStatus::default()
+        }
+        fn local_load(&self, _: ModelRegistry) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn local_configure(&self, _: ModelRegistry, _: Duration) {}
+        fn local_unload(&self) {}
+        fn download(
+            &self,
+            _: &ModelRegistry,
+            _: &ModelSpec,
+            _: &mut dyn FnMut(Progress),
+            _: &AtomicBool,
+        ) -> Result<Located, ModelError> {
+            Err(ModelError::new(
+                ModelErrorKind::Cancelled,
+                "not in this test",
+            ))
+        }
+        fn shutdown(&self) {}
+        fn diarizer(&self) -> Result<Arc<dyn Diarizer>, NotAvailable> {
+            self.diarizers.fetch_add(1, Ordering::SeqCst);
+            match &self.refuse {
+                Some(why) => Err(why.clone()),
+                None => Ok(Arc::new(NoDiarizer)),
+            }
+        }
+        fn speaker_availability(&self) -> Result<RuntimeInfo, NotAvailable> {
+            Err(NotAvailable::Runtime)
+        }
+        fn streaming(&self, _: &ProviderConfig) -> Result<Arc<dyn StreamingSpeech>, ProviderError> {
+            self.streams.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(NoStream))
+        }
+    }
+
+    fn off_reason(labels: &Labels) -> Option<&str> {
+        match labels {
+            Labels::Off { reason } => Some(reason),
+            Labels::Local { .. } => None,
+        }
+    }
+
+    fn realtime(cfg: &mut Config) {
+        cfg.switch_meeting_provider("mistral");
+        cfg.meetings_audio_api_key = "sk-test".into();
+        cfg.meetings_audio_model = "voxtral-mini-transcribe-realtime-3".into();
+    }
+
+    #[test]
+    fn nemotron_labels_when_the_switch_is_on_and_it_can_run() {
+        let speech = Labelling::default();
+        let cfg = Config::defaults(false);
+        assert!(cfg.meetings_live_speakers, "on by default");
+        let chosen = meeting_labels(&cfg, &speech);
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_switch_off_keeps_the_diarizer_for_meetings_that_label() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        assert!(meeting_labels(&cfg, &speech).live_speakers);
+        cfg.meetings_live_speakers = false;
+        let chosen = meeting_labels(&cfg, &speech);
+        // A meeting that started with labels gets its diarizer again after a restart; the
+        // pipeline gives a new meeting none, by the switch.
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(!chosen.live_speakers);
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nemotron_that_can_t_run_leaves_the_call_one_speaker_and_never_streams() {
+        let speech = Labelling {
+            refuse: Some(NotAvailable::Cpu {
+                missing: vec!["bmi2".into()],
+            }),
+            ..Labelling::default()
+        };
+        // A Mistral key for dictation changes nothing: only the meeting provider streams.
+        let mut cfg = Config::defaults(false);
+        cfg.switch_audio_provider("mistral");
+        cfg.audio_api_key = "sk-test".into();
+        let chosen = meeting_labels(&cfg, &speech);
+        assert_eq!(off_reason(&chosen.labels), Some("cpu"));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_realtime_meeting_provider_streams_and_labels_without_nemotron() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        realtime(&mut cfg);
+        cfg.language = "nl".into();
+        cfg.vocabulary = vec!["Rukoo".into()];
+        let chosen = meeting_labels(&cfg, &speech);
+        assert_eq!(off_reason(&chosen.labels), Some("stream"));
+        let stream = chosen
+            .stream
+            .expect("streams")
+            .expect("the stream is built");
+        assert!(stream.diarize);
+        assert_eq!(stream.delay_ms, 480);
+        assert_eq!(stream.language.as_deref(), Some("nl"));
+        assert_eq!(stream.context_bias, ["Rukoo"]);
+        assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+        // With the switch off the stream still transcribes, without labels.
+        cfg.meetings_live_speakers = false;
+        let stream = meeting_labels(&cfg, &speech).stream.unwrap().unwrap();
+        assert!(!stream.diarize);
+        assert_eq!(speech.diarizers.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_batch_mistral_model_is_labelled_by_nemotron() {
+        let speech = Labelling::default();
+        let mut cfg = Config::defaults(false);
+        realtime(&mut cfg);
+        cfg.meetings_audio_model = "voxtral-mini-latest".into();
+        let chosen = meeting_labels(&cfg, &speech);
+        assert!(matches!(chosen.labels, Labels::Local { .. }));
+        assert!(chosen.stream.is_none());
+        assert_eq!(speech.streams.load(Ordering::SeqCst), 0);
     }
 }

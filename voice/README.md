@@ -50,6 +50,16 @@ Each meeting can record the screen in one of three ways: off, frames only, or th
 
 Rukoo can hide its window from screen capture while a meeting records, so your agent chat stays out of the recording. On Windows 10 2004 and later, that also keeps it out of Teams and Zoom screen shares. On macOS 15 and later, other apps' screen shares still show Rukoo, although Voice can leave it out of its own recording. Linux has no way to hide a window, so keep Rukoo on a monitor you don't record.
 
+## Speaker labels
+
+During a call, Voice tells the voices on the call apart: Speaker 1, Speaker 2 and so on. Rukoo turns them into names from the calendar event's guests. Voice never learns the names.
+
+- By default the labels come from NVIDIA Nemotron 3 Diarization, which runs on this computer in its own process, `rukoo-voice-speakers`, so the call audio stays here. It needs a processor with AVX2, FMA, F16C and BMI2, the speaker model (107 MB, shared with Ownkey when Ownkey has it) and the runtime that comes with Voice.
+- When you transcribe meetings with Mistral's realtime model, Voxtral Mini Transcribe Realtime 3, Mistral labels the voices in the same stream. That happens only after you agreed to stream meeting audio to Mistral at that server. After a dropped connection Voice sends Mistral a short clip of each voice it already knows, so the numbers stay; Mistral bills those clips as audio. Nemotron never hands its work to Mistral: when Nemotron can't run, the call stays one speaker.
+- Your microphone is always you. Voice doesn't tell apart people who share your microphone.
+- A voice keeps its number for the whole meeting, also when labelling restarts after a crash: Voice plays the new process a few seconds of every voice it already knows and matches them.
+- Without labels, or on a computer that can't run them, meetings record and transcribe with the whole call as one speaker. Settings › Meetings › Speaker labels says why.
+
 ## Crash safety
 
 A meeting can't be repeated, so losing a recording is the worst thing Voice can do.
@@ -71,7 +81,7 @@ On its first start, Voice imports Ownkey's settings and uses the speech models O
 
 ## How it's built
 
-Voice is a Rust workspace with four processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens.
+Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens.
 
 The bridge between Voice and Rukoo is specified in [PROTOCOL.md](PROTOCOL.md), with examples both apps test against in `fixtures/`.
 
@@ -79,7 +89,6 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 
 ## What 0.1 leaves out
 
-- Speaker labels with Nemotron 3 Diarization. Voice 0.1 labels the microphone as you and the call audio as one speaker.
 - Sync to your own bucket.
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
 - macOS and Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows only.

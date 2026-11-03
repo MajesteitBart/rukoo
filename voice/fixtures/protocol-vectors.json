@@ -78,6 +78,26 @@
       "message": { "type": "event", "seq": 1046, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000090000, "data": { "id": "mic-000081000", "track": "mic", "speaker": "mic", "start": 81000, "end": 84500, "text": "Thanks for the update, see you Thursday.", "revision": 1, "dictation": true, "language": "en" } }
     },
     {
+      "name": "speaker on the call from speaker labels",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1100, "event": "speaker", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000100000, "data": { "id": "call-2", "track": "call", "label": "Speaker 2" } }
+    },
+    {
+      "name": "speaker with a two-digit number",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1101, "event": "speaker", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000100500, "data": { "id": "call-10", "track": "call", "label": "Speaker 10" } }
+    },
+    {
+      "name": "call passage before its speaker is known",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1102, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000101000, "data": { "id": "call-000101000", "track": "call", "speaker": null, "start": 101000, "end": 102400, "text": "Okay, let's look at the numbers.", "revision": 1, "dictation": false, "language": "en" } }
+    },
+    {
+      "name": "the same passage once its speaker settled",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1103, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000104000, "data": { "id": "call-000101000", "track": "call", "speaker": "call-2", "start": 101000, "end": 102400, "text": "Okay, let's look at the numbers.", "revision": 2, "dictation": false, "language": "en" } }
+    },
+    {
       "name": "passage removed",
       "from": "voice",
       "message": { "type": "event", "seq": 1047, "event": "passage.removed", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000091000, "data": { "id": "call-000065320" } }
@@ -336,6 +356,8 @@
     { "name": "passage without text", "from": "voice", "reason": "text", "message": { "type": "event", "seq": 5, "event": "passage", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "id": "call-000065320", "track": "call", "speaker": null, "start": 65320, "end": 71880, "revision": 1, "dictation": false, "language": null } } },
     { "name": "mark that ends before it starts", "from": "voice", "reason": "until", "message": { "type": "event", "seq": 5, "event": "mark", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "id": "k-1", "kind": "gap", "at": 5000, "until": 4000, "track": "mic", "detail": "crash", "label": null } } },
     { "name": "speaker on an unknown track", "from": "voice", "reason": "track", "message": { "type": "event", "seq": 5, "event": "speaker", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "id": "room-1", "track": "room", "label": "Speaker 1" } } },
+    { "name": "speaker with an empty id", "from": "voice", "reason": "id", "message": { "type": "event", "seq": 5, "event": "speaker", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "id": "", "track": "call", "label": "Speaker 3" } } },
+    { "name": "speaker without a label", "from": "voice", "reason": "label", "message": { "type": "event", "seq": 5, "event": "speaker", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "id": "call-3", "track": "call" } } },
     { "name": "command without an id", "from": "rukoo", "reason": "id", "message": { "type": "command", "command": "status.get" } },
     { "name": "command with a long id", "from": "rukoo", "reason": "id", "message": { "type": "command", "id": "c-00000000000000000000000000000000000000000000000000000000000000000", "command": "status.get" } },
     { "name": "stop without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-1", "command": "meeting.stop", "args": {} } },

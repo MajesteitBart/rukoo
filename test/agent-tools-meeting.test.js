@@ -715,3 +715,43 @@ test('the transcript says where the screen changed, folds a run of changes into 
   assert.deepEqual(untag(data(await call('read_meeting_transcript', {}, c.id)).transcript).trim().split('\n'), ['[00:03:20] [Screen changed; get_meeting_frame shows it]']);
   assert.equal(data(await call('read_meeting_transcript', {}, c.id)).count, 0);
 });
+
+test('three voices on the call: a calendar name tagged as the calendar\'s, a name the user gave, a label, and a passage nobody claimed yet', async (t) => {
+  const { voice, feed, call } = await setup(t);
+  const said = (start, speaker, text, revision = 1) => ev('passage', M, { id: `call-${String(start).padStart(9, '0')}`, track: 'call', speaker, start, end: start + 2000, text, revision, dictation: false, language: 'en' });
+  feed([
+    startedEv(),
+    ev('meeting.state', M, { state: 'recording', at: 0 }),
+    ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }),
+    ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }),
+    said(1000, 'call-1', 'Morning, all.'),
+    ev('speaker', M, { id: 'call-2', track: 'call', label: 'Speaker 2' }),
+    said(5000, 'call-2', 'The numbers are in.'),
+    ev('speaker', M, { id: 'call-10', track: 'call', label: 'Speaker 10' }),
+    said(9000, 'call-10', 'Sorry, I joined late.'),
+    said(13000, null, 'Okay, let us look at them.'),
+    passage('mic', 17000, 'Go ahead.')
+  ]);
+  voice.store.setName(M, 'call-1', { name: 'Anna de Vries', address: 'anna@example.com', from: 'calendar' });
+  voice.setSpeaker(M, 'call-2', { name: 'Sanne' });
+  const res = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.deepEqual(res.speakers, [
+    { id: 'mic', track: 'mic', name: 'You', you: true, named_by: null },
+    { id: 'call-1', track: 'call', name: meetingTag('Anna de Vries', 'calendar'), you: false, named_by: 'calendar' },
+    { id: 'call-2', track: 'call', name: meetingTag('Sanne'), you: false, named_by: 'user' },
+    { id: 'call-10', track: 'call', name: meetingTag('Speaker 10'), you: false, named_by: null }
+  ]);
+  assert.deepEqual(untag(res.transcript).trim().split('\n'), [
+    '[00:00:01] Anna de Vries: Morning, all.',
+    '[00:00:05] Sanne: The numbers are in.',
+    '[00:00:09] Speaker 10: Sorry, I joined late.',
+    '[00:00:13] Someone on the call: Okay, let us look at them.',
+    '[00:00:17] You: Go ahead.'
+  ]);
+  // Voice settles who said it: the next read names that voice.
+  feed([said(13000, 'call-2', 'Okay, let us look at them.', 2)]);
+  const again = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.equal(untag(again.transcript).trim().split('\n')[3], '[00:00:13] Sanne: Okay, let us look at them.');
+  const hit = data(await call('search_meetings', { query: 'joined late' })).results[0];
+  assert.equal(hit.speaker, meetingTag('Speaker 10'));
+});

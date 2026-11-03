@@ -62,7 +62,7 @@ const PILL_STATES = [
   'meeting-screen-hover',
   'meeting-dictating'
 ];
-const SETTINGS_PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'storage', 'rukoo', 'import'];
+const SETTINGS_PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
 // Other states worth seeing: [file name, query].
 const SCENARIOS = [
   ['main-fresh', 'page=main&scenario=fresh'],
@@ -85,6 +85,20 @@ const SCENARIOS = [
   ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
   ['main-screen-unavailable', 'page=meetings&screenUnavailable=1'],
   ['storage-screen', 'page=storage&features=screen'],
+  ['main-speakers-cpu', 'page=meetings&speakers=cpu'],
+  ['speakers-ready', 'page=speakers&speakers=ready'],
+  ['speakers-off', 'page=speakers&speakers=off'],
+  ['speakers-cpu', 'page=speakers&speakers=cpu'],
+  ['speakers-model', 'page=speakers&speakers=model'],
+  ['speakers-modelDamaged', 'page=speakers&speakers=modelDamaged'],
+  ['speakers-runtime', 'page=speakers&speakers=runtime'],
+  ['speakers-runtimeFailed', 'page=speakers&speakers=runtimeFailed'],
+  ['speakers-platform', 'page=speakers&speakers=platform'],
+  ['speakers-key', 'page=speakers&speakers=key'],
+  ['speakers-consent', 'page=speakers&speakers=consent'],
+  ['speakers-mistral', 'page=speakers&speakers=mistral'],
+  ['speakers-stopped', 'page=speakers&speakers=stopped'],
+  ['meetingTranscription-stream', 'page=meetingTranscription&speakers=consent'],
   ['later-main', 'page=meetings&later=1'],
   ['later-speakers', 'page=speakers&later=1'],
   ['later-storage-sync', 'page=storage&later=1&sync=1']
@@ -165,6 +179,9 @@ async function main() {
           ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
           ['transcription', 'page=transcription&scenario=busy'],
           ['meeting-transcription', 'page=meetingTranscription&scenario=cloud'],
+          ['meeting-transcription-stream', 'page=meetingTranscription&speakers=consent'],
+          ['speakers-cpu', 'page=speakers&speakers=cpu'],
+          ['speakers-mistral', 'page=speakers&speakers=mistral'],
           ['dictionary', 'page=dictionary'],
           ['rukoo', 'page=rukoo'],
           ['import', 'page=import&scenario=cloud']
@@ -187,6 +204,13 @@ async function main() {
         await page.click('[data-a="licenses"]');
         await page.waitForTimeout(300);
         await shot(path.join(dir, 'licenses.png'));
+        await page.keyboard.press('Escape');
+        // Why the speaker label runtime didn't start.
+        await page.goto(`${base}settings.html?mock=1&page=speakers&speakers=runtimeFailed&theme=${theme}&lang=${lang}`);
+        await page.waitForSelector('[data-a="speakers-details"]');
+        await page.click('[data-a="speakers-details"]');
+        await page.waitForTimeout(300);
+        await shot(path.join(dir, 'speakers-error-details.png'));
         await page.keyboard.press('Escape');
         await page.goto(`${base}settings.html?mock=1&page=import&theme=${theme}&lang=${lang}`);
         await page.waitForSelector('.page-inner .card');

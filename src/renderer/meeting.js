@@ -719,15 +719,31 @@ function voiceOf(p) {
   if (s) return s;
   return p.track === 'mic' ? { id: 'mic', track: 'mic', you: true, label: null, name: null } : { id: null, track: p.track, label: null, name: null };
 }
+// The N of a call voice Voice labelled "Speaker N" under the id call-N, else null.
+function speakerNumber(s) {
+  const m = s.track === 'call' && typeof s.id === 'string' ? /^call-([1-9]\d*)$/.exec(s.id) : null;
+  return m && s.label === `Speaker ${m[1]}` ? m[1] : null;
+}
+// What Voice calls a voice, in the interface's language: Voice labels call-N "Speaker N" in English, so that label
+// becomes "Spreker N" in Dutch. Any other label shows as Voice sent it.
+function speakerLabel(s) {
+  const n = speakerNumber(s);
+  return n ? t('meeting.speakers.numbered', { n }) : s.label || t('meeting.speakers.unknown');
+}
 function speakerName(s) {
   if (s.name) return s.name;
   if (s.you || s.track === 'mic') return t('meeting.speakers.you');
-  return s.label || t('meeting.speakers.unknown');
+  return speakerLabel(s);
 }
+// An unnamed voice on the call shows its number, so Speaker 1 and Speaker 10 don't both read "S1". Its color follows
+// the number around the color wheel by the golden angle (Speaker 1 blue, 2 rose, 3 green, ...): hashing the label would
+// give Speaker 1 and Speaker 2 nearly the same color, and change it with the language.
 function avatarHtml(s) {
   if (s.you || s.track === 'mic') return `<span class="mt-av is-you" aria-hidden="true">${icons.mic}</span>`;
   const name = speakerName(s);
-  return `<span class="mt-av" style="--h:${hue(s.address || name)}" aria-hidden="true">${esc(initials({ name }))}</span>`;
+  const n = s.name ? null : speakerNumber(s);
+  const h = n ? (Number(n) * 137 + 83) % 360 : hue(s.address || name);
+  return `<span class="mt-av" style="--h:${h}" aria-hidden="true">${esc(n || initials({ name }))}</span>`;
 }
 
 const TRACK_KEYS = { mic: 'meeting.track.mic', call: 'meeting.track.call', screen: 'meeting.track.screen' };
@@ -1165,7 +1181,8 @@ function renderPeople() {
   const box = $('.meeting .mt-people');
   const d = M.data;
   if (!box || !d) return;
-  const speakers = [...d.speakers].sort((a, b) => Number(b.you || b.track === 'mic') - Number(a.you || a.track === 'mic') || (a.id < b.id ? -1 : 1));
+  // Main sends them in order (call-2 before call-10); the microphone goes first whatever happens.
+  const speakers = [...d.speakers].sort((a, b) => Number(b.you || b.track === 'mic') - Number(a.you || a.track === 'mic'));
   if (!speakers.length) {
     box.innerHTML = d.meeting.removed ? '' : `<p class="mt-quiet">${esc(t('meeting.speakers.none'))}</p>`;
     return;
@@ -1177,9 +1194,18 @@ function renderPeople() {
       if (s.you || s.track === 'mic') {
         return `<div class="mt-person is-you">${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub">${esc(t('meeting.speakers.microphone'))}</span></span></div>`;
       }
-      const sub = s.name ? s.address || (s.label ? t('meeting.speakers.was', { label: s.label }) : '') : (s.suggestions || []).length ? t('meeting.speakers.pick') : t('meeting.speakers.nameIt');
+      // A name Rukoo guessed for a 1:1 asks to be checked once a second voice is on the call.
+      const check = Boolean(s.name && s.autoCheck);
+      const sub = check
+        ? t('meeting.speakers.autoCheck')
+        : s.name
+          ? s.address || (s.label ? t('meeting.speakers.was', { label: speakerLabel(s) }) : '')
+          : (s.suggestions || []).length
+            ? t('meeting.speakers.pick')
+            : t('meeting.speakers.nameIt');
+      const subClass = check ? 'is-check' : s.name ? '' : 'is-ask';
       const disabled = d.meeting.removed ? 'disabled' : '';
-      return `<button class="mt-person" data-mt="speaker" data-speaker="${esc(s.id)}" aria-haspopup="menu" ${disabled} title="${esc(t('meeting.speakers.choose', { name }))}">${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub ${s.name ? '' : 'is-ask'}">${esc(sub)}</span></span>${icons.chevronDown}</button>`;
+      return `<button class="mt-person" data-mt="speaker" data-speaker="${esc(s.id)}" aria-haspopup="menu" ${disabled} title="${esc(t('meeting.speakers.choose', { name }))}">${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub ${subClass}">${esc(sub)}</span></span>${icons.chevronDown}</button>`;
     })
     .join('');
   if (focused) box.querySelector(`[data-speaker="${CSS.escape(focused)}"]`)?.focus();
@@ -1190,9 +1216,12 @@ function speakerMenu(btn) {
   const s = d && d.speakers.find((x) => x.id === btn.dataset.speaker);
   if (!s) return;
   const event = d.event && !d.event.missing ? d.event : null;
+  // A guest another voice already has says so, and main lists it after the free ones. It stays a choice: one person
+  // can sound like two voices.
+  const taker = (c) => (Array.isArray(c.takenBy) && c.takenBy.length ? d.speakers.find((x) => x.id === c.takenBy[0]) || null : null);
   const options = (s.suggestions || []).map((c) => ({
     label: c.name || c.address,
-    sub: c.name && c.address ? c.address : '',
+    sub: taker(c) ? t('meeting.speakers.taken', { name: speakerName(taker(c)) }) : c.name && c.address ? c.address : '',
     checked: Boolean(s.name) && s.name === (c.name || c.address) && (s.address || '') === (c.address || ''),
     action: () => setSpeaker(s.id, { name: c.name || c.address, address: c.address || '' })
   }));
@@ -1203,14 +1232,14 @@ function speakerMenu(btn) {
       ...options,
       options.length ? { separator: true } : null,
       { label: t('meeting.speakers.someoneElse'), icon: 'edit', action: () => nameSpeaker(s) },
-      s.name ? { label: t('meeting.speakers.clear', { label: s.label || t('meeting.speakers.unknown') }), icon: 'undo', action: () => setSpeaker(s.id, null) } : null
+      s.name ? { label: t('meeting.speakers.clear', { label: speakerLabel(s) }), icon: 'undo', action: () => setSpeaker(s.id, null) } : null
     ],
     { align: 'left' }
   );
 }
 
 async function nameSpeaker(s) {
-  const value = await promptDialog(t('meeting.speakers.nameTitle', { label: s.label || t('meeting.speakers.unknown') }), s.name || '', { placeholder: t('meeting.speakers.namePlaceholder') });
+  const value = await promptDialog(t('meeting.speakers.nameTitle', { label: speakerLabel(s) }), s.name || '', { placeholder: t('meeting.speakers.namePlaceholder') });
   if (typeof value !== 'string' || !value.trim()) return;
   setSpeaker(s.id, { name: value.trim(), address: '' });
 }

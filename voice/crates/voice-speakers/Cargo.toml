@@ -1,0 +1,35 @@
+[package]
+name = "voice-speakers"
+description = "Rukoo Voice's speaker label worker: NeMo-Speech.cpp in its own process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "rukoo-voice-speakers"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# LoadLibraryExW and GetProcAddress for nemo_speech_asr_c.dll; SetThreadErrorMode so a damaged DLL
+# fails the load instead of opening a system error box in a process nobody can see.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
+] }
+
+# The runtime tests list the worker's loaded modules and compare their folders with System32.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "=0.62.2", features = [
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_SystemInformation",
+] }

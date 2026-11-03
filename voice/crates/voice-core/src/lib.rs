@@ -13,6 +13,7 @@ pub mod ownkey;
 pub mod paths;
 pub mod prompts;
 pub mod providers;
+pub mod speakers;
 pub mod update;
 
 pub use config::Config;

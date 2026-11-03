@@ -17,12 +17,16 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_core::cleanup::{self, CleanupConfig};
 use voice_core::config::{provider_form_problem, Config, Consent, LANGUAGES};
+use voice_core::consent::ConsentState;
 use voice_core::local::{self, LocalState, Location, ModelErrorKind, ModelSpec, Stage};
+use voice_core::providers::stream::{streams, REALTIME_MODEL_PREFIX};
 use voice_core::providers::{
     normalize_provider, provider_endpoints, Activity, ProviderConfig, Purpose, AUDIO_PROVIDER_IDS,
     MODELS_TIMEOUT, ORUKEET_MODEL_ID, REWRITE_PROVIDER_IDS,
 };
+use voice_core::speakers::{cpu_features, Unavailable};
 use voice_core::{ErrorKind, ProviderError};
+use voice_meetings::{LabelState, LabelStatus};
 
 use crate::api::{ApiError, Folder, Locale, Theme};
 use crate::engine::{lock, Core};
@@ -140,9 +144,9 @@ pub fn state(core: &Core) -> Value {
         "version": core.opts.version,
         "devMode": core.opts.dev_mode,
         "platform": platform(),
-        // The parts of Settings this Voice shows (voice/ui/API.md). Speaker labels and bucket
-        // sync come with their own changes.
-        "features": { "screen": true, "speakers": false, "sync": false },
+        // Which features' Settings this Voice shows (voice/ui/API.md). Bucket sync isn't in
+        // this Voice yet.
+        "features": { "screen": true, "speakers": true, "sync": false },
         "theme": match looks.theme { Theme::Light => "light", Theme::Dark => "dark" },
         "locale": match looks.locale { Locale::En => "en", Locale::Nl => "nl" },
         "config": keys::view(&cfg, start_at_login),
@@ -153,6 +157,7 @@ pub fn state(core: &Core) -> Value {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),
         },
+        "speakers": speakers_state(core, &cfg),
         "storage": {
             "folder": core.meetings.library().root().display().to_string(),
             "usedBytes": slow.used_bytes,
@@ -207,16 +212,99 @@ fn slow(core: &Core) -> Slow {
     slow
 }
 
-/// voice-core's registry in Ownkey's order (ownkey-providers.md 2).
+/// voice-core's registry in Ownkey's order (ownkey-providers.md 2). An audio provider with a
+/// realtime model names its prefix in `streamingPrefix`: such a model streams meetings.
 pub fn providers() -> Value {
-    let list = |ids: &[&str], activity: Activity| -> Vec<Value> {
-        ids.iter()
-            .map(|id| json!({ "id": id, "endpoints": provider_endpoints(id, activity) }))
-            .collect()
+    let audio: Vec<Value> = AUDIO_PROVIDER_IDS
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "endpoints": provider_endpoints(id, Activity::Audio),
+                "streamingPrefix": (*id == "mistral").then_some(REALTIME_MODEL_PREFIX),
+            })
+        })
+        .collect();
+    let rewrite: Vec<Value> = REWRITE_PROVIDER_IDS
+        .iter()
+        .map(|id| json!({ "id": id, "endpoints": provider_endpoints(id, Activity::Rewrite) }))
+        .collect();
+    json!({ "audio": audio, "rewrite": rewrite })
+}
+
+/// Settings > Speaker labels: who labels new meetings, whether they can, and what each meeting
+/// that transcribes now is doing (voice/ui/API.md, `SpeakersState`).
+fn speakers_state(core: &Core, cfg: &Config) -> Value {
+    let audio = cfg.meeting_audio();
+    let mistral = streams(&audio);
+    let availability = core.svc.speech.speaker_availability();
+    let mut detail = None;
+    let mut missing: Vec<String> = Vec::new();
+    let reason: Option<&str> = if !cfg.meetings_live_speakers {
+        Some("off")
+    } else if mistral {
+        // The stream labels the call; Nemotron's state doesn't matter for these meetings. The
+        // stream needs a key (MistralRealtime::new) and a `stream` agreement before it starts.
+        if audio.api_key.trim().is_empty() {
+            Some("key")
+        } else {
+            matches!(cfg.meeting_consent(), ConsentState::Required { .. }).then_some("consent")
+        }
+    } else {
+        match &availability {
+            Ok(_) => None,
+            Err(why) => {
+                match why {
+                    Unavailable::Cpu { missing: names } => missing.clone_from(names),
+                    Unavailable::RuntimeFailed { detail: text }
+                    | Unavailable::ModelDamaged { detail: text } => detail = Some(text.clone()),
+                    _ => {}
+                }
+                Some(why.code())
+            }
+        }
     };
+    let dev = core.opts.dev_mode;
+    let live: Vec<Value> = core
+        .meetings
+        .labels()
+        .into_iter()
+        .map(|(meeting, s)| {
+            json!({
+                "meeting": meeting,
+                "mode": s.mode,
+                "state": s.state,
+                "speakers": s.speakers,
+                "reason": s.reason,
+                // For the live run, which kills the worker on purpose.
+                "workerPid": s.worker_pid.filter(|_| dev),
+            })
+        })
+        .collect();
     json!({
-        "audio": list(&AUDIO_PROVIDER_IDS, Activity::Audio),
-        "rewrite": list(&REWRITE_PROVIDER_IDS, Activity::Rewrite),
+        "engine": if mistral { "mistral" } else { "nemotron" },
+        "ready": reason.is_none(),
+        "reason": reason,
+        "detail": detail,
+        "missing": missing,
+        "cpu": cpu_features(),
+        "runtime": availability.ok().map(|info| json!({
+            "location": info.location,
+            "commit": info.commit.chars().take(7).collect::<String>(),
+        })),
+        "live": live,
+    })
+}
+
+/// Whether a meeting labels speakers with Nemotron now, or soon again after a restart of its
+/// worker: removing the model would stop it.
+fn labelling_with_nemotron(live: &[(String, LabelStatus)]) -> bool {
+    live.iter().any(|(_, s)| {
+        s.mode != "mistral"
+            && !matches!(
+                s.state,
+                LabelState::Finished | LabelState::Failed | LabelState::Off
+            )
     })
 }
 
@@ -337,6 +425,12 @@ pub fn save_provider(core: &Arc<Core>, save: Value) -> Result<(), ApiError> {
     };
     if let Some(problem) = provider_form_problem(purpose, &provider, &endpoint, &model) {
         return Err(ApiError::new("need_endpoint_model", problem));
+    }
+    // A realtime model only streams, and only meetings stream.
+    if purpose != Purpose::Meetings && model.starts_with(REALTIME_MODEL_PREFIX) {
+        return Err(invalid(
+            "Realtime models work for meeting transcription only.",
+        ));
     }
     let api_key = match &save["apiKey"] {
         Value::Null => None,
@@ -511,9 +605,6 @@ pub fn model(core: &Arc<Core>, id: &str, action: &str) -> Result<(), ApiError> {
 }
 
 fn download(core: &Arc<Core>, model: Model) -> Result<(), ApiError> {
-    if model == Model::Nemotron {
-        return Err(invalid("Speaker labels come in a later version of Voice."));
-    }
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut downloads = lock(&core.settings.downloads);
@@ -606,6 +697,12 @@ fn remove(core: &Arc<Core>, model: Model) -> Result<(), ApiError> {
             _ => "This model is in the folder you chose. Voice doesn't remove it.",
         };
         return Err(ApiError::new("not_removable", message));
+    }
+    if model == Model::Nemotron && labelling_with_nemotron(&core.meetings.labels()) {
+        return Err(ApiError::new(
+            "busy",
+            "A meeting is labelling speakers with this model.",
+        ));
     }
     if model == Model::Orukeet {
         core.svc.speech.local_unload();
@@ -744,10 +841,77 @@ pub fn folder_path(core: &Core, folder: Folder) -> Option<PathBuf> {
     })
 }
 
-/// The consent object for the page.
+/// The consent object for the page. `mode` says whether the agreement covers recorded windows
+/// or a stream; one doesn't cover the other.
 pub fn consent_view(consent: Option<&Consent>) -> Value {
     consent.map_or(
         Value::Null,
-        |c| json!({"provider": c.provider, "host": c.host}),
+        |c| json!({"provider": c.provider, "host": c.host, "mode": c.mode}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(mode: &str, state: LabelState) -> (String, LabelStatus) {
+        (
+            "m-20261102-101500-1a2b".into(),
+            LabelStatus {
+                mode: mode.into(),
+                state,
+                reason: None,
+                epoch: 1,
+                speakers: 2,
+                settled_ms: Some(1000),
+                worker_pid: None,
+            },
+        )
+    }
+
+    #[test]
+    fn nemotron_can_be_removed_only_while_no_meeting_labels_with_it() {
+        assert!(!labelling_with_nemotron(&[]));
+        for state in [
+            LabelState::Starting,
+            LabelState::Matching,
+            LabelState::Listening,
+            LabelState::CatchingUp,
+            LabelState::Restarting,
+        ] {
+            assert!(
+                labelling_with_nemotron(&[status("nemotron", state)]),
+                "{state:?}"
+            );
+        }
+        for state in [LabelState::Finished, LabelState::Failed, LabelState::Off] {
+            assert!(
+                !labelling_with_nemotron(&[status("nemotron", state)]),
+                "{state:?}"
+            );
+        }
+        // Mistral's stream doesn't use the model.
+        assert!(!labelling_with_nemotron(&[status(
+            "mistral",
+            LabelState::Listening
+        )]));
+        assert!(labelling_with_nemotron(&[
+            status("nemotron", LabelState::Finished),
+            status("nemotron", LabelState::Restarting),
+        ]));
+    }
+
+    #[test]
+    fn consent_shows_its_mode() {
+        let consent = Consent {
+            provider: "mistral".into(),
+            host: "api.mistral.ai".into(),
+            mode: voice_core::config::ConsentMode::Stream,
+        };
+        assert_eq!(
+            consent_view(Some(&consent)),
+            json!({"provider": "mistral", "host": "api.mistral.ai", "mode": "stream"})
+        );
+        assert_eq!(consent_view(None), Value::Null);
+    }
 }

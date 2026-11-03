@@ -18,7 +18,7 @@ const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
 const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS } = require('./protocol');
-const { candidateEvents, suggest, WINDOW_MS } = require('./speakers');
+const { candidateEvents, suggest, compareSpeakers, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
 const PROTECT_DELAY_MS = 100;
@@ -69,8 +69,10 @@ function summary(e, now = Date.now()) {
   };
 }
 
-function speakerView(s) {
-  return { id: s.id, track: s.track, label: s.label, name: s.name, address: s.address, from: s.from, you: s.track === 'mic' };
+// calls: how many voices the meeting has on the call. A name Rukoo filled in for a 1:1 is a guess once a second voice
+// turns up, so the People card asks the user to check it (autoCheck) rather than dropping a probably right name.
+function speakerView(s, calls = 1) {
+  return { id: s.id, track: s.track, label: s.label, name: s.name, address: s.address, from: s.from, you: s.track === 'mic', autoCheck: s.from === 'auto' && calls > 1 };
 }
 
 const count = (v) => Number.isInteger(v) && v >= 0;
@@ -659,12 +661,14 @@ class VoiceService extends EventEmitter {
     return this.speakers(id);
   }
 
+  // In one order for the meeting view and meetingGet: the microphone, then call-1, call-2, …, call-10 by number.
   speakers(id) {
     const full = this.store.meeting(id);
     if (!full) return [];
     const event = this.calendarEvent(full.meeting.eventId);
     const { suggestions } = suggest(full.speakers, event);
-    return full.speakers.map((s) => ({ ...speakerView(s), suggestions: suggestions[s.id] || [] }));
+    const calls = full.speakers.filter((s) => s.track === 'call').length;
+    return [...full.speakers].sort(compareSpeakers).map((s) => ({ ...speakerView(s, calls), suggestions: suggestions[s.id] || [] }));
   }
 
   // The calendar events this meeting can be, nearest first. {events, failed}.
@@ -704,7 +708,8 @@ class VoiceService extends EventEmitter {
     this.setEvent(id, events[0].id);
   }
 
-  // A 1:1 gets its name without asking: one voice on the call and one guest who can be it, and no name yet.
+  // A 1:1 gets its name without asking: one voice on the call and one guest who can be it, and no name yet. When a
+  // second voice turns up later the name stays, and speakerView marks it for the user to check.
   autoName(id) {
     const full = this.store.meeting(id);
     if (!full || !full.meeting.eventId) return;

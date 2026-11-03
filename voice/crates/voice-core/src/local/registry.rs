@@ -96,8 +96,9 @@ impl ModelSpec {
         }
     }
 
-    /// NVIDIA Nemotron 3 Diarization (`local_diarization.py:21-31`). Speaker labels come after
-    /// 0.1; Voice only finds and verifies Ownkey's copy for now.
+    /// NVIDIA Nemotron 3 Diarization (`local_diarization.py:21-31`), the speaker label model.
+    /// Voice uses Ownkey's copy when there is one, and otherwise downloads the single GGUF file
+    /// itself (no archive). `voice/scripts/speaker-assets.ps1` pins the same URL and hash.
     pub fn nemotron() -> ModelSpec {
         const REVISION: &str = "f667ed73aee57d40cc39428eb768b4fd87a0a29e";
         let mut gguf = file(
@@ -113,7 +114,7 @@ impl ModelSpec {
             label: "Nemotron 3 Diarization".into(),
             revision: REVISION.into(),
             folder: "nemotron-3-diarization".into(),
-            settings_page: "Meetings".into(),
+            settings_page: "Meetings > Speaker labels".into(),
             custom_folder: false,
             archive: None,
             files: vec![gguf],

@@ -4307,8 +4307,11 @@ dependencies = [
  "httparse",
  "log",
  "rand",
+ "rustls",
+ "rustls-pki-types",
  "sha1",
  "thiserror 2.0.21",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4528,6 +4531,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tar",
+ "tungstenite",
  "ureq 3.5.0",
  "windows",
 ]
@@ -4629,6 +4633,17 @@ dependencies = [
  "serde_json",
  "voice-protocol",
  "voice-recorder",
+]
+
+[[package]]
+name = "voice-speakers"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "windows",
 ]
 
 [[package]]

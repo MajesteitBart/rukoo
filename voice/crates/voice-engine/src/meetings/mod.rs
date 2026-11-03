@@ -13,9 +13,9 @@ use std::thread;
 
 use serde_json::json;
 use voice_bridge::EventLog;
-use voice_core::config::{Config, Retention};
+use voice_core::config::{Config, ConsentMode, Retention};
 use voice_core::consent::ConsentState;
-use voice_meetings::{Pipeline, PipelineHandle};
+use voice_meetings::{LabelStatus, Pipeline, PipelineHandle};
 use voice_protocol::{MeetingState, ScreenMode, Track};
 
 pub use voice_meetings::{Library, PipelineOptions, PipelineState};
@@ -123,6 +123,15 @@ impl Meetings {
         self.lock()
             .iter()
             .map(|p| (p.meeting().to_string(), p.state()))
+            .collect()
+    }
+
+    /// What speaker labels do in each meeting a pipeline still transcribes, for Settings.
+    pub fn labels(&self) -> Vec<(String, LabelStatus)> {
+        self.lock()
+            .iter()
+            .filter(|p| !p.state().is_final())
+            .map(|p| (p.meeting().to_string(), p.labels()))
             .collect()
     }
 
@@ -251,16 +260,24 @@ fn shutdown_all(pipelines: Vec<PipelineHandle>) {
 pub fn transcription_allowed(cfg: &Config) -> Result<(), String> {
     match cfg.meeting_consent() {
         ConsentState::NotNeeded | ConsentState::Granted => Ok(()),
-        ConsentState::Required { label, host, .. } => Err(format!(
-            "Transcription waits until you allow sending meeting audio to {label} at {host} in Settings > Meetings > Transcription."
-        )),
+        ConsentState::Required {
+            label, host, mode, ..
+        } => {
+            let what = match mode {
+                ConsentMode::Windows => "sending",
+                ConsentMode::Stream => "streaming",
+            };
+            Err(format!(
+                "Transcription waits until you allow {what} meeting audio to {label} at {host} in Settings > Meetings > Transcription."
+            ))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voice_core::config::Consent;
+    use voice_core::config::{Consent, ConsentMode};
 
     #[test]
     fn transcription_waits_for_consent_but_never_for_orukeet() {
@@ -273,6 +290,7 @@ mod tests {
         cfg.meetings_transcription_consent = Some(Consent {
             provider: "mistral".into(),
             host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         });
         assert_eq!(transcription_allowed(&cfg), Ok(()));
         // Another host needs consent again.

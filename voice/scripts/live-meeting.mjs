@@ -1,15 +1,17 @@
-// The live paired run of Rukoo Voice and Rukoo, its acceptance test: a development Voice on the real engine records
+// The live paired run of Rukoo Voice and Rukoo, their acceptance test: a development Voice on the real engine records
 // SAPI speech through its recorder's file sources, transcribes it with Orukeet, records the screen, and streams the
 // meeting to a development Rukoo over the bridge.
 //
-//   node voice/scripts/live-meeting.mjs [--skip-build] [--screen off|frames|video] [--real-screen]
-//                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--measure=screen]
+//   node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
+//                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
+//                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>]]
 //
 // Windows only. Everything it starts lives under tmp\live\<time>\ in this checkout: Voice's data folder
 // (RUKOO_VOICE_DATA_DIR), Rukoo's profile (SEM_DATA_DIR), the discovery file both get as RUKOO_VOICE_BRIDGE, and the
 // speech. Captures of the apps' own windows go to tmp\live-shots\. Orukeet is read from Ownkey's model folder, read
 // only. Nothing touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process
-// it started is stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice\target.
+// it started is stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice\target, and
+// the programs run from there: debug builds unless --release is given, release builds for --measure=screen.
 //
 // The checks: passages with the expected words reach Rukoo on both tracks before the stop; the pill shows the
 // recording; Rukoo's windows are protected from capture; frames with their text reach Rukoo while it records and
@@ -41,24 +43,49 @@
 //                          synthetic screen by default, at the sizes of this computer's displays as Windows reports
 //                          them (off, frames and video at the main display's size, then video at the other display's
 //                          size), with a new slide every 10 s; nothing shows on the desktop. With --real-screen, on the
-//                          demo slide display instead: slides every 10 s, then a scrolling page, then still.
+//                          demo slide display instead: slides every 10 s, then a scrolling page, then still. Live
+//                          speaker labels are off, so the screen's cost stands alone; with --speakers they are on, the
+//                          call is the AMI excerpt and the speaker worker is measured too, for the combined load.
+//
+// --speakers plays the AMI meeting excerpt (fetched by scripts\speaker-assets.ps1 into tmp\speaker-assets, never
+// committed) as the call, looped; the microphone keeps its SAPI speech. On top of the checks above: at least three
+// call speakers reach Rukoo before the stop, and the three main AMI speakers get ids of their own; the id of MEE071
+// gets a name; the speaker worker is killed and its voice keeps that id afterwards, and again after the Voice
+// restart; after done at least 90% of the call's passage time went to the right speaker
+// (scripts\lib\speaker-score.mjs) and no passage moved from one id to another between revisions. It doesn't combine
+// with --real-screen, whose slides follow the SAPI call.
+//
+// --speakers=cpu|runtime|model runs a short meeting with RUKOO_VOICE_TEST_NO_SPEAKERS set to that reason: the call
+// is one speaker, call-1, Settings > Speaker labels says why, and Voice captures that page.
+//
+// --measure=speakers measures labels on and off (spec RUK-109 section 7): the worker's real-time factor through its
+// --self-test, then two meetings started from Voice in fresh data folders, labels on and labels off, each --minutes
+// long (default 5) with CPU per process read by pid at minute 1 and 5 (and at the end of a longer one), the speaker
+// worker's peak working set, and the call passages' latency. With --minutes of 21 or more the labels-on meeting is
+// also the compaction run: the settled position keeps moving past minute 20, the worker never restarts, and the three
+// main speakers keep their ids from the first five minutes to the last five.
+//
+// The runtime: RUKOO_VOICE_NEMO_DIR when set; otherwise tmp\speaker-assets\nemo_speech when it holds one; otherwise
+// Voice's own order (next to the exe, then Ownkey's copy, read only).
 
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { accuracy, mapping } from './lib/speaker-score.mjs';
 
 const require = createRequire(import.meta.url);
 const { _electron: electron } = require('@playwright/test');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
-const MEASURES = ['screen'];
+const MEASURES = ['screen', 'speakers'];
+const REASONS = ['cpu', 'runtime', 'model'];
 const SCREENS = ['off', 'frames', 'video'];
 
 function parseArgs(argv) {
-  const out = { skipBuild: false, screen: 'frames', realScreen: false, chooseMonitor: null, visibleRukoo: false, measure: null, seconds: 600 };
+  const out = { skipBuild: false, release: false, screen: 'frames', realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, measure: null, seconds: 600, minutes: 5 };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -68,6 +95,17 @@ function parseArgs(argv) {
     switch (key) {
       case '--skip-build':
         out.skipBuild = true;
+        break;
+      case '--release':
+        out.release = true;
+        break;
+      case '--speakers':
+        if (value !== null && !REASONS.includes(value)) throw new Error(`--speakers takes no value or one of ${REASONS.join(', ')}`);
+        out.speakers = value ?? true;
+        break;
+      case '--minutes':
+        out.minutes = Number(next());
+        if (!Number.isInteger(out.minutes) || out.minutes < 1) throw new Error('--minutes takes a whole number of minutes, at least 1');
         break;
       case '--screen':
         out.screen = next();
@@ -100,23 +138,52 @@ function parseArgs(argv) {
   }
   if ((out.chooseMonitor || out.visibleRukoo) && !out.realScreen) throw new Error('--choose-monitor and --visible-rukoo need --real-screen');
   if ([out.chooseMonitor, out.visibleRukoo, out.measure].filter(Boolean).length > 1) throw new Error('--choose-monitor, --visible-rukoo and --measure are separate runs');
+  if (out.speakers !== null && out.realScreen) throw new Error('--speakers and --real-screen are separate runs: the slides follow the SAPI call');
+  if (REASONS.includes(out.speakers) && out.measure) throw new Error('--speakers=<reason> and --measure are separate runs');
+  if (out.measure === 'speakers' && out.speakers !== null) throw new Error('--measure=speakers plays the AMI excerpt by itself; leave out --speakers');
   return out;
 }
 
 const ARGS = parseArgs(process.argv.slice(2));
-const RELEASE = Boolean(ARGS.measure);
+// --release builds and runs the release programs, as the measurements should; --measure=screen always does.
+const RELEASE = ARGS.release || ARGS.measure === 'screen';
+const PROFILE = RELEASE ? 'release' : 'debug';
+const SPEAKERS = ARGS.speakers;
+const MEASURE = ARGS.measure;
+const MINUTES = ARGS.minutes;
+// The AMI excerpt is the call in every speaker run.
+const AMI = SPEAKERS !== null || MEASURE === 'speakers';
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
 const RUN = path.join(ROOT, 'tmp', 'live', STAMP);
 const SHOTS = path.join(ROOT, 'tmp', 'live-shots');
-const VOICE_DATA = path.join(RUN, 'voice-data');
-const RUKOO_DATA = path.join(RUN, 'rukoo-data');
-const BRIDGE = path.join(RUN, 'bridge', 'voice-bridge.json');
-const HOOKS = path.join(RUN, 'hooks');
 const TARGET = process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(VOICE, 'target');
-const BIN = path.join(TARGET, RELEASE ? 'release' : 'debug');
+const BIN = path.join(TARGET, PROFILE);
 const EXE = path.join(BIN, 'rukoo-voice.exe');
+const SPEAKERS_EXE = path.join(BIN, 'rukoo-voice-speakers.exe');
 const SCREEN_EXE = path.join(BIN, 'rukoo-voice-screen.exe');
 const SHERPA = process.env.SHERPA_ONNX_ARCHIVE_DIR || path.join(ROOT, 'tmp', 'sherpa-archive');
+const ASSETS = path.join(ROOT, 'tmp', 'speaker-assets');
+const AMI_WAV = path.join(ASSETS, 'ami', 'ami_en2002d_2132.wav');
+const AMI_RTTM = path.join(ASSETS, 'ami', 'ami_en2002d_2132.rttm');
+const NEMOTRON = path.join(ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf');
+// ModelSpec::nemotron() in voice-core: Voice's own models folder keeps it at <data>\models\<folder>\<revision>.
+const NEMOTRON_DIR = path.join('models', 'nemotron-3-diarization', 'f667ed73aee57d40cc39428eb768b4fd87a0a29e');
+// The three AMI speakers who talk for more than a few words; FEO072 says three.
+const MAIN = ['MEE071', 'FEO070', 'MEE073'];
+
+// Where the current Voice and Rukoo keep their files. --measure gives each of its meetings a fresh set.
+let VOICE_DATA;
+let RUKOO_DATA;
+let BRIDGE;
+let HOOKS;
+function folders(dir) {
+  VOICE_DATA = path.join(dir, 'voice-data');
+  RUKOO_DATA = path.join(dir, 'rukoo-data');
+  BRIDGE = path.join(dir, 'bridge', 'voice-bridge.json');
+  HOOKS = path.join(dir, 'hooks');
+  fs.mkdirSync(path.dirname(BRIDGE), { recursive: true });
+}
+
 // The synthetic screen of every run without --real-screen (contract 1.13). --measure=screen sets its size to a display's.
 const synthetic = (size) => `synthetic:${size},change-every=10000,text=Slide`;
 let syntheticSize = '1920x1080';
@@ -140,12 +207,14 @@ const THEM = {
     'The deadline for the warehouse contract is next Tuesday.',
     'I will call the supplier about the delivery.'
   ],
-  words: ['invoice', 'amsterdam', 'deadline', 'warehouse', 'supplier', 'delivery', 'tuesday']
+  // With the AMI excerpt as the call: words its passages say.
+  words: AMI ? ['speaker', 'organis', 'organiz', 'segment', 'steve', 'evaluation', 'time'] : ['invoice', 'amsterdam', 'deadline', 'warehouse', 'supplier', 'delivery', 'tuesday']
 };
 
 const report = { started: new Date().toISOString(), run: RUN, options: ARGS, checks: [], notes: [], screen: {} };
-const started = { voice: [], rukoo: null, screens: null, measure: [] };
+const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [] };
 let failed = 0;
+let nemoDir = null;
 
 function check(name, ok, detail = null) {
   report.checks.push({ name, ok: Boolean(ok), detail });
@@ -197,18 +266,62 @@ function powershell(script, args = []) {
   return out.stdout;
 }
 
-// ---------- build and speech ----------
+const median = (xs) => percentile(xs, 0.5);
+function percentile(xs, p) {
+  if (!xs.length) return null;
+  const sorted = [...xs].sort((a, b) => a - b);
+  const at = (sorted.length - 1) * p;
+  const lo = Math.floor(at);
+  const hi = Math.ceil(at);
+  return Math.round(sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo));
+}
+
+// ---------- build, assets and speech ----------
 
 function build() {
-  const crates = ['-p', 'voice-app', '-p', 'voice-recorder', '-p', 'voice-local', '-p', 'voice-screen'];
-  console.log(`building rukoo-voice, rukoo-voice-recorder, rukoo-voice-local and rukoo-voice-screen (${RELEASE ? 'release' : 'debug'})`);
-  const out = spawnSync('cargo', ['build', ...(RELEASE ? ['--release'] : []), ...crates], {
+  const crates = ['voice-app', 'voice-recorder', 'voice-local', 'voice-speakers', 'voice-screen'];
+  console.log(`building ${crates.join(', ')} (${PROFILE}) into ${TARGET}`);
+  const out = spawnSync('cargo', ['build', ...(RELEASE ? ['--release'] : []), ...crates.flatMap((c) => ['-p', c])], {
     cwd: VOICE,
     env: { ...process.env, SHERPA_ONNX_ARCHIVE_DIR: SHERPA },
     stdio: 'inherit',
     windowsHide: true
   });
   if (out.status !== 0) throw new Error('cargo build failed');
+}
+
+// The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
+// names a published archive (the script skips it before that).
+function assets() {
+  const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.ps1 failed: ${out.stderr || out.stdout}`);
+  if (process.env.RUKOO_VOICE_NEMO_DIR) nemoDir = process.env.RUKOO_VOICE_NEMO_DIR;
+  else if (fs.existsSync(path.join(ASSETS, 'nemo_speech', 'runtime.json'))) nemoDir = path.join(ASSETS, 'nemo_speech');
+  if (nemoDir) {
+    const runtime = JSON.parse(fs.readFileSync(path.join(nemoDir, 'runtime.json'), 'utf8').replace(/^﻿/, ''));
+    note(`NeMo runtime: ${nemoDir} (${runtime.name || 'unnamed'}, commit ${String(runtime.commit || '').slice(0, 7)}, MSVC ${runtime.toolset?.msvc || '?'})`);
+  } else {
+    note("NeMo runtime: Voice's own lookup (next to the exe, then Ownkey's copy, read only)");
+  }
+}
+
+// The AMI reference: its RTTM turns in ms, and the length of one loop of the WAV.
+let AMI_TURNS = [];
+let AMI_MS = 0;
+function loadAmi() {
+  AMI_TURNS = fs
+    .readFileSync(AMI_RTTM, 'utf8')
+    .split('\n')
+    .filter((line) => line.startsWith('SPEAKER '))
+    .map((line) => {
+      const f = line.trim().split(/\s+/);
+      const start = Math.round(Number(f[3]) * 1000);
+      return { start, end: start + Math.round(Number(f[4]) * 1000), speaker: f[7] };
+    });
+  AMI_MS = Math.round((fs.statSync(AMI_WAV).size - 44) / 32);
 }
 
 // SAPI speech as 16 kHz mono 16-bit WAV, with a pause after every sentence so the pipeline can cut windows there.
@@ -252,16 +365,42 @@ function partOffsets(track) {
 
 // ---------- Voice ----------
 
-function voiceEnv(monitor) {
+// A fresh data folder: the model as a hard link in Voice's own models folder, so the run doesn't depend on Ownkey
+// having it (Voice still prefers Ownkey's copy when there is one), and the settings the run asks for.
+function prepareVoiceData(config = null) {
+  fs.mkdirSync(VOICE_DATA, { recursive: true });
+  started.dataDirs.push(VOICE_DATA);
+  if (AMI && fs.existsSync(NEMOTRON)) {
+    const dir = path.join(VOICE_DATA, NEMOTRON_DIR);
+    fs.mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, path.basename(NEMOTRON));
+    if (!fs.existsSync(target)) {
+      try {
+        fs.linkSync(NEMOTRON, target);
+      } catch (_) {
+        fs.copyFileSync(NEMOTRON, target);
+      }
+    }
+  }
+  if (config) fs.writeFileSync(path.join(VOICE_DATA, 'config.json'), JSON.stringify(config));
+}
+
+function voiceEnv({ monitor = null, noSpeakers = null } = {}) {
+  const call = AMI ? `${AMI_WAV},loop` : `${path.join(RUN, 'them.wav')},loop`;
   const env = {
     ...process.env,
     RUKOO_VOICE_DATA_DIR: VOICE_DATA,
     RUKOO_VOICE_BRIDGE: BRIDGE,
     // The recorder plays the speech in real time, looping, instead of opening the microphone and the speakers.
-    RUKOO_VOICE_TEST_SOURCES: `mic=file:${path.join(RUN, 'you.wav')},loop,call=file:${path.join(RUN, 'them.wav')},loop`
+    RUKOO_VOICE_TEST_SOURCES: `mic=file:${path.join(RUN, 'you.wav')},loop,call=file:${call}`
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.RUKOO_VOICE_LOCAL_EXE;
+  delete env.RUKOO_VOICE_SPEAKERS_EXE;
+  delete env.RUKOO_VOICE_TEST_NO_SPEAKERS;
+  delete env.RUKOO_VOICE_NEMO_DIR;
+  if (nemoDir) env.RUKOO_VOICE_NEMO_DIR = nemoDir;
+  if (noSpeakers) env.RUKOO_VOICE_TEST_NO_SPEAKERS = noSpeakers;
   delete env.RUKOO_VOICE_TEST_SCREEN;
   delete env.RUKOO_VOICE_TEST_MONITOR;
   if (!ARGS.realScreen) env.RUKOO_VOICE_TEST_SCREEN = synthetic(syntheticSize);
@@ -269,8 +408,9 @@ function voiceEnv(monitor) {
   return env;
 }
 
-// Voice's default screen mode, before Voice reads its settings. config.json keeps Ownkey's flat keys.
-function writeConfig() {
+// Voice's default screen mode, and any other setting the run asks for, before Voice reads its settings. config.json
+// keeps Ownkey's flat keys.
+function writeConfig(extra = {}) {
   fs.mkdirSync(VOICE_DATA, { recursive: true });
   const file = path.join(VOICE_DATA, 'config.json');
   let cfg = {};
@@ -280,12 +420,13 @@ function writeConfig() {
     // A fresh data folder.
   }
   cfg.meetings_screen = ARGS.screen;
+  Object.assign(cfg, extra);
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
 }
 
-function startVoice(n, monitor = null) {
-  const log = fs.openSync(path.join(RUN, `voice-${n}.log`), 'a');
-  const child = spawn(EXE, ['--dev-hooks', HOOKS], { cwd: VOICE, env: voiceEnv(monitor), stdio: ['ignore', log, log], windowsHide: true });
+function startVoice(n, { monitor = null, noSpeakers = null } = {}) {
+  const log = fs.openSync(path.join(path.dirname(VOICE_DATA), `voice-${n}.log`), 'a');
+  const child = spawn(EXE, ['--dev-hooks', HOOKS], { cwd: VOICE, env: voiceEnv({ monitor, noSpeakers }), stdio: ['ignore', log, log], windowsHide: true });
   started.voice.push(child.pid);
   console.log(`started Voice ${n}, pid ${child.pid}${monitor ? `, screen pinned to ${monitor}` : ''}${ARGS.realScreen ? '' : `, synthetic screen ${syntheticSize}`}`);
   return child;
@@ -346,10 +487,17 @@ function wallOf(id, t) {
   return session ? session.wall + (t - session.t) : null;
 }
 
-// What Voice's event log holds, read only: the states a meeting went through, or how many status events it keeps.
-async function voiceLog(query, ...params) {
+// The meeting's time now, in ms, from its newest heartbeat.
+function meetingNow(id) {
+  const beats = timeline(id).filter((l) => l.kind === 'heartbeat');
+  const last = beats.at(-1);
+  return last ? last.t + (Date.now() - last.wall) : 0;
+}
+
+// A file of Voice's data folder through SQLite, read only.
+async function readDb(file, query, ...params) {
   const { DatabaseSync } = await import('node:sqlite');
-  const db = new DatabaseSync(path.join(VOICE_DATA, 'bridge.db'), { readOnly: true });
+  const db = new DatabaseSync(file, { readOnly: true });
   try {
     return db.prepare(query).all(...params);
   } finally {
@@ -357,9 +505,17 @@ async function voiceLog(query, ...params) {
   }
 }
 
+// What Voice's event log holds, read only: the states a meeting went through, or how many status events it keeps.
+const voiceLog = (query, ...params) => readDb(path.join(VOICE_DATA, 'bridge.db'), query, ...params);
+const transcriptDb = (id, query, ...params) => readDb(path.join(VOICE_DATA, 'meetings', id, 'transcript.db'), query, ...params);
+
+
 const voiceStates = async (id) =>
   (await voiceLog("SELECT data FROM events WHERE event = 'meeting.state' AND meeting = ? ORDER BY seq", id)).map((row) => JSON.parse(row.data).state);
 const statusRows = async () => (await voiceLog("SELECT COUNT(*) AS n FROM events WHERE event = 'status'"))[0].n;
+// Every passage event of a meeting, in order, with the time the log took it.
+const passageEvents = async (id) =>
+  (await voiceLog("SELECT created_at, data FROM events WHERE event = 'passage' AND meeting = ? ORDER BY seq", id)).map((row) => ({ createdAt: row.created_at, ...JSON.parse(row.data) }));
 
 // processing comes before done, which comes last.
 function stoppedThenDone(states) {
@@ -367,11 +523,73 @@ function stoppedThenDone(states) {
   return processing >= 0 && processing < states.lastIndexOf('done') && states.at(-1) === 'done';
 }
 
-// The meeting's processes, for measure.ps1: the local worker is the app's child.
-function childrenOf(pid) {
-  const out = powershell(`Get-CimInstance Win32_Process -Filter "ParentProcessId=${Number(pid)}" | Select-Object ProcessId, Name | ConvertTo-Json -Compress`);
-  const list = out.trim() ? JSON.parse(out) : [];
-  return (Array.isArray(list) ? list : [list]).map((p) => ({ pid: p.ProcessId, name: p.Name }));
+// The meeting's entry in Settings > Speaker labels.
+async function labelsOf(id) {
+  const s = await hook('status');
+  return (s.settings.speakers?.live || []).find((l) => l.meeting === id) || null;
+}
+
+// ---------- the speaker reference ----------
+
+// The AMI turns on the meeting clock: the file source starts the WAV at the first call segment of every recorder
+// session and loops it without a gap, until the next session.
+function reference(id) {
+  const lines = timeline(id);
+  const starts = [];
+  let open = false;
+  for (const l of lines) {
+    if (l.kind === 'session') open = true;
+    else if (open && l.kind === 'segment' && l.track === 'call') {
+      starts.push(l.t);
+      open = false;
+    }
+  }
+  const last = Math.max(0, ...lines.map((l) => (Number.isFinite(l.t) ? l.t : 0)));
+  const turns = [];
+  starts.forEach((start, i) => {
+    const end = i + 1 < starts.length ? starts[i + 1] : last + AMI_MS;
+    for (let loop = start; loop < end; loop += AMI_MS) {
+      for (const r of AMI_TURNS) {
+        const s = loop + r.start;
+        const e = Math.min(loop + r.end, end);
+        if (s < e) turns.push({ start: s, end: e, speaker: r.speaker });
+      }
+    }
+  });
+  return turns;
+}
+
+const callPassages = (passages) => passages.filter((p) => p.track === 'call').map((p) => ({ id: p.id, start: p.start, end: p.end, speaker: p.speaker ?? null }));
+
+// The reference speaker who talks most inside a passage, as the scorer picks it.
+function referenceOf(passage, turns) {
+  const overlap = new Map();
+  for (const r of turns) {
+    const shared = Math.min(passage.end, r.end) - Math.max(passage.start, r.start);
+    if (shared > 0) overlap.set(r.speaker, (overlap.get(r.speaker) || 0) + shared);
+  }
+  let best = null;
+  for (const [name, time] of [...overlap].sort((a, b) => (a[0] < b[0] ? -1 : 1))) if (best === null || time > overlap.get(best)) best = name;
+  return best;
+}
+
+// The id each main AMI speaker maps to, by the scorer's one-to-one rule.
+function mainIds(passages, turns) {
+  const map = mapping(passages, turns);
+  return Object.fromEntries(MAIN.map((name) => [name, Object.keys(map).find((id) => map[id] === name) || null]));
+}
+
+// Passages whose speaker changed from one id to another between revisions; null to an id is allowed.
+function movedPassages(events) {
+  const seen = new Map();
+  const moved = [];
+  for (const e of events.filter((p) => p.track === 'call')) {
+    if (e.speaker == null) continue;
+    const before = seen.get(e.id);
+    if (before && before !== e.speaker) moved.push({ id: e.id, from: before, to: e.speaker, revision: e.revision });
+    seen.set(e.id, e.speaker);
+  }
+  return moved;
 }
 
 // ---------- Rukoo ----------
@@ -399,6 +617,7 @@ const rukoo = {
   get: (id) => win.evaluate((m) => window.mail.call('meetingGet', m), id),
   start: (opts) => win.evaluate((o) => window.mail.call('meetingStart', o), opts),
   stop: (id) => win.evaluate((m) => window.mail.call('meetingStop', m), id),
+  name: (id, speaker, name) => win.evaluate(([m, s, n]) => window.mail.call('meetingSetSpeaker', m, s, { name: n, address: '' }), [id, speaker, name]),
   frame: (id, at) => win.evaluate(([m, a]) => window.mail.call('meetingFrame', m, a), [id, at]),
   screen: (id) => win.evaluate((m) => window.mail.call('meetingScreen', m), id),
   select: (id, monitor) => win.evaluate(([m, s]) => window.mail.call('meetingScreenSelect', m, s), [id, monitor]),
@@ -726,11 +945,16 @@ function checkVideos(id, label) {
 // ---------- the run ----------
 
 async function pair(monitor) {
-  writeConfig();
-  const voice = startVoice(1, monitor);
+  // A measurement says whether live speaker labels run; the other runs keep Voice's default, which is on.
+  writeConfig(ARGS.measure === 'screen' ? { meetings_live_speakers: SPEAKERS === true } : {});
+  const voice = startVoice(1, { monitor });
   await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
   const first = await hook('status');
   check('Voice runs the real engine in a development copy', first.settings.devMode === true && first.pid === voice.pid, { pid: first.pid });
+  if (SPEAKERS === true) {
+    const sp = first.settings.speakers;
+    check('Settings > Speaker labels is ready with Nemotron', sp.ready === true && sp.engine === 'nemotron', { reason: sp.reason, detail: sp.detail, runtime: sp.runtime });
+  }
   await startRukoo();
   await until('Rukoo to connect to Voice', rukoo.connected, 30000);
   const settled = await until('Settings > Rukoo to show the client', async () => {
@@ -796,6 +1020,7 @@ async function killScreen(id) {
 }
 
 async function standardRun(voice, offsets) {
+  const labels = SPEAKERS === true;
   // 2. A meeting started from Rukoo, with Voice's default screen mode.
   const t0 = Date.now();
   const { meetingId: id } = await rukoo.start({ title: 'Live run: launch review' });
@@ -830,9 +1055,13 @@ async function standardRun(voice, offsets) {
     const stillRecording = (await rukoo.state()).recording === id;
     check('passages with the expected words reached Rukoo on both tracks before the stop', stillRecording, {
       after: `${Math.round((Date.now() - t0) / 1000)} s`,
-      mic: live.passages.filter((p) => p.track === 'mic').map((p) => p.text),
-      call: live.passages.filter((p) => p.track === 'call').map((p) => p.text)
+      mic: live.passages.filter((p) => p.track === 'mic').length,
+      call: live.passages.filter((p) => p.track === 'call').length
     });
+
+    // 3a. Speaker labels: three voices on the call before the stop, one of them named, then the worker killed.
+    let named = null;
+    if (labels) named = await speakersBeforeStop(id);
 
     // Captures while it records: Rukoo's meeting view, the pill and Settings > Rukoo.
     if (!ARGS.realScreen) {
@@ -852,12 +1081,13 @@ async function standardRun(voice, offsets) {
     const before = await rukoo.get(id);
     const lastEnd = Math.max(...before.passages.map((p) => p.end));
     const recorder = recorderOf(id);
+    const restartAt = meetingNow(id);
     killPid(voice.pid);
     await until('Voice to exit', () => !alive(voice.pid), 15000);
     await sleep(1500);
     check('the recorder outlives Voice', recorder && alive(recorder.pid), recorder && { pid: recorder.pid });
     if (screenPid) check('the screen process outlives Voice', alive(screenPid), { pid: screenPid });
-    voice = startVoice(2, report.screen.pinned);
+    voice = startVoice(2, { monitor: report.screen.pinned });
     await until('Rukoo to reconnect to the new Voice', async () => (await rukoo.connected()) && (await rukoo.state()).voiceVersion, 60000);
     const reattached = await until('the reattached meeting in the pill', async () => {
       const s = await hook('status');
@@ -874,6 +1104,7 @@ async function standardRun(voice, offsets) {
     }, 120000, 500);
     check('the meeting goes on after the restart without passages twice', overlaps(resumed.passages).length === 0, { overlaps: overlaps(resumed.passages), passages: resumed.passages.length });
     check("Rukoo's windows stayed protected through the restart", (await rukoo.protectedWindows()).every(Boolean));
+    if (labels && named) await keepsItsId(id, named, restartAt, 'after the Voice restart');
     if (screenPid) {
       const framesBefore = (await rukoo.get(id)).frames.length;
       const more = await until('a frame after the restart', async () => (await rukoo.get(id)).frames.length > framesBefore, 30000, 500).catch(() => false);
@@ -898,7 +1129,7 @@ async function standardRun(voice, offsets) {
     if (screenPid) check('the screen process followed the resumed recorder', alive(screenOf(id)?.pid), { pid: screenOf(id)?.pid });
 
     // 6. Stop from Rukoo: processing, then done, after the screen journal's stop.
-    await sleep(6000);
+    await sleep(labels ? 20000 : 6000);
     await rukoo.stop(id);
     await until('done', async () => (await rukoo.get(id)).meeting.state === 'done', 240000, 200);
     const states = await voiceStates(id);
@@ -935,6 +1166,7 @@ async function standardRun(voice, offsets) {
       check("Rukoo's frames are Voice's frames", ids(mine) === ids(theirs) && (theirs.frames || []).length > 0, { voice: (theirs.frames || []).length, rukoo: (mine.frames || []).length });
     }
     await captureRukoo(path.join(SHOTS, 'rukoo-meeting-done.png'));
+    if (labels) await speakersAfterDone(id, mine, named);
   } finally {
     stopSlides();
   }
@@ -1132,7 +1364,8 @@ async function visibleRun() {
 
 // ---------- measurements ----------
 
-function percentile(values, p) {
+// The nearest-rank percentile, p from 0 to 100.
+function nearestRank(values, p) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
@@ -1164,7 +1397,7 @@ function screenLog(id) {
     const m = /gpu memory in use: (\d+) MB/.exec(line);
     if (m) memory.push(Number(m[1]));
   }
-  return { jpegMs: { p50: percentile(jpeg, 50), p95: percentile(jpeg, 95) }, ocrMs: { p50: percentile(ocr, 50), p95: percentile(ocr, 95) }, gpuMemoryMb: memory.length ? Math.max(...memory) : null };
+  return { jpegMs: { p50: nearestRank(jpeg, 50), p95: nearestRank(jpeg, 95) }, ocrMs: { p50: nearestRank(ocr, 50), p95: nearestRank(ocr, 95) }, gpuMemoryMb: memory.length ? Math.max(...memory) : null };
 }
 
 // One measured meeting: started from Rukoo with `screen`, measured for ARGS.seconds once transcription runs. On the
@@ -1177,8 +1410,11 @@ async function measureRun(voice, name, screen) {
   if (screen !== 'off' && ARGS.realScreen) await guardMonitor(id, report.screen.slideDisplay);
   await until('the first passage', async () => ((await rukoo.get(id)).passages || []).length > 0, 120000, 500);
   const pids = { 'rukoo-voice': voice.pid, recorder: recorderOf(id).pid };
-  const local = childrenOf(voice.pid).find((c) => /^rukoo-voice-local/i.test(c.name));
-  if (local) pids.local = local.pid;
+  const children = childrenOf(voice.pid);
+  if (children['rukoo-voice-local']) pids.local = children['rukoo-voice-local'];
+  // With live speaker labels on, the speaker worker belongs to the meeting's load.
+  const speakerWorker = (await labelsOf(id))?.workerPid || children['rukoo-voice-speakers'];
+  if (speakerWorker) pids.speakers = speakerWorker;
   if (screen !== 'off') pids.screen = screenOf(id).pid;
   const out = path.join(RUN, `measure-${name}.json`);
   const seconds = ARGS.seconds;
@@ -1207,6 +1443,7 @@ async function measureRun(voice, name, screen) {
     name,
     screen,
     source: ARGS.realScreen ? 'real' : synthetic(syntheticSize),
+    liveSpeakers: SPEAKERS === true,
     monitor: j.find((l) => l.kind === 'monitor')?.id || null,
     seconds,
     elapsed: Math.round(elapsed),
@@ -1234,8 +1471,8 @@ async function measureAll(voice, sizes) {
   const main = displays.find((d) => d.primary);
   const other = displays.find((d) => !d.primary);
   for (const [name, screen] of [['off', 'off'], ['frames', 'frames'], ['video', 'video']]) report.measure.push(await measureRun(voice, name, screen));
-  // The fourth: video on the other display, or on the synthetic screen at its size. RUK-109's combined run with live
-  // speaker labels follows its rebase.
+  // The fourth: video on the other display, or on the synthetic screen at its size. Live speaker labels are on in all
+  // four with --speakers, for the combined load, and off without.
   const fourth = ARGS.realScreen ? other && `${other.width}x${other.height}` : sizes.find((s) => s !== syntheticSize);
   if (fourth) {
     killPid(voice.pid);
@@ -1247,7 +1484,7 @@ async function measureAll(voice, sizes) {
     } else {
       syntheticSize = fourth;
     }
-    voice = startVoice(2, ARGS.realScreen ? other.id : null);
+    voice = startVoice(2, { monitor: ARGS.realScreen ? other.id : null });
     await until('Rukoo to reconnect to the new Voice', async () => (await rukoo.connected()) && (await rukoo.state()).voiceVersion, 60000);
     report.measure.push(await measureRun(voice, `video-${fourth}`, 'video'));
     if (ARGS.realScreen) report.screen.slideDisplay = main.id;
@@ -1269,17 +1506,323 @@ function printMeasurements(runs) {
   }
 }
 
-async function main() {
-  if (process.platform !== 'win32') throw new Error('The live run needs Windows: Voice records there only.');
-  fs.mkdirSync(RUN, { recursive: true });
-  fs.mkdirSync(SHOTS, { recursive: true });
-  fs.mkdirSync(path.dirname(BRIDGE), { recursive: true });
-  if (!ARGS.skipBuild) build();
-  for (const exe of [EXE, SCREEN_EXE]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
+// Before the stop: three call speakers in Rukoo with the main AMI speakers apart; MEE071's id gets a name; the
+// worker is killed, comes back through the reel, and MEE071 keeps the id. Returns { speaker, name }.
+async function speakersBeforeStop(id) {
+  const t = Date.now();
+  const found = await until('three call speakers in Rukoo with the main AMI speakers apart', async () => {
+    const m = await rukoo.get(id);
+    const calls = m.speakers.filter((s) => s.track === 'call');
+    const ids = mainIds(callPassages(m.passages), reference(id));
+    return calls.length >= 3 && MAIN.every((n) => ids[n]) && { calls: calls.map((s) => s.id), ids };
+  }, 300000, 1000);
+  check('three call speakers reached Rukoo before the stop, the main AMI speakers on ids of their own', true, { after: `${Math.round((Date.now() - t) / 1000)} s`, ...found });
+  report.speakers = { beforeStop: found };
 
+  const speaker = found.ids.MEE071;
+  const name = 'Person A';
+  const after = await rukoo.name(id, speaker, name);
+  check(`the id of MEE071 (${speaker}) got a name in Rukoo`, after.find((s) => s.id === speaker)?.name === name);
+
+  const labels = await until('the speaker worker', async () => {
+    const l = await labelsOf(id);
+    return l?.workerPid && l.state === 'listening' && l;
+  }, 60000, 500);
+  const pid = labels.workerPid;
+  const killAt = meetingNow(id);
+  const killed = Date.now();
+  check('Settings names the running speaker worker by its process id', alive(pid), { pid, state: labels.state });
+  killPid(pid);
+  await until('the killed worker to exit', () => !alive(pid), 15000);
+  const states = new Set();
+  const back = await until('the follower to listen again with a new worker', async () => {
+    const l = await labelsOf(id);
+    if (l) states.add(l.state);
+    return l?.state === 'listening' && l.workerPid && l.workerPid !== pid && l;
+  }, 120000, 250);
+  const refeed = Date.now() - killed;
+  report.speakers.refeedMs = refeed;
+  check('the follower started a new worker and matched the reel', alive(back.workerPid), { pid: back.workerPid, refeedMs: refeed, states: [...states] });
+  check('recording went on through the worker crash', (await rukoo.state()).recording === id && alive(recorderOf(id)?.pid));
+  await keepsItsId(id, { speaker, name }, killAt, 'after the worker kill');
+  return { speaker, name };
+}
+
+// MEE071's passages after `from` (meeting ms) carry the named id, and Rukoo shows the name on it.
+async function keepsItsId(id, { speaker, name }, from, when) {
+  const later = await until(`MEE071's passages ${when}`, async () => {
+    const m = await rukoo.get(id);
+    const turns = reference(id);
+    const own = m.passages.filter((p) => p.track === 'call' && p.start > from && referenceOf(p, turns) === 'MEE071');
+    const labelled = own.filter((p) => p.speaker != null);
+    return labelled.length >= 2 && { m, own, labelled };
+  }, 240000, 1000);
+  const wrong = later.labelled.filter((p) => p.speaker !== speaker);
+  check(`MEE071 keeps ${speaker} ${when}`, wrong.length === 0, { passages: later.labelled.length, wrong: wrong.map((p) => `${p.id}:${p.speaker}`), unlabelled: later.own.length - later.labelled.length });
+  check(`the name stays on ${speaker} ${when}`, later.m.speakers.find((s) => s.id === speaker)?.name === name);
+}
+
+// After done: the score over the whole meeting, and no passage moved from one id to another.
+async function speakersAfterDone(id, meeting, named) {
+  const passages = callPassages(meeting.passages);
+  const turns = reference(id);
+  const score = accuracy(passages, turns);
+  const nulls = passages.filter((p) => p.speaker == null);
+  const total = passages.reduce((sum, p) => sum + (p.end - p.start), 0);
+  const nullTime = nulls.reduce((sum, p) => sum + (p.end - p.start), 0);
+  report.speakers.accuracy = score;
+  report.speakers.mapping = mapping(passages, turns);
+  report.speakers.callSpeakers = meeting.speakers.filter((s) => s.track === 'call').map((s) => s.id);
+  report.speakers.nullShare = total ? nullTime / total : 0;
+  check('at least 90% of the call passage time went to the right speaker', score >= 0.9, {
+    accuracy: Number(score.toFixed(4)),
+    passages: passages.length,
+    withoutSpeaker: `${nulls.length} (${((100 * nullTime) / (total || 1)).toFixed(1)}% of the time)`,
+    mapping: report.speakers.mapping
+  });
+  const moved = movedPassages(await passageEvents(id));
+  check('no passage moved from one id to another between revisions', moved.length === 0, moved.slice(0, 10));
+  if (named) check(`MEE071 maps to ${named.speaker} over the whole meeting`, report.speakers.mapping[named.speaker] === 'MEE071', report.speakers.mapping);
+}
+
+// ---------- --speakers=<reason> ----------
+
+async function withoutLabels(reason) {
+  folders(RUN);
+  prepareVoiceData();
+  speech(path.join(RUN, 'you.wav'), YOU);
+  startVoice(1, { noSpeakers: reason });
+  await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
+  const status = await hook('status');
+  const sp = status.settings.speakers;
+  check(`Settings > Speaker labels says why: ${reason}`, sp.ready === false && sp.reason === reason, { reason: sp.reason, missing: sp.missing, detail: sp.detail });
+  await startRukoo();
+  await until('Rukoo to connect to Voice', rukoo.connected, 30000);
+
+  const { meetingId: id } = await rukoo.start({ title: `Live run: no speaker labels (${reason})` });
+  check('Rukoo started a meeting through Voice', Boolean(id), id);
+  report.meeting = id;
+  const live = await until('passages with the expected words on both tracks', async () => {
+    const m = await rukoo.get(id);
+    return m && trackHas(m, 'mic', YOU.words) && trackHas(m, 'call', THEM.words) && m;
+  }, 240000, 500);
+  check('the meeting records and transcribes both tracks without labels', (await rukoo.state()).recording === id, { call: live.passages.filter((p) => p.track === 'call').length });
+  const entry = await labelsOf(id);
+  check(`the meeting's labels are off with reason ${reason}`, entry?.mode === 'off' && entry?.reason === reason, entry);
+  const dir = path.join(SHOTS, `speakers-${reason}`);
+  const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
+  check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
+
+  // Every AMI voice has spoken once a whole loop has gone by.
+  await until('a whole loop of the AMI excerpt', () => meetingNow(id) > AMI_MS + 15000, 180000, 1000);
+  await rukoo.stop(id);
+  await until('done', async () => (await rukoo.get(id)).meeting.state === 'done', 240000, 200);
+  const m = await rukoo.get(id);
+  const calls = m.speakers.filter((s) => s.track === 'call').map((s) => s.id);
+  const others = m.passages.filter((p) => p.track === 'call' && p.speaker !== 'call-1');
+  check('the whole call is one speaker, call-1, as in Voice 0.1', calls.length === 1 && calls[0] === 'call-1' && others.length === 0, { calls, otherPassages: others.length });
+  check('the stop went to processing, then done', stoppedThenDone(await voiceStates(id)));
+}
+
+// ---------- --measure=speakers ----------
+
+// CPU time, working set and peak working set of each process id, through Get-Process.
+function processTimes(pids) {
+  const ids = pids.filter(Boolean);
+  if (!ids.length) return {};
+  const at = Date.now();
+  const out = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', `Get-Process -Id ${ids.join(',')} -ErrorAction SilentlyContinue | ForEach-Object { '{0} {1} {2} {3}' -f $_.Id, [long]$_.TotalProcessorTime.TotalMilliseconds, $_.WorkingSet64, $_.PeakWorkingSet64 }`],
+    { encoding: 'utf8', windowsHide: true }
+  );
+  const wall = (at + Date.now()) / 2;
+  const result = {};
+  for (const line of (out.stdout || '').split(/\r?\n/).filter(Boolean)) {
+    const [pid, cpu, ws, peak] = line.trim().split(/\s+/).map(Number);
+    result[pid] = { cpu, ws, peak, wall };
+  }
+  return result;
+}
+
+// The children of a process by image name, through CIM.
+function childrenOf(pid) {
+  const out = spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "ParentProcessId=${pid}" | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.Name }`], { encoding: 'utf8', windowsHide: true });
+  const result = {};
+  for (const line of (out.stdout || '').split(/\r?\n/).filter(Boolean)) {
+    const [child, name] = line.trim().split(/\s+/);
+    result[name.replace(/\.exe$/i, '')] = Number(child);
+  }
+  return result;
+}
+
+async function measuredPids(id, voicePid) {
+  const children = childrenOf(voicePid);
+  const l = await labelsOf(id);
+  return {
+    'rukoo-voice': voicePid,
+    'rukoo-voice-local': children['rukoo-voice-local'] || null,
+    'rukoo-voice-speakers': l?.workerPid || children['rukoo-voice-speakers'] || null,
+    'rukoo-voice-recorder': recorderOf(id)?.pid || null
+  };
+}
+
+// The wall time of a meeting time, from the newest heartbeat at or before it.
+function wallAt(beats, t) {
+  let best = beats[0];
+  for (const b of beats) if (b.t <= t) best = b;
+  return best ? best.wall + (t - best.t) : null;
+}
+
+async function measuredMeeting(label, liveSpeakers, minutes) {
+  folders(path.join(RUN, label));
+  prepareVoiceData(liveSpeakers ? null : { meetings_live_speakers: false });
+  const voice = startVoice(label);
+  await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
+  const sp = (await hook('status')).settings.speakers;
+  check(`${label}: Settings > Speaker labels is ${liveSpeakers ? 'ready' : 'off'}`, liveSpeakers ? sp.ready === true : sp.reason === 'off', { reason: sp.reason, runtime: sp.runtime });
+
+  const { meeting: id } = await hook('start_meeting');
+  const result = { label, meeting: id, minutes, cpu: {}, samples: [], settled: [] };
+  await until('the recording', async () => (await hook('status')).pill.meeting?.state === 'recording', 30000);
+  const marks = [...new Set([1, 5, minutes].filter((m) => m <= minutes))];
+  let pids = null;
+  for (const minute of marks) {
+    while (meetingNow(id) < minute * 60000) {
+      await sleep(5000);
+      if (liveSpeakers && minutes > 5) {
+        try {
+          const row = (await transcriptDb(id, "SELECT value FROM meta WHERE key = 'speakers.settled.call'"))[0];
+          result.settled.push([Math.round(meetingNow(id)), row ? Number(row.value) : null]);
+        } catch (_) {
+          // The app holds the file; the next read gets it.
+        }
+      }
+    }
+    pids = await measuredPids(id, voice.pid);
+    result.samples.push({ minute, pids, times: processTimes(Object.values(pids)) });
+    console.log(`     ${label}: minute ${minute}`);
+  }
+  const l = await labelsOf(id);
+  result.labels = l && { state: l.state, mode: l.mode, speakers: l.speakers, reason: l.reason };
+
+  // CPU per process between minute 1 and each later sample, in % of one core.
+  const first = result.samples[0];
+  for (const sample of result.samples.slice(1)) {
+    const row = {};
+    let total = 0;
+    for (const [name, pid] of Object.entries(sample.pids)) {
+      const a = first.times[first.pids[name]];
+      const b = sample.times[pid];
+      if (!a || !b || first.pids[name] !== pid) {
+        row[name] = null;
+        continue;
+      }
+      row[name] = Number(((100 * (b.cpu - a.cpu)) / (b.wall - a.wall)).toFixed(1));
+      total += row[name];
+    }
+    row.total = Number(total.toFixed(1));
+    result.cpu[`1-${sample.minute}`] = row;
+  }
+  const last = result.samples.at(-1);
+  const worker = last.pids['rukoo-voice-speakers'];
+  result.workerPeakMb = worker && last.times[worker] ? Math.round(last.times[worker].peak / 1048576) : null;
+  result.peakMb = Object.fromEntries(Object.entries(last.pids).map(([name, pid]) => [name, pid && last.times[pid] ? Math.round(last.times[pid].peak / 1048576) : null]));
+
+  const stopWall = Date.now();
+  await hook('stop_meeting');
+  await until('done', async () => (await voiceStates(id)).at(-1) === 'done', 300000, 500);
+
+  // Latency of each call passage's first revision, from the wall time of its end to the log taking it. Passages the
+  // log took after the stop come from the final windows and aren't live.
+  const beats = timeline(id).filter((x) => x.kind === 'heartbeat');
+  const firsts = new Map();
+  for (const e of await passageEvents(id)) if (!firsts.has(e.id)) firsts.set(e.id, e);
+  const latency = { call: [], mic: [] };
+  for (const e of firsts.values()) {
+    if (e.createdAt > stopWall) continue;
+    const wall = wallAt(beats, e.end);
+    if (wall != null) latency[e.track]?.push(e.createdAt - wall);
+  }
+  result.latency = Object.fromEntries(Object.entries(latency).map(([track, xs]) => [track, { passages: xs.length, medianMs: median(xs), p90Ms: percentile(xs, 0.9) }]));
+
+  if (liveSpeakers) {
+    const events = await passageEvents(id);
+    const latest = new Map();
+    for (const e of events) latest.set(e.id, e);
+    const passages = callPassages([...latest.values()]);
+    const turns = reference(id);
+    result.accuracy = Number(accuracy(passages, turns).toFixed(4));
+    result.moved = movedPassages(events).length;
+    const epochs = await transcriptDb(id, 'SELECT epoch, reason FROM speaker_epochs ORDER BY epoch');
+    result.epochs = epochs.map((e) => e.reason);
+    if (minutes >= 21) {
+      const end = Math.max(...passages.map((p) => p.end));
+      const head = mainIds(passages.filter((p) => p.end <= 5 * 60000), turns);
+      const tail = mainIds(passages.filter((p) => p.start >= end - 5 * 60000), turns);
+      const settledLast = result.settled.filter(([, s]) => s != null).at(-1);
+      const log = fs.readFileSync(path.join(path.dirname(VOICE_DATA), `voice-${label}.log`), 'utf8');
+      result.compaction = { head, tail, settledLast, behindInLog: /fell behind/.test(log) };
+      check(`${label}: the settled position moved past minute 20`, settledLast && settledLast[1] > 20 * 60000, settledLast);
+      check(`${label}: no worker restart and no "behind" error in ${minutes} minutes`, result.epochs.length === 1 && !result.compaction.behindInLog, { epochs: result.epochs });
+      check(`${label}: the main AMI speakers keep their ids from the first five minutes to the last five`, MAIN.every((n) => head[n] && head[n] === tail[n]), { head, tail });
+    }
+    check(`${label}: at least 90% of the call passage time went to the right speaker`, result.accuracy >= 0.9, { accuracy: result.accuracy, moved: result.moved });
+  }
+  killPid(voice.pid);
+  await until('Voice to exit', () => !alive(voice.pid), 15000);
+  return result;
+}
+
+// The worker's own real-time factor on the AMI excerpt, through --self-test.
+function selfTest() {
+  if (!nemoDir) {
+    note('self-test skipped: no runtime folder for --runtime (set RUKOO_VOICE_NEMO_DIR)');
+    return null;
+  }
+  const out = path.join(RUN, 'self-test.json');
+  const runs = [];
+  for (let i = 0; i < 3; i++) {
+    const res = spawnSync(SPEAKERS_EXE, ['--self-test', '--runtime', nemoDir, '--model', NEMOTRON, '--wav', AMI_WAV, '--report', out], { encoding: 'utf8', windowsHide: true });
+    if (res.status !== 0 || !fs.existsSync(out)) {
+      note(`self-test failed: ${res.stderr}`);
+      return null;
+    }
+    runs.push(JSON.parse(fs.readFileSync(out, 'utf8')));
+  }
+  return { runs, medianRtf: Number(median(runs.map((r) => Math.round(r.realtimeFactor * 100))) / 100) };
+}
+
+async function measureSpeakers() {
+  fs.mkdirSync(RUN, { recursive: true });
+  speech(path.join(RUN, 'you.wav'), YOU);
+  report.measure = { selfTest: selfTest() };
+  if (report.measure.selfTest) note(`worker real-time factor on the AMI excerpt: ${report.measure.selfTest.medianRtf}x (median of 3)`);
+  report.measure.on = await measuredMeeting('labels-on', true, MINUTES);
+  report.measure.off = await measuredMeeting('labels-off', false, Math.min(MINUTES, 5));
+  const { on, off } = report.measure;
+  const row = (name, a, b) => console.log(`  ${name.padEnd(34)} ${String(a ?? '-').padStart(10)} ${String(b ?? '-').padStart(10)}`);
+  console.log('\n  measure                             labels on  labels off');
+  for (const p of ['rukoo-voice', 'rukoo-voice-local', 'rukoo-voice-speakers', 'rukoo-voice-recorder', 'total']) row(`CPU % of one core, min 1-5: ${p}`, on.cpu['1-5']?.[p], off.cpu['1-5']?.[p]);
+  if (on.cpu[`1-${MINUTES}`] && MINUTES > 5) row(`CPU total, min 1-${MINUTES}`, on.cpu[`1-${MINUTES}`].total, null);
+  row('call passage latency, median ms', on.latency.call.medianMs, off.latency.call.medianMs);
+  row('call passage latency, p90 ms', on.latency.call.p90Ms, off.latency.call.p90Ms);
+  row('mic passage latency, median ms', on.latency.mic.medianMs, off.latency.mic.medianMs);
+  row('speaker worker peak working set MB', on.workerPeakMb, null);
+  row('accuracy', on.accuracy, null);
+}
+
+// ---------- the paired run ----------
+
+async function pairedRun() {
+  folders(RUN);
+  prepareVoiceData();
   const youBytes = speech(path.join(RUN, 'you.wav'), YOU);
-  const themBytes = speech(path.join(RUN, 'them.wav'), THEM);
-  note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s, them.wav ${(themBytes / 32000).toFixed(1)} s`);
+  if (AMI) note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s; the call is the AMI excerpt, ${(AMI_MS / 1000).toFixed(1)} s, looped`);
+  else {
+    const themBytes = speech(path.join(RUN, 'them.wav'), THEM);
+    note(`speech: you.wav ${(youBytes / 32000).toFixed(1)} s, them.wav ${(themBytes / 32000).toFixed(1)} s`);
+  }
 
   let offsets = null;
   let pinned = null;
@@ -1315,6 +1858,23 @@ async function main() {
   else await standardRun(voice, offsets);
 }
 
+// ---------- main ----------
+
+async function main() {
+  if (process.platform !== 'win32') throw new Error('The live run needs Windows: Voice records there only.');
+  fs.mkdirSync(RUN, { recursive: true });
+  fs.mkdirSync(SHOTS, { recursive: true });
+  if (!ARGS.skipBuild) build();
+  for (const exe of [EXE, SCREEN_EXE]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
+  if (AMI) {
+    assets();
+    loadAmi();
+  }
+  if (MEASURE === 'speakers') await measureSpeakers();
+  else if (REASONS.includes(SPEAKERS)) await withoutLabels(SPEAKERS);
+  else await pairedRun();
+}
+
 async function cleanup() {
   // Rukoo first: its quit path, then its process id if it hangs.
   for (const electronApp of [app, screens]) {
@@ -1331,12 +1891,15 @@ async function cleanup() {
   for (const pid of started.measure) if (alive(pid)) killPid(pid);
   for (const pid of started.voice) if (alive(pid)) killPid(pid);
   // A recorder or a screen process still recording after a failure: by the id in its recorder.json or screen.json.
-  const meetings = path.join(VOICE_DATA, 'meetings');
-  for (const id of fs.existsSync(meetings) ? fs.readdirSync(meetings) : []) {
-    for (const [what, info] of [['recorder', recorderOf(id)], ['screen process', screenOf(id)]]) {
-      if (info && alive(info.pid)) {
-        killPid(info.pid);
-        note(`stopped a ${what} that was still running: ${info.pid}`);
+  for (const data of started.dataDirs) {
+    const meetings = path.join(data, 'meetings');
+    for (const id of fs.existsSync(meetings) ? fs.readdirSync(meetings) : []) {
+      const dir = path.join(meetings, id);
+      for (const [what, info] of [['recorder', readJson(path.join(dir, 'recorder.json'))], ['screen process', readJson(path.join(dir, 'screen', 'screen.json'))]]) {
+        if (info && alive(info.pid)) {
+          killPid(info.pid);
+          note(`stopped a ${what} that was still running: ${info.pid}`);
+        }
       }
     }
   }
@@ -1357,6 +1920,7 @@ try {
   await cleanup();
   report.finished = new Date().toISOString();
   report.failed = failed;
+  fs.mkdirSync(RUN, { recursive: true });
   fs.writeFileSync(path.join(RUN, 'report.json'), JSON.stringify(report, null, 2));
   console.log(`\n${failed ? `${failed} check(s) failed` : 'every check passed'}; report: ${path.join(RUN, 'report.json')}`);
   if (error) console.error(error);

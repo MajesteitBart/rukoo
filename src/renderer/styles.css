@@ -9003,6 +9003,22 @@ button.mt-person:disabled {
 .mt-person-sub.is-ask {
   color: var(--text-2);
 }
+/* A name Rukoo filled in for a 1:1 that a second voice on the call put in doubt: an orange dot asks for a look. The
+   line wraps rather than cut off its last words, which say what to do ("controleer het" in Dutch). */
+.mt-person-sub.is-check {
+  color: var(--text-2);
+  white-space: normal;
+}
+.mt-person-sub.is-check::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  vertical-align: 1px;
+}
 .mt-person > svg {
   width: 16px;
   height: 16px;
