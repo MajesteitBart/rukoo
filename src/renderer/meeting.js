@@ -26,7 +26,8 @@ const SCREEN_MODES = { off: 'meeting.screen.modeOff', frames: 'meeting.screen.mo
 // Frame images kept in memory for the meeting on screen; the least recently used goes first.
 const FRAME_CACHE = 60;
 // A frame's image starts loading when its row comes this close to the visible part of the transcript.
-const FRAME_MARGIN = '300px 0px';
+const FRAME_MARGIN_PX = 300;
+const FRAME_MARGIN = `${FRAME_MARGIN_PX}px 0px`;
 
 const M = {
   open: false,
@@ -968,7 +969,35 @@ function remember(meetingId, frameId, entry) {
   if (F.meeting !== meetingId) return;
   F.cache.delete(frameId);
   F.cache.set(frameId, entry);
-  while (F.cache.size > FRAME_CACHE) F.cache.delete(F.cache.keys().next().value);
+  while (F.cache.size > FRAME_CACHE) {
+    const old = F.cache.keys().next().value;
+    F.cache.delete(old);
+    releaseImage(old);
+  }
+}
+
+// An image that left the cache leaves its row too, so FRAME_CACHE bounds the images the view holds; the row is watched
+// again and loads the image when it comes back into view. A row in or near view keeps its image: dropping that one
+// would only load it again at once.
+function releaseImage(frameId) {
+  const row = $('.meeting .mt-transcript')?.querySelector(`[data-key="f:${CSS.escape(frameId)}"]`);
+  if (!row || !row.classList.contains('has-image') || nearView(row)) return;
+  const img = row.querySelector('.mt-shot img');
+  if (img) {
+    img.removeAttribute('src');
+    img.hidden = true;
+  }
+  row.classList.remove('has-image');
+  if (F.io && M.voice.status === 'connected') F.io.observe(row);
+}
+
+// Within FRAME_MARGIN_PX of the transcript's visible part, as the observer that loads images counts it.
+function nearView(row) {
+  const sc = scroller();
+  if (!sc) return false;
+  const view = sc.getBoundingClientRect();
+  const box = row.getBoundingClientRect();
+  return box.bottom > view.top - FRAME_MARGIN_PX && box.top < view.bottom + FRAME_MARGIN_PX;
 }
 
 // A frame's text: its own, or, when the snapshot left it out to stay small, what meetingFrame brought. null while

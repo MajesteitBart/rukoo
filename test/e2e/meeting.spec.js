@@ -733,8 +733,8 @@ test('frames sit between the lines at their moments, load as they come into view
   test.setTimeout(90000);
   voice.handlers['frame.get'] = ((own) =>
     function (args) {
-      // Voice removed this frame's image with the meeting's audio.
-      if (args.at === 9000) return { error: { code: 'not_available', message: "The meeting's screen media was removed." } };
+      // Voice removed this frame's image with the meeting's audio: the frame keeps its text, without an image.
+      if (args.at === 9000) return { frame: { id: 'f-000009000', at: 9000, width: 1920, height: 1080, text: 'Agenda' }, image: null };
       return own.call(this, args);
     })(voice.handlers['frame.get']);
   const id = voiceStarts({ title: 'Roadmap review', screen: 'frames' });
@@ -799,6 +799,37 @@ test('frames sit between the lines at their moments, load as they come into view
   await expect(frame(152500)).not.toHaveClass(/has-image/);
   await expect(frame(4000)).toHaveClass(/has-image/);
   await shot('frames-offline');
+});
+
+test("the view keeps at most the cached frames' images, and a frame scrolled back to loads its image again", async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Long deck', screen: 'frames' });
+  const ats = Array.from({ length: 75 }, (_, i) => 1000 + i * 4000);
+  for (const [i, at] of ats.entries()) frameAt(id, at, `Slide ${i + 1}`);
+  await openMeetings();
+  const last = ats[ats.length - 1];
+  await expect(frame(last)).toHaveClass(/has-image/);
+  // Up to the top a step at a time, so each frame comes into view and loads.
+  const scroll = view().locator('.mt-scroll');
+  for (;;) {
+    const top = await scroll.evaluate((el) => (el.scrollTop = Math.max(0, el.scrollTop - el.clientHeight / 2)));
+    await expect
+      .poll(() => win.locator('.meeting .mt-frame').evaluateAll((els, h) => els.filter((el) => { const b = el.getBoundingClientRect(); return b.bottom > 0 && b.top < h && !el.classList.contains('has-image'); }).length, 950))
+      .toBe(0);
+    if (top === 0) break;
+  }
+  await expect(frame(ats[0])).toHaveClass(/has-image/);
+  // Every frame was loaded once, but the rows keep at most the cache's images and the ones near the view.
+  expect(new Set(frameGets()).size).toBe(ats.length);
+  const holding = await win.locator('.meeting .mt-frame.has-image').count();
+  expect(holding).toBeLessThan(ats.length);
+  expect(holding).toBeLessThanOrEqual(70);
+  await expect(frame(last)).not.toHaveClass(/has-image/);
+  expect(await frame(last).locator('.mt-shot img').getAttribute('src')).toBeNull();
+  // Back at the end, the last frame asks Voice again and shows its image.
+  await scroll.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await expect(frame(last)).toHaveClass(/has-image/);
+  expect(frameGets().filter((at) => at === last)).toHaveLength(2);
 });
 
 test('marks about the screen say what happened to it, apart from the audio', async () => {
