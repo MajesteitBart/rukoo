@@ -6,6 +6,8 @@ Rukoo Mail is an open-source email client for Windows and Linux. A macOS build a
 
 The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, with the voices on the call named and the screen recorded if you want, backs meetings up encrypted to a bucket you own, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
 
+The next version, 2.3.0, adds formatted meeting notes stored as Markdown, folds repeated screen frames and gives meeting chats the right agent context. Its Hermes bridge keeps desktop tools available when another device runs an older Rukoo.
+
 ## Install
 
 Download Rukoo from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases/latest).
