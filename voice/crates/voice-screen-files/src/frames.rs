@@ -62,6 +62,17 @@ pub fn changed_fraction(a: &Thumb, b: &Thumb) -> f32 {
     changed as f32 / n as f32
 }
 
+/// The thumbnail of a frame's own picture: `read` when one was read for it, else the last
+/// frame's when the frame's dirty regions say nothing changed. A frame with changes and no
+/// thumbnail has none, so a re-offer reads its own rather than measuring on an older picture.
+pub fn own_thumb(read: Option<&Thumb>, dirty: Option<f32>, last: Option<&Thumb>) -> Option<Thumb> {
+    match read {
+        Some(thumb) => Some(thumb.clone()),
+        None if dirty == Some(0.0) => last.cloned(),
+        None => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     Skip,
@@ -601,6 +612,46 @@ mod tests {
         );
         // About one thumbnail per twenty keystrokes, as their dirty regions add up to DIRTY_SKIP.
         assert!(thumbs <= 200 / 15, "{thumbs} thumbnails read");
+    }
+
+    /// A frame keeps the last thumbnail only when nothing changed on the screen. A slide comes
+    /// within the five-a-second pace of the thumbnail before it, so it gets none, and then the
+    /// screen is still: the re-offers, a quarter second apart as in the screen process, must
+    /// read the slide's own thumbnail. With the last frame's they would measure the old slide
+    /// and never save the new one.
+    #[test]
+    fn a_reoffer_measures_the_frame_s_own_picture() {
+        let (w, h) = (100usize, 100usize);
+        let old = Thumb {
+            width: w as u32,
+            height: h as u32,
+            luma: vec![255; w * h],
+        };
+        let mut slide = old.clone();
+        slide.luma[..3_000].fill(0);
+        let mut saver = Saver::new();
+        assert_eq!(saver.offer(0, Some(&old), Some(1.0)), Decision::Save);
+        saver.saved(0, old.clone());
+        // A frame that changed nothing keeps the thumbnail of the one before it.
+        let last = own_thumb(None, Some(0.0), Some(&old));
+        assert_eq!(last.as_ref(), Some(&old));
+        assert_eq!(saver.offer(2_000, None, Some(0.0)), Decision::Skip);
+
+        // The slide changes 30% of the screen, but its thumbnail is paced out.
+        assert!(saver.needs_thumb(Some(0.3)));
+        let last = own_thumb(None, Some(0.3), last.as_ref());
+        assert_eq!(saver.offer(2_100, None, Some(0.3)), Decision::Skip);
+        // The screen process's re-offer: the frame's thumbnail, read now when it has none.
+        let mut saved = Vec::new();
+        for t in (2_350..6_000).step_by(250) {
+            let thumb = last.clone().unwrap_or_else(|| slide.clone());
+            if saver.offer(t, Some(&thumb), None) == Decision::Save {
+                saver.saved(t, thumb);
+                saved.push(t);
+            }
+        }
+        assert!(!saved.is_empty(), "the slide was never saved");
+        assert!(saved[0] <= 2_100 + SETTLE_MS + 500, "saved at {saved:?}");
     }
 
     #[test]

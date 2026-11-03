@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
 use voice_screen_files::control::{self, Request};
-use voice_screen_files::frames::{Decision, Saver, Thumb};
+use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{self, History, JournalWriter, Line, OpenError, FORMAT_VERSION};
 use voice_screen_files::monitors::{self, MonitorInfo};
@@ -880,14 +880,13 @@ impl Screen {
 
     /// `thumb` is this frame's thumbnail, when one was read.
     fn frames_frame(&mut self, frame: CapturedFrame, t: u64, thumb: Option<Thumb>) {
-        // The thumbnail of this frame's own picture: the one just read, or the last frame's when
-        // nothing on the screen changed since. A frame with small changes has none; a re-offer
-        // reads it, so a change never stays measured on an older picture.
-        let own = match &thumb {
-            Some(thumb) => Some(thumb.clone()),
-            None if frame.dirty == Some(0.0) => self.last.as_ref().and_then(|l| l.thumb.clone()),
-            None => None,
-        };
+        // A frame with small changes has no thumbnail of its own; a re-offer reads it, so a
+        // change never stays measured on an older picture.
+        let own = own_thumb(
+            thumb.as_ref(),
+            frame.dirty,
+            self.last.as_ref().and_then(|l| l.thumb.as_ref()),
+        );
         self.last = Some(Last {
             frame: frame.clone(),
             thumb: own.clone(),
