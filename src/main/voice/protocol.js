@@ -28,7 +28,7 @@ const STATES = ['recording', 'paused', 'processing', 'done', 'failed'];
 const ENDED = new Set(['processing', 'done', 'failed']);
 const WITH_REASON = new Set(['processing', 'failed']);
 const MARK_TRACKS = ['mic', 'call', 'screen'];
-const MEETING_EVENTS = new Set(['meeting.started', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed']);
+const MEETING_EVENTS = new Set(['meeting.started', 'meeting.starting', 'meeting.state', 'speaker', 'passage', 'passage.removed', 'mark', 'frame', 'meeting.removed']);
 const ERROR_CODES = ['bad_request', 'unknown_command', 'not_found', 'not_recording', 'busy', 'not_available', 'failed'];
 
 class Invalid extends Error {
@@ -95,6 +95,8 @@ function tracks(o, k = 'tracks') {
 function status(o) {
   pattern(o, 'recording', MEETING_ID, { nullable: true });
   bool(o, 'dictating');
+  // The screen a meeting gets when meeting.start leaves it out. An older Voice leaves it out.
+  if (given(o, 'screenDefault')) oneOf(o, 'screenDefault', SCREENS);
 }
 
 // ---------- messages from Rukoo ----------
@@ -131,7 +133,19 @@ const COMMAND_ARGS = {
     pattern(a, 'meeting', MEETING_ID);
     int(a, 'at', 0);
   },
-  'status.get': () => {}
+  'status.get': () => {},
+  'clip.get': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    const start = int(a, 'start', 0);
+    const end = int(a, 'end', 0);
+    check(end >= start, 'end');
+  },
+  'meeting.protected': (a) => pattern(a, 'meeting', MEETING_ID),
+  'screen.get': (a) => pattern(a, 'meeting', MEETING_ID),
+  'screen.select': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    str(a, 'monitor', { min: 1, max: 64 });
+  }
 };
 
 function command(m) {
@@ -172,6 +186,7 @@ const EVENT_DATA = {
     oneOf(d, 'startedBy', ['voice', 'rukoo']);
     check(has(d, 'context') && (d.context === null || isObj(d.context)), 'context');
   },
+  'meeting.starting': (d) => oneOf(d, 'screen', SCREENS),
   'meeting.state': (d) => {
     const state = oneOf(d, 'state', STATES);
     int(d, 'at', 0);

@@ -144,17 +144,35 @@ pub struct Recording {
 
 impl Recording {
     pub fn new(lib: &Library, tracks: &[Track]) -> Recording {
+        Recording::with_screen(lib, tracks, ScreenMode::Off)
+    }
+
+    /// A meeting that records the screen as `screen`; the test writes its journal with
+    /// [`Recording::journal`], as the screen process would.
+    pub fn with_screen(lib: &Library, tracks: &[Track], screen: ScreenMode) -> Recording {
         let dir = lib
             .create(&CreateMeeting {
                 title: "Planning".into(),
                 tracks: tracks.to_vec(),
                 sources: Default::default(),
-                screen: ScreenMode::Off,
+                screen,
                 started_by: StartedBy::Voice,
                 context: None,
             })
             .unwrap();
         Recording { dir }
+    }
+
+    /// One line of the screen journal, `screen/journal.jsonl`.
+    pub fn journal(&self, line: Value) {
+        let path = voice_screen_files::paths::journal_path(self.dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(format!("{line}\n").as_bytes()).unwrap();
     }
 
     pub fn id(&self) -> String {
@@ -241,7 +259,7 @@ pub fn assert_no_repeats(events: &[Stored]) {
         let key = match e.event.as_str() {
             "passage" => format!("passage {} {}", e.data["id"], e.data["revision"]),
             "meeting.state" => format!("state {} {}", e.data["state"], e.data["at"]),
-            "mark" | "speaker" => format!("{} {}", e.event, e.data["id"]),
+            "mark" | "speaker" | "frame" => format!("{} {}", e.event, e.data["id"]),
             other => other.to_owned(),
         };
         assert!(seen.insert(key.clone()), "sent twice: {key}");

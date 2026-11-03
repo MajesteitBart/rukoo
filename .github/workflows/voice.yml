@@ -83,6 +83,10 @@ jobs:
           }
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
       - run: cargo test --workspace --no-fail-fast
+      # The runner's capture support, H.264 encoders, OCR languages and monitors, so a log shows why the screen tests
+      # took the software encoder or skipped OCR.
+      - name: What this runner can record of the screen
+        run: cargo run --locked -q -p voice-screen -- probe
       # Rukoo's real bridge client against Voice's real bridge server (the voice-bridge `serve` example, built above).
       # It needs Node's global WebSocket (Node 22 or later) and no npm packages.
       - name: Bridge interop between Rukoo and Voice
@@ -103,6 +107,6 @@ jobs:
           persist-credentials: false
       - name: Install ALSA headers for cpal
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      # The app, the input crate and the local worker are Windows-first; the recorder, the bridge and the
-      # transcript pipeline must behave the same on Linux, so their tests run here too.
-      - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings
+      # The app, the input crate, the local worker and the screen process are Windows-first; the recorder, the bridge,
+      # the transcript pipeline and the screen folder format must behave the same on Linux, so their tests run here too.
+      - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files

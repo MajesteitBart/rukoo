@@ -25,10 +25,10 @@ FunctionEnd
 ; The uninstaller says that the data folder stays.
 !define MUI_UNCONFIRMPAGE_TEXT_TOP "$(voiceKeepsData)"
 
-; Stops the installer or the uninstaller while the recorder in the install folder runs. The recorder outlives the app
-; on purpose, so a meeting keeps recording when the app quits; replacing or deleting its exe now would fail halfway,
-; and stopping it would end the meeting. It asks the Restart Manager about that one file, as Tauri's
-; CheckIfAppIsRunning does for the app, and never stops the process.
+; Stops the installer or the uninstaller while the recorder or the screen process in the install folder runs. Both
+; outlive the app on purpose, so a meeting keeps recording when the app quits; replacing or deleting their exes now
+; would fail halfway, and stopping them would end the recording. It asks the Restart Manager about those two files, as
+; Tauri's CheckIfAppIsRunning does for the app, and never stops a process.
 !macro VOICE_REFUSE_WHILE_RECORDING message
   Push $R1
   Push $R0
@@ -41,8 +41,11 @@ FunctionEnd
   ${If} $R0 != ""
     !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\rukoo-voice-recorder.exe"
     ${If} $0 = 0
+      !insertmacro RestartManager_RegisterFile $R0 "$INSTDIR\rukoo-voice-screen.exe"
+    ${EndIf}
+    ${If} $0 = 0
       System::Call 'RSTRTMGR::RmGetList(p R0, *i .r1, *i .r2, p 0, *i .r3) i .r0'
-      ; ERROR_MORE_DATA: at least one process runs that exe.
+      ; ERROR_MORE_DATA: at least one process runs one of those exes.
       ${IfThen} $0 = 234 ${|} StrCpy $R1 1 ${|}
     ${EndIf}
     !insertmacro RestartManager_EndSession $R0

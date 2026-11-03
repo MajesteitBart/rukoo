@@ -11,24 +11,28 @@
 //! - `{"op":"script"}` stores a finished meeting: started, speakers, passages, a user mark, a gap
 //!   mark, a passage's second revision, a removed passage, processing and done.
 //! - `{"op":"passage","meeting":"m-…","track":"mic","start":1000,"text":"…"}` adds a passage.
+//! - `{"op":"frame","meeting":"m-…","at":412000,"text":"…"}` adds a frame, for `meeting.get`'s
+//!   `frames`.
 //! - `{"op":"remove","meeting":"m-…"}` deletes a meeting's events, as Voice does.
 //! - `{"op":"restart"}` stops the server and starts it again: new port and token, same events.
 //! - `{"op":"quit"}`, or the end of stdin, stops it.
 //!
 //! Rukoo's commands reach a small scripted Voice that starts, pauses, marks and stops meetings by
-//! appending the events a real one would. It records nothing.
+//! appending the events a real one would. It records nothing, so like a Voice that can't record
+//! the screen on its computer it starts every meeting with `screen: off`, and `frame.get`,
+//! `clip.get`, `screen.get` and `screen.select` answer `not_available`.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use voice_bridge::{
     BridgeServer, ControlError, EventLog, Handle, MeetingControl, MeetingSummary, StartArgs, Status,
 };
-use voice_protocol::{events, passage_id, MeetingId, MeetingState};
+use voice_protocol::{events, passage_id, MeetingId, MeetingState, ScreenMode};
 
 const VERSION: &str = "0.1.0";
 
@@ -58,6 +62,7 @@ fn main() {
         let answer = match request["op"].as_str().unwrap_or("") {
             "script" => voice.script(),
             "passage" => voice.passage(&request),
+            "frame" => voice.frame_event(&request),
             "remove" => request["meeting"]
                 .as_str()
                 .ok_or("meeting is missing".to_owned())
@@ -279,6 +284,28 @@ impl ScriptedVoice {
         Ok(json!({"seq": seq}))
     }
 
+    fn frame_event(&self, request: &Value) -> Result<Value, String> {
+        let meeting = request["meeting"].as_str().ok_or("meeting is missing")?;
+        let at = request["at"].as_u64().ok_or("at is missing")?;
+        let text = request["text"].as_str().unwrap_or("");
+        let data = json!({"id": format!("f-{at:09}"), "at": at, "width": 1920, "height": 1080, "text": text});
+        let seq = self
+            .log
+            .append(events::FRAME, Some(meeting), data)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({"seq": seq}))
+    }
+
+    /// The answer to a screen command: `not_found` for a meeting this Voice doesn't have, else
+    /// `not_available`, because every meeting here records with `screen: off`.
+    fn no_screen(&self, id: &str) -> ControlError {
+        if self.meetings.lock().unwrap().contains_key(id) {
+            ControlError::not_available("The meeting didn't record the screen.")
+        } else {
+            ControlError::not_found(format!("No meeting {id}."))
+        }
+    }
+
     fn remove(&self, id: &str) -> Result<Value, String> {
         self.meetings.lock().unwrap().remove(id);
         let seq = self.log.remove_meeting(id).map_err(|e| e.to_string())?;
@@ -432,6 +459,7 @@ impl MeetingControl for ScriptedVoice {
         let mut speakers: Vec<(String, Value)> = Vec::new();
         let mut passages: BTreeMap<String, Value> = BTreeMap::new();
         let mut marks: BTreeMap<String, Value> = BTreeMap::new();
+        let mut frames: BTreeMap<String, Value> = BTreeMap::new();
         let mut state = json!({});
         for event in stored {
             let key = event.data["id"].as_str().unwrap_or("").to_owned();
@@ -451,6 +479,9 @@ impl MeetingControl for ScriptedVoice {
                 events::MARK => {
                     marks.insert(key, event.data);
                 }
+                events::FRAME => {
+                    frames.insert(key, event.data);
+                }
                 _ => {}
             }
         }
@@ -463,22 +494,51 @@ impl MeetingControl for ScriptedVoice {
         }
         let mut passages: Vec<Value> = passages.into_values().collect();
         passages.sort_by_key(|p| p["start"].as_u64());
+        let mut frames: Vec<Value> = frames.into_values().collect();
+        frames.sort_by_key(|f| f["at"].as_u64());
         Ok(json!({
             "meeting": meeting,
             "speakers": speakers.into_iter().map(|(_, s)| s).collect::<Vec<_>>(),
             "passages": passages,
             "marks": marks.into_values().collect::<Vec<_>>(),
+            "frames": frames,
             "head": head,
         }))
     }
 
     fn frame(&self, id: &str, _at: u64) -> Result<Value, ControlError> {
-        if !self.meetings.lock().unwrap().contains_key(id) {
-            return Err(ControlError::not_found(format!("No meeting {id}.")));
+        Err(self.no_screen(id))
+    }
+
+    fn clip(
+        &self,
+        id: &str,
+        _start: u64,
+        _end: u64,
+        _deadline: Instant,
+    ) -> Result<Value, ControlError> {
+        Err(self.no_screen(id))
+    }
+
+    fn protected(&self, id: &str) -> Result<(), ControlError> {
+        if self.meetings.lock().unwrap().contains_key(id) {
+            Ok(())
+        } else {
+            Err(ControlError::not_found(format!("No meeting {id}.")))
         }
-        Err(ControlError::not_available(
-            "Voice 0.1 doesn't record the screen.",
-        ))
+    }
+
+    fn screen(&self, id: &str, _deadline: Instant) -> Result<Value, ControlError> {
+        Err(self.no_screen(id))
+    }
+
+    fn select_monitor(
+        &self,
+        id: &str,
+        _monitor: &str,
+        _deadline: Instant,
+    ) -> Result<String, ControlError> {
+        Err(self.no_screen(id))
     }
 
     fn status(&self) -> Status {
@@ -490,6 +550,7 @@ impl MeetingControl for ScriptedVoice {
                 .as_deref()
                 .and_then(MeetingId::parse),
             dictating: false,
+            screen_default: Some(ScreenMode::Off),
         }
     }
 }

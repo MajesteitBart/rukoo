@@ -175,16 +175,36 @@
     "description": "Pill: the microphone works again after \"Microphone lost\". voice/ui/pill.js (viewOf)."
   },
   "pill.videoDropped.disk": {
-    "message": "Screen stopped: disk full",
-    "description": "Pill: Voice stopped recording the screen to keep the audio, because the disk is full. Not used in Voice 0.1. voice/ui/pill.js (viewOf)."
+    "message": "Video stopped: disk almost full",
+    "description": "Pill notice: Voice stopped the screen video to keep recording audio, because the disk is almost full; the screen frames go on. voice/ui/pill.js (meetingView)."
   },
   "pill.videoDropped.encoder": {
+    "message": "Video stopped: no encoder",
+    "description": "Pill notice: Voice records the screen as frames only, because no video encoder on this computer worked. voice/ui/pill.js (meetingView)."
+  },
+  "pill.videoDropped.device": {
+    "message": "Video stopped: graphics card",
+    "description": "Pill notice: Voice stopped the screen video because the graphics device was reset and didn't come back with the video support the encoder needs; the screen frames go on, unless \"Screen recording stopped\" follows. voice/ui/pill.js (meetingView)."
+  },
+  "pill.framesDropped.disk": {
+    "message": "Screen stopped: disk almost full",
+    "description": "Pill notice: Voice stopped recording the screen, frames and video, to keep recording audio, because the disk is almost full. voice/ui/pill.js (meetingView)."
+  },
+  "pill.screenFailed": {
     "message": "Screen recording stopped",
-    "description": "Pill: Voice stopped recording the screen because the video encoder failed. Not used in Voice 0.1. voice/ui/pill.js (viewOf)."
+    "description": "Pill notice: Voice's screen recorder stopped five times in a row, so Voice no longer records the screen in this meeting; the audio goes on. voice/ui/pill.js (meetingView)."
+  },
+  "pill.screenMoved": {
+    "message": "Screen: {name}",
+    "description": "Pill notice: Voice now records another monitor. {name} is the monitor's name from Windows, such as \"DELL U2720Q\". voice/ui/pill.js (meetingView)."
   },
   "pill.stopButton": {
     "message": "Stop recording",
     "description": "Pill: accessible name of the stop button. The app also uses it as the title of the native window over the button. voice/ui/pill.js (renderButton)."
+  },
+  "pill.screenButton": {
+    "message": "Record another monitor",
+    "description": "Pill: accessible name of the monitor button left of the stop button, which moves the screen recording to the next monitor. The app also uses it as the title of the native window over the button. voice/ui/pill.js (setScreen)."
   },
   "pill.dev": {
     "message": "Dev",
@@ -881,19 +901,31 @@
   },
   "settings.meetings.screen": {
     "message": "Screen recording",
-    "description": "Settings > Meetings: segmented control for what Voice records of the screen. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+    "description": "Settings > Meetings: segmented control for what Voice records of the screen in a new meeting; Rukoo can choose per meeting. voice/ui/settings.js (mainPage)."
   },
   "settings.meetings.screenHelp": {
     "message": "What Voice records of your screen in a new meeting. Change it per meeting in Rukoo.",
-    "description": "Settings > Meetings: description of Screen recording. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+    "description": "Settings > Meetings: description of Screen recording. voice/ui/settings.js (mainPage)."
   },
   "settings.meetings.screenFrames": {
     "message": "Frames",
-    "description": "Settings > Meetings > Screen recording: segment for still frames when the screen changes. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+    "description": "Settings > Meetings > Screen recording: segment for still frames, saved when the screen changes, with the text read from them. voice/ui/settings.js (mainPage)."
   },
   "settings.meetings.screenVideo": {
     "message": "Video",
-    "description": "Settings > Meetings > Screen recording: segment for full video. Hidden in Voice 0.1. voice/ui/settings.js (mainPage)."
+    "description": "Settings > Meetings > Screen recording: segment for a video of the screen, with the frames. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenNoEncoder": {
+    "message": "This computer has no hardware video encoder, so Video records frames only.",
+    "description": "Settings > Meetings: note under Screen recording when Voice found no hardware video encoder on this computer. voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenNoOcr": {
+    "message": "Windows has no text recognition language installed, so frames are saved without their text.",
+    "description": "Settings > Meetings: note under Screen recording when Windows has no language for text recognition (OCR). voice/ui/settings.js (mainPage)."
+  },
+  "settings.meetings.screenUnavailable": {
+    "message": "Screen recording needs Windows 10 version 2004 or later.",
+    "description": "Settings > Meetings: note under Screen recording, which is then disabled, when this Windows can't capture the screen. voice/ui/settings.js (mainPage)."
   },
   "settings.meetings.transcription": {
     "message": "Transcription",
@@ -1117,7 +1149,7 @@
   },
   "settings.storage.disk": {
     "message": "When the disk fills up, Voice drops the video first, then the frames, and never the audio.",
-    "description": "Settings > Storage: paragraph about a full disk. Hidden in Voice 0.1, which records no screen. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: paragraph about what Voice stops first when the disk fills up during a meeting that records the screen. voice/ui/settings.js (storagePage)."
   },
   "settings.sync.title": {
     "message": "Sync to your bucket",

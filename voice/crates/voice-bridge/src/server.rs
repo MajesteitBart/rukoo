@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +26,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message as Frame};
 use tokio_tungstenite::WebSocketStream;
 use voice_protocol::{
     close, new_token, replay_plan, validate_incoming, Command, CommandBody, ErrorCode, Hello,
-    MeetingId, Message, Object, Refusal, Reply, ReplyError, Side, Welcome, BRIDGE_PATH,
+    MeetingId, Message, Object, Refusal, Reply, ReplyError, Side, Welcome, BRIDGE_PATH, CLIP_WAIT,
     HELLO_TIMEOUT, MAX_CLIENTS, MAX_ID_CHARS, MAX_RUKOO_MESSAGE, MAX_VOICE_MESSAGE, MIN_PROTOCOL,
     PING_INTERVAL, PONG_TIMEOUT, PROTOCOL,
 };
@@ -87,6 +87,10 @@ pub struct Client {
     /// The highest sequence number the client has: sent on this connection, or `after` before
     /// the replay sent anything.
     pub sent: u64,
+    /// Its `welcome` went out, so every event appended from now on reaches it after the replay,
+    /// as a live event. An event appended between the `hello` and the `welcome` can fall inside
+    /// the replay, which Rukoo reads as history.
+    pub welcomed: bool,
     /// When it connected, in ms since the epoch.
     pub connected_at: u64,
 }
@@ -127,6 +131,7 @@ struct Registry {
 struct Entry {
     client: Client,
     sent: AtomicU64,
+    welcomed: AtomicBool,
 }
 
 /// Removes a connection from the registry when its task ends, also when it is aborted.
@@ -290,6 +295,7 @@ impl Handle {
                 .values()
                 .map(|entry| Client {
                     sent: entry.sent.load(Ordering::SeqCst),
+                    welcomed: entry.welcomed.load(Ordering::SeqCst),
                     ..entry.client.clone()
                 })
                 .collect(),
@@ -358,9 +364,11 @@ impl Shared {
                 protocol: hello.protocol,
                 after: hello.after,
                 sent: hello.after,
+                welcomed: false,
                 connected_at: now_ms(),
             },
             sent: AtomicU64::new(hello.after),
+            welcomed: AtomicBool::new(false),
         });
         let mut registry = lock(&self.registry);
         registry.last_admitted_at = Some(entry.client.connected_at);
@@ -662,6 +670,7 @@ impl Session {
             status,
         };
         self.send(Message::Welcome(welcome).to_json()).await?;
+        self.client.welcomed.store(true, Ordering::SeqCst);
         self.reached(from.saturating_sub(1));
         self.catch_up().await?;
 
@@ -701,7 +710,10 @@ impl Session {
                 _ = self.quit.changed() => return Ok(End::Quit),
                 frame = source.next() => match frame {
                     Some(Ok(Frame::Text(text))) => {
-                        if let Some(job) = read_command(&text) {
+                        // Stamped before the job waits in the queue, so a command's deadline
+                        // counts the time it spends behind earlier ones.
+                        let received = std::time::Instant::now();
+                        if let Some(job) = read_command(&text, received) {
                             jobs.send(job).await.map_err(|_| End::Dropped)?;
                         }
                     }
@@ -788,15 +800,16 @@ where
 /// One entry in a connection's command queue. Answers to bad commands queue too, so every
 /// reply leaves in the order its command came in.
 enum Job {
-    Run(Command),
+    /// A command and the moment the server read its frame.
+    Run(Command, std::time::Instant),
     Answer(Reply),
 }
 
-/// The job for a text frame, or `None` when there is nothing to answer.
-fn read_command(text: &str) -> Option<Job> {
+/// The job for a text frame read at `received`, or `None` when there is nothing to answer.
+fn read_command(text: &str, received: std::time::Instant) -> Option<Job> {
     let value: Value = serde_json::from_str(text).ok()?;
     match validate_incoming(Side::Rukoo, &value) {
-        Ok(Message::Command(command)) => Some(Job::Run(command)),
+        Ok(Message::Command(command)) => Some(Job::Run(command, received)),
         // A second hello.
         Ok(_) => None,
         Err(invalid) => {
@@ -824,9 +837,10 @@ async fn run_commands(
     while let Some(job) = queue.recv().await {
         let reply = match job {
             Job::Answer(reply) => reply,
-            Job::Run(Command { id, body }) => {
+            Job::Run(Command { id, body }, received) => {
                 let control = control.clone();
-                match tokio::task::spawn_blocking(move || dispatch(control.as_ref(), body)).await {
+                let run = move || dispatch(control.as_ref(), body, received);
+                match tokio::task::spawn_blocking(run).await {
                     Ok(Ok(result)) => Reply::ok(id, result),
                     Ok(Err(error)) => Reply::error(id, reply_error(error)),
                     Err(_) => Reply::error(
@@ -845,7 +859,15 @@ async fn run_commands(
     }
 }
 
-fn dispatch(control: &dyn MeetingControl, body: CommandBody) -> Result<Object, ControlError> {
+/// Runs one command. `received` is when the server read it: `clip.get`, `screen.get` and
+/// `screen.select`, the commands that wait for a cut or the screen recorder, answer by
+/// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after that, however long they waited in the queue.
+fn dispatch(
+    control: &dyn MeetingControl,
+    body: CommandBody,
+    received: std::time::Instant,
+) -> Result<Object, ControlError> {
+    let deadline = received + CLIP_WAIT;
     let result = match body {
         CommandBody::MeetingStart(args) => json!({ "meeting": control.start(args)? }),
         CommandBody::MeetingStop { meeting } => {
@@ -871,6 +893,19 @@ fn dispatch(control: &dyn MeetingControl, body: CommandBody) -> Result<Object, C
         CommandBody::MeetingGet { meeting } => control.get(meeting.as_str())?,
         CommandBody::FrameGet { meeting, at } => control.frame(meeting.as_str(), at)?,
         CommandBody::StatusGet => json!(control.status()),
+        CommandBody::ClipGet {
+            meeting,
+            start,
+            end,
+        } => control.clip(meeting.as_str(), start, end, deadline)?,
+        CommandBody::MeetingProtected { meeting } => {
+            control.protected(meeting.as_str())?;
+            json!({})
+        }
+        CommandBody::ScreenGet { meeting } => control.screen(meeting.as_str(), deadline)?,
+        CommandBody::ScreenSelect { meeting, monitor } => {
+            json!({ "monitor": control.select_monitor(meeting.as_str(), &monitor, deadline)? })
+        }
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(
                 ErrorCode::UnknownCommand,
@@ -925,16 +960,32 @@ mod tests {
 
     #[test]
     fn bad_commands_with_a_readable_id_get_bad_request() {
-        let Some(Job::Answer(reply)) =
-            read_command(r#"{"type":"command","id":"c-1","command":"meeting.stop","args":{}}"#)
-        else {
+        let now = std::time::Instant::now();
+        let Some(Job::Answer(reply)) = read_command(
+            r#"{"type":"command","id":"c-1","command":"meeting.stop","args":{}}"#,
+            now,
+        ) else {
             panic!("no answer");
         };
         assert_eq!(reply.id, "c-1");
         assert_eq!(reply.outcome.unwrap_err().code, "bad_request");
-        assert!(read_command(r#"{"type":"command","command":"meeting.stop"}"#).is_none());
-        assert!(read_command("not json").is_none());
-        assert!(read_command(r#"{"type":"greeting"}"#).is_none());
+        assert!(read_command(r#"{"type":"command","command":"meeting.stop"}"#, now).is_none());
+        assert!(read_command("not json", now).is_none());
+        assert!(read_command(r#"{"type":"greeting"}"#, now).is_none());
+    }
+
+    #[test]
+    fn a_command_keeps_the_moment_it_was_read() {
+        let now = std::time::Instant::now();
+        let received = now.checked_sub(Duration::from_secs(3)).unwrap_or(now);
+        let Some(Job::Run(command, stamped)) = read_command(
+            r#"{"type":"command","id":"c-1","command":"status.get","args":{}}"#,
+            received,
+        ) else {
+            panic!("no command");
+        };
+        assert_eq!(command.id, "c-1");
+        assert_eq!(stamped, received);
     }
 
     #[test]

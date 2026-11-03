@@ -30,8 +30,23 @@ const NOTICES = new Set([
   'pill.micLost',
   'pill.micBack',
   'pill.videoDropped.disk',
-  'pill.videoDropped.encoder'
+  'pill.videoDropped.encoder',
+  'pill.videoDropped.device',
+  'pill.framesDropped.disk',
+  'pill.screenFailed',
+  'pill.screenMoved'
 ]);
+// The screen notices of a meeting, with the screen glyph's tone: orange when Voice stopped recording part of the
+// screen, grey when it only moved to another monitor.
+const SCREEN_NOTICES = {
+  'pill.videoDropped.disk': 'orange',
+  'pill.videoDropped.encoder': 'orange',
+  'pill.videoDropped.device': 'orange',
+  'pill.framesDropped.disk': 'orange',
+  'pill.screenFailed': 'orange',
+  'pill.screenMoved': 'text2'
+};
+const SCREENS = new Set(['off', 'frames', 'video']);
 
 const LABEL_MAX = 220;
 const EXIT_MS = 140;
@@ -78,6 +93,9 @@ function isSnapshot(s) {
     const m = s.meeting;
     if (!isObject(m) || !MEETING_STATES.has(m.state) || !Number.isFinite(m.atMs)) return false;
     for (const flag of ['compact', 'confirmStop', 'stopEnabled', 'rukooConnected']) if (typeof m[flag] !== 'boolean') return false;
+    // An app from before screen recording sends neither.
+    if (m.screen != null && !SCREENS.has(m.screen)) return false;
+    if (m.screenSwitch != null && typeof m.screenSwitch !== 'boolean') return false;
   }
   return true;
 }
@@ -119,9 +137,15 @@ function noticeOf(s) {
   return key && NOTICES.has(key) ? key : null;
 }
 
+// A notice's own values, such as the monitor's name in pill.screenMoved. They reach the page only as textContent.
+function noticeArgs(s) {
+  const args = isObject(s.notice?.args) ? s.notice.args : {};
+  return Object.fromEntries(Object.entries(args).filter(([, value]) => typeof value === 'string' || Number.isFinite(value)));
+}
+
 function viewOf(s) {
   const notice = noticeOf(s);
-  const view = { indicator: { kind: 'none' }, label: null, time: null, stop: null, error: false, dev: s.dev === true };
+  const view = { indicator: { kind: 'none' }, label: null, time: null, screen: null, stop: null, error: false, dev: s.dev === true };
   switch (s.phase) {
     case 'arming':
       view.indicator = bars('ripple', 'muted');
@@ -166,13 +190,13 @@ function viewOf(s) {
       view.error = true;
       break;
     case 'meeting':
-      meetingView(s.meeting, notice, view);
+      meetingView(s.meeting, notice, view, noticeArgs(s));
       break;
   }
   return view;
 }
 
-function meetingView(m, notice, view) {
+function meetingView(m, notice, view, args) {
   if (m.state === 'processing') {
     view.indicator = { kind: 'spinner' };
     view.label = text(t('pill.meeting.saving'));
@@ -187,15 +211,17 @@ function meetingView(m, notice, view) {
   const paused = m.state === 'paused';
   view.time = { paused };
   view.stop = m.stopEnabled ? { confirm: m.confirmStop } : null;
+  // The monitor button, while the meeting records the screen on a computer with more than one monitor.
+  view.screen = m.screenSwitch === true ? {} : null;
   if (notice === 'pill.micLost') {
     view.indicator = glyph('mic', 14, 'orange');
     view.label = text(t('pill.micLost'));
   } else if (notice === 'pill.micBack') {
     view.indicator = glyph('mic', 14, 'green');
     view.label = text(t('pill.micBack'));
-  } else if (notice === 'pill.videoDropped.disk' || notice === 'pill.videoDropped.encoder') {
-    view.indicator = glyph('screen', 14, 'orange');
-    view.label = text(t(notice));
+  } else if (SCREEN_NOTICES[notice]) {
+    view.indicator = glyph('screen', 14, SCREEN_NOTICES[notice]);
+    view.label = text(t(notice, notice === 'pill.screenMoved' ? { name: String(args.name ?? '') } : args));
   } else if (paused) {
     // Paused never compacts, so a paused meeting isn't forgotten.
     view.indicator = glyph('pause', 12, 'text2');
@@ -237,8 +263,10 @@ function render() {
   setTime(view.time);
   pill.dev.hidden = !view.dev;
   pill.dev.textContent = t('pill.dev');
+  setScreen(view.screen);
   setStop(view.stop, first);
   pill.root.classList.toggle('has-stop', !!view.stop);
+  pill.root.classList.toggle('has-screen', !!view.screen);
   syncLevelLoop();
   queueLayout();
 }
@@ -254,20 +282,26 @@ function create() {
   time.hidden = true;
   const dev = el('span', 'dev');
   dev.hidden = true;
+  // Like the stop button, a picture of a button: the app puts a native window over it for the clicks.
+  const screen = el('span', 'screen-btn');
+  screen.setAttribute('role', 'img');
+  screen.innerHTML = pillIcon('monitor', 15);
+  screen.hidden = true;
   const stop = el('span', 'stop');
   stop.setAttribute('role', 'img');
   stop.innerHTML = `<span class="stop-ic">${pillIcon('stop', 10)}</span>`;
   const stopLabel = el('span', 'stop-label');
   stop.append(stopLabel);
   stop.hidden = true;
-  root.append(ind, slot, time, dev, stop);
+  root.append(ind, slot, time, dev, screen, stop);
   root.addEventListener('animationend', queueLayout);
   root.addEventListener('transitionend', queueLayout);
   stage.replaceChildren(root);
   const observer = new ResizeObserver(queueLayout);
   observer.observe(root);
   observer.observe(stop);
-  return { root, ind, slot, time, dev, stop, stopLabel, observer, indicatorKey: '', labelKey: null, leaving: false, timer: 0, view: null };
+  observer.observe(screen);
+  return { root, ind, slot, time, dev, screen, stop, stopLabel, observer, indicatorKey: '', labelKey: null, leaving: false, timer: 0, view: null };
 }
 
 function hide() {
@@ -372,6 +406,13 @@ function remeasure() {
     pill.slot.style.width = `${width}px`;
   }
   if (pill.view.stop?.confirm) pill.stop.style.width = `${measure(t('pill.meeting.confirmStop')) + STOP_PADDING}px`;
+}
+
+function setScreen(screen) {
+  const node = pill.screen;
+  node.hidden = !screen;
+  node.setAttribute('aria-label', t('pill.screenButton'));
+  if (!screen) node.classList.remove('hover', 'pressed');
 }
 
 function setStop(stop, first) {
@@ -530,13 +571,14 @@ function box(node) {
   return { x, y, width: Math.ceil(r.right) - x, height: Math.ceil(r.bottom) - y };
 }
 
-// The app puts its native stop window over `button`, in CSS pixels from the window's top left. null means no
-// button is drawn, so the stop window hides.
+// The app puts its native stop window over `button` and its monitor window over `screenButton`, in CSS pixels from
+// the window's top left. null means that button isn't drawn, so its window hides.
 function reportLayout() {
   const live = pill && !pill.leaving;
   const layout = {
     pill: live ? box(pill.root) : null,
-    button: live && pill.view?.stop ? box(pill.stop) : null
+    button: live && pill.view?.stop ? box(pill.stop) : null,
+    screenButton: live && pill.view?.screen ? box(pill.screen) : null
   };
   const key = JSON.stringify(layout);
   if (key === lastLayout) return;
@@ -556,10 +598,12 @@ async function start() {
   await listen('pill://level', (payload) => {
     if (payload && Number.isFinite(payload.level)) level = Math.max(0, Math.min(1, payload.level));
   });
+  // target names the native window the pointer is over; an app from before the monitor button sends none.
   await listen('pill://pointer', (payload) => {
     if (!pill || !payload) return;
-    pill.stop.classList.toggle('hover', payload.hover === true);
-    pill.stop.classList.toggle('pressed', payload.pressed === true);
+    const node = payload.target === 'screen' ? pill.screen : pill.stop;
+    node.classList.toggle('hover', payload.hover === true);
+    node.classList.toggle('pressed', payload.pressed === true);
   });
   apply(await invoke('pill_snapshot'));
   // A safety net for a missed event; the app's ack watchdog covers the paint itself.

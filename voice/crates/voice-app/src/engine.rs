@@ -28,15 +28,20 @@ pub fn options(
         .ok()
         .and_then(|exe| exe.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    let test_sources = dev_mode
-        .then(|| std::env::var("RUKOO_VOICE_TEST_SOURCES").ok())
-        .flatten()
-        .filter(|sources| !sources.is_empty());
+    // Test switches reach only a development copy.
+    let dev_var = |name: &str| {
+        dev_mode
+            .then(|| std::env::var(name).ok())
+            .flatten()
+            .filter(|value| !value.is_empty())
+    };
     EngineOptions {
         data_dir,
         dev_mode,
         exe_dir,
-        test_sources,
+        test_sources: dev_var("RUKOO_VOICE_TEST_SOURCES"),
+        test_screen: dev_var("RUKOO_VOICE_TEST_SCREEN"),
+        test_monitor: dev_var("RUKOO_VOICE_TEST_MONITOR"),
         import_ownkey_from,
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
@@ -103,6 +108,8 @@ mod tests {
     fn test_sources_only_reach_a_development_engine() {
         let opts = options(PathBuf::from("x"), false, None);
         assert_eq!(opts.test_sources, None);
+        assert_eq!(opts.test_screen, None);
+        assert_eq!(opts.test_monitor, None);
         assert!(!opts.dev_mode);
         assert_eq!(opts.version, env!("CARGO_PKG_VERSION"));
     }

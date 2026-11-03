@@ -1,6 +1,6 @@
 # Third-party notices for Rukoo Voice
 
-Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its installer and portable zip hold four programs: `rukoo-voice.exe` (the app), `rukoo-voice-recorder.exe` (the meeting recorder), `rukoo-voice-local.exe` (the local speech worker) and `rukoo-voice-speakers.exe` (the speaker worker), plus the speaker label runtime in `nemo_speech\`. This file lists the work of others that is built into them, and ships next to them.
+Rukoo Voice is released under the MIT license, Copyright (c) 2026 Bart van der Meeren. Its installer and portable zip hold five programs: `rukoo-voice.exe` (the app), `rukoo-voice-recorder.exe` (the meeting recorder), `rukoo-voice-local.exe` (the local speech worker), `rukoo-voice-speakers.exe` (the speaker worker) and `rukoo-voice-screen.exe` (the screen recorder), plus the speaker label runtime in `nemo_speech\`. This file lists the work of others that is built into them, and ships next to them.
 
 `THIRD_PARTY_LICENSES.txt`, which ships alongside, holds the license files of every Rust crate listed below as they appear in each crate's source package, and the license files in `nemo_speech\licenses\`. `voice/scripts/package.ps1` writes it when it builds the installer.
 
@@ -48,7 +48,7 @@ SOFTWARE.
 
 ## Speaker labels: nemo_speech\ and rukoo-voice-speakers.exe
 
-The speaker worker, `rukoo-voice-speakers.exe`, is a Rust program like the other three; its crates are in the list below. It loads the speaker label runtime from the `nemo_speech\` folder next to it. Voice builds that folder from [NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) at commit `97a15afa5caa9bce5baaa86c1184103877af4101`, with the CPU backend and no changes to the source (`voice/nemo-runtime/`). `nemo_speech\runtime.json` names the build and the SHA-256 of every file. The folder holds:
+The speaker worker, `rukoo-voice-speakers.exe`, is a Rust program like the other four; its crates are in the list below. It loads the speaker label runtime from the `nemo_speech\` folder next to it. Voice builds that folder from [NVIDIA NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) at commit `97a15afa5caa9bce5baaa86c1184103877af4101`, with the CPU backend and no changes to the source (`voice/nemo-runtime/`). `nemo_speech\runtime.json` names the build and the SHA-256 of every file. The folder holds:
 
 - NeMo-Speech.cpp, in `nemo_speech_asr_c.dll` and `nemo_speech_asr.dll`: Apache License 2.0, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Parts of its runtime derive from [parakeet.cpp](https://github.com/jason-ni/parakeet.cpp), Copyright (c) 2025 Jason Ni, under the MIT license. Its `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES.md` are in `nemo_speech\licenses\`.
 - [ggml](https://github.com/ggml-org/ggml), in `ggml.dll`, `ggml-base.dll` and `ggml-cpu.dll`: MIT license, Copyright (c) 2023-2026 The ggml authors. The license text is in NeMo-Speech.cpp's `THIRD_PARTY_NOTICES.md`.
@@ -102,9 +102,13 @@ Speaker labels use NVIDIA's Nemotron 3 Diarization weights ([nvidia/Nemotron-3-D
 - [Inter](https://github.com/rsms/inter), the typeface of the pill and Settings: SIL Open Font License 1.1, Copyright 2016 The Inter Project Authors. The app carries the font together with its license (`voice/ui/fonts/Inter-LICENSE.txt`), and `THIRD_PARTY_LICENSES.txt` repeats that license.
 - The Rukoo Voice icon is drawn from Rukoo's own pigeon, which is part of this repository.
 
+## The screen recorder: rukoo-voice-screen.exe
+
+The screen recorder uses Windows' own Windows.Graphics.Capture, Media Foundation (for the H.264 encoder and the MP4 files) and Windows.Media.Ocr, which come with Windows. It ships none of their code.
+
 ## Rust crates
 
-The Rust crates built into the four programs, by license. The list covers the normal dependencies for Windows x64 and leaves out the procedural macros, which run only while compiling, and Voice's own crates.
+The Rust crates built into the five programs, by license. The list covers the normal dependencies for Windows x64 and leaves out the procedural macros, which run only while compiling, and Voice's own crates.
 
 <!-- rust-crates:start: written by voice/scripts/package.ps1 -UpdateNotices; package.ps1 stops when this list is out of date -->
 

@@ -165,7 +165,7 @@
     {
       "name": "command from a newer Rukoo",
       "from": "rukoo",
-      "message": { "type": "command", "id": "c-23", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "from": 1000, "to": 5000 } }
+      "message": { "type": "command", "id": "c-23", "command": "example.unknown", "args": { "meeting": "m-20261030-171203-4f2a", "from": 1000, "to": 5000 } }
     },
     {
       "name": "reply with a result",
@@ -211,6 +211,126 @@
       "name": "status request with null args, which count as {}",
       "from": "rukoo",
       "message": { "type": "command", "id": "c-34", "command": "status.get", "args": null }
+    },
+    {
+      "name": "status event with the screen default",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1069, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "screenDefault": "frames" } }
+    },
+    {
+      "name": "welcome with the screen default",
+      "from": "voice",
+      "message": { "type": "welcome", "protocol": 1, "voiceVersion": "0.1.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "head": 1052, "oldest": 1, "replay": "partial", "status": { "recording": null, "dictating": false, "screenDefault": "video" } }
+    },
+    {
+      "name": "meeting started from Voice with frames",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1070, "event": "meeting.started", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003000000, "data": { "title": "Meeting", "startedAt": 1793003000000, "tracks": ["mic", "call"], "screen": "frames", "startedBy": "voice", "context": null } }
+    },
+    {
+      "name": "meeting started from Rukoo with video",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1080, "event": "meeting.started", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793006600000, "data": { "title": "Design review", "startedAt": 1793006600000, "tracks": ["mic", "call"], "screen": "video", "startedBy": "rukoo", "context": { "calendarEvent": "abc123" } } }
+    },
+    {
+      "name": "meeting starting to record the screen",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1071, "event": "meeting.starting", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003000400, "data": { "screen": "frames" } }
+    },
+    {
+      "name": "frame without text",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1072, "event": "frame", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003414000, "data": { "id": "f-000413500", "at": 413500, "width": 2560, "height": 1440, "text": "" } }
+    },
+    {
+      "name": "video dropped for a full disk",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1081, "event": "mark", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793008400000, "data": { "id": "dropped-video", "kind": "video_dropped", "at": 1800000, "until": null, "track": "screen", "detail": "disk", "label": null } }
+    },
+    {
+      "name": "frames dropped for a full disk",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1082, "event": "mark", "meeting": "m-20261030-190000-0c2d", "createdAt": 1793009000000, "data": { "id": "dropped-frames", "kind": "dropped", "at": 2400000, "until": null, "track": "screen", "detail": "disk", "label": null } }
+    },
+    {
+      "name": "video dropped without a hardware encoder",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1073, "event": "mark", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003001000, "data": { "id": "dropped-video", "kind": "video_dropped", "at": 900, "until": null, "track": "screen", "detail": "encoder", "label": null } }
+    },
+    {
+      "name": "screen moved to another monitor",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1074, "event": "mark", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003615000, "data": { "id": "monitor-000615000", "kind": "monitor", "at": 615000, "until": null, "track": "screen", "detail": "user", "label": "DELL U2720Q" } }
+    },
+    {
+      "name": "no frames while the computer was locked",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1075, "event": "mark", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003760000, "data": { "id": "gap-screen-000700000", "kind": "screen_gap", "at": 700000, "until": 760000, "track": "screen", "detail": "locked", "label": null } }
+    },
+    {
+      "name": "no frames while the graphics device restarted",
+      "from": "voice",
+      "message": { "type": "event", "seq": 1076, "event": "mark", "meeting": "m-20261030-180000-0a1b", "createdAt": 1793003803000, "data": { "id": "gap-screen-000800000", "kind": "screen_gap", "at": 800000, "until": 803000, "track": "screen", "detail": "device", "label": null } }
+    },
+    {
+      "name": "start a meeting with video",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-35", "command": "meeting.start", "args": { "title": "Design review", "screen": "video" } }
+    },
+    {
+      "name": "frame at the moment of a frame",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-36", "command": "frame.get", "args": { "meeting": "m-20261030-171203-4f2a", "at": 412000 } }
+    },
+    {
+      "name": "clip between two times",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-37", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "start": 60000, "end": 75000 } }
+    },
+    {
+      "name": "clip of one moment",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-38", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "start": 412000, "end": 412000 } }
+    },
+    {
+      "name": "windows protected",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-39", "command": "meeting.protected", "args": { "meeting": "m-20261030-180000-0a1b" } }
+    },
+    {
+      "name": "ask about the screen recording",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-40", "command": "screen.get", "args": { "meeting": "m-20261030-171203-4f2a" } }
+    },
+    {
+      "name": "record another monitor",
+      "from": "rukoo",
+      "message": { "type": "command", "id": "c-41", "command": "screen.select", "args": { "meeting": "m-20261030-171203-4f2a", "monitor": "\\\\.\\DISPLAY2" } }
+    },
+    {
+      "name": "frame reply with an image",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-36", "ok": true, "result": { "frame": { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": "Q3 roadmap" }, "image": { "type": "image/jpeg", "data": "/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==" } } }
+    },
+    {
+      "name": "clip reply",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-37", "ok": true, "result": { "clips": [{ "path": "C:\\Users\\anna\\AppData\\Local\\Rukoo Voice\\meetings\\m-20261030-171203-4f2a\\screen\\clips\\c-000060000-000075000-000001.mp4", "start": 59850, "end": 75120, "width": 1920, "height": 1080, "bytes": 2481152 }] } }
+    },
+    {
+      "name": "screen reply",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-40", "ok": true, "result": { "screen": "frames", "state": "recording", "video": false, "frames": true, "monitor": "\\\\.\\DISPLAY1", "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL U2720Q", "width": 2560, "height": 1440, "primary": true }, { "id": "\\\\.\\DISPLAY2", "name": "Display 2", "width": 1920, "height": 1080, "primary": false }] } }
+    },
+    {
+      "name": "reply that the meeting recorded no screen",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-36", "ok": false, "error": { "code": "not_available", "message": "The meeting didn't record the screen." } }
+    },
+    {
+      "name": "reply to a command Voice doesn't know",
+      "from": "voice",
+      "message": { "type": "reply", "id": "c-23", "ok": false, "error": { "code": "unknown_command", "message": "Voice doesn't know the command `example.unknown`." } }
     }
   ],
   "invalid": [
@@ -255,7 +375,19 @@
     { "name": "processing with an empty reason", "from": "voice", "reason": "reason", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "processing", "at": 10, "endedAt": 1793000000010, "reason": "" } } },
     { "name": "frame with a null text", "from": "voice", "reason": "text", "message": { "type": "event", "seq": 1, "event": "frame", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "id": "f-000412000", "at": 412000, "width": 1920, "height": 1080, "text": null } } },
     { "name": "failed reply whose meeting id is malformed", "from": "voice", "reason": "error", "message": { "type": "reply", "id": "c-1", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-1" } } },
-    { "name": "recording state with an endedAt that is not a number", "from": "voice", "reason": "endedAt", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "recording", "at": 0, "endedAt": "soon" } } }
+    { "name": "recording state with an endedAt that is not a number", "from": "voice", "reason": "endedAt", "message": { "type": "event", "seq": 1, "event": "meeting.state", "meeting": "m-20261030-171203-4f2a", "createdAt": 0, "data": { "state": "recording", "at": 0, "endedAt": "soon" } } },
+    { "name": "clip without an end", "from": "rukoo", "reason": "end", "message": { "type": "command", "id": "c-1", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "start": 60000 } } },
+    { "name": "clip that ends before it starts", "from": "rukoo", "reason": "end", "message": { "type": "command", "id": "c-1", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "start": 75000, "end": 60000 } } },
+    { "name": "clip with a fractional start", "from": "rukoo", "reason": "start", "message": { "type": "command", "id": "c-1", "command": "clip.get", "args": { "meeting": "m-20261030-171203-4f2a", "start": 1.5, "end": 2000 } } },
+    { "name": "clip without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-1", "command": "clip.get", "args": { "start": 1000, "end": 2000 } } },
+    { "name": "protected without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-1", "command": "meeting.protected", "args": {} } },
+    { "name": "screen request without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-1", "command": "screen.get", "args": {} } },
+    { "name": "select without a monitor", "from": "rukoo", "reason": "monitor", "message": { "type": "command", "id": "c-1", "command": "screen.select", "args": { "meeting": "m-20261030-171203-4f2a" } } },
+    { "name": "select with an empty monitor", "from": "rukoo", "reason": "monitor", "message": { "type": "command", "id": "c-1", "command": "screen.select", "args": { "meeting": "m-20261030-171203-4f2a", "monitor": "" } } },
+    { "name": "meeting starting without a meeting", "from": "voice", "reason": "meeting", "message": { "type": "event", "seq": 5, "event": "meeting.starting", "createdAt": 1793000000000, "data": { "screen": "frames" } } },
+    { "name": "meeting starting with an unknown screen mode", "from": "voice", "reason": "screen", "message": { "type": "event", "seq": 5, "event": "meeting.starting", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "screen": "4k" } } },
+    { "name": "meeting started with an unknown screen mode", "from": "voice", "reason": "screen", "message": { "type": "event", "seq": 5, "event": "meeting.started", "meeting": "m-20261030-171203-4f2a", "createdAt": 1793000000000, "data": { "title": "", "startedAt": 1793000000000, "tracks": ["mic"], "screen": "4k", "startedBy": "voice", "context": null } } },
+    { "name": "status with an unknown screen default", "from": "voice", "reason": "screenDefault", "message": { "type": "event", "seq": 5, "event": "status", "createdAt": 1793000000000, "data": { "recording": null, "dictating": false, "screenDefault": "4k" } } }
   ],
   "discovery": {
     "valid": [

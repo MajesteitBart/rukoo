@@ -10,14 +10,18 @@
 // meeting (meeting.removed); the user's notes stay. Applying an event twice gives the same result, so a replay that
 // overlaps what Rukoo has is harmless.
 //
-// tick is Rukoo's own change counter: every change to a passage or mark takes the next number. It orders what the
-// agent has read (read_meeting_transcript's cursor) and what the renderer has shown, and unlike Voice's seq it never
-// starts again when Voice's data folder does. When voice.json is lost it resumes, for each meeting, above the ticks
-// in that meeting's file before the meeting changes again (data()).
+// tick is Rukoo's own change counter: every change to a passage, mark or frame takes the next number. It orders what
+// the agent has read (read_meeting_transcript's cursor) and what the renderer has shown, and unlike Voice's seq it
+// never starts again when Voice's data folder does. When voice.json is lost it resumes, for each meeting, above the
+// ticks in that meeting's file before the meeting changes again (data()).
+//
+// A meeting.get snapshot can leave out the text of older frames to stay under Voice's reply limit ("textOmitted"). A
+// frame Rukoo already has keeps its text; one it hasn't seen keeps textOmitted until frame.get brings the text
+// (frameText()).
 
 const fs = require('fs');
 const path = require('path');
-const { validate, isMeetingId, STATES } = require('./protocol');
+const { validate, isMeetingId, STATES, SCREENS } = require('./protocol');
 
 const VERSION = 1;
 const SAVE_MS = 400;
@@ -41,8 +45,18 @@ function writeAtomic(file, data) {
   fs.renameSync(tmp, file);
 }
 
+// The screen a meeting gets when meeting.start leaves it out, as Voice said; null when Voice didn't say.
+const screenDefault = (v) => (SCREENS.includes(v) ? v : null);
+
 function emptyIndex() {
-  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, status: { recording: null, dictating: false }, meetings: {} };
+  return { version: VERSION, instance: null, lastSeq: 0, tick: 0, status: { recording: null, dictating: false, screenDefault: null }, meetings: {} };
+}
+
+// A frame as Rukoo keeps it. textOmitted: Voice left the text out of a snapshot, and Rukoo doesn't have it yet.
+function frameEntry(d, changed, textOmitted = false) {
+  const f = { id: d.id, at: d.at, width: d.width, height: d.height, text: textOmitted ? '' : d.text, changed };
+  if (textOmitted) f.textOmitted = true;
+  return f;
 }
 
 function emptyMeeting(id) {
@@ -144,7 +158,7 @@ class VoiceStore {
       index.lastSeq = int(raw.lastSeq, 0);
       index.tick = int(raw.tick, 0);
       const st = isObj(raw.status) ? raw.status : {};
-      index.status = { recording: isMeetingId(st.recording) ? st.recording : null, dictating: st.dictating === true };
+      index.status = { recording: isMeetingId(st.recording) ? st.recording : null, dictating: st.dictating === true, screenDefault: screenDefault(st.screenDefault) };
       for (const [id, v] of Object.entries(raw.meetings)) if (isMeetingId(id) && isObj(v)) index.meetings[id] = indexEntry(id, v);
     } else if (raw) {
       this.keepAside(this.file);
@@ -182,7 +196,7 @@ class VoiceStore {
     // voice.json can be lost, set aside or older than this file (a crash between the two saves) while a chat's
     // cursor still holds this file's ticks: the meeting's next change must still count as new.
     let top = 0;
-    for (const v of [...Object.values(m.passages), ...Object.values(m.marks)]) top = Math.max(top, int(v.changed), int(v.added));
+    for (const v of [...Object.values(m.passages), ...Object.values(m.marks), ...Object.values(m.frames)]) top = Math.max(top, int(v.changed), int(v.added));
     if (top > this.index.tick) {
       this.index.tick = top;
       this.indexDirty = true;
@@ -296,14 +310,21 @@ class VoiceStore {
   setStatus(status) {
     const recording = status && isMeetingId(status.recording) ? status.recording : null;
     const dictating = Boolean(status && status.dictating === true);
-    if (this.index.status.recording === recording && this.index.status.dictating === dictating) return false;
-    this.index.status = { recording, dictating };
+    const screen = screenDefault(status && status.screenDefault);
+    const now = this.index.status;
+    if (now.recording === recording && now.dictating === dictating && now.screenDefault === screen) return false;
+    this.index.status = { recording, dictating, screenDefault: screen };
     this.touchIndex();
     return true;
   }
 
   status() {
     return { ...this.index.status };
+  }
+
+  // Whether an event is part of the replay that follows the welcome, up to its head: history, not what happens now.
+  isReplay(seq) {
+    return Number.isInteger(seq) && seq <= (this.replayHead || 0);
   }
 
   // ---------- Voice's events ----------
@@ -327,7 +348,7 @@ class VoiceStore {
     }
     const id = ev.meeting;
     const d = ev.data;
-    const live = !(Number.isInteger(ev.seq) && ev.seq <= (this.replayHead || 0));
+    const live = !this.isReplay(ev.seq);
     switch (ev.event) {
       case 'status':
         return live && this.setStatus(d) ? { meeting: null, kind: 'status' } : null;
@@ -432,13 +453,28 @@ class VoiceStore {
     return { meeting: id, kind: 'mark', id: d.id };
   }
 
-  frame(id, d) {
+  // A frame event: Voice sends a frame again with the same id, and that changes nothing. textOmitted only comes from
+  // a snapshot (applySnapshot).
+  frame(id, d, textOmitted = false) {
     const m = this.data(id, true);
-    const next = { id: d.id, at: d.at, width: d.width, height: d.height, text: d.text };
-    if (JSON.stringify(m.frames[d.id]) === JSON.stringify(next)) return null;
-    m.frames[d.id] = next;
-    this.meetingChanged(id);
+    const old = m.frames[d.id];
+    const next = frameEntry(d, 0, textOmitted);
+    if (old && JSON.stringify({ ...old, changed: 0 }) === JSON.stringify(next)) return null;
+    const tick = this.nextTick();
+    m.frames[d.id] = { ...next, changed: tick };
+    this.meetingChanged(id, tick);
     return { meeting: id, kind: 'frame', id: d.id };
+  }
+
+  // The text frame.get brought for a frame a snapshot gave without it. Not a new change for the agent: the transcript
+  // never holds screen text, so the frame keeps its tick and only the meeting's rev moves, for the renderer.
+  frameText(id, f) {
+    const m = isObj(f) && typeof f.id === 'string' && typeof f.text === 'string' ? this.data(id) : null;
+    const old = m && m.frames[f.id];
+    if (!old || !old.textOmitted) return null;
+    m.frames[f.id] = { id: old.id, at: old.at, width: old.width, height: old.height, text: f.text, changed: old.changed };
+    this.meetingChanged(id);
+    return { meeting: id, kind: 'frame', id: f.id };
   }
 
   // meeting.get's answer: the current version of everything up to its head. What Rukoo has that the snapshot lacks
@@ -451,7 +487,7 @@ class VoiceStore {
     const newer = later.filter((ev) => ev.meeting === id && ev.seq > head);
     // Voice removed the meeting after the snapshot, and Rukoo did too.
     if (newer.some((ev) => ev.event === 'meeting.removed')) return null;
-    const fresh = new Set(newer.filter((ev) => ev.event === 'passage' || ev.event === 'mark').map((ev) => `${ev.event}:${ev.data.id}`));
+    const fresh = new Set(newer.filter((ev) => ev.event === 'passage' || ev.event === 'mark' || ev.event === 'frame').map((ev) => `${ev.event}:${ev.data.id}`));
     const ok = (event, data) => validate('voice', { type: 'event', seq: 1, event, meeting: id, createdAt: 0, data }).ok;
     const meeting = isObj(snap.meeting) ? snap.meeting : {};
     const e = this.ensureEntry(id);
@@ -500,6 +536,25 @@ class VoiceStore {
       if (!marks.has(kid) && !fresh.has(`mark:${kid}`)) {
         delete m.marks[kid];
         touched = true;
+      }
+    }
+    // An older Voice sends no frames: then the frames Rukoo has stay.
+    if (Array.isArray(snap.frames)) {
+      const frames = new Set();
+      for (const f of snap.frames) {
+        if (!ok('frame', f)) continue;
+        frames.add(f.id);
+        const old = m.frames[f.id];
+        // Left out to keep the reply small: the text Rukoo had stays, else frame.get brings it later.
+        const omitted = f.textOmitted === true;
+        if (omitted && old && !old.textOmitted) continue;
+        if (this.frame(id, f, omitted)) touched = true;
+      }
+      for (const fid of Object.keys(m.frames)) {
+        if (!frames.has(fid) && !fresh.has(`frame:${fid}`)) {
+          delete m.frames[fid];
+          touched = true;
+        }
       }
     }
     // Applying an event twice gives the same result, so what Rukoo had from them comes back as it was.
@@ -587,6 +642,12 @@ class VoiceStore {
 
   entry(id) {
     return isMeetingId(id) ? this.index.meetings[id] || null : null;
+  }
+
+  // Whether Voice stopped recording the meeting's screen for good: it sends a dropped mark on the screen track then.
+  screenDropped(id) {
+    const m = this.data(id);
+    return Boolean(m) && Object.values(m.marks).some((k) => k.kind === 'dropped' && k.track === 'screen');
   }
 
   // Newest first.

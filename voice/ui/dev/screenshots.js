@@ -54,6 +54,12 @@ const PILL_STATES = [
   'meeting-mic-lost',
   'meeting-mic-back',
   'meeting-video-dropped',
+  'meeting-video-dropped-encoder',
+  'meeting-frames-dropped',
+  'meeting-screen-failed',
+  'meeting-screen-moved',
+  'meeting-screen-button',
+  'meeting-screen-hover',
   'meeting-dictating'
 ];
 const SETTINGS_PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
@@ -75,6 +81,10 @@ const SCENARIOS = [
   ['import-never', 'page=import&scenario=fresh'],
   ['import-dev', 'page=import&scenario=dev'],
   ['import-cloud', 'page=import&scenario=cloud'],
+  ['main-screen', 'page=meetings&features=screen'],
+  ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
+  ['main-screen-unavailable', 'page=meetings&screenUnavailable=1'],
+  ['storage-screen', 'page=storage&features=screen'],
   ['main-speakers-cpu', 'page=meetings&speakers=cpu'],
   ['speakers-ready', 'page=speakers&speakers=ready'],
   ['speakers-off', 'page=speakers&speakers=off'],
@@ -123,8 +133,8 @@ async function main() {
             await page.waitForTimeout(650);
             await shot(path.join(out, 'pill', `${theme}-${lang}`, `${state}.png`));
           }
-          // Where the app puts the native stop window, from the page's own pill_layout report.
-          for (const state of ['meeting-recording', 'meeting-confirm']) {
+          // Where the app puts the native stop and monitor windows, from the page's own pill_layout report.
+          for (const state of ['meeting-recording', 'meeting-confirm', 'meeting-screen-button']) {
             await page.goto(`${base}pill.html?mock=${state}&theme=${theme}&lang=${lang}&backdrop=1&hit=1`);
             await page.waitForTimeout(700);
             await shot(path.join(out, 'pill', `${theme}-${lang}`, `${state}-hit.png`));
@@ -166,6 +176,7 @@ async function main() {
       ]) {
         for (const [name, query] of [
           ['main', 'page=main&scenario=busy'],
+          ['main-screen-limits', 'page=meetings&noEncoder=1&noOcr=1'],
           ['transcription', 'page=transcription&scenario=busy'],
           ['meeting-transcription', 'page=meetingTranscription&scenario=cloud'],
           ['meeting-transcription-stream', 'page=meetingTranscription&speakers=consent'],

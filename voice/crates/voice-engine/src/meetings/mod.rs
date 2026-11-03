@@ -1,8 +1,9 @@
-//! Meetings: the recorder controller, the bridge for Rukoo, and the voice-meetings pipelines that
-//! transcribe each meeting and send its events.
+//! Meetings: the recorder controller, the screen supervisor, the bridge for Rukoo, and the
+//! voice-meetings pipelines that transcribe each meeting and send its events.
 
 pub mod bridge;
 pub mod controller;
+pub mod screen;
 pub mod tap;
 
 use std::path::PathBuf;
@@ -15,46 +16,63 @@ use voice_bridge::EventLog;
 use voice_core::config::{Config, ConsentMode, Retention};
 use voice_core::consent::ConsentState;
 use voice_meetings::{LabelStatus, Pipeline, PipelineHandle};
-use voice_protocol::{MeetingState, Track};
+use voice_protocol::{MeetingState, ScreenMode, Track};
 
 pub use voice_meetings::{Library, PipelineOptions, PipelineState};
 
 use self::bridge::{Bridge, Control};
 use self::controller::Controller;
+use self::screen::ScreenSupervisor;
 use crate::services::{AudioSink, MicStream};
 
 pub struct Meetings {
     pub controller: Arc<Controller>,
+    pub screen: Arc<ScreenSupervisor>,
     pub log: Option<EventLog>,
-    pub bridge: Option<Bridge>,
+    pub bridge: Option<Arc<Bridge>>,
     dictating: Arc<AtomicBool>,
     pipelines: Mutex<Vec<PipelineHandle>>,
-    published: Mutex<Option<(Option<String>, bool)>>,
+    published: Mutex<Option<Published>>,
 }
+
+/// What the last `status` event said: recording, dictating, the screen default.
+type Published = (Option<String>, bool, ScreenMode);
 
 impl Meetings {
     pub fn new(
         controller: Arc<Controller>,
+        screen: Arc<ScreenSupervisor>,
         log: Option<EventLog>,
         discovery_path: Option<PathBuf>,
         version: &str,
     ) -> Meetings {
         let dictating = Arc::new(AtomicBool::new(false));
         let bridge = match (&log, discovery_path) {
-            (Some(log), Some(path)) => Some(Bridge::start(
+            (Some(log), Some(path)) => Some(Arc::new(Bridge::start(
                 log.clone(),
-                Arc::new(Control {
-                    controller: Arc::clone(&controller),
-                    log: log.clone(),
-                    dictating: Arc::clone(&dictating),
-                }),
+                Arc::new(Control::new(
+                    Arc::clone(&controller),
+                    Arc::clone(&screen),
+                    log.clone(),
+                    Arc::clone(&dictating),
+                )),
                 path,
                 version,
-            )),
+            ))),
             _ => None,
         };
+        // The start handshake waits for the Rukoo clients connected now, or for one that was.
+        let weak = bridge.as_ref().map(Arc::downgrade);
+        screen.set_rukoo_clients(Box::new(move || {
+            weak.as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .map_or((0, false), |bridge| {
+                    (bridge.rukoo_clients(), bridge.rukoo_seen())
+                })
+        }));
         Meetings {
             controller,
+            screen,
             log,
             bridge,
             dictating,
@@ -139,7 +157,8 @@ impl Meetings {
         }
     }
 
-    /// Removes the audio of meetings whose retention ran out (Ownkey's rule; voice-meetings).
+    /// Removes the audio and screen media of meetings whose retention ran out (Ownkey's rule;
+    /// voice-meetings).
     pub fn sweep(&self, retention: Retention) -> Vec<String> {
         match &self.log {
             Some(log) => voice_meetings::retention_sweep(self.library(), log, |_| retention),
@@ -163,22 +182,24 @@ impl Meetings {
         };
         let recording = self.controller.current().map(|r| r.id);
         let dictating = self.dictating();
+        let screen = self.controller.screen_default();
         let mut published = self
             .published
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if published.as_ref() == Some(&(recording.clone(), dictating)) {
+        let now = (recording, dictating, screen);
+        if published.as_ref() == Some(&now) {
             return;
         }
         if log
             .append(
                 voice_protocol::events::STATUS,
                 None,
-                json!({"recording": recording, "dictating": dictating}),
+                json!({"recording": now.0, "dictating": dictating, "screenDefault": screen}),
             )
             .is_ok()
         {
-            *published = Some((recording, dictating));
+            *published = Some(now);
         }
     }
 
@@ -205,10 +226,12 @@ impl Meetings {
             .is_some_and(|meeting| meeting.tracks.contains(&Track::Mic))
     }
 
-    /// Stops transcribing, the watchdog and the bridge. A recorder that records goes on.
+    /// Stops transcribing, the watchdogs and the bridge. A recorder or screen process that
+    /// records goes on.
     pub fn shutdown(&self) {
         shutdown_all(std::mem::take(&mut *self.lock()));
         self.controller.shutdown();
+        self.screen.shutdown();
         if let Some(bridge) = &self.bridge {
             bridge.stop();
         }

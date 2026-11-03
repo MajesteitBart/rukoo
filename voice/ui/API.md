@@ -34,7 +34,8 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
   "meeting": {
     "state": "recording",
     "atMs": 724000,
-    "screen": "off",
+    "screen": "frames",
+    "screenSwitch": true,
     "compact": false,
     "confirmStop": false,
     "stopEnabled": true,
@@ -58,7 +59,8 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
 | `meeting` | object or null | Present while a meeting records, is paused or has just ended. |
 | `meeting.state` | string | `recording`, `paused`, `processing` (shows "Saving"), `done` (not shown) or `failed` |
 | `meeting.atMs` | integer | Meeting time when the app sent the snapshot. The page adds the time since it received the snapshot and ticks every second, also while paused, because the meeting clock keeps running (PROTOCOL.md). Resend every 60 s to correct drift. |
-| `meeting.screen` | string | `off`, `frames` or `video`; always `off` in 0.1. |
+| `meeting.screen` | string | `off`, `frames` or `video`: what the meeting records of the screen. Optional: an app from before screen recording leaves it out. |
+| `meeting.screenSwitch` | bool, optional | Draw the monitor button left of the stop button: the meeting records the screen, Voice still captures it and this computer has more than one monitor. Missing means `false`. |
 | `meeting.compact` | bool | Hide the label and show the time only. The app sets it 4000 ms after the last meeting change, never while paused or while a notice shows. |
 | `meeting.confirmStop` | bool | The stop button shows "Stop?" after the first click. The app clears it after 3000 ms. |
 | `meeting.stopEnabled` | bool | Draw the stop button. `false` during a dictation in a meeting and in `processing` and `failed`. |
@@ -82,9 +84,10 @@ What the page shows:
 | `rewrote` | | green check, "Rewrote the selection" |
 | `nothingHeard` | | no icon, "Nothing heard" |
 | `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
-| `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, stop button |
+| `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, the monitor button when `screenSwitch`, stop button |
 | `meeting`, `recording` or `paused` | `pill.micLost`, `pill.micBack` | microphone icon in orange or green, the notice, time, stop button |
-| `meeting`, `recording` | `pill.videoDropped.disk`, `pill.videoDropped.encoder` | screen icon, the notice (later than 0.1) |
+| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed` | screen icon in orange, the notice: the video, or the whole screen recording, stopped; the audio goes on. The app holds each for 4000 ms. |
+| `meeting`, `recording` or `paused` | `pill.screenMoved` with `args.name` | screen icon in grey, "Screen: {name}": Voice records another monitor now. The app holds it for 2200 ms. |
 | `meeting`, `paused` | | pause glyph, "Paused", grey time, stop button |
 | `meeting`, `processing` | | spinner, "Saving" |
 | `meeting`, `failed` | `pill.meetingFailed` | red x on a red tint, "Couldn't save the meeting" |
@@ -97,7 +100,7 @@ What the page shows:
 
 ### Event `pill://pointer`
 
-`{ "hover": true, "pressed": false }`, from the native stop window: hover on `WM_MOUSEMOVE`, pressed between `WM_LBUTTONDOWN` and `WM_LBUTTONUP`, both false on `WM_MOUSELEAVE`. The page only colours the button; Rust handles the click.
+`{ "hover": true, "pressed": false, "target": "stop" }`, from a native button window: hover on `WM_MOUSEMOVE`, pressed between `WM_LBUTTONDOWN` and `WM_LBUTTONUP`, both false on `WM_MOUSELEAVE`. `target` is `stop` for the stop window or `screen` for the monitor window; without it the page takes `stop`. The page only colours the button `target` names; Rust handles the click, and a click on the monitor window moves the screen recording to the next monitor (`EngineApi::pill_screen_clicked`).
 
 ### Command `pill_snapshot`
 
@@ -109,14 +112,15 @@ What the page shows:
 
 ### Command `pill_layout`
 
-`invoke('pill_layout', { layout })` → nothing. Where the pill and the stop button are, so the app can put its native stop window exactly over the button.
+`invoke('pill_layout', { layout })` → nothing. Where the pill, the stop button and the monitor button are, so the app can put its native windows exactly over the buttons.
 
 ```json
-{ "seq": 418, "pill": { "x": 96, "y": 24, "width": 193, "height": 36 }, "button": { "x": 257, "y": 28, "width": 28, "height": 28 } }
+{ "seq": 418, "pill": { "x": 80, "y": 24, "width": 225, "height": 36 }, "button": { "x": 273, "y": 28, "width": 28, "height": 28 }, "screenButton": { "x": 241, "y": 28, "width": 28, "height": 28 } }
 ```
 
 - Rectangles are in CSS pixels from the window's top left, rounded outwards to whole pixels. At the page's 100% zoom a CSS pixel is a logical pixel; multiply by the monitor's scale for physical pixels.
 - `button` is `null` when no stop button is drawn: no meeting, `stopEnabled` false, the pill hidden or leaving. Hide the stop window then.
+- `screenButton` is `null` when no monitor button is drawn: `screenSwitch` false or missing, no meeting that records or is paused, the pill hidden or leaving. Hide the monitor window then. An app from before the monitor button ignores it.
 - `pill` is `null` while nothing is drawn.
 - `seq` is the snapshot the layout was measured for. Ignore a layout whose `seq` is older than the newest snapshot that has a stop button.
 - The page reports after every change: a new snapshot, the end of the entry animation, every frame of a width transition (the label sliding to 0 when the pill compacts, the button widening to "Stop?") and when Inter finishes loading. It never sends the same layout twice in a row.
@@ -126,6 +130,7 @@ What the page shows:
 The app has text of its own and reads it from `i18n/en.json` (the `message` field) and `i18n/nl.json`, in the language Settings resolves:
 
 - `pill.stopButton`: the title of the native stop window, which screen readers announce.
+- `pill.screenButton`: the title of the native monitor window, which screen readers announce.
 - `settings.title`: the Settings window's title.
 - `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`. Settings 0.1 asks only for `models` (see the command below).
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
@@ -157,7 +162,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
-  "features": { "screen": false, "speakers": true, "sync": false },
+  "features": { "screen": true, "speakers": true, "sync": false },
   "theme": "dark",
   "locale": "en",
   "config": {
@@ -167,7 +172,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
     "dictionary": { "vocabulary": ["Rukoo"], "corrections": [{ "from": "rocco", "to": "Rukoo" }] },
     "fillers": { "enabled": true, "languages": ["en", "nl"], "custom": "" },
     "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": true, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
-    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
+    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "frames", "liveSpeakers": true },
     "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
     "updates": { "check": false },
     "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "secret": "" } }
@@ -184,6 +189,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "models": { "orukeet": "ModelState", "nemotron": "ModelState" },
   "speakers": "SpeakersState",
   "storage": { "folder": "C:\\Users\\…\\Rukoo Voice\\meetings", "usedBytes": 2400000000, "freeBytes": 182000000000 },
+  "screen": { "available": true, "hardwareEncoder": "NVIDIA H.264 Encoder MFT", "ocr": ["nl-NL"], "monitors": 2 },
   "updates": { "state": "idle", "version": null },
   "ownkey": "OwnkeyState",
   "sync": { "lastUpload": null, "waiting": 0 }
@@ -210,6 +216,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
 | `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
+| `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: Windows can capture the screen (Windows 10 2004 or later); `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the text recognition languages Windows has, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
 | `sync` | Later than 0.1: the last upload (epoch ms) and the files waiting. |
@@ -241,7 +248,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `meetings.provider`, `endpoint`, `model`, `keySaved`, `consent` | read-only here; saved with `settings_save_provider` | Orukeet | `meetings_audio_*` |
 | `meetings.retention` | `days7`, `keep`, `after_transcription` | `days7` | `meetings_retention` |
 | `meetings.stopKey` | `off` or a key | `off` | new |
-| `meetings.screen` | `off`, `frames`, `video` (later) | `off` | new |
+| `meetings.screen` | `off`, `frames`, `video`: what a new meeting records of the screen when Rukoo doesn't choose for it. Voice tells Rukoo in `status.screenDefault` (PROTOCOL.md). | `off` | new |
 | `meetings.liveSpeakers` | bool, default `true`, stored as `meetings_live_speakers`: speaker labels for meetings started from then on | `true` | new; Ownkey's `meetings_auto_speakers` ("label after Stop") is kept but not read |
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
@@ -416,14 +423,16 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 | URL | Shows |
 |---|---|
-| `pill.html?mock=<state>&theme=light&lang=nl&backdrop=1` | One pill state; `<state>` is a key of `STATES` in `mock/pill.js`. `backdrop=1` draws a document behind the pill, `hit=1` outlines the stop window from the last `pill_layout`, `edge=top`, `dev=1`. |
+| `pill.html?mock=<state>&theme=light&lang=nl&backdrop=1` | One pill state; `<state>` is a key of `STATES` in `mock/pill.js`, such as `meeting-screen-button` or `meeting-frames-dropped`. `backdrop=1` draws a document behind the pill, `hit=1` outlines the stop and monitor windows from the last `pill_layout`, `edge=top`, `dev=1`. A click on the monitor button moves to the next demo monitor. |
 | `pill.html?mock=dictation`, `mock=meeting`, `mock=cycle` | A dictation; a meeting with a two-step stop you can click; every state in turn |
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
+| `&features=screen` | The Settings of the features listed (`screen`, `speakers`, `sync`, comma-separated), as the engine lists them in `state.features` |
+| `&noEncoder=1`, `&noOcr=1`, `&screenUnavailable=1` | Screen recording on a computer without a hardware video encoder, without an OCR language, or on a Windows that can't capture; each turns on `features.screen` |
 | `&later=1` | Every feature's Settings (`features` all `true`): screen recording, speaker labels, bucket sync (`&sync=1` turns sync on). Without it the mock's `features` are `false`, except those named in `&features=screen,speakers,sync`. |
 | `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 
-`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider, host or way of sending, keys never carried to another provider, speaker labels' reasons and switch, the stop button's layout report, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.
+`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider, host or way of sending, keys never carried to another provider, speaker labels' reasons and switch, the screen row and its notes, the stop and monitor buttons' layout report, the screen notices, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.

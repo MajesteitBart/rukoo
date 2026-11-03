@@ -1,9 +1,10 @@
-//! Removing meeting audio that the user doesn't want kept, as Ownkey does (`store.py:684-698`,
-//! `service.py:1065-1098`).
+//! Removing meeting media that the user doesn't want kept, as Ownkey does for audio
+//! (`store.py:684-698`, `service.py:1065-1098`).
 //!
-//! Only `audio/` goes; the transcript, the timeline and the meeting's events stay. Audio is
-//! removed only after the meeting is `done`, counted from the moment it became done, so a
-//! meeting that was cut off and never transcribed never loses its audio.
+//! `audio/` goes, and with it the screen media: `screen/video`, `screen/frames` and
+//! `screen/clips`. The transcript, the timeline, the screen journal (with each frame's text) and
+//! the meeting's events stay. Media is removed only after the meeting is `done`, counted from the
+//! moment it became done, so a meeting that was cut off and never transcribed never loses it.
 //!
 //! Each meeting follows the retention it started with, kept in its `meeting.json` (Ownkey's
 //! `create_meeting` stored it the same way), so a changed setting applies to new meetings only.
@@ -20,9 +21,9 @@ use crate::library::Library;
 /// Seven days, for [`Retention::Days7`].
 pub const WEEK_MS: u64 = 7 * 86_400_000;
 
-/// Removes the audio of every meeting whose retention has run out. A meeting's retention is the
-/// one in its `meeting.json`; `retention_of` gives it by id for a meeting from before Voice
-/// stored it there. Returns the meetings whose audio went.
+/// Removes the audio and screen media of every meeting whose retention has run out. A meeting's
+/// retention is the one in its `meeting.json`; `retention_of` gives it by id for a meeting from
+/// before Voice stored it there. Returns the meetings whose media went.
 ///
 /// Run it at start, after a meeting is done, and every minute or so.
 pub fn retention_sweep(
@@ -42,7 +43,7 @@ pub fn retention_sweep_at(
 ) -> Vec<String> {
     let mut removed = Vec::new();
     for dir in lib.dirs() {
-        if !dir.has_audio() {
+        if !dir.has_media() {
             continue;
         }
         let id = dir.id().as_str();
@@ -62,8 +63,17 @@ pub fn retention_sweep_at(
             Retention::Days7 => now.saturating_sub(state.created_at) >= WEEK_MS,
             Retention::Keep => false,
         };
+        if !expired {
+            continue;
+        }
         // A file that is in use stays until the next sweep.
-        if expired && fs::remove_dir_all(dir.audio_dir()).is_ok() {
+        let mut gone = false;
+        for media in std::iter::once(dir.audio_dir()).chain(dir.screen_media_dirs()) {
+            if media.is_dir() && fs::remove_dir_all(&media).is_ok() {
+                gone = true;
+            }
+        }
+        if gone {
             removed.push(id.to_owned());
         }
     }
@@ -131,7 +141,7 @@ mod tests {
                 Retention::Days7
             }
         };
-        let has_audio = |id: &str| lib.dir(id).unwrap().has_audio();
+        let has_audio = |id: &str| lib.dir(id).unwrap().has_media();
         let done_at = log
             .latest(&week, events::MEETING_STATE)
             .unwrap()
@@ -164,6 +174,55 @@ mod tests {
     }
 
     #[test]
+    fn screen_media_goes_with_the_audio_and_the_journal_stays() {
+        let tmp = TempDir::new("retention-screen");
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let states = ["recording", "processing", "done"];
+        let done = meeting(&lib, &log, &states);
+        let recording = meeting(&lib, &log, &["recording"]);
+        let screen_of = |id: &str| {
+            let dir = lib.dir(id).unwrap();
+            let screen = dir.path().join("screen");
+            for part in ["video", "frames", "clips"] {
+                fs::create_dir_all(screen.join(part)).unwrap();
+            }
+            fs::write(screen.join("video").join("000001.mp4"), b"mp4").unwrap();
+            fs::write(screen.join("frames").join("f-000000500.jpg"), b"jpg").unwrap();
+            fs::write(screen.join("journal.jsonl"), b"{}\n").unwrap();
+            dir
+        };
+        let done_dir = screen_of(&done);
+        let recording_dir = screen_of(&recording);
+        // Frames only, without audio: swept all the same.
+        let frames_only = meeting(&lib, &log, &states);
+        let frames_dir = screen_of(&frames_only);
+        fs::remove_dir_all(frames_dir.audio_dir()).unwrap();
+
+        let mut removed =
+            retention_sweep_at(&lib, &log, |_| Retention::AfterTranscription, u64::MAX / 2);
+        removed.sort();
+        let mut expected = vec![done.clone(), frames_only.clone()];
+        expected.sort();
+        assert_eq!(removed, expected);
+        for dir in [&done_dir, &frames_dir] {
+            assert!(!dir.has_media());
+            for media in dir.screen_media_dirs() {
+                assert!(!media.exists(), "{}", media.display());
+            }
+            assert!(
+                dir.path().join("screen").join("journal.jsonl").is_file(),
+                "the journal keeps the frame text"
+            );
+        }
+        assert!(
+            recording_dir.has_media(),
+            "a meeting that isn't done keeps it all"
+        );
+        assert!(recording_dir.path().join("screen").join("video").is_dir());
+    }
+
+    #[test]
     fn each_meeting_keeps_the_retention_it_started_with() {
         let tmp = TempDir::new("retention-stamped");
         let lib = Library::open(tmp.path()).unwrap();
@@ -185,7 +244,7 @@ mod tests {
         assert_eq!(raw["retention"], "keep");
         assert!(lib.dir(&kept).unwrap().meeting().is_ok());
 
-        let has_audio = |id: &str| lib.dir(id).unwrap().has_audio();
+        let has_audio = |id: &str| lib.dir(id).unwrap().has_media();
         let done_at = log
             .latest(&week, events::MEETING_STATE)
             .unwrap()

@@ -104,8 +104,10 @@ body {
   animation: none;
   transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
 }
-/* The stop button sits at a 4px inset: 18px outside, 14px for the 28px button. */
-.pill.has-stop {
+/* The stop button sits at a 4px inset: 18px outside, 14px for the 28px button. The monitor button does too when
+   it is the last one. */
+.pill.has-stop,
+.pill.has-screen {
   padding-right: 4px;
 }
 /* Rukoo's status rule: a tint over the surface, with saturated text. */
@@ -333,6 +335,32 @@ body {
   line-height: 18px;
 }
 
+/* The monitor button: the stop button's size and shape, quieter until the pointer is on it, 4px before stop. */
+.screen-btn {
+  margin-left: 8px;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.screen-btn svg {
+  display: block;
+}
+.screen-btn.hover {
+  background: var(--chip);
+  color: var(--text);
+}
+.screen-btn.pressed {
+  transform: scale(0.96);
+}
+.screen-btn:not([hidden]) + .stop {
+  margin-left: 4px;
+}
+
 .stop {
   position: relative;
   margin-left: 8px;
@@ -415,6 +443,7 @@ body {
   .label-slot,
   .ind,
   .time,
+  .screen-btn,
   .stop {
     transition: none;
   }
@@ -449,11 +478,12 @@ html.mock.backdrop,
 html.mock.backdrop body {
   background: var(--panel);
 }
-html.mock .stop {
+html.mock .stop,
+html.mock .screen-btn {
   pointer-events: auto;
   cursor: pointer;
 }
-/* Where the app would put its native stop window, from the last pill_layout report. */
+/* Where the app would put its native stop and monitor windows, from the last pill_layout report. */
 .hit-debug {
   position: absolute;
   outline: 1px dashed var(--accent);

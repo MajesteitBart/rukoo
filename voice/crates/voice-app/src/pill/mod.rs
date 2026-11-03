@@ -1,5 +1,6 @@
 //! The pill window: shows, places, raises and hides it from the engine's snapshots, keeps the native stop
-//! window over the button, and repairs a window that stopped painting (pill-settings-design.md 3.2-3.3, 3.7).
+//! window over the stop button and a second one over the screen button, and repairs a window that stopped
+//! painting (pill-settings-design.md 3.2-3.3, 3.7).
 //!
 //! The engine owns the state machine and its timers; this module only turns snapshots into window
 //! changes. Window calls run on the event loop thread. Never dispatch to it while holding `inner`: on that
@@ -54,6 +55,7 @@ pub struct PillStatus {
     pub page_loaded: bool,
     pub rebuilds: u32,
     pub hit_visible: bool,
+    pub screen_hit_visible: bool,
 }
 
 struct Inner {
@@ -67,13 +69,14 @@ struct Inner {
     hide_gen: u64,
     watch_gen: u64,
     repair_gen: u64,
-    /// The newest snapshot that draws a stop button; older layouts are stale.
+    /// The newest snapshot that draws a stop or screen button; older layouts are stale.
     stop_seq: u64,
     layout: Option<Layout>,
     ui: UiOptions,
     last_raise: Option<Instant>,
     raise_queued: bool,
     hit_visible: bool,
+    screen_hit_visible: bool,
     monitor: Option<window::Monitor>,
     /// The newest snapshot repaired, and how far: the app's watchdog and the engine's
     /// `pill_repair` both watch the paint, and one of them is enough.
@@ -107,6 +110,8 @@ pub struct Pill {
 thread_local! {
     // The stop window lives on the event loop thread, like the pill.
     static HIT: std::cell::RefCell<Option<hit::HitWindow>> = const { std::cell::RefCell::new(None) };
+    // So does the screen button's window.
+    static SCREEN_HIT: std::cell::RefCell<Option<hit::HitWindow>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Which monitor a show uses.
@@ -129,6 +134,13 @@ enum Action {
 
 fn has_stop(s: &PillSnapshot) -> bool {
     s.visible && s.meeting.as_ref().is_some_and(|m| m.stop_enabled)
+}
+
+/// The pill draws its screen button: a meeting records the screen and there is another monitor.
+fn has_screen(s: &PillSnapshot) -> bool {
+    s.visible
+        && s.phase == PillPhase::Meeting
+        && s.meeting.as_ref().is_some_and(|m| m.screen_switch)
 }
 
 impl Pill {
@@ -160,6 +172,7 @@ impl Pill {
                 last_raise: None,
                 raise_queued: false,
                 hit_visible: false,
+                screen_hit_visible: false,
                 monitor: None,
                 repaired: (0, Repair::None),
             }),
@@ -184,6 +197,7 @@ impl Pill {
             page_loaded: i.page_loaded,
             rebuilds: i.rebuilds,
             hit_visible: i.hit_visible,
+            screen_hit_visible: i.screen_hit_visible,
         }
     }
 
@@ -252,7 +266,7 @@ impl Pill {
                 return;
             }
             let prev_phase = i.snapshot.as_ref().map(|p| p.phase);
-            if has_stop(&s) {
+            if has_stop(&s) || has_screen(&s) {
                 i.stop_seq = i.stop_seq.max(s.seq);
             }
             let action = if s.visible {
@@ -484,8 +498,14 @@ impl Pill {
                 hit.set_title(&self.catalog.text(ui.locale, keys::STOP_BUTTON));
             }
         });
+        #[cfg(windows)]
+        SCREEN_HIT.with(|hit| {
+            if let Some(hit) = hit.borrow().as_ref() {
+                hit.set_title(&self.catalog.text(ui.locale, keys::SCREEN_BUTTON));
+            }
+        });
         #[cfg(not(windows))]
-        let _ = (&self.catalog, keys::STOP_BUTTON);
+        let _ = (&self.catalog, keys::STOP_BUTTON, keys::SCREEN_BUTTON);
     }
 
     /// Called from the foreground hook: raise at once, or once the interval has passed.
@@ -553,64 +573,84 @@ impl Pill {
         }
     }
 
-    // ---------- the stop window ----------
+    // ---------- the stop and screen windows ----------
 
     #[cfg(windows)]
     fn ensure_hit(self: &Arc<Self>) {
-        HIT.with(|cell| {
-            if cell.borrow().is_some() {
-                return;
-            }
-            let locale = self.lock().ui.locale;
-            let title = self.catalog.text(locale, keys::STOP_BUTTON);
-            let this = Arc::downgrade(self);
-            let handler = Box::new(move |event: hit::HitEvent| {
-                let Some(pill) = this.upgrade() else { return };
-                match event {
-                    hit::HitEvent::Pointer { hover, pressed } => {
-                        let label = pill.label();
-                        let _ = pill.app.emit_to(
-                            label.as_str(),
-                            "pill://pointer",
-                            json!({ "hover": hover, "pressed": pressed }),
-                        );
-                    }
-                    hit::HitEvent::Click => {
-                        // Stopping talks to the recorder; keep it off the event loop.
-                        if let Some(engine) = pill.engine.get() {
-                            thread::spawn(move || engine.pill_stop_clicked());
-                        }
+        let locale = self.lock().ui.locale;
+        for (cell, target, key) in [
+            (&HIT, Target::Stop, keys::STOP_BUTTON),
+            (&SCREEN_HIT, Target::Screen, keys::SCREEN_BUTTON),
+        ] {
+            cell.with(|cell| {
+                if cell.borrow().is_some() {
+                    return;
+                }
+                let title = self.catalog.text(locale, key);
+                match hit::HitWindow::create(&title, self.hit_handler(target)) {
+                    Ok(window) => *cell.borrow_mut() = Some(window),
+                    Err(error) => {
+                        log::error!("pill: could not create the {target:?} window: {error}")
                     }
                 }
             });
-            match hit::HitWindow::create(&title, handler) {
-                Ok(window) => *cell.borrow_mut() = Some(window),
-                Err(error) => log::error!("pill: could not create the stop window: {error}"),
+        }
+    }
+
+    /// What a click or a pointer move on one of the native button windows does.
+    #[cfg(windows)]
+    fn hit_handler(self: &Arc<Self>, target: Target) -> hit::HitHandler {
+        let this = Arc::downgrade(self);
+        Box::new(move |event: hit::HitEvent| {
+            let Some(pill) = this.upgrade() else { return };
+            match event {
+                hit::HitEvent::Pointer { hover, pressed } => {
+                    let label = pill.label();
+                    let _ = pill.app.emit_to(
+                        label.as_str(),
+                        "pill://pointer",
+                        json!({ "hover": hover, "pressed": pressed, "target": target.as_str() }),
+                    );
+                }
+                hit::HitEvent::Click => {
+                    // Both talk to a process of their own; keep them off the event loop.
+                    if let Some(engine) = pill.engine.get() {
+                        thread::spawn(move || match target {
+                            Target::Stop => engine.pill_stop_clicked(),
+                            Target::Screen => engine.pill_screen_clicked(),
+                        });
+                    }
+                }
             }
-        });
+        })
     }
 
     #[cfg(not(windows))]
     fn ensure_hit(self: &Arc<Self>) {}
 
-    /// Shows the stop window over the button while the pill shows one, else hides it.
+    /// Shows the stop window over the stop button and the screen window over the screen button
+    /// while the pill shows them, else hides them.
     #[cfg(windows)]
     fn update_hit(self: &Arc<Self>) {
-        let (want, button, excluded) = {
+        let (want_stop, want_screen, button, screen_button, excluded) = {
             let i = self.lock();
-            let want = i.shown && i.snapshot.as_ref().is_some_and(has_stop);
+            let snapshot = i.snapshot.as_ref().filter(|_| i.shown);
             (
-                want,
+                snapshot.is_some_and(has_stop),
+                snapshot.is_some_and(has_screen),
                 i.layout.as_ref().and_then(|l| l.button),
+                i.layout.as_ref().and_then(|l| l.screen_button),
                 i.ui.hide_pill_from_capture,
             )
         };
-        let rect = match (want, button, self.window()) {
-            (true, Some(button), Some(win)) => window::origin_and_scale(&win)
+        let win = self.window();
+        let rect = |want: bool, button: Option<place::CssRect>| match (want, button, &win) {
+            (true, Some(button), Some(win)) => window::origin_and_scale(win)
                 .and_then(|(origin, scale)| place::css_to_physical(origin, scale, &button)),
             _ => None,
         };
-        let visible = HIT.with(|cell| {
+        let show = |cell: &std::cell::RefCell<Option<hit::HitWindow>>,
+                    rect: Option<place::Rect>| {
             let cell = cell.borrow();
             let Some(hit) = cell.as_ref() else {
                 return false;
@@ -623,8 +663,14 @@ impl Pill {
                 None => hit.hide(),
             }
             hit.is_visible()
-        });
-        self.lock().hit_visible = visible;
+        };
+        let stop = rect(want_stop, button);
+        let screen = rect(want_screen, screen_button);
+        let visible = HIT.with(|cell| show(cell, stop));
+        let screen_visible = SCREEN_HIT.with(|cell| show(cell, screen));
+        let mut i = self.lock();
+        i.hit_visible = visible;
+        i.screen_hit_visible = screen_visible;
     }
 
     #[cfg(not(windows))]
@@ -713,9 +759,73 @@ impl Pill {
     }
 }
 
+/// Which native button window took the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Stop,
+    Screen,
+}
+
+impl Target {
+    /// `pill://pointer`'s `target`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn as_str(self) -> &'static str {
+        match self {
+            Target::Stop => "stop",
+            Target::Screen => "screen",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot(phase: PillPhase, stop: bool, switch: bool) -> PillSnapshot {
+        PillSnapshot {
+            seq: 1,
+            visible: true,
+            phase,
+            activity: voice_engine::Activity::Dictate,
+            notice: None,
+            words: None,
+            meeting: Some(voice_engine::MeetingPill {
+                state: "recording".into(),
+                at_ms: 0,
+                screen: "frames".into(),
+                screen_switch: switch,
+                compact: false,
+                confirm_stop: false,
+                stop_enabled: stop,
+                rukoo_connected: false,
+            }),
+            edge: voice_engine::Edge::Bottom,
+            theme: voice_engine::Theme::Dark,
+            locale: voice_engine::Locale::En,
+            dev: false,
+        }
+    }
+
+    #[test]
+    fn the_screen_button_shows_only_on_a_meeting_pill_that_can_switch() {
+        assert!(has_screen(&snapshot(PillPhase::Meeting, true, true)));
+        assert!(!has_screen(&snapshot(PillPhase::Meeting, true, false)));
+        // A dictation during the meeting covers the meeting's buttons.
+        assert!(!has_screen(&snapshot(PillPhase::Listening, false, true)));
+        let mut hidden = snapshot(PillPhase::Meeting, true, true);
+        hidden.visible = false;
+        assert!(!has_screen(&hidden) && !has_stop(&hidden));
+        assert_eq!(Target::Screen.as_str(), "screen");
+        assert_eq!(Target::Stop.as_str(), "stop");
+        let layout: Layout = serde_json::from_str(
+            r#"{ "seq": 9, "pill": null, "button": { "x": 257, "y": 28, "width": 28, "height": 28 }, "screenButton": { "x": 225, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        assert_eq!(layout.screen_button.unwrap().x, 225.0);
+        let old: Layout =
+            serde_json::from_str(r#"{ "seq": 3, "pill": null, "button": null }"#).unwrap();
+        assert!(old.screen_button.is_none());
+    }
 
     #[test]
     fn one_repair_per_snapshot_and_step() {

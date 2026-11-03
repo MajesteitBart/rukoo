@@ -3,12 +3,12 @@
 Builds Rukoo Voice's Windows installer and portable zip.
 
 .DESCRIPTION
-Builds the four release programs (rukoo-voice, rukoo-voice-recorder, rukoo-voice-local and rukoo-voice-speakers),
-fetches the NeMo-Speech.cpp runtime that voice/nemo-runtime/manifest.json pins, runs Tauri's bundler for the per-user
-NSIS installer and checks the result. Everything goes to <cargo target dir>\package:
+Builds the five release programs (rukoo-voice, rukoo-voice-recorder, rukoo-voice-local, rukoo-voice-speakers and
+rukoo-voice-screen), fetches the NeMo-Speech.cpp runtime that voice/nemo-runtime/manifest.json pins, runs Tauri's
+bundler for the per-user NSIS installer and checks the result. Everything goes to <cargo target dir>\package:
 
   Rukoo-Voice-Setup-<version>.exe     the installer
-  Rukoo-Voice-Portable-<version>.zip  the four programs, the runtime folder nemo_speech\ and the notices, without an
+  Rukoo-Voice-Portable-<version>.zip  the five programs, the runtime folder nemo_speech\ and the notices, without an
                                       installer
   SHA256SUMS.txt                      checksums of both
 
@@ -19,14 +19,16 @@ isn't published yet (voice/nemo-runtime/README.md).
 
 It checks that:
   - THIRD_PARTY_NOTICES.md lists exactly the Rust crates the programs contain (-UpdateNotices rewrites the list);
-  - the installer holds the four programs, the notices and the licenses, and uses Voice's NSIS hooks and texts;
+  - the installer holds the five programs, the notices and the licenses, and uses Voice's NSIS hooks and texts;
   - its nemo_speech\ folder holds exactly the runtime's files and runtime.json, with the manifest's hashes;
-  - none of the four programs imports a C runtime DLL (vcruntime, msvcp or the UCRT);
+  - none of the five programs imports a C runtime DLL (vcruntime, msvcp or the UCRT);
+  - rukoo-voice-screen.exe doesn't import Media Foundation (mfplat.dll, mfreadwrite.dll), so it starts without it;
   - the runtime's DLLs import nothing but each other, the Visual C++ runtime next to them, the UCRT and Windows, and
     that Visual C++ runtime has the versions runtime.json records;
   - rukoo-voice.exe shows the app icon first and carries the recording tray icon;
   - the hooks keep the program out of the data folder and refuse to run while a recording runs
-    (voice/crates/voice-app/nsis/test-hooks.ps1, which starts a recorder on a synthetic tone in the build folder).
+    (voice/crates/voice-app/nsis/test-hooks.ps1, which starts a recorder on a synthetic tone and a screen process on a
+    synthetic screen in the build folder).
 
 The installer is not signed in 0.1.
 
@@ -55,7 +57,7 @@ Set-StrictMode -Version 2.0
 # The CLI whose NSIS template voice/crates/voice-app/nsis was written against (hooks.nsh, English.nsh, Dutch.nsh).
 $TauriCli = '2.12.4'
 $Triple = 'x86_64-pc-windows-msvc'
-$Sidecars = @('rukoo-voice-recorder', 'rukoo-voice-local', 'rukoo-voice-speakers')
+$Sidecars = @('rukoo-voice-recorder', 'rukoo-voice-local', 'rukoo-voice-speakers', 'rukoo-voice-screen')
 $Programs = @('rukoo-voice') + $Sidecars
 # The runtime folder next to the programs, as voice-core's speakers::RUNTIME_FOLDER names it, and the DLLs in it that
 # build.ps1 compiles. The rest are the Visual C++ runtime and the licenses.
@@ -98,12 +100,12 @@ function Format-License {
   return ((Sort-Ordinal $parts) -join ' OR ')
 }
 
-# The crates linked into the four programs: normal dependencies on Windows x64, without procedural macros (they run
+# The crates linked into the five programs: normal dependencies on Windows x64, without procedural macros (they run
 # only while compiling) and without Voice's own crates, which have a path instead of a registry source.
 function Get-ShippedCrates {
   Push-Location $Voice
   try {
-    $lines = & cargo tree --locked -e 'normal,no-proc-macro' --target $Triple -p voice-app -p voice-recorder -p voice-local -p voice-speakers --prefix none -f '{p}|{l}'
+    $lines = & cargo tree --locked -e 'normal,no-proc-macro' --target $Triple -p voice-app -p voice-recorder -p voice-local -p voice-speakers -p voice-screen --prefix none -f '{p}|{l}'
     if ($LASTEXITCODE -ne 0) { throw 'cargo tree failed' }
   } finally { Pop-Location }
   $seen = @{}
@@ -230,6 +232,16 @@ function Assert-StaticCrt {
     if ($crt.Count -gt 0) { throw "$(Split-Path -Leaf $file) imports the C runtime: $($crt -join ', ')" }
     Write-Host "  $(Split-Path -Leaf $file): static C runtime ($($imports.Count) DLL imports, none from the CRT)"
   }
+}
+
+# Fails when the screen process imports Media Foundation. It loads mfplat.dll and mfreadwrite.dll itself when it
+# records video, so on a Windows N edition without them it still starts and records frames (voice/RECORDING.md).
+function Assert-NoLoadTimeMediaFoundation {
+  param([string]$File)
+  $imports = @(Get-Imports (Get-Dumpbin) $File)
+  $mf = @($imports | Where-Object { $_ -match '^(mfplat|mfreadwrite)\.dll$' })
+  if ($mf.Count -gt 0) { throw "$(Split-Path -Leaf $File) imports Media Foundation: $($mf -join ', ')" }
+  Write-Host "  $(Split-Path -Leaf $File): no Media Foundation import ($($imports.Count) DLL imports)"
 }
 
 # The NeMo DLLs use the dynamic C runtime, which ships next to them. Fails when one of them needs anything outside the
@@ -448,10 +460,10 @@ Write-Host "Fetching the NeMo runtime $($nemoManifest.name)"
 $nemo = Join-Path $out $NemoFolder
 Get-NemoRuntime $nemoManifest $target $nemo
 
-Write-Host 'Building the recorder, the local speech worker and the speaker worker'
+Write-Host 'Building the recorder, the local speech worker, the speaker worker and the screen process'
 Push-Location $Voice
 try {
-  Invoke-Native cargo @('build', '--release', '--locked', '-p', 'voice-recorder', '-p', 'voice-local', '-p', 'voice-speakers')
+  Invoke-Native cargo @('build', '--release', '--locked', '-p', 'voice-recorder', '-p', 'voice-local', '-p', 'voice-speakers', '-p', 'voice-screen')
 } finally { Pop-Location }
 
 # Tauri's externalBin wants each program named with the target triple. The installer puts them next to rukoo-voice.exe
@@ -498,12 +510,13 @@ foreach ($language in @('English', 'Dutch')) {
 $contents = Join-Path $out 'installer-contents'
 Expand-Installer $installer $contents
 $installed = @(Get-ChildItem -LiteralPath $contents -File | ForEach-Object { $_.Name } | Sort-Object)
-$expected = @('rukoo-voice.exe', 'rukoo-voice-local.exe', 'rukoo-voice-recorder.exe', 'rukoo-voice-speakers.exe', 'THIRD_PARTY_LICENSES.txt', 'THIRD_PARTY_NOTICES.md') | Sort-Object
+$expected = @('rukoo-voice.exe', 'rukoo-voice-local.exe', 'rukoo-voice-recorder.exe', 'rukoo-voice-screen.exe', 'rukoo-voice-speakers.exe',
+  'THIRD_PARTY_LICENSES.txt', 'THIRD_PARTY_NOTICES.md') | Sort-Object
 if (($installed -join ',') -ne ($expected -join ',')) { throw "The installer holds $($installed -join ', ') instead of $($expected -join ', ')" }
 # The sidecars and the notices are the files built here. The bundler marks its own copy of rukoo-voice.exe with the
 # bundle type, so that one only gets the C runtime check.
 $same = @{ 'rukoo-voice-recorder.exe' = (Join-Path $release 'rukoo-voice-recorder.exe'); 'rukoo-voice-local.exe' = (Join-Path $release 'rukoo-voice-local.exe');
-  'rukoo-voice-speakers.exe' = (Join-Path $release 'rukoo-voice-speakers.exe');
+  'rukoo-voice-speakers.exe' = (Join-Path $release 'rukoo-voice-speakers.exe'); 'rukoo-voice-screen.exe' = (Join-Path $release 'rukoo-voice-screen.exe');
   'THIRD_PARTY_NOTICES.md' = $NoticesFile; 'THIRD_PARTY_LICENSES.txt' = $licenses }
 foreach ($name in $same.Keys) {
   if ((Get-Sha256 (Join-Path $contents $name)) -ne (Get-Sha256 $same[$name])) { throw "The installer's $name differs from $($same[$name])" }
@@ -518,13 +531,15 @@ Get-ChildItem -LiteralPath $installedNemo -Recurse -File | Sort-Object FullName 
   Write-Host ("  {0,12:N0}  {1}" -f $_.Length, $_.FullName.Substring($contents.Length + 1))
 }
 
-Write-Host 'Checking the C runtime and the icons'
+Write-Host 'Checking the C runtime, Media Foundation, the NeMo runtime and the icons'
 Assert-StaticCrt @(@($Programs | ForEach-Object { Join-Path $release "$_.exe" }) + (Join-Path $contents 'rukoo-voice.exe'))
+Assert-NoLoadTimeMediaFoundation (Join-Path $release 'rukoo-voice-screen.exe')
 Assert-NemoRuntime $installedNemo
 Assert-IconResources (Join-Path $contents 'rukoo-voice.exe')
 
 Write-Host 'Testing the installer hooks'
-& (Join-Path $App 'nsis\test-hooks.ps1') -Recorder (Join-Path $release 'rukoo-voice-recorder.exe') -Work (Join-Path $out 'hooks-test')
+& (Join-Path $App 'nsis\test-hooks.ps1') -Recorder (Join-Path $release 'rukoo-voice-recorder.exe') -Screen (Join-Path $release 'rukoo-voice-screen.exe') `
+  -Work (Join-Path $out 'hooks-test')
 
 Write-Host 'Writing the portable zip'
 $portable = Join-Path $out 'portable'

@@ -38,12 +38,20 @@ fn the_state_has_every_part_api_md_lists() {
         "models",
         "speakers",
         "storage",
+        "screen",
         "updates",
         "ownkey",
         "sync",
     ] {
         assert!(state.get(field).is_some(), "{field} is missing");
     }
+    assert_eq!(
+        state["features"],
+        json!({"screen": true, "speakers": true, "sync": false})
+    );
+    // No screen program here, so no probe answered.
+    assert_eq!(state["screen"], Value::Null);
+    assert_eq!(state["config"]["meetings"]["screen"], "off");
     assert_eq!(state["devMode"], true);
     assert_eq!(state["version"], "0.1.0-test");
     assert_eq!(state["theme"], "dark");
@@ -62,10 +70,6 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["models"]["orukeet"]["removable"], false);
     assert_eq!(state["models"]["orukeet"]["active"], "unloaded");
     assert_eq!(state["models"]["nemotron"]["active"], Value::Null);
-    assert_eq!(
-        state["features"],
-        json!({"screen": false, "speakers": true, "sync": false})
-    );
     // The fake speech can't run Nemotron: it says why, and nothing labels yet.
     assert_eq!(state["config"]["meetings"]["liveSpeakers"], true);
     assert_eq!(state["speakers"]["engine"], "nemotron");
@@ -108,6 +112,62 @@ fn the_state_has_every_part_api_md_lists() {
         "a key never reaches the page"
     );
     assert_eq!(state["config"]["rewriting"]["keySaved"], false);
+    engine.shutdown();
+}
+
+/// The newest `status` event's `screenDefault`.
+fn screen_default_sent(h: &Harness) -> Value {
+    let log = voice_bridge::EventLog::open(&h.data()).unwrap();
+    log.after(0)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|e| e.event == "status")
+        .unwrap()
+        .data["screenDefault"]
+        .clone()
+}
+
+#[test]
+fn the_screen_default_is_saved_and_reaches_rukoo() {
+    let mut h = Harness::new("screen-default");
+    // A screen program is there; its probe can't run, so capture isn't known to be unsupported.
+    h.screen_exe = h.dir.join("rukoo-voice-screen.exe");
+    std::fs::write(&h.screen_exe, b"not a program").unwrap();
+    h.config(json!({}));
+    let engine = h.start();
+    engine
+        .settings_set("meetings.screen", json!("video"))
+        .unwrap();
+    assert_eq!(
+        h.saved_config().meetings_screen,
+        voice_core::config::ScreenMode::Video
+    );
+    assert_eq!(
+        h.sink.last_settings()["config"]["meetings"]["screen"],
+        "video"
+    );
+    // Rukoo hears the new default in a status event.
+    assert_eq!(screen_default_sent(&h), "video");
+    assert_eq!(
+        code(engine.settings_set("meetings.screen", json!("4k"))),
+        "invalid_value"
+    );
+    engine.shutdown();
+
+    // Without a screen program a meeting records no screen, and Rukoo hears that as the default
+    // while Settings keeps the choice.
+    let h = Harness::new("screen-default-none");
+    h.config(json!({}));
+    let engine = h.start();
+    engine
+        .settings_set("meetings.screen", json!("video"))
+        .unwrap();
+    assert_eq!(
+        h.saved_config().meetings_screen,
+        voice_core::config::ScreenMode::Video
+    );
+    assert_eq!(screen_default_sent(&h), "off");
     engine.shutdown();
 }
 

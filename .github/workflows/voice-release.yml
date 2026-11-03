@@ -69,7 +69,7 @@ jobs:
 
       - run: rustup show active-toolchain
 
-      # Builds the three programs and the installer, and checks the notices, the C runtime, the icons, the installer's
+      # Builds the five programs and the installer, and checks the notices, the C runtime, the icons, the installer's
       # contents and its hooks. The files land in voice/target/package.
       - name: Build the installer and the portable zip
         run: ./voice/scripts/package.ps1

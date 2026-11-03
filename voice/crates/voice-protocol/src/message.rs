@@ -13,6 +13,7 @@ pub type Object = Map<String, Value>;
 pub mod events {
     pub const STATUS: &str = "status";
     pub const MEETING_STARTED: &str = "meeting.started";
+    pub const MEETING_STARTING: &str = "meeting.starting";
     pub const MEETING_STATE: &str = "meeting.state";
     pub const SPEAKER: &str = "speaker";
     pub const PASSAGE: &str = "passage";
@@ -26,6 +27,7 @@ pub mod events {
         matches!(
             name,
             MEETING_STARTED
+                | MEETING_STARTING
                 | MEETING_STATE
                 | SPEAKER
                 | PASSAGE
@@ -48,6 +50,10 @@ pub mod commands {
     pub const MEETING_GET: &str = "meeting.get";
     pub const FRAME_GET: &str = "frame.get";
     pub const STATUS_GET: &str = "status.get";
+    pub const CLIP_GET: &str = "clip.get";
+    pub const MEETING_PROTECTED: &str = "meeting.protected";
+    pub const SCREEN_GET: &str = "screen.get";
+    pub const SCREEN_SELECT: &str = "screen.select";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -133,7 +139,8 @@ impl From<Track> for MarkTrack {
     }
 }
 
-/// How a meeting records the screen. Voice 0.1 always records with `Off`.
+/// How a meeting records the screen: not at all, as frames with their text, or as frames and
+/// video.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ScreenMode {
     #[default]
@@ -392,6 +399,14 @@ pub struct Status {
     pub recording: Option<MeetingId>,
     /// True while the user holds a dictation key.
     pub dictating: bool,
+    /// The `screen` a meeting gets when `meeting.start` leaves it out. An older Voice leaves it
+    /// out.
+    #[serde(
+        rename = "screenDefault",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub screen_default: Option<ScreenMode>,
 }
 
 /// The message Voice sends before it closes a connection it refuses.
@@ -431,6 +446,7 @@ impl Serialize for Event {
 pub enum EventBody {
     Status(Status),
     MeetingStarted(MeetingStarted),
+    MeetingStarting(MeetingStarting),
     MeetingState(MeetingStateChange),
     Speaker(Speaker),
     Passage(Passage),
@@ -452,6 +468,7 @@ impl EventBody {
         match self {
             EventBody::Status(_) => events::STATUS,
             EventBody::MeetingStarted(_) => events::MEETING_STARTED,
+            EventBody::MeetingStarting(_) => events::MEETING_STARTING,
             EventBody::MeetingState(_) => events::MEETING_STATE,
             EventBody::Speaker(_) => events::SPEAKER,
             EventBody::Passage(_) => events::PASSAGE,
@@ -468,6 +485,7 @@ impl EventBody {
         let data = match self {
             EventBody::Status(status) => serde_json::to_value(status),
             EventBody::MeetingStarted(started) => serde_json::to_value(started),
+            EventBody::MeetingStarting(starting) => serde_json::to_value(starting),
             EventBody::MeetingState(state) => serde_json::to_value(state),
             EventBody::Speaker(speaker) => serde_json::to_value(speaker),
             EventBody::Passage(passage) => serde_json::to_value(passage),
@@ -502,6 +520,14 @@ pub struct MeetingStarted {
     pub started_by: StartedBy,
     /// The object `meeting.start` passed, unchanged. Voice stores it and doesn't read it.
     pub context: Option<Object>,
+}
+
+/// `meeting.starting`: Voice is about to record the screen in a meeting it started itself, and
+/// waits up to [`STARTING_WAIT`](crate::STARTING_WAIT) for every connected Rukoo to answer with
+/// `meeting.protected`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeetingStarting {
+    pub screen: ScreenMode,
 }
 
 /// `meeting.state`.
@@ -562,7 +588,8 @@ pub struct Mark {
     pub label: Option<String>,
 }
 
-/// `frame`. Voice 0.1 doesn't record the screen and never sends it.
+/// `frame`: a moment the screen changed noticeably, in a meeting that records the screen. `text`
+/// is what Voice read on it, at most [`MAX_FRAME_TEXT_CHARS`](crate::MAX_FRAME_TEXT_CHARS).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Frame {
     pub id: String,
@@ -619,6 +646,24 @@ pub enum CommandBody {
         at: u64,
     },
     StatusGet,
+    /// Cuts the meeting's video between `start` and `end` (meeting ms, `end >= start`).
+    ClipGet {
+        meeting: MeetingId,
+        start: u64,
+        end: u64,
+    },
+    /// Rukoo applied its window protection after `meeting.starting`.
+    MeetingProtected {
+        meeting: MeetingId,
+    },
+    ScreenGet {
+        meeting: MeetingId,
+    },
+    /// Moves the screen recording to the monitor with that id from `screen.get`.
+    ScreenSelect {
+        meeting: MeetingId,
+        monitor: String,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -639,6 +684,10 @@ impl CommandBody {
             CommandBody::MeetingGet { .. } => commands::MEETING_GET,
             CommandBody::FrameGet { .. } => commands::FRAME_GET,
             CommandBody::StatusGet => commands::STATUS_GET,
+            CommandBody::ClipGet { .. } => commands::CLIP_GET,
+            CommandBody::MeetingProtected { .. } => commands::MEETING_PROTECTED,
+            CommandBody::ScreenGet { .. } => commands::SCREEN_GET,
+            CommandBody::ScreenSelect { .. } => commands::SCREEN_SELECT,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -653,7 +702,9 @@ impl CommandBody {
             CommandBody::MeetingStop { meeting }
             | CommandBody::MeetingPause { meeting }
             | CommandBody::MeetingResume { meeting }
-            | CommandBody::MeetingGet { meeting } => {
+            | CommandBody::MeetingGet { meeting }
+            | CommandBody::MeetingProtected { meeting }
+            | CommandBody::ScreenGet { meeting } => {
                 args.insert("meeting".into(), meeting.as_str().into());
             }
             CommandBody::MeetingMark { meeting, label } => {
@@ -670,6 +721,19 @@ impl CommandBody {
                 args.insert("at".into(), (*at).into());
             }
             CommandBody::StatusGet => {}
+            CommandBody::ClipGet {
+                meeting,
+                start,
+                end,
+            } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("start".into(), (*start).into());
+                args.insert("end".into(), (*end).into());
+            }
+            CommandBody::ScreenSelect { meeting, monitor } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("monitor".into(), monitor.as_str().into());
+            }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
         Value::Object(args)

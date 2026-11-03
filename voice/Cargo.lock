@@ -4540,6 +4540,7 @@ dependencies = [
 name = "voice-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cpal",
  "log",
  "serde",
@@ -4551,6 +4552,8 @@ dependencies = [
  "voice-meetings",
  "voice-protocol",
  "voice-recorder",
+ "voice-screen",
+ "voice-screen-files",
  "windows",
 ]
 
@@ -4584,6 +4587,7 @@ dependencies = [
  "voice-core",
  "voice-protocol",
  "voice-recorder",
+ "voice-screen-files",
 ]
 
 [[package]]
@@ -4606,6 +4610,29 @@ dependencies = [
  "serde_json",
  "voice-audio",
  "windows",
+]
+
+[[package]]
+name = "voice-screen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "voice-recorder",
+ "voice-screen-files",
+ "windows",
+]
+
+[[package]]
+name = "voice-screen-files"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "voice-protocol",
+ "voice-recorder",
 ]
 
 [[package]]

@@ -18,9 +18,10 @@ use support::{lock, wait_for, Harness, TempDir};
 use voice_bridge::{EventLog, MeetingControl};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
+use voice_engine::meetings::screen::{ScreenOptions, ScreenSupervisor};
 use voice_engine::{PillPhase, StopReason};
 use voice_input::Key;
-use voice_protocol::{ErrorCode, StartArgs, StartedBy, Track};
+use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::meeting::read_recorder_file;
 use voice_recorder::timeline::{self, Line};
 
@@ -79,6 +80,12 @@ fn main() {
             "a_reattach_ends_a_dictation_the_old_app_left_open",
             a_reattach_ends_a_dictation_the_old_app_left_open,
         ),
+        (
+            "a_meeting_records_the_settings_default_screen",
+            a_meeting_records_the_settings_default_screen,
+        ),
+        ("rukoo_overrides_the_screen", rukoo_overrides_the_screen),
+        ("no_screen_process_means_off", no_screen_process_means_off),
     ];
     // Only Windows refuses a second writer of the timeline, which this test plays.
     #[cfg(windows)]
@@ -577,15 +584,37 @@ fn a_cut_off_meeting_is_finished_at_start() {
     c.shutdown();
 }
 
+/// A screen supervisor without a screen program: meetings it would follow record no screen.
+fn no_screen(data: &Path) -> Arc<ScreenSupervisor> {
+    ScreenSupervisor::new(
+        ScreenOptions {
+            data_dir: data.to_path_buf(),
+            exe: data.join("no-screen.exe"),
+            test: None,
+            test_monitor: None,
+            timing: Default::default(),
+            free_bytes: None,
+        },
+        None,
+        |_| {},
+    )
+    .unwrap()
+}
+
+fn control(c: &Arc<Controller>, data: &Path) -> Control {
+    Control::new(
+        Arc::clone(c),
+        no_screen(data),
+        EventLog::open(data).unwrap(),
+        Arc::default(),
+    )
+}
+
 fn rukoo_commands_go_through_meeting_control() {
     let dir = TempDir::new("control");
     let data = dir.join("data");
     let (c, changes) = controller(&data, timing());
-    let control = Control {
-        controller: Arc::clone(&c),
-        log: EventLog::open(&data).unwrap(),
-        dictating: Arc::default(),
-    };
+    let control = control(&c, &data);
     assert_eq!(MeetingControl::status(&control).recording, None);
     let id = MeetingControl::start(
         &control,
@@ -634,6 +663,95 @@ fn rukoo_commands_go_through_meeting_control() {
     );
     assert_eq!(control.stop(&id).unwrap_err().code, ErrorCode::NotRecording);
     c.shutdown();
+}
+
+/// Starts a meeting the way `by` would, with `screen` asked for, and returns what its
+/// `meeting.json` and `meeting.started` say it records of the screen.
+fn screen_of_a_meeting(
+    default: ScreenMode,
+    available: bool,
+    by: StartedBy,
+    screen: Option<ScreenMode>,
+) -> (String, Option<ScreenMode>) {
+    let dir = TempDir::new("screen-choice");
+    let data = dir.join("data");
+    let (c, _) = controller(&data, timing());
+    c.set_screen(default, available);
+    let control = control(&c, &data);
+    // What a start without `screen` gets, which is what Rukoo labels as Voice's default.
+    let expected = if available { default } else { ScreenMode::Off };
+    assert_eq!(c.screen_default(), expected);
+    assert_eq!(
+        MeetingControl::status(&control).screen_default,
+        Some(expected)
+    );
+    let args = StartArgs {
+        tracks: Some(vec![Track::Mic]),
+        screen,
+        ..StartArgs::default()
+    };
+    let id = match by {
+        StartedBy::Rukoo => MeetingControl::start(&control, args).unwrap(),
+        StartedBy::Voice => c.start(args, StartedBy::Voice).unwrap(),
+    };
+    let meeting: Value = serde_json::from_slice(
+        &std::fs::read(meeting_dir(&data, &id).join("meeting.json")).unwrap(),
+    )
+    .unwrap();
+    let file = c.library().dir(&id).unwrap().meeting().unwrap();
+    assert_eq!(file.started()["screen"], meeting["screen"]);
+    c.stop(Some(&id), "user").unwrap();
+    c.shutdown();
+    (
+        meeting["screen"].as_str().unwrap().to_string(),
+        MeetingControl::status(&control).screen_default,
+    )
+}
+
+fn a_meeting_records_the_settings_default_screen() {
+    let (screen, default) = screen_of_a_meeting(ScreenMode::Frames, true, StartedBy::Voice, None);
+    assert_eq!(screen, "frames");
+    assert_eq!(default, Some(ScreenMode::Frames), "status.screenDefault");
+    let (screen, _) = screen_of_a_meeting(ScreenMode::Video, true, StartedBy::Rukoo, None);
+    assert_eq!(
+        screen, "video",
+        "Rukoo's start without screen gets the default"
+    );
+}
+
+fn rukoo_overrides_the_screen() {
+    let (screen, _) = screen_of_a_meeting(
+        ScreenMode::Frames,
+        true,
+        StartedBy::Rukoo,
+        Some(ScreenMode::Video),
+    );
+    assert_eq!(screen, "video");
+    let (screen, _) = screen_of_a_meeting(
+        ScreenMode::Video,
+        true,
+        StartedBy::Rukoo,
+        Some(ScreenMode::Off),
+    );
+    assert_eq!(screen, "off");
+}
+
+fn no_screen_process_means_off() {
+    let (screen, default) = screen_of_a_meeting(
+        ScreenMode::Video,
+        false,
+        StartedBy::Rukoo,
+        Some(ScreenMode::Video),
+    );
+    assert_eq!(screen, "off");
+    assert_eq!(
+        default,
+        Some(ScreenMode::Off),
+        "Rukoo hears the default a meeting really gets"
+    );
+    let (screen, default) = screen_of_a_meeting(ScreenMode::Frames, false, StartedBy::Voice, None);
+    assert_eq!(screen, "off");
+    assert_eq!(default, Some(ScreenMode::Off));
 }
 
 fn engine_harness(name: &str) -> Harness {
@@ -751,8 +869,8 @@ fn a_meeting_through_the_engine() {
     assert!(!lock(&h.speech.meeting_heard).is_empty());
     assert_eq!(lock(&h.speech.meeting_providers)[0], "orukeet");
     // Rukoo's meeting.get has every passage the log has.
-    let control = Control {
-        controller: Controller::new(
+    let control = control(
+        &Controller::new(
             ControllerOptions {
                 data_dir: h.data(),
                 recorder_exe: recorder_exe(),
@@ -762,9 +880,8 @@ fn a_meeting_through_the_engine() {
             |_| {},
         )
         .unwrap(),
-        log: EventLog::open(&h.data()).unwrap(),
-        dictating: Arc::default(),
-    };
+        &h.data(),
+    );
     let snapshot = control.get(&id).unwrap();
     assert_eq!(snapshot["meeting"]["state"], "done");
     assert_eq!(

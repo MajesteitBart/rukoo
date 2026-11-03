@@ -3,9 +3,10 @@
 //! can be exercised before the real engine lands. It records nothing, listens to no keys, touches no
 //! network and writes no files.
 //!
-//! Scenarios: `idle` (nothing shows until the tray starts a meeting), `meeting` (a meeting records from the
-//! start), `dictation` (a dictation every 8 s), `cycle` (every pill state in turn) and `first-run`
-//! (Settings opens at the Ownkey import). A meeting that records shows in Settings > Speaker labels,
+//! Scenarios: `idle` (nothing shows until the tray starts a meeting), `meeting` (a meeting records the
+//! audio and screen frames from the start, with a screen button that cycles two fake monitors),
+//! `dictation` (a dictation every 8 s), `cycle` (every pill state in turn) and `first-run` (Settings
+//! opens at the Ownkey import). A meeting that records shows in Settings > Speaker labels,
 //! labelled once the Nemotron model is "downloaded".
 
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
 /// Mistral's realtime models stream meetings; nothing else does.
 const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
 const TICK: Duration = Duration::from_millis(20);
+/// The fake meeting's monitors, which the pill's screen button cycles.
+const MONITORS: &[&str] = &["DELL U2720Q", "Display 2"];
 
 /// The engine's hold times (pill-settings-design.md 3.4), shortened in tests.
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +47,8 @@ pub struct Timing {
     pub compact: Duration,
     pub saving: Duration,
     pub resend: Duration,
+    /// How long a screen notice ("Screen: Display 2") stays.
+    pub notice: Duration,
     pub dictation_every: Duration,
     pub cycle_step: Duration,
 }
@@ -55,6 +60,7 @@ impl Default for Timing {
             compact: Duration::from_millis(4000),
             saving: Duration::from_millis(2200),
             resend: Duration::from_secs(60),
+            notice: Duration::from_millis(2200),
             dictation_every: Duration::from_secs(8),
             cycle_step: Duration::from_millis(1500),
         }
@@ -76,6 +82,10 @@ struct Meeting {
     compact_at: Option<Instant>,
     compact: bool,
     resend_at: Instant,
+    /// The fake monitor the screen records, an index into [`MONITORS`].
+    monitor: usize,
+    /// The pill's notice and when it ends.
+    notice: Option<(Notice, Instant)>,
 }
 
 /// A step of a scripted timeline: at `at` after the start, show this.
@@ -204,6 +214,7 @@ struct State {
     download: Option<(&'static str, Instant)>,
     start_page: Option<String>,
     stop_clicks: u32,
+    screen_clicks: u32,
 }
 
 /// Output gathered under the lock and sent after it, so the sink never runs while the state is locked.
@@ -279,6 +290,7 @@ impl FakeEngine {
                 download: None,
                 start_page: (scenario == "first-run").then(|| "import".to_string()),
                 stop_clicks: 0,
+                screen_clicks: 0,
             }),
             stopped: AtomicBool::new(false),
             born: Instant::now(),
@@ -290,6 +302,11 @@ impl FakeEngine {
         });
         match scenario {
             "meeting" => {
+                // The meeting records the screen as frames, as Settings says.
+                engine.apply(|st, out| {
+                    st.settings["config"]["meetings"]["screen"] = json!("frames");
+                    st.settings_changed(out);
+                });
                 // Nemotron shared from Ownkey's folder, so the meeting labels its speakers.
                 let path = options
                     .data_dir
@@ -371,6 +388,12 @@ impl FakeEngine {
         self.lock().stop_clicks
     }
 
+    /// How often the screen window's clicks reached the engine.
+    #[cfg(test)]
+    pub fn screen_clicks(&self) -> u32 {
+        self.lock().screen_clicks
+    }
+
     fn tick(&self) {
         let now = Instant::now();
         let timing = self.timing;
@@ -388,6 +411,10 @@ impl FakeEngine {
                 }
                 if now >= m.resend_at {
                     m.resend_at = now + timing.resend;
+                    changed = true;
+                }
+                if m.notice.as_ref().is_some_and(|(_, until)| now >= *until) {
+                    m.notice = None;
                     changed = true;
                 }
                 if let Run::Saving { until } = m.run {
@@ -566,6 +593,11 @@ impl State {
         };
         let dictating =
             self.script.is_some() && self.pill.phase != PillPhase::Meeting && self.pill.visible;
+        let live = matches!(m.run, Run::Recording | Run::Paused);
+        let screen = self.settings["config"]["meetings"]["screen"]
+            .as_str()
+            .unwrap_or("off")
+            .to_string();
         let meeting = MeetingPill {
             state: match m.run {
                 Run::Recording => "recording",
@@ -574,17 +606,19 @@ impl State {
             }
             .to_string(),
             at_ms: m.started.elapsed().as_millis() as u64,
-            screen: "off".to_string(),
-            compact: m.compact && m.run == Run::Recording,
+            screen_switch: live && screen != "off" && MONITORS.len() > 1,
+            screen,
+            compact: m.compact && m.run == Run::Recording && m.notice.is_none(),
             confirm_stop: m.confirm_until.is_some(),
-            stop_enabled: !dictating && matches!(m.run, Run::Recording | Run::Paused),
+            stop_enabled: !dictating && live,
             rukoo_connected: false,
         };
+        let notice = m.notice.as_ref().map(|(notice, _)| notice.clone());
         self.pill_change(out, |p| {
             if !dictating {
                 p.visible = true;
                 p.phase = PillPhase::Meeting;
-                p.notice = None;
+                p.notice = notice;
                 p.words = None;
                 p.activity = Activity::Dictate;
             }
@@ -615,10 +649,15 @@ impl State {
             self.meeting_pill(out);
             return;
         }
+        let screen = self.settings["config"]["meetings"]["screen"]
+            .as_str()
+            .unwrap_or("off")
+            .to_string();
         let meeting = self.meeting.as_ref().map(|m| MeetingPill {
             state: "recording".to_string(),
             at_ms: m.started.elapsed().as_millis() as u64,
-            screen: "off".to_string(),
+            screen,
+            screen_switch: false,
             compact: true,
             confirm_stop: false,
             stop_enabled: false,
@@ -718,7 +757,7 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
-        "features": { "screen": false, "speakers": true, "sync": false },
+        "features": { "screen": true, "speakers": true, "sync": false },
         "theme": "dark",
         "locale": "en",
         "config": {
@@ -760,6 +799,7 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         // Filled in from the rest of the state each time it goes out (State::speakers).
         "speakers": null,
         "storage": { "folder": data_dir.join("meetings"), "usedBytes": 0, "freeBytes": null },
+        "screen": { "available": true, "hardwareEncoder": "NVIDIA H.264 Encoder MFT", "ocr": ["en-US", "nl-NL"], "monitors": MONITORS.len() },
         "updates": { "state": "idle", "version": null },
         "ownkey": { "running": false, "keys": [], "configFound": false, "configPath": "%APPDATA%\\Ownkey\\config.json", "lastImport": null, "models": [], "report": null },
         "sync": { "lastUpload": null, "waiting": 0 }
@@ -792,6 +832,30 @@ impl EngineApi for FakeEngine {
     fn pill_ack(&self, seq: u64) {
         let mut st = self.lock();
         st.acked = st.acked.max(seq);
+    }
+
+    fn pill_screen_clicked(&self) {
+        let notice = self.timing.notice;
+        self.apply(|st, out| {
+            st.screen_clicks += 1;
+            let Some(m) = st.meeting.as_mut() else {
+                return;
+            };
+            if !matches!(m.run, Run::Recording | Run::Paused) {
+                return;
+            }
+            m.monitor = (m.monitor + 1) % MONITORS.len();
+            let mut args = Map::new();
+            args.insert("name".into(), json!(MONITORS[m.monitor]));
+            m.notice = Some((
+                Notice {
+                    key: "pill.screenMoved".into(),
+                    args,
+                },
+                Instant::now() + notice,
+            ));
+            st.meeting_pill(out);
+        });
     }
 
     fn pill_stop_clicked(&self) {
@@ -1189,6 +1253,8 @@ impl EngineApi for FakeEngine {
                 compact_at: Some(now + timing.compact),
                 compact: false,
                 resend_at: now + timing.resend,
+                monitor: 0,
+                notice: None,
             });
             st.meeting_pill(out);
             out.push(Out::Tray(st.tray()));
@@ -1315,6 +1381,7 @@ pub mod tests {
             compact: Duration::from_millis(150),
             saving: Duration::from_millis(150),
             resend: Duration::from_secs(60),
+            notice: Duration::from_millis(150),
             dictation_every: Duration::from_secs(8),
             cycle_step: Duration::from_millis(50),
         }
@@ -1327,6 +1394,8 @@ pub mod tests {
             dev_mode: true,
             exe_dir: PathBuf::from("."),
             test_sources: None,
+            test_screen: None,
+            test_monitor: None,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
@@ -1350,6 +1419,8 @@ pub mod tests {
             dev_mode: true,
             exe_dir: PathBuf::from("."),
             test_sources: None,
+            test_screen: None,
+            test_monitor: None,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
@@ -1404,6 +1475,44 @@ pub mod tests {
         engine.resume_meeting().unwrap();
         assert_eq!(recorder.last_pill().meeting.unwrap().state, "recording");
         assert_eq!(engine.start_meeting().unwrap_err().code, "busy");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_meeting_records_frames_and_the_screen_button_cycles_two_monitors() {
+        let (engine, recorder) = engine("meeting");
+        let first = recorder.last_pill().meeting.unwrap();
+        assert_eq!(first.screen, "frames");
+        assert!(first.screen_switch);
+        let json = serde_json::to_value(recorder.last_pill()).unwrap();
+        assert_eq!(json["meeting"]["screenSwitch"], true);
+        let state = engine.settings_state();
+        assert_eq!(state["features"]["screen"], true);
+        assert_eq!(state["screen"]["monitors"], 2);
+        assert_eq!(state["config"]["meetings"]["screen"], "frames");
+
+        engine.pill_screen_clicked();
+        let moved = recorder.last_pill().notice.unwrap();
+        assert_eq!(moved.key, "pill.screenMoved");
+        assert_eq!(moved.args["name"], "Display 2");
+        engine.pill_screen_clicked();
+        assert_eq!(
+            recorder.last_pill().notice.unwrap().args["name"],
+            "DELL U2720Q",
+            "it wraps around"
+        );
+        wait_for("the notice to go", || recorder.last_pill().notice.is_none());
+        assert_eq!(engine.screen_clicks(), 2);
+
+        // Off in Settings: no screen and no button for the next meeting.
+        engine.stop_meeting(StopReason::User).unwrap();
+        wait_for("the pill to hide", || !recorder.last_pill().visible);
+        engine
+            .settings_set("meetings.screen", json!("off"))
+            .unwrap();
+        engine.start_meeting().unwrap();
+        let off = recorder.last_pill().meeting.unwrap();
+        assert_eq!((off.screen.as_str(), off.screen_switch), ("off", false));
         engine.shutdown();
     }
 

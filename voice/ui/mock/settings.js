@@ -10,6 +10,9 @@
 //   in that state, with the feature on.
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
+//   features=<comma list>: the features this Voice shows (screen, speakers, sync); later=1 turns on all of them.
+//   noEncoder=1, noOcr=1, screenUnavailable=1: a computer without a hardware video encoder, without an OCR language,
+//   or whose Windows can't capture the screen. Each turns on the screen feature too.
 
 const MB = 1_000_000;
 const NOW = Date.UTC(2026, 9, 30, 15, 42);
@@ -149,6 +152,7 @@ function baseState() {
     // Worked out from the rest on every state (speakersState below).
     speakers: null,
     storage: { folder: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\meetings', usedBytes: 2.4e9, freeBytes: 182e9 },
+    screen: { available: true, hardwareEncoder: 'NVIDIA H.264 Encoder MFT', ocr: ['nl-NL', 'en-US'], monitors: 2 },
     updates: { state: 'idle', version: null },
     ownkey: {
       running: false,
@@ -306,6 +310,10 @@ export function createMock(params) {
   const later = params.get('later') === '1';
   const named = (params.get('features') || '').split(',').filter(Boolean);
   for (const name of Object.keys(state.features)) state.features[name] = later || named.includes(name);
+  if (params.get('noEncoder') === '1') state.screen.hardwareEncoder = null;
+  if (params.get('noOcr') === '1') state.screen.ocr = [];
+  if (params.get('screenUnavailable') === '1') state.screen = { available: false, hardwareEncoder: null, ocr: [], monitors: 2 };
+  if (['noEncoder', 'noOcr', 'screenUnavailable'].some((name) => params.get(name) === '1')) state.features.screen = true;
   const forcedSpeakers = {};
   const speakers = params.get('speakers');
   if (speakers) {

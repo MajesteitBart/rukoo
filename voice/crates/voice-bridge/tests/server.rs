@@ -4,6 +4,7 @@ mod common;
 
 use std::io::Read;
 use std::net::TcpStream;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use common::{passage, Bridge, Client, TempDir, DONE_MEETING, NEW_MEETING};
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Options};
-use voice_protocol::{validate_discovery, MAX_RUKOO_MESSAGE};
+use voice_protocol::{validate_discovery, CLIP_WAIT, MAX_RUKOO_MESSAGE};
 
 const A: &str = "m-20261030-171203-4f2a";
 const B: &str = "m-20261030-180000-0b0b";
@@ -563,6 +564,68 @@ fn commands_reach_the_meeting_control() {
     );
     assert_eq!(client.read_reply("c-14")["error"]["code"], "not_available");
 
+    // clip.get gets a deadline CLIP_WAIT after the server read it.
+    let clip = json!({ "meeting": DONE_MEETING, "start": 60_000, "end": 75_000 });
+    let sent = Instant::now();
+    client.command("c-15", "clip.get", clip.clone());
+    assert_eq!(client.read_reply("c-15")["error"]["code"], "not_available");
+    let answered = Instant::now();
+    let deadline = bridge.control.deadlines.lock().unwrap()[0];
+    assert!(
+        deadline >= sent + CLIP_WAIT && deadline <= answered + CLIP_WAIT,
+        "the deadline isn't CLIP_WAIT after the command arrived"
+    );
+    let clips = json!({ "clips": [{ "path": "C:\\clips\\c-1.mp4", "start": 59_850, "end": 75_120, "width": 1920, "height": 1080, "bytes": 2_481_152 }] });
+    *bridge.control.clips.lock().unwrap() = Some(clips.clone());
+    client.command("c-16", "clip.get", clip);
+    assert_eq!(client.read_reply("c-16")["result"], clips);
+
+    client.command(
+        "c-17",
+        "meeting.protected",
+        json!({ "meeting": DONE_MEETING }),
+    );
+    assert_eq!(client.read_reply("c-17")["result"], json!({}));
+    client.command(
+        "c-18",
+        "meeting.protected",
+        json!({ "meeting": A.replace("4f2a", "0000") }),
+    );
+    assert_eq!(client.read_reply("c-18")["error"]["code"], "not_found");
+
+    // screen.get and screen.select need a recording meeting that records the screen.
+    client.command("c-19", "screen.get", json!({ "meeting": DONE_MEETING }));
+    assert_eq!(client.read_reply("c-19")["error"]["code"], "not_recording");
+    client.command("c-20", "meeting.start", json!({ "screen": "frames" }));
+    assert_eq!(client.read_reply("c-20")["result"]["meeting"], NEW_MEETING);
+    assert_eq!(
+        bridge.control.started.lock().unwrap()[1].screen,
+        Some(voice_protocol::ScreenMode::Frames)
+    );
+    client.command("c-21", "screen.get", json!({ "meeting": NEW_MEETING }));
+    assert_eq!(client.read_reply("c-21")["error"]["code"], "not_available");
+    let screen = json!({ "screen": "frames", "state": "recording", "video": false, "frames": true, "monitor": "\\\\.\\DISPLAY1",
+        "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL U2720Q", "width": 2560, "height": 1440, "primary": true },
+                     { "id": "\\\\.\\DISPLAY2", "name": "Display 2", "width": 1440, "height": 2560, "primary": false }] });
+    *bridge.control.screen.lock().unwrap() = Some(screen.clone());
+    client.command("c-22", "screen.get", json!({ "meeting": NEW_MEETING }));
+    assert_eq!(client.read_reply("c-22")["result"], screen);
+    client.command(
+        "c-23",
+        "screen.select",
+        json!({ "meeting": NEW_MEETING, "monitor": "\\\\.\\DISPLAY2" }),
+    );
+    assert_eq!(
+        client.read_reply("c-23")["result"],
+        json!({ "monitor": "\\\\.\\DISPLAY2" })
+    );
+    client.command(
+        "c-24",
+        "screen.select",
+        json!({ "meeting": NEW_MEETING, "monitor": "\\\\.\\DISPLAY9" }),
+    );
+    assert_eq!(client.read_reply("c-24")["error"]["code"], "not_found");
+
     let calls = bridge.control.calls.lock().unwrap().clone();
     assert!(calls.contains(&"list 1".to_owned()), "{calls:?}");
     assert!(calls.contains(&"list 50".to_owned()), "{calls:?}");
@@ -574,6 +637,81 @@ fn commands_reach_the_meeting_control() {
         calls.contains(&format!("mark {NEW_MEETING} Some(\"Decision\")")),
         "{calls:?}"
     );
+    for call in [
+        format!("clip {DONE_MEETING} 60000 75000"),
+        format!("protected {DONE_MEETING}"),
+        format!("screen {NEW_MEETING}"),
+        format!("select {NEW_MEETING} \\\\.\\DISPLAY2"),
+    ] {
+        assert!(calls.contains(&call), "{call} is missing from {calls:?}");
+    }
+}
+
+#[test]
+fn queued_commands_keep_their_deadline() {
+    let bridge = Bridge::start("server-clip-deadline");
+    bridge.control.slow_clips.store(true, Ordering::SeqCst);
+    let (mut client, _) = bridge.client(None, 0);
+    // Two clips that each take until their deadline and a heartbeat, in one burst. Voice runs
+    // them one after another; counted from dispatch, the second clip would end 8 s after it
+    // was sent and the heartbeat after that.
+    let clip = json!({ "meeting": DONE_MEETING, "start": 0, "end": 300_000 });
+    let sent = Instant::now();
+    client.command("c-1", "clip.get", clip.clone());
+    client.command("c-2", "clip.get", clip);
+    client.command("c-3", "status.get", json!({}));
+    let limit = CLIP_WAIT + Duration::from_secs(1);
+    for id in ["c-1", "c-2", "c-3"] {
+        let reply = client.read_reply(id);
+        let took = sent.elapsed();
+        assert!(took < limit, "{id} answered after {took:?}: {reply}");
+        if id == "c-1" {
+            assert!(took >= CLIP_WAIT, "the first clip didn't wait: {took:?}");
+        }
+    }
+    let deadlines = bridge.control.deadlines.lock().unwrap().clone();
+    assert_eq!(deadlines.len(), 2);
+    assert!(deadlines[1] - deadlines[0] < Duration::from_secs(1));
+}
+
+#[test]
+fn screen_commands_queued_behind_a_clip_keep_their_deadline() {
+    let bridge = Bridge::start("server-screen-deadline");
+    let (mut client, _) = bridge.client(None, 0);
+    client.command("c-1", "meeting.start", json!({ "screen": "frames" }));
+    assert_eq!(client.read_reply("c-1")["result"]["meeting"], NEW_MEETING);
+    *bridge.control.screen.lock().unwrap() = Some(
+        json!({ "screen": "frames", "state": "recording", "video": false, "frames": true, "monitor": "\\\\.\\DISPLAY1",
+        "monitors": [{ "id": "\\\\.\\DISPLAY2", "name": "Display 2", "width": 1440, "height": 2560, "primary": false }] }),
+    );
+    *bridge.control.clips.lock().unwrap() = Some(json!({ "clips": [] }));
+    bridge.control.slow_clips.store(true, Ordering::SeqCst);
+    // screen.get and screen.select wait for the screen recorder, which can be slow to start or
+    // answer: behind a clip that took its 4 s, they get what is left of their own 4 s.
+    let sent = Instant::now();
+    client.command(
+        "c-2",
+        "clip.get",
+        json!({ "meeting": DONE_MEETING, "start": 0, "end": 300_000 }),
+    );
+    client.command("c-3", "screen.get", json!({ "meeting": NEW_MEETING }));
+    client.command(
+        "c-4",
+        "screen.select",
+        json!({ "meeting": NEW_MEETING, "monitor": "\\\\.\\DISPLAY2" }),
+    );
+    for id in ["c-2", "c-3", "c-4"] {
+        assert_eq!(client.read_reply(id)["ok"], true, "{id}");
+    }
+    let deadlines = bridge.control.screen_deadlines.lock().unwrap().clone();
+    assert_eq!(deadlines.len(), 2);
+    for deadline in deadlines {
+        assert!(
+            deadline >= sent + CLIP_WAIT && deadline < sent + CLIP_WAIT + Duration::from_secs(1),
+            "the deadline isn't CLIP_WAIT after the command arrived: {:?} after it was sent",
+            deadline - sent
+        );
+    }
 }
 
 #[test]
@@ -591,7 +729,7 @@ fn bad_and_unknown_commands_get_error_replies() {
 
     client.command(
         "c-3",
-        "clip.get",
+        "example.unknown",
         json!({ "meeting": A, "from": 1000, "to": 5000 }),
     );
     let reply = client.read_reply("c-3");
@@ -679,9 +817,10 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
             rukoo.client_version.as_deref(),
             rukoo.protocol,
             rukoo.after,
-            rukoo.sent
+            rukoo.sent,
+            rukoo.welcomed
         ),
-        ("rukoo", Some("2.2.0"), 1, 1, 3)
+        ("rukoo", Some("2.2.0"), 1, 1, 3, true)
     );
     bridge
         .log

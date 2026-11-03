@@ -12,6 +12,8 @@ members = [
   "crates/voice-engine",
   "crates/voice-app",
   "crates/voice-speakers",
+  "crates/voice-screen-files",
+  "crates/voice-screen",
 ]
 
 [workspace.package]
