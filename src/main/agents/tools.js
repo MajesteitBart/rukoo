@@ -2821,6 +2821,10 @@ const MEDIA_NOTE =
 // Added when Voice hadn't cut the video yet, so to_seconds is the end asked for and not where the video ends.
 const VIDEO_END_NOTE =
   ' Rukoo Voice was still preparing this video, so to_seconds is the end you asked for: the MP4 ends earlier where the video breaks at a pause or a monitor switch, and its length says where.';
+// Added when Voice hadn't mixed the audio of a meeting that still records, so to_seconds is what was recorded when the
+// agent asked.
+const AUDIO_END_NOTE =
+  ' The meeting is still recording and Rukoo Voice was still mixing this audio, so to_seconds is what was recorded when you asked: the WAV may end a moment earlier or later, and its length says where. Ask for the next stretch from to_seconds.';
 // Added when the file ends less than a second after from_seconds, so to_seconds, rounded down, equals from_seconds.
 // Going on from to_seconds would open the same file again: a video goes on from the next whole second, past the break.
 function shortEndNote(kind, endMs, from) {
@@ -2835,9 +2839,9 @@ const MEDIA_POLL_MAX_MS = 1000;
 
 // media.open, and for video again until Voice has cut it or waitMs passed: only a cut video says where it really ends
 // (a pause or a monitor switch ends it early), and Voice starts cutting on the first media.open. Errors throw.
-async function openMedia(voice, args, waitMs) {
+async function openMedia(voice, args, waitMs, { waitForAudio = false } = {}) {
   let opened = await voice.mediaOpen(args);
-  if (args.kind !== 'video') return opened;
+  if (args.kind !== 'video' && !(args.kind === 'audio' && waitForAudio)) return opened;
   const started = Date.now();
   let wait = MEDIA_POLL_FIRST_MS;
   while (!(opened && opened.ready === true) && Date.now() - started + wait <= waitMs) {
@@ -2875,10 +2879,13 @@ async function getMeetingMediaLink(hub, args, call) {
     if (to - from > span) throw new ToolError(`One link holds at most ${span} seconds of ${kind}. Ask for the next stretch with another link.`);
   }
   if (!voice.connected) throw new ToolError("Rukoo Voice is not running, and it keeps the meeting's media. Ask the user to start Rukoo Voice.");
+  // While the meeting records, Voice cuts audio at what it has recorded so far, which Rukoo only estimates from the
+  // clock: the tool waits for the mix, as for video, to say where the WAV really ends.
+  const live = e.state === 'recording' || e.state === 'paused';
   let opened;
   try {
     const waitMs = hub.mediaLinks ? hub.mediaLinks.videoEndWaitMs : 0;
-    opened = await openMedia(voice, { meeting: id, kind, start: from * 1000, end: to === null ? undefined : to * 1000 }, waitMs);
+    opened = await openMedia(voice, { meeting: id, kind, start: from * 1000, end: to === null ? undefined : to * 1000 }, waitMs, { waitForAudio: live });
   } catch (err) {
     const code = (err && err.code) || 'error';
     if (code === 'unknown_command') throw new ToolError('Rukoo Voice on this computer is too old to share meeting media. Ask the user to update Rukoo Voice.');
@@ -2893,9 +2900,14 @@ async function getMeetingMediaLink(hub, args, call) {
   // checked in milliseconds, before rounding: one less than a second after from_seconds is still where the file ends.
   const cut = opened && opened.ready === true;
   const endMs = to !== null && cut && Number.isSafeInteger(opened.end) && opened.end > from * 1000 && opened.end < to * 1000 ? opened.end : null;
-  const shown = endMs === null ? to : Math.floor(endMs / 1000);
+  let shown = endMs === null ? to : Math.floor(endMs / 1000);
+  // Audio Voice hasn't mixed yet ends where the recording does: never later than the meeting's length, and while it
+  // records, no later than what was recorded when the agent asked, rounded down so going on skips nothing.
+  const audioGuess = kind === 'audio' && endMs === null && !cut && lengthMs !== null && shown !== null;
+  if (audioGuess) shown = Math.max(from, Math.min(shown, live ? Math.floor(lengthMs / 1000) : Math.ceil(lengthMs / 1000)));
   let note = MEDIA_NOTE;
   if (kind === 'video' && !cut) note += VIDEO_END_NOTE;
+  else if (audioGuess && live) note += AUDIO_END_NOTE;
   else if (endMs !== null && shown === from) note += shortEndNote(kind, endMs, from);
   const link = hub.mediaLinks
     ? hub.mediaLinks.issue({ agent: call.agent, remote: call.remote, peer: call.peer, tokenHash: call.tokenHash, meeting: id, kind, start: from * 1000, end: to === null ? null : to * 1000 })
