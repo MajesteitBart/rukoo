@@ -27,7 +27,7 @@ use serde_json::Value;
 pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
 pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
-pub use voice_protocol::{ErrorCode, MeetingSummary, StartArgs, Status};
+pub use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, StartArgs, Status};
 
 /// What the bridge asks of the app when Rukoo sends a command.
 ///
@@ -105,6 +105,23 @@ pub trait MeetingControl: Send + Sync {
         ))
     }
 
+    /// `media.open`: `{ media, ready: false }` while preparing, then `{ media, ready: true, type, size,
+    /// start, end }`. Must answer quickly; prepare on another thread. The same arguments give the
+    /// same `media` while the file is kept. A Voice that doesn't serve media answers
+    /// `not_available`.
+    fn media_open(&self, _args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't serve meeting media.",
+        ))
+    }
+
+    /// `media.read`: `{ offset, data }`, at most `length` bytes in standard base64
+    /// ([`voice_protocol::media_read_result`] builds it); `data` is empty past the end. `not_found`
+    /// for an unknown or forgotten id, `bad_request` for a file that isn't ready yet.
+    fn media_read(&self, _media: &str, _offset: u64, _length: u64) -> Result<Value, ControlError> {
+        Err(ControlError::not_found("There is no media with that id."))
+    }
+
     fn status(&self) -> Status;
 }
 
@@ -149,6 +166,12 @@ impl ControlError {
 
     pub fn failed(message: impl Into<String>) -> ControlError {
         ControlError::new(ErrorCode::Failed, message)
+    }
+
+    /// The arguments passed the protocol checks but this Voice can't take them, such as more
+    /// video than it serves at once.
+    pub fn bad_request(message: impl Into<String>) -> ControlError {
+        ControlError::new(ErrorCode::BadRequest, message)
     }
 }
 

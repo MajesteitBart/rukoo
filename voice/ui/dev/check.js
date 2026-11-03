@@ -377,6 +377,539 @@ check('Dutch is complete on every page', async ({ open, page }) => {
   }
 });
 
+// ---------- Settings > Storage: bucket sync ----------
+
+const ZERO_CODE = `RKV1-${Array(11).fill('00000').join('-')}`;
+const blurFill = async (page, field, value) => {
+  const input = page.locator(`[data-field="${field}"]`);
+  await input.fill(value);
+  await input.blur();
+};
+const protectedNow = (page) => page.evaluate(() => window.__settingsMockProtected());
+const dialogText = (page) => page.locator('.dialog').innerText();
+// Test connection pressed with the mouse, as a user does: the press takes the focus from the field being edited, which
+// saves it, before the click lands. page.click() would focus the button first. Scrolling doesn't move the focus.
+const press = async (page, selector) => {
+  const target = page.locator(selector);
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+};
+const pressTest = (page) => press(page, '[data-a="sync-test"]');
+
+check('the sync card shows only when the engine lists sync in features', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage');
+  assert.equal(await page.locator('[data-section="sync"]').count(), 0);
+  await open('settings.html?mock=1&lang=en&page=storage&features=sync');
+  assert.equal(await page.locator('[data-section="sync"]').count(), 1);
+  assert.equal(await page.locator('[data-section="sync-connection"] .form').count(), 1, 'the form shows while sync is off');
+});
+
+check('a sync store that didn\'t open says nothing uploads and leaves the switch to turn off', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=unavailable');
+  const card = page.locator('[data-section="sync"]');
+  assert.equal(await card.count(), 1, 'the switch stays reachable');
+  assert.equal(await page.locator('[data-section="sync-connection"]').count(), 0, 'nothing else of sync shows');
+  const text = await card.innerText();
+  assert.match(text, /Voice can't open its list of uploads, so nothing uploads\./);
+  assert.match(text, /keeps meeting audio on this computer/);
+  await page.click('[data-a="sync-details:unavailable"]');
+  assert.match(await dialogText(page), /from a newer Voice/);
+  await page.keyboard.press('Escape');
+  const toggle = '[data-a="toggle:storage.sync.enabled"]';
+  assert.equal(await page.locator(toggle).getAttribute('aria-checked'), 'true');
+  await page.click(toggle);
+  await page.waitForFunction(() => !document.querySelector('[data-section="sync"]'));
+  assert.equal((await mockState()).config.storage.sync.enabled, false);
+});
+
+check('the switch waits for a passed Test connection, and a changed bucket pauses uploads', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  const toggle = '[data-a="toggle:storage.sync.enabled"]';
+  assert.equal(await page.locator(toggle).isDisabled(), true);
+  assert.match(await page.locator('[data-section="sync"]').innerText(), /Test the connection before you turn sync on\./);
+  assert.equal(await page.locator('[data-a="sync-test"]').isDisabled(), true, 'no secret saved yet');
+  for (const [name, value] of [
+    ['endpoint', 'https://example.upcloudobjects.com'],
+    ['region', 'europe-1'],
+    ['bucket', 'my-meetings'],
+    ['accessKeyId', 'example-access-key']
+  ])
+    await blurFill(page, `storage.sync.${name}`, value);
+  await blurFill(page, 'storage.sync.secret', 'test-secret-1');
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  assert.equal(await page.locator(toggle).isDisabled(), true, 'still untested');
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  assert.match(await page.locator('[data-section="sync-connection"] .form-status').innerText(), /Connected to the bucket/);
+  await page.waitForSelector(`${toggle}:not([disabled])`);
+  assert.match(await page.locator('[data-section="sync"]').innerText(), /newest first/, 'says what turning it on uploads');
+  await page.click(toggle);
+  await page.waitForSelector(`${toggle}[aria-checked="true"]`);
+  assert.equal((await mockState()).config.storage.sync.enabled, true);
+  await page.waitForSelector('[data-section="sync"] .sync-status .status');
+  // The switch stays on, so retention keeps holding what hasn't reached the bucket; uploads wait for a test.
+  await blurFill(page, 'storage.sync.bucket', 'other-bucket');
+  await page.waitForFunction(() => /Uploads paused\. Test the connection to go on\./.test(document.querySelector('[data-section="sync"]').innerText));
+  assert.equal(await page.locator(toggle).getAttribute('aria-checked'), 'true');
+  assert.equal(await page.locator(toggle).isDisabled(), false, 'the user can still turn it off');
+  assert.equal(await page.locator('[data-section="sync-connection"] .form-status.ok').count(), 0, 'the old test no longer counts');
+  assert.equal((await mockState()).config.storage.sync.enabled, true);
+  // A passed test lets uploads go on without touching the switch.
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  await page.waitForFunction(() => !/Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
+  assert.notEqual((await mockState()).sync.state, 'paused');
+});
+
+check('a new secret while uploads fail pauses them and keeps the switch on', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=failing');
+  await page.click('[data-a="sync-secret-replace"]');
+  await blurFill(page, 'storage.sync.secret', 'test-secret-7');
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  await page.waitForFunction(() => /Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
+  const text = await page.locator('[data-section="sync"]').innerText();
+  assert.match(text, /Uploads paused\. Test the connection to go on\.[\s\S]*41 files waiting[\s\S]*as long as 10 GB stay free/);
+  const sync = (await mockState()).config.storage.sync;
+  assert.deepEqual([sync.enabled, sync.tested, sync.secretSaved], [true, false, true]);
+  assert.equal(await page.locator('[data-a="toggle:storage.sync.enabled"]').getAttribute('aria-checked'), 'true');
+});
+
+check('a switch the app refuses with needs_test rolls back and says why', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=tested');
+  // The app no longer counts the test, and the page hasn't heard yet.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.config.storage.sync.tested = false), { emit: false }));
+  await page.click('[data-a="toggle:storage.sync.enabled"]');
+  await page.waitForSelector('.dialog');
+  assert.match(await dialogText(page), /Test the connection before you turn sync on\./);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('[data-a="toggle:storage.sync.enabled"]').getAttribute('aria-checked'), 'false');
+});
+
+check('the bucket secret goes to settings_sync_save_secret on blur and never through settings_set', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await blurFill(page, 'storage.sync.secret', 'test-secret-2');
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  const log = await calls();
+  assert.ok(log.some(([command, args]) => command === 'settings_sync_save_secret' && args.secret === 'test-secret-2'));
+  assert.ok(!log.some(([command, args]) => command === 'settings_set' && JSON.stringify(args).includes('test-secret-2')), 'settings_set never sees it');
+  assert.ok(!log.some(([command, args]) => command === 'settings_set' && args.key === 'storage.sync.secret'));
+  assert.ok(!(await page.content()).includes('test-secret-2'), 'the page keeps no copy');
+  await page.click('[data-a="sync-secret-replace"]');
+  assert.equal(await page.inputValue('[data-field="storage.sync.secret"]'), '', 'Replace shows an empty field');
+  // Escape leaves the page and so the field: the secret is saved as on any blur, and the page keeps nothing.
+  await page.fill('[data-field="storage.sync.secret"]', 'test-secret-3');
+  await page.keyboard.press('Escape');
+  await page.click('[data-a="go:storage"]');
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  await page.click('[data-a="sync-secret-replace"]');
+  assert.equal(await page.inputValue('[data-field="storage.sync.secret"]'), '');
+  const sent = (await calls()).filter(([, args]) => JSON.stringify(args).includes('test-secret-3'));
+  assert.deepEqual(
+    sent.map(([command]) => command),
+    ['settings_sync_save_secret'],
+    'only settings_sync_save_secret sees it'
+  );
+  assert.ok(!(await page.content()).includes('test-secret-3'));
+});
+
+check('a test still running when the secret is replaced never saves it half-typed', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  // Its answer is about the old secret. Redrawing the card for it would take the focused field out of the page, which
+  // Chromium commits as on blur: "test-" would be saved and the rest of the typing lost.
+  await page.click('[data-a="sync-test"]');
+  await page.click('[data-a="sync-secret-replace"]');
+  await page.click('[data-field="storage.sync.secret"]');
+  await page.keyboard.type('test-');
+  await page.waitForTimeout(900); // the mock answers Test connection after 600 ms
+  await page.keyboard.type('secret-5');
+  assert.equal(await page.inputValue('[data-field="storage.sync.secret"]'), 'test-secret-5', 'the field kept its text and focus');
+  assert.equal(await page.locator('[data-section="sync-connection"] .form-status.ok').count(), 0, 'the old secret\'s test is dropped');
+  const saves = () => calls().then((log) => log.filter(([command]) => command === 'settings_sync_save_secret').map(([, args]) => args.secret));
+  assert.deepEqual(await saves(), [], 'nothing saved before the field loses focus');
+  await page.locator('[data-field="storage.sync.secret"]').blur();
+  await page.waitForSelector('[data-section="sync-connection"] .key-saved');
+  assert.deepEqual(await saves(), ['test-secret-5']);
+});
+
+check('Remove deletes the bucket secret and pauses uploads', async ({ open, page, calls, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  await page.click('[data-a="sync-secret-remove"]');
+  await page.waitForSelector('[data-field="storage.sync.secret"]');
+  assert.ok((await calls()).some(([command, args]) => command === 'settings_remove_key' && args.target === 'sync'));
+  const sync = (await mockState()).config.storage.sync;
+  assert.deepEqual([sync.secretSaved, sync.tested, sync.enabled], [false, false, true]);
+  await page.waitForFunction(() => /Uploads paused/.test(document.querySelector('[data-section="sync"]').innerText));
+  assert.equal(await page.locator('[data-a="sync-test"]').isDisabled(), true);
+});
+
+check('a failed Test connection says why, with Error details', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=tested');
+  await blurFill(page, 'storage.sync.bucket', 'fail');
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.bad');
+  assert.match(await page.locator('[data-section="sync-connection"] .form-status').innerText(), /There's no bucket with this name at this endpoint\./);
+  await page.click('[data-a="sync-details:test"]');
+  assert.match(await dialogText(page), /NoSuchBucket/);
+  await page.keyboard.press('Escape');
+  // A bucket that holds another key's meetings says so.
+  await blurFill(page, 'storage.sync.bucket', 'shared');
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  assert.match(await page.locator('[data-section="sync-connection"]').innerText(), /another encryption key/);
+});
+
+check('one click on Test connection right after typing the secret saves it, then tests', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  for (const [name, value] of [
+    ['endpoint', 'https://example.upcloudobjects.com'],
+    ['bucket', 'my-meetings'],
+    ['accessKeyId', 'example-access-key']
+  ])
+    await blurFill(page, `storage.sync.${name}`, value);
+  const test = page.locator('[data-a="sync-test"]');
+  assert.equal(await test.isDisabled(), true, 'nothing to test without a secret');
+  await page.click('[data-field="storage.sync.secret"]');
+  await page.keyboard.type('test-secret-4');
+  assert.equal(await test.isDisabled(), false, 'a typed secret can be tested');
+  assert.equal(await page.inputValue('[data-field="storage.sync.secret"]'), 'test-secret-4', 'typing goes on after the button turns on');
+  await pressTest(page);
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  const order = (await calls()).map(([command]) => command).filter((command) => command.startsWith('settings_sync_'));
+  assert.deepEqual(order, ['settings_sync_save_secret', 'settings_sync_test'], 'saved first, then tested, from one click');
+  // Pasted in one go, with a state from the app redrawing the page while it sits in the field.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await page.fill('[data-field="storage.sync.secret"]', 'test-secret-6');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.storage.usedBytes += 1_000_000)));
+  await page.waitForTimeout(100);
+  assert.equal(await page.inputValue('[data-field="storage.sync.secret"]'), 'test-secret-6');
+  assert.equal(await test.isDisabled(), false);
+  await pressTest(page);
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.bad');
+  const sent = (await calls()).filter(([command]) => command.startsWith('settings_sync_'));
+  assert.deepEqual(
+    sent.map(([command, args]) => (command === 'settings_sync_save_secret' ? `${command}:${args.secret}` : command)),
+    ['settings_sync_save_secret:test-secret-6', 'settings_sync_test']
+  );
+  // Typing and emptying the field again leaves nothing to test.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await page.click('[data-field="storage.sync.secret"]');
+  await page.keyboard.type('x');
+  await page.keyboard.press('Backspace');
+  assert.equal(await test.isDisabled(), true);
+});
+
+check('after a failed test, fixing a field and clicking Test once tests again', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=tested');
+  await blurFill(page, 'storage.sync.bucket', 'fail');
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.bad');
+  // The press takes the focus from the field, which saves it and clears the old result; the click still counts.
+  await page.click('[data-field="storage.sync.bucket"]');
+  await page.keyboard.press('End');
+  await page.keyboard.type('-fixed');
+  await pressTest(page);
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+  const log =(await calls()).filter(([command, args]) => command === 'settings_sync_test' || args.key === 'storage.sync.bucket');
+  assert.deepEqual(
+    log.map(([command, args]) => (command === 'settings_set' ? args.value : command)),
+    ['fail', 'settings_sync_test', 'fail-fixed', 'settings_sync_test'],
+    'the fixed name saved, then tested'
+  );
+});
+
+check('an http endpoint is refused with its own text and stays in the field', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await blurFill(page, 'storage.sync.endpoint', 'http://example.com');
+  await page.waitForSelector('.dialog');
+  assert.match(await dialogText(page), /It starts with https:\/\//);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.inputValue('[data-field="storage.sync.endpoint"]'), 'http://example.com');
+});
+
+// Test connection and the switch both use the saved fields, so neither may run while a field shows a value the app
+// refused: the page would say "Connected to the bucket", or sync would start, for an endpoint the form doesn't show.
+check('a refused connection value blocks Test connection and the switch until a value saves', async ({ open, page, calls, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=tested');
+  const endpoint = '[data-field="storage.sync.endpoint"]';
+  const toggle = '[data-a="toggle:storage.sync.enabled"]';
+  const connection = page.locator('[data-section="sync-connection"]');
+  const sent = async (match) => (await calls()).filter(match).length;
+  const tests = () => sent(([command]) => command === 'settings_sync_test');
+  const switchesOn = () => sent(([command, args]) => command === 'settings_set' && args.key === 'storage.sync.enabled' && args.value === true);
+  const blocked = async (why) => {
+    assert.equal(await connection.locator('.form-status.ok').count(), 0, `${why}: a passed test shows next to the refused endpoint`);
+    assert.equal(await page.locator('[data-a="sync-test"]').isDisabled(), true, `${why}: Test connection waits`);
+    assert.equal(await page.locator(toggle).isDisabled(), true, `${why}: the switch waits`);
+    assert.match(await connection.locator('.form-status').innerText(), /Voice didn't save the marked field\./, why);
+    assert.equal(await page.locator(endpoint).getAttribute('aria-invalid'), 'true', why);
+  };
+  const unblocked = async () => {
+    await page.waitForFunction(() => !document.querySelector('[data-a="sync-test"]').disabled);
+    assert.equal(await page.locator(endpoint).getAttribute('aria-invalid'), null);
+  };
+  await page.click('[data-a="sync-test"]');
+  await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+
+  // Refused when the field loses focus: the value stays to be fixed, and the passed test no longer shows.
+  await blurFill(page, 'storage.sync.endpoint', 'http://example.com');
+  await page.waitForSelector('.dialog');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  await blocked('refused on blur');
+  assert.equal(await page.inputValue(endpoint), 'http://example.com');
+  await blurFill(page, 'storage.sync.endpoint', 'https://fixed.example.com');
+  await unblocked();
+
+  // Typed, then Test or the switch pressed at once while the app takes a moment to answer: the press saves the field,
+  // the app refuses it, and the test or the switch that waited for that save doesn't run with the saved endpoint.
+  await page.evaluate(() => (window.__settingsMockSlow.settings_set = 300));
+  for (const [target, ran] of [
+    ['[data-a="sync-test"]', tests],
+    [toggle, switchesOn]
+  ]) {
+    await page.click('[data-a="sync-test"]');
+    await page.waitForSelector('[data-section="sync-connection"] .form-status.ok');
+    assert.equal(await page.locator(toggle).isDisabled(), false, 'tested, so the switch can turn on');
+    const before = await ran();
+    await page.click(endpoint);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('http://typed.example.com');
+    await press(page, target);
+    await page.waitForSelector('.dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+    assert.equal(await ran(), before, `${target} ran with the saved endpoint`);
+    await blocked(target);
+    assert.equal((await mockState()).config.storage.sync.enabled, false);
+    await blurFill(page, 'storage.sync.endpoint', 'https://fixed.example.com');
+    await unblocked();
+  }
+});
+
+check('the sync status says what the bucket is doing', async ({ open, page }) => {
+  const statusOf = async (sync) => {
+    await open(`settings.html?mock=1&lang=en&page=storage&sync=${sync}`);
+    return page.locator('[data-section="sync"]').innerText();
+  };
+  assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
+  assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
+  const retrying = await statusOf('retrying');
+  assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
+  const failing = await statusOf('failing');
+  assert.match(failing, /Uploads stopped\.[\s\S]*doesn't accept this access key and secret[\s\S]*41 files waiting[\s\S]*as long as 10 GB stay free/);
+  assert.match(failing, /removed 3 files before they reached the bucket/);
+  await page.click('[data-a="sync-details:last"]');
+  assert.match(await dialogText(page), /SignatureDoesNotMatch/);
+  await page.keyboard.press('Escape');
+  assert.match(await statusOf('key'), /can't open its encryption key/);
+  assert.equal(await page.locator('[data-section="sync"] [data-a="sync-key-use"]').count(), 1);
+  assert.equal(await page.locator('[data-a="sync-key-show"]').isDisabled(), true, 'an unreadable key has nothing to show');
+  await statusOf('tested');
+  assert.equal(await page.locator('[data-section="sync"] .sync-status').count(), 0, 'nothing while off');
+  // An upload that failed for no known reason: Error details says uploads stopped, never "The test failed.".
+  await open('settings.html?mock=1&lang=en&page=storage&sync=failing');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.lastError = { at: 1, code: 'failed', message: 'HTTP 500 from example.upcloudobjects.com.' })));
+  await page.waitForFunction(() => !document.querySelector('[data-section="sync"]').innerText.includes('access key'));
+  assert.doesNotMatch(await page.locator('[data-section="sync"]').innerText(), /The test failed/);
+  await page.click('[data-a="sync-details:last"]');
+  assert.match(await dialogText(page), /Uploads stopped\.[\s\S]*HTTP 500/);
+  assert.doesNotMatch(await dialogText(page), /The test failed/);
+});
+
+check('Show key says what went wrong when the app can\'t give the key', async ({ open, page }) => {
+  // A key that exists but can't be opened, which the page hasn't heard about yet.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.state = 'key'), { emit: false }));
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.dialog');
+  assert.match(await dialogText(page), /can't open its encryption key on this computer/);
+  assert.equal(await protectedNow(page), false);
+  await page.keyboard.press('Escape');
+  // No key yet: Show makes one, so a failure isn't an unreadable key and asks for no saved key.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.state = 'key'), { emit: false }));
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.dialog');
+  assert.doesNotMatch(await dialogText(page), /saved key/);
+  assert.match(await dialogText(page), /Couldn't change this setting\./);
+  assert.equal(await page.locator('.recovery-key').count(), 0);
+  assert.equal(await protectedNow(page), false);
+});
+
+check('the recovery key shows only in its protected dialog and leaves nothing behind', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  // Any use of the web clipboard by the page is recorded.
+  await page.evaluate(() => {
+    window.__clipboardUsed = false;
+    const real = navigator.clipboard;
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      get() {
+        window.__clipboardUsed = true;
+        return real;
+      }
+    });
+  });
+  assert.equal(await protectedNow(page), false);
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.recovery-key');
+  assert.equal(await protectedNow(page), true, 'hidden from capture while open');
+  const log = await calls();
+  const protectAt = log.findIndex(([command, args]) => command === 'settings_protect' && args.on === true);
+  const showAt = log.findIndex(([command, args]) => command === 'settings_sync_key' && args.action === 'show');
+  assert.ok(protectAt >= 0 && protectAt < showAt, 'protected before the code is asked for');
+  assert.equal(await page.locator('.recovery-key').innerText(), ZERO_CODE);
+  await page.click('[data-copy]');
+  await page.waitForSelector('[data-copy]:has-text("Copied")');
+  assert.ok((await calls()).some(([command]) => command === 'settings_sync_key_copy'));
+  assert.equal(await page.evaluate(() => window.__clipboardUsed), false, 'never navigator.clipboard');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.recovery-key').count(), 0);
+  assert.ok(!(await page.content()).includes('RKV1-'), 'no code in the DOM');
+  assert.equal(await protectedNow(page), false, 'shown again after closing');
+  assert.ok(!(await calls()).some(([command, args]) => command === 'settings_sync_key' && args.action === 'saved'), 'closing is not saving');
+  // I saved it.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=retrying');
+  assert.match(await page.locator('[data-section="sync-key"]').innerText(), /You haven't saved it yet\./);
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.recovery-key');
+  await page.click('.dialog .buttons .btn.primary');
+  await page.waitForSelector('[data-section="sync-key"] .desc:text("Saved. Key 0f1e2d3c")');
+  assert.ok((await calls()).some(([command, args]) => command === 'settings_sync_key' && args.action === 'saved'));
+  assert.equal(await page.locator('.recovery-key').count(), 0);
+  assert.equal(await protectedNow(page), false);
+});
+
+check('Settings never uses the web clipboard', async () => {
+  const source = require('fs').readFileSync(path.join(__dirname, '..', 'settings.js'), 'utf8');
+  assert.doesNotMatch(source, /navigator\s*\.\s*clipboard|execCommand\(\s*['"]copy/);
+});
+
+check('a meeting that starts recording the screen closes either key dialog', async ({ open, page }) => {
+  for (const [button, selector, title] of [
+    ['sync-key-show', '.recovery-key', 'Your encryption key'],
+    ['sync-key-use', '.recovery-input', 'Use a key from another computer']
+  ]) {
+    await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+    await page.click(`[data-a="${button}"]`);
+    await page.waitForSelector(selector);
+    if (button === 'sync-key-use') await page.fill('.recovery-input', ZERO_CODE);
+    assert.equal(await protectedNow(page), true);
+    await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.screenRecording = true)));
+    await page.waitForSelector(selector, { state: 'detached' });
+    assert.ok(!(await page.content()).includes('RKV1-'), `${button}: no code left in the DOM`);
+    assert.equal(await page.locator('.recovery-input').count(), 0);
+    assert.match(await dialogText(page), new RegExp(`${title}[\\s\\S]*Stop the meeting's screen recording`));
+    assert.equal(await protectedNow(page), false, `${button}: shown again`);
+    await page.keyboard.press('Escape');
+    // While it records, the dialog doesn't open at all.
+    await page.click(`[data-a="${button}"]`);
+    await page.waitForSelector('.dialog');
+    assert.equal(await page.locator(selector).count(), 0);
+    assert.match(await dialogText(page), /Stop the meeting's screen recording/);
+  }
+  // The app refuses Show key before the page has heard about the recording.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.screenRecording = true), { emit: false }));
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.dialog');
+  assert.equal(await page.locator('.recovery-key').count(), 0);
+  assert.match(await dialogText(page), /Stop the meeting's screen recording/);
+  assert.equal(await protectedNow(page), false);
+});
+
+check('Use a key maps invalid_value, key_in_use and recording_screen, and takes a good key', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  await page.click('[data-a="sync-key-use"]');
+  await page.waitForSelector('.recovery-input');
+  assert.equal(await page.getAttribute('.recovery-input', 'spellcheck'), 'false');
+  assert.equal(await page.getAttribute('.recovery-input', 'autocomplete'), 'off');
+  const use = '.dialog .buttons .btn.primary';
+  await page.fill('.recovery-input', 'hello');
+  await page.click(use);
+  await page.waitForSelector('.dialog-error:text("That isn\'t a Rukoo Voice key")');
+  await page.fill('.recovery-input', ZERO_CODE);
+  await page.click(use);
+  await page.waitForSelector('.dialog-error:text("already uploaded meetings with its own key")');
+  assert.equal(await page.locator('.recovery-input').count(), 1, 'the dialog stays open on a refusal');
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.screenRecording = true), { emit: false }));
+  await page.click(use);
+  await page.waitForSelector('.recovery-input', { state: 'detached' });
+  assert.match(await dialogText(page), /Stop the meeting's screen recording/);
+  assert.equal(await protectedNow(page), false);
+  // A computer that hasn't uploaded takes the key.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=fresh');
+  await page.click('[data-a="sync-key-use"]');
+  await page.fill('.recovery-input', ZERO_CODE.toLowerCase());
+  await page.click(use);
+  await page.waitForSelector('.recovery-input', { state: 'detached' });
+  await page.waitForSelector('[data-section="sync-key"] .desc:text("Saved. Key 0f1e2d3c")');
+  assert.ok((await calls()).some(([command, args]) => command === 'settings_sync_key' && args.action === 'import'));
+  assert.equal(await protectedNow(page), false);
+  assert.equal(await page.locator('.dialog').count(), 0);
+});
+
+check('Restore brings the bucket\'s meetings back with progress', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=restore');
+  assert.match(await page.locator('[data-section="sync-bucket"]').innerText(), /2 meetings in your bucket aren't on this computer/);
+  await page.click('[data-a="sync-restore"]');
+  await page.waitForSelector('[data-section="sync-bucket"] .progress');
+  assert.match(await page.locator('[data-section="sync-bucket"]').innerText(), /Restoring \d of 2/);
+  await page.waitForSelector('[data-section="sync-bucket"] .title:text("Restored")', { timeout: 4000 });
+  await open('settings.html?mock=1&lang=en&page=storage&sync=restore-failed');
+  assert.match(await page.locator('[data-section="sync-bucket"]').innerText(), /Restoring stopped\./);
+  await page.click('[data-a="sync-details:restore"]');
+  assert.match(await dialogText(page), /Weekly/);
+});
+
+check('the bucket retention saves from its segmented control', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&page=storage&sync=on');
+  await page.click('[data-a="seg:storage.sync.retention:days90"]');
+  assert.equal((await mockState()).config.storage.sync.retention, 'days90');
+  assert.equal(await page.locator('[data-a="seg:storage.sync.retention:days90"]').getAttribute('aria-selected'), 'true');
+});
+
+check('Dutch is complete on the Storage page with sync, and in the key dialogs', async ({ open, page }) => {
+  const english = [
+    'Sync to your bucket',
+    'In your bucket',
+    'Test connection',
+    'Secret access key',
+    'Key saved',
+    'Replace',
+    'Remove',
+    'Encrypted',
+    'Show key',
+    'Use a key',
+    'Keep in the bucket',
+    'Forever',
+    'Everything is in the bucket',
+    'files waiting',
+    'Uploads stopped',
+    'keeps trying',
+    'Restore',
+    'Waiting since',
+    'Last upload',
+    'saved it'
+  ];
+  const noEnglish = (text, where) => {
+    for (const phrase of english) assert.ok(!text.includes(phrase), `"${phrase}" on the Dutch ${where}`);
+  };
+  for (const sync of ['fresh', 'tested', 'on', 'live', 'retrying', 'failing', 'key', 'restore', 'restore-failed']) {
+    await open(`settings.html?mock=1&lang=nl&page=storage&sync=${sync}`);
+    noEnglish(await page.locator('.page').innerText(), `storage page, sync=${sync}`);
+  }
+  await open('settings.html?mock=1&lang=nl&page=storage&sync=on');
+  await page.click('[data-a="sync-key-show"]');
+  await page.waitForSelector('.recovery-key');
+  noEnglish(await dialogText(page), 'key dialog');
+  await page.keyboard.press('Escape');
+  await page.click('[data-a="sync-key-use"]');
+  await page.waitForSelector('.recovery-input');
+  noEnglish(await dialogText(page), 'Use a key dialog');
+});
+
 // ---------- the pill ----------
 
 check('the pill reports the stop button for the native window, and null without one', async ({ open, page }) => {
@@ -544,10 +1077,12 @@ async function main() {
       } else await page.waitForSelector('.pill');
     };
     const mockState = () => page.evaluate(() => window.__settingsMockState());
+    // Every command the page sent the mock since it loaded: [command, args].
+    const calls = () => page.evaluate(() => window.__settingsMockCalls);
     for (const { name, run } of checks) {
       errors.length = 0;
       try {
-        await run({ open, page, mockState });
+        await run({ open, page, mockState, calls });
         assert.deepEqual(errors, [], 'page errors');
         console.log(`ok   ${name}`);
       } catch (error) {

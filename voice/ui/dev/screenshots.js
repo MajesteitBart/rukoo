@@ -101,7 +101,8 @@ const SCENARIOS = [
   ['meetingTranscription-stream', 'page=meetingTranscription&speakers=consent'],
   ['later-main', 'page=meetings&later=1'],
   ['later-speakers', 'page=speakers&later=1'],
-  ['later-storage-sync', 'page=storage&later=1&sync=1']
+  // Settings > Storage with bucket sync in each of its states (mock/settings.js, &sync=).
+  ...['fresh', 'tested', 'on', 'live', 'retrying', 'failing', 'paused', 'unavailable', 'key', 'restore', 'restore-failed'].map((sync) => [`storage-sync-${sync}`, `page=storage&sync=${sync}`])
 ];
 
 async function main() {
@@ -184,7 +185,10 @@ async function main() {
           ['speakers-mistral', 'page=speakers&speakers=mistral'],
           ['dictionary', 'page=dictionary'],
           ['rukoo', 'page=rukoo'],
-          ['import', 'page=import&scenario=cloud']
+          ['import', 'page=import&scenario=cloud'],
+          ['storage-sync-failing', 'page=storage&sync=failing'],
+          ['storage-sync-key', 'page=storage&sync=key'],
+          ['storage-sync-restore', 'page=storage&sync=restore']
         ])
           await settings(path.join(out, 'settings', `narrow-${theme}-${lang}`, `${name}.png`), `${query}&theme=${theme}&lang=${lang}`, 480);
       }
@@ -242,6 +246,60 @@ async function main() {
         await page.waitForTimeout(200);
         await shot(path.join(dir, 'dictionary-error.png'));
       }
+      // Bucket sync's dialogs and Test connection, in both themes and languages: the recovery code (zeros in the
+      // mock), copied; a refused key; a failed test with its Error details; a test that found another key.
+      for (const theme of THEMES)
+        for (const lang of LANGS) {
+          const dir = path.join(out, 'settings', `sync-${theme}-${lang}`);
+          const storage = async (sync) => {
+            await size(760, 680);
+            await page.goto(`${base}settings.html?mock=1&page=storage&sync=${sync}&theme=${theme}&lang=${lang}`);
+            await page.waitForSelector('[data-section="sync"]');
+          };
+          await storage('on');
+          await page.click('[data-a="sync-key-show"]');
+          await page.waitForSelector('.recovery-key');
+          await page.waitForTimeout(300);
+          await shot(path.join(dir, 'key-show.png'));
+          await page.click('[data-copy]');
+          await page.waitForTimeout(200);
+          await shot(path.join(dir, 'key-copied.png'));
+          await page.keyboard.press('Escape');
+          await page.click('[data-a="sync-key-use"]');
+          await page.waitForSelector('.recovery-input');
+          await page.waitForTimeout(300);
+          await shot(path.join(dir, 'key-use.png'));
+          await page.fill('.recovery-input', 'RKV1-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000');
+          await page.click('.dialog .buttons .btn.primary');
+          await page.waitForSelector('.dialog-error:not([hidden])');
+          await shot(path.join(dir, 'key-use-in-use.png'));
+          await page.keyboard.press('Escape');
+          // A meeting starts recording the screen while the key shows.
+          await page.click('[data-a="sync-key-show"]');
+          await page.waitForSelector('.recovery-key');
+          await page.evaluate(() => window.__settingsMockEdit((s) => (s.sync.screenRecording = true)));
+          await page.waitForSelector('.recovery-key', { state: 'detached' });
+          await page.waitForTimeout(300);
+          await shot(path.join(dir, 'key-closed-by-screen-recording.png'));
+          await storage('tested');
+          await page.fill('[data-field="storage.sync.bucket"]', 'fail');
+          await page.locator('[data-field="storage.sync.bucket"]').blur();
+          await page.click('[data-a="sync-test"]');
+          await page.waitForSelector('.form-status.bad');
+          await fitHeight(page, size, 760, '.page-inner', 52 + 4 + 48);
+          await shot(path.join(dir, 'test-failed.png'));
+          await size(760, 680);
+          await page.click('[data-a="sync-details:test"]');
+          await page.waitForTimeout(300);
+          await shot(path.join(dir, 'test-failed-details.png'));
+          await page.keyboard.press('Escape');
+          await page.fill('[data-field="storage.sync.bucket"]', 'shared');
+          await page.locator('[data-field="storage.sync.bucket"]').blur();
+          await page.click('[data-a="sync-test"]');
+          await page.waitForSelector('.form-status.ok');
+          await fitHeight(page, size, 760, '.page-inner', 52 + 4 + 48);
+          await shot(path.join(dir, 'test-other-keys.png'));
+        }
     }
   } finally {
     await app.close();

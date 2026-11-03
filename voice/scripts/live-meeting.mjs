@@ -4,14 +4,16 @@
 //
 //   node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
 //                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
-//                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>]]
+//                                       [--sync] [--remote-fetch=<ssh target>]
+//                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>] | --measure=sync]
 //
 // Windows only. Everything it starts lives under tmp\live\<time>\ in this checkout: Voice's data folder
 // (RUKOO_VOICE_DATA_DIR), Rukoo's profile (SEM_DATA_DIR), the discovery file both get as RUKOO_VOICE_BRIDGE, and the
 // speech. Captures of the apps' own windows go to tmp\live-shots\. Orukeet is read from Ownkey's model folder, read
 // only. Nothing touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process
 // it started is stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice\target, and
-// the programs run from there: debug builds unless --release is given, release builds for --measure=screen.
+// the programs run from there: debug builds unless --release is given, release builds for --measure=screen. Rukoo's
+// MCP server listens on port 47810, not the 47800 an installed Rukoo uses.
 //
 // The checks: passages with the expected words reach Rukoo on both tracks before the stop; the pill shows the
 // recording; Rukoo's windows are protected from capture; frames with their text reach Rukoo while it records and
@@ -67,9 +69,24 @@
 //
 // The runtime: RUKOO_VOICE_NEMO_DIR when set; otherwise tmp\speaker-assets\nemo_speech when it holds one; otherwise
 // Voice's own order (next to the exe, then Ownkey's copy, read only).
+//
+// --sync adds bucket sync against voice-s3-fake (rukoo-voice-fake-s3) in tmp\live\<time>\s3\: Voice connects
+// through its Settings commands before the meeting; audio objects arrive while it records, and frames too when the
+// meeting records the screen; the fake stops for 20 s mid-meeting and the recorder's heartbeats stay within 1,300 ms;
+// the Voice restart leaves no object uploaded twice; video goes up only after the stop; after done every object passes
+// check-encrypted.mjs, the clips and screen.json never went up, and neither the secret nor the recovery code is in
+// plain text; an agent's audio link (get_meeting_media_link) gives the meeting's speech and is refused after its 5 s,
+// and its frame and video links give the screen; and a second Voice on a fresh data folder imports the code, restores
+// every meeting into Rukoo with its screen journal and speaker ids, and serves the same audio, frame and video from
+// the bucket. It combines with --screen and --speakers, never with --real-screen. --measure=sync adds spec-RUK-110's
+// measurements to report.json: a 10-minute meeting with sync on, a 3-minute one with sync off and six short ones.
+// --remote-fetch=<ssh target> lets that machine, on the tailnet, call the tool over Rukoo's Tailscale listener and
+// download the link with curl, read only; it then checks that the link is refused from this computer's own address
+// and after it expired. The recovery code and the secret stay in memory.
 
 import { createRequire } from 'node:module';
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,12 +97,12 @@ const { _electron: electron } = require('@playwright/test');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const VOICE = path.join(ROOT, 'voice');
-const MEASURES = ['screen', 'speakers'];
+const MEASURES = ['screen', 'speakers', 'sync'];
 const REASONS = ['cpu', 'runtime', 'model'];
 const SCREENS = ['off', 'frames', 'video'];
 
 function parseArgs(argv) {
-  const out = { skipBuild: false, release: false, screen: 'frames', realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, measure: null, seconds: 600, minutes: 5 };
+  const out = { skipBuild: false, release: false, screen: 'frames', realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5 };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -124,6 +141,13 @@ function parseArgs(argv) {
       case '--visible-rukoo':
         out.visibleRukoo = true;
         break;
+      case '--sync':
+        out.sync = true;
+        break;
+      case '--remote-fetch':
+        out.remoteFetch = next();
+        if (!out.remoteFetch) throw new Error('--remote-fetch takes an ssh target');
+        break;
       case '--measure':
         if (!MEASURES.includes(value)) throw new Error(`--measure takes a value: ${MEASURES.map((m) => `--measure=${m}`).join(', ')}`);
         out.measure = value;
@@ -141,6 +165,11 @@ function parseArgs(argv) {
   if (out.speakers !== null && out.realScreen) throw new Error('--speakers and --real-screen are separate runs: the slides follow the SAPI call');
   if (REASONS.includes(out.speakers) && out.measure) throw new Error('--speakers=<reason> and --measure are separate runs');
   if (out.measure === 'speakers' && out.speakers !== null) throw new Error('--measure=speakers plays the AMI excerpt by itself; leave out --speakers');
+  if (out.measure === 'sync') out.sync = true;
+  // A real-screen run deletes what it captured; it never uploads the real screen to a bucket (contract 1.13).
+  if (out.sync && out.realScreen) throw new Error('--sync and --real-screen are separate runs: the real screen never goes to a bucket');
+  if (out.sync && (out.measure === 'screen' || out.measure === 'speakers' || REASONS.includes(out.speakers))) throw new Error('--sync runs the standard meeting; --measure=screen, --measure=speakers and --speakers=<reason> are separate runs');
+  if (out.remoteFetch && !out.sync) throw new Error('--remote-fetch needs --sync');
   return out;
 }
 
@@ -151,6 +180,8 @@ const PROFILE = RELEASE ? 'release' : 'debug';
 const SPEAKERS = ARGS.speakers;
 const MEASURE = ARGS.measure;
 const MINUTES = ARGS.minutes;
+const SYNC = ARGS.sync;
+const REMOTE_FETCH = ARGS.remoteFetch;
 // The AMI excerpt is the call in every speaker run.
 const AMI = SPEAKERS !== null || MEASURE === 'speakers';
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
@@ -161,6 +192,7 @@ const BIN = path.join(TARGET, PROFILE);
 const EXE = path.join(BIN, 'rukoo-voice.exe');
 const SPEAKERS_EXE = path.join(BIN, 'rukoo-voice-speakers.exe');
 const SCREEN_EXE = path.join(BIN, 'rukoo-voice-screen.exe');
+const FAKE_S3 = path.join(BIN, 'rukoo-voice-fake-s3.exe');
 const SHERPA = process.env.SHERPA_ONNX_ARCHIVE_DIR || path.join(ROOT, 'tmp', 'sherpa-archive');
 const ASSETS = path.join(ROOT, 'tmp', 'speaker-assets');
 const AMI_WAV = path.join(ASSETS, 'ami', 'ami_en2002d_2132.wav');
@@ -170,6 +202,15 @@ const NEMOTRON = path.join(ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf
 const NEMOTRON_DIR = path.join('models', 'nemotron-3-diarization', 'f667ed73aee57d40cc39428eb768b4fd87a0a29e');
 // The three AMI speakers who talk for more than a few words; FEO072 says three.
 const MAIN = ['MEE071', 'FEO070', 'MEE073'];
+// Bucket sync: the fake bucket's folder, the second Voice of the restore on a fresh data folder, Rukoo's MCP port
+// (an installed Rukoo listens on 47800) and the lifetime of the run's links, so it sees one refused.
+const S3_DIR = path.join(RUN, 's3');
+const VOICE_DATA_2 = path.join(RUN, 'voice-data-2');
+const MCP_PORT = 47810;
+const LINK_TTL_MS = 5000;
+const TITLE = 'Live run: launch review';
+// The recorder's segments are 30 s (voice/RECORDING.md).
+const SEGMENT_MS = 30000;
 
 // Where the current Voice and Rukoo keep their files. --measure gives each of its meetings a fresh set.
 let VOICE_DATA;
@@ -211,8 +252,12 @@ const THEM = {
   words: AMI ? ['speaker', 'organis', 'organiz', 'segment', 'steve', 'evaluation', 'time'] : ['invoice', 'amsterdam', 'deadline', 'warehouse', 'supplier', 'delivery', 'tuesday']
 };
 
-const report = { started: new Date().toISOString(), run: RUN, options: ARGS, checks: [], notes: [], screen: {} };
-const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [] };
+// The bucket secret the run chooses and the recovery code Voice shows: in memory only, never in the report.
+const SECRETS = { secret: `test-secret-${crypto.randomBytes(12).toString('hex')}`, code: null };
+
+// The ssh target stays out of the report.
+const report = { started: new Date().toISOString(), run: RUN, options: { ...ARGS, remoteFetch: Boolean(ARGS.remoteFetch) }, checks: [], notes: [], screen: {}, measurements: {} };
+const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [], fake: [] };
 let failed = 0;
 let nemoDir = null;
 
@@ -279,7 +324,7 @@ function percentile(xs, p) {
 // ---------- build, assets and speech ----------
 
 function build() {
-  const crates = ['voice-app', 'voice-recorder', 'voice-local', 'voice-speakers', 'voice-screen'];
+  const crates = ['voice-app', 'voice-recorder', 'voice-local', 'voice-speakers', 'voice-screen', ...(SYNC ? ['voice-s3-fake'] : [])];
   console.log(`building ${crates.join(', ')} (${PROFILE}) into ${TARGET}`);
   const out = spawnSync('cargo', ['build', ...(RELEASE ? ['--release'] : []), ...crates.flatMap((c) => ['-p', c])], {
     cwd: VOICE,
@@ -385,11 +430,11 @@ function prepareVoiceData(config = null) {
   if (config) fs.writeFileSync(path.join(VOICE_DATA, 'config.json'), JSON.stringify(config));
 }
 
-function voiceEnv({ monitor = null, noSpeakers = null } = {}) {
+function voiceEnv({ monitor = null, noSpeakers = null, data = VOICE_DATA } = {}) {
   const call = AMI ? `${AMI_WAV},loop` : `${path.join(RUN, 'them.wav')},loop`;
   const env = {
     ...process.env,
-    RUKOO_VOICE_DATA_DIR: VOICE_DATA,
+    RUKOO_VOICE_DATA_DIR: data,
     RUKOO_VOICE_BRIDGE: BRIDGE,
     // The recorder plays the speech in real time, looping, instead of opening the microphone and the speakers.
     RUKOO_VOICE_TEST_SOURCES: `mic=file:${path.join(RUN, 'you.wav')},loop,call=file:${call}`
@@ -424,9 +469,9 @@ function writeConfig(extra = {}) {
   fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
 }
 
-function startVoice(n, { monitor = null, noSpeakers = null } = {}) {
+function startVoice(n, { monitor = null, noSpeakers = null, data = VOICE_DATA } = {}) {
   const log = fs.openSync(path.join(path.dirname(VOICE_DATA), `voice-${n}.log`), 'a');
-  const child = spawn(EXE, ['--dev-hooks', HOOKS], { cwd: VOICE, env: voiceEnv({ monitor, noSpeakers }), stdio: ['ignore', log, log], windowsHide: true });
+  const child = spawn(EXE, ['--dev-hooks', HOOKS], { cwd: VOICE, env: voiceEnv({ monitor, noSpeakers, data }), stdio: ['ignore', log, log], windowsHide: true });
   started.voice.push(child.pid);
   console.log(`started Voice ${n}, pid ${child.pid}${monitor ? `, screen pinned to ${monitor}` : ''}${ARGS.realScreen ? '' : `, synthetic screen ${syntheticSize}`}`);
   return child;
@@ -442,6 +487,8 @@ async function hook(cmd, args = {}, ms = 60000) {
   const reply = path.join(HOOKS, `reply-${id}.json`);
   await until(`Voice's answer to ${cmd}`, () => fs.existsSync(reply), ms, 100);
   const answer = JSON.parse(fs.readFileSync(reply, 'utf8'));
+  // A reply can hold the recovery code; it stays in memory only.
+  fs.rmSync(reply, { force: true });
   if (!answer.ok) throw new Error(`${cmd}: ${answer.error}`);
   return answer.result;
 }
@@ -592,13 +639,340 @@ function movedPassages(events) {
   return moved;
 }
 
+// The largest step between heartbeats whose wall time is in [from, to], by the meeting clock `t`, and whether any
+// gap, device_lost, crash or suspend line falls in it.
+function heartbeats(lines, from = 0, to = Infinity) {
+  const inside = lines.filter((l) => Number.isFinite(l.wall) ? l.wall >= from && l.wall <= to : false);
+  const beats = inside.filter((l) => l.kind === 'heartbeat').map((l) => l.t);
+  let maxGapMs = 0;
+  for (let i = 1; i < beats.length; i++) maxGapMs = Math.max(maxGapMs, beats[i] - beats[i - 1]);
+  // Lines without a wall time sit between the heartbeats around them.
+  const first = lines.findIndex((l) => l.kind === 'heartbeat' && l.wall >= from);
+  let last = -1;
+  lines.forEach((l, i) => {
+    if (l.kind === 'heartbeat' && l.wall <= to) last = i;
+  });
+  const trouble = first >= 0 && last >= first ? lines.slice(first, last + 1).filter((l) => ['gap', 'device_lost', 'crash', 'suspend'].includes(l.kind)).map((l) => l.kind) : [];
+  return { beats: beats.length, maxGapMs, trouble };
+}
+
+// CPU time and I/O transfer counts of one process, from Win32_Process.
+function cpuIo(pid) {
+  const out = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}"; if ($p) { '{0} {1} {2} {3}' -f $p.UserModeTime, $p.KernelModeTime, $p.ReadTransferCount, $p.WriteTransferCount }`],
+    { encoding: 'utf8', windowsHide: true }
+  );
+  const [user, kernel, read, write] = String(out.stdout || '').trim().split(/\s+/).map(Number);
+  if (![user, kernel, read, write].every(Number.isFinite)) throw new Error(`no process ${pid}`);
+  return { at: Date.now(), cpuMs: (user + kernel) / 1e4, readBytes: read, writeBytes: write };
+}
+
+function usage(a, b) {
+  const minutes = (b.at - a.at) / 60000;
+  return {
+    seconds: Math.round((b.at - a.at) / 1000),
+    cpuSeconds: +((b.cpuMs - a.cpuMs) / 1000).toFixed(2),
+    cpuPercentOfOneCore: +(((b.cpuMs - a.cpuMs) / (b.at - a.at)) * 100).toFixed(2),
+    readMB: +((b.readBytes - a.readBytes) / 1e6).toFixed(2),
+    writeMB: +((b.writeBytes - a.writeBytes) / 1e6).toFixed(2),
+    cpuSecondsPerMinute: +((b.cpuMs - a.cpuMs) / 1000 / minutes).toFixed(3)
+  };
+}
+
+// ---------- the fake bucket (--sync) ----------
+
+const fake = { child: null, endpoint: null, port: 0 };
+
+// rukoo-voice-fake-s3 on port (0: any), serving S3_DIR; resolves once it prints where it listens.
+async function startFakeS3(port = 0) {
+  fs.mkdirSync(S3_DIR, { recursive: true });
+  const log = fs.openSync(path.join(RUN, 'fake-s3.log'), 'a');
+  const child = spawn(FAKE_S3, ['--port', String(port), '--bucket', 'test', '--access-key', 'test', '--dir', S3_DIR], { stdio: ['ignore', 'pipe', log], windowsHide: true });
+  started.fake.push(child.pid);
+  const endpoint = await new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(() => reject(new Error('the fake S3 did not say where it listens within 15 s')), 15000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      const m = /listening (http:\/\/\S+)/.exec(out);
+      if (m) {
+        clearTimeout(timer);
+        resolve(m[1]);
+      }
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`the fake S3 exited with ${code}`));
+    });
+  });
+  child.stdout.resume();
+  fake.child = child;
+  fake.endpoint = endpoint;
+  fake.port = Number(new URL(endpoint).port);
+  console.log(`started the fake S3, pid ${child.pid}, ${endpoint}`);
+  return endpoint;
+}
+
+async function stopFakeS3() {
+  const child = fake.child;
+  if (!child) return;
+  killPid(child.pid);
+  await until('the fake S3 to exit', () => !alive(child.pid), 10000);
+  fake.child = null;
+}
+
+// The fake's request log: { op, key, part, bytes, status, at }.
+function s3Log() {
+  try {
+    return fs
+      .readFileSync(path.join(S3_DIR, 'log.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (_) {
+    return [];
+  }
+}
+
+// Every stored object: key -> size.
+function s3Objects() {
+  const root = path.join(S3_DIR, 'objects');
+  const out = new Map();
+  const visit = (dir) => {
+    for (const entry of fs.existsSync(dir) ? fs.readdirSync(dir, { withFileTypes: true }) : []) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else out.set(path.relative(root, full).split(path.sep).join('/'), fs.statSync(full).size);
+    }
+  };
+  visit(root);
+  return out;
+}
+
+const uploads = (log) => log.filter((l) => (l.op === 'put' || l.op === 'upload_part') && l.status >= 200 && l.status < 300);
+
+// Object names stored twice, and parts uploaded twice, over the whole log. Only meeting files count: a manifest
+// and the index keep their names and are written again on purpose.
+function duplicates(log) {
+  const puts = new Map();
+  const parts = new Map();
+  for (const l of uploads(log)) {
+    if (!l.key.includes('/o/')) continue;
+    if (l.op === 'put') puts.set(l.key, (puts.get(l.key) || 0) + 1);
+    else parts.set(`${l.key}#${l.part}`, (parts.get(`${l.key}#${l.part}`) || 0) + 1);
+  }
+  const twice = (m) => [...m].filter(([, n]) => n > 1).map(([k, n]) => `${k} x${n}`);
+  return { puts: puts.size, parts: parts.size, putTwice: twice(puts), partTwice: twice(parts) };
+}
+
+// Upload rate between from and to (wall ms): mean, the busiest 10 s window and the largest request.
+function uploadRate(log, from, to) {
+  const inside = uploads(log).filter((l) => l.at >= from && l.at <= to);
+  const total = inside.reduce((n, l) => n + l.bytes, 0);
+  const windows = new Map();
+  for (const l of inside) {
+    const w = Math.floor((l.at - from) / 10000);
+    windows.set(w, (windows.get(w) || 0) + l.bytes);
+  }
+  const count = Math.max(1, Math.ceil((to - from) / 10000));
+  const perWindow = Array.from({ length: count }, (_, i) => windows.get(i) || 0);
+  return {
+    seconds: Math.round((to - from) / 1000),
+    requests: inside.length,
+    bytes: total,
+    meanKiBs: +(total / 1024 / ((to - from) / 1000)).toFixed(1),
+    maxKiBsPer10s: +(Math.max(...perWindow) / 1024 / 10).toFixed(1),
+    largestRequest: inside.reduce((n, l) => Math.max(n, l.bytes), 0)
+  };
+}
+
+// Settings > Storage, through the dev hooks as the page would.
+const syncHook = (action, more = {}, ms) => hook('sync', { action, ...more }, ms);
+const setting = (key, value) => hook('settings', { key, value });
+const syncStatus = () => syncHook('status');
+
+async function connectSync(endpoint, secret) {
+  await setting('storage.sync.service', 'other');
+  await setting('storage.sync.endpoint', endpoint);
+  await setting('storage.sync.region', 'us-east-1');
+  await setting('storage.sync.bucket', 'test');
+  await setting('storage.sync.accessKeyId', 'test');
+  await syncHook('secret', { secret });
+  const tested = await syncHook('test');
+  await setting('storage.sync.enabled', true);
+  return tested;
+}
+
+// Settings > Storage in the real app, from WebView2, in both themes and languages: tmp\live-shots\voice-storage-
+// <label>-<theme>-<language>.png. The page shows the fake's loopback address and nothing else of this computer.
+async function captureStorage(label) {
+  const was = (await hook('status')).settings;
+  const ui = was.config?.ui || {};
+  const shots = [];
+  for (const [theme, language] of [['dark', 'en'], ['light', 'en'], ['dark', 'nl'], ['light', 'nl']]) {
+    await setting('ui.theme', theme);
+    await setting('ui.language', language);
+    const dir = path.join(RUN, 'captures', `${label}-${theme}-${language}`);
+    const out = await hook('capture', { dir, page: 'storage' }, 90000);
+    const file = path.join(SHOTS, `voice-storage-${label}-${theme}-${language}.png`);
+    if (!out.settings.error) fs.copyFileSync(out.settings.file, file);
+    shots.push(out.settings.error ? { theme, language, error: out.settings.error } : { theme, language, file: path.basename(file) });
+  }
+  if (ui.theme) await setting('ui.theme', ui.theme);
+  if (ui.language) await setting('ui.language', ui.language);
+  check(`Voice captured Settings > Storage (${label}) in both themes and languages`, shots.every((s) => !s.error), shots);
+}
+
+// Waits until nothing waits to upload, the worker is idle and the index went up after the last manifest, so the
+// bucket's index names every meeting.
+async function drained(what, ms = 300000) {
+  return until(`${what}: the queue to drain and the index to follow`, async () => {
+    const s = await syncStatus();
+    if (s.waiting !== 0 || !(s.state === 'idle' || s.state === 'live')) return false;
+    const puts = s3Log().filter((l) => l.op === 'put' && l.status === 200);
+    const last = (test) => puts.filter((l) => test(l.key)).reduce((n, l) => Math.max(n, l.at), 0);
+    const manifest = last((k) => k.endsWith('/manifest'));
+    return manifest > 0 && last((k) => k.includes('/index/')) > manifest && s;
+  }, ms, 1000);
+}
+
+// Which files under dir (a folder or one file) hold one of the needles (strings). A file a running process holds
+// open without sharing can't be read; it is listed in `locked`, and the scan after every process stopped reads it.
+function holders(dir, needles, locked = []) {
+  const found = [];
+  const look = (full) => {
+    let bytes;
+    try {
+      bytes = fs.readFileSync(full);
+    } catch (err) {
+      if (err.code === 'EBUSY' || err.code === 'EPERM') return locked.push(path.relative(RUN, full));
+      throw err;
+    }
+    needles.forEach((n, i) => {
+      if (n && bytes.includes(Buffer.from(n, 'utf8'))) found.push(`${path.relative(RUN, full)} holds needle ${i + 1}`);
+    });
+  };
+  const visit = (d) => {
+    for (const entry of fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }) : []) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else look(full);
+    }
+  };
+  if (fs.existsSync(dir) && fs.statSync(dir).isFile()) look(dir);
+  else visit(dir);
+  return found;
+}
+
+// ---------- audio ----------
+
+// The samples of a 16-bit mono PCM WAV.
+function pcm(buf) {
+  let at = 12;
+  while (at + 8 <= buf.length) {
+    const id = buf.toString('latin1', at, at + 4);
+    const size = buf.readUInt32LE(at + 4);
+    if (id === 'data') {
+      const end = Math.min(buf.length, at + 8 + size);
+      const bytes = Buffer.from(buf.subarray(at + 8, end - ((end - at - 8) % 2)));
+      return new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
+    }
+    at += 8 + size + (size % 2);
+  }
+  throw new Error('no data chunk in the WAV');
+}
+
+// RMS per 20 ms window (320 samples at 16 kHz).
+function envelope(samples) {
+  const out = [];
+  for (let i = 0; i + 320 <= samples.length; i += 320) {
+    let sum = 0;
+    for (let j = i; j < i + 320; j++) sum += samples[j] * samples[j];
+    out.push(Math.sqrt(sum / 320));
+  }
+  return out;
+}
+
+function pearson(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 10) return 0;
+  let ma = 0;
+  let mb = 0;
+  for (let i = 0; i < n; i++) {
+    ma += a[i];
+    mb += b[i];
+  }
+  ma /= n;
+  mb /= n;
+  let num = 0;
+  let da = 0;
+  let db = 0;
+  for (let i = 0; i < n; i++) {
+    num += (a[i] - ma) * (b[i] - mb);
+    da += (a[i] - ma) ** 2;
+    db += (b[i] - mb) ** 2;
+  }
+  return da && db ? num / Math.sqrt(da * db) : 0;
+}
+
+// How well a fetched mix follows the two speech files played on a loop and summed: the best correlation of their
+// loudness over time, within a second of lag either way (the recorder starts its file sources as it starts).
+function matchesSpeech(wav, you, them) {
+  const got = pcm(wav);
+  const a = pcm(you);
+  const b = pcm(them);
+  const mix = new Int16Array(got.length + 16000);
+  for (let i = 0; i < mix.length; i++) mix[i] = Math.max(-32768, Math.min(32767, a[i % a.length] + b[i % b.length]));
+  const eg = envelope(got);
+  const em = envelope(mix);
+  let best = { r: -1, lagMs: 0 };
+  for (let lag = -50; lag <= 50; lag++) {
+    const x = lag >= 0 ? eg.slice(lag) : eg;
+    const y = lag >= 0 ? em : em.slice(-lag);
+    const r = pearson(x, y);
+    if (r > best.r) best = { r: +r.toFixed(3), lagMs: lag * 20 };
+  }
+  return { seconds: +(got.length / 16000).toFixed(2), ...best };
+}
+
+// Fetches url: status, headers, the bytes, time to the first byte and the rate.
+async function download(url, headers = {}) {
+  const t0 = performance.now();
+  const res = await fetch(url, { headers });
+  const chunks = [];
+  let firstMs = null;
+  if (res.body) {
+    for await (const chunk of res.body) {
+      if (firstMs === null) firstMs = performance.now() - t0;
+      chunks.push(Buffer.from(chunk));
+    }
+  }
+  const ms = performance.now() - t0;
+  const bytes = Buffer.concat(chunks);
+  return {
+    status: res.status,
+    type: res.headers.get('content-type'),
+    bytes,
+    firstByteMs: firstMs === null ? null : Math.round(firstMs),
+    totalMs: Math.round(ms),
+    mbPerS: ms > 0 ? +((bytes.length / 1e6) / (ms / 1000)).toFixed(1) : null
+  };
+}
+
 // ---------- Rukoo ----------
 
 let app;
 let win;
 
 async function startRukoo() {
+  // Port 47810 for the MCP server: an installed Rukoo listens on 47800.
+  const agents = path.join(RUKOO_DATA, 'data', 'agents.json');
+  fs.mkdirSync(path.dirname(agents), { recursive: true });
+  if (!fs.existsSync(agents)) fs.writeFileSync(agents, JSON.stringify({ version: 1, mcp: { port: MCP_PORT, remote: false, remoteHost: '' } }));
   const env = { ...process.env, SEM_DATA_DIR: RUKOO_DATA, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', RUKOO_VOICE_BRIDGE: BRIDGE };
+  // Links die after 5 s, so the run sees one refused.
+  if (SYNC) env.SEM_MEDIA_LINK_TTL_MS = String(LINK_TTL_MS);
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.RUKOO_VOICE_DATA_DIR;
   app = await electron.launch({ args: ['.'], cwd: ROOT, env });
@@ -623,7 +997,18 @@ const rukoo = {
   select: (id, monitor) => win.evaluate(([m, s]) => window.mail.call('meetingScreenSelect', m, s), [id, monitor]),
   settings: (patch) => win.evaluate((p) => window.mail.call('updateSettings', p), patch),
   voiceGet: (id) => app.evaluate((_, m) => global.__semVoice.bridge.command('meeting.get', { meeting: m }), id),
-  protectedWindows: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()))
+  protectedWindows: () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected())),
+  // get_meeting_media_link as Claude Code on this computer would call it, through the tool code MCP runs. A call from
+  // inside Rukoo carries no MCP token, so the link isn't bound to one.
+  mediaLink: (args) =>
+    app.evaluate(async (_, a) => {
+      const res = await global.__semAgents.callTool({ agent: 'claude', conversationId: null, remote: false, peer: '127.0.0.1' }, 'get_meeting_media_link', a);
+      return res.isError ? { error: res.content[0].text } : res.structuredContent;
+    }, args),
+  linkTtl: (ms) =>
+    app.evaluate((_, t) => {
+      global.__semAgents.mediaLinks.ttlMs = t;
+    }, ms)
 };
 
 async function captureRukoo(file) {
@@ -1024,9 +1409,15 @@ async function killScreen(id) {
 
 async function standardRun(voice, offsets) {
   const labels = SPEAKERS === true;
+  let outage = {};
+  let stopAt = null;
+  let snapshot = null;
+  // Sync: the fake bucket, then Settings > Storage as a user fills it in, before the meeting.
+  const sync = SECRETS;
+  if (SYNC) await syncSetup(sync);
   // 2. A meeting started from Rukoo, with Voice's default screen mode.
   const t0 = Date.now();
-  const { meetingId: id } = await rukoo.start({ title: 'Live run: launch review' });
+  const { meetingId: id } = await rukoo.start({ title: TITLE });
   check('Rukoo started a meeting through Voice', Boolean(id), id);
   report.meeting = id;
   const stopSlides = offsets ? scheduleSlides(id, offsets) : () => {};
@@ -1066,6 +1457,10 @@ async function standardRun(voice, offsets) {
     let named = null;
     if (labels) named = await speakersBeforeStop(id);
 
+    // Sync while it records: audio and frames go up before the stop, and a 20 s bucket outage costs the recorder
+    // nothing.
+    if (SYNC) outage = await syncWhileLive(id, t0);
+
     // Captures while it records: Rukoo's meeting view, the pill and Settings > Rukoo.
     if (!ARGS.realScreen) {
       await win.keyboard.press('Control+3');
@@ -1080,7 +1475,15 @@ async function standardRun(voice, offsets) {
     let screenPid = null;
     if (ARGS.screen !== 'off') screenPid = (await killScreen(id)).pid;
 
-    // 4. Voice restarts mid-meeting; the recorder and the screen process go on and the new Voice reattaches.
+    // 4. Voice restarts mid-meeting; the recorder and the screen process go on and the new Voice reattaches. With
+    // sync, the kill lands while the worker still has a file to upload.
+    if (SYNC) {
+      const pending = await until('a file waiting to upload', async () => {
+        const s = await syncStatus();
+        return s.waiting >= 1 && s;
+      }, 60000, 250);
+      note(`Voice killed with ${pending.waiting} file(s) waiting to upload, state ${pending.state}`);
+    }
     const before = await rukoo.get(id);
     const lastEnd = Math.max(...before.passages.map((p) => p.end));
     const recorder = recorderOf(id);
@@ -1133,6 +1536,7 @@ async function standardRun(voice, offsets) {
 
     // 6. Stop from Rukoo: processing, then done, after the screen journal's stop.
     await sleep(labels ? 20000 : 6000);
+    stopAt = Date.now();
     await rukoo.stop(id);
     await until('done', async () => (await rukoo.get(id)).meeting.state === 'done', 240000, 200);
     const states = await voiceStates(id);
@@ -1164,6 +1568,7 @@ async function standardRun(voice, offsets) {
       extra: extra.map(key)
     });
     check('no passage covers the same audio twice', overlaps(mine.passages).length === 0, overlaps(mine.passages));
+    snapshot = theirs;
     if (ARGS.screen !== 'off') {
       const ids = (x) => (x.frames || []).map((f) => f.id).sort().join(',');
       check("Rukoo's frames are Voice's frames", ids(mine) === ids(theirs) && (theirs.frames || []).length > 0, { voice: (theirs.frames || []).length, rukoo: (mine.frames || []).length });
@@ -1217,6 +1622,14 @@ async function standardRun(voice, offsets) {
   const final = await hook('status');
   report.settingsRukoo = final.settings.rukoo;
   check('Settings > Rukoo reports the client and how far behind it is', final.settings.rukoo.state === 'connected' && final.settings.rukoo.behind === 0, final.settings.rukoo);
+
+  if (!SYNC) return;
+  const ctx = { id, fromVoice, theirs: snapshot, t0, stopAt, outage, sync, voice: () => voice, setVoice: (v) => (voice = v) };
+  await bucketChecks(ctx);
+  if (MEASURE === 'sync') await measureSync(ctx);
+  await linkChecks(ctx);
+  if (REMOTE_FETCH) await remoteFetch(ctx);
+  await restoreChecks(ctx);
 }
 
 // Counts per kind and the drops; never the frames' text.
@@ -1815,6 +2228,508 @@ async function measureSpeakers() {
   row('accuracy', on.accuracy, null);
 }
 
+// ---------- bucket sync during the standard run (--sync) ----------
+
+// The fake bucket, then Settings > Storage as a user fills it in. The secret and the recovery code stay in memory.
+async function syncSetup(sync) {
+  await startFakeS3();
+  const off = await syncStatus();
+  check('sync is off until it is turned on', off.state === 'off', { state: off.state });
+  const refused = await setting('storage.sync.enabled', true).then(() => null, (err) => err.message);
+  check('the switch stays off before Test connection passed', /test/i.test(refused || ''), refused);
+  const tested = await connectSync(fake.endpoint, sync.secret);
+  const on = await syncStatus();
+  check('Test connection passed and sync is on', on.state !== 'off' && on.state !== 'failing', { tested, state: on.state });
+  const shown = await syncHook('key');
+  sync.code = shown.code;
+  check('Voice shows a recovery code for its key', typeof sync.code === 'string' && sync.code.startsWith('RKV1-'), { id: shown.id });
+}
+
+// While it records: audio objects, frames when the meeting records the screen, then a 20 s outage of the bucket.
+async function syncWhileLive(id, t0) {
+  const outage = {};
+  const audio = await until('audio objects in the bucket while it records', () => {
+    const n = s3Objects().size;
+    return n >= 3 && n; // meeting.json and a segment of each track
+  }, 120000, 1000);
+  check('audio objects reach the bucket before the stop', (await rukoo.state()).recording === id, { objects: audio, after: `${Math.round((Date.now() - t0) / 1000)} s` });
+  if (ARGS.screen !== 'off') {
+    const frames = await until('frames in the bucket while it records', async () => {
+      const rows = await queueRows(VOICE_DATA, id);
+      const up = rows.filter((r) => r.kind === 'frame' && r.state === 'done');
+      return up.length > 0 && up.length;
+    }, 120000, 1000);
+    const rows = await queueRows(VOICE_DATA, id);
+    check('frames reach the bucket before the stop, and no video does', (await rukoo.state()).recording === id && !rows.some((r) => r.kind === 'video'), { frames, videoRows: rows.filter((r) => r.kind === 'video').length });
+  }
+
+  // Stop the fake about 7 s before the next segment closes, so the worker tries to upload it while the bucket is
+  // gone.
+  const closes = () => {
+    const ends = timeline(id).filter((l) => l.kind === 'segment_end' && l.track === 'mic').map((l) => l.t);
+    return (ends.length ? Math.max(...ends) : 0) + SEGMENT_MS;
+  };
+  const nowT = () => timeline(id).filter((l) => l.kind === 'heartbeat').at(-1)?.t ?? 0;
+  let target = closes();
+  if (nowT() > target - 4000) target += SEGMENT_MS;
+  await until('the moment before a segment closes', () => nowT() >= target - 7000, 40000, 200);
+  outage.start = Date.now();
+  await stopFakeS3();
+  const seen = new Set();
+  let maxWaiting = 0;
+  while (Date.now() - outage.start < 20000) {
+    const s = await syncStatus();
+    seen.add(s.state);
+    maxWaiting = Math.max(maxWaiting, s.waiting);
+    await sleep(500);
+  }
+  // Same port and folder; a refused bind is retried for a few seconds.
+  for (let tries = 1; ; tries++) {
+    try {
+      await startFakeS3(fake.port);
+      break;
+    } catch (err) {
+      if (tries >= 10) throw err;
+      await sleep(1000);
+    }
+  }
+  outage.end = Date.now();
+  // Recovered: an upload succeeded after the bucket came back, the worker no longer retries, and what waited during
+  // the outage went up (frames keep coming while the screen records, so a few may wait).
+  const settled = ARGS.screen === 'off' ? 1 : 4;
+  const back = await until('sync to recover after the outage', async () => {
+    const s = await syncStatus();
+    seen.add(s.state);
+    const up = uploads(s3Log()).filter((l) => l.at >= outage.end);
+    return up.length >= Math.min(maxWaiting, 2) && s.state !== 'retrying' && s.state !== 'failing' && s.waiting <= settled && { s, up };
+  }, 180000, 500);
+  const firstUp = back.up.reduce((n, l) => Math.min(n, l.at), Infinity);
+  check('the outage shows as retrying, then sync recovers and the queue drains', seen.has('retrying') && back.s.waiting <= settled, {
+    states: [...seen],
+    maxWaiting,
+    waitingAfter: back.s.waiting,
+    uploadsAfter: back.up.length,
+    firstUploadAfterMs: firstUp - outage.end,
+    recoveredAfter: `${Math.round((Date.now() - outage.end) / 1000)} s`
+  });
+  // From just before the outage until sync recovered.
+  const window = heartbeats(timeline(id), outage.start - 2000, Date.now());
+  outage.heartbeats = window;
+  check('heartbeats stay within 1,300 ms through the outage, with no gap marks', window.beats > 20 && window.maxGapMs <= 1300 && window.trouble.length === 0, window);
+  await captureStorage('live');
+  return outage;
+}
+
+// ---------- after the meetings, with --sync ----------
+
+const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+const queueRows = (data, meeting) => readDb(path.join(data, 'sync', 'queue.db'), 'SELECT path, kind, size, object, state FROM files WHERE meeting = ? ORDER BY id', meeting);
+
+// 6. Every file in the bucket, encrypted, once; neither the secret nor the code on disk in plain text.
+async function bucketChecks(ctx) {
+  const { id, sync } = ctx;
+  const status = await drained('after both meetings');
+  check('every file of both meetings reached the bucket and the index followed', status.waiting === 0, { state: status.state, lastError: status.lastError && status.lastError.code });
+  await captureStorage('synced');
+
+  const rows = await queueRows(VOICE_DATA, id);
+  const byKind = {};
+  for (const r of rows) byKind[`${r.kind}:${r.state}`] = (byKind[`${r.kind}:${r.state}`] || 0) + 1;
+  const segments = [];
+  for (const track of ['mic', 'call']) {
+    const dir = path.join(VOICE_DATA, 'meetings', id, 'audio', track);
+    for (const f of fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.endsWith('.wav')) : []) segments.push(`audio/${track}/${f}`);
+  }
+  const notUp = segments.filter((p) => !rows.some((r) => r.path === p && r.state === 'done'));
+  check("each of the meeting's segments, meeting.json, its timeline and its transcript are in the bucket", notUp.length === 0 && ['meeting', 'timeline', 'transcript', 'manifest'].every((k) => byKind[`${k}:done`]), { segments: segments.length, notUp, rows: byKind });
+
+  // The screen folder by its rules (voice/RECORDING.md, "Other readers"): every frame and video file and the journal
+  // went up; the clips and screen.json never did; video only after the timeline's stop.
+  if (ARGS.screen !== 'off') {
+    const screen = path.join(VOICE_DATA, 'meetings', id, 'screen');
+    const onDisk = (sub, ext) => (fs.existsSync(path.join(screen, sub)) ? fs.readdirSync(path.join(screen, sub)).filter((n) => n.endsWith(ext)).map((n) => `screen/${sub}/${n}`) : []);
+    const files = [...onDisk('frames', '.jpg'), ...onDisk('video', '.mp4'), 'screen/journal.jsonl'];
+    const missingScreen = files.filter((p) => !rows.some((r) => r.path === p && r.state === 'done'));
+    const never = rows.filter((r) => r.path.startsWith('screen/clips/') || r.path === 'screen/screen.json' || r.path.endsWith('.tmp')).map((r) => r.path);
+    check("the screen journal, every frame and every video file are in the bucket; clips and screen.json never went up", missingScreen.length === 0 && never.length === 0 && byKind['screen:done'] === 1, {
+      frames: files.filter((p) => p.startsWith('screen/frames/')).length,
+      videos: files.filter((p) => p.startsWith('screen/video/')).length,
+      missing: missingScreen,
+      never
+    });
+    if (ARGS.screen === 'video') {
+      // The fake logs object names; the queue says which object each file became.
+      const log = uploads(s3Log());
+      const firstUp = (object) => log.filter((l) => l.key.endsWith(object)).reduce((n, l) => Math.min(n, l.at), Infinity);
+      const stopWall = wallOf(id, timeline(id).filter((l) => l.kind === 'stop').at(-1)?.t ?? 0) ?? ctx.stopAt;
+      const videoRows = rows.filter((r) => r.kind === 'video' && r.state === 'done');
+      const early = videoRows.filter((r) => firstUp(r.object) < stopWall).map((r) => r.path);
+      const frameUps = rows.filter((r) => r.kind === 'frame' && r.state === 'done').map((r) => firstUp(r.object));
+      check('video went up only after the stop, frames before it', videoRows.length > 0 && early.length === 0 && frameUps.some((at) => at < stopWall), { videos: videoRows.length, early, framesBeforeStop: frameUps.filter((at) => at < stopWall).length });
+    }
+  }
+
+  encrypted('every object in the bucket passes check-encrypted.mjs');
+
+  const dup = duplicates(s3Log());
+  check('the Voice restart left no file uploaded twice and no part twice', dup.putTwice.length === 0 && dup.partTwice.length === 0, dup);
+
+  const cfg = JSON.parse(fs.readFileSync(path.join(VOICE_DATA, 'config.json'), 'utf8'));
+  const stored = cfg.extra?.storage_sync || cfg.storage_sync || {};
+  const magic = (f, m) => {
+    try {
+      return fs.readFileSync(path.join(VOICE_DATA, 'sync', f)).subarray(0, 4).toString('latin1') === m;
+    } catch (_) {
+      return false;
+    }
+  };
+  const logs = fs.readdirSync(RUN).filter((f) => /^voice-\d+\.log$/.test(f));
+  const locked = [];
+  const needles = [sync.secret, sync.code];
+  const leaks = [...holders(VOICE_DATA, needles, locked), ...holders(HOOKS, needles, locked), ...logs.flatMap((f) => holders(path.join(RUN, f), needles, locked))];
+  check('the secret and the key are DPAPI files; neither is in plain text in the data folder or the logs', !('secret' in stored) && magic('bucket-secret.bin', 'RKVS') && magic('master-key.bin', 'RKVK') && leaks.length === 0, { leaks, configHasSecret: 'secret' in stored, lockedUntilTheEnd: locked });
+
+  // M1 and M2 for the healthy and the failing bucket, from the run's own meeting.
+  const lines = timeline(id);
+  report.measurements.M1_mainMeetingBeforeOutage = uploadRate(s3Log(), ctx.t0, ctx.outage.start);
+  report.measurements.M2 = {
+    healthy: heartbeats(lines, ctx.t0, ctx.outage.start),
+    failing: ctx.outage.heartbeats
+  };
+}
+
+// check-encrypted.mjs on the fake's folder, with every meeting id, the title and words of the speech as text no
+// object may hold; and no key shows a meeting id.
+function encrypted(name) {
+  const objects = s3Objects();
+  const ids = fs.readdirSync(path.join(VOICE_DATA, 'meetings')).filter((n) => n.startsWith('m-'));
+  // "Slide 2" is what the synthetic screen shows, so the journal holds it as frame text.
+  const forbid = [...ids, TITLE, 'warehouse', 'Amsterdam', ...(ARGS.screen !== 'off' ? ['Slide 2'] : [])].flatMap((t) => ['--forbid', t]);
+  const enc = spawnSync(process.execPath, [path.join(VOICE, 'scripts', 'check-encrypted.mjs'), S3_DIR, '--json', ...forbid], { encoding: 'utf8', windowsHide: true });
+  let result = null;
+  try {
+    result = JSON.parse(enc.stdout);
+  } catch (_) {
+    result = { error: enc.stderr };
+  }
+  check(name, enc.status === 0 && objects.size > 0, { meetings: ids.length, objects: result.objects, bytes: result.bytes, failed: result.failed, error: result.error });
+  check('no object key shows a meeting id', [...objects.keys()].every((k) => !k.includes('m-20')), { objects: objects.size });
+}
+
+// The spec's measurements: a 10-minute meeting with sync on, a 3-minute one with sync off, six short ones.
+async function measureSync(ctx) {
+  const pid = ctx.voice().pid;
+  const record = async (seconds, label) => {
+    const before = cpuIo(pid);
+    const { meeting } = await hook('start_meeting');
+    const start = Date.now();
+    console.log(`     ${label}: ${meeting}, ${seconds} s`);
+    await until(`${label} to record 3 minutes`, () => Date.now() - start >= 180000, 200000, 1000);
+    const at3 = cpuIo(pid);
+    await until(`${label} to record ${seconds} s`, () => Date.now() - start >= seconds * 1000, seconds * 1000 + 60000, 1000);
+    const stop = Date.now();
+    await hook('stop_meeting');
+    await until(`${label} to be done`, async () => (await rukoo.get(meeting))?.meeting.state === 'done', 300000, 1000);
+    return { meeting, start, stop, before, at3 };
+  };
+
+  const b = await record(600, 'meeting B, sync on');
+  await drained('meeting B');
+  const bEnd = cpuIo(pid);
+  const c0 = Date.now();
+  await setting('storage.sync.enabled', false);
+  const c = await record(180, 'meeting C, sync off');
+  const cEnd = cpuIo(pid);
+  await setting('storage.sync.enabled', true);
+  const shorts = [];
+  for (let i = 0; i < 6; i++) {
+    const { meeting } = await hook('start_meeting');
+    await sleep(6000);
+    await hook('stop_meeting');
+    await until('a short meeting to be done', async () => (await rukoo.get(meeting))?.meeting.state === 'done', 120000, 500);
+    shorts.push(meeting);
+  }
+  await drained('every meeting');
+  encrypted("every object of the measurements' ten meetings passes check-encrypted.mjs");
+  ctx.measured = { b: b.meeting, c: c.meeting, shorts };
+
+  const m = report.measurements;
+  m.M1 = uploadRate(s3Log(), b.start, b.stop);
+  m.M2.syncOn10min = heartbeats(timeline(b.meeting));
+  m.M2.syncOff3min = heartbeats(timeline(c.meeting));
+  m.M3 = {
+    syncOnFirst3min: usage(b.before, b.at3),
+    syncOffFirst3min: usage(c.before, c.at3),
+    syncOnWhole10minAndUpload: usage(b.before, bEnd),
+    syncOffWhole3min: usage(c.before, cEnd),
+    note: `meeting C started ${Math.round((c.start - c0) / 1000)} s after sync went off`
+  };
+
+  // M5 on this computer: a 10-minute audio link from local audio.
+  await rukoo.linkTtl(300000);
+  const t = performance.now();
+  const link = await rukoo.mediaLink({ meeting_id: b.meeting, kind: 'audio', from_seconds: 0, to_seconds: 600 });
+  const toolMs = Math.round(performance.now() - t);
+  const got = link.error ? null : await download(link.url);
+  await rukoo.linkTtl(LINK_TTL_MS);
+  check('a 10-minute audio link downloads from local audio', got && got.status === 200 && got.bytes.length === 600 * 32000 + 44, { error: link.error, status: got?.status, bytes: got?.bytes.length });
+  ctx.measured.bSha = got ? sha(got.bytes) : null;
+  m.M5 = { local: { bytes: got?.bytes.length, toolCallMs: toolMs, firstByteMs: got?.firstByteMs, totalMs: got?.totalMs, mbPerS: got?.mbPerS } };
+
+  // M7: what meeting B costs in the bucket against its plaintext.
+  const rows = await queueRows(VOICE_DATA, b.meeting);
+  const objects = s3Objects();
+  let plain = 0;
+  let stored = 0;
+  let audioObjects = 0;
+  const segmentSizes = new Set();
+  const counted = new Set();
+  // Newest row first: a manifest keeps its object name, so only its last generation counts.
+  for (const r of rows.filter((x) => x.state === 'done').reverse()) {
+    const keyed = [...objects.keys()].find((k) => k.endsWith(r.object));
+    if (!keyed || counted.has(keyed)) continue;
+    counted.add(keyed);
+    plain += r.size;
+    stored += objects.get(keyed);
+    if (r.kind === 'audio') {
+      audioObjects++;
+      if (r.size === 960044) segmentSizes.add(objects.get(keyed));
+    }
+  }
+  m.M7 = {
+    meeting: '10 minutes, two tracks',
+    files: counted.size,
+    audioObjects,
+    plaintextBytes: plain,
+    bucketBytes: stored,
+    overheadPercent: plain ? +(((stored - plain) / plain) * 100).toFixed(3) : null,
+    fullSegmentObjectBytes: [...segmentSizes],
+    perHourMB: +((stored / 1e6) * (3600 / ((b.stop - b.start) / 1000))).toFixed(1)
+  };
+}
+
+// A frame link and, for a meeting that recorded video, a video link: the bytes of the JPEG and of an MP4 stretch.
+async function screenLinks(id, label) {
+  const out = {};
+  const frames = (first && first.frames) || [];
+  if (ARGS.screen === 'off' || !frames.length) return out;
+  const at = Math.floor(frames[Math.floor(frames.length / 2)].at / 1000);
+  const frameLink = await rukoo.mediaLink({ meeting_id: id, kind: 'frame', from_seconds: at });
+  const frame = frameLink.error ? null : await download(frameLink.url);
+  const jpeg = frame && frame.status === 200 && frame.bytes[0] === 0xff && frame.bytes[1] === 0xd8;
+  check(`a frame link gives the frame's JPEG (${label})`, jpeg && frame.type === 'image/jpeg', { error: frameLink.error, status: frame?.status, type: frame?.type, bytes: frame?.bytes.length, at });
+  out.frame = jpeg ? frame.bytes : null;
+  if (ARGS.screen === 'video') {
+    const videoLink = await rukoo.mediaLink({ meeting_id: id, kind: 'video', from_seconds: 0, to_seconds: 60 });
+    const video = videoLink.error ? null : await download(videoLink.url);
+    const mp4 = video && video.status === 200 && video.bytes.toString('latin1', 4, 8) === 'ftyp';
+    check(`a video link gives an MP4 of one stretch (${label})`, mp4 && video.type === 'video/mp4', { error: videoLink.error, status: video?.status, type: video?.type, bytes: video?.bytes.length, to: videoLink.to_seconds });
+    out.video = mp4 ? video.bytes : null;
+  }
+  return out;
+}
+
+// The first meeting's snapshot from Voice, for the screen links and the restore.
+let first = null;
+
+// 7. An agent's link to the meeting's audio: the speech, a range, and refused once expired; then the screen.
+async function linkChecks(ctx) {
+  first = ctx.theirs;
+  const you = fs.readFileSync(path.join(RUN, 'you.wav'));
+  const them = fs.readFileSync(AMI ? AMI_WAV : path.join(RUN, 'them.wav'));
+  const link = await rukoo.mediaLink({ meeting_id: ctx.id, kind: 'audio', from_seconds: 0, to_seconds: 20 });
+  check('get_meeting_media_link gives a link on the local listener', !link.error && link.url.startsWith(`http://127.0.0.1:${MCP_PORT}/media/v1/`), {
+    error: link.error,
+    type: link.type,
+    to: link.to_seconds,
+    expiresIn: link.expires_in_seconds
+  });
+  if (link.error) return;
+  const got = await download(link.url);
+  const ranged = await download(link.url, { range: 'bytes=0-43' });
+  const match = got.status === 200 ? matchesSpeech(got.bytes, you, them) : null;
+  check("the link gives the meeting's speech, both tracks mixed", got.status === 200 && got.type === 'audio/wav' && Math.abs(match.seconds - 20) < 0.05 && match.r >= 0.9, { status: got.status, type: got.type, bytes: got.bytes.length, match });
+  check('a Range request gives those bytes', ranged.status === 206 && ranged.bytes.equals(got.bytes.subarray(0, 44)), { status: ranged.status });
+  await until('the link to expire', () => Date.now() > Date.parse(link.expires_at) + 1000, 15000, 200);
+  const expired = await download(link.url);
+  check('the same link is refused after it expired', expired.status === 410, { status: expired.status });
+  ctx.localAudio = got.bytes;
+  ctx.localScreen = await screenLinks(ctx.id, 'from this computer');
+}
+
+// The link fetched from another machine on the tailnet, over ssh, read only: Rukoo's Tailscale listener opens for
+// Clark with a throwaway key in this profile.
+async function remoteFetch(ctx) {
+  const target = REMOTE_FETCH;
+  const key = crypto.randomBytes(24).toString('base64url');
+  const token = crypto.createHmac('sha256', key).update('rukoo-mcp-v1').digest('base64url');
+  await app.evaluate(async (_, k) => {
+    const hub = global.__semAgents;
+    hub.setSecret('clark', k);
+    await hub.updateConfig({ mcp: { remote: true } });
+  }, key);
+  const at = await until('the Tailscale listener', () =>
+    app.evaluate(() => {
+      const hub = global.__semAgents;
+      const port = hub.mcp && hub.mcp.ports().remote;
+      return port ? { port, host: hub.cfg.address() } : null;
+    }), 30000, 500);
+  const meeting = ctx.measured ? ctx.measured.b : ctx.id;
+  const to = ctx.measured ? 600 : 20;
+  const want = ctx.measured ? ctx.measured.bSha : sha(ctx.localAudio);
+  const ttl = 60000;
+  await rukoo.linkTtl(ttl);
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_meeting_media_link', arguments: { meeting_id: meeting, kind: 'audio', from_seconds: 0, to_seconds: to } } });
+  const ssh = (script) => spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', target, 'bash -s'], { input: script, encoding: 'utf8', windowsHide: true, timeout: 180000 });
+  const first = ssh(
+    [
+      'set -u',
+      `T='${token}'`,
+      `B='${body}'`,
+      `R=$(curl -s -m 60 -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data "$B" http://${at.host}:${at.port}/mcp)`,
+      `U=$(printf '%s' "$R" | grep -o '"url":"[^"]*"' | head -1 | cut -d'"' -f4)`,
+      'if [ -z "$U" ]; then echo "NOURL"; exit 0; fi',
+      'F=$(mktemp)',
+      'echo "URL $U"',
+      `curl -s -m 120 -o "$F" -w 'GOT %{http_code} %{size_download} %{time_starttransfer} %{speed_download}\\n' "$U"`,
+      'echo "SHA $(sha256sum "$F" | cut -d" " -f1)"',
+      'rm -f "$F"'
+    ].join('\n')
+  );
+  const out = String(first.stdout || '');
+  const url = (/^URL (\S+)$/m.exec(out) || [])[1];
+  const gotLine = (/^GOT (\d+) (\d+) ([\d.]+) ([\d.]+)$/m.exec(out) || []).slice(1);
+  const remoteSha = (/^SHA ([0-9a-f]{64})$/m.exec(out) || [])[1];
+  const issuedAt = Date.now();
+  check('a machine on the tailnet gets a link from the tool and downloads the same audio', Boolean(url) && gotLine[0] === '200' && remoteSha === want, {
+    ssh: first.status,
+    status: gotLine[0],
+    bytes: Number(gotLine[1]),
+    sameAsLocal: remoteSha === want,
+    stderr: first.status ? String(first.stderr || '').slice(0, 200) : undefined
+  });
+  report.measurements.M5 = report.measurements.M5 || {};
+  report.measurements.M5.tailscale = { bytes: Number(gotLine[1]), firstByteMs: Math.round(Number(gotLine[2]) * 1000), mbPerS: +(Number(gotLine[3]) / 1e6).toFixed(1) };
+  if (url) {
+    const here = await download(url.replace(/^http:\/\/[^/]+/, `http://${at.host}:${at.port}`));
+    check("the link is refused from another address on the tailnet (this computer's)", here.status === 403, { status: here.status });
+    await until('the remote link to expire', () => Date.now() > issuedAt + ttl + 2000, ttl + 30000, 500);
+    const again = ssh(`curl -s -m 30 -o /dev/null -w '%{http_code}' '${url}'`);
+    check('the remote link is refused once expired', String(again.stdout).trim() === '410', { status: String(again.stdout).trim() });
+  }
+  await app.evaluate(async () => {
+    const hub = global.__semAgents;
+    await hub.updateConfig({ mcp: { remote: false } });
+    hub.setSecret('clark', '');
+  });
+  await rukoo.linkTtl(LINK_TTL_MS);
+}
+
+// 8. A second Voice on a fresh data folder: the code, the bucket, a restore, and the media back from the bucket.
+async function restoreChecks(ctx) {
+  const { id, sync } = ctx;
+  await drained('before the restore');
+  const old = ctx.voice();
+  killPid(old.pid);
+  await until('Voice to exit', () => !alive(old.pid), 15000);
+  const meetings = fs.readdirSync(path.join(VOICE_DATA, 'meetings')).filter((n) => n.startsWith('m-'));
+  started.dataDirs.push(VOICE_DATA_2);
+  const v = startVoice(3, { data: VOICE_DATA_2, monitor: report.screen.pinned });
+  ctx.setVoice(v);
+  await until('the second Voice', async () => {
+    try {
+      return (await hook('status', {}, 5000)).pid === v.pid;
+    } catch (_) {
+      return false;
+    }
+  }, 60000, 1000);
+  const imported = await syncHook('import', { code: sync.code });
+  await connectSync(fake.endpoint, sync.secret);
+  const list = await syncHook('restore_list');
+  check('the second Voice lists every meeting in the bucket', list.meetings.length === meetings.length, { listed: list.meetings.length, meetings: meetings.length, key: imported && imported.id });
+  const r0 = Date.now();
+  await syncHook('restore_start');
+  const done = await until('the restore', async () => {
+    const s = await syncStatus();
+    return ['done', 'failed'].includes(s.restore.state) && s;
+  }, 600000, 250);
+  const restoreMs = Date.now() - r0;
+  check('the restore finished', done.restore.state === 'done', done.restore);
+  report.measurements.M6 = { meetings: list.meetings.length, seconds: +(restoreMs / 1000).toFixed(1), fromBucket: 'voice-s3-fake on this computer' };
+
+  await until('Rukoo to connect to the second Voice', async () => (await rukoo.connected()) && (await rukoo.state()).voiceVersion, 60000);
+  const theirs = await until('the restored meeting through the bridge', async () => {
+    try {
+      const m = await rukoo.voiceGet(id);
+      return m && m.passages.length >= ctx.theirs.passages.length && m;
+    } catch (_) {
+      return false;
+    }
+  }, 120000, 1000);
+  const key = (p) => `${p.id}@${p.revision}`;
+  const sameSet = (a, b) => a.length === b.length && a.every((p) => b.some((q) => key(q) === key(p)));
+  check('the restored meeting reaches Rukoo with every passage the first Voice had', sameSet(theirs.passages, ctx.theirs.passages), { first: ctx.theirs.passages.length, restored: theirs.passages.length });
+  const mine = await rukoo.get(id);
+  check("Rukoo's meeting.get still has every passage once", sameSet(mine.passages, ctx.theirs.passages), { rukoo: mine.passages.length });
+  const same = (f) => {
+    try {
+      return fs.readFileSync(path.join(VOICE_DATA, 'meetings', id, f)).equals(fs.readFileSync(path.join(VOICE_DATA_2, 'meetings', id, f)));
+    } catch (_) {
+      return false;
+    }
+  };
+  const localAudio = fs.existsSync(path.join(VOICE_DATA_2, 'meetings', id, 'audio'));
+  check('meeting.json and the timeline come back byte for byte; audio stays in the bucket until needed', same('meeting.json') && same('timeline.jsonl') && !localAudio, { localAudio });
+  if (ARGS.screen !== 'off') {
+    const restored = (sub) => fs.existsSync(path.join(VOICE_DATA_2, 'meetings', id, 'screen', sub));
+    check('the screen journal comes back byte for byte with the text; frames and video stay in the bucket until needed', same('screen/journal.jsonl') && !restored('frames') && !restored('video'), {
+      frames: restored('frames'),
+      video: restored('video')
+    });
+    const ids = (x) => (x.frames || []).map((f) => f.id).sort().join(',');
+    check('the restored meeting reaches Rukoo with every frame the first Voice had', ids(theirs) === ids(ctx.theirs) && (theirs.frames || []).length > 0, { first: (ctx.theirs.frames || []).length, restored: (theirs.frames || []).length });
+  }
+  // Speaker ids and labels live in transcript.db, which the restore brings back (contract 2.5).
+  const speakers = (x) => (x.speakers || []).map((sp) => `${sp.id}=${sp.label}`).sort().join(',');
+  check('the restored meeting has the same speaker ids and labels', speakers(theirs) === speakers(ctx.theirs) && (theirs.speakers || []).length > 0, { first: speakers(ctx.theirs), restored: speakers(theirs) });
+  if (SPEAKERS === true) {
+    const named = (mine.speakers || []).filter((sp) => sp.name).map((sp) => sp.id);
+    check("Rukoo keeps the names it gave the speakers across the restore", named.length > 0, { named });
+  }
+
+  // The same audio link, now served from the bucket.
+  if (ctx.localAudio) {
+    const t = performance.now();
+    const link = await rukoo.mediaLink({ meeting_id: id, kind: 'audio', from_seconds: 0, to_seconds: 20 });
+    const toolMs = Math.round(performance.now() - t);
+    const got = link.error ? null : await download(link.url);
+    check("the restored meeting's audio comes back from the bucket, byte for byte", got && got.status === 200 && got.bytes.equals(ctx.localAudio), { error: link.error, status: got?.status, toolMs, firstByteMs: got?.firstByteMs });
+  }
+  // The frame and the video, now fetched back from the bucket.
+  if (ctx.localScreen && ctx.localScreen.frame) {
+    const back = await screenLinks(id, 'fetched back from the bucket');
+    check("the restored meeting's frame comes back from the bucket, byte for byte", back.frame && back.frame.equals(ctx.localScreen.frame), { bytes: back.frame?.length });
+    if (ctx.localScreen.video) {
+      const sameVideo = Boolean(back.video && back.video.equals(ctx.localScreen.video));
+      if (!sameVideo) note(`the video link from the bucket gave ${back.video?.length ?? 0} bytes, the local one ${ctx.localScreen.video.length}`);
+      report.screen.restoredVideoSameBytes = sameVideo;
+    }
+  }
+  if (ctx.measured) {
+    await rukoo.linkTtl(300000);
+    const t = performance.now();
+    const link = await rukoo.mediaLink({ meeting_id: ctx.measured.b, kind: 'audio', from_seconds: 0, to_seconds: 600 });
+    const toolMs = Math.round(performance.now() - t);
+    const got = link.error ? null : await download(link.url);
+    await rukoo.linkTtl(LINK_TTL_MS);
+    check('the 10-minute link from the bucket gives the same bytes as from local audio', got && got.status === 200 && sha(got.bytes) === ctx.measured.bSha, { error: link.error, status: got?.status });
+    report.measurements.M5.bucket = { bytes: got?.bytes.length, toolCallMs: toolMs, firstByteMs: got?.firstByteMs, totalMs: got?.totalMs, mbPerS: got?.mbPerS };
+  }
+  const locked = [];
+  const leaks = holders(VOICE_DATA_2, [sync.secret, sync.code], locked);
+  check("the second Voice's data folder holds neither the secret nor the code in plain text", leaks.length === 0, { leaks, lockedUntilTheEnd: locked });
+}
+
 // ---------- the paired run ----------
 
 async function pairedRun() {
@@ -1845,7 +2760,7 @@ async function pairedRun() {
   // The synthetic screen of a measurement takes the sizes of this computer's displays, read from Windows, the main
   // display's first: the cost of encoding and reading text depends on the pixels.
   let sizes = [];
-  if (ARGS.measure && !ARGS.realScreen) {
+  if (ARGS.measure === 'screen' && !ARGS.realScreen) {
     const listed = windowsDisplays().sort((a, b) => Number(b.primary) - Number(a.primary));
     sizes = [...new Set(listed.map((d) => `${d.width}x${d.height}`))];
     if (sizes.length) syntheticSize = sizes[0];
@@ -1855,7 +2770,7 @@ async function pairedRun() {
 
   // 1. Voice, then Rukoo, paired through RUKOO_VOICE_BRIDGE.
   const voice = await pair(pinned);
-  if (ARGS.measure) await measureAll(voice, sizes);
+  if (ARGS.measure === 'screen') await measureAll(voice, sizes);
   else if (ARGS.chooseMonitor) await chooseRun(offsets);
   else if (ARGS.visibleRukoo) await visibleRun();
   else await standardRun(voice, offsets);
@@ -1868,7 +2783,7 @@ async function main() {
   fs.mkdirSync(RUN, { recursive: true });
   fs.mkdirSync(SHOTS, { recursive: true });
   if (!ARGS.skipBuild) build();
-  for (const exe of [EXE, SCREEN_EXE]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
+  for (const exe of [EXE, SCREEN_EXE, ...(SYNC ? [FAKE_S3] : [])]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build it first`);
   if (AMI) {
     assets();
     loadAmi();
@@ -1893,6 +2808,7 @@ async function cleanup() {
   }
   for (const pid of started.measure) if (alive(pid)) killPid(pid);
   for (const pid of started.voice) if (alive(pid)) killPid(pid);
+  for (const pid of started.fake) if (alive(pid)) killPid(pid);
   // A recorder or a screen process still recording after a failure: by the id in its recorder.json or screen.json.
   for (const data of started.dataDirs) {
     const meetings = path.join(data, 'meetings');
@@ -1906,7 +2822,7 @@ async function cleanup() {
       }
     }
   }
-  report.leftRunning = [...started.voice, started.rukoo, started.screens].filter((pid) => pid && alive(pid));
+  report.leftRunning = [...started.voice, started.rukoo, started.screens, ...started.fake].filter((pid) => pid && alive(pid));
   if (ARGS.realScreen) {
     await sleep(1000);
     deleteRealCaptures();
@@ -1921,6 +2837,17 @@ try {
   check('the run finished', false, err.message);
 } finally {
   await cleanup();
+  // With every process stopped, nothing holds a file open: the whole run folder, both data folders, the hooks, the
+  // logs and the bucket's objects, for the secret and the code.
+  if (SYNC && SECRETS.code) {
+    try {
+      const locked = [];
+      const leaks = holders(RUN, [SECRETS.secret, SECRETS.code], locked);
+      check('after every process stopped, no file of the run holds the secret or the recovery code', leaks.length === 0 && locked.length === 0, { leaks, locked });
+    } catch (err) {
+      check('after every process stopped, no file of the run holds the secret or the recovery code', false, err.message);
+    }
+  }
   report.finished = new Date().toISOString();
   report.failed = failed;
   fs.mkdirSync(RUN, { recursive: true });

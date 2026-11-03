@@ -266,6 +266,10 @@
     "message": "Welcome to Rukoo Voice",
     "description": "Title of the tray notification on the first start when dictation can't work yet; the body points to Settings > Transcription. Read by voice-app (see voice/ui/API.md)."
   },
+  "app.notify.sync": {
+    "message": "Bucket sync",
+    "description": "Title of the tray notification about bucket sync: uploads failed for a day, or a nearly full disk made Voice remove media that hadn't uploaded. Read by voice-app (see voice/ui/API.md)."
+  },
   "settings.title": {
     "message": "Rukoo Voice Settings",
     "description": "Settings: the window title. The app sets it on the native window too. voice/ui/settings.html; voice/ui/settings.js (applyLanguage)."
@@ -1153,74 +1157,292 @@
   },
   "settings.sync.title": {
     "message": "Sync to your bucket",
-    "description": "Settings > Storage: switch for uploading meetings to the user's own S3-compatible storage. Hidden in Voice 0.1. voice/ui/settings.js (syncSection)."
+    "description": "Settings > Storage: switch for uploading meetings to the user's own S3-compatible storage. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.help": {
-    "message": "Encrypted on this computer before upload. Video uploads after the meeting.",
-    "description": "Settings > Storage: description of the sync switch. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "message": "Encrypted on this computer before upload. Audio uploads during the meeting, video after it.",
+    "description": "Settings > Storage: description of the sync switch. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.service": {
     "message": "Service",
-    "description": "Settings > Storage: label of the storage service list. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: label of the storage service list. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.other": {
     "message": "Other S3-compatible",
-    "description": "Settings > Storage: storage service choice. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: storage service choice, after UpCloud Managed Object Storage and Cloudflare R2. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.endpoint": {
     "message": "Endpoint URL",
-    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label for the bucket service's address. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.region": {
     "message": "Region",
-    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label for the bucket's region. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.bucket": {
     "message": "Bucket",
-    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label for the name of the bucket. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.prefix": {
     "message": "Folder in the bucket",
-    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label for the folder in the bucket that Voice uploads into. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.accessKey": {
     "message": "Access key ID",
-    "description": "Settings > Storage: field label. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label for the bucket's access key ID. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.secretKey": {
     "message": "Secret access key",
-    "description": "Settings > Storage: field label; a saved secret shows as Key saved. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: field label; a saved secret shows as Key saved. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.test": {
     "message": "Test connection",
-    "description": "Settings > Storage: button. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: button that checks Voice can write, read, list and delete in the bucket. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.testOk": {
     "message": "Connected to the bucket",
-    "description": "Settings > Storage: result of Test connection. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: result of a Test connection that passed. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.encrypted": {
     "message": "Encrypted on this computer before upload",
-    "description": "Settings > Storage: static row. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: static row with a check mark. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.videoAfter": {
     "message": "Video uploads after the meeting",
-    "description": "Settings > Storage: static row. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: static row with a check mark. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.recovery": {
     "message": "Save the encryption key",
-    "description": "Settings > Storage: row that shows the key once. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: row that shows the key on request. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.recoveryHelp": {
     "message": "Without this key, nobody can open the files in your bucket, you included.",
-    "description": "Settings > Storage: description of Save the encryption key. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: description of Save the encryption key. voice/ui/settings.js (syncSection)."
   },
   "settings.sync.waiting": {
     "message": {
       "one": "{count} file waiting",
       "other": "{count} files waiting"
     },
-    "description": "Settings > Storage: upload queue. Hidden in Voice 0.1. voice/ui/settings.js (storagePage)."
+    "description": "Settings > Storage: status under the sync switch while files upload, and a line under the live, retrying, stopped and paused statuses. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.inBucket": {
+    "message": "In your bucket",
+    "description": "Settings > Storage: group title above the sync cards, after On this computer. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.needsTest": {
+    "message": "Test the connection before you turn sync on.",
+    "description": "Settings > Storage: description of the sync switch while it waits for a passed Test connection; also the message when the app refuses to turn sync on. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.refused": {
+    "message": "Voice didn't save the marked field. Fix it before you test the connection or turn sync on.",
+    "description": "Settings > Storage: beside Test connection and as the sync switch's description while a connection field shows a value the app refused, such as an http:// endpoint; the field is marked. voice/ui/settings.js (syncConnectionCard)."
+  },
+  "settings.sync.backfill": {
+    "message": "Voice then also uploads the meetings on this computer now, newest first.",
+    "description": "Settings > Storage: added to the sync switch description while sync is off. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.testing": {
+    "message": "Testing…",
+    "description": "Settings > Storage: status beside Test connection while the test runs. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.otherKeys": {
+    "message": "This bucket also holds meetings saved with another encryption key. Use that key to open them.",
+    "description": "Settings > Storage: note after a passed Test connection and on the encryption key card when the bucket has meetings under another key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.endpoint": {
+    "message": "Check the endpoint URL. It starts with https://.",
+    "description": "Settings > Storage: Test connection failed, or the app refused the endpoint: the URL is wrong or not https. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.network": {
+    "message": "Voice can't reach the endpoint.",
+    "description": "Settings > Storage: Test connection or an upload failed: no connection to the endpoint. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.auth": {
+    "message": "The bucket doesn't accept this access key and secret.",
+    "description": "Settings > Storage: Test connection or an upload failed: the access key or secret is wrong. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.bucket": {
+    "message": "There's no bucket with this name at this endpoint.",
+    "description": "Settings > Storage: Test connection or an upload failed: the bucket does not exist. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.clock": {
+    "message": "This computer's clock is off. Set it right and test again.",
+    "description": "Settings > Storage: Test connection or an upload failed: the bucket refused the request time. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.permission": {
+    "message": "This key may not write, read, list or delete in the bucket. Voice needs all four.",
+    "description": "Settings > Storage: Test connection or an upload failed: the access key lacks a permission. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.noSecret": {
+    "message": "Save the secret access key first.",
+    "description": "Settings > Storage: Test connection failed: no secret access key is saved. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.error.failed": {
+    "message": "The test failed.",
+    "description": "Settings > Storage: Test connection failed for another reason; Error details shows the app's English message. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.upToDate": {
+    "message": "Everything is in the bucket",
+    "description": "Settings > Storage: status under the sync switch when nothing waits to upload. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.lastUpload": {
+    "message": "Last upload {time}",
+    "description": "Settings > Storage: line under Everything is in the bucket. {time}: a date and time such as \"Oct 30, 2026, 3:38 PM\". voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.live": {
+    "message": "Audio and frames go up while the meeting records",
+    "description": "Settings > Storage: status under the sync switch while a meeting records and uploads as its files close. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retrying": {
+    "message": "Can't reach the bucket. Voice keeps trying.",
+    "description": "Settings > Storage: status under the sync switch while uploads fail and Voice tries again. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.waitingSince": {
+    "message": "Waiting since {time}",
+    "description": "Settings > Storage: line under the retrying status. {time}: when the oldest waiting file was queued, a date and time. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keptLocal": {
+    "message": "Audio stays on this computer until it's in the bucket, as long as 10 GB stay free.",
+    "description": "Settings > Storage: line under the retrying, stopped and paused statuses. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.lostLocal": {
+    "message": {
+      "one": "The disk was almost full, so Voice removed {count} file before it reached the bucket.",
+      "other": "The disk was almost full, so Voice removed {count} files before they reached the bucket."
+    },
+    "description": "Settings > Storage: warning line under the sync switch. {count}: files removed from this computer before they uploaded. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.stopped": {
+    "message": "Uploads stopped.",
+    "description": "Settings > Storage: status under the sync switch when the bucket refused; the reason follows. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.paused": {
+    "message": "Uploads paused. Test the connection to go on.",
+    "description": "Settings > Storage: status under the sync switch while it is on but a connection field or the secret changed since the last passed Test connection. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.unavailable": {
+    "message": "Voice can't open its list of uploads, so nothing uploads.",
+    "description": "Settings > Storage: status under the sync switch while it is on but the sync store (queue.db) didn't open: locked, damaged or from a newer Voice. Error details follow. voice/ui/settings.js (syncUnavailableCard)."
+  },
+  "settings.sync.unavailableHeld": {
+    "message": "While sync is on, Voice keeps meeting audio on this computer, as long as 10 GB stay free. Turn it off and Voice removes audio again as Keep audio says.",
+    "description": "Settings > Storage: line under settings.sync.unavailable. 'Keep audio' is the name of the setting settings.meetings.retention. voice/ui/settings.js (syncUnavailableCard)."
+  },
+  "settings.sync.keyUnreadable": {
+    "message": "Voice can't open its encryption key on this computer. Use your saved key.",
+    "description": "Settings > Storage: status under the sync switch when the key file cannot be decrypted, with a button to enter the saved key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyNotSaved": {
+    "message": "You haven't saved it yet.",
+    "description": "Settings > Storage: line on the encryption key row, in the warning color, until the user says they saved the key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keySaved": {
+    "message": "Saved. Key {id}",
+    "description": "Settings > Storage: line on the encryption key row after the user saved it. {id}: the first 8 hex characters of the key id. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyShow": {
+    "message": "Show key",
+    "description": "Settings > Storage: button that opens the dialog with the recovery code. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyTitle": {
+    "message": "Your encryption key",
+    "description": "Settings > Storage: title of the dialog that shows the recovery code. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyHelp": {
+    "message": "Keep it somewhere safe, such as a password manager. With this key, another computer can open the meetings in your bucket.",
+    "description": "Settings > Storage: text under the recovery code in its dialog. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyCopy": {
+    "message": "Copy",
+    "description": "Settings > Storage: button in the key dialog that copies the code, kept out of clipboard history. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyCopied": {
+    "message": "Copied",
+    "description": "Settings > Storage: the Copy button after it copied the code. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyCopyFailed": {
+    "message": "Couldn't copy the key. Try again.",
+    "description": "Settings > Storage: line beside the Copy button in the key dialog when copying failed. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyDone": {
+    "message": "I saved it",
+    "description": "Settings > Storage: filled button in the key dialog: the user saved the code, and the dialog closes. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyUse": {
+    "message": "Use a key from another computer",
+    "description": "Settings > Storage: button, and the title of the dialog where the user pastes a saved recovery code. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyUseHelp": {
+    "message": "Paste the key you saved. This computer then opens the meetings in your bucket and uploads new ones with that key.",
+    "description": "Settings > Storage: text in the dialog for a key from another computer. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyUseButton": {
+    "message": "Use this key",
+    "description": "Settings > Storage: filled button in the dialog for a key from another computer. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyInvalid": {
+    "message": "That isn't a Rukoo Voice key. Check it for typos.",
+    "description": "Settings > Storage: error in the dialog for a key from another computer: the code is not a key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyInUse": {
+    "message": "This computer already uploaded meetings with its own key, so it keeps that key.",
+    "description": "Settings > Storage: error in the dialog for a key from another computer: this computer uploaded under its own key. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyScreen": {
+    "message": "Stop the meeting's screen recording before you show or enter a key.",
+    "description": "Settings > Storage: message when a key dialog is refused or closed because a meeting records the screen. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.keyProtect": {
+    "message": "Voice can't hide this window from screen sharing right now, so it doesn't show the key.",
+    "description": "Settings > Storage: message when the window could not be excluded from screen capture before a key dialog. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retention": {
+    "message": "Keep in the bucket",
+    "description": "Settings > Storage: row title with the bucket retention choice. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retentionKeep": {
+    "message": "Forever",
+    "description": "Settings > Storage: bucket retention choice: never remove media. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retentionYear": {
+    "message": "1 year",
+    "description": "Settings > Storage: bucket retention choice. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retention90": {
+    "message": "90 days",
+    "description": "Settings > Storage: bucket retention choice. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.retentionHelp": {
+    "message": "After this, Voice removes a meeting's audio, frames and video from the bucket. The transcript stays.",
+    "description": "Settings > Storage: description of Keep in the bucket. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restoreAvailable": {
+    "message": {
+      "one": "{count} meeting in your bucket isn't on this computer",
+      "other": "{count} meetings in your bucket aren't on this computer"
+    },
+    "description": "Settings > Storage: row title with the Restore button. {count}: meetings in the bucket missing here. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restore": {
+    "message": "Restore",
+    "description": "Settings > Storage: button that restores the meetings from the bucket. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restoreHelp": {
+    "message": "Brings their transcripts back now. Audio comes back from the bucket when it's needed.",
+    "description": "Settings > Storage: description of the restore row. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restoring": {
+    "message": "Restoring {done} of {total}",
+    "description": "Settings > Storage: row title while meetings restore, above a progress bar. {done}, {total}: meeting counts. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restored": {
+    "message": "Restored",
+    "description": "Settings > Storage: row after a restore finished. voice/ui/settings.js (syncSection)."
+  },
+  "settings.sync.restoreFailed": {
+    "message": "Restoring stopped.",
+    "description": "Settings > Storage: line after a restore failed, with Error details. voice/ui/settings.js (syncSection)."
   },
   "settings.rukoo.connection": {
     "message": "Connection",

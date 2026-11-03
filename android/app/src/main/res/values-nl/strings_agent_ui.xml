@@ -324,6 +324,7 @@
     <string name="agentui_tools_read_meeting_notes">Las je vergadernotities</string>
     <string name="agentui_tools_get_meeting_frame">Bekeek het scherm van de vergadering</string>
     <string name="agentui_tools_get_meeting_clip">Bekeek een fragment van het scherm van de vergadering</string>
+    <string name="agentui_tools_get_meeting_media_link">Haalde een link naar geluid of scherm</string>
     <string name="agentui_tools_unknown">Gebruikte een tool</string>
     <string name="agentui_tools_running_get_context">Kijkt mee op je scherm...</string>
     <string name="agentui_tools_running_get_draft">Bekijkt het concept...</string>
@@ -346,6 +347,7 @@
     <string name="agentui_tools_running_read_meeting_notes">Leest je vergadernotities...</string>
     <string name="agentui_tools_running_get_meeting_frame">Bekijkt het scherm van de vergadering...</string>
     <string name="agentui_tools_running_get_meeting_clip">Bekijkt een fragment van het scherm van de vergadering...</string>
+    <string name="agentui_tools_running_get_meeting_media_link">Haalt een link naar geluid of scherm...</string>
     <string name="agentui_tools_running_unknown">Gebruikt een tool...</string>
 
     <string name="agentui_a11y_expanded">Uitgeklapt</string>

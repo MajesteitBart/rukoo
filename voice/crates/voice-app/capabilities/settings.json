@@ -19,6 +19,11 @@
     "allow-settings-new-token",
     "allow-settings-import-ownkey",
     "allow-settings-sync-test",
+    "allow-settings-sync-save-secret",
+    "allow-settings-sync-key",
+    "allow-settings-sync-key-copy",
+    "allow-settings-sync-restore",
+    "allow-settings-protect",
     "allow-settings-close"
   ]
 }

@@ -4,7 +4,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,6 +16,7 @@ use voice_core::local::{
 };
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::{Hints, ProviderError, Recognized, RewriteRequest, Rewriter, SpeechToText};
+use voice_engine::media::{RecordedScreen, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
@@ -27,6 +28,8 @@ use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
 };
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
+use voice_sync::protect::{Protector, TestProtector};
+use voice_sync::{ScreenFiles, SyncTiming};
 
 /// CI machines are slow; every wait is generous.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -273,6 +276,9 @@ pub struct FakeInput {
     pub clipboard_wait: Mutex<Duration>,
     /// Insertions and captures that started.
     pub entered: AtomicUsize,
+    /// What `copy_hidden` put on the fake clipboard, and whether `clear_if` emptied it.
+    pub clipboard: Mutex<Option<String>>,
+    pub hidden_copies: Mutex<Vec<String>>,
 }
 
 impl FakeInput {
@@ -287,6 +293,8 @@ impl FakeInput {
             fail: Mutex::new(None),
             clipboard_wait: Mutex::new(Duration::ZERO),
             entered: AtomicUsize::new(0),
+            clipboard: Mutex::new(None),
+            hidden_copies: Mutex::new(Vec::new()),
         }
     }
 
@@ -345,6 +353,21 @@ impl TextInput for FakeInput {
 
     fn text_target(&self) -> TextTarget {
         *lock(&self.target)
+    }
+
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        lock(&self.hidden_copies).push(text.to_string());
+        *lock(&self.clipboard) = Some(text.to_string());
+        Ok(())
+    }
+
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        let mut clipboard = lock(&self.clipboard);
+        let holds = clipboard.as_deref() == Some(text);
+        if holds {
+            *clipboard = None;
+        }
+        Ok(holds)
     }
 }
 
@@ -643,8 +666,13 @@ impl Updates for UpdatesHandle {
     }
 }
 
-/// The system, with free disk space a test can set (1 GB unless it does).
-pub struct FakeSystem(pub Arc<AtomicU64>);
+/// Free space on the test's disk, as the engine reads it.
+pub type FreeSpace = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
+
+/// Plenty of room: more than every free-space floor (bucket sync holds media above 10 GiB).
+pub const ROOMY: u64 = 500 << 30;
+
+pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>);
 
 impl System for FakeSystem {
     fn theme(&self) -> Theme {
@@ -659,8 +687,9 @@ impl System for FakeSystem {
         false
     }
 
-    fn free_bytes(&self, _path: &Path) -> Option<u64> {
-        Some(self.0.load(Ordering::SeqCst))
+    fn free_bytes(&self, path: &Path) -> Option<u64> {
+        let free = Arc::clone(&lock(&self.0));
+        free(path)
     }
 }
 
@@ -682,11 +711,16 @@ pub struct Harness {
     /// `rukoo-voice-screen`; a path that doesn't exist (the default) records no screen.
     pub screen_exe: PathBuf,
     pub screen_timing: ScreenTiming,
-    /// What the fake system says is free on the meetings volume.
-    pub free_bytes: Arc<AtomicU64>,
     pub dev_mode: bool,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
+    /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
+    pub free: Arc<Mutex<FreeSpace>>,
+    pub screen_files: Arc<dyn ScreenFiles>,
+    pub screen_media: Arc<dyn ScreenMedia>,
+    pub sync_timing: SyncTiming,
+    /// The stand-in protector works on every platform; a test of DPAPI itself sets `Dpapi`.
+    pub protector: Arc<dyn Protector>,
     pub test_screen: Option<String>,
     pub test_monitor: Option<String>,
 }
@@ -695,11 +729,18 @@ impl Harness {
     pub fn new(name: &str) -> Harness {
         let keys = Keys::default();
         let dir = TempDir::new(name);
+        let roomy: FreeSpace = Arc::new(|_| Some(ROOMY));
+        // The screen folder as the app reads it; a meeting without a screen recording has none.
+        let screen = Arc::new(RecordedScreen::default());
         Harness {
+            free: Arc::new(Mutex::new(roomy)),
+            screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
+            screen_media: screen,
+            sync_timing: SyncTiming::default(),
+            protector: Arc::new(TestProtector),
             recorder_exe: dir.join("no-recorder.exe"),
             screen_exe: dir.join("no-screen.exe"),
             screen_timing: ScreenTiming::default(),
-            free_bytes: Arc::new(AtomicU64::new(1_000_000_000)),
             dir,
             input: Arc::new(FakeInput::new(keys.clone())),
             keys,
@@ -755,7 +796,7 @@ impl Harness {
             chime: Arc::new(ChimeHandle(Arc::clone(&self.chime))),
             autostart: Arc::new(AutostartHandle(Arc::clone(&self.autostart))),
             updates: Arc::new(UpdatesHandle(Arc::clone(&self.updates))),
-            system: Arc::new(FakeSystem(Arc::clone(&self.free_bytes))),
+            system: Arc::new(FakeSystem(Arc::clone(&self.free))),
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
@@ -763,7 +804,16 @@ impl Harness {
             discovery_path: Some(self.dir.join("bridge.json")),
             controller: self.timing.clone(),
             screen_timing: self.screen_timing.clone(),
+            screen_files: Arc::clone(&self.screen_files),
+            screen_media: Arc::clone(&self.screen_media),
+            protector: Arc::clone(&self.protector),
+            sync_timing: self.sync_timing.clone(),
         }
+    }
+
+    /// Sets the free space the engine sees from now on.
+    pub fn set_free(&self, free: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) {
+        *lock(&self.free) = Arc::new(free);
     }
 
     pub fn options(&self) -> EngineOptions {
@@ -792,5 +842,156 @@ impl Harness {
             self.mic.delivered.load(Ordering::SeqCst) >= before + 3200
         });
         self.keys.up(key);
+    }
+}
+
+// Bucket sync -------------------------------------------------------------------------------
+
+/// The fake bucket's name, access key and the secret the tests save.
+pub const BUCKET: &str = "test";
+pub const ACCESS_KEY: &str = "test";
+pub const BUCKET_SECRET: &str = "test-secret-4711";
+
+/// A fake S3 on a free port of this computer, objects in memory.
+pub fn fake_s3() -> voice_s3_fake::FakeS3 {
+    voice_s3_fake::FakeS3::start(BUCKET, ACCESS_KEY, None).expect("the fake S3 starts")
+}
+
+/// Fills in the fake bucket in Settings, saves the secret, passes Test connection and turns sync
+/// on, as a user would.
+pub fn connect_bucket(engine: &Engine, endpoint: &str) {
+    for (key, value) in [
+        ("storage.sync.service", "other"),
+        ("storage.sync.endpoint", endpoint),
+        ("storage.sync.region", "us-east-1"),
+        ("storage.sync.bucket", BUCKET),
+        ("storage.sync.accessKeyId", ACCESS_KEY),
+    ] {
+        engine
+            .settings_set(key, serde_json::json!(value))
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+    }
+    engine
+        .settings_sync_save_secret(BUCKET_SECRET.into())
+        .expect("the secret is saved");
+    engine.settings_sync_test().expect("Test connection passes");
+    engine
+        .settings_set("storage.sync.enabled", serde_json::json!(true))
+        .expect("sync turns on");
+}
+
+/// Settings' `sync` now.
+pub fn sync_state(engine: &Engine) -> Value {
+    engine.settings_state()["sync"].clone()
+}
+
+/// The 32 bytes of the master key in a recovery code: Crockford base32 after `RKV1-`.
+pub fn key_bytes(code: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let body = code.strip_prefix("RKV1-").expect("a recovery code");
+    let mut bits: u64 = 0;
+    let mut count = 0;
+    let mut bytes = Vec::new();
+    for c in body.bytes().filter(|c| *c != b'-') {
+        let value = ALPHABET
+            .iter()
+            .position(|a| *a == c.to_ascii_uppercase())
+            .expect("Crockford base32") as u64;
+        bits = (bits << 5) | value;
+        count += 5;
+        if count >= 8 {
+            count -= 8;
+            bytes.push((bits >> count) as u8);
+            bits &= (1 << count) - 1;
+        }
+    }
+    bytes.truncate(32);
+    bytes
+}
+
+/// Every object of the fake bucket and its plaintext, opened with the key of `code`. Fails when
+/// an object doesn't open: then it isn't RKV1 under that key and that name.
+pub fn decrypt_all(fake: &voice_s3_fake::FakeS3, code: &str) -> Vec<(String, Vec<u8>)> {
+    use voice_sync::format::{Header, Sealer, CHUNK, HEADER_LEN, TAG};
+    let key = voice_sync::recovery::decode(code).expect("the code decodes");
+    fake.objects()
+        .into_iter()
+        .map(|(name, bytes)| {
+            assert!(bytes.starts_with(b"RKV1"), "{name} isn't RKV1");
+            let header = Header::parse(&bytes[..HEADER_LEN as usize]).expect("a header");
+            let sealer = Sealer::open(&key, &name, &header)
+                .unwrap_or_else(|e| panic!("{name} doesn't open: {e}"));
+            let chunks = header.plain_len().div_ceil(CHUNK).max(1);
+            let mut plain = Vec::new();
+            for i in 0..chunks {
+                let from = (HEADER_LEN + i * (CHUNK + TAG)) as usize;
+                let to = (from + (CHUNK + TAG) as usize).min(bytes.len());
+                plain.extend(
+                    sealer
+                        .open_chunk(&header, i, &bytes[from..to])
+                        .unwrap_or_else(|e| panic!("chunk {i} of {name}: {e}")),
+                );
+            }
+            (name, plain)
+        })
+        .collect()
+}
+
+/// What a decrypted object is: `audio`, `transcript`, `meeting`, `timeline`, `manifest`,
+/// `index`, `jpeg`, `mp4` or `other`.
+pub fn kind_of(plain: &[u8]) -> &'static str {
+    if plain.starts_with(b"RIFF") {
+        return "audio";
+    }
+    if plain.starts_with(b"SQLite format 3\0") {
+        return "transcript";
+    }
+    if plain.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "jpeg";
+    }
+    if plain.len() > 8 && &plain[4..8] == b"ftyp" {
+        return "mp4";
+    }
+    if let Ok(value) = serde_json::from_slice::<Value>(plain) {
+        return if value.get("files").is_some() {
+            "manifest"
+        } else if value.get("meetings").is_some() {
+            "index"
+        } else if value.get("tracks").is_some() {
+            "meeting"
+        } else {
+            "other"
+        };
+    }
+    let text = String::from_utf8_lossy(plain);
+    let first = text.lines().next().unwrap_or_default();
+    match serde_json::from_str::<Value>(first) {
+        Ok(line) if line.get("kind").is_some() => "timeline",
+        _ => "other",
+    }
+}
+
+/// The kinds of the bucket's objects, decrypted with `code`, sorted.
+pub fn bucket_kinds(fake: &voice_s3_fake::FakeS3, code: &str) -> Vec<&'static str> {
+    let mut kinds: Vec<&str> = decrypt_all(fake, code)
+        .iter()
+        .map(|(_, plain)| kind_of(plain))
+        .collect();
+    kinds.sort();
+    kinds
+}
+
+/// Bucket sync's clocks for tests: scans, backoff and debounces in fractions of a second.
+pub fn fast_sync() -> SyncTiming {
+    SyncTiming {
+        scan_live: Duration::from_millis(300),
+        scan_all: Duration::from_secs(2),
+        backoff_min: Duration::from_millis(100),
+        backoff_max: Duration::from_secs(1),
+        manifest_live: Duration::from_secs(1),
+        index_debounce: Duration::from_millis(500),
+        connect_timeout: Duration::from_secs(2),
+        request_timeout: Duration::from_secs(5),
+        ..SyncTiming::default()
     }
 }

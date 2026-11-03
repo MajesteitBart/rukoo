@@ -10,6 +10,19 @@ use crate::services::{Chime, System};
 /// Ownkey keeps chimes at least this far apart (`ownkey.py:268`).
 pub const CHIME_COOLDOWN: Duration = Duration::from_millis(200);
 
+/// Puts the calling thread in Windows' background mode, so its disk and CPU yield to everything
+/// else, the recorder included. Media preparation calls it first. Elsewhere it does nothing.
+pub fn background_thread() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+        };
+        // Fails only for a thread that is in background mode already.
+        let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
+    }
+}
+
 pub struct SystemChime;
 
 impl Chime for SystemChime {

@@ -276,6 +276,8 @@ Rukoo sends commands; Voice answers each with one reply.
 | `meeting.protected` | `meeting` | `{}` | `not_found` |
 | `screen.get` | `meeting` | the screen recording, see below | `not_found`, `not_recording`, `not_available` |
 | `screen.select` | `meeting`, `monitor` | `{ "monitor" }` | `not_found`, `not_recording`, `not_available` |
+| `media.open` | `meeting`, `kind`, `start`, `end`? | `{ "media", "ready", … }` | `not_found`, `not_available`, `bad_request`, `failed` |
+| `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
@@ -286,6 +288,14 @@ Rukoo sends commands; Voice answers each with one reply.
 - `meeting.protected` answers `meeting.starting`: Rukoo applied its window protection.
 - `screen.get` returns `{ "screen", "state", "video", "frames", "monitor", "monitors" }`. `screen` is as in `meeting.started`. `state` is `starting`, `recording`, `paused`, `locked` or `stopped`. `video` and `frames` say whether each part still records. `monitor` is the id of the monitor Voice records, or `null`. `monitors` lists `{ "id", "name", "width", "height", "primary" }` for every monitor, left to right. It answers `not_recording` for a meeting that doesn't record now and `not_available` for one that records no screen. Like `clip.get`, it answers within 4 seconds of receiving the command; when the screen recorder doesn't answer by then, the state is what Voice knew last.
 - `screen.select` moves the screen recording to the monitor with that id from `screen.get`, and returns the id. It answers `not_found` for a monitor that isn't there, and `not_available` when the screen recording stopped. It answers within 4 seconds of receiving the command, `failed` when the screen recorder is still starting or didn't switch by then; Rukoo can ask again.
+- `media.open` prepares a file of a meeting's media that Rukoo can hand to an agent, and names it with an id. `kind` is `audio`, `frame` or `video`:
+  - `audio`: a WAV file of all the meeting's tracks mixed into one, 16 kHz mono 16-bit PCM with the 44-byte header, from `start` to `end`. Gaps are silence.
+  - `frame`: the JPEG of the frame at or before `start`. `end` is ignored.
+  - `video`: an MP4 of the screen from `start` to `end`, cut at fragment boundaries without re-encoding, so it can begin a few seconds before `start`. It holds one stretch of continuous video: when the video breaks before `end`, at a pause or a monitor switch, the file ends there. Voice serves at most 300,000 ms of video, the limit of `clip.get`, and answers `bad_request` for more.
+
+  `end` is required for `audio` and `video`. Voice cuts the range to what was recorded. Preparing can take a while, for instance when Voice fetches the media back from the user's bucket, so Voice answers at once. While the file isn't ready, the result is `{ "media": "md-…", "ready": false }`, and Rukoo sends the same `media.open` again, no more than every 250 ms. A ready file gives `{ "media", "ready": true, "type", "size", "start", "end" }`: `type` is `audio/wav`, `image/jpeg` or `video/mp4`, `size` the file's length in bytes, and `start` and `end` the meeting times the file covers (both the frame's `at` for a frame). The same arguments give the same `media` while Voice keeps the file.
+- `media.read` returns up to `length` bytes of a prepared file from `offset` as `{ "offset", "data" }`, with `data` in standard base64. It returns fewer bytes at the end of the file and an empty `data` past it. `length` is at most 1,048,576, so a reply stays far below Voice's 8 MiB limit and one command never holds the connection for long. Voice keeps a file for 10 minutes after it was last read and answers `not_found` afterwards; Rukoo then opens it again.
+- `media.open` answers `not_found` when the meeting or the frame doesn't exist or nothing was recorded at `start`, and `not_available` when the meeting didn't record that kind of media, or its media is gone from this computer and isn't in a synced bucket. `media.read` answers `bad_request` for a file that isn't ready yet.
 
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 
@@ -293,7 +303,7 @@ Errors carry a `code` and an English `message` for logs. Rukoo shows its own tex
 |---|---|
 | `bad_request` | The command or its arguments don't match this document |
 | `unknown_command` | Voice doesn't know the command; a newer Rukoo may send commands an older Voice lacks |
-| `not_found` | No meeting, frame or monitor with that id or time |
+| `not_found` | No meeting, frame, monitor or prepared media with that id or time |
 | `not_recording` | The meeting isn't recording, or isn't paused for `meeting.resume` |
 | `busy` | A meeting is already recording; `meeting` says which |
 | `not_available` | Voice can't do this for this meeting or in this version |
@@ -309,12 +319,13 @@ Both sides check what they receive with the same rules and drop a message that b
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.
 - An unknown event type or command name is not an error in itself.
 
 ## The transcript is untrusted
 
-Everyone in a call is a third party. Passage text, speaker labels, titles, marks and the text read from the screen come from what people said or showed, and can hold instructions aimed at an agent. Voice never acts on what it hears in a meeting. Rukoo never follows instructions in this content and hands it to the agent inside `<unsafe_content>`, as it does with email.
+Everyone in a call is a third party. Passage text, speaker labels, titles, marks and the text read from the screen come from what people said or showed, and can hold instructions aimed at an agent. Voice never acts on what it hears in a meeting. Rukoo never follows instructions in this content and hands it to the agent inside `<unsafe_content>`, as it does with email. The same goes for media: audio, frames and video hold whatever anyone in the call said or showed.
 
 ## Versioning
 

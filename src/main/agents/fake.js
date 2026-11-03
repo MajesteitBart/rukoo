@@ -277,6 +277,7 @@ class FakeRun {
     if (/\blong command\b/.test(lower)) return this.approval(LONG_COMMAND);
     if (/\bmarkdown\b/.test(lower)) return this.markdown();
     if (/\bschedule\b/.test(lower)) return this.schedule();
+    if (/\bmedia link\b/.test(lower)) return this.mediaLink();
     if (/\bmeeting\b/.test(lower)) return this.meeting();
     if (/\bapproval\b/.test(lower)) return this.approval();
     if (/\berror\b/.test(lower)) return this.error();
@@ -489,6 +490,13 @@ class FakeRun {
     const title = untag((res.meeting && res.meeting.title) || '') || 'the meeting';
     if (!lines.length) return this.say(`Nothing new in ${title} since I last read it.`);
     return this.say(`From ${title}, ${res.count} ${res.count === 1 ? 'line' : 'lines'}${res.revised ? `, ${res.revised} revised` : ''}:\n${lines.map((l) => `> ${l}`).join('\n')}`);
+  }
+
+  // "media link": a link to the first five seconds of the chat's meeting's audio (get_meeting_media_link).
+  async mediaLink() {
+    const res = await this.tool('get_meeting_media_link', { kind: 'audio', from_seconds: 0, to_seconds: 5 });
+    if (res.error) return this.say(`I could not get a link: ${res.error}`);
+    return this.say(`Link: ${res.url}`);
   }
 
   // "lost session": the agent no longer has the chat's session, like Claude Code after it deleted an old

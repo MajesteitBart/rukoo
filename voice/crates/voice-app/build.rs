@@ -18,6 +18,11 @@ const COMMANDS: &[&str] = &[
     "settings_new_token",
     "settings_import_ownkey",
     "settings_sync_test",
+    "settings_sync_save_secret",
+    "settings_sync_key",
+    "settings_sync_key_copy",
+    "settings_sync_restore",
+    "settings_protect",
     "settings_close",
 ];
 

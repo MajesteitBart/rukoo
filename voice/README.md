@@ -73,7 +73,15 @@ A meeting can't be repeated, so losing a recording is the worst thing Voice can 
 
 ## Storage
 
-Everything records to your computer first. A dropped connection never costs audio. Optional sync goes to an S3-compatible bucket you own, such as UpCloud Managed Object Storage or Cloudflare R2. Voice encrypts media before upload, so the storage provider can't listen to your meetings, and uploads video after the meeting, so it doesn't compete with the call. A remote agent gets short-lived links to the files it needs.
+Everything records to your computer first. A dropped connection never costs audio.
+
+Sync is optional and off until you turn it on. It goes to an S3-compatible bucket you own, such as UpCloud Managed Object Storage or Cloudflare R2, once Test connection passed for that bucket. Voice encrypts every file on this computer before upload: XChaCha20-Poly1305 in 64 KiB pieces, with a random key per file and object names that show neither meeting ids nor titles. The storage provider can't listen. It still sees how many files there are, how big they are and when they arrive.
+
+The bucket gets each meeting's audio, screen frames and video, `meeting.json`, its timeline and a copy of its transcript. Audio and frames upload as they close during the meeting, at a modest rate; video and the text follow after it. A meeting's audio, frames and video stay on this computer until they are in the bucket, whatever Keep audio says, as long as 10 GB stay free. Below that, Voice removes the oldest media that is waiting to upload, video first, so the meeting being recorded never runs out of room, and Settings says what never reached the bucket. A new secret or a corrected bucket detail pauses uploads until Test connection passes again, and the held media stays meanwhile; only turning sync off lets it go. Moving to another bucket, endpoint or folder uploads everything still on this computer again, and holds its audio until the new bucket has it. Voice doesn't copy between buckets, so what only the old bucket has, such as audio Keep audio already removed here, stays there. The bucket keeps media as long as you choose and the text for good.
+
+Save the encryption key when Settings offers it. With it, a new computer restores your meetings from the bucket; without it, nobody can open them, you included. Voice keeps the key and the bucket's secret with Windows DPAPI, readable only by your Windows account.
+
+An agent never reads the bucket. It asks Rukoo for a link, and the link points at Rukoo on this computer. When the agent fetches it within five minutes, Rukoo asks Voice for the bytes, and Voice reads its own copy or fetches the file back from the bucket and decrypts it. A link opens one meeting's audio, one frame or a stretch of video, only from the address that asked for it, and only while "Agents can read meetings" is on in Rukoo. So this computer must be on to serve a link, and long video leaves over its upload.
 
 ## Coming from Ownkey for Windows
 
@@ -81,7 +89,7 @@ On its first start, Voice imports Ownkey's settings and uses the speech models O
 
 ## How it's built
 
-Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens.
+Voice is a Rust workspace with five processes. The recorder, `rukoo-voice-recorder`, captures audio and writes it to disk and does nothing else; [RECORDING.md](RECORDING.md) describes what it writes. The screen process, `rukoo-voice-screen`, records the screen next to the recorder, follows the recorder's clock and never touches the audio. The local speech worker, `rukoo-voice-local`, runs Orukeet, so a crashing model can't take dictation down. The speaker worker, `rukoo-voice-speakers`, runs NeMo-Speech.cpp for speaker labels, so a crash there can't stop recording, transcription or dictation. The app, `rukoo-voice`, is a Tauri shell around everything else: dictation, the pill, Settings, live transcription and the bridge to Rukoo. Its pages are plain HTML, CSS and JavaScript in `ui/`, built from Rukoo's design tokens. Bucket sync runs inside the app and only reads finished files.
 
 The bridge between Voice and Rukoo is specified in [PROTOCOL.md](PROTOCOL.md), with examples both apps test against in `fixtures/`.
 
@@ -89,7 +97,6 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 
 ## What 0.1 leaves out
 
-- Sync to your own bucket.
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
 - macOS and Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows only.
 - A signed installer and automatic updates. The opt-in update check tells you a new version exists.

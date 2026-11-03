@@ -37,6 +37,9 @@ const ENDED_STATES = ['processing', 'done', 'failed'];
 const MONITOR_MAX = 64;
 const MONITOR_NAME_MAX = 200;
 const CLIP_PATH_MAX = 4096;
+// media.open and media.read: the bridge's own 10 s, kept as an option of its own so tests can shorten it. Either can
+// wait behind another command Voice runs on the same connection, such as a clip.get of up to 4 s.
+const MEDIA_TIMEOUT_MS = 10000;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -109,8 +112,8 @@ class VoiceService extends EventEmitter {
   // discovery: the discovery file (paths.bridgePathHere), or null for a profile that never looks for Voice.
   // hide(): whether the user wants Rukoo hidden from screen capture during a meeting. protect(on): hides or shows
   // every window, and returns false or throws when a window didn't take it. calendars, engine: for the linked event
-  // and the names of its guests.
-  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, protectRetryMs = PROTECT_RETRY_MS, startingHoldMs = STARTING_HOLD_MS, emitMs = EMIT_MS, now = Date.now, log = () => {} } = {}) {
+  // and the names of its guests. mediaTimeoutMs: how long media.open and media.read may take, shorter in tests.
+  constructor({ dataDir, discovery = null, appVersion = '', hide = () => true, protect = () => {}, calendars = null, WebSocket, bridge = {}, protectDelayMs = PROTECT_DELAY_MS, protectRetryMs = PROTECT_RETRY_MS, startingHoldMs = STARTING_HOLD_MS, emitMs = EMIT_MS, mediaTimeoutMs = MEDIA_TIMEOUT_MS, now = Date.now, log = () => {} } = {}) {
     super();
     this.store = new VoiceStore({ dataDir, now, log });
     // A meeting file found damaged when a meeting is read: Voice sends the meeting again while it is connected.
@@ -124,6 +127,7 @@ class VoiceService extends EventEmitter {
     this.protectRetry = null;
     this.startingHoldMs = startingHoldMs;
     this.emitMs = emitMs;
+    this.mediaTimeoutMs = mediaTimeoutMs;
     this.now = now;
     this.log = log;
     this.starting = 0;
@@ -621,6 +625,21 @@ class VoiceService extends EventEmitter {
   // The holds whose time ran out while the connection was down, once the welcome's status says what records.
   endHeldOver() {
     for (; this.heldOver > 0; this.heldOver -= 1) this.endStarting();
+  }
+
+  // media.open: { media, ready, type?, size?, start?, end? }. Voice answers at once; call again until ready is true.
+  // start and end are meeting ms; end is left out for a frame.
+  async mediaOpen({ meeting, kind, start, end }) {
+    this.mustConnect();
+    const args = { meeting, kind, start };
+    if (Number.isInteger(end)) args.end = end;
+    return this.bridge.command('media.open', args, { timeoutMs: this.mediaTimeoutMs });
+  }
+
+  // media.read: { offset, data } with up to length bytes of a prepared file from offset, in base64.
+  async mediaRead(media, offset, length) {
+    this.mustConnect();
+    return this.bridge.command('media.read', { media, offset, length }, { timeoutMs: this.mediaTimeoutMs });
   }
 
   // ---------- what Rukoo owns ----------

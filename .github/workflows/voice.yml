@@ -108,5 +108,6 @@ jobs:
       - name: Install ALSA headers for cpal
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       # The app, the input crate, the local worker and the screen process are Windows-first; the recorder, the bridge,
-      # the transcript pipeline and the screen folder format must behave the same on Linux, so their tests run here too.
-      - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files
+      # the transcript pipeline, the screen folder format and bucket sync must behave the same on Linux, so their tests
+      # run here too. Bucket sync's tests run against voice-s3-fake; only its DPAPI cases are Windows-only.
+      - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files -p voice-sync -p voice-s3-fake

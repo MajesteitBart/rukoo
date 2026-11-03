@@ -1,5 +1,7 @@
 use std::fmt;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
@@ -54,6 +56,8 @@ pub mod commands {
     pub const MEETING_PROTECTED: &str = "meeting.protected";
     pub const SCREEN_GET: &str = "screen.get";
     pub const SCREEN_SELECT: &str = "screen.select";
+    pub const MEDIA_OPEN: &str = "media.open";
+    pub const MEDIA_READ: &str = "media.read";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -664,6 +668,14 @@ pub enum CommandBody {
         meeting: MeetingId,
         monitor: String,
     },
+    MediaOpen(MediaOpenArgs),
+    MediaRead {
+        /// An id `media.open` gave.
+        media: String,
+        offset: u64,
+        /// 1 to [`crate::MAX_MEDIA_READ`].
+        length: u64,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -688,6 +700,8 @@ impl CommandBody {
             CommandBody::MeetingProtected { .. } => commands::MEETING_PROTECTED,
             CommandBody::ScreenGet { .. } => commands::SCREEN_GET,
             CommandBody::ScreenSelect { .. } => commands::SCREEN_SELECT,
+            CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
+            CommandBody::MediaRead { .. } => commands::MEDIA_READ,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -734,6 +748,23 @@ impl CommandBody {
                 args.insert("meeting".into(), meeting.as_str().into());
                 args.insert("monitor".into(), monitor.as_str().into());
             }
+            CommandBody::MediaOpen(open) => {
+                args.insert("meeting".into(), open.meeting.as_str().into());
+                args.insert("kind".into(), open.kind.as_str().into());
+                args.insert("start".into(), open.start.into());
+                if let Some(end) = open.end {
+                    args.insert("end".into(), end.into());
+                }
+            }
+            CommandBody::MediaRead {
+                media,
+                offset,
+                length,
+            } => {
+                args.insert("media".into(), media.as_str().into());
+                args.insert("offset".into(), (*offset).into());
+                args.insert("length".into(), (*length).into());
+            }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
         Value::Object(args)
@@ -751,6 +782,39 @@ pub struct StartArgs {
     pub screen: Option<ScreenMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<Object>,
+}
+
+/// What `media.open` prepares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MediaKind {
+    /// A WAV of all the meeting's tracks mixed, 16 kHz mono 16-bit, from `start` to `end`.
+    Audio,
+    /// The JPEG of the frame at or before `start`.
+    Frame,
+    /// An MP4 of one stretch of continuous video from `start` to `end`.
+    Video,
+}
+
+named!(MediaKind { Audio => "audio", Frame => "frame", Video => "video" });
+
+/// The arguments of `media.open`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MediaOpenArgs {
+    pub meeting: MeetingId,
+    pub kind: MediaKind,
+    /// Meeting ms.
+    pub start: u64,
+    /// Meeting ms; Voice requires it for audio and video.
+    pub end: Option<u64>,
+}
+
+/// The result of `media.read`: `{ "offset", "data" }`, the bytes in standard base64 with padding
+/// and without line breaks, as Rukoo reads them.
+pub fn media_read_result(offset: u64, bytes: &[u8]) -> Value {
+    let mut result = Object::new();
+    result.insert("offset".into(), offset.into());
+    result.insert("data".into(), STANDARD.encode(bytes).into());
+    Value::Object(result)
 }
 
 /// Voice's answer to one command.
@@ -886,6 +950,7 @@ mod tests {
         check(Replay::ALL);
         check(ErrorCode::ALL);
         check(Refusal::ALL);
+        check(MediaKind::ALL);
         assert!(serde_json::from_value::<Track>(json!("room")).is_err());
     }
 
@@ -958,5 +1023,22 @@ mod tests {
         assert_eq!(data, json!({ "id": "mic-000000000" }));
         let (name, data) = EventBody::MeetingRemoved.into_parts();
         assert_eq!((name.as_str(), data), ("meeting.removed", json!({})));
+    }
+
+    #[test]
+    fn media_pieces_are_padded_standard_base64() {
+        assert_eq!(
+            media_read_result(1_048_576, b"RIFF$\0\0\0WAVE"),
+            json!({ "offset": 1_048_576, "data": "UklGRiQAAABXQVZF" })
+        );
+        // Bytes that differ between base64 and base64url, and padding.
+        assert_eq!(
+            media_read_result(0, &[0xfb, 0xff, 0xbf, 0xfe])["data"],
+            "+/+//g=="
+        );
+        assert_eq!(
+            media_read_result(7, &[]),
+            json!({ "offset": 7, "data": "" })
+        );
     }
 }

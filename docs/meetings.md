@@ -50,7 +50,9 @@ The sidebar lists the meetings by day, newest first. With the chat open the side
 
 With the chat open in meeting mode, the chat is about the meeting on screen: the panel opens that meeting's newest chat, or starts a new one about it. Its quick actions are Catch me up, What did they ask me?, Write the notes and Draft the follow-up email.
 
-The agent reads the meeting through [Rukoo's meeting tools](agents.md#rukoos-tools). Each turn says how many lines are new since the agent last read the transcript; the transcript itself never goes into the turn. Everyone in a meeting is a third party, so the tools hand the transcript over as untrusted text. In a meeting that records the screen, the agent can look at the frames at a moment or over a stretch; anything can be on a screen, so their text is untrusted too, and a video clip goes only to an agent on this computer. No tool starts or stops a recording.
+The agent reads the meeting through [Rukoo's meeting tools](agents.md#rukoos-tools). Each turn says how many lines are new since the agent last read the transcript; the transcript itself never goes into the turn. Everyone in a meeting is a third party, so the tools hand the transcript over as untrusted text. In a meeting that records the screen, the agent can look at the frames at a moment or over a stretch; anything can be on a screen, so their text is untrusted too, and a video clip's file path goes only to an agent on this computer. No tool starts or stops a recording.
+
+The agent can also get a link to the meeting's audio, one frame or up to five minutes of its video, which works for five minutes and only from where it asked. Agents on another computer, such as Clark, get video this way. Rukoo Voice serves the media, so it must be running; with bucket sync on, Voice fetches media back from your bucket when this computer no longer has it.
 
 ## Settings
 
@@ -72,10 +74,11 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Speaker labels tell voices apart, not people. Voice can hear one person as two voices or two similar voices as one, and it doesn't label people who share your microphone.
 - Rukoo keeps a copy of each transcript in its profile, so the view and the tools work while Voice is closed. Rukoo deletes that copy when Voice deletes the meeting. Your notes stay.
 - Frame images stay with Voice. Rukoo keeps their text, so while Voice isn't running a frame's row shows its text, and an image only when Rukoo loaded it before. After Voice removed the meeting's screen media with its audio, the rows keep their text and say the image is gone.
-- Rukoo doesn't play a meeting's video. Agents on this computer can get a clip of it (see [the meeting tools](agents.md#rukoos-tools)).
+- Rukoo doesn't play a meeting's video. Agents can get a clip or a link to it (see [the meeting tools](agents.md#rukoos-tools)).
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.
 - Other apps' notifications and pop-ups on the recorded monitor end up in the frames. Rukoo holds back only its own.
 - With Rukoo's hide switch off, a meeting started from Rukoo records Rukoo's monitor, because Rukoo is the window you're working in. Move it with Screen in the header or with the pill's monitor button.
 - When Windows doesn't hide a Rukoo window, the meeting's header says "Visible in screen recordings" and Rukoo tries again every second. Until a try works, Rukoo can show in the frames: a meeting Voice starts gets no confirmation from Rukoo and starts its frames after half a second.
 - A Rukoo that isn't connected to Voice when a meeting starts from Voice can show in that meeting's first frames. Voice waits up to 5 seconds only for a Rukoo it has seen since Voice started, so right after Voice restarts it doesn't wait at all.
 - Native file dialogs and system notifications can't be hidden from screen capture.
+- Media links need Rukoo Voice running on this computer.

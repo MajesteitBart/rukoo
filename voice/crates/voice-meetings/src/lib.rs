@@ -41,7 +41,10 @@ pub use pipeline::{
     STREAM_REASON,
 };
 pub use reader::TrackReader;
-pub use retention::{retention_sweep, retention_sweep_at, WEEK_MS};
+pub use retention::{
+    release_held, retention_sweep, retention_sweep_at, retention_sweep_holding, MediaPart, Swept,
+    WEEK_MS,
+};
 pub use screen::{derived_key, ScreenDerived, ScreenFollower};
 pub use speakers::follower::FollowerTiming;
 pub use speakers::turns::Turn;

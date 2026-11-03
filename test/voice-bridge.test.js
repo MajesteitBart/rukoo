@@ -472,7 +472,7 @@ test('a meeting Voice started: meeting.started, then meeting.state recording, te
 test('without a connection, meeting commands fail with offline', async (t) => {
   const dir = tempDir('rukoo-voice-off-');
   const s = service(t, dir, null).init();
-  for (const call of [() => s.start({}), () => s.stop(M1), () => s.mark(M1, 'x'), () => s.frame(M1, 0)]) {
+  for (const call of [() => s.start({}), () => s.stop(M1), () => s.mark(M1, 'x'), () => s.frame(M1, 0), () => s.mediaOpen({ meeting: M1, kind: 'audio', start: 0, end: 1000 }), () => s.mediaRead('md-a1B2c3D4e5F6g7H8i9J0kL', 0, 1024)]) {
     const err = await call().then(() => null, (e) => e);
     assert.equal(err.code, 'offline');
   }
@@ -976,4 +976,55 @@ test("a 1:1's name Rukoo filled in stays when a second voice turns up, gets no s
   // The user confirms the guess: it is theirs now, and nothing asks any more.
   const confirmed = s.setSpeaker(M1, 'call-1', { name: 'Sanne', address: 'sanne@example.com' });
   assert.deepEqual([confirmed[0].name, confirmed[0].from, confirmed[0].autoCheck], ['Sanne', 'user', false]);
+});
+
+test('media.open and media.read reach Voice with the protocol\'s arguments and a 10 s limit, and are checked before they leave', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const MEDIA = 'md-a1B2c3D4e5F6g7H8i9J0kL';
+  voice.handlers['media.open'] = (args) => ({ media: MEDIA, ready: true, type: 'audio/wav', size: 19200044, start: args.start, end: args.end === undefined ? args.start : args.end });
+  voice.handlers['media.read'] = (args) => ({ offset: args.offset, data: 'UklGRiQAAABXQVZF' });
+  const s = service(t, dir, file).init();
+  await until(() => s.connected, 'the connection');
+  const limits = [];
+  const command = s.bridge.command.bind(s.bridge);
+  s.bridge.command = (name, args, opts) => {
+    limits.push([name, opts && opts.timeoutMs]);
+    return command(name, args, opts);
+  };
+
+  assert.deepEqual(await s.mediaOpen({ meeting: M1, kind: 'audio', start: 600000, end: 1200000 }), { media: MEDIA, ready: true, type: 'audio/wav', size: 19200044, start: 600000, end: 1200000 });
+  assert.deepEqual(voice.commands.at(-1).args, { meeting: M1, kind: 'audio', start: 600000, end: 1200000 });
+  // A frame has no end: the argument is left out, not sent as null.
+  await s.mediaOpen({ meeting: M1, kind: 'frame', start: 412500, end: undefined });
+  assert.deepEqual(voice.commands.at(-1).args, { meeting: M1, kind: 'frame', start: 412500 });
+  assert.deepEqual(await s.mediaRead(MEDIA, 1048576, 1048576), { offset: 1048576, data: 'UklGRiQAAABXQVZF' });
+  assert.deepEqual(voice.commands.at(-1).args, { media: MEDIA, offset: 1048576, length: 1048576 });
+  assert.deepEqual(limits, [['media.open', 10000], ['media.open', 10000], ['media.read', 10000]]);
+
+  // What the protocol refuses never leaves Rukoo.
+  const sent = voice.commands.length;
+  for (const call of [
+    () => s.mediaOpen({ meeting: M1, kind: 'transcript', start: 0 }),
+    () => s.mediaOpen({ meeting: M1, kind: 'audio', start: 5000, end: 4000 }),
+    () => s.mediaOpen({ meeting: M1, kind: 'audio', start: 0, end: 3600001 }),
+    () => s.mediaRead('md-short', 0, 1024),
+    () => s.mediaRead(MEDIA, 0, 0),
+    () => s.mediaRead(MEDIA, 0, 1048577),
+    () => s.mediaRead(MEDIA, -1, 1024)
+  ]) {
+    const err = await call().then(() => null, (e) => e);
+    assert.equal(err && err.code, 'bad_request');
+  }
+  assert.equal(voice.commands.length, sent);
+
+  // Voice's own answers come through with their code, and a read Voice never answers ends at the limit.
+  voice.handlers['media.open'] = () => ({ error: { code: 'not_available', message: "This meeting didn't record video." } });
+  const missing = await s.mediaOpen({ meeting: M1, kind: 'video', start: 0, end: 300000 }).then(() => null, (e) => e);
+  assert.equal(missing.code, 'not_available');
+  s.mediaTimeoutMs = 80;
+  voice.silent.add('media.read');
+  const slow = await s.mediaRead(MEDIA, 0, 1024).then(() => null, (e) => e);
+  assert.equal(slow.code, 'timeout');
+  assert.match(slow.message, /within 80 ms/);
 });

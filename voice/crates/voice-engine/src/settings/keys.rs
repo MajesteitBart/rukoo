@@ -13,16 +13,14 @@ fn invalid(key: &str) -> ApiError {
 }
 
 /// `state.config`: every setting under the key `settings_set` takes for it. Keys never appear;
-/// only whether one is saved.
-pub fn view(cfg: &Config, start_at_login: bool) -> Value {
+/// only whether one is saved. The bucket secret lives with DPAPI; `secret_saved` says whether
+/// there is one.
+pub fn view(cfg: &Config, start_at_login: bool, secret_saved: bool) -> Value {
     let saved = |key: &str| !key.trim().is_empty();
     let enum_text = |value: Value| value.as_str().unwrap_or_default().to_string();
-    let sync = cfg
-        .extra
-        .get(SYNC_KEY)
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let sync_value = crate::sync::sync_value(cfg);
+    let tested = crate::sync::is_tested(&sync_value);
+    let sync = sync_value.as_object().cloned().unwrap_or_default();
     let sync_text = |name: &str| {
         sync.get(name)
             .and_then(Value::as_str)
@@ -94,6 +92,9 @@ pub fn view(cfg: &Config, start_at_login: bool) -> Value {
                 "bucket": sync_text("bucket"),
                 "prefix": sync_text("prefix"),
                 "accessKeyId": sync_text("accessKeyId"),
+                "retention": sync.get("retention").and_then(Value::as_str).unwrap_or("keep"),
+                "secretSaved": secret_saved,
+                "tested": tested,
                 // The secret never reaches the page.
                 "secret": "",
             }
@@ -101,8 +102,75 @@ pub fn view(cfg: &Config, start_at_login: bool) -> Value {
     })
 }
 
-/// Bucket sync comes after 0.1; its settings are kept under this key in `config.json`.
-const SYNC_KEY: &str = "storage_sync";
+/// `storage_sync` in `config.json`, made an object when it isn't one.
+fn sync_object(cfg: &mut Config) -> &mut serde_json::Map<String, Value> {
+    let sync = cfg
+        .extra
+        .entry(crate::sync::SYNC_KEY)
+        .or_insert_with(|| json!({}));
+    if !sync.is_object() {
+        *sync = json!({});
+    }
+    sync.as_object_mut().expect("made an object above")
+}
+
+/// Saving or removing the bucket secret clears the passed Test connection. The switch stays as the
+/// user left it: while it is on, uploads pause until a new test passes, and retention keeps
+/// holding media that hasn't reached the bucket (spec D6, D8). Only the user turns it off.
+pub fn untest_sync(cfg: &mut Config) {
+    sync_object(cfg).remove("tested");
+}
+
+/// One `storage.sync.*` key (voice/ui/API.md). The switch turns on only for fields that passed
+/// Test connection. A changed connection field no longer matches the tested fingerprint, so
+/// uploads pause until the new fields pass; the switch stays where the user put it.
+fn set_sync(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
+    let field = &key["storage.sync.".len()..];
+    let text = |value: &Value| value.as_str().map(|s| s.trim().to_string());
+    let next = match field {
+        "secret" => {
+            return Err(ApiError::new(
+                "invalid_value",
+                "Save the secret with settings_sync_save_secret.",
+            ))
+        }
+        "enabled" => {
+            let on = boolean(key, &value)?;
+            if on && !crate::sync::is_tested(&Value::Object(sync_object(cfg).clone())) {
+                return Err(ApiError::new(
+                    "needs_test",
+                    "Test the connection before you turn sync on.",
+                ));
+            }
+            sync_object(cfg).insert("enabled".into(), json!(on));
+            return Ok(());
+        }
+        "retention" => {
+            let name = text(&value)
+                .filter(|n| voice_sync::BucketRetention::parse(n).is_some())
+                .ok_or_else(|| invalid(key))?;
+            sync_object(cfg).insert("retention".into(), json!(name));
+            return Ok(());
+        }
+        "service" => text(&value)
+            .filter(|n| voice_sync::Service::parse(n).is_some())
+            .ok_or_else(|| invalid(key))?,
+        "endpoint" => {
+            let endpoint = text(&value).ok_or_else(|| invalid(key))?;
+            if !endpoint.is_empty() {
+                voice_sync::SyncConfig::check_endpoint(&endpoint)
+                    .map_err(|e| ApiError::new("invalid_value", e.message))?;
+            }
+            endpoint
+        }
+        "region" | "bucket" | "prefix" | "accessKeyId" => {
+            text(&value).ok_or_else(|| invalid(key))?
+        }
+        _ => return Err(invalid(key)),
+    };
+    sync_object(cfg).insert(field.into(), json!(next));
+    Ok(())
+}
 
 fn boolean(key: &str, value: &Value) -> Result<bool, ApiError> {
     value.as_bool().ok_or_else(|| invalid(key))
@@ -232,23 +300,7 @@ pub fn set(cfg: &mut Config, key: &str, value: Value) -> Result<(), ApiError> {
         "ui.language" => cfg.ui_language = choice::<UiLanguage>(key, &value)?,
         "ui.theme" => cfg.ui_theme = choice::<Theme>(key, &value)?,
         "updates.check" => cfg.updates_check = boolean(key, &value)?,
-        _ if key.starts_with("storage.sync.") => {
-            let field = &key["storage.sync.".len()..];
-            let ok = match field {
-                "enabled" => value.is_boolean(),
-                "service" | "endpoint" | "region" | "bucket" | "prefix" | "accessKeyId"
-                | "secret" => value.is_string(),
-                _ => false,
-            };
-            if !ok {
-                return Err(invalid(key));
-            }
-            let sync = cfg.extra.entry(SYNC_KEY).or_insert_with(|| json!({}));
-            if !sync.is_object() {
-                *sync = json!({});
-            }
-            sync[field] = value;
-        }
+        _ if key.starts_with("storage.sync.") => set_sync(cfg, key, value)?,
         // transcription.*, rewriting.provider and the other provider fields are saved as a
         // whole with settings_save_provider.
         _ => {
@@ -300,7 +352,7 @@ mod tests {
         for (key, value) in &cases {
             set(&mut cfg, key, value.clone()).unwrap_or_else(|e| panic!("{key}: {e}"));
         }
-        let view = view(&cfg, false);
+        let view = view(&cfg, false, false);
         for (key, value) in cases {
             let (group, field) = key.split_once('.').unwrap();
             assert_eq!(view[group][field], value, "{key}");
@@ -319,7 +371,7 @@ mod tests {
         let mut cfg = Config::defaults(true);
         cfg.meetings_auto_speakers = true;
         cfg.meetings_live_speakers = false;
-        assert_eq!(view(&cfg, false)["meetings"]["liveSpeakers"], false);
+        assert_eq!(view(&cfg, false, false)["meetings"]["liveSpeakers"], false);
         set(&mut cfg, "meetings.liveSpeakers", json!(true)).unwrap();
         assert!(cfg.meetings_live_speakers);
         set(&mut cfg, "meetings.liveSpeakers", json!(false)).unwrap();
@@ -389,14 +441,157 @@ mod tests {
         let mut cfg = Config::defaults(true);
         cfg.audio_api_key = "sk-secret-audio".into();
         cfg.rewrite_api_key = "sk-secret-rewrite".into();
-        set(&mut cfg, "storage.sync.secret", json!("bucket-secret")).unwrap();
+        // The secret never goes through settings_set (settings_sync_save_secret keeps it).
+        let refused = set(&mut cfg, "storage.sync.secret", json!("bucket-secret")).unwrap_err();
+        assert_eq!(refused.code, "invalid_value");
+        assert!(refused.message.contains("settings_sync_save_secret"));
+        // One from before, still in config.json, never reaches the page either.
+        cfg.extra.insert(
+            crate::sync::SYNC_KEY.into(),
+            json!({"secret": "bucket-secret"}),
+        );
         set(&mut cfg, "storage.sync.bucket", json!("meetings")).unwrap();
-        let text = view(&cfg, false).to_string();
+        let text = view(&cfg, false, true).to_string();
         for secret in ["sk-secret-audio", "sk-secret-rewrite", "bucket-secret"] {
             assert!(!text.contains(secret), "{secret} leaked");
         }
-        let view = view(&cfg, false);
+        let view = view(&cfg, false, true);
         assert_eq!(view["transcription"]["keySaved"], true);
         assert_eq!(view["storage"]["sync"]["bucket"], "meetings");
+        assert_eq!(view["storage"]["sync"]["secret"], "");
+        assert_eq!(view["storage"]["sync"]["secretSaved"], true);
+    }
+
+    #[test]
+    fn sync_is_off_by_default_and_needs_a_passed_test() {
+        let mut cfg = Config::defaults(true);
+        let sync = &view(&cfg, false, false)["storage"]["sync"];
+        assert_eq!(sync["enabled"], false);
+        assert_eq!(sync["service"], "upcloud");
+        assert_eq!(sync["retention"], "keep");
+        assert_eq!(sync["tested"], false);
+        assert_eq!(sync["secretSaved"], false);
+        assert_eq!(
+            set(&mut cfg, "storage.sync.enabled", json!(true))
+                .unwrap_err()
+                .code,
+            "needs_test"
+        );
+        // Turning it off always works.
+        set(&mut cfg, "storage.sync.enabled", json!(false)).unwrap();
+        assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], false);
+    }
+
+    #[test]
+    fn sync_fields_are_checked() {
+        let mut cfg = Config::defaults(true);
+        for (key, value) in [
+            ("storage.sync.service", json!("s3")),
+            ("storage.sync.service", json!(1)),
+            ("storage.sync.retention", json!("days30")),
+            ("storage.sync.enabled", json!("yes")),
+            ("storage.sync.bucket", json!(null)),
+            ("storage.sync.urlStyle", json!("path")),
+            ("storage.sync.tested", json!("0000")),
+            ("storage.sync.nonsense", json!("x")),
+        ] {
+            let error = set(&mut cfg, key, value).unwrap_err();
+            assert_eq!(error.code, "invalid_value", "{key}");
+        }
+        for (key, value) in [
+            ("storage.sync.service", json!("r2")),
+            ("storage.sync.retention", json!("days90")),
+            ("storage.sync.region", json!(" auto ")),
+            ("storage.sync.bucket", json!("meetings")),
+            ("storage.sync.prefix", json!("/voice/")),
+            ("storage.sync.accessKeyId", json!("AKIA")),
+            ("storage.sync.endpoint", json!("")),
+        ] {
+            set(&mut cfg, key, value).unwrap_or_else(|e| panic!("{key}: {e}"));
+        }
+        let sync = &view(&cfg, false, false)["storage"]["sync"];
+        assert_eq!(sync["service"], "r2");
+        assert_eq!(sync["retention"], "days90");
+        assert_eq!(sync["region"], "auto", "trimmed");
+        assert_eq!(sync["prefix"], "/voice/");
+    }
+
+    /// The fields of a bucket, tested as Test connection would store it.
+    fn tested_config() -> Config {
+        let mut cfg = Config::defaults(true);
+        for (key, value) in [
+            ("storage.sync.service", "other"),
+            ("storage.sync.endpoint", "http://127.0.0.1:9000"),
+            ("storage.sync.region", "us-east-1"),
+            ("storage.sync.bucket", "test"),
+            ("storage.sync.accessKeyId", "test"),
+        ] {
+            set(&mut cfg, key, json!(value)).unwrap();
+        }
+        let sync = crate::sync::sync_value(&cfg);
+        let fingerprint = voice_sync::SyncConfig::from_json(&sync)
+            .unwrap()
+            .fingerprint();
+        cfg.extra.get_mut(crate::sync::SYNC_KEY).unwrap()["tested"] = json!(fingerprint);
+        cfg
+    }
+
+    #[test]
+    fn a_tested_bucket_turns_on_and_a_changed_one_pauses() {
+        let mut cfg = tested_config();
+        assert_eq!(view(&cfg, false, true)["storage"]["sync"]["tested"], true);
+        set(&mut cfg, "storage.sync.enabled", json!(true)).unwrap();
+        // The same value again changes nothing.
+        set(&mut cfg, "storage.sync.bucket", json!("test")).unwrap();
+        assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], true);
+        // The bucket's retention isn't part of the connection.
+        set(&mut cfg, "storage.sync.retention", json!("days365")).unwrap();
+        assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], true);
+        // Another bucket hasn't passed a test: nothing goes to it, but the switch stays on, so
+        // retention keeps what hasn't reached the bucket.
+        set(&mut cfg, "storage.sync.bucket", json!("other")).unwrap();
+        let sync = &view(&cfg, false, true)["storage"]["sync"];
+        assert_eq!(sync["enabled"], true);
+        assert_eq!(sync["tested"], false);
+        assert_eq!(crate::sync::sync_config(&cfg), None, "paused");
+        // Off, it turns on again only after a test.
+        set(&mut cfg, "storage.sync.enabled", json!(false)).unwrap();
+        assert_eq!(
+            set(&mut cfg, "storage.sync.enabled", json!(true))
+                .unwrap_err()
+                .code,
+            "needs_test"
+        );
+        // Back to the tested bucket: its fingerprint matches again.
+        set(&mut cfg, "storage.sync.bucket", json!("test")).unwrap();
+        assert_eq!(cfg.extra[crate::sync::SYNC_KEY]["enabled"], false);
+        set(&mut cfg, "storage.sync.enabled", json!(true)).unwrap();
+        assert!(crate::sync::sync_config(&cfg).is_some());
+
+        // A new or removed secret needs a new test; the switch stays on meanwhile.
+        untest_sync(&mut cfg);
+        let sync = &view(&cfg, false, true)["storage"]["sync"];
+        assert_eq!(
+            (&sync["enabled"], &sync["tested"]),
+            (&json!(true), &json!(false))
+        );
+        assert_eq!(crate::sync::sync_config(&cfg), None);
+    }
+
+    #[test]
+    fn an_endpoint_is_https_or_on_this_computer() {
+        let mut cfg = Config::defaults(true);
+        for endpoint in ["http://example.com", "ftp://example.com", "not a url"] {
+            let error = set(&mut cfg, "storage.sync.endpoint", json!(endpoint)).unwrap_err();
+            assert_eq!(error.code, "invalid_value", "{endpoint}");
+        }
+        for endpoint in [
+            "https://example.upcloudobjects.com",
+            "http://127.0.0.1:9000",
+            "",
+        ] {
+            set(&mut cfg, "storage.sync.endpoint", json!(endpoint))
+                .unwrap_or_else(|e| panic!("{endpoint}: {e}"));
+        }
     }
 }

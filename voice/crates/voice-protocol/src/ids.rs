@@ -151,6 +151,11 @@ pub fn is_instance(instance: &str) -> bool {
     instance.len() == 22 && is_base64url(instance)
 }
 
+/// True when `media` matches `^md-[A-Za-z0-9_-]{22}$`: a prepared file of `media.open`.
+pub fn is_media_id(media: &str) -> bool {
+    media.strip_prefix("md-").is_some_and(is_instance)
+}
+
 fn is_base64url(text: &str) -> bool {
     text.bytes()
         .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
@@ -164,6 +169,11 @@ pub fn new_token() -> io::Result<String> {
 /// A fresh instance id: 16 random bytes from the operating system, in base64url.
 pub fn new_instance() -> io::Result<String> {
     random_base64url::<16>()
+}
+
+/// A fresh id for a prepared media file: `md-` and 16 random bytes in base64url.
+pub fn new_media_id() -> io::Result<String> {
+    Ok(format!("md-{}", new_instance()?))
 }
 
 fn random_base64url<const N: usize>() -> io::Result<String> {
@@ -258,6 +268,30 @@ mod tests {
         assert!(!is_token("q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8+"));
         assert!(!is_token("q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o="));
         assert!(!is_instance("Vb3kQ9m2X7pL1sR4tY8wZQx"));
+    }
+
+    #[test]
+    fn media_ids_are_md_and_an_instance() {
+        let media = new_media_id().unwrap();
+        assert!(is_media_id(&media), "{media}");
+        assert_eq!(media.len(), 25);
+        assert_ne!(new_media_id().unwrap(), media);
+        assert!(is_media_id("md-a1B2c3D4e5F6g7H8i9J0kL"));
+        assert!(is_media_id("md-______________________"));
+        for bad in [
+            "",
+            "md-",
+            "md-short",
+            "md-a1B2c3D4e5F6g7H8i9J0k",
+            "md-a1B2c3D4e5F6g7H8i9J0kLx",
+            "md-a1B2c3D4e5F6g7H8i9J0k=",
+            "md-a1B2c3D4e5F6g7H8i9J0k/",
+            "MD-a1B2c3D4e5F6g7H8i9J0kL",
+            "mdxa1B2c3D4e5F6g7H8i9J0kL",
+            "Vb3kQ9m2X7pL1sR4tY8wZQ",
+        ] {
+            assert!(!is_media_id(bad), "{bad}");
+        }
     }
 
     #[test]

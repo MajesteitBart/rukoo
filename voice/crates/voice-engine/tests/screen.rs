@@ -23,6 +23,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
 use voice_bridge::{EventLog, MeetingControl};
+use voice_engine::media::{MediaService, RecordedScreen};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::meetings::screen::{ScreenChange, ScreenOptions, ScreenSupervisor, ScreenTiming};
@@ -317,6 +318,14 @@ impl Rig {
             self.screen(),
             self.log.clone(),
             Arc::default(),
+            // Media links read the same screen folder; no bucket sync here.
+            MediaService::new(
+                &self.data,
+                Arc::clone(&self.controller),
+                None,
+                Arc::new(RecordedScreen::default()),
+                Arc::new(|_| None),
+            ),
         )
     }
 

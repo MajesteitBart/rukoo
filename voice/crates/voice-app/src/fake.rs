@@ -465,6 +465,16 @@ impl FakeEngine {
 }
 
 impl State {
+    /// A changed connection field or a new or removed secret: uploads pause until Test connection
+    /// passes again, and the switch stays where the user put it.
+    fn untest_sync(&mut self) {
+        let sync = &mut self.settings["config"]["storage"]["sync"];
+        sync["tested"] = json!(false);
+        if sync["enabled"] == true {
+            self.settings["sync"]["state"] = json!("paused");
+        }
+    }
+
     fn pill_change(&mut self, out: &mut Vec<Out>, f: impl FnOnce(&mut PillSnapshot)) {
         f(&mut self.pill);
         self.pill.seq += 1;
@@ -757,7 +767,8 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
-        "features": { "screen": true, "speakers": true, "sync": false },
+        // Every feature is in this Voice: screen recording, speaker labels and bucket sync.
+        "features": { "screen": true, "speakers": true, "sync": true },
         "theme": "dark",
         "locale": "en",
         "config": {
@@ -770,7 +781,7 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
             "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
             "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
             "updates": { "check": false },
-            "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "secret": "" } }
+            "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "retention": "keep", "secretSaved": false, "tested": false, "secret": "" } }
         },
         "providers": {
             "audio": [
@@ -802,9 +813,37 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "screen": { "available": true, "hardwareEncoder": "NVIDIA H.264 Encoder MFT", "ocr": ["en-US", "nl-NL"], "monitors": MONITORS.len() },
         "updates": { "state": "idle", "version": null },
         "ownkey": { "running": false, "keys": [], "configFound": false, "configPath": "%APPDATA%\\Ownkey\\config.json", "lastImport": null, "models": [], "report": null },
-        "sync": { "lastUpload": null, "waiting": 0 }
+        "sync": {
+            "available": true, "state": "off", "waiting": 0, "waitingBytes": 0, "oldestWaiting": null,
+            "lastUpload": null, "lastError": null, "failingSince": null, "lost": 0, "screenRecording": false,
+            "key": { "exists": false, "id": null, "exported": false },
+            "restore": { "state": "idle", "available": 0, "done": 0, "total": 0, "error": null },
+            "otherKeys": 0
+        }
     })
 }
+
+/// The recovery code the fake shows: zeros, never a key.
+pub const FAKE_RECOVERY_CODE: &str =
+    "RKV1-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000-00000";
+
+/// The meetings the fake's bucket holds that aren't "on this computer".
+fn fake_remote_meetings() -> Value {
+    json!([
+        { "id": "m-20261028-140000-a1b2", "title": "Design review", "startedAt": 1_793_196_000_000u64, "duration": 2_712_000 },
+        { "id": "m-20261021-090000-c3d4", "title": "Weekly", "startedAt": 1_792_573_200_000u64, "duration": 1_800_000 }
+    ])
+}
+
+/// Bucket sync's connection fields: changing one needs a new Test connection.
+const SYNC_FIELDS: &[&str] = &[
+    "storage.sync.service",
+    "storage.sync.endpoint",
+    "storage.sync.region",
+    "storage.sync.bucket",
+    "storage.sync.prefix",
+    "storage.sync.accessKeyId",
+];
 
 fn models_for(provider: &str) -> Option<Vec<&'static str>> {
     Some(match provider {
@@ -945,8 +984,21 @@ impl EngineApi for FakeEngine {
                 | "rewriting.auto"
                 | "rewriting.formatting"
                 | "meetings.liveSpeakers"
-                | "updates.check"
-                | "storage.sync.enabled" => boolean()?,
+                | "updates.check" => boolean()?,
+                "storage.sync.enabled" => {
+                    boolean()?;
+                    if value == true && config["storage"]["sync"]["tested"] != true {
+                        return Err(ApiError::new(
+                            "needs_test",
+                            "Test the connection before you turn sync on.",
+                        ));
+                    }
+                }
+                "storage.sync.secret" => {
+                    return Err(invalid("Save the secret with settings_sync_save_secret."))
+                }
+                "storage.sync.service" => one_of(&["upcloud", "r2", "other"], false)?,
+                "storage.sync.retention" => one_of(&["keep", "days365", "days90"], false)?,
                 "ui.pillEdge" => one_of(&["bottom", "top"], false)?,
                 "ui.language" => one_of(&["system", "en", "nl"], false)?,
                 "ui.theme" => one_of(&["system", "light", "dark"], false)?,
@@ -957,7 +1009,7 @@ impl EngineApi for FakeEngine {
                 "meetings.retention" => one_of(&["days7", "keep", "after_transcription"], false)?,
                 "meetings.screen" => one_of(&["off", "frames", "video"], false)?,
                 "local.modelFolder" | "fillers.custom" | "rewriting.instructions" => string()?,
-                k if k.starts_with("storage.sync.") && k != "storage.sync.secret" => string()?,
+                k if SYNC_FIELDS.contains(&k) => string()?,
                 "local.idleMinutes" => match value.as_u64() {
                     Some(m) if m <= 1440 => {}
                     _ => return Err(invalid("Idle minutes go from 0 to 1440.")),
@@ -990,7 +1042,16 @@ impl EngineApi for FakeEngine {
                 }
                 _ => return Err(invalid(format!("{key} can't be set here"))),
             }
+            if SYNC_FIELDS.contains(&key) {
+                let (_, field) = key.rsplit_once('.').unwrap_or_default();
+                if st.settings["config"]["storage"]["sync"][field] != value {
+                    st.untest_sync();
+                }
+            }
             set_path(&mut st.settings["config"], key, value.clone());
+            if key == "storage.sync.enabled" {
+                st.settings["sync"]["state"] = json!(if value == true { "idle" } else { "off" });
+            }
             if matches!(
                 key,
                 "ui.theme" | "ui.language" | "ui.pillEdge" | "ui.hidePillFromCapture"
@@ -1082,6 +1143,12 @@ impl EngineApi for FakeEngine {
 
     fn settings_remove_key(&self, target: &str) -> Result<(), ApiError> {
         self.apply(|st, out| {
+            if target == "sync" {
+                st.untest_sync();
+                st.settings["config"]["storage"]["sync"]["secretSaved"] = json!(false);
+                st.settings_changed(out);
+                return Ok(());
+            }
             if !matches!(target, "transcription" | "rewriting" | "meetings") {
                 return Err(invalid(format!("Unknown provider form {target}")));
             }
@@ -1200,6 +1267,109 @@ impl EngineApi for FakeEngine {
             "dev_mode",
             "A development copy imports Ownkey's settings only from a copy, with --import-ownkey <path>.",
         ))
+    }
+
+    fn settings_sync_test(&self) -> Result<Value, ApiError> {
+        self.apply(|st, out| {
+            let sync = &mut st.settings["config"]["storage"]["sync"];
+            if sync["secretSaved"] != true {
+                return Err(ApiError::new(
+                    "no_secret",
+                    "Save the secret access key first.",
+                ));
+            }
+            if sync["bucket"] == "fail" {
+                return Err(ApiError::new(
+                    "bucket",
+                    "The bucket answered NoSuchBucket for fail.",
+                ));
+            }
+            sync["tested"] = json!(true);
+            if sync["enabled"] == true {
+                st.settings["sync"]["state"] = json!("idle");
+            }
+            st.settings_changed(out);
+            Ok(json!({ "otherKeys": 0 }))
+        })
+    }
+
+    fn settings_sync_save_secret(&self, secret: String) -> Result<(), ApiError> {
+        if secret.trim().is_empty() || secret.chars().count() > 1024 {
+            return Err(invalid("The secret is 1 to 1024 characters."));
+        }
+        // The fake keeps only that there is one.
+        self.apply(|st, out| {
+            st.untest_sync();
+            st.settings["config"]["storage"]["sync"]["secretSaved"] = json!(true);
+            st.settings_changed(out);
+            Ok(())
+        })
+    }
+
+    fn settings_sync_key(&self, action: &str, code: Option<String>) -> Result<Value, ApiError> {
+        self.apply(|st, out| {
+            let result = match action {
+                "show" => {
+                    st.settings["sync"]["key"]["exists"] = json!(true);
+                    st.settings["sync"]["key"]["id"] = json!("00000000");
+                    json!({ "code": FAKE_RECOVERY_CODE, "id": "00000000" })
+                }
+                "saved" => {
+                    st.settings["sync"]["key"]["exported"] = json!(true);
+                    Value::Null
+                }
+                "import" => {
+                    let letters: String = code
+                        .unwrap_or_default()
+                        .chars()
+                        .filter(|c| !c.is_whitespace() && *c != '-')
+                        .collect();
+                    // RKV1 and 55 characters of base32, as a real code has.
+                    if !letters.to_uppercase().starts_with("RKV1") || letters.len() != 59 {
+                        return Err(invalid("That isn't a Rukoo Voice key."));
+                    }
+                    st.settings["sync"]["key"] =
+                        json!({ "exists": true, "id": "00000000", "exported": true });
+                    json!({ "id": "00000000" })
+                }
+                _ => return Err(invalid("action is show, saved or import.")),
+            };
+            st.settings_changed(out);
+            Ok(result)
+        })
+    }
+
+    fn settings_sync_key_copy(&self) -> Result<(), ApiError> {
+        // The fake never touches the clipboard.
+        Ok(())
+    }
+
+    fn settings_sync_restore(&self, action: &str) -> Result<Value, ApiError> {
+        self.apply(|st, out| {
+            let sync = &st.settings["config"]["storage"]["sync"];
+            if sync["enabled"] != true || sync["tested"] != true {
+                return Err(ApiError::new("off", "Turn sync on first."));
+            }
+            match action {
+                "list" => {
+                    let meetings = fake_remote_meetings();
+                    let available = meetings.as_array().map_or(0, Vec::len);
+                    st.settings["sync"]["restore"] = json!({
+                        "state": "available", "available": available, "done": 0, "total": 0, "error": null
+                    });
+                    st.settings_changed(out);
+                    Ok(json!({ "meetings": meetings }))
+                }
+                "start" => {
+                    st.settings["sync"]["restore"] = json!({
+                        "state": "done", "available": 0, "done": 2, "total": 2, "error": null
+                    });
+                    st.settings_changed(out);
+                    Ok(Value::Null)
+                }
+                _ => Err(invalid("action is list or start.")),
+            }
+        })
     }
 
     fn settings_start_page(&self) -> Option<String> {
@@ -1627,5 +1797,114 @@ pub mod tests {
         assert_eq!(host_of("http://[::1]:8080/x"), "::1");
         assert_eq!(host_of("HTTPS://User@Example.COM"), "example.com");
         assert_eq!(host_of(""), "");
+    }
+
+    #[test]
+    fn bucket_sync_follows_api_md_with_scripted_answers() {
+        let (engine, _) = engine("idle");
+        let sync = || engine.settings_state()["config"]["storage"]["sync"].clone();
+        assert_eq!(engine.settings_state()["features"]["sync"], true);
+        assert_eq!(engine.settings_state()["sync"]["state"], "off");
+        // The secret never goes through settings_set, and the switch waits for a test.
+        assert_eq!(
+            engine
+                .settings_set("storage.sync.secret", json!("s"))
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        assert_eq!(
+            engine
+                .settings_set("storage.sync.enabled", json!(true))
+                .unwrap_err()
+                .code,
+            "needs_test"
+        );
+        assert_eq!(engine.settings_sync_test().unwrap_err().code, "no_secret");
+        assert_eq!(
+            engine
+                .settings_sync_save_secret(" ".into())
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        engine.settings_sync_save_secret("secret-1".into()).unwrap();
+        assert_eq!(sync()["secretSaved"], true);
+        engine
+            .settings_set("storage.sync.bucket", json!("fail"))
+            .unwrap();
+        assert_eq!(engine.settings_sync_test().unwrap_err().code, "bucket");
+        engine
+            .settings_set("storage.sync.bucket", json!("meetings"))
+            .unwrap();
+        assert_eq!(
+            engine.settings_sync_test().unwrap(),
+            json!({ "otherKeys": 0 })
+        );
+        engine
+            .settings_set("storage.sync.enabled", json!(true))
+            .unwrap();
+        assert_eq!(engine.settings_state()["sync"]["state"], "idle");
+        engine
+            .settings_set("storage.sync.retention", json!("days90"))
+            .unwrap();
+        assert_eq!(
+            sync()["enabled"],
+            true,
+            "retention isn't a connection field"
+        );
+        assert_eq!(
+            engine
+                .settings_set("storage.sync.retention", json!("forever"))
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+
+        // The key: zeros, never a real one.
+        let shown = engine.settings_sync_key("show", None).unwrap();
+        assert_eq!(shown["code"], FAKE_RECOVERY_CODE);
+        engine.settings_sync_key("saved", None).unwrap();
+        assert_eq!(engine.settings_state()["sync"]["key"]["exported"], true);
+        assert_eq!(
+            engine
+                .settings_sync_key("import", Some("hello".into()))
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        engine
+            .settings_sync_key("import", Some(FAKE_RECOVERY_CODE.to_lowercase()))
+            .unwrap();
+        engine.settings_sync_key_copy().unwrap();
+
+        let list = engine.settings_sync_restore("list").unwrap();
+        let titles: Vec<&str> = list["meetings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, ["Design review", "Weekly"]);
+        engine.settings_sync_restore("start").unwrap();
+        assert_eq!(engine.settings_state()["sync"]["restore"]["state"], "done");
+
+        // Changing the bucket or removing the secret pauses sync until a new test; the switch
+        // stays on.
+        engine
+            .settings_set("storage.sync.bucket", json!("elsewhere"))
+            .unwrap();
+        assert_eq!(
+            (sync()["enabled"].clone(), sync()["tested"].clone()),
+            (json!(true), json!(false))
+        );
+        assert_eq!(engine.settings_state()["sync"]["state"], "paused");
+        engine.settings_remove_key("sync").unwrap();
+        assert_eq!(sync()["secretSaved"], false);
+        assert_eq!(
+            engine.settings_sync_restore("list").unwrap_err().code,
+            "off"
+        );
+        engine.shutdown();
     }
 }

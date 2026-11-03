@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
 use voice_bridge::{EventLog, MeetingControl};
+use voice_engine::media::{MediaService, NoScreenMedia};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::meetings::screen::{ScreenOptions, ScreenSupervisor};
@@ -584,6 +585,17 @@ fn a_cut_off_meeting_is_finished_at_start() {
     c.shutdown();
 }
 
+/// Media links without bucket sync or screen recording.
+fn no_media(data: &Path, controller: &Arc<Controller>) -> Arc<MediaService> {
+    MediaService::new(
+        data,
+        Arc::clone(controller),
+        None,
+        Arc::new(NoScreenMedia),
+        Arc::new(|_| None),
+    )
+}
+
 /// A screen supervisor without a screen program: meetings it would follow record no screen.
 fn no_screen(data: &Path) -> Arc<ScreenSupervisor> {
     ScreenSupervisor::new(
@@ -607,6 +619,7 @@ fn control(c: &Arc<Controller>, data: &Path) -> Control {
         no_screen(data),
         EventLog::open(data).unwrap(),
         Arc::default(),
+        no_media(data, c),
     )
 }
 

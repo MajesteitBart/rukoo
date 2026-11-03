@@ -15,14 +15,27 @@
 //!   `frames`.
 //! - `{"op":"remove","meeting":"m-…"}` deletes a meeting's events, as Voice does.
 //! - `{"op":"restart"}` stops the server and starts it again: new port and token, same events.
+//! - `{"op":"media","error":"not_available"}` makes the next `media.open` answer that error;
+//!   `"failed"` works too.
 //! - `{"op":"quit"}`, or the end of stdin, stops it.
 //!
 //! Rukoo's commands reach a small scripted Voice that starts, pauses, marks and stops meetings by
 //! appending the events a real one would. It records nothing, so like a Voice that can't record
 //! the screen on its computer it starts every meeting with `screen: off`, and `frame.get`,
 //! `clip.get`, `screen.get` and `screen.select` answer `not_available`.
+//!
+//! `media.open` serves synthetic media, the same bytes as Rukoo's fake Voice
+//! (test/fixtures/voice-server.js), so the interop test can compare them. The first `media.open`
+//! for new arguments answers `ready: false` and the next one `ready: true`, as a Voice that
+//! prepares the file does.
+//!
+//! - `audio`: the canonical 44-byte WAV header for `(end - start) · 16` samples, then sample `k`
+//!   (from 0) is `(k mod 64) · 512 − 16384`, little-endian.
+//! - `frame`: 107 bytes, `FF D8 FF E0 00 10 'JFIF' 00`, zeros, then `FF D9`, at `start` rounded
+//!   down to a whole second.
+//! - `video`: `not_available`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -30,9 +43,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use voice_bridge::{
-    BridgeServer, ControlError, EventLog, Handle, MeetingControl, MeetingSummary, StartArgs, Status,
+    BridgeServer, ControlError, EventLog, Handle, MediaKind, MediaOpenArgs, MeetingControl,
+    MeetingSummary, StartArgs, Status,
 };
-use voice_protocol::{events, passage_id, MeetingId, MeetingState, ScreenMode};
+use voice_protocol::{
+    events, media_read_result, new_media_id, passage_id, ErrorCode, MeetingId, MeetingState,
+    ScreenMode,
+};
 
 const VERSION: &str = "0.1.0";
 
@@ -74,6 +91,7 @@ fn main() {
                 server = Some(start(&log, &voice, &discovery));
                 continue;
             }
+            "media" => voice.fail_next_media(&request),
             "quit" => break,
             other => Err(format!("unknown op {other:?}")),
         };
@@ -129,11 +147,124 @@ struct Meeting {
     marks: u64,
 }
 
+/// The length of the synthetic frame.
+const FRAME_LEN: u64 = 107;
+/// The start of the synthetic frame; zeros and `FF D9` follow.
+const FRAME_HEAD: [u8; 11] = [
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00,
+];
+
+/// One prepared file of synthetic media.
+#[derive(Clone)]
+struct Synthetic {
+    kind: MediaKind,
+    /// Meeting ms the file covers.
+    start: u64,
+    end: u64,
+    size: u64,
+}
+
+impl Synthetic {
+    /// The file `media.open` prepares for `args`, or the error Voice answers.
+    fn for_args(args: &MediaOpenArgs) -> Result<Synthetic, ControlError> {
+        match args.kind {
+            MediaKind::Audio => {
+                let end = args
+                    .end
+                    .ok_or_else(|| ControlError::bad_request("`end` is required for audio."))?;
+                Ok(Synthetic {
+                    kind: MediaKind::Audio,
+                    start: args.start,
+                    end,
+                    size: 44 + (end - args.start) * 32,
+                })
+            }
+            MediaKind::Frame => {
+                let at = args.start / 1000 * 1000;
+                Ok(Synthetic {
+                    kind: MediaKind::Frame,
+                    start: at,
+                    end: at,
+                    size: FRAME_LEN,
+                })
+            }
+            MediaKind::Video => Err(ControlError::not_available(
+                "This meeting didn't record video.",
+            )),
+        }
+    }
+
+    fn content_type(&self) -> &'static str {
+        match self.kind {
+            MediaKind::Audio => "audio/wav",
+            MediaKind::Frame => "image/jpeg",
+            MediaKind::Video => "video/mp4",
+        }
+    }
+
+    /// At most `length` bytes from `offset`; none past the end.
+    fn bytes(&self, offset: u64, length: u64) -> Vec<u8> {
+        let end = offset.saturating_add(length).min(self.size);
+        let header = wav_header((self.end - self.start) * 16);
+        (offset.min(end)..end)
+            .map(|i| match self.kind {
+                MediaKind::Audio if i < 44 => header[i as usize],
+                MediaKind::Audio => {
+                    let k = (i - 44) / 2;
+                    let sample = (k % 64) as i16 * 512 - 16384;
+                    sample.to_le_bytes()[((i - 44) % 2) as usize]
+                }
+                _ if i < FRAME_HEAD.len() as u64 => FRAME_HEAD[i as usize],
+                _ if i >= FRAME_LEN - 2 => [0xFF, 0xD9][(i - (FRAME_LEN - 2)) as usize],
+                _ => 0,
+            })
+            .collect()
+    }
+}
+
+/// The canonical WAV header for `samples` samples of 16 kHz mono 16-bit PCM, as
+/// `voice_audio::segment_header` writes it. Written out here so voice-bridge needs no audio crate.
+fn wav_header(samples: u64) -> [u8; 44] {
+    const RATE: u32 = 16_000;
+    let data = (samples.min((u64::from(u32::MAX) - 36) / 2) * 2) as u32;
+    let mut h = [0u8; 44];
+    h[0..4].copy_from_slice(b"RIFF");
+    h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+    h[8..12].copy_from_slice(b"WAVE");
+    h[12..16].copy_from_slice(b"fmt ");
+    h[16..20].copy_from_slice(&16u32.to_le_bytes());
+    h[20..22].copy_from_slice(&1u16.to_le_bytes());
+    h[22..24].copy_from_slice(&1u16.to_le_bytes());
+    h[24..28].copy_from_slice(&RATE.to_le_bytes());
+    h[28..32].copy_from_slice(&(RATE * 2).to_le_bytes());
+    h[32..34].copy_from_slice(&2u16.to_le_bytes());
+    h[34..36].copy_from_slice(&16u16.to_le_bytes());
+    h[36..40].copy_from_slice(b"data");
+    h[40..44].copy_from_slice(&data.to_le_bytes());
+    h
+}
+
+/// A prepared file and whether `media.open` has said it is ready.
+struct Prepared {
+    file: Synthetic,
+    ready: bool,
+}
+
+/// The media `media.open` prepared: ids by arguments, and the files by id.
+#[derive(Default)]
+struct Media {
+    ids: HashMap<MediaOpenArgs, String>,
+    files: HashMap<String, Prepared>,
+    /// The error the next `media.open` answers, from the `media` op.
+    fail_next: Option<ErrorCode>,
+}
+
 /// Just enough of Voice to answer Rukoo's commands with the events a real Voice would send.
 struct ScriptedVoice {
     log: EventLog,
     meetings: Mutex<BTreeMap<String, Meeting>>,
     recording: Mutex<Option<String>>,
+    media: Mutex<Media>,
 }
 
 impl ScriptedVoice {
@@ -142,7 +273,23 @@ impl ScriptedVoice {
             log,
             meetings: Mutex::new(BTreeMap::new()),
             recording: Mutex::new(None),
+            media: Mutex::new(Media::default()),
         }
+    }
+
+    /// The `media` op: the next `media.open` answers `not_available` or `failed`.
+    fn fail_next_media(&self, request: &Value) -> Result<Value, String> {
+        let code = match request["error"].as_str() {
+            Some("not_available") => ErrorCode::NotAvailable,
+            Some("failed") => ErrorCode::Failed,
+            other => {
+                return Err(format!(
+                    "error must be not_available or failed, not {other:?}"
+                ))
+            }
+        };
+        self.media.lock().unwrap().fail_next = Some(code);
+        Ok(json!({}))
     }
 
     fn append(&self, meeting: &str, event: &str, data: Value) -> Result<u64, ControlError> {
@@ -539,6 +686,72 @@ impl MeetingControl for ScriptedVoice {
         _deadline: Instant,
     ) -> Result<String, ControlError> {
         Err(self.no_screen(id))
+    }
+
+    fn media_open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
+        let mut media = self.media.lock().unwrap();
+        match media.fail_next.take() {
+            Some(ErrorCode::NotAvailable) => {
+                return Err(ControlError::not_available(
+                    "The media of this meeting is no longer on this computer and isn't in a synced bucket.",
+                ))
+            }
+            Some(_) => {
+                return Err(ControlError::failed(
+                    "Not enough free disk space to prepare the media.",
+                ))
+            }
+            None => {}
+        }
+        if !self
+            .meetings
+            .lock()
+            .unwrap()
+            .contains_key(args.meeting.as_str())
+        {
+            return Err(ControlError::not_found(format!(
+                "No meeting {}.",
+                args.meeting
+            )));
+        }
+        let file = Synthetic::for_args(args)?;
+        // A frame ignores `end`, so it doesn't make another file.
+        let mut key = args.clone();
+        if key.kind == MediaKind::Frame {
+            key.end = None;
+        }
+        let Media { ids, files, .. } = &mut *media;
+        if let Some(id) = ids.get(&key) {
+            let prepared = files.get_mut(id).expect("every id has its file");
+            prepared.ready = true;
+            let file = &prepared.file;
+            return Ok(json!({
+                "media": id,
+                "ready": true,
+                "type": file.content_type(),
+                "size": file.size,
+                "start": file.start,
+                "end": file.end,
+            }));
+        }
+        let id = new_media_id().map_err(|e| ControlError::failed(e.to_string()))?;
+        ids.insert(key, id.clone());
+        files.insert(id.clone(), Prepared { file, ready: false });
+        Ok(json!({ "media": id, "ready": false }))
+    }
+
+    fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {
+        let state = self.media.lock().unwrap();
+        let Some(prepared) = state.files.get(media) else {
+            return Err(ControlError::not_found("There is no media with that id."));
+        };
+        if !prepared.ready {
+            return Err(ControlError::bad_request("The media isn't ready yet."));
+        }
+        Ok(media_read_result(
+            offset,
+            &prepared.file.bytes(offset, length),
+        ))
     }
 
     fn status(&self) -> Status {

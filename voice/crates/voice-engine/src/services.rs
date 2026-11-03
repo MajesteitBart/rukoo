@@ -18,8 +18,11 @@ use voice_core::speakers::{Diarizer, RuntimeInfo, SpeakerLabels, SpeakerOptions,
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_input::{BeforeKeys, InputError, InsertMode, Key, TextTarget};
 use voice_meetings::PipelineOptions;
+use voice_sync::protect::Protector;
+use voice_sync::{ScreenFiles, SyncTiming};
 
 use crate::api::{EngineOptions, Locale, Theme};
+use crate::media::{RecordedScreen, ScreenMedia};
 use crate::meetings::controller::ControllerTiming;
 use crate::meetings::screen::{ScreenTiming, SCREEN_EXE};
 
@@ -45,6 +48,17 @@ pub trait TextInput: Send + Sync {
     fn text_target(&self) -> TextTarget;
     /// Before quitting, so the user's clipboard comes back.
     fn wait_for_clipboard_restore(&self) {}
+    /// Puts text on the clipboard hidden from clipboard history and cloud clipboard
+    /// (voice-input's `copy_hidden`), for the recovery code.
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
+    /// Empties the clipboard while it still holds `text` (voice-input's `clear_if`).
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        let _ = text;
+        Err(InputError::Unsupported)
+    }
 }
 
 /// Blocks of 16 kHz mono samples, as they are captured.
@@ -153,6 +167,14 @@ pub struct Services {
     pub discovery_path: Option<PathBuf>,
     pub controller: ControllerTiming,
     pub screen_timing: ScreenTiming,
+    /// What the screen recording left in a meeting folder, for bucket sync.
+    pub screen_files: Arc<dyn ScreenFiles>,
+    /// The same, for media links: frames and video clips.
+    pub screen_media: Arc<dyn ScreenMedia>,
+    /// Keeps the bucket secret and the encryption key readable only by this Windows user.
+    pub protector: Arc<dyn Protector>,
+    /// Bucket sync's clocks and sizes; tests shorten them.
+    pub sync_timing: SyncTiming,
 }
 
 impl Services {
@@ -170,6 +192,7 @@ impl Services {
         // runtime in `nemo_speech\` next to the exe.
         let mut speakers = SpeakerOptions::new(&options.exe_dir, registry);
         speakers.dev_mode = options.dev_mode;
+        let screen = Arc::new(RecordedScreen::default());
         Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
@@ -190,6 +213,11 @@ impl Services {
             discovery_path: None,
             controller: ControllerTiming::default(),
             screen_timing: ScreenTiming::default(),
+            // The screen folder for both, sharing one frame index cache.
+            screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
+            screen_media: screen,
+            protector: voice_sync::protect::system(),
+            sync_timing: SyncTiming::default(),
         }
     }
 }
@@ -225,6 +253,14 @@ impl TextInput for SystemInput {
 
     fn wait_for_clipboard_restore(&self) {
         voice_input::wait_for_clipboard_restore();
+    }
+
+    fn copy_hidden(&self, text: &str) -> Result<(), InputError> {
+        voice_input::copy_hidden(text)
+    }
+
+    fn clear_if(&self, text: &str) -> Result<bool, InputError> {
+        voice_input::clear_if(text)
     }
 }
 

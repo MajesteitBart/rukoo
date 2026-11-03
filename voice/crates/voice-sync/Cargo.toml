@@ -1,0 +1,44 @@
+[package]
+name = "voice-sync"
+description = "Encrypted sync of Rukoo Voice meetings to the user's own S3-compatible bucket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+voice-meetings = { path = "../voice-meetings" }
+voice-protocol = { path = "../voice-protocol" }
+voice-recorder = { path = "../voice-recorder" }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+getrandom = "0.4"
+hmac = "0.13"
+log = "0.4"
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+rusty-s3 = "=0.10.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+ureq = "=3.5.0"
+url = "2"
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+voice-audio = { path = "../voice-audio" }
+voice-s3-fake = { path = "../voice-s3-fake" }
+# The screen folder's format and its closed-file rules, platform-neutral, for upload tests with a real journal.
+voice-screen-files = { path = "../voice-screen-files" }
+
+# Kills a child that uploads, then resumes: the test binary is also the uploader.
+[[test]]
+name = "resume"
+harness = false

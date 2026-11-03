@@ -16,7 +16,8 @@ use std::time::Duration;
 
 pub use handshake::{negotiate, replay_plan};
 pub use ids::{
-    is_instance, is_meeting_id, is_token, new_instance, new_token, passage_id, MeetingId,
+    is_instance, is_media_id, is_meeting_id, is_token, new_instance, new_media_id, new_token,
+    passage_id, MeetingId,
 };
 pub use message::*;
 pub use paths::Platform;
@@ -64,6 +65,10 @@ pub const CLIP_WAIT: Duration = Duration::from_secs(4);
 /// The most bytes of serialized frames in a `meeting.get` snapshot that keep their `text`, newest
 /// first; older frames come with `"text": ""` and `"textOmitted": true`.
 pub const SNAPSHOT_FRAME_TEXT: usize = 4 << 20;
+/// The longest range `media.open` accepts, `end - start` in ms.
+pub const MAX_MEDIA_SPAN_MS: u64 = 3_600_000;
+/// The most bytes one `media.read` returns.
+pub const MAX_MEDIA_READ: u64 = 1 << 20;
 
 /// WebSocket close codes from "Connecting".
 pub mod close {

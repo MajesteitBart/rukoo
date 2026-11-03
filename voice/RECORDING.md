@@ -292,7 +292,7 @@ A frames meeting with one slide change, locked for a minute, the heartbeats left
 ### Readers
 
 - A frame is complete once its `frame` line exists, a video file once its `video_end` line exists, and the journal once its last line is `stop`. Until then, read the journal as a growing file with the torn-line rule above. An open video file can still be truncated by a repair.
-- Nothing outside the screen process writes under `screen/`, except the app's clips and `finalize`.
+- Nothing outside the screen process writes under `screen/`, except the app's clips, `finalize`, and a restore from the user's bucket, which puts a file back at its own path byte for byte (see "Other readers").
 
 ### When parts stop
 
@@ -371,6 +371,10 @@ The screen process listens on `127.0.0.1` at the port in `screen.json` and speak
 | `stop` | | `{"ok":true,"t":…}` once `stop` is written; then the process exits |
 
 Errors are `{"ok":false,"error":"<code>"}`. `bad_token`, and a line that isn't a JSON object (`bad_request`), close the connection; a missing `cmd` or bad arguments (`bad_request`), `unknown_command`, `unknown_monitor` and `stopped` leave it open.
+
+## Other readers
+
+Bucket sync and media links read the meeting folder too, and never write to a file the recorder or the screen recorder writes. Bucket sync reads a segment once its `segment_end` line exists, `timeline.jsonl` once it has `stop`, and `transcript.db` through a snapshot. A media link may also read the open segment of a meeting that still records, up to the samples its header counts, as any other process may (see "Writing, in crash-safe order"). In `screen/`, both read a frame once a `frame` line names it, a video file once its `video_end` line exists, and `journal.jsonl` once it ends with `stop`; `screen/clips/` and `screen/screen.json` never leave this computer. A file restored from the bucket comes back byte for byte at its own path.
 
 ## Versioning
 

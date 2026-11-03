@@ -556,6 +556,14 @@ impl fmt::Debug for Config {
                     map.insert(key.into(), json!("<redacted>"));
                 }
             }
+            // A bucket secret from before Voice kept it with DPAPI, until the engine moves it there.
+            if let Some(secret) = map
+                .get_mut("storage_sync")
+                .and_then(|sync| sync.get_mut("secret"))
+                .filter(|s| s.as_str().is_some_and(|s| !s.is_empty()))
+            {
+                *secret = json!("<redacted>");
+            }
         }
         write!(f, "Config {value}")
     }
@@ -923,4 +931,26 @@ pub(crate) fn normalize(value: &Value, dev_mode: bool) -> Map<String, Value> {
         .max(CONFIG_VERSION);
     cfg.insert("version".into(), json!(version));
     cfg
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_hides_an_old_bucket_secret() {
+        let mut cfg = Config::defaults(true);
+        cfg.extra.insert(
+            "storage_sync".into(),
+            json!({"bucket": "meetings", "secret": "bucket-secret-1234"}),
+        );
+        let text = format!("{cfg:?}");
+        assert!(!text.contains("bucket-secret-1234"), "{text}");
+        assert!(text.contains("<redacted>"));
+        assert!(text.contains("meetings"), "the rest stays readable");
+        // An empty secret stays as it is.
+        cfg.extra
+            .insert("storage_sync".into(), json!({"secret": ""}));
+        assert!(!format!("{cfg:?}").contains("<redacted>"));
+    }
 }

@@ -8,7 +8,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
-const { FakeVoice, startVoiceServer } = require('../fixtures/voice-server');
+const { FakeVoice, startVoiceServer, syntheticMedia } = require('../fixtures/voice-server');
 
 const ROOT = path.join(__dirname, '..', '..');
 const SHOTS = path.join(ROOT, 'tmp', 'e2e-shots', 'meeting');
@@ -21,7 +21,8 @@ let dataDir;
 let voice;
 
 async function launch(size = [1500, 950]) {
-  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5' };
+  // Media links live 4 s instead of 5 minutes, so a test sees one expire.
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_AGENT_FAKE: '1', SEM_AGENT_FAKE_SCALE: '0.5', SEM_MEDIA_LINK_TTL_MS: '4000' };
   delete env.ELECTRON_RUN_AS_NODE;
   // The pairing goes through the profile, never a path from the shell that started the tests.
   delete env.RUKOO_VOICE_BRIDGE;
@@ -524,6 +525,50 @@ test('the chat follows the meeting: the fake agent reads the transcript, and its
   await expect(win.locator('.agentpane .bui-entity__name')).not.toHaveText('Design review');
   await win.keyboard.press('Control+3');
   await expect(transcript()).toContainText('From Design review, 2 lines');
+});
+
+test("an agent gets a link to the meeting's audio that stops working", async () => {
+  const id = voiceStarts({ title: 'Design review', startedAt: Date.now() - 60 * 1000 });
+  say(id, 'call', 1000, 'Can we hear that part again?');
+  await openMeetings();
+  await expect(rows()).toHaveCount(1);
+  await win.keyboard.press('Control+j');
+  await expect(pane()).toBeVisible();
+  await input().fill('Get me a media link for the first seconds');
+  await input().press('Enter');
+
+  // The fake agent calls get_meeting_media_link for 0 to 5 s and answers with the link.
+  await expect(transcript().locator('.bui-tool', { hasText: "Got a link to the meeting's audio or screen" })).toBeVisible({ timeout: 10000 });
+  const answer = transcript().locator('[data-type="assistant"]').last();
+  await expect(answer).toContainText('-audio-0-5.wav', { timeout: 10000 });
+  const url = await answer.locator('a').first().getAttribute('href');
+  expect(url.startsWith('http://127.0.0.1:')).toBe(true);
+  expect(url).toMatch(/\/media\/v1\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\/m-[0-9a-f-]+-audio-0-5\.wav$/);
+  expect(url.endsWith(`/${id}-audio-0-5.wav`)).toBe(true);
+  expect(voice.commands.find((c) => c.command === 'media.open').args).toEqual({ meeting: id, kind: 'audio', start: 0, end: 5000 });
+
+  // Fetched from here, as an agent on this computer would: the mix Voice prepared, and a range of it.
+  const audio = syntheticMedia({ kind: 'audio', start: 0, end: 5000 });
+  const wav = audio.bytes(0, audio.size);
+  const res = await fetch(url);
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toBe('audio/wav');
+  expect(Buffer.from(await res.arrayBuffer()).equals(wav)).toBe(true);
+  const head = await fetch(url, { headers: { range: 'bytes=0-43' } });
+  expect(head.status).toBe(206);
+  expect(Buffer.from(await head.arrayBuffer()).equals(wav.subarray(0, 44))).toBe(true);
+  await setTheme('dark');
+  await shot('media-link-dark');
+  await setTheme('light');
+  await shot('media-link-light');
+  await setLanguage('nl');
+  await expect(transcript().locator('.bui-tool', { hasText: 'Haalde een link naar geluid of scherm' })).toBeVisible();
+  await shot('media-link-light-nl');
+  await setTheme('dark');
+  await shot('media-link-dark-nl');
+
+  // Four seconds after it was made, the same link is refused.
+  await expect.poll(async () => (await fetch(url)).status, { timeout: 10000, intervals: [500] }).toBe(410);
 });
 
 test('a dropped connection and a Rukoo Voice on a new port replay without showing anything twice', async () => {

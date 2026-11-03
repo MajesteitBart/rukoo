@@ -1351,6 +1351,10 @@
     "message": "Looked at the meeting's screen over a stretch",
     "description": "Chat transcript tool chip: the agent looked at the frames, and perhaps a video clip, of the screen Rukoo Voice recorded between two moments of a meeting (get_meeting_clip)."
   },
+  "agent.tools.get_meeting_media_link": {
+    "message": "Got a link to the meeting's audio or screen",
+    "description": "Chat transcript tool chip: the agent got a short-lived link to audio, a screen frame or screen video Rukoo Voice recorded in a meeting (get_meeting_media_link)."
+  },
   "agent.tools.running.read_meeting_transcript": {
     "message": "Reading the meeting...",
     "description": "Chat transcript tool chip while it runs: the agent reads a meeting's transcript. Present tense; the done form is agent.tools.read_meeting_transcript."
@@ -1370,6 +1374,10 @@
   "agent.tools.running.get_meeting_clip": {
     "message": "Looking at the meeting's screen over a stretch...",
     "description": "Chat transcript tool chip while it runs: the agent looks at the screen recorded over a stretch of a meeting. Present tense; the done form is agent.tools.get_meeting_clip."
+  },
+  "agent.tools.running.get_meeting_media_link": {
+    "message": "Getting a link to the meeting's audio or screen...",
+    "description": "Chat transcript tool chip while it runs: the agent asks for a link to a meeting's audio or screen. Present tense; the done form is agent.tools.get_meeting_media_link."
   },
   "agent.approval.calendarTitle": {
     "message": "{name} wants to add an event to your calendar",

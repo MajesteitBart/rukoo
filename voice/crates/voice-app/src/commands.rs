@@ -130,14 +130,6 @@ pub mod ops {
         engine.settings_set_folder(purpose, path.clone())?;
         Ok(Some(path.to_string_lossy().into_owned()))
     }
-
-    /// Bucket sync comes later than 0.1; the card that calls this only shows with `?later=1`.
-    pub fn sync_test() -> Result<(), ApiError> {
-        Err(ApiError::new(
-            "failed",
-            "Bucket sync isn't available in this version of Voice.",
-        ))
-    }
 }
 
 // ---------- the pill ----------
@@ -283,8 +275,55 @@ pub async fn settings_import_ownkey(state: State<'_, Shared>) -> Result<Value, A
 }
 
 #[tauri::command]
-pub async fn settings_sync_test() -> Result<(), ApiError> {
-    ops::sync_test()
+pub async fn settings_sync_test(state: State<'_, Shared>) -> Result<Value, ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_sync_test()).await
+}
+
+#[tauri::command]
+pub async fn settings_sync_save_secret(
+    secret: String,
+    state: State<'_, Shared>,
+) -> Result<(), ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_sync_save_secret(secret)).await
+}
+
+#[tauri::command]
+pub async fn settings_sync_key(
+    action: String,
+    code: Option<String>,
+    state: State<'_, Shared>,
+) -> Result<Value, ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_sync_key(&action, code)).await
+}
+
+#[tauri::command]
+pub async fn settings_sync_key_copy(state: State<'_, Shared>) -> Result<(), ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_sync_key_copy()).await
+}
+
+#[tauri::command]
+pub async fn settings_sync_restore(
+    action: String,
+    state: State<'_, Shared>,
+) -> Result<Value, ApiError> {
+    let engine = state.engine.clone();
+    blocking(move || engine.settings_sync_restore(&action)).await
+}
+
+/// Hides the Settings window from screen capture and screen sharing while a key dialog is open,
+/// as the pill hides itself. A new Settings window starts without it.
+#[tauri::command]
+pub async fn settings_protect(on: bool, window: WebviewWindow) -> Result<(), ApiError> {
+    window.set_content_protected(on).map_err(|e| {
+        ApiError::new(
+            "failed",
+            format!("Settings couldn't change its capture protection: {e}"),
+        )
+    })
 }
 
 #[tauri::command]
@@ -313,6 +352,11 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         settings_new_token,
         settings_import_ownkey,
         settings_sync_test,
+        settings_sync_save_secret,
+        settings_sync_key,
+        settings_sync_key_copy,
+        settings_sync_restore,
+        settings_protect,
         settings_close,
     ]
 }
@@ -632,7 +676,22 @@ mod tests {
                 .code,
             "not_found"
         );
-        assert_eq!(ops::sync_test().unwrap_err().code, "failed");
+        // Bucket sync: Test connection needs the secret first, then the switch can turn on.
+        assert_eq!(engine.settings_sync_test().unwrap_err().code, "no_secret");
+        engine
+            .settings_sync_save_secret("bucket-secret-4711".into())
+            .unwrap();
+        assert_eq!(
+            engine.settings_sync_test().unwrap(),
+            json!({ "otherKeys": 0 })
+        );
+        engine
+            .settings_set("storage.sync.enabled", json!(true))
+            .unwrap();
+        assert!(!engine
+            .settings_state()
+            .to_string()
+            .contains("bucket-secret-4711"));
         engine.shutdown();
     }
 
