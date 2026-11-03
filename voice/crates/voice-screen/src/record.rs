@@ -953,15 +953,22 @@ impl Screen {
         let Some(d3d) = self.d3d.clone() else {
             return;
         };
+        // The JPEG thread is behind: the saver offers this change again, and it is saved once
+        // there is room, so the frames waiting never pile up in memory.
+        if !self.worker.accepts() {
+            return;
+        }
         match jpeg::pixels(&d3d, frame) {
             Ok(pixels) => {
-                self.worker.send(FrameJob {
+                let job = FrameJob {
                     id: id.clone(),
                     t,
                     pixels,
-                });
-                self.saver.saved(t, thumb);
-                self.last_frame_id = Some(id);
+                };
+                if self.worker.send(job) {
+                    self.saver.saved(t, thumb);
+                    self.last_frame_id = Some(id);
+                }
             }
             Err(e) => self.graphics_failed(&e, "reading a frame"),
         }
@@ -1433,7 +1440,10 @@ impl Screen {
             while self.worker.pending() > 0 {
                 let waited = started.elapsed();
                 if waited >= DRAIN_WAIT {
-                    self.worker.skip_ocr();
+                    // The frames OCR still holds come back with their JPEG, without text.
+                    for done in self.worker.skip_ocr() {
+                        self.on_frame_done(done);
+                    }
                 }
                 if waited >= DRAIN_WAIT + DRAIN_EXTRA {
                     log("frames still waiting at the stop are left out");
