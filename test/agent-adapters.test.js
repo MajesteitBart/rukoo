@@ -1922,7 +1922,7 @@ function findPython() {
 }
 
 // A Rukoo on one device: the real MCP server, with the hub's own code for signing in, the proof and hello.
-async function fakeRukoo({ key, idle = 0, chats = [] }) {
+async function fakeRukoo({ key, idle = 0, chats = [], tools = null }) {
   const token = remoteTokenFor(key);
   const seen = [];
   const calls = [];
@@ -1932,7 +1932,7 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
     // "Let Clark use Rukoo" is on.
     cfg: { data: { mcp: { remote: true } } },
     conversations: new Map(chats.map((id) => [id, { id, agent: 'clark' }])),
-    deps: { idleSeconds: () => idle },
+    deps: { idleSeconds: () => typeof idle === 'function' ? idle() : idle },
     identify(t) {
       return AgentHub.prototype.identify.call(this, t);
     },
@@ -1942,7 +1942,7 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
     hello(identity, params) {
       return AgentHub.prototype.hello.call(this, identity, params);
     },
-    listTools: () => [{ name: 'get_context', inputSchema: { type: 'object' } }],
+    listTools: () => tools || [{ name: 'get_context', inputSchema: { type: 'object' } }],
     skillInstructions: () => 'Rukoo has skills:\n- fixture-skill: A skill for the bridge test.',
     async callTool(identity, name, args) {
       calls.push({ name, args });
@@ -1960,6 +1960,42 @@ async function fakeRukoo({ key, idle = 0, chats = [] }) {
   const port = await server.listen({ host: '127.0.0.1', port: 0, remote: true });
   return { url: `http://127.0.0.1:${port}/mcp`, seen, calls, close: () => server.close() };
 }
+
+test('hermes bridge: combines old and new device catalogs regardless of activity, and routes meeting calls to their owner', async (t) => {
+  const python = findPython();
+  if (!python) return t.skip('no Python 3.8+ on PATH');
+  const { spawn } = require('child_process');
+  const catalog = JSON.parse(JSON.stringify(require('../src/main/agents/tools').list(null)));
+  let phoneLast = true;
+  const desktop = await fakeRukoo({ key: 'union-key', idle: () => phoneLast ? 300 : 0, chats: ['c_meeting'], tools: catalog });
+  const phone = await fakeRukoo({ key: 'union-key', idle: () => phoneLast ? 0 : 300, tools: catalog.slice(0, 16) });
+  const cache = path.join(tmp('bridge-union'), 'tools.json');
+  const child = spawn(python, [path.join(__dirname, '..', 'integrations', 'hermes', 'rukoo_bridge.py')], {
+    env: { ...process.env, RUKOO_KEY: 'union-key', RUKOO_URL: `${phone.url},${desktop.url}`, RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8' }, windowsHide: true
+  });
+  t.after(async () => { child.kill(); await desktop.close(); await phone.close(); });
+  const replies = [];
+  let log = '';
+  child.stderr.on('data', (b) => { log += b; });
+  readJsonLines(child.stdout, (m) => replies.push(m));
+  const ask = async (message) => {
+    const count = replies.length;
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: count + 1, ...message }) + '\n');
+    await waitFor(() => replies.length > count, 15000);
+    return replies[count];
+  };
+  for (const last of [true, false, true]) {
+    phoneLast = last;
+    const reply = await ask({ method: 'tools/list' });
+    assert.deepEqual(reply.result.tools, catalog);
+  }
+  await ask({ method: 'tools/call', params: { name: 'read_meeting_transcript', arguments: { conversation_id: 'c_meeting' } } });
+  assert.equal(desktop.calls.at(-1).name, 'read_meeting_transcript');
+  assert.equal(phone.calls.length, 0);
+  assert.equal(JSON.parse(fs.readFileSync(cache)).tools.length, catalog.length);
+  assert.match(log, /supplied 16 tools/);
+  assert.match(log, /serving 22 tools from 2 devices/);
+});
 
 test('hermes bridge: picks the right device, sends the token only to Rukoo with the key, and copes when Rukoo is away', async (t) => {
   const python = findPython();
@@ -2210,7 +2246,7 @@ test('hermes bridge: a Rukoo of another bridge protocol is reported as newer or 
     'import json, sys',
     'sys.path.insert(0, sys.argv[1])',
     'import rukoo_bridge as b',
-    'b.DEVICES.pick = lambda *a: ("http://100.64.0.4:47800/mcp", "desk-pc")',
+    'b.DEVICES.answers = lambda *a: [("http://100.64.0.4:47800/mcp", "desk-pc", {})]',
     'def fail(*a, **k): raise OSError("timed out")',
     'b.post = fail',
     'print(json.dumps(b.list_tools({"id": 1})))'

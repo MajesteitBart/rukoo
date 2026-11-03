@@ -9053,6 +9053,9 @@
     "message": "Voices show here once someone speaks.",
     "description": "Meeting view people list before Rukoo Voice reported any voice. src/renderer/meeting.js (renderPeople)"
   },
+  "meeting.frame.visibility": {"message":"Screen","description":"Meeting transcript toggle in meeting.js. Shows or hides screen frames; remembered on this device."},
+  "meeting.frame.group": {"message":"Show {count} more screen frames","description":"Meeting transcript button opening the folded frame strip; count is the number of additional frames."},
+  "meeting.notes.heading": {"message":"Heading","description":"Meeting notes toolbar action applying a level two heading with the shared editor."},
   "meeting.notes.title": {
     "message": "Your notes",
     "description": "Meeting view side column: heading of your notes about the meeting. src/renderer/meeting.js (shellHtml)"

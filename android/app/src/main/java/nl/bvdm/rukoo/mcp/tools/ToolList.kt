@@ -64,7 +64,7 @@ object ToolList {
         ToolSpec(
             "get_context",
             "See what the user sees in Rukoo",
-            "Returns what is on the user's screen in Rukoo: the open email with its full text, the email this chat is about, related mail in the same thread, checked emails, the reply draft in the composer, the user's accounts and folders, and today's date. Call this first.",
+            "Returns what is on the user's screen in Rukoo: the open email with its full text, the email this chat is about, related mail in the same thread, checked emails, the reply draft in the composer, the user's accounts and folders, and today's date. In the Meet view or a meeting chat, returns meeting metadata instead of an unrelated open email; use read_meeting_transcript for what was said. Meetings are available only on desktop. Call this first.",
             schema(),
             READ,
         ),

@@ -8436,7 +8436,7 @@ body.meeting-mode .titlebar-search {
 }
 
 .mt-tabs {
-  display: none;
+  display: block;
   padding: 10px 16px 2px;
 }
 .mt-tabs .segmented {
@@ -8448,7 +8448,76 @@ body.meeting-mode .titlebar-search {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(260px, 34%, 340px);
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 42%, 480px);
+}
+
+/* Notes can take the whole meeting width without losing the current transcript position. */
+.meeting:not([data-tab='transcript']) .mt-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+.meeting:not([data-tab='transcript']) .mt-transcript-pane,
+.meeting[data-tab='notes'] .mt-card[data-pane='people'],
+.meeting[data-tab='people'] .mt-card[data-pane='notes'] {
+  display: none;
+}
+.meeting:not([data-tab='transcript']) .mt-side {
+  border-left: 0;
+}
+.mt-transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.mt-transcript-head .tbtn {
+  height: 28px;
+}
+.mt-transcript-head .tbtn[aria-pressed='true'] {
+  background: var(--sel);
+  color: var(--text);
+}
+.mt-frame-count {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  background: var(--chip);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.mt-frame-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  list-style: none;
+  padding: 8px 0;
+  margin: 0;
+}
+.mt-frame-strip > .mt-frame {
+  flex: 0 0 160px;
+  display: flex;
+  flex-direction: column;
+}
+.mt-frame-strip > .mt-frame > .mt-main {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.mt-frame-strip > .mt-frame .mt-shot {
+  width: 160px;
+  height: 90px;
+}
+.mt-frame-strip > .mt-frame > .mt-at {
+  text-align: left;
+}
+.mt-frame-strip .mt-frame-body {
+  width: 160px;
 }
 
 /* The transcript: meeting time in the gutter, the voice once per stretch, then what was said. */
@@ -8674,16 +8743,16 @@ body.meeting-mode .titlebar-search {
 .mt-frame.has-image .mt-shot > svg {
   display: none;
 }
-.mt-frame.is-open .mt-main {
+.mt-frame.is-open > .mt-main {
   grid-template-columns: minmax(0, 1fr);
 }
-.mt-frame.is-open .mt-shot {
+.mt-frame.is-open > .mt-main > .mt-shot {
   width: 100%;
   height: auto;
   aspect-ratio: var(--ar);
   max-height: 72vh;
 }
-.mt-frame.is-open .mt-shot img {
+.mt-frame.is-open > .mt-main > .mt-shot img {
   object-fit: contain;
 }
 .mt-frame-body {
@@ -8698,7 +8767,7 @@ body.meeting-mode .titlebar-search {
   text-overflow: ellipsis;
   user-select: text;
 }
-.mt-frame.is-open .mt-frame-line {
+.mt-frame.is-open > .mt-main > .mt-frame-body > .mt-frame-line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -8731,7 +8800,7 @@ body.meeting-mode .titlebar-search {
   height: 14px;
   transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.mt-frame.is-open .mt-frame-toggle svg {
+.mt-frame.is-open > .mt-main > .mt-frame-body > .mt-frame-toggle svg {
   transform: rotate(180deg);
 }
 /* The rest of the text opens and closes in place. */
@@ -8742,7 +8811,7 @@ body.meeting-mode .titlebar-search {
   visibility: hidden;
   transition: grid-template-rows 320ms cubic-bezier(0.23, 1, 0.32, 1), opacity 320ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s linear 320ms;
 }
-.mt-frame.is-open .mt-frame-rest {
+.mt-frame.is-open > .mt-main > .mt-frame-body > .mt-frame-rest {
   grid-template-rows: 1fr;
   opacity: 1;
   visibility: visible;
@@ -9042,7 +9111,6 @@ button.mt-person:disabled {
   flex: 1;
   width: 100%;
   min-height: 150px;
-  resize: none;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -9052,12 +9120,40 @@ button.mt-person:disabled {
   user-select: text;
   transition: border-color 120ms ease, background-color 120ms ease;
 }
-.mt-notes-input::placeholder {
+.mt-notes-input:empty::before {
+  content: attr(data-placeholder);
   color: var(--text-3);
+  pointer-events: none;
 }
 .mt-notes-input:focus {
   border-color: var(--border-strong);
   background: var(--panel);
+}
+.mt-notes-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.mt-notes-toolbar .sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+.mt-notes-input.editor {
+  padding: 12px;
+  min-height: 220px;
+  overflow-wrap: anywhere;
+}
+.mt-notes-input h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.mt-notes-input a {
+  color: var(--accent);
+  cursor: pointer;
 }
 
 /* Nothing to show yet: how to record, or why Rukoo can't. */
@@ -9171,6 +9267,12 @@ button.mt-person:disabled {
   }
 }
 @container meeting (max-width: 460px) {
+  .mt-titles {
+    flex-basis: 100%;
+  }
+  .mt-actions {
+    margin-left: auto;
+  }
   .mt-actions .tbtn:not(.primary) span {
     display: none;
   }

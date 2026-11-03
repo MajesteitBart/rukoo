@@ -1,6 +1,7 @@
 import { t, localize, translate, getLanguage } from './i18n.js';
 // The message editor. It runs inline in the main window's reading pane, or on its own in a
 // compose window (compose.js). Either way it saves drafts as you write.
+import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { icons } from './icons.js';
 import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
 import { fillFrame } from './mailframe.js';
@@ -313,15 +314,7 @@ function recipientsHtml(list) {
     .join('');
 }
 
-// Shared with the signature editor in Settings (signature.js).
-export const formatButtons = () => `
-  <button class="icon-btn sm" data-cmd="bold" data-i18n-title="composer.format.bold" title="${esc(t('composer.format.bold'))}">${icons.bold}</button>
-  <button class="icon-btn sm" data-cmd="italic" data-i18n-title="composer.format.italic" title="${esc(t('composer.format.italic'))}">${icons.italic}</button>
-  <button class="icon-btn sm" data-cmd="underline" data-i18n-title="composer.format.underline" title="${esc(t('composer.format.underline'))}">${icons.underline}</button>
-  <span class="sep"></span>
-  <button class="icon-btn sm" data-c="link" data-i18n-title="composer.format.link" title="${esc(t('composer.format.link'))}">${icons.link}</button>
-  <button class="icon-btn sm" data-cmd="insertUnorderedList" data-i18n-title="composer.format.bullets" title="${esc(t('composer.format.bullets'))}">${icons.ul}</button>
-  <button class="icon-btn sm" data-cmd="insertOrderedList" data-i18n-title="composer.format.numbered" title="${esc(t('composer.format.numbered'))}">${icons.ol}</button>`;
+export { formatButtons } from './rich-editor.js';
 
 function template(data, st, inline) {
   const accounts = data.accounts;
@@ -679,10 +672,6 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       e.preventDefault();
       return saveDraft({ auto: false });
     }
-    if (ctrl && e.key.toLowerCase() === 'k' && editor.contains(t)) {
-      e.preventDefault();
-      return insertLink();
-    }
     if (e.key === 'Escape') {
       if (suggest) return closeSuggest();
       if (document.querySelector('.menu')) return;
@@ -725,38 +714,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (e.target.closest('.format-row button, .float-bar button')) e.preventDefault();
   });
 
-  const restoreRange = (range) => {
-    editor.focus();
-    if (!range) return;
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  };
-  const editorRange = () => {
-    const sel = window.getSelection();
-    return sel.rangeCount && editor.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
-  };
-
-  async function insertLink() {
-    const range = editorRange();
-    const selected = range ? range.toString() : '';
-    const url = await dialog({
-      title: t('composer.link.title'),
-      buttons: [
-        { get label() { return t('common.actions.cancel'); }, value: null },
-        { get label() { return t('composer.link.insert'); }, value: (scrim) => scrim.querySelector('input').value.trim(), primary: true }
-      ],
-      render(body) {
-        body.innerHTML = `<div class="form" style="padding:0"><label data-i18n="composer.link.address">${esc(t('composer.link.address'))}<input class="form-input" type="text" placeholder="https://" value="${/^https?:\/\//.test(selected) ? esc(selected) : ''}"/></label></div>`;
-      }
-    });
-    if (!url) return restoreRange(range);
-    const href = /^(https?:|mailto:)/i.test(url) ? url : `https://${url}`;
-    restoreRange(range);
-    if (range && !range.collapsed) document.execCommand('createLink', false, href);
-    else document.execCommand('insertHTML', false, `<a href="${esc(href)}">${esc(url)}</a>`);
-    changed();
-  }
+  const richEditor = mountRichEditor(page, editor, { onChange: changed, onSelection: () => placeFloatBar() });
+  cleanups.push(() => richEditor.dispose());
+  const { editorRange, restoreRange, updateToolbar } = richEditor;
 
   // ----- from the calendar -----
 
@@ -942,15 +902,6 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     floatBar.style.top = `${top < 4 ? r.bottom - box.top + 8 : top}px`;
   };
 
-  const updateToolbar = () => {
-    for (const cmd of ['bold', 'italic', 'underline', 'insertOrderedList', 'insertUnorderedList']) {
-      const on = document.queryCommandState(cmd);
-      page.querySelectorAll(`[data-cmd="${cmd}"]`).forEach((btn) => {
-        btn.classList.toggle('on', on);
-        btn.setAttribute('aria-pressed', String(on));
-      });
-    }
-  };
   listen(document, 'selectionchange', () => {
     if (editor.contains(document.activeElement) || document.activeElement === editor) updateToolbar();
     placeFloatBar();
@@ -980,13 +931,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       changed();
       return renderAttachments();
     }
-    if (b.dataset.cmd) {
-      editor.focus();
-      document.execCommand(b.dataset.cmd, false, null);
-      changed();
-      updateToolbar();
-      return placeFloatBar();
-    }
+    if (b.dataset.cmd) return;
     if (b.dataset.color) {
       const input = $('.color-input', page);
       const range = editorRange();
@@ -1004,7 +949,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       case 'attach':
         return attachFiles();
       case 'link':
-        return insertLink();
+        return;
       case 'format':
         return showFormatRow(formatRow.hidden);
       case 'image': {
@@ -1573,7 +1518,6 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     });
   }
 
-  editor.addEventListener('input', () => changed());
   const focusStart = () => {
     if (st.mode === 'forward' || !st.to.length) return $('[data-rinput="to"]', page).focus();
     editor.focus();

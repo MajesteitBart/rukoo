@@ -360,9 +360,8 @@ class Devices:
         info = reply.get("result") if isinstance(reply, dict) else None
         return info if isinstance(info, dict) else {}
 
-    def pick(self, conversation_id=None):
-        """(url, name) of the Rukoo to send a call to, or None. The device with the chat wins; otherwise the
-        one the user touched last."""
+    def answers(self, conversation_id=None):
+        """All proved devices that answer now, with their hello metadata."""
         answers = []
         for attempt in range(2):
             with self.lock:
@@ -377,6 +376,11 @@ class Devices:
                 break
             if attempt == 0:
                 self.search(since)
+        return answers
+
+    def pick(self, conversation_id=None):
+        """Calls follow the chat's owner, otherwise the device the user touched last."""
+        answers = self.answers(conversation_id)
         if not answers:
             return None
         owners = [a for a in answers if a[2].get("owns") is True]
@@ -487,24 +491,39 @@ def fetch_instructions(url):
 
 
 def list_tools(message):
-    target = DEVICES.pick()
-    if target is None:
+    answers = DEVICES.answers()
+    if not answers:
         log("tools/list: Rukoo isn't open anywhere, using the cache")
         # Without a cache, this error is all Hermes gets from the bridge when it starts, so it says why no Rukoo
         # answered: another bridge protocol, another key, or no Rukoo open.
         why = DEVICES.unreachable()
     else:
-        try:
-            reply = post(target[0], message, LIST_TIMEOUT_SECONDS)
-            tools = reply["result"]["tools"]
-        except Exception as exc:  # noqa: BLE001 - any failure falls back to the cache
-            log(f"tools/list from {target[1]} failed, using the cache: {exc}")
-            why = f"Rukoo Mail on {target[1]} didn't send its tool list."
-        else:
-            # Hermes reads the instructions at the handshake, before Rukoo may be found, so they are kept
-            # for the next one.
-            save_cache(tools, fetch_instructions(target[0]) or load_cache()[1])
-            return reply
+        # Prefer the largest catalog for duplicate names (usually the newest app), then URL for a stable tie.
+        # Discovery has no conversation: activity on an older phone must never remove a desktop's tools.
+        def fetch(device):
+            url, name, _ = device
+            try:
+                tools = post(url, message, LIST_TIMEOUT_SECONDS)["result"]["tools"]
+                if not isinstance(tools, list) or any(not isinstance(t, dict) or not isinstance(t.get("name"), str) for t in tools):
+                    raise ValueError("invalid tool list")
+                log(f"tools/list: {name} ({url}) supplied {len(tools)} tools")
+                return url, name, tools
+            except Exception as exc:  # noqa: BLE001 - one unavailable device doesn't hide the others
+                log(f"tools/list from {name} failed: {exc}")
+                return None
+
+        lists = [r for r in each(fetch, answers) if r is not None]
+        lists.sort(key=lambda r: (-len(r[2]), r[0]))
+        combined = {}
+        for _, _, catalog in lists:
+            for tool in catalog:
+                combined.setdefault(tool["name"], tool)
+        if lists:
+            tools = list(combined.values())
+            log(f"tools/list: serving {len(tools)} tools from {len(lists)} devices")
+            save_cache(tools, fetch_instructions(lists[0][0]) or load_cache()[1])
+            return result(message.get("id"), {"tools": tools})
+        why = f"Rukoo Mail on {', '.join(a[1] for a in answers)} didn't send its tool list."
     tools, _ = load_cache()
     if tools is None:
         return error(message.get("id"), -32603, f"The Rukoo bridge has no tool list yet. {why}")

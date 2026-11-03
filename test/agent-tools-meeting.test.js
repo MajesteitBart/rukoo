@@ -91,6 +91,36 @@ function meetingEvents() {
   ];
 }
 
+test('get_context follows the meeting chat or Meet view, hides stale mail, and respects meeting access', async (t) => {
+  const { hub, feed, engine, call } = await setup(t);
+  feed(meetingEvents());
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const mail = engine.listMessages({ scope: acc.id, view: 'inbox' })[0];
+  hub.view({ mode: 'mail', openMessageId: mail.id, checkedIds: [mail.id] });
+  const before = data(await call('get_context'));
+  assert.equal(before.open_message.id, mail.id);
+  assert.equal(before.meeting, null);
+  const chat = hub.create({ agent: 'claude', meeting: { id: M, title: 'Weekly with Anna' } });
+  const about = data(await call('get_context', {}, chat.id));
+  assert.equal(about.open_message, null);
+  assert.equal(about.meeting.id, M);
+  assert.equal(about.meeting.title, meetingTag('Weekly with Anna'));
+  assert.equal(about.meeting.transcript_tool, 'read_meeting_transcript');
+  assert.equal(about.meeting.state, 'recording');
+  assert.ok(about.meeting.elapsed_seconds >= 590);
+  assert.ok(!JSON.stringify(about).includes('move the launch'));
+  assert.deepEqual(about.selection, []);
+  hub.view({ mode: 'meeting', meetingId: M, openMessageId: mail.id });
+  assert.equal(data(await call('get_context')).meeting.id, M);
+  engine.updateSettings({ meetingAgentsCanRead: false });
+  assert.equal(data(await call('get_context', {}, chat.id)).meeting, null);
+  hub.view({ mode: 'calendar', openMessageId: mail.id });
+  assert.equal(data(await call('get_context')).open_message, null);
+  hub.view({ mode: 'mail', openMessageId: mail.id, checkedIds: [mail.id] });
+  assert.deepEqual(data(await call('get_context')), before);
+});
+
 test('the transcript is one tagged block, with a passage that tries to close the tag defanged', async (t) => {
   const { voice, feed, call } = await setup(t);
   feed(meetingEvents());

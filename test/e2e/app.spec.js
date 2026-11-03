@@ -276,6 +276,35 @@ test('selected text gets a floating formatting bar', async () => {
   await expect(c.locator('.float-bar [data-cmd="bold"]')).toHaveClass(/on/);
 });
 
+test('the shared editor formats text and inserts links inline and in a compose window, then reopens the saved draft', async () => {
+  await composer(() => win.click('[data-action="compose"]'));
+  await win.locator('.composer [data-field="subject"]').fill('Shared editor draft');
+  const format = async (page, text, command, href) => {
+    const editor = page.locator('.composer .editor');
+    await editor.fill(text);
+    await editor.press('Control+a');
+    await page.locator(`.float-bar [data-cmd="${command}"]`).click();
+    await editor.press('Control+k');
+    await page.locator('.dialog input').fill(href);
+    await page.locator('.dialog .buttons .primary').click();
+    await expect(editor.locator('a')).toHaveAttribute('href', href);
+    expect(await editor.locator('*').evaluateAll((els, command) => els.some((el) => command === 'bold' ? Number(getComputedStyle(el).fontWeight) >= 600 : getComputedStyle(el).fontStyle === 'italic'), command)).toBe(true);
+  };
+  await format(win, 'Inline formatting', 'bold', 'https://example.com/inline');
+  const [popup] = await Promise.all([app.waitForEvent('window'), win.click('[data-c="popout"]')]);
+  await popup.waitForSelector('.composer .editor');
+  await expect(popup.locator('.editor a')).toHaveAttribute('href', 'https://example.com/inline');
+  await format(popup, 'Window formatting', 'italic', 'https://example.com/window');
+  await popup.locator('.editor').press('Control+s');
+  await expect(popup.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  await popup.close();
+  await win.click('[data-view="drafts"]');
+  await item('Shared editor draft').click();
+  await win.locator('[data-reader="edit"]').click();
+  await expect(win.locator('.composer .editor a')).toHaveAttribute('href', 'https://example.com/window');
+  expect(await win.locator('.composer .editor *').evaluateAll((els) => els.some((el) => getComputedStyle(el).fontStyle === 'italic'))).toBe(true);
+});
+
 test('forward keeps the original attachment', async () => {
   await item('Sanne de Vries').click();
   await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
