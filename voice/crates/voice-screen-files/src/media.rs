@@ -104,19 +104,27 @@ pub fn frame_reply(
     }))
 }
 
+/// Whether a cut may go on, from the bytes of video it reads, an upper bound on the clips it
+/// writes. `Err` is the request's answer. It runs on the cut's thread after the plan, so a slow
+/// check doesn't hold the answer past its deadline either.
+pub type ClipCheck = Box<dyn FnOnce(u64) -> Result<(), MediaError> + Send>;
+
 /// `clip.get`: `{ clips: [{ path, start, end, width, height, bytes }] }` with the clips finished
-/// by `wait_until`; `clips: []` when none was finished yet.
+/// by `wait_until`; `clips: []` when none was finished yet. Reading the journal, indexing the
+/// video files and `check` happen on the cut's thread, which a later request joins, so this
+/// answers by `wait_until` however long a meeting and however slow its disk.
 pub fn clip_reply(
     meeting: &Path,
     recorded_video: bool,
     start: u64,
     end: u64,
     wait_until: Instant,
+    check: Option<ClipCheck>,
 ) -> Result<Value, MediaError> {
     if !recorded_video {
         return Err(MediaError::NotAvailable(NO_VIDEO.into()));
     }
-    let cut = cut_clips(meeting, start, end, wait_until)?;
+    let cut = cut_clips_within(meeting, start, end, wait_until, CLIP_BUDGET, check)?;
     let clips: Vec<Value> = cut
         .clips
         .iter()
@@ -196,20 +204,21 @@ pub struct ClipCut {
     pub complete: bool,
 }
 
-/// How long a background cut may run.
+/// How long a background cut may run, its plan included.
 pub const CLIP_BUDGET: Duration = Duration::from_secs(120);
 
 /// One file per stretch of continuous video in `[start, min(end, start + MAX_CLIP_MS)]`, oldest
 /// first; a reused clip gets its modification time set to now. A background thread per
-/// (meeting, start, end) cuts each clip to `.mp4.tmp`, syncs and renames it under a per-path
-/// lock; this call returns at completion or `wait_until`.
+/// (meeting, start, end) plans the cut from the journal and the video files, then cuts each clip
+/// to `.mp4.tmp`, syncs and renames it under a per-path lock; this call returns at completion or
+/// `wait_until`.
 pub fn cut_clips(
     meeting: &Path,
     start: u64,
     end: u64,
     wait_until: Instant,
 ) -> Result<ClipCut, MediaError> {
-    cut_clips_within(meeting, start, end, wait_until, CLIP_BUDGET)
+    cut_clips_within(meeting, start, end, wait_until, CLIP_BUDGET, None)
 }
 
 /// `[start, end]` with `end` at least `start` and at most `MAX_CLIP_MS` after it.
@@ -217,39 +226,34 @@ fn capped(start: u64, end: u64) -> (u64, u64) {
     (start, end.max(start).min(start.saturating_add(MAX_CLIP_MS)))
 }
 
+/// Joins the cut of the range that runs, or starts one with `check`. Only a map lookup happens
+/// before the wait.
 fn cut_clips_within(
     meeting: &Path,
     start: u64,
     end: u64,
     wait_until: Instant,
     budget: Duration,
+    check: Option<ClipCheck>,
 ) -> Result<ClipCut, MediaError> {
     let (start, end) = capped(start, end);
     let key = (meeting.to_path_buf(), start, end);
-    let running = lock(jobs()).get(&key).cloned();
-    let job = match running {
-        Some(job) => job,
+    let mut running = lock(jobs());
+    let job = match running.get(&key) {
+        Some(job) => job.clone(),
         None => {
-            let planned = plan_clips(meeting, start, end)?;
-            let mut running = lock(jobs());
-            match running.get(&key) {
-                // Another caller started the same cut meanwhile.
-                Some(job) => job.clone(),
-                None => {
-                    let job = Arc::new(Job::default());
-                    running.insert(key.clone(), job.clone());
-                    drop(running);
-                    let worker = job.clone();
-                    let spawned = std::thread::Builder::new()
-                        .name("clip-cut".into())
-                        .spawn(move || run_job(&worker, key, planned, budget));
-                    if let Err(e) = spawned {
-                        lock(jobs()).remove(&(meeting.to_path_buf(), start, end));
-                        return Err(MediaError::Failed(format!("Can't start the cut: {e}")));
-                    }
-                    job
-                }
+            let job = Arc::new(Job::default());
+            running.insert(key.clone(), job.clone());
+            drop(running);
+            let worker = job.clone();
+            let spawned = std::thread::Builder::new()
+                .name("clip-cut".into())
+                .spawn(move || run_job(&worker, key, check, budget));
+            if let Err(e) = spawned {
+                lock(jobs()).remove(&(meeting.to_path_buf(), start, end));
+                return Err(MediaError::Failed(format!("Can't start the cut: {e}")));
             }
+            job
         }
     };
     job.wait(wait_until)
@@ -452,8 +456,11 @@ impl Planned {
     }
 }
 
-/// The clips a request makes, from the journal and the video files as they are now.
+/// The clips a request makes, from the journal and the video files as they are now. A long
+/// meeting on a slow disk makes this slow, so only a cut's thread calls it.
 fn plan_clips(meeting: &Path, start: u64, end: u64) -> Result<Vec<Planned>, MediaError> {
+    #[cfg(test)]
+    tests::slow_plan(meeting);
     let lines = journal::read_all(meeting)
         .map_err(|e| MediaError::Failed(format!("Can't read the screen journal: {e}")))?;
     let stretches = overlapping(&lines, start, end);
@@ -556,12 +563,40 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Cuts each planned clip in turn, reusing one that is there already, until the budget runs out.
-fn run_job(job: &Arc<Job>, key: JobKey, planned: Vec<Planned>, budget: Duration) {
+/// Plans the cut, asks `check`, then cuts each planned clip in turn, reusing one that is there
+/// already, until the budget runs out.
+fn run_job(job: &Arc<Job>, key: JobKey, check: Option<ClipCheck>, budget: Duration) {
     let deadline = Instant::now() + budget;
+    let (meeting, start, end) = (&key.0, key.1, key.2);
+    let planned = plan_clips(meeting, start, end).and_then(|planned| {
+        if let Some(check) = check {
+            check(planned.iter().map(|p| p.cut.bytes).sum())?;
+        }
+        Ok(planned)
+    });
+    let (complete, error) = match planned {
+        Ok(planned) => cut_planned(job, &planned, deadline),
+        Err(e) => (false, Some(e)),
+    };
+    {
+        let mut state = lock(&job.state);
+        state.done = true;
+        state.complete = complete;
+        state.error = error;
+    }
+    job.changed.notify_all();
+    let mut jobs = lock(jobs());
+    if jobs.get(&key).is_some_and(|j| Arc::ptr_eq(j, job)) {
+        jobs.remove(&key);
+    }
+}
+
+/// Cuts the planned clips until `deadline`. Returns whether every one is there, and the error
+/// of the last one that failed.
+fn cut_planned(job: &Job, planned: &[Planned], deadline: Instant) -> (bool, Option<MediaError>) {
     let mut complete = true;
     let mut error = None;
-    for plan in &planned {
+    for plan in planned {
         let _guard = lock_path(&plan.dst);
         if let Some(clip) = reuse(plan) {
             job.add(clip);
@@ -599,17 +634,7 @@ fn run_job(job: &Arc<Job>, key: JobKey, planned: Vec<Planned>, budget: Duration)
             }
         }
     }
-    {
-        let mut state = lock(&job.state);
-        state.done = true;
-        state.complete = complete;
-        state.error = error;
-    }
-    job.changed.notify_all();
-    let mut jobs = lock(jobs());
-    if jobs.get(&key).is_some_and(|j| Arc::ptr_eq(j, job)) {
-        jobs.remove(&key);
-    }
+    (complete, error)
 }
 
 /// The clip at the plan's path, when it is there and holds every fragment the plan does. A clip
@@ -782,6 +807,93 @@ mod tests {
         Instant::now() + Duration::from_secs(20)
     }
 
+    /// Meetings whose plan takes this long, standing in for a long recording on a slow disk.
+    fn slow_plans() -> MutexGuard<'static, HashMap<PathBuf, Duration>> {
+        static SLOW: OnceLock<Mutex<HashMap<PathBuf, Duration>>> = OnceLock::new();
+        lock(SLOW.get_or_init(Mutex::default))
+    }
+
+    /// Called by `plan_clips`: sleeps for a meeting a test made slow.
+    pub(super) fn slow_plan(meeting: &Path) {
+        let wait = slow_plans().get(meeting).copied();
+        if let Some(wait) = wait {
+            std::thread::sleep(wait);
+        }
+    }
+
+    #[test]
+    fn a_slow_plan_or_check_doesn_t_hold_the_answer() {
+        let m = two_stretches("clip-slow-plan");
+        slow_plans().insert(m.path().to_path_buf(), Duration::from_millis(1_500));
+        let asked = Instant::now();
+        let reply = clip_reply(
+            m.path(),
+            true,
+            2_000,
+            12_000,
+            asked + Duration::from_millis(300),
+            None,
+        )
+        .unwrap();
+        let took = asked.elapsed();
+        assert!(
+            took < Duration::from_millis(1_000),
+            "answered after {took:?}"
+        );
+        assert_eq!(reply, json!({ "clips": [] }));
+        // The plan and the cut go on; the same request later returns both files.
+        let reply = clip_reply(m.path(), true, 2_000, 12_000, soon(), None).unwrap();
+        assert_eq!(reply["clips"].as_array().unwrap().len(), 2, "{reply}");
+        slow_plans().remove(m.path());
+
+        // The check runs on the cut's thread with the bytes the cut reads: a slow one doesn't
+        // hold the answer, and its refusal is the answer when it comes in time.
+        let input = clip_input_bytes(m.path(), 5_000, 10_000).unwrap();
+        assert!(input > 0);
+        let (seen, bytes) = std::sync::mpsc::channel();
+        let slow: ClipCheck = Box::new(move |b| {
+            std::thread::sleep(Duration::from_millis(1_500));
+            seen.send(b).unwrap();
+            Err(MediaError::Failed(
+                "Not enough free disk space to cut a clip.".into(),
+            ))
+        });
+        let asked = Instant::now();
+        let reply = clip_reply(
+            m.path(),
+            true,
+            5_000,
+            10_000,
+            asked + Duration::from_millis(300),
+            Some(slow),
+        )
+        .unwrap();
+        let took = asked.elapsed();
+        assert!(
+            took < Duration::from_millis(1_000),
+            "answered after {took:?}"
+        );
+        assert_eq!(reply, json!({ "clips": [] }));
+        assert_eq!(bytes.recv_timeout(Duration::from_secs(10)), Ok(input));
+        let refuse: ClipCheck = Box::new(|_| {
+            Err(MediaError::Failed(
+                "Not enough free disk space to cut a clip.".into(),
+            ))
+        });
+        assert_eq!(
+            clip_reply(m.path(), true, 5_000, 10_000, soon(), Some(refuse)),
+            Err(MediaError::Failed(
+                "Not enough free disk space to cut a clip.".into()
+            ))
+        );
+        assert!(
+            !clip_files(m.path())
+                .iter()
+                .any(|n| n.starts_with("c-000005000")),
+            "a refused cut writes nothing"
+        );
+    }
+
     #[test]
     fn limits_match_the_protocol_and_rukoo() {
         assert_eq!(MAX_CLIP_MS, voice_protocol::MAX_CLIP_MS);
@@ -894,7 +1006,7 @@ mod tests {
     fn clip_reply_cuts_one_clip_per_stretch() {
         let m = two_stretches("clip-two");
         // 5 s to 10 s: the end of video 1 and the start of video 2.
-        let reply = clip_reply(m.path(), true, 5_000, 10_000, soon()).unwrap();
+        let reply = clip_reply(m.path(), true, 5_000, 10_000, soon(), None).unwrap();
         let clips = reply["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2, "{reply}");
         // Video 1's media 4 s to its end at 6 s; video 2's first second, which ends at 10 s.
@@ -921,18 +1033,18 @@ mod tests {
             ]
         );
         // A range inside one stretch, and a pause between them.
-        let reply = clip_reply(m.path(), true, 9_500, 9_500, soon()).unwrap();
+        let reply = clip_reply(m.path(), true, 9_500, 9_500, soon(), None).unwrap();
         assert_eq!(reply["clips"].as_array().unwrap().len(), 1);
         assert_eq!(
-            clip_reply(m.path(), true, 7_200, 8_800, soon()),
+            clip_reply(m.path(), true, 7_200, 8_800, soon(), None),
             Err(MediaError::NotFound(NO_CLIP.into()))
         );
         assert_eq!(
-            clip_reply(m.path(), true, 20_000, 30_000, soon()),
+            clip_reply(m.path(), true, 20_000, 30_000, soon(), None),
             Err(MediaError::NotFound(NO_CLIP.into()))
         );
         assert_eq!(
-            clip_reply(m.path(), false, 5_000, 10_000, soon()),
+            clip_reply(m.path(), false, 5_000, 10_000, soon(), None),
             Err(MediaError::NotAvailable(NO_VIDEO.into()))
         );
     }
@@ -942,7 +1054,7 @@ mod tests {
         let m = meeting("clip-cap", "video");
         write_video(m.path(), 1, 400);
         journal(m.path(), &[video(0, 1)]);
-        let reply = clip_reply(m.path(), true, 10_000, 900_000, soon()).unwrap();
+        let reply = clip_reply(m.path(), true, 10_000, 900_000, soon(), None).unwrap();
         let clip = &reply["clips"][0];
         assert_eq!(clip["start"], 10_000);
         assert_eq!(clip["end"], 10_000 + MAX_CLIP_MS);
@@ -951,7 +1063,7 @@ mod tests {
             vec![paths::clip_name(10_000, 10_000 + MAX_CLIP_MS, 1)]
         );
         // The same range asked differently shares the file.
-        let again = clip_reply(m.path(), true, 10_000, 310_000, soon()).unwrap();
+        let again = clip_reply(m.path(), true, 10_000, 310_000, soon(), None).unwrap();
         assert_eq!(again["clips"][0]["path"], clip["path"]);
         assert_eq!(clip_files(m.path()).len(), 1);
     }
@@ -968,12 +1080,13 @@ mod tests {
             2_000,
             12_000,
             Instant::now() + Duration::from_millis(300),
+            None,
         )
         .unwrap();
         assert_eq!(reply, json!({ "clips": [] }));
         drop(guard);
         // The cut goes on; the same request later returns both files.
-        let reply = clip_reply(m.path(), true, 2_000, 12_000, soon()).unwrap();
+        let reply = clip_reply(m.path(), true, 2_000, 12_000, soon(), None).unwrap();
         assert_eq!(reply["clips"].as_array().unwrap().len(), 2, "{reply}");
         let names = clip_files(m.path());
         assert_eq!(names.len(), 2, "{names:?}");
@@ -989,6 +1102,7 @@ mod tests {
             3_000,
             11_000,
             Instant::now() + Duration::from_secs(2),
+            None,
         )
         .unwrap();
         let clips = reply["clips"].as_array().unwrap();
@@ -1089,7 +1203,7 @@ mod tests {
     #[test]
     fn a_cut_stopped_by_its_budget_leaves_no_file() {
         let m = two_stretches("clip-budget");
-        let cut = cut_clips_within(m.path(), 2_000, 12_000, soon(), Duration::ZERO).unwrap();
+        let cut = cut_clips_within(m.path(), 2_000, 12_000, soon(), Duration::ZERO, None).unwrap();
         assert_eq!(
             cut,
             ClipCut {
@@ -1109,7 +1223,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(dir);
         }
         assert_eq!(
-            clip_reply(m.path(), true, 2_000, 12_000, soon()),
+            clip_reply(m.path(), true, 2_000, 12_000, soon(), None),
             Err(MediaError::NotAvailable(VIDEO_REMOVED.into()))
         );
         assert_eq!(clip_input_bytes(m.path(), 2_000, 12_000).unwrap(), 0);

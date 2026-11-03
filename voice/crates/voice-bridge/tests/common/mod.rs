@@ -75,6 +75,8 @@ pub struct FakeControl {
     /// What `screen.get` answers for the recording meeting; `None` answers `not_available`.
     /// `screen.select` knows the ids in its `monitors`.
     pub screen: Mutex<Option<Value>>,
+    /// The deadline of every `screen.get` and `screen.select`, in the order they ran.
+    pub screen_deadlines: Mutex<Vec<Instant>>,
 }
 
 impl FakeControl {
@@ -224,8 +226,9 @@ impl MeetingControl for FakeControl {
         self.known(id)
     }
 
-    fn screen(&self, id: &str) -> Result<Value, ControlError> {
+    fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
         self.call(format!("screen {id}"));
+        self.screen_deadlines.lock().unwrap().push(deadline);
         self.recording(id)?;
         self.screen
             .lock()
@@ -234,8 +237,14 @@ impl MeetingControl for FakeControl {
             .ok_or_else(|| ControlError::not_available("The meeting records no screen."))
     }
 
-    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
+    fn select_monitor(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
         self.call(format!("select {id} {monitor}"));
+        self.screen_deadlines.lock().unwrap().push(deadline);
         self.recording(id)?;
         let screen = self.screen.lock().unwrap().clone();
         let Some(screen) = screen else {

@@ -859,13 +859,15 @@ async fn run_commands(
     }
 }
 
-/// Runs one command. `received` is when the server read it: `clip.get` answers by
-/// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after that, however long it waited in the queue.
+/// Runs one command. `received` is when the server read it: `clip.get`, `screen.get` and
+/// `screen.select`, the commands that wait for a cut or the screen recorder, answer by
+/// [`CLIP_WAIT`](voice_protocol::CLIP_WAIT) after that, however long they waited in the queue.
 fn dispatch(
     control: &dyn MeetingControl,
     body: CommandBody,
     received: std::time::Instant,
 ) -> Result<Object, ControlError> {
+    let deadline = received + CLIP_WAIT;
     let result = match body {
         CommandBody::MeetingStart(args) => json!({ "meeting": control.start(args)? }),
         CommandBody::MeetingStop { meeting } => {
@@ -895,14 +897,14 @@ fn dispatch(
             meeting,
             start,
             end,
-        } => control.clip(meeting.as_str(), start, end, received + CLIP_WAIT)?,
+        } => control.clip(meeting.as_str(), start, end, deadline)?,
         CommandBody::MeetingProtected { meeting } => {
             control.protected(meeting.as_str())?;
             json!({})
         }
-        CommandBody::ScreenGet { meeting } => control.screen(meeting.as_str())?,
+        CommandBody::ScreenGet { meeting } => control.screen(meeting.as_str(), deadline)?,
         CommandBody::ScreenSelect { meeting, monitor } => {
-            json!({ "monitor": control.select_monitor(meeting.as_str(), &monitor)? })
+            json!({ "monitor": control.select_monitor(meeting.as_str(), &monitor, deadline)? })
         }
         CommandBody::Unknown { command, .. } => {
             return Err(ControlError::new(

@@ -46,9 +46,11 @@ const REQUEST_WAIT: Duration = Duration::from_secs(1);
 const STOP_WAIT: Duration = Duration::from_secs(5);
 /// How long `probe` and `finalize` may run.
 const TOOL_WAIT: Duration = Duration::from_secs(30);
-/// How long a monitor switch waits for a screen process that is starting. Shorter than Rukoo's
-/// 10 s command timeout.
+/// How long a monitor switch waits for a screen process that is starting, at most: a command
+/// from Rukoo waits only until its deadline, 4 s after Voice read it.
 const STARTING_PATIENCE: Duration = Duration::from_secs(3);
+/// How long the pill's monitor switch waits for the screen process to answer.
+const SWITCH_WAIT: Duration = Duration::from_secs(5);
 
 /// How the supervisor waits and retries. The defaults are for real use; tests shorten them.
 #[derive(Clone, Debug)]
@@ -823,13 +825,18 @@ impl ScreenSupervisor {
 
     // What Rukoo and the pill ask -------------------------------------------------------------
 
-    /// The meeting's screen recording as `screen.get` answers it.
-    pub fn describe(&self, id: &str) -> Result<Value, ControlError> {
-        let view = self.live_of(id)?;
+    /// The meeting's screen recording as `screen.get` answers it, by `deadline`: without time
+    /// left to ask the screen process, from the status the watchdog had last.
+    pub fn describe(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        let view = self.live_of(id, deadline)?;
         let fresh = match (&view.file, view.phase) {
-            (Some(file), Phase::Running) => request(file, json!({"cmd": "status"}), REQUEST_WAIT)
-                .ok()
-                .filter(|s| s["ok"] == true),
+            (Some(file), Phase::Running) => request_until(
+                file,
+                json!({"cmd": "status"}),
+                deadline.min(Instant::now() + REQUEST_WAIT),
+            )
+            .ok()
+            .filter(|s| s["ok"] == true),
             _ => None,
         };
         let status = fresh.or(view.status).unwrap_or(Value::Null);
@@ -875,12 +882,14 @@ impl ScreenSupervisor {
 
     /// What `screen.get` and `screen.select` need of the meeting that records now, or their
     /// errors: `not_found` without the meeting, `not_recording` when it doesn't record now,
-    /// `not_available` when it records no screen.
-    fn live_of(&self, id: &str) -> Result<LiveView, ControlError> {
+    /// `not_available` when it records no screen. A screen process that is starting gets until
+    /// `deadline`, at most [`STARTING_PATIENCE`].
+    fn live_of(&self, id: &str, deadline: Instant) -> Result<LiveView, ControlError> {
         let Some(dir) = self.lib.dir(id) else {
             return Err(ControlError::not_found("There is no meeting with that id."));
         };
-        let slot = self.wait_started(self.lock(), Some(id));
+        let until = deadline.min(Instant::now() + STARTING_PATIENCE);
+        let slot = self.wait_started(self.lock(), Some(id), until);
         match slot.as_ref() {
             Some(live) if live.id == id && live.phase == Phase::Ending => Err(
                 ControlError::not_recording("The meeting doesn't record now."),
@@ -915,25 +924,33 @@ impl ScreenSupervisor {
         voice_meetings::MeetingDir::at(dir).is_some_and(|d| !d.stopped())
     }
 
-    /// `screen.select`: records the monitor with that id. Returns the id.
-    pub fn select(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
-        let view = self.live_of(id)?;
+    /// `screen.select`: records the monitor with that id. Returns the id. Answers by
+    /// `deadline`, `failed` when the screen process is still starting or didn't switch by then.
+    pub fn select(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
+        let view = self.live_of(id, deadline)?;
         if !view.frames || view.phase == Phase::Stopped {
             return Err(ControlError::not_available("The screen recording stopped."));
         }
         let Some(file) = view.file.filter(|_| view.phase == Phase::Running) else {
             return Err(ControlError::failed("The screen recorder is starting."));
         };
-        self.switch(&file, monitor)
+        self.switch(&file, monitor, deadline)
     }
 
-    fn switch(&self, file: &ScreenFile, monitor: &str) -> Result<String, ControlError> {
-        let reply = request(
-            file,
-            json!({"cmd": "monitor", "id": monitor}),
-            Duration::from_secs(5),
-        )
-        .map_err(|e| ControlError::failed(format!("The screen recorder didn't answer: {e}")))?;
+    /// Asks the screen process to record `monitor`, and waits for its answer until `until`.
+    fn switch(
+        &self,
+        file: &ScreenFile,
+        monitor: &str,
+        until: Instant,
+    ) -> Result<String, ControlError> {
+        let reply = request_until(file, json!({"cmd": "monitor", "id": monitor}), until)
+            .map_err(|e| ControlError::failed(format!("The screen recorder didn't answer: {e}")))?;
         if reply["ok"] == true {
             return Ok(reply["monitor"].as_str().unwrap_or(monitor).to_string());
         }
@@ -946,22 +963,25 @@ impl ScreenSupervisor {
         }
     }
 
-    /// Waits a moment for a screen process that is starting or restarting, so a switch asked
-    /// right then isn't lost.
+    /// Waits until `until` at most for a screen process that is starting or restarting, so a
+    /// switch asked right then isn't lost.
     fn wait_started<'a>(
         &'a self,
         mut slot: MutexGuard<'a, Option<ScreenLive>>,
         id: Option<&str>,
+        until: Instant,
     ) -> MutexGuard<'a, Option<ScreenLive>> {
-        let deadline = Instant::now() + STARTING_PATIENCE;
         while slot.as_ref().is_some_and(|l| {
             id.is_none_or(|id| l.id == id)
                 && (l.phase == Phase::Starting || l.phase == Phase::Restarting)
-        }) && Instant::now() < deadline
-        {
+        }) {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
             slot = self
                 .changed
-                .wait_timeout(slot, Duration::from_millis(100))
+                .wait_timeout(slot, left.min(Duration::from_millis(100)))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -971,7 +991,7 @@ impl ScreenSupervisor {
     /// The pill's screen button: the recording moves to the next monitor, left to right.
     pub fn next_monitor(&self) -> Result<MonitorInfo, String> {
         let (id, file) = {
-            let slot = self.wait_started(self.lock(), None);
+            let slot = self.wait_started(self.lock(), None, Instant::now() + STARTING_PATIENCE);
             match slot.as_ref() {
                 Some(live) if live.phase == Phase::Running && live.recording() => (
                     live.id.clone(),
@@ -990,7 +1010,7 @@ impl ScreenSupervisor {
         if next == current {
             return Err("There is no other monitor.".into());
         }
-        self.switch(&file, &next)
+        self.switch(&file, &next, Instant::now() + SWITCH_WAIT)
             .map_err(|e| format!("{id}: {}", e.message))?;
         list.into_iter()
             .find(|m| m.id == next)
@@ -1153,25 +1173,39 @@ impl ScreenSupervisor {
 
     // The watchdog ---------------------------------------------------------------------------
 
-    /// One watchdog round.
+    /// One watchdog round. The status request runs without the slot's lock, so a screen process
+    /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
     fn check(&self) {
-        let mut slot = self.lock();
-        let Some(live) = slot.as_mut() else {
-            return;
+        let (id, file, exited, mut changes) = {
+            let mut slot = self.lock();
+            let Some(live) = slot.as_mut() else {
+                return;
+            };
+            if live.phase != Phase::Running {
+                return;
+            }
+            let changes = live.read_journal(true);
+            let exited = live
+                .child
+                .as_mut()
+                .is_some_and(|child| !matches!(child.try_wait(), Ok(None)));
+            (live.id.clone(), live.file.clone(), exited, changes)
         };
-        if live.phase != Phase::Running {
-            return;
-        }
-        let mut changes = live.read_journal(true);
-        let exited = live
-            .child
-            .as_mut()
-            .is_some_and(|child| !matches!(child.try_wait(), Ok(None)));
-        let status = match (&live.file, exited) {
+        let status = match (&file, exited) {
             (Some(file), false) => request(file, json!({"cmd": "status"}), REQUEST_WAIT)
                 .ok()
                 .filter(|r| r["ok"] == true),
             _ => None,
+        };
+        let mut slot = self.lock();
+        let Some(live) = slot
+            .as_mut()
+            .filter(|l| l.id == id && l.phase == Phase::Running && l.file == file)
+        else {
+            // The meeting ended or its process changed meanwhile; the next round looks again.
+            drop(slot);
+            self.emit_all(changes);
+            return;
         };
         if let Some(status) = status {
             live.failed_pings = 0;
@@ -1315,6 +1349,11 @@ fn watch(supervisor: Weak<ScreenSupervisor>) {
 /// One control request with the screen process's token.
 fn request(file: &ScreenFile, body: Value, timeout: Duration) -> io::Result<Value> {
     control::request(file.port, &file.token, body, timeout)
+}
+
+/// One control request that ends, answered or not, by `deadline`.
+fn request_until(file: &ScreenFile, body: Value, deadline: Instant) -> io::Result<Value> {
+    control::request_until(file.port, &file.token, body, deadline)
 }
 
 /// What the journal says, or `None` when there is none.

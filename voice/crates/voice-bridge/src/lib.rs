@@ -82,17 +82,24 @@ pub trait MeetingControl: Send + Sync {
         Ok(())
     }
 
-    /// The result of `screen.get`: `{ screen, state, video, frames, monitor, monitors }`.
-    fn screen(&self, id: &str) -> Result<Value, ControlError> {
-        let _ = id;
+    /// The result of `screen.get`: `{ screen, state, video, frames, monitor, monitors }`. It
+    /// answers by `deadline`, as `clip`, however slow the screen recorder is to start or answer.
+    fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        let _ = (id, deadline);
         Err(ControlError::not_available(
             "This Voice doesn't record the screen.",
         ))
     }
 
-    /// `screen.select`: records the monitor with that id. Returns the id.
-    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
-        let _ = (id, monitor);
+    /// `screen.select`: records the monitor with that id. Returns the id. It answers by
+    /// `deadline`, as `clip`: `failed` when the screen recorder couldn't switch by then.
+    fn select_monitor(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
+        let _ = (id, monitor, deadline);
         Err(ControlError::not_available(
             "This Voice doesn't record the screen.",
         ))

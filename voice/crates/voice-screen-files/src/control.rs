@@ -248,6 +248,31 @@ pub fn request(port: u16, token: &str, body: Value, timeout: Duration) -> io::Re
     serde_json::from_str(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+/// [`request`], with the connection, the write and the whole answer done by `deadline`: a slow
+/// or silent process makes it fail with `TimedOut` then, never later. The answer may be up to
+/// `MAX_LINE` long, like a request; the port's answers are a few hundred bytes.
+pub fn request_until(port: u16, token: &str, body: Value, deadline: Instant) -> io::Result<Value> {
+    let left = || match deadline.saturating_duration_since(Instant::now()) {
+        left if left.is_zero() => Err(io::Error::from(io::ErrorKind::TimedOut)),
+        left => Ok(left),
+    };
+    let Value::Object(mut object) = body else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a request is a JSON object",
+        ));
+    };
+    object.insert("token".into(), Value::String(token.to_string()));
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let mut stream = TcpStream::connect_timeout(&addr, left()?)?;
+    stream.set_nodelay(true)?;
+    stream.set_write_timeout(Some(left()?))?;
+    send(&mut stream, &Value::Object(object))?;
+    let line = read_line(&mut BufReader::new(stream), Some(deadline))?
+        .ok_or(io::ErrorKind::UnexpectedEof)?;
+    serde_json::from_str(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read;
@@ -295,6 +320,50 @@ mod tests {
     fn closed(stream: &mut TcpStream) -> bool {
         let mut buf = [0u8; 16];
         matches!(stream.read(&mut buf), Ok(0) | Err(_))
+    }
+
+    #[test]
+    fn a_request_until_a_deadline_ends_by_it() {
+        let (port, token, _seen) = served();
+        let answer = request_until(
+            port,
+            &token,
+            json!({ "cmd": "status" }),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(answer, json!({ "ok": true, "cmd": "status" }));
+
+        // A main loop that never answers: the request gives up at its deadline.
+        let listener = bind().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (to_main, requests) = mpsc::sync_channel::<Request>(4);
+        serve(listener, token.clone(), to_main).unwrap();
+        let asked = Instant::now();
+        let error = request_until(
+            port,
+            &token,
+            json!({ "cmd": "monitor", "id": "\\\\.\\DISPLAY2" }),
+            asked + Duration::from_millis(300),
+        )
+        .unwrap_err();
+        let took = asked.elapsed();
+        assert!(
+            took >= Duration::from_millis(250) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error:?}"
+        );
+        // A deadline that passed: nothing is sent.
+        let error =
+            request_until(port, &token, json!({ "cmd": "status" }), Instant::now()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        drop(requests);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use voice_bridge::{
 };
 use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status};
 use voice_screen_files::frames::FrameIndex;
-use voice_screen_files::media::{self, MediaError};
+use voice_screen_files::media::{self, ClipCheck, MediaError};
 use voice_screen_files::{paths, policy};
 
 use super::controller::Controller;
@@ -149,22 +149,19 @@ impl MeetingControl for Control {
     ) -> Result<Value, ControlError> {
         let dir = self.meeting_dir(id)?;
         let (_, video) = media::recorded(&dir);
-        if !video {
-            return Err(ControlError::not_available(
-                "The meeting didn't record video.",
-            ));
-        }
-        // A cut never eats into the free space the screen recording keeps (RUK-108 2.6).
-        if let Some(free) = self.screen.free_bytes() {
-            let capped = end.min(start.saturating_add(voice_protocol::MAX_CLIP_MS));
-            let bytes = media::clip_input_bytes(&dir, start, capped).unwrap_or(0);
-            if !policy::reserve_ok(free, bytes, self.controller.current().is_some()) {
-                return Err(ControlError::failed(
-                    "Not enough free disk space to cut a clip.",
-                ));
-            }
-        }
-        media::clip_reply(&dir, video, start, end, deadline).map_err(media_error)
+        // A cut never eats into the free space the screen recording keeps (RUK-108 2.6). Its
+        // input is known only once the journal is read and the video files are indexed, which
+        // takes a while for a long meeting on a slow disk, so the check runs on the cut's thread
+        // and this answers by `deadline` all the same.
+        let screen = Arc::clone(&self.screen);
+        let controller = Arc::clone(&self.controller);
+        let check: ClipCheck = Box::new(move |bytes| match screen.free_bytes() {
+            Some(free) if !policy::reserve_ok(free, bytes, controller.current().is_some()) => Err(
+                MediaError::Failed("Not enough free disk space to cut a clip.".into()),
+            ),
+            _ => Ok(()),
+        });
+        media::clip_reply(&dir, video, start, end, deadline, Some(check)).map_err(media_error)
     }
 
     fn protected(&self, id: &str) -> Result<(), ControlError> {
@@ -173,12 +170,17 @@ impl MeetingControl for Control {
         Ok(())
     }
 
-    fn screen(&self, id: &str) -> Result<Value, ControlError> {
-        self.screen.describe(id)
+    fn screen(&self, id: &str, deadline: Instant) -> Result<Value, ControlError> {
+        self.screen.describe(id, deadline)
     }
 
-    fn select_monitor(&self, id: &str, monitor: &str) -> Result<String, ControlError> {
-        self.screen.select(id, monitor)
+    fn select_monitor(
+        &self,
+        id: &str,
+        monitor: &str,
+        deadline: Instant,
+    ) -> Result<String, ControlError> {
+        self.screen.select(id, monitor, deadline)
     }
 
     fn status(&self) -> Status {

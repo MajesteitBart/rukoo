@@ -29,7 +29,7 @@ use voice_engine::meetings::screen::{ScreenChange, ScreenOptions, ScreenSupervis
 use voice_engine::PillPhase;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 use voice_screen_files::journal::{self, Line};
-use voice_screen_files::screenfile;
+use voice_screen_files::{control, screenfile};
 
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 /// What the screen process records here: a synthetic screen whose text changes every second.
@@ -103,7 +103,19 @@ fn main() {
             "clip_get_refuses_near_the_video_floor",
             clip_get_refuses_near_the_video_floor,
         ),
+        (
+            "clip_get_answers_by_its_deadline_while_its_check_runs",
+            clip_get_answers_by_its_deadline_while_its_check_runs,
+        ),
         ("screen_get_and_select", screen_get_and_select),
+        (
+            "screen_commands_answer_by_their_deadline_while_starting",
+            screen_commands_answer_by_their_deadline_while_starting,
+        ),
+        (
+            "screen_select_answers_by_its_deadline_when_the_screen_is_slow",
+            screen_select_answers_by_its_deadline_when_the_screen_is_slow,
+        ),
         ("drops_reach_the_pill", drops_reach_the_pill),
         ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
         (
@@ -156,6 +168,11 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// The deadline of a command the bridge runs as soon as it reads it: 4 s from now.
+fn in_time() -> Instant {
+    Instant::now() + voice_protocol::CLIP_WAIT
+}
+
 fn controller_timing() -> ControllerTiming {
     ControllerTiming {
         poll: Duration::from_millis(100),
@@ -194,6 +211,8 @@ struct Rig {
     started_at: Arc<AtomicU64>,
     /// What the supervisor's free-space stand-in says, when the rig has one.
     free: Arc<AtomicU64>,
+    /// How long, in ms, the free-space stand-in takes to answer, as a slow disk can.
+    free_wait: Arc<AtomicU64>,
 }
 
 type Slot = Arc<OnceLock<Mutex<Weak<ScreenSupervisor>>>>;
@@ -243,13 +262,14 @@ impl Rig {
         let changes: Arc<Mutex<Vec<ScreenChange>>> = Arc::default();
         let rukoo: Arc<(AtomicUsize, AtomicBool)> = Arc::default();
         let free = Arc::new(AtomicU64::new(free_bytes.unwrap_or(0)));
+        let free_wait = Arc::new(AtomicU64::new(0));
         let screen = supervisor(
             &data,
             &log,
             test,
             &changes,
             &rukoo,
-            free_bytes.map(|_| Arc::clone(&free)),
+            free_bytes.map(|_| (Arc::clone(&free), Arc::clone(&free_wait))),
         );
         let _ = slot.set(Mutex::new(Arc::downgrade(&screen)));
         controller.set_screen(ScreenMode::Frames, screen.available());
@@ -264,6 +284,7 @@ impl Rig {
             rukoo,
             started_at,
             free,
+            free_wait,
         }
     }
 
@@ -407,7 +428,8 @@ fn supervisor(
     test: &str,
     changes: &Arc<Mutex<Vec<ScreenChange>>>,
     rukoo: &Arc<(AtomicUsize, AtomicBool)>,
-    free_bytes: Option<Arc<AtomicU64>>,
+    // What the free-space stand-in says, and how many ms it takes.
+    free_bytes: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
 ) -> Arc<ScreenSupervisor> {
     let screen = ScreenSupervisor::new(
         ScreenOptions {
@@ -416,9 +438,11 @@ fn supervisor(
             test: Some(test.to_string()),
             test_monitor: None,
             timing: screen_timing(),
-            free_bytes: free_bytes.map(|free| {
-                Arc::new(move |_: &Path| Some(free.load(Ordering::SeqCst)))
-                    as voice_engine::meetings::screen::FreeBytes
+            free_bytes: free_bytes.map(|(free, wait)| {
+                Arc::new(move |_: &Path| {
+                    thread::sleep(Duration::from_millis(wait.load(Ordering::SeqCst)));
+                    Some(free.load(Ordering::SeqCst))
+                }) as voice_engine::meetings::screen::FreeBytes
             }),
         },
         Some(log.clone()),
@@ -623,7 +647,7 @@ fn screen_off_sends_no_meeting_starting() {
     assert_eq!(rig.screen().mode_of(&id), ScreenMode::Off);
     let control = rig.control();
     assert_eq!(
-        control.screen(&id).unwrap_err().code,
+        control.screen(&id, in_time()).unwrap_err().code,
         ErrorCode::NotAvailable
     );
     assert_eq!(
@@ -695,7 +719,10 @@ fn the_watchdog_gives_up_and_finalizes() {
     assert!(matches!(stop, Line::Stop { reason, .. } if reason == "failed"));
     assert_eq!(rig.screen().mode_of(&id), ScreenMode::Off);
     assert_eq!(
-        rig.screen().select(&id, "anything").unwrap_err().code,
+        rig.screen()
+            .select(&id, "anything", in_time())
+            .unwrap_err()
+            .code,
         ErrorCode::NotAvailable
     );
     // The audio goes on.
@@ -717,7 +744,7 @@ fn a_new_supervisor_reattaches() {
     // The process says `starting` until its first frame arrives.
     let mut described = Value::Null;
     wait_for("the reattached process to record", || {
-        described = screen.describe(&id).unwrap();
+        described = screen.describe(&id, in_time()).unwrap();
         described["state"] == "recording"
     });
     assert_eq!(described["screen"], "frames");
@@ -729,7 +756,7 @@ fn a_new_supervisor_reattaches() {
     // Pause and resume reach it; the stop ends it.
     rig.controller.pause(Some(&id)).unwrap();
     wait_for("the screen to pause", || {
-        screen.describe(&id).unwrap()["state"] == "paused"
+        screen.describe(&id, in_time()).unwrap()["state"] == "paused"
     });
     rig.controller.resume(Some(&id)).unwrap();
     rig.stop(&id);
@@ -737,7 +764,7 @@ fn a_new_supervisor_reattaches() {
         screenfile::live(&rig.dir(&id)).is_none()
     });
     assert_eq!(
-        screen.describe(&id).unwrap_err().code,
+        screen.describe(&id, in_time()).unwrap_err().code,
         ErrorCode::NotRecording
     );
 }
@@ -945,6 +972,40 @@ fn clip_get_refuses_near_the_video_floor() {
     roomy.stop(&live);
 }
 
+/// The free-space check needs the clip's input, which a long meeting on a slow disk takes a
+/// while to read: `clip.get` still answers by its deadline, and the cut goes on after the check.
+fn clip_get_answers_by_its_deadline_while_its_check_runs() {
+    const GIB: u64 = 1 << 30;
+    let rig = Rig::with("clip-slow-check", &video_spec(), Some(8 * GIB));
+    let id = recorded_video(&rig, 4);
+    let control = rig.control();
+    rig.free_wait.store(6_000, Ordering::SeqCst);
+    let asked = Instant::now();
+    let reply = control
+        .clip(&id, 500, 2_500, asked + Duration::from_secs(1))
+        .unwrap();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "clip.get answered {took:?} after it came"
+    );
+    assert_eq!(reply, json!({ "clips": [] }));
+    rig.free_wait.store(0, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let asked = Instant::now();
+        let reply = control
+            .clip(&id, 500, 2_500, asked + Duration::from_secs(1))
+            .unwrap();
+        assert!(asked.elapsed() < Duration::from_secs(2));
+        if !reply["clips"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the clip never came");
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn screen_get_and_select() {
     let rig = Rig::new("screen-select", &format!("{SCREEN},monitors=2"));
     let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
@@ -952,7 +1013,7 @@ fn screen_get_and_select() {
     rig.wait_line(&id, "the capture", |l| matches!(l, Line::Capture { .. }));
     let mut described = Value::Null;
     wait_for("two monitors, recording", || {
-        described = control.screen(&id).unwrap();
+        described = control.screen(&id, in_time()).unwrap();
         described["state"] == "recording"
             && described["monitors"]
                 .as_array()
@@ -973,14 +1034,17 @@ fn screen_get_and_select() {
             assert!(m.get(field).is_some(), "{field} in {m}");
         }
     }
-    assert_eq!(control.select_monitor(&id, &other).unwrap(), other);
+    assert_eq!(
+        control.select_monitor(&id, &other, in_time()).unwrap(),
+        other
+    );
     rig.wait_line(
         &id,
         "the monitor line",
         |l| matches!(l, Line::Monitor { id: m, reason, .. } if *m == other && reason == "user"),
     );
     wait_for("screen.get to say so", || {
-        control.screen(&id).unwrap()["monitor"] == other.as_str()
+        control.screen(&id, in_time()).unwrap()["monitor"] == other.as_str()
     });
     wait_for("the move to be reported", || {
         rig.changes()
@@ -989,24 +1053,174 @@ fn screen_get_and_select() {
     });
     assert_eq!(
         control
-            .select_monitor(&id, "\\\\.\\DISPLAY99")
+            .select_monitor(&id, "\\\\.\\DISPLAY99", in_time())
             .unwrap_err()
             .code,
         ErrorCode::NotFound
     );
     assert_eq!(
-        control.screen("m-20000101-000000-0000").unwrap_err().code,
+        control
+            .screen("m-20000101-000000-0000", in_time())
+            .unwrap_err()
+            .code,
         ErrorCode::NotFound
     );
     rig.stop(&id);
     assert_eq!(
-        control.screen(&id).unwrap_err().code,
+        control.screen(&id, in_time()).unwrap_err().code,
         ErrorCode::NotRecording
     );
     assert_eq!(
-        control.select_monitor(&id, &other).unwrap_err().code,
+        control
+            .select_monitor(&id, &other, in_time())
+            .unwrap_err()
+            .code,
         ErrorCode::NotRecording
     );
+}
+
+/// `screen.get` and `screen.select` answer by their deadline while the screen process starts: a
+/// meeting Voice started waits up to 5 s for a Rukoo that was connected to come back.
+fn screen_commands_answer_by_their_deadline_while_starting() {
+    let rig = Rig::new("screen-deadline-starting", &format!("{SCREEN},monitors=2"));
+    rig.rukoo(0, true);
+    let id = rig.start(StartedBy::Voice, Some(ScreenMode::Frames));
+    wait_for("meeting.starting", || !rig.starting_events(&id).is_empty());
+    let control = rig.control();
+    let asked = Instant::now();
+    let described = control
+        .screen(&id, asked + Duration::from_millis(500))
+        .unwrap();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_millis(1_500),
+        "screen.get answered after {took:?}"
+    );
+    assert_eq!(described["state"], "starting");
+    let asked = Instant::now();
+    let refused = control
+        .select_monitor(&id, "\\\\.\\SYNTHETIC2", asked + Duration::from_millis(500))
+        .unwrap_err();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_millis(1_500),
+        "screen.select answered after {took:?}"
+    );
+    assert_eq!(refused.code, ErrorCode::Failed);
+    rig.stop(&id);
+}
+
+/// A screen process on a real control port that answers `status` at once, or once slowly when
+/// asked to, and takes 6 s to switch monitors.
+struct SlowScreen {
+    port: u16,
+    token: String,
+    slow_status: Arc<AtomicBool>,
+    status_started: std::sync::mpsc::Receiver<()>,
+}
+
+impl SlowScreen {
+    fn start() -> SlowScreen {
+        let listener = control::bind().unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = control::new_token().unwrap();
+        let (to_main, requests) = std::sync::mpsc::sync_channel::<control::Request>(8);
+        control::serve(listener, token.clone(), to_main).unwrap();
+        let slow_status = Arc::new(AtomicBool::new(false));
+        let (started, status_started) = std::sync::mpsc::channel();
+        let slow = Arc::clone(&slow_status);
+        thread::spawn(move || {
+            for request in requests {
+                let (slow, started) = (Arc::clone(&slow), started.clone());
+                thread::spawn(move || {
+                    let answer = if request.body["cmd"] == "monitor" {
+                        thread::sleep(Duration::from_secs(6));
+                        json!({ "ok": true, "monitor": request.body["id"] })
+                    } else {
+                        if slow.swap(false, Ordering::SeqCst) {
+                            let _ = started.send(());
+                            thread::sleep(Duration::from_millis(900));
+                        }
+                        json!({ "ok": true, "state": "recording", "video": false, "frames": true, "monitor": "\\\\.\\SYNTHETIC1" })
+                    };
+                    let _ = request.reply.send(answer);
+                });
+            }
+        });
+        SlowScreen {
+            port,
+            token,
+            slow_status,
+            status_started,
+        }
+    }
+
+    /// Its `screen.json`. The pid is this test's, so the rig never stops it.
+    fn file(&self) -> screenfile::ScreenFile {
+        screenfile::ScreenFile {
+            pid: std::process::id(),
+            port: self.port,
+            token: self.token.clone(),
+            session: 1,
+            started_at: now_ms(),
+        }
+    }
+}
+
+/// A screen process that is slow to answer: `screen.select` still answers by its deadline, also
+/// while the watchdog waits for that process's status.
+fn screen_select_answers_by_its_deadline_when_the_screen_is_slow() {
+    let rig = Rig::new("screen-deadline-slow", SCREEN);
+    let slow = SlowScreen::start();
+    // A meeting whose screen process is the stand-in, reattached as after the app restarted.
+    let dir = voice_meetings::Library::open(&rig.data)
+        .unwrap()
+        .create(&voice_meetings::CreateMeeting {
+            title: "Slow screen".into(),
+            tracks: vec![Track::Mic],
+            sources: Default::default(),
+            screen: ScreenMode::Frames,
+            started_by: StartedBy::Rukoo,
+            context: None,
+        })
+        .unwrap();
+    let id = dir.id().to_string();
+    screenfile::write(dir.path(), &slow.file()).unwrap();
+    rig.screen().reattach(&id);
+    let control = rig.control();
+    wait_for("the stand-in to record", || {
+        control
+            .screen(&id, Instant::now() + Duration::from_secs(4))
+            .is_ok_and(|s| s["state"] == "recording")
+    });
+
+    // It takes 6 s to switch.
+    let asked = Instant::now();
+    let refused = control
+        .select_monitor(&id, "\\\\.\\SYNTHETIC2", asked + Duration::from_secs(1))
+        .unwrap_err();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_millis(1_800),
+        "screen.select answered after {took:?}"
+    );
+    assert_eq!(refused.code, ErrorCode::Failed);
+
+    // The watchdog's next status takes 900 ms: screen.select doesn't wait for it.
+    slow.slow_status.store(true, Ordering::SeqCst);
+    slow.status_started
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the watchdog asks for the status");
+    let asked = Instant::now();
+    let refused = control
+        .select_monitor(&id, "\\\\.\\SYNTHETIC2", asked + Duration::from_millis(250))
+        .unwrap_err();
+    let took = asked.elapsed();
+    assert!(
+        took < Duration::from_millis(650),
+        "screen.select waited {took:?} for the watchdog"
+    );
+    assert_eq!(refused.code, ErrorCode::Failed);
 }
 
 // Through the whole engine ----------------------------------------------------------------------

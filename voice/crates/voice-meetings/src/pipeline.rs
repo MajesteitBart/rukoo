@@ -7,7 +7,7 @@
 //! that `transcript.db` keeps once the event is in the log, and at start the keys are checked
 //! against the log itself, so nothing is sent twice, even after a crash between the two writes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -500,6 +500,10 @@ struct Worker {
     begun: bool,
     /// The screen journal's follower, for a meeting that records the screen.
     screen: Option<ScreenFollower>,
+    /// Screen events the follower has passed but the log doesn't have yet, oldest first. The
+    /// follower never gives an event twice, so one whose save failed waits here for the next
+    /// step, and the meeting isn't done while any wait.
+    screen_pending: VecDeque<ScreenDerived>,
 }
 
 impl Worker {
@@ -553,6 +557,7 @@ impl Worker {
             next_track: 0,
             begun: false,
             screen,
+            screen_pending: VecDeque::new(),
         }))
     }
 
@@ -562,7 +567,12 @@ impl Worker {
             return Ok(());
         }
         match self.log.append(event, Some(&self.id), data) {
-            Ok(seq) => self.transcript.record_emitted(&key, seq)?,
+            Ok(seq) => {
+                // The log has it now, which is what counts (see `open`): when the store's note
+                // fails, the step that tries again mustn't send it a second time.
+                self.emitted.insert(key.clone());
+                self.transcript.record_emitted(&key, seq)?;
+            }
             // A bug built an event Rukoo would drop; sending it again can't help.
             Err(e @ (LogError::Invalid(_) | LogError::TooLarge { .. })) => {
                 eprintln!("voice-meetings: {}: dropped a {event} event: {e}", self.id);
@@ -990,31 +1000,41 @@ impl Worker {
 /// The screen journal (RUK-108): frames and screen marks flow while the meeting records and while
 /// transcription waits, and a meeting is `done` or `failed` only once its screen part is settled.
 impl Worker {
-    /// Sends what the screen journal says since the last look.
+    /// Sends what the screen journal says since the last look, after the events an earlier step
+    /// couldn't store.
     fn poll_screen(&mut self) -> Result<(), Error> {
-        let derived = match self.screen.as_mut() {
-            Some(screen) => screen.poll()?,
-            None => return Ok(()),
-        };
-        for d in derived {
-            self.emit_screen(d)?;
+        self.flush_screen()?;
+        if let Some(screen) = self.screen.as_mut() {
+            let read = screen.poll()?;
+            self.screen_pending.extend(read);
+        }
+        self.flush_screen()
+    }
+
+    /// Sends the waiting screen events in order. One that fails stays first in line, with every
+    /// later one behind it, for the next step.
+    fn flush_screen(&mut self) -> Result<(), Error> {
+        while let Some(next) = self.screen_pending.front().cloned() {
+            self.emit_screen(next)?;
+            self.screen_pending.pop_front();
         }
         Ok(())
     }
 
     /// Whether the screen part of a stopped meeting is over: at once without a screen, else once
-    /// the journal has `stop`, or 60 s after the timeline's stop without a live screen process.
-    /// When it turns true, the marks that close the screen part go out first.
+    /// the journal has `stop`, or 60 s after the timeline's stop without a live screen process,
+    /// and every screen event is in the log. When it turns true, the marks that close the
+    /// screen part went out first.
     fn screen_settled(&mut self, stop: &Stop) -> Result<bool, Error> {
         let Some(screen) = self.screen.as_mut() else {
             return Ok(true);
         };
+        // The follower gives its closing marks once, so they wait in line like the rest.
         let Some(closing) = screen.settle(stop.t) else {
             return Ok(false);
         };
-        for d in closing {
-            self.emit_screen(d)?;
-        }
+        self.screen_pending.extend(closing);
+        self.flush_screen()?;
         Ok(true)
     }
 
@@ -1071,5 +1091,216 @@ mod tests {
         assert_eq!(speaker_of(Track::Mic).label, "You");
         assert_eq!(speaker_of(Track::Call).id, "call-1");
         assert_eq!(speaker_of(Track::Call).label, "Speaker 1");
+    }
+}
+
+/// A screen event whose save fails goes out on a later step, with every event read after it, and
+/// the meeting isn't done while one waits.
+#[cfg(test)]
+mod screen_retry_tests {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::Path;
+
+    use rusqlite::Connection;
+    use serde_json::json;
+    use voice_audio::SegmentWriter;
+    use voice_core::Recognized;
+    use voice_protocol::StartedBy;
+
+    use super::*;
+    use crate::library::{CreateMeeting, Library};
+    use crate::test_support::TempDir;
+
+    struct Silence;
+
+    impl SpeechToText for Silence {
+        fn transcribe(&self, _pcm: &[i16], _hints: &Hints) -> Result<Recognized, ProviderError> {
+            Ok(Recognized {
+                text: String::new(),
+                language: None,
+            })
+        }
+    }
+
+    fn append(path: &Path, lines: &[Value]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        for line in lines {
+            file.write_all(format!("{line}\n").as_bytes()).unwrap();
+        }
+    }
+
+    /// Takes a table of transcript.db away from the pipeline, as a failing disk would: every
+    /// write to it fails until it is back.
+    fn hide(meeting: &Path, table: &str) {
+        Connection::open(meeting.join("transcript.db"))
+            .unwrap()
+            .execute_batch(&format!("ALTER TABLE {table} RENAME TO {table}_away"))
+            .unwrap();
+    }
+
+    fn restore(meeting: &Path, table: &str) {
+        Connection::open(meeting.join("transcript.db"))
+            .unwrap()
+            .execute_batch(&format!("ALTER TABLE {table}_away RENAME TO {table}"))
+            .unwrap();
+    }
+
+    /// Steps until the worker stops making progress, and returns how that step ended.
+    fn run(worker: &mut Worker, shared: &Shared) -> Result<Step, Error> {
+        for _ in 0..500 {
+            match worker.step(shared) {
+                Ok(Step::Progress) => continue,
+                other => return other,
+            }
+        }
+        panic!("the worker never stopped making progress");
+    }
+
+    fn ids(log: &EventLog, meeting: &str, event: &str) -> Vec<String> {
+        log.meeting_events(meeting)
+            .unwrap()
+            .1
+            .into_iter()
+            .filter(|e| e.event == event)
+            .map(|e| e.data["id"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn frame(t: u64) -> Value {
+        json!({"kind":"frame","t":t,"id":format!("f-{t:09}"),"file":format!("screen/frames/f-{t:09}.jpg"),"width":1920,"height":1080,"text":"Slide","ocr":"ok","language":null})
+    }
+
+    #[test]
+    fn screen_events_wait_out_a_failed_save() {
+        let tmp = TempDir::new("pipeline-screen-retry");
+        let lib = Library::open(tmp.path()).unwrap();
+        let log = EventLog::open(tmp.path()).unwrap();
+        let dir = lib
+            .create(&CreateMeeting {
+                title: "Retry".into(),
+                tracks: vec![Track::Mic],
+                sources: Default::default(),
+                screen: ScreenMode::Frames,
+                started_by: StartedBy::Voice,
+                context: None,
+            })
+            .unwrap();
+        let id = dir.id().to_string();
+        let meeting = dir.path().to_path_buf();
+
+        // Two seconds of silence on the microphone, and the meeting still records.
+        let timeline = meeting.join("timeline.jsonl");
+        append(
+            &timeline,
+            &[
+                json!({"kind":"session","t":0,"wall":1_793_000_000_000u64,"session":1,"pid":1,"resumed":false,"version":1}),
+            ],
+        );
+        let file = "audio/mic/000001.wav";
+        fs::create_dir_all(meeting.join("audio/mic")).unwrap();
+        let mut writer = SegmentWriter::create(&meeting.join(file)).unwrap();
+        writer.append(&vec![0i16; 16_000 * 2]).unwrap();
+        let samples = writer.close().unwrap();
+        append(
+            &timeline,
+            &[
+                json!({"kind":"segment","t":0,"track":"mic","seq":1,"file":file}),
+                json!({"kind":"segment_end","t":samples / 16,"track":"mic","seq":1,"samples":samples}),
+            ],
+        );
+        let journal = voice_screen_files::paths::journal_path(&meeting);
+        append(
+            &journal,
+            &[
+                json!({"kind":"session","t":40,"wall":1,"session":1,"pid":7,"resumed":false,"version":1,"mode":"frames","anchor":"boot","screen":"0.1.0"}),
+            ],
+        );
+
+        let mut worker = Worker::open(
+            dir.clone(),
+            log.clone(),
+            &PipelineOptions::new(Arc::new(Silence)),
+        )
+        .unwrap()
+        .unwrap();
+        // No screen process runs here, so the screen settles as soon as the recording stops.
+        worker.screen = Some(ScreenFollower::with_wait(&meeting, Duration::ZERO));
+        let shared = Shared::default();
+        assert!(matches!(run(&mut worker, &shared), Ok(Step::Idle)));
+
+        // One read of the journal: a frame, a mark that can't be saved, a frame, a lock.
+        hide(&meeting, "marks");
+        append(
+            &journal,
+            &[
+                frame(500),
+                json!({"kind":"dropped","t":900,"what":"video","reason":"encoder"}),
+                frame(1200),
+                json!({"kind":"lock","t":1500}),
+            ],
+        );
+        assert!(worker.step(&shared).is_err(), "the mark can't be saved");
+        assert!(worker.step(&shared).is_err(), "nor on the next step");
+        assert_eq!(ids(&log, &id, "frame"), ["f-000000500"]);
+        restore(&meeting, "marks");
+        assert!(matches!(run(&mut worker, &shared), Ok(Step::Idle)));
+        assert_eq!(
+            ids(&log, &id, "frame"),
+            ["f-000000500", "f-000001200"],
+            "the frame read after the failed mark"
+        );
+        assert_eq!(ids(&log, &id, "mark"), ["dropped-video"]);
+
+        // The log takes a frame but the note that it did fails: the frame still goes out once.
+        hide(&meeting, "emitted");
+        append(&journal, &[frame(1700)]);
+        assert!(worker.step(&shared).is_err(), "the note can't be saved");
+        restore(&meeting, "emitted");
+        assert!(matches!(run(&mut worker, &shared), Ok(Step::Idle)));
+        assert_eq!(
+            ids(&log, &id, "frame"),
+            ["f-000000500", "f-000001200", "f-000001700"]
+        );
+
+        // The recording stops with the screen locked. The mark that closes the lock can't be
+        // saved, and the meeting isn't done without it.
+        hide(&meeting, "marks");
+        append(
+            &timeline,
+            &[json!({"kind":"stop","t":2000,"wall":1_793_000_002_000u64,"reason":"user"})],
+        );
+        let mut failed = 0;
+        for _ in 0..500 {
+            match worker.step(&shared) {
+                Ok(Step::Finished) => panic!("done without the screen's last mark"),
+                Err(_) => failed += 1,
+                Ok(_) => failed = 0,
+            }
+            if failed == 3 {
+                break;
+            }
+        }
+        assert_eq!(failed, 3, "the closing mark's save never failed");
+        restore(&meeting, "marks");
+        assert!(matches!(run(&mut worker, &shared), Ok(Step::Finished)));
+        let all = log.meeting_events(&id).unwrap().1;
+        let seq_of = |what: &dyn Fn(&voice_bridge::Stored) -> bool| {
+            all.iter().find(|e| what(e)).map(|e| e.seq)
+        };
+        let gap = seq_of(&|e| e.event == "mark" && e.data["id"] == "gap-screen-1500")
+            .expect("the lock's gap was sent");
+        let done = seq_of(&|e| e.event == "meeting.state" && e.data["state"] == "done").unwrap();
+        assert!(gap < done, "the lock's gap comes before done");
+        assert_eq!(
+            ids(&log, &id, "mark"),
+            ["dropped-video", "gap-screen-1500"],
+            "nothing twice"
+        );
     }
 }
