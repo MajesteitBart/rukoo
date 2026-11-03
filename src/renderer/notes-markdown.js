@@ -82,26 +82,28 @@ export function notesToMarkdown(editor) {
     }
     return text;
   };
+  // The reader parses one Markdown line at a time. Reopen an inline span on each
+  // line instead of saving delimiters that cross a Shift+Enter boundary.
+  const formatLines = (text, format) => text.split('\n').map((line) => {
+    const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(line);
+    return m[2] ? `${m[1]}${format(m[2])}${m[3]}` : line;
+  }).join('\n');
   function write(node) {
     if (node.nodeType === Node.TEXT_NODE) return escapeMarkdown(node.textContent.replace(/\u00a0/g, ' '));
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
     const body = () => children(node);
-    const wrap = (mark) => {
-      const s = body();
-      const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(s);
-      return m[2] ? `${m[1]}${mark}${m[2]}${mark}${m[3]}` : s;
-    };
+    const wrap = (mark) => formatLines(body(), (line) => `${mark}${line}${mark}`);
     switch (node.tagName) {
       case 'BR': return '\n';
       case 'B': case 'STRONG': return wrap('**');
       case 'I': case 'EM': return wrap('*');
       case 'S': return wrap('~~');
-      case 'U': return `<u>${body()}</u>`;
+      case 'U': return formatLines(body(), (line) => `<u>${line}</u>`);
       case 'A': {
         const href = node.getAttribute('href') || '';
-        return safeHref(href) ? `[${body()}](<${href.replace(/>/g, '%3E').replace(/</g, '%3C')}>)` : body();
+        return safeHref(href) ? formatLines(body(), (line) => `[${line}](<${href.replace(/>/g, '%3E').replace(/</g, '%3C')}>)`) : body();
       }
-      case 'H1': case 'H2': case 'H3': return `${'#'.repeat(Number(node.tagName[1]))} ${body().trim()}\n`;
+      case 'H1': case 'H2': case 'H3': return body().trim().split('\n').map((line) => line.trim() ? `${'#'.repeat(Number(node.tagName[1]))} ${line.trim()}` : '').join('\n') + '\n';
       case 'UL': case 'OL': return [...node.children].filter((n) => n.tagName === 'LI').map((li, i) => {
         const content = children(li).replace(/\n+$/, '');
         const lines = content.split('\n');
@@ -113,10 +115,12 @@ export function notesToMarkdown(editor) {
         return `${fence}\n${node.textContent}\n${fence}\n`;
       }
       case 'CODE': {
-        const text = node.textContent;
-        const ticks = ticksFor(text);
-        const pad = /^`|`$|^ .* $/.test(text) ? ' ' : '';
-        return `${ticks}${pad}${text}${pad}${ticks}`;
+        return node.textContent.split('\n').map((text) => {
+          if (!text) return '';
+          const ticks = ticksFor(text);
+          const pad = /^`|`$|^ .* $/.test(text) ? ' ' : '';
+          return `${ticks}${pad}${text}${pad}${ticks}`;
+        }).join('\n');
       }
       case 'HR': return '---\n';
       case 'DIV': case 'P': {

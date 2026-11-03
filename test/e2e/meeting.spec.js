@@ -339,7 +339,15 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
       '<ol><li>First<br>More on the first item</li><li>Second</li></ol>',
       '<div>1. Literal numbering</div><div># Literal heading</div><div></div><div>Last line</div>',
       '<div><a href="https://example.com"><code>a*b</code> and literal * [brackets]</a></div>',
-      '<div><u><code>value</code> and literal * [brackets]</u></div>'
+      '<div><u><code>value</code> and literal * [brackets]</u></div>',
+      '<div><b>First<br>Second</b></div>',
+      '<div><i>First<br>Second</i></div>',
+      '<div><s>First<br>Second</s></div>',
+      '<div><u>First<br>Second</u></div>',
+      '<div><a href="https://example.com">First<br>Second</a></div>',
+      '<div><b><u>First<br><br>Second</u></b></div>',
+      '<div><code>First\nSecond</code></div>',
+      '<h2>First<br>Second</h2>'
     ].map((html) => {
       editor.innerHTML = html;
       const first = notesToMarkdown(editor);
@@ -362,6 +370,35 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   for (const [first, second] of result.variants) expect(second).toBe(first);
   expect(result.blocks).toEqual(['First\nSecond', 'First\nSecond', 'First\nSecond', 'First\n\nThird']);
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
+});
+
+test('soft breaks preserve note formatting and linked labels after restart', async () => {
+  const id = voiceStarts({ title: 'Soft breaks in notes' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  await notes().fill('First bold line');
+  await notes().press('Control+a');
+  await notes().press('Control+b');
+  await notes().press('End');
+  await notes().press('Shift+Enter');
+  await win.keyboard.type('Second bold line');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  const typed = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  expect(typed).toBe('**First bold line**\n**Second bold line**');
+  await notes().evaluate((el) => {
+    el.insertAdjacentHTML('beforeend', '<div><u>First underlined line<br>Second underlined line</u></div><div><a href="https://example.com">First linked line<br>Second linked line</a></div>');
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  });
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Soft breaks in notes');
+  await expect(notes().locator('b, strong')).toHaveText(['First bold line', 'Second bold line']);
+  await expect(notes().locator('u')).toHaveText(['First underlined line', 'Second underlined line']);
+  await expect(notes().locator('a')).toHaveText(['First linked line', 'Second linked line']);
+  await expect(notes()).not.toContainText('**');
+  await shot('notes-soft-breaks-reopened');
 });
 
 test('typed note lines and formatted link labels survive saving, view changes and restart', async () => {
