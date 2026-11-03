@@ -116,6 +116,10 @@ fn main() {
             "a_restored_meeting_keeps_its_speakers",
             a_restored_meeting_keeps_its_speakers,
         ),
+        (
+            "the_key_dialogs_wait_while_the_screen_records",
+            the_key_dialogs_wait_while_the_screen_records,
+        ),
     ];
     let filters: Vec<String> = std::env::args()
         .skip(1)
@@ -1641,5 +1645,61 @@ fn a_restored_meeting_keeps_its_speakers() {
     seeded.sort();
     assert_eq!(restored, seeded, "every passage keeps its speaker");
     engine_b.shutdown();
+    fake.stop();
+}
+
+/// Voice refuses to show or import the recovery code while a meeting records the screen, and Settings
+/// says so in `sync.screenRecording` (spec RUK-110 D18, contract 2.7): by the screen supervisor's
+/// mode for the meeting that records, not by Voice's default.
+fn the_key_dialogs_wait_while_the_screen_records() {
+    if !cfg!(windows) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
+    let h = screen_harness("key-screen", "keep");
+    let fake = fake_s3();
+    let engine = h.start();
+    connect_bucket(&engine, &fake.endpoint());
+    assert_eq!(sync_state(&engine)["screenRecording"], false);
+    let code = recovery_code(&engine);
+
+    let id = engine.start_meeting().unwrap();
+    wait_recorded(&h.data(), &id, 1000);
+    wait_for("Settings to say the screen records", || {
+        sync_state(&engine)["screenRecording"] == true
+    });
+    for (action, code) in [("show", None), ("import", Some(code.clone()))] {
+        let refused = engine.settings_sync_key(action, code).unwrap_err();
+        assert_eq!(
+            refused.code, "recording_screen",
+            "{action}: {}",
+            refused.message
+        );
+    }
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &id);
+    wait_for("Settings to say the screen stopped", || {
+        sync_state(&engine)["screenRecording"] == false
+    });
+    assert_eq!(
+        recovery_code(&engine),
+        code,
+        "the code shows once the meeting stopped"
+    );
+
+    // A meeting that records no screen leaves the dialogs alone, whatever Voice's default.
+    let control = engine.meeting_control().unwrap();
+    let audio_only = control
+        .start(voice_protocol::StartArgs {
+            screen: Some(voice_protocol::ScreenMode::Off),
+            ..Default::default()
+        })
+        .unwrap();
+    wait_recorded(&h.data(), &audio_only, 1000);
+    assert_eq!(sync_state(&engine)["screenRecording"], false);
+    assert_eq!(recovery_code(&engine), code);
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &audio_only);
+    engine.shutdown();
     fake.stop();
 }
