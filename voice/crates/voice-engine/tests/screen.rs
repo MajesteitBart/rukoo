@@ -849,13 +849,13 @@ fn frame_get_answers_at_or_before() {
         control.frame("m-20000101-000000-0000", 1).unwrap_err().code,
         ErrorCode::NotFound
     );
-    // A frame whose JPEG retention removed keeps its place but has no image.
+    // A frame whose JPEG retention removed keeps its place and its text, without an image.
     rig.stop(&id);
     std::fs::remove_dir_all(rig.dir(&id).join("screen").join("frames")).unwrap();
-    assert_eq!(
-        control.frame(&id, second_at).unwrap_err().code,
-        ErrorCode::NotAvailable
-    );
+    let removed = control.frame(&id, second_at).unwrap();
+    assert_eq!(removed["image"], serde_json::Value::Null, "{removed}");
+    assert_eq!(removed["frame"]["at"], second_at);
+    assert!(removed["frame"]["text"].is_string(), "{removed}");
 }
 
 fn video_spec() -> String {

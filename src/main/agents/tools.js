@@ -2632,15 +2632,21 @@ async function getMeetingFrame(hub, args, call) {
     frame_at_seconds: frameAt === null ? null : Math.floor(frameAt / 1000),
     text: typeof frame.text === 'string' && frame.text ? unsafeBlock(frame.text, { source: 'screen', meeting_id: id, at_seconds: frameAt === null ? null : Math.floor(frameAt / 1000) }) : '',
     // The note comes before the image: an image can't carry tags, and a screen shows anyone's text.
-    note: `The image follows. ${IMAGE_DATA}`
+    note: image ? `The image follows. ${IMAGE_DATA}` : FRAME_TEXT_ONLY
   };
   // No structured result: Codex passes only that on when there is one, and the image would never reach it.
-  return raw([{ type: 'text', text: JSON.stringify(info) }, { type: 'image', data: image.data, mimeType: image.type }]);
+  const content = [{ type: 'text', text: JSON.stringify(info) }];
+  if (image) content.push({ type: 'image', data: image.data, mimeType: image.type });
+  return raw(content);
 }
 
-// frame.get's answer as Rukoo passes it on: a plain image of at most IMAGE_MAX, and the frame's data.
+const FRAME_TEXT_ONLY = "Rukoo Voice removed this meeting's screen images and kept the text read from the screen, so there is no image.";
+
+// frame.get's answer as Rukoo passes it on: a plain image of at most IMAGE_MAX, and the frame's data. image is null
+// when Voice says so: retention removed the image and the frame keeps only its text.
 function checkedImage(res) {
   const frame = res && typeof res.frame === 'object' && res.frame ? res.frame : {};
+  if (res && res.image === null) return { frame, image: null };
   const image = res && typeof res.image === 'object' && res.image ? res.image : {};
   if (!FRAME_TYPES.has(image.type) || typeof image.data !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(image.data) || (image.data.length * 3) / 4 > IMAGE_MAX) {
     throw new ToolError('Rukoo Voice sent a frame Rukoo cannot pass on.');
@@ -2725,6 +2731,7 @@ async function getMeetingClip(hub, args, call) {
   const images = [];
   const notes = [];
   let size = 0;
+  let textOnly = 0;
   let failure = null;
   for (const f of picked) {
     let got;
@@ -2736,20 +2743,28 @@ async function getMeetingClip(hub, args, call) {
       failure = err.code || 'error';
       break;
     }
-    if (size + got.image.data.length > CLIP_IMAGES_MAX) {
+    if (got.image && size + got.image.data.length > CLIP_IMAGES_MAX) {
       notes.push(`Rukoo stopped after ${images.length} images to keep the answer small; ask for a shorter stretch or fewer frames for the rest.`);
       break;
     }
-    size += got.image.data.length;
     const at = Number.isInteger(got.frame.at) ? got.frame.at : f.at;
     const atS = Math.floor(at / 1000);
     const text = typeof got.frame.text === 'string' ? got.frame.text : f.text || '';
-    frames.push({ at_seconds: atS, text: text ? unsafeBlock(text, { source: 'screen', meeting_id: id, at_seconds: atS }) : '' });
-    images.push({ type: 'image', data: got.image.data, mimeType: got.image.type });
+    const entry = { at_seconds: atS, text: text ? unsafeBlock(text, { source: 'screen', meeting_id: id, at_seconds: atS }) : '' };
+    if (got.image) {
+      size += got.image.data.length;
+      images.push({ type: 'image', data: got.image.data, mimeType: got.image.type });
+    } else {
+      // Retention removed the image; the text stays, and the frames with images still line up with the images.
+      entry.image = false;
+      textOnly++;
+    }
+    frames.push(entry);
   }
-  if (!images.length && failure === 'not_available') throw new ToolError(`Rukoo Voice has no frames of the meeting ${id}. read_meeting_transcript has what was said.`);
-  if (!images.length && failure) throw new ToolError(`Rukoo Voice did not give the frames (${failure}). Try again in a moment.`);
-  if (failure) notes.push(`Rukoo Voice stopped giving frames after ${images.length} (${failure}).`);
+  if (!frames.length && failure === 'not_available') throw new ToolError(`Rukoo Voice has no frames of the meeting ${id}. read_meeting_transcript has what was said.`);
+  if (!frames.length && failure) throw new ToolError(`Rukoo Voice did not give the frames (${failure}). Try again in a moment.`);
+  if (failure) notes.push(`Rukoo Voice stopped giving frames after ${frames.length} (${failure}).`);
+  if (textOnly) notes.push(`${textOnly === 1 ? 'One frame has' : `${textOnly} frames have`} "image": false: Rukoo Voice removed the meeting's screen images and kept their text.`);
   let video = null;
   if (args.video) {
     if (call.remote) notes.push('The video clip is only for agents on this computer.');
@@ -2767,7 +2782,7 @@ async function getMeetingClip(hub, args, call) {
     frames,
     video,
     // The note comes before the images: an image can't carry tags, and a screen shows anyone's text.
-    note: [images.length ? `The images follow, oldest first. ${IMAGE_DATA}` : picked.length ? 'Rukoo Voice gave none of the frames of that stretch.' : 'Rukoo has no frame of the screen in that stretch.', ...notes].join(' ')
+    note: [images.length ? `The images follow, oldest first. ${IMAGE_DATA}` : frames.length ? 'There are no images.' : picked.length ? 'Rukoo Voice gave none of the frames of that stretch.' : 'Rukoo has no frame of the screen in that stretch.', ...notes].join(' ')
   };
   // No structured result, as for get_meeting_frame: Codex would pass on only that, without the images.
   return raw([{ type: 'text', text: JSON.stringify(info) }, ...images]);

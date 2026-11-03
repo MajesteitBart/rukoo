@@ -46,12 +46,13 @@ pub const MAX_CLIP_MS: u64 = 300_000;
 const NO_SCREEN: &str = "The meeting didn't record the screen.";
 const NO_VIDEO: &str = "The meeting didn't record video.";
 const NO_FRAME: &str = "No frame at or before that time.";
-const FRAME_REMOVED: &str = "The meeting's screen media was removed.";
 const NO_CLIP: &str = "No video between those times.";
 const VIDEO_REMOVED: &str = "The meeting's video was removed.";
 
 /// `frame.get`: `{ frame: { id, at, width, height, text }, image: { type: "image/jpeg", data } }`
-/// for the frame at or before `at`, with the image in standard base64.
+/// for the frame at or before `at`, with the image in standard base64. Once retention removed
+/// the frame's image, `image` is null and `frame` still carries its text: a snapshot that left the
+/// text out to stay small (`textOmitted`) gets it from here, and the journal keeps it.
 pub fn frame_reply(
     meeting: &Path,
     recorded_screen: bool,
@@ -67,6 +68,13 @@ pub fn frame_reply(
     let path = paths::frame_path(meeting, &frame.file).ok_or_else(|| {
         MediaError::Failed("The screen journal names a file that isn't a frame.".into())
     })?;
+    let data = json!({
+        "id": frame.id,
+        "at": frame.t,
+        "width": frame.width,
+        "height": frame.height,
+        "text": frame.text,
+    });
     let image = match File::open(&path) {
         Ok(file) => {
             let mut bytes = Vec::new();
@@ -75,8 +83,9 @@ pub fn frame_reply(
                 .map_err(|e| MediaError::Failed(format!("Can't read the frame's image: {e}")))?;
             bytes
         }
+        // Retention removed the image; the text the journal keeps still comes back.
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Err(MediaError::NotAvailable(FRAME_REMOVED.into()))
+            return Ok(json!({ "frame": data, "image": null }))
         }
         Err(e) => {
             return Err(MediaError::Failed(format!(
@@ -90,13 +99,7 @@ pub fn frame_reply(
         ));
     }
     Ok(json!({
-        "frame": {
-            "id": frame.id,
-            "at": frame.t,
-            "width": frame.width,
-            "height": frame.height,
-            "text": frame.text,
-        },
+        "frame": data,
         "image": {
             "type": "image/jpeg",
             "data": base64::engine::general_purpose::STANDARD.encode(&image),
@@ -998,15 +1001,21 @@ mod tests {
         let m = meeting("frame-reply-bad", "frames");
         journal(
             m.path(),
-            &[frame(1_000, ""), frame(2_000, ""), frame(3_000, "")],
+            &[
+                frame(1_000, "Slide one"),
+                frame(2_000, ""),
+                frame(3_000, ""),
+            ],
         );
         write_frame(m.path(), 2_000, &vec![0u8; MAX_FRAME_BYTES as usize + 1]);
         write_frame(m.path(), 3_000, &vec![0u8; MAX_FRAME_BYTES as usize]);
         let index = FrameIndex::load(m.path()).unwrap();
-        assert_eq!(
-            frame_reply(m.path(), true, 1_500, &index),
-            Err(MediaError::NotAvailable(FRAME_REMOVED.into()))
-        );
+        // Retention removed the first frame's image: its text still comes back, without an image,
+        // so a snapshot that left the text out can still fill it in.
+        let removed = frame_reply(m.path(), true, 1_500, &index).unwrap();
+        assert_eq!(removed["image"], Value::Null, "{removed}");
+        assert_eq!(removed["frame"]["at"], 1_000);
+        assert_eq!(removed["frame"]["text"], "Slide one");
         assert!(matches!(
             frame_reply(m.path(), true, 2_000, &index),
             Err(MediaError::Failed(_))
