@@ -2,12 +2,14 @@
 // how the provider's answers to a wrong secret and a missing bucket map to Settings' reasons, a multipart upload with
 // ListParts, a meeting that syncs while it records, a Voice killed with files waiting and started again, every raw
 // object downloaded and run through check-encrypted.mjs, a restore into a fresh data folder with the recovery code,
-// and the meeting's audio fetched back from the bucket through the bridge. Run it only against a throwaway bucket.
+// and the meeting's audio, a frame and a stretch of video fetched back from the bucket through the bridge. The meeting
+// records screen video from the screen process's synthetic screen (numbered slides), never the real desktop: frames
+// go up while it records, video after the stop. Run it only against a throwaway bucket.
 //
 //   node voice/scripts/bucket-check.mjs [--minutes=3]
 //
-// Windows only, on a development build (CARGO_TARGET_DIR\debug: rukoo-voice, its recorder and local worker, and
-// voice-sync's `bucket` example). The bucket comes from RUKOO_VOICE_SYNC_TEST_ENDPOINT, _REGION, _BUCKET,
+// Windows only, on a development build (CARGO_TARGET_DIR\debug: rukoo-voice, its recorder, local worker and screen
+// process, and voice-sync's `bucket` example). The bucket comes from RUKOO_VOICE_SYNC_TEST_ENDPOINT, _REGION, _BUCKET,
 // _ACCESS_KEY_ID and _SECRET_ACCESS_KEY, and the service from _SERVICE (upcloud, r2 or other; default upcloud). The
 // script never prints them: they reach the development Voice only through its Settings commands, as a user types
 // them, and every message is redacted before it is shown or written. Each run uses a folder (prefix) of its own,
@@ -53,6 +55,9 @@ const RUN = path.join(ROOT, 'tmp', 'bucket-check', STAMP);
 const TARGET = process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(VOICE, 'target');
 const EXE = path.join(TARGET, 'debug', 'rukoo-voice.exe');
 const BUCKET_EXE = path.join(TARGET, 'debug', 'examples', 'bucket.exe');
+const SCREEN_EXE = path.join(TARGET, 'debug', 'rukoo-voice-screen.exe');
+// The screen process draws numbered slides itself, so nothing of the desktop is captured (contract 1.13).
+const SYNTHETIC_SCREEN = 'synthetic:1920x1080,change-every=10000,text=Slide';
 const TITLE = 'Bucket check';
 const SEGMENT_MS = 30000;
 
@@ -163,6 +168,8 @@ function cleanEnv() {
   for (const key of Object.keys(env)) if (key.startsWith('RUKOO_VOICE_SYNC_TEST_')) delete env[key];
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.RUKOO_VOICE_LOCAL_EXE;
+  delete env.RUKOO_VOICE_TEST_MONITOR;
+  env.RUKOO_VOICE_TEST_SCREEN = SYNTHETIC_SCREEN;
   return env;
 }
 
@@ -173,6 +180,12 @@ function voiceAt(name) {
 
 function startVoice(v) {
   fs.mkdirSync(path.dirname(v.bridge), { recursive: true });
+  // Meetings record screen video, from the synthetic screen of cleanEnv(). config.json keeps Ownkey's flat keys.
+  const file = path.join(v.data, 'config.json');
+  if (!fs.existsSync(file)) {
+    fs.mkdirSync(v.data, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ meetings_screen: 'video' }));
+  }
   const env = {
     ...cleanEnv(),
     RUKOO_VOICE_DATA_DIR: v.data,
@@ -260,6 +273,34 @@ function recorderOf(v, id) {
     return JSON.parse(fs.readFileSync(path.join(v.data, 'meetings', id, 'recorder.json'), 'utf8'));
   } catch (_) {
     return null;
+  }
+}
+
+function screenOf(v, id) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(v.data, 'meetings', id, 'screen', 'screen.json'), 'utf8').replace(/^\uFEFF/, ''));
+  } catch (_) {
+    return null;
+  }
+}
+
+// The screen journal's lines, for frame times and the video files.
+function journal(v, id) {
+  try {
+    return fs
+      .readFileSync(path.join(v.data, 'meetings', id, 'screen', 'journal.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
   }
 }
 
@@ -366,7 +407,7 @@ let bridges = [];
 
 async function main() {
   if (process.platform !== 'win32') throw new Error('The check needs Windows: Voice records there only.');
-  for (const exe of [EXE, BUCKET_EXE]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build voice-app, voice-recorder, voice-local and voice-sync's bucket example first`);
+  for (const exe of [EXE, BUCKET_EXE, SCREEN_EXE]) if (!fs.existsSync(exe)) throw new Error(`${exe} is missing; build voice-app, voice-recorder, voice-local, voice-screen and voice-sync's bucket example first`);
   fs.mkdirSync(RUN, { recursive: true });
   speech(path.join(RUN, 'you.wav'), YOU);
   speech(path.join(RUN, 'them.wav'), THEM, 1500);
@@ -407,6 +448,12 @@ async function main() {
   }, 180000, 5000);
   const recording = timeline(A, id).every((l) => l.kind !== 'stop');
   check('audio objects reach the bucket while the meeting records', recording, { objects: firstObjects.objects, after: `${Math.round((Date.now() - t0) / 1000)} s` });
+  const queueOf = (meeting) => readDb(path.join(A.data, 'sync', 'queue.db'), 'SELECT path, kind, state FROM files WHERE meeting = ? ORDER BY id', meeting);
+  const liveFrames = await until('frames in the bucket while it records', async () => {
+    const up = (await queueOf(id)).filter((r) => r.kind === 'frame' && r.state === 'done');
+    return up.length > 0 && up.length;
+  }, 180000, 2000);
+  check('screen frames reach the bucket while the meeting records', timeline(A, id).every((l) => l.kind !== 'stop'), { frames: liveFrames, after: `${Math.round((Date.now() - t0) / 1000)} s` });
 
   // 3. Voice killed with a file waiting, then started again: the recorder goes on and the queue resumes.
   const pending = await until('a file waiting to upload', async () => {
@@ -429,6 +476,8 @@ async function main() {
 
   // 4. The stop after the meeting's minutes, then done, and every file in the bucket.
   await until('the meeting to reach its length', () => Date.now() - t0 >= MINUTES * 60000, MINUTES * 60000 + 60000, 1000);
+  const videoBeforeStop = (await queueOf(id)).filter((r) => r.kind === 'video');
+  check('no video goes up while the meeting records', videoBeforeStop.length === 0, { videoRows: videoBeforeStop.length });
   await hook(A, 'stop_meeting');
   await until('done', async () => (await states(A, id)).at(-1) === 'done', 600000, 1000);
   const t1 = Date.now();
@@ -444,12 +493,24 @@ async function main() {
   }
   const notUp = segments.filter((p) => !rows.some((r) => r.path === p && r.state === 'done'));
   check("each segment, meeting.json, the timeline and the transcript are in the bucket", segments.length > 0 && notUp.length === 0 && ['meeting', 'timeline', 'transcript', 'manifest'].every((k) => byKind[`${k}:done`]), { segments: segments.length, notUp, rows: byKind });
+  const screenDir = path.join(A.data, 'meetings', id, 'screen');
+  const onDisk = (sub, ext) => (fs.existsSync(path.join(screenDir, sub)) ? fs.readdirSync(path.join(screenDir, sub)).filter((n) => n.endsWith(ext)).map((n) => `screen/${sub}/${n}`) : []);
+  const screenFiles = [...onDisk('frames', '.jpg'), ...onDisk('video', '.mp4'), 'screen/journal.jsonl'];
+  const screenNotUp = screenFiles.filter((p) => !rows.some((r) => r.path === p && r.state === 'done'));
+  const never = rows.filter((r) => r.path.startsWith('screen/clips/') || r.path === 'screen/screen.json' || r.path.endsWith('.tmp')).map((r) => r.path);
+  check('every frame, every video file and the screen journal are in the bucket; clips and screen.json never', screenNotUp.length === 0 && never.length === 0 && byKind['video:done'] > 0 && byKind['frame:done'] > 0 && byKind['screen:done'] === 1, {
+    frames: screenFiles.filter((p) => p.startsWith('screen/frames/')).length,
+    videos: screenFiles.filter((p) => p.startsWith('screen/video/')).length,
+    notUp: screenNotUp,
+    never
+  });
   report.measurements.bucket = bucketRun(urlStyle, 'list');
 
   // 5. Every raw object, downloaded and checked for anything the provider could read.
   const objects = path.join(RUN, 'objects');
   const dumped = bucketRun(urlStyle, 'dump', objects);
-  const forbid = [id, TITLE, 'warehouse', 'Amsterdam'].flatMap((t) => ['--forbid', t]);
+  // "Slide 2" is what the synthetic screen showed, so the journal holds it as frame text.
+  const forbid = [id, TITLE, 'warehouse', 'Amsterdam', 'Slide 2'].flatMap((t) => ['--forbid', t]);
   const enc = spawnSync(process.execPath, [path.join(VOICE, 'scripts', 'check-encrypted.mjs'), objects, '--json', ...forbid], { encoding: 'utf8', windowsHide: true });
   let result;
   try {
@@ -466,6 +527,13 @@ async function main() {
   bridges.push(bridgeA);
   const args = { meeting: id, kind: 'audio', start: 0, end: 20000 };
   const local = await mediaBytes(bridgeA, args);
+  // A frame from the middle and the first stretch of video, from Voice's own copy.
+  const frames = journal(A, id).filter((l) => l.kind === 'frame');
+  const frameArgs = { meeting: id, kind: 'frame', start: frames.length ? frames[Math.floor(frames.length / 2)].t : 0 };
+  const videoArgs = { meeting: id, kind: 'video', start: 0, end: 60000 };
+  const localFrame = await mediaBytes(bridgeA, frameArgs);
+  const localVideo = await mediaBytes(bridgeA, videoArgs);
+  check('a frame and a stretch of video come from Voice\'s own copy', localFrame.bytes[0] === 0xff && localFrame.bytes[1] === 0xd8 && localVideo.bytes.toString('latin1', 4, 8) === 'ftyp', { frame: localFrame.bytes.length, video: localVideo.bytes.length });
   bridgeA.close();
   killPid(A.child.pid);
   await until('Voice A to exit', () => !alive(A.child.pid), 15000);
@@ -494,11 +562,18 @@ async function main() {
   };
   const restoredAudio = fs.existsSync(path.join(B.data, 'meetings', id, 'audio'));
   check('meeting.json and the timeline come back byte for byte; audio stays in the bucket until needed', same('meeting.json') && same('timeline.jsonl') && !restoredAudio, { restoredAudio });
+  const restoredMedia = ['frames', 'video'].filter((sub) => fs.existsSync(path.join(B.data, 'meetings', id, 'screen', sub)));
+  check('the screen journal comes back byte for byte; frames and video stay in the bucket until needed', same('screen/journal.jsonl') && restoredMedia.length === 0, { restoredMedia });
   const bridgeB = await bridgeTo(B);
   bridges.push(bridgeB);
   const fetched = await mediaBytes(bridgeB, args);
   report.measurements.audioFromBucket = { bytes: fetched.bytes.length, readyMs: fetched.readyMs, totalMs: fetched.totalMs };
   check("the meeting's audio comes back from the real bucket byte for byte", fetched.bytes.equals(local.bytes), { bytes: fetched.bytes.length, sha256Matches: sha(fetched.bytes) === sha(local.bytes), readyMs: fetched.readyMs });
+  const fetchedFrame = await mediaBytes(bridgeB, frameArgs);
+  const fetchedVideo = await mediaBytes(bridgeB, videoArgs);
+  report.measurements.screenFromBucket = { frameBytes: fetchedFrame.bytes.length, frameReadyMs: fetchedFrame.readyMs, videoBytes: fetchedVideo.bytes.length, videoReadyMs: fetchedVideo.readyMs };
+  check('the frame comes back from the real bucket byte for byte', fetchedFrame.bytes.equals(localFrame.bytes), { bytes: fetchedFrame.bytes.length, readyMs: fetchedFrame.readyMs });
+  check('the video stretch is cut again from video fetched back from the real bucket, the same bytes', fetchedVideo.bytes.equals(localVideo.bytes), { bytes: fetchedVideo.bytes.length, readyMs: fetchedVideo.readyMs });
   bridgeB.close();
 }
 
@@ -514,10 +589,11 @@ async function cleanup() {
   for (const v of [A, B]) {
     const meetings = path.join(v.data, 'meetings');
     for (const id of fs.existsSync(meetings) ? fs.readdirSync(meetings) : []) {
-      const r = recorderOf(v, id);
-      if (r && alive(r.pid)) {
-        killPid(r.pid);
-        note(`stopped a recorder that was still running: ${r.pid}`);
+      for (const [what, info] of [['recorder', recorderOf(v, id)], ['screen process', screenOf(v, id)]]) {
+        if (info && alive(info.pid)) {
+          killPid(info.pid);
+          note(`stopped a ${what} that was still running: ${info.pid}`);
+        }
       }
     }
   }
