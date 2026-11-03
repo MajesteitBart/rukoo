@@ -861,8 +861,11 @@ async function frameAgainstSlide(dataUrl, rect) {
 
 // Deletes what a real-screen run captured: the screen folders, Voice's event log with the frames' text, and Rukoo's
 // profile with its copy. The report keeps counts only.
+// A run that failed before folders() set the paths, as a failed build, recorded nothing to delete.
 function deleteRealCaptures() {
-  for (const dir of [VOICE_DATA, RUKOO_DATA]) fs.rmSync(dir, { recursive: true, force: true });
+  const dirs = [VOICE_DATA, RUKOO_DATA].filter(Boolean);
+  if (!dirs.length) return;
+  for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   note('deleted the real-screen captures: Voice\'s data folder and Rukoo\'s profile of this run');
 }
 
