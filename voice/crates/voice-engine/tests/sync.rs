@@ -72,6 +72,10 @@ fn main() {
             media_open_and_read_give_the_mix,
         ),
         (
+            "a_live_meeting_s_audio_link_grows_with_the_recording",
+            a_live_meeting_s_audio_link_grows_with_the_recording,
+        ),
+        (
             "media_comes_back_from_the_bucket",
             media_comes_back_from_the_bucket,
         ),
@@ -731,6 +735,33 @@ fn retention_holds_when_the_queue_is_unreadable() {
 }
 
 // Media links --------------------------------------------------------------------------------
+
+fn a_live_meeting_s_audio_link_grows_with_the_recording() {
+    let h = harness("media-live", json!({"meetings_retention": "keep"}));
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    wait_recorded(&h.data(), &id, 1500);
+    let control = engine.meeting_control().unwrap();
+    // Ten minutes asked while about two seconds are recorded: cut to what is there.
+    let args = audio(&id, 0, Some(600_000));
+    let first = open_ready(&*control, &args);
+    let held = first["end"].as_u64().unwrap();
+    assert!(held < 600_000, "{first}");
+    // Once the meeting recorded on, the same arguments mix up to the new end instead of handing
+    // back the short file.
+    wait_recorded(&h.data(), &id, held + 2000);
+    let second = open_ready(&*control, &args);
+    assert!(
+        second["end"].as_u64().unwrap() > held,
+        "{first} then {second}"
+    );
+    assert_ne!(second["media"], first["media"], "a new mix");
+    // The short mix still answers for the range it holds.
+    let again = open_ready(&*control, &audio(&id, 0, Some(held)));
+    assert_eq!(again["media"], first["media"]);
+    engine.stop_meeting(StopReason::User).unwrap();
+    wait_done(&h.data(), &id);
+}
 
 fn media_open_and_read_give_the_mix() {
     let h = harness("media-mix", json!({"meetings_retention": "keep"}));

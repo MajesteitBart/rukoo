@@ -343,6 +343,7 @@ impl MediaService {
     pub fn open(&self, args: &MediaOpenArgs) -> Result<Value, ControlError> {
         self.sweep();
         let key = JobKey::of(args);
+        self.rekey_grown_audio(&key, args);
         if let Some(answer) = self.known(&key)? {
             return Ok(answer);
         }
@@ -418,6 +419,41 @@ impl MediaService {
                     end,
                 };
                 self.start_job(key, work, 0)
+            }
+        }
+    }
+
+    /// An audio mix cut short at the end of what was recorded when it was made, while the meeting
+    /// records on: once more is recorded, the job is keyed to the range it holds, so these
+    /// arguments mix again up to the new end. The old file stays for a link still reading it, and
+    /// the sweep removes it once nobody uses it.
+    fn rekey_grown_audio(&self, key: &JobKey, args: &MediaOpenArgs) {
+        let Some(wanted) = key.end.filter(|_| key.kind == MediaKind::Audio) else {
+            return;
+        };
+        let clamped = self
+            .lock()
+            .jobs
+            .iter()
+            .find_map(|(id, job)| match &job.state {
+                State::Ready(ready) if job.key == *key && ready.end < wanted => {
+                    Some((id.clone(), ready.end))
+                }
+                _ => None,
+            });
+        let Some((id, held)) = clamped else {
+            return;
+        };
+        let Some(dir) = self.controller.library().dir(args.meeting.as_str()) else {
+            return;
+        };
+        match self.audio_plan(&dir, args.start, wanted) {
+            Ok(plan) if plan.end > held => {}
+            _ => return,
+        }
+        if let Some(job) = self.lock().jobs.get_mut(&id) {
+            if job.key == *key {
+                job.key.end = Some(held);
             }
         }
     }
