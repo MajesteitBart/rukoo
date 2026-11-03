@@ -100,7 +100,7 @@ function Format-License {
   return ((Sort-Ordinal $parts) -join ' OR ')
 }
 
-# The crates linked into the four programs: normal dependencies on Windows x64, without procedural macros (they run
+# The crates linked into the five programs: normal dependencies on Windows x64, without procedural macros (they run
 # only while compiling) and without Voice's own crates, which have a path instead of a registry source.
 function Get-ShippedCrates {
   Push-Location $Voice
