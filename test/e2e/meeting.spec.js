@@ -69,14 +69,19 @@ test.afterEach(async () => {
 
 const pid = (track, start) => `${track}-${String(start).padStart(9, '0')}`;
 
-// A meeting Voice starts on its own, as from its pill: the events Voice sends, with both voices.
-function voiceStarts({ title = '', startedAt = Date.now(), context = null } = {}) {
+const MIC = { id: 'mic', track: 'mic', label: 'You' };
+const CALL_1 = { id: 'call-1', track: 'call', label: 'Speaker 1' };
+// A call voice as Voice's speaker labels send it: call-N, "Speaker N".
+const callVoice = (n) => ({ id: `call-${n}`, track: 'call', label: `Speaker ${n}` });
+
+// A meeting Voice starts on its own, as from its pill: the events Voice sends. speakers: the voices it sends at the
+// start; without speaker labels that is you and the whole call as one voice.
+function voiceStarts({ title = '', startedAt = Date.now(), context = null, speakers = [MIC, CALL_1] } = {}) {
   const id = voice.meetingId();
   voice.append('meeting.started', id, { title, startedAt, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context });
   voice.append('meeting.state', id, { state: 'recording', at: 0 });
   voice.append('status', null, { recording: id, dictating: false });
-  voice.append('speaker', id, { id: 'mic', track: 'mic', label: 'You' });
-  voice.append('speaker', id, { id: 'call-1', track: 'call', label: 'Speaker 1' });
+  for (const s of speakers) voice.append('speaker', id, s);
   return id;
 }
 
@@ -296,6 +301,123 @@ test('a meeting Rukoo Voice starts links the Stand-up, hides Rukoo, and the name
   await expect.poll(connected, { timeout: 10000 }).toBe(true);
   if (CAN_HIDE) await expect.poll(isProtected).toEqual([true]);
   await expect(indicator()).toBeVisible();
+});
+
+test('three voices on the call keep their names', async () => {
+  test.setTimeout(180000);
+  await openMeetings();
+  // With speaker labels Voice sends a call voice right before its first passage: at the start there is only you.
+  const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
+  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  voice.append('speaker', id, callVoice(1));
+  say(id, 'call', 1500, 'Shall we start with the numbers?');
+  say(id, 'mic', 4000, 'Yes, go ahead.');
+  // Numbers follow the order Voice first heard each voice, but call-10's first passage can arrive before call-2's.
+  voice.append('speaker', id, callVoice(10));
+  say(id, 'call', 7000, 'Sorry, I joined late.', { speaker: 'call-10' });
+  voice.append('speaker', id, callVoice(2));
+  say(id, 'call', 10000, 'The numbers are in.', { speaker: 'call-2' });
+  const names = () => view().locator('.mt-people .mt-person-name');
+  await expect(names()).toHaveText(['You', 'Speaker 1', 'Speaker 2', 'Speaker 10']);
+  // An unnamed voice's monogram is its number: Speaker 1 and Speaker 10 would both be "S1".
+  await expect(view().locator('.mt-people button.mt-person .mt-av')).toHaveText(['1', '2', '10']);
+  await expect(rows()).toHaveCount(4);
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveText('Choose who this is');
+
+  // call-2 gets a name from the Stand-up's guests.
+  const menu = win.locator('.menu');
+  await person('call-2').click();
+  await expect(menu.locator('button')).toHaveText([/Sanne de Vries/, /Joris Bakker/, /Someone else/]);
+  await menu.locator('button', { hasText: 'Sanne de Vries' }).click();
+  await expect(person('call-2').locator('.mt-person-name')).toHaveText('Sanne de Vries');
+  await expect(rows().nth(3).locator('.mt-name')).toHaveText('Sanne de Vries');
+
+  // Another voice's picker offers Sanne after Joris, marked, and she can still be picked.
+  const sanne = menu.locator('button', { hasText: 'Sanne de Vries' });
+  await person('call-10').click();
+  await expect(menu.locator('button')).toHaveText([/Joris Bakker/, /Sanne de Vries/, /Someone else/]);
+  await expect(sanne.locator('.ms')).toHaveText('Already chosen for Sanne de Vries');
+  await expect(sanne).toBeEnabled();
+  await expect(menu.locator('button', { hasText: 'Joris Bakker' }).locator('.ms')).toHaveText('joris@example.com');
+  await win.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  // A passage Voice couldn't place yet shows Someone; its revision with the voice takes Sanne's name.
+  say(id, 'call', 14000, "Okay, let's look at them.", { speaker: null });
+  await expect(rows()).toHaveCount(5);
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('Someone');
+  say(id, 'call', 14000, "Okay, let's look at them.", { speaker: 'call-2', revision: 2 });
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('Sanne de Vries');
+  await expect(rows()).toHaveCount(5);
+
+  // The People card and call-10's open picker, in both themes and languages, wide and narrow.
+  for (const [width, height, size] of [[1500, 950, 'wide'], [760, 900, 'narrow']]) {
+    await setSize(width, height);
+    for (const language of ['en', 'nl']) {
+      await setLanguage(language);
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme);
+        if (size === 'narrow') await view().locator('[data-mt-tab="people"]').click();
+        await expect(person('call-10')).toBeVisible();
+        if (language === 'nl') await expect(names()).toHaveText(['Jij', 'Spreker 1', 'Sanne de Vries', 'Spreker 10']);
+        await shot(`speakers-${size}-${theme}-${language}`);
+        await person('call-10').click();
+        await expect(sanne.locator('.ms')).toHaveText(language === 'nl' ? 'Al gekozen voor Sanne de Vries' : 'Already chosen for Sanne de Vries');
+        await shot(`speakers-menu-${size}-${theme}-${language}`);
+        await win.keyboard.press('Escape');
+        await expect(menu).toHaveCount(0);
+      }
+    }
+  }
+  await setLanguage('en');
+
+  // After a restart the names are still on their voices.
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Stand-up', { timeout: 20000 });
+  await expect(names()).toHaveText(['You', 'Speaker 1', 'Sanne de Vries', 'Speaker 10']);
+  await expect(rows()).toHaveCount(5);
+  await expect(rows().nth(3).locator('.mt-name')).toHaveText('Sanne de Vries');
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('Sanne de Vries');
+  await expect(rows().nth(2).locator('.mt-name')).toHaveText('Speaker 10');
+});
+
+test("a 1:1's guessed name stays when a second voice joins, and the People card asks to check it", async () => {
+  await openMeetings();
+  // The Stand-up as if only Sanne were invited: one voice on the call and one guest, so Rukoo fills in her name.
+  await app.evaluate(() => {
+    const v = global.__semVoice;
+    const event = v.calendarEvent.bind(v);
+    v.calendarEvent = (eventId) => {
+      const e = event(eventId);
+      return e && /standup/.test(e.id) ? { ...e, attendees: (e.attendees || []).filter((a) => a.self || /Sanne/.test(a.name || '')) } : e;
+    };
+  });
+  const id = voiceStarts({ startedAt: standupAt() + 60 * 1000 });
+  say(id, 'call', 1500, 'Hi, just the two of us today.');
+  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  await expect(person('call-1').locator('.mt-person-name')).toHaveText('Sanne de Vries');
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveText('sanne@example.com');
+  // Someone else joins the call: the guess stays, and the card asks to check it.
+  voice.append('speaker', id, callVoice(2));
+  say(id, 'call', 6000, 'Sorry, Joris here, I joined after all.', { speaker: 'call-2' });
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveText('Guessed from the invitation; check it');
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveClass(/is-check/);
+  await expect(person('call-2').locator('.mt-person-name')).toHaveText('Speaker 2');
+  for (const theme of ['dark', 'light']) {
+    await setTheme(theme);
+    await shot(`speakers-autocheck-${theme}-en`);
+  }
+  await setLanguage('nl');
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveText('Geraden uit de uitnodiging; controleer het');
+  // The longer Dutch sentence wraps rather than losing "controleer het" to an ellipsis.
+  expect(await person('call-1').locator('.mt-person-sub').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shot('speakers-autocheck-light-nl');
+  await setLanguage('en');
+  // Picking the name confirms it.
+  await person('call-1').click();
+  await win.locator('.menu button', { hasText: 'Sanne de Vries' }).click();
+  await expect(person('call-1').locator('.mt-person-sub')).toHaveText('sanne@example.com');
 });
 
 test('the chat follows the meeting: the fake agent reads the transcript, and its second turn gets only what is new', async () => {

@@ -6,10 +6,16 @@
 //! `transcript.db`, and a pipeline started again later continues from there. Each event has a key
 //! that `transcript.db` keeps once the event is in the log, and at start the keys are checked
 //! against the log itself, so nothing is sent twice, even after a crash between the two writes.
+//!
+//! With speaker labels, the call track has its own follower thread that stores who spoke when
+//! (`speakers/`). The pipeline then cuts call windows only up to the follower's settled position,
+//! splits a window's words by speaker before it commits them, and later names passages it had to
+//! commit without a speaker.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -23,12 +29,25 @@ use voice_protocol::{events, MeetingState, MeetingStateChange, Passage, Speaker,
 use crate::library::{MeetingDir, MeetingFile};
 use crate::reader::{segment_samples, TrackReader, PER_MS};
 use crate::segmentation::{
-    next_boundary, owned_tokens, timed_passages, window_passage, within, worth_recognizing, Draft,
-    CORE_LIMIT, LEFT_CONTEXT, RATE, RIGHT_CONTEXT,
+    next_boundary_with, owned_tokens, timed_passages, window_passage, within, worth_recognizing,
+    Draft, CORE_LIMIT, LEFT_CONTEXT, RATE, RIGHT_CONTEXT,
 };
+use crate::speakers::follower::{
+    Follower, FollowerHandle, FollowerShared, FollowerTiming, Snapshot,
+};
+use crate::speakers::stream::StreamFollower;
+use crate::speakers::turns::{
+    passage_speaker, segment_passages, speaker_passages, turn_cuts, window_speaker, Turn,
+};
+use crate::speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
-use crate::transcript::{Outcome, StoredPassage, Transcript};
-use crate::watcher::{mark_key, state_key, tracks_of, Derived, Stop, Stretch, TimelineWatcher};
+use crate::transcript::{
+    call_number, taken_key, Outcome, StoredPassage, StoredSegment, Transcript, BACKFILL_KEY,
+    DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
+};
+use crate::watcher::{
+    mark_key, state_key, tracks_of, Derived, Mapper, Stop, Stretch, TimelineWatcher,
+};
 
 /// A track without an open segment may still get a segment that starts this far before the
 /// timeline's latest time: a padded loopback writes its `segment` line up to 0.5 s late.
@@ -38,12 +57,67 @@ const GAP_STEP: u64 = 5 * RATE as u64;
 /// Neighbouring segments this close count as one stretch of audio: drift correction leaves
 /// gaps of about 0.1 s (voice/RECORDING.md). A lost device is retried every second, so a real
 /// gap is longer.
-const DRIFT_GAP: u64 = 300 * PER_MS;
+pub(crate) const DRIFT_GAP: u64 = 300 * PER_MS;
 /// Dictation comes first: recognition waits while the user dictates, up to two minutes, as in
 /// Ownkey (`meetings/service.py:973-986`).
 const DICTATION_YIELD_MS: u64 = 120_000;
 /// How long [`PipelineHandle::shutdown`] waits for a recognition call to return.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+/// Turns this far around a window still decide its words and cuts.
+const TURN_MARGIN_MS: u64 = 2_000;
+/// The [`Labels::Off`] reason of a meeting provider that streams: the stream labels the call.
+/// Without a stream in the options too, the stream couldn't be set up yet.
+pub const STREAM_REASON: &str = "stream";
+
+/// The reader for one track of a meeting folder, from the timeline read so far. `lengths` keeps
+/// the samples of segments that ended, which can't change any more.
+pub(crate) fn read_track(
+    dir: &Path,
+    track: Track,
+    mapper: &Mapper,
+    lengths: &mut HashMap<(String, u64), u64>,
+) -> TrackReader {
+    TrackReader::with_lengths(dir, track.as_str(), mapper.segments(), |s| match s.ended {
+        Some(ended) => *lengths
+            .entry((s.track.clone(), s.seq))
+            .or_insert_with(|| segment_samples(&dir.join(&s.file), Some(ended))),
+        None => segment_samples(&dir.join(&s.file), None),
+    })
+}
+
+/// Whether the track has a segment the recorder still writes.
+pub(crate) fn has_open_segment(mapper: &Mapper, track: Track) -> bool {
+    mapper
+        .segments()
+        .iter()
+        .any(|s| s.track == track.as_str() && s.ended.is_none())
+}
+
+/// The meeting sample up to which the track's audio is settled: recorded, or known to be a gap
+/// that no later segment can fill.
+pub(crate) fn track_horizon(
+    mapper: &Mapper,
+    track: Track,
+    reader: &TrackReader,
+    stopped: bool,
+) -> u64 {
+    let end = reader.end();
+    if stopped || has_open_segment(mapper, track) {
+        end
+    } else {
+        end.max(mapper.latest_t().saturating_sub(SETTLE_MS) * PER_MS)
+    }
+}
+
+/// Whether the user dictates now, and recognition should wait.
+pub(crate) fn dictating(mapper: &Mapper, yield_ms: u64) -> bool {
+    mapper
+        .dictating_since()
+        .is_some_and(|since| mapper.latest_t().saturating_sub(since) < yield_ms)
+}
+
+/// `meta` keys a window sets in the transaction that stores it.
+type MetaUpdates = Vec<(String, String)>;
 
 /// The decision 10 consent check: `Err(reason)` keeps transcription waiting.
 pub type ConsentCheck = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
@@ -61,10 +135,22 @@ pub struct PipelineOptions {
     /// goes on; transcription waits, and [`PipelineState::Waiting`] says why.
     pub transcription_allowed: ConsentCheck,
     pub timing: Timing,
+    /// Who labels the speakers on the call. [`Labels::Off`] makes the whole call `call-1`, as in
+    /// Voice 0.1.
+    pub labels: Labels,
+    /// Whether a meeting that chooses its label mode now gets labels: the Settings switch. A
+    /// meeting that has its mode keeps it whatever the switch says now, so `labels` still
+    /// carries Nemotron's diarizer when the switch is off.
+    pub live_speakers: bool,
+    /// Mistral's realtime stream, when the meeting provider streams; it then transcribes both
+    /// tracks and labels the call instead of `stt`.
+    pub stream: Option<StreamOptions>,
+    /// How the speaker and stream followers poll, push and retry.
+    pub speakers: FollowerTiming,
 }
 
 impl PipelineOptions {
-    /// Transcribes with `stt`, always allowed, without hints.
+    /// Transcribes with `stt`, always allowed, without hints or speaker labels.
     pub fn new(stt: Arc<dyn SpeechToText>) -> PipelineOptions {
         PipelineOptions {
             stt,
@@ -72,6 +158,12 @@ impl PipelineOptions {
             hints: Hints::default(),
             transcription_allowed: Arc::new(|| Ok(())),
             timing: Timing::default(),
+            labels: Labels::Off {
+                reason: "off".into(),
+            },
+            live_speakers: true,
+            stream: None,
+            speakers: FollowerTiming::default(),
         }
     }
 
@@ -86,10 +178,17 @@ impl PipelineOptions {
 
 impl fmt::Debug for PipelineOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let labels = match &self.labels {
+            Labels::Off { reason } => format!("off ({reason})"),
+            Labels::Local { .. } => "nemotron".to_owned(),
+        };
         f.debug_struct("PipelineOptions")
             .field("timed", &self.timed.is_some())
             .field("hints", &self.hints)
             .field("timing", &self.timing)
+            .field("labels", &labels)
+            .field("live_speakers", &self.live_speakers)
+            .field("stream", &self.stream.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -165,10 +264,12 @@ impl Pipeline {
     /// Follows `dir` on a thread of its own until its timeline has `stop` and every recorded
     /// second is transcribed.
     ///
-    /// Sends every meeting event to `log`: `meeting.started` (from meeting.json), the speakers
-    /// (`mic` "You", `call-1` "Speaker 1"), `meeting.state` and `mark` from the timeline,
-    /// `passage` as windows are transcribed, and finally `done` (or `failed`). Start it once the
-    /// recorder runs; it never touches the recorder.
+    /// Sends every meeting event to `log`: `meeting.started` (from meeting.json), the speakers,
+    /// `meeting.state` and `mark` from the timeline, `passage` as windows are transcribed, and
+    /// finally `done` (or `failed`). Without speaker labels the speakers are `mic` "You" and
+    /// `call-1` "Speaker 1" from the start, as in Voice 0.1; with them, each `call-N` comes right
+    /// before the first passage that names it. Start it once the recorder runs; it never touches
+    /// the recorder.
     pub fn start(dir: MeetingDir, log: EventLog, opts: PipelineOptions) -> PipelineHandle {
         let shared = Arc::new(Shared::default());
         let meeting = dir.id().to_string();
@@ -215,13 +316,23 @@ impl PipelineHandle {
         self.shared.state()
     }
 
+    /// What speaker labels are doing for this meeting, for Settings.
+    pub fn labels(&self) -> LabelStatus {
+        match &*lock(&self.shared.labels) {
+            LabelView::Fixed(status) => status.clone(),
+            LabelView::Live(follower) => follower.status(),
+        }
+    }
+
     /// Looks again now instead of at the next poll, for instance after the user gave consent.
     pub fn wake(&self) {
         self.shared.wake();
     }
 
-    /// Stops following the meeting, for an app that quits. The recorder isn't touched. Waits up
-    /// to 5 s for a recognition call that is running; what it returns is still stored.
+    /// Stops following the meeting, for an app that quits or a pipeline that is replaced. The
+    /// recorder isn't touched. The speaker and stream followers stop at once: when this returns
+    /// they write nothing more, also while a recognition call keeps the pipeline's thread busy.
+    /// Waits up to 5 s for such a call; what it returns is still stored.
     pub fn shutdown(mut self) {
         self.shared.request_stop();
         if self.shared.wait_finished(SHUTDOWN_WAIT) {
@@ -247,12 +358,40 @@ impl fmt::Debug for PipelineHandle {
     }
 }
 
+/// Where [`PipelineHandle::labels`] reads from.
+enum LabelView {
+    Fixed(LabelStatus),
+    Live(Arc<FollowerShared>),
+}
+
+impl Default for LabelView {
+    fn default() -> LabelView {
+        LabelView::Fixed(fixed_status("off", LabelState::Off, None))
+    }
+}
+
+fn fixed_status(mode: &str, state: LabelState, reason: Option<String>) -> LabelStatus {
+    LabelStatus {
+        mode: mode.to_owned(),
+        state,
+        reason,
+        epoch: 0,
+        speakers: 0,
+        settled_ms: None,
+        worker_pid: None,
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     state: Mutex<Option<PipelineState>>,
     stop: AtomicBool,
     flags: Mutex<Flags>,
     signal: Condvar,
+    labels: Mutex<LabelView>,
+    /// Every follower this pipeline started, so a stop reaches them without waiting for the
+    /// pipeline's thread, which a recognition call can keep busy for minutes.
+    followers: Mutex<Vec<Arc<FollowerShared>>>,
 }
 
 #[derive(Default)]
@@ -270,13 +409,33 @@ impl Shared {
         *lock(&self.state) = Some(state);
     }
 
+    fn set_labels(&self, view: LabelView) {
+        *lock(&self.labels) = view;
+    }
+
     fn stopping(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
 
+    /// Asks the pipeline and its followers to stop. When this returns, no follower writes again.
     fn request_stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        for follower in lock(&self.followers).iter() {
+            follower.request_stop();
+        }
         self.wake();
+    }
+
+    /// The status of a follower that is about to start, kept so a stop reaches it. A pipeline
+    /// asked to stop already stops it before its thread can write.
+    fn follower(&self, mode: &str) -> Arc<FollowerShared> {
+        let follower = FollowerShared::new(mode);
+        let mut followers = lock(&self.followers);
+        if self.stopping() {
+            follower.request_stop();
+        }
+        followers.push(follower.clone());
+        follower
     }
 
     fn wake(&self) {
@@ -349,7 +508,7 @@ fn run(dir: MeetingDir, log: EventLog, opts: PipelineOptions, shared: &Shared) {
                 errors = 0;
                 shared.sleep(timing.poll);
             }
-            Ok(Step::Finished) | Ok(Step::Gone) => return,
+            Ok(Step::Finished) | Ok(Step::Gone) => break,
             Err(e) => {
                 // A full disk or a locked file: the recording is safe, so try again later.
                 errors += 1;
@@ -360,6 +519,7 @@ fn run(dir: MeetingDir, log: EventLog, opts: PipelineOptions, shared: &Shared) {
             }
         }
     }
+    worker.stop_followers();
 }
 
 fn backoff(timing: &Timing, attempts: u32) -> Duration {
@@ -432,7 +592,43 @@ struct Failure {
     until: Instant,
 }
 
-/// The speaker a track's passages belong to. Voice 0.1 labels the whole call as one speaker.
+/// Who labels the call's speakers in this pipeline.
+enum Run {
+    /// `begin` hasn't decided yet.
+    Undecided,
+    /// The whole call is `call-1`, as in Voice 0.1.
+    Off,
+    /// Nemotron on this computer. `follower` is `None` when none runs: the meeting finished
+    /// before, or (`lost`) no diarizer can run now, which counts as a failed follower.
+    Nemotron {
+        follower: Option<FollowerHandle>,
+        lost: bool,
+    },
+    /// Mistral's realtime stream, one follower per track. `lost` when this pipeline has no stream
+    /// for it: the rest is transcribed with the pipeline's recognizer, as after a failed
+    /// follower.
+    Mistral {
+        followers: Vec<(Track, FollowerHandle)>,
+        diarize: bool,
+        lost: bool,
+    },
+}
+
+/// A track's gate: how far its windows may go.
+enum Gate {
+    /// As far as the audio goes.
+    Open,
+    /// Up to this meeting sample.
+    At(u64),
+    /// As far as the audio goes for now, because the follower stopped moving; the track isn't
+    /// complete until the follower finishes or fails.
+    Stalled,
+    /// The stream failed after the recording ended.
+    Failed(String),
+}
+
+/// The speaker of a track's passages without speaker labels. Voice 0.1 labels the whole call as
+/// one speaker, which stays the rule for meetings whose label mode is `off`.
 pub fn speaker_of(track: Track) -> Speaker {
     let (id, label) = match track {
         Track::Mic => ("mic", "You"),
@@ -442,6 +638,15 @@ pub fn speaker_of(track: Track) -> Speaker {
         id: id.to_owned(),
         track,
         label: label.to_owned(),
+    }
+}
+
+/// A labelled call speaker: `call-N` is "Speaker N".
+fn call_speaker(id: &str) -> Speaker {
+    Speaker {
+        id: id.to_owned(),
+        track: Track::Call,
+        label: format!("Speaker {}", call_number(id).unwrap_or(1)),
     }
 }
 
@@ -474,6 +679,16 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// `epoch:n` of a stream segment.
+fn parse_taken(value: Option<String>) -> (u64, u64) {
+    value
+        .and_then(|v| {
+            let (e, n) = v.split_once(':')?;
+            Some((e.parse().ok()?, n.parse().ok()?))
+        })
+        .unwrap_or((0, 0))
+}
+
 struct Worker {
     dir: MeetingDir,
     id: String,
@@ -494,6 +709,13 @@ struct Worker {
     failure: Option<Failure>,
     next_track: usize,
     begun: bool,
+    labels: Labels,
+    live_speakers: bool,
+    stream: Option<StreamOptions>,
+    speaker_timing: FollowerTiming,
+    run: Run,
+    /// The Nemotron follower's status at the start of this step, so one step sees one state.
+    snapshot: Option<Snapshot>,
 }
 
 impl Worker {
@@ -545,6 +767,12 @@ impl Worker {
             failure: None,
             next_track: 0,
             begun: false,
+            labels: opts.labels.clone(),
+            live_speakers: opts.live_speakers,
+            stream: opts.stream.clone(),
+            speaker_timing: opts.speakers.clone(),
+            run: Run::Undecided,
+            snapshot: None,
         }))
     }
 
@@ -565,7 +793,13 @@ impl Worker {
         Ok(())
     }
 
+    /// Sends a passage, after the speaker it names when that speaker is new to Rukoo.
     fn emit_passage(&mut self, passage: &Passage) -> Result<(), Error> {
+        if let Some(id) = passage.speaker.as_deref() {
+            if passage.track == Track::Call && call_number(id).is_some() {
+                self.emit_speaker_id(id)?;
+            }
+        }
         self.emit(
             passage_key(&passage.id, passage.revision),
             events::PASSAGE,
@@ -573,8 +807,7 @@ impl Worker {
         )
     }
 
-    fn emit_speaker(&mut self, track: Track) -> Result<(), Error> {
-        let speaker = speaker_of(track);
+    fn send_speaker(&mut self, speaker: Speaker) -> Result<(), Error> {
         self.transcript.save_speaker(&speaker)?;
         self.emit(
             format!("speaker:{}", speaker.id),
@@ -583,16 +816,246 @@ impl Worker {
         )
     }
 
+    /// The speaker of a track without labels: `mic`, or `call-1` for the whole call.
+    fn emit_speaker(&mut self, track: Track) -> Result<(), Error> {
+        self.send_speaker(speaker_of(track))
+    }
+
+    /// A labelled call speaker, `call-N` "Speaker N", unless Rukoo has it.
+    fn emit_speaker_id(&mut self, id: &str) -> Result<(), Error> {
+        if self.emitted.contains(&format!("speaker:{id}")) {
+            return Ok(());
+        }
+        self.send_speaker(call_speaker(id))
+    }
+
+    /// Whether the whole call is one speaker, `call-1`.
+    fn call_is_one_speaker(&self) -> bool {
+        match &self.run {
+            Run::Off | Run::Undecided => true,
+            Run::Mistral { diarize, .. } => !diarize,
+            Run::Nemotron { .. } => false,
+        }
+    }
+
+    fn call_emitted(&self) -> bool {
+        self.emitted.iter().any(|k| k.starts_with("speaker:call-"))
+    }
+
+    /// Decides how the call's speakers are labelled, once per meeting: the first pipeline stores
+    /// the mode, and every later one keeps it whatever the current options say.
+    fn decide(&mut self, shared: &Shared) -> Result<(), Error> {
+        // `begin` runs again after an error; the followers it started keep running.
+        if !matches!(self.run, Run::Undecided) {
+            return Ok(());
+        }
+        let stored = self.transcript.meta_get(MODE_KEY)?;
+        let mode = match stored {
+            Some(mode) => mode,
+            None => {
+                let upgrade = self.transcript.has_passage_on(Track::Call)?;
+                let stream_missing = self.stream.is_none()
+                    && matches!(&self.labels, Labels::Off { reason } if reason == STREAM_REASON);
+                if !upgrade && stream_missing {
+                    // The provider streams, but its stream can't be set up yet, as without an
+                    // API key: the windows fail with that reason, and a pipeline that has the
+                    // stream chooses the mode, so adding the key still streams this meeting.
+                    return Ok(());
+                }
+                let (mode, reason) = if upgrade {
+                    // Voice 0.1 transcribed part of this meeting with the whole call as
+                    // `call-1`; it finishes that way, so a name given to `call-1` keeps its
+                    // meaning.
+                    ("off", Some("upgrade".to_owned()))
+                } else if self.stream.is_some() {
+                    ("mistral", None)
+                } else if !self.live_speakers {
+                    // Switched off before this meeting chose; one that chose earlier keeps
+                    // labelling below.
+                    ("off", Some("off".to_owned()))
+                } else {
+                    match &self.labels {
+                        Labels::Off { reason } => ("off", Some(reason.clone())),
+                        Labels::Local { .. } if !self.tracks.contains(&Track::Call) => {
+                            ("off", Some("noCall".to_owned()))
+                        }
+                        Labels::Local { .. } => ("nemotron", None),
+                    }
+                };
+                if let Some(reason) = &reason {
+                    self.transcript.meta_set(REASON_KEY, reason)?;
+                }
+                if mode == "mistral" {
+                    let diarize = self.stream.as_ref().is_some_and(|s| s.diarize);
+                    self.transcript
+                        .meta_set(DIARIZE_KEY, if diarize { "1" } else { "0" })?;
+                }
+                self.transcript.meta_set(MODE_KEY, mode)?;
+                mode.to_owned()
+            }
+        };
+        let reason = self.transcript.meta_get(REASON_KEY)?;
+        let finished = self
+            .transcript
+            .outcome()?
+            .is_some_and(|o| o.state == MeetingState::Done);
+        let failed = self
+            .transcript
+            .outcome()?
+            .is_some_and(|o| o.state == MeetingState::Failed);
+        // Nemotron heard the whole call after the stop. The meeting can still wait for its
+        // transcription, as for consent, through many Voice starts.
+        let labelled = self.transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1");
+        self.run = match mode.as_str() {
+            "nemotron" => match &self.labels {
+                // No follower for a meeting that ended `done` or `failed`, such as one restored
+                // from the bucket, or whose labels are done: its speaker ids stay as stored.
+                Labels::Local { .. } if finished || failed || labelled => {
+                    shared.set_labels(LabelView::Fixed(fixed_status(
+                        "nemotron",
+                        LabelState::Finished,
+                        None,
+                    )));
+                    Run::Nemotron {
+                        follower: None,
+                        lost: false,
+                    }
+                }
+                Labels::Local { diarizer } => {
+                    let follower = Follower::start(
+                        self.dir.clone(),
+                        diarizer.clone(),
+                        self.speaker_timing.clone(),
+                        shared.follower("nemotron"),
+                    );
+                    shared.set_labels(LabelView::Live(follower.shared().clone()));
+                    Run::Nemotron {
+                        follower: Some(follower),
+                        lost: false,
+                    }
+                }
+                Labels::Off { reason } => {
+                    let lost = !finished && !failed && !labelled;
+                    shared.set_labels(LabelView::Fixed(fixed_status(
+                        "nemotron",
+                        if lost {
+                            LabelState::Failed
+                        } else {
+                            LabelState::Finished
+                        },
+                        lost.then(|| reason.clone()),
+                    )));
+                    Run::Nemotron {
+                        follower: None,
+                        lost,
+                    }
+                }
+            },
+            "mistral" => {
+                let diarize = self.transcript.meta_get(DIARIZE_KEY)?.as_deref() == Some("1");
+                match self.stream.clone() {
+                    // The stream transcribes as well as labels, so a meeting that failed gets
+                    // it again; a reconnect keeps the ids.
+                    Some(mut opts) if !finished => {
+                        // Whether the call is labelled was stored with the mode; a Settings
+                        // change since then applies to the next meeting.
+                        opts.diarize = diarize;
+                        let followers: Vec<(Track, FollowerHandle)> = self
+                            .tracks
+                            .iter()
+                            .map(|&track| (track, self.start_stream(shared, track, &opts)))
+                            .collect();
+                        let shown = followers
+                            .iter()
+                            .find(|(t, _)| *t == Track::Call)
+                            .or(followers.first())
+                            .map(|(_, f)| f.shared().clone());
+                        if let Some(shown) = shown {
+                            shared.set_labels(LabelView::Live(shown));
+                        }
+                        self.recognizer = Recognizer::Stream;
+                        Run::Mistral {
+                            followers,
+                            diarize,
+                            lost: false,
+                        }
+                    }
+                    Some(_) => {
+                        self.recognizer = Recognizer::Stream;
+                        shared.set_labels(LabelView::Fixed(fixed_status(
+                            "mistral",
+                            LabelState::Finished,
+                            None,
+                        )));
+                        Run::Mistral {
+                            followers: Vec::new(),
+                            diarize,
+                            lost: false,
+                        }
+                    }
+                    None => {
+                        shared.set_labels(LabelView::Fixed(fixed_status(
+                            "mistral",
+                            LabelState::Failed,
+                            Some("stream".into()),
+                        )));
+                        Run::Mistral {
+                            followers: Vec::new(),
+                            diarize,
+                            lost: true,
+                        }
+                    }
+                }
+            }
+            _ => {
+                shared.set_labels(LabelView::Fixed(fixed_status(
+                    "off",
+                    LabelState::Off,
+                    reason,
+                )));
+                Run::Off
+            }
+        };
+        Ok(())
+    }
+
+    /// A stream follower for one track of a Mistral meeting.
+    fn start_stream(&self, shared: &Shared, track: Track, opts: &StreamOptions) -> FollowerHandle {
+        StreamFollower::start(
+            self.dir.clone(),
+            track,
+            opts.clone(),
+            self.allowed.clone(),
+            self.speaker_timing.clone(),
+            self.timing.attempts_after_stop,
+            shared.follower("mistral"),
+        )
+    }
+
     /// The events that come before anything recorded, and passages a pipeline before this one
     /// stored but didn't send.
-    fn begin(&mut self) -> Result<(), Error> {
+    fn begin(&mut self, shared: &Shared) -> Result<(), Error> {
         self.emit(
             "started".into(),
             events::MEETING_STARTED,
             self.file.started(),
         )?;
+        self.decide(shared)?;
+        // Still undecided: a stream that can't be set up yet. Its call speakers come once it can.
+        let decided = !matches!(self.run, Run::Undecided);
         for track in self.tracks.clone() {
-            self.emit_speaker(track)?;
+            if track == Track::Mic || (decided && self.call_is_one_speaker()) {
+                self.emit_speaker(track)?;
+            }
+        }
+        // A restarted or restored pipeline sends its call speakers again, before their passages.
+        if !self.call_is_one_speaker() {
+            for id in self.transcript.speaker_ids()? {
+                self.emit_speaker_id(&id)?;
+            }
+        }
+        if matches!(self.run, Run::Off) && self.tracks.contains(&Track::Call) {
+            self.unlabelled_to_call_1()?;
         }
         for stored in self.transcript.passages()? {
             self.emit_passage(&stored.passage)?;
@@ -601,18 +1064,41 @@ impl Worker {
         Ok(())
     }
 
+    /// Stops the speaker and stream followers, waiting a little for each.
+    fn stop_followers(&mut self) {
+        match std::mem::replace(&mut self.run, Run::Undecided) {
+            Run::Nemotron {
+                follower: Some(f), ..
+            } => f.stop(),
+            Run::Mistral { followers, .. } => {
+                for (_, f) in followers {
+                    f.stop();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn step(&mut self, shared: &Shared) -> Result<Step, Error> {
         if !self.dir.path().is_dir() {
             return Ok(Step::Gone);
         }
         if !self.begun {
-            self.begin()?;
+            self.begin(shared)?;
         }
         for derived in self.watcher.poll()? {
             self.apply(derived)?;
         }
-        self.follow_new_tracks()?;
+        self.follow_new_tracks(shared)?;
         self.flag_dictation()?;
+        self.snapshot = match &self.run {
+            Run::Nemotron {
+                follower: Some(f), ..
+            } => Some(f.shared().snapshot()),
+            _ => None,
+        };
+        self.switch_to_off_if_failed(shared)?;
+        self.backfill_speakers()?;
         let stop = self.watcher.mapper().stop().cloned();
 
         if let Err(reason) = (self.allowed)() {
@@ -626,7 +1112,7 @@ impl Worker {
         {
             return Ok(Step::Idle);
         }
-        if stop.is_none() && self.dictating() {
+        if stop.is_none() && dictating(self.watcher.mapper(), DICTATION_YIELD_MS) {
             shared.set(PipelineState::Listening);
             return Ok(Step::Idle);
         }
@@ -657,6 +1143,8 @@ impl Worker {
         }
         match stop {
             Some(stop) if complete => {
+                // The follower finished: name what the last turns settle before `done`.
+                self.backfill_speakers()?;
                 self.done(&stop)?;
                 shared.set(PipelineState::Done);
                 Ok(Step::Finished)
@@ -693,8 +1181,9 @@ impl Worker {
         }
     }
 
-    /// A track the recorder records that meeting.json didn't name gets followed too.
-    fn follow_new_tracks(&mut self) -> Result<(), Error> {
+    /// A track the recorder records that meeting.json didn't name gets followed too, and in a
+    /// Mistral meeting streamed, since its windows read only what a stream stored.
+    fn follow_new_tracks(&mut self, shared: &Shared) -> Result<(), Error> {
         let seen = tracks_of(
             self.watcher
                 .mapper()
@@ -706,7 +1195,32 @@ impl Worker {
             if !self.tracks.contains(&track) {
                 self.tracks.push(track);
                 self.tracks.sort();
-                self.emit_speaker(track)?;
+                if track == Track::Mic || self.call_is_one_speaker() {
+                    self.emit_speaker(track)?;
+                }
+                // A finished meeting runs no followers and starts none.
+                let follower = match (&self.run, &self.stream) {
+                    (
+                        Run::Mistral {
+                            followers,
+                            diarize,
+                            lost: false,
+                        },
+                        Some(opts),
+                    ) if !followers.is_empty() => {
+                        let mut opts = opts.clone();
+                        opts.diarize = *diarize;
+                        Some(self.start_stream(shared, track, &opts))
+                    }
+                    _ => None,
+                };
+                if let (Some(follower), Run::Mistral { followers, .. }) = (follower, &mut self.run)
+                {
+                    if track == Track::Call {
+                        shared.set_labels(LabelView::Live(follower.shared().clone()));
+                    }
+                    followers.push((track, follower));
+                }
             }
         }
         Ok(())
@@ -733,6 +1247,102 @@ impl Worker {
         Ok(())
     }
 
+    /// A Nemotron meeting whose labeller failed before any call speaker reached Rukoo goes on
+    /// as a meeting without labels. The gate held the call's windows, so usually no call passage
+    /// exists yet; those a stalled labeller let through without a speaker get `call-1` too.
+    ///
+    /// A Mistral meeting never switches: its stream transcribes as well as labels, and the
+    /// recorded windows can't go to a realtime model. One whose stream can't be set up now, as
+    /// without an API key, keeps its mode, its windows wait, and a pipeline that has the stream
+    /// again streams the rest.
+    fn switch_to_off_if_failed(&mut self, shared: &Shared) -> Result<(), Error> {
+        let failed = match &self.run {
+            Run::Nemotron {
+                follower: Some(_), ..
+            } => self
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.state == LabelState::Failed),
+            Run::Nemotron { lost, .. } => *lost,
+            _ => false,
+        };
+        if !failed || self.call_emitted() {
+            return Ok(());
+        }
+        let reason = match (&self.run, &self.labels) {
+            (Run::Nemotron { lost: true, .. }, Labels::Off { reason }) => reason.clone(),
+            _ => "runtimeFailed".to_owned(),
+        };
+        if let Some(error) = self.snapshot.as_ref().and_then(|s| s.error.clone()) {
+            eprintln!(
+                "voice-meetings: {}: speaker labels are off for this meeting: {error}",
+                self.id
+            );
+        }
+        self.transcript.meta_set(MODE_KEY, "off")?;
+        self.transcript.meta_set(REASON_KEY, &reason)?;
+        self.stop_followers();
+        self.run = Run::Off;
+        self.snapshot = None;
+        shared.set_labels(LabelView::Fixed(fixed_status(
+            "off",
+            LabelState::Failed,
+            Some(reason),
+        )));
+        if self.tracks.contains(&Track::Call) {
+            self.emit_speaker(Track::Call)?;
+        }
+        self.unlabelled_to_call_1()
+    }
+
+    /// In a meeting without labels the whole call is `call-1`, also the passages a labeller
+    /// that stalled and then failed let through without a speaker. Also run at `begin`, for a
+    /// pipeline that stopped between the switch and this.
+    fn unlabelled_to_call_1(&mut self) -> Result<(), Error> {
+        let call = speaker_of(Track::Call).id;
+        for stored in self.transcript.null_call_passages(0, u64::MAX)? {
+            let mut passage = stored.passage;
+            passage.speaker = Some(call.clone());
+            passage.revision += 1;
+            self.transcript.update_passage(&passage)?;
+            self.emit_passage(&passage)?;
+        }
+        Ok(())
+    }
+
+    /// Names call passages that were committed without a speaker, once the turns over them are
+    /// settled and exactly one speaker overlaps them. A named passage never changes its speaker.
+    fn backfill_speakers(&mut self) -> Result<(), Error> {
+        if !matches!(self.run, Run::Nemotron { .. }) {
+            return Ok(());
+        }
+        let settled = self.transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0);
+        let mark = self.transcript.meta_u64(BACKFILL_KEY)?.unwrap_or(0);
+        let waiting = self.transcript.null_call_passages(mark, settled)?;
+        let (Some(first), Some(last)) = (waiting.first(), waiting.last()) else {
+            return Ok(());
+        };
+        let turns = self.transcript.turns(
+            Track::Call,
+            first.passage.start.saturating_sub(TURN_MARGIN_MS),
+            last.passage.end + TURN_MARGIN_MS,
+        )?;
+        let mut checked = mark;
+        for stored in waiting {
+            let mut passage = stored.passage;
+            checked = checked.max(passage.end);
+            if let Some(id) = passage_speaker(&turns, passage.start, passage.end) {
+                passage.speaker = Some(id);
+                passage.revision += 1;
+                self.transcript.update_passage(&passage)?;
+                self.emit_passage(&passage)?;
+            }
+        }
+        self.transcript
+            .meta_set(BACKFILL_KEY, &checked.to_string())?;
+        Ok(())
+    }
+
     /// Dictation goes into the microphone; the call track carries the other people.
     fn in_dictation(&self, track: Track, start: u64, end: u64) -> bool {
         track == Track::Mic
@@ -744,56 +1354,94 @@ impl Worker {
                 .any(|s| s.overlaps(start, end))
     }
 
-    fn dictating(&self) -> bool {
-        let mapper = self.watcher.mapper();
-        mapper
-            .dictating_since()
-            .is_some_and(|since| mapper.latest_t().saturating_sub(since) < DICTATION_YIELD_MS)
-    }
-
     fn reader(&mut self, track: Track) -> TrackReader {
-        let dir = self.dir.path().to_owned();
-        let lengths = &mut self.lengths;
-        TrackReader::with_lengths(
-            &dir,
-            track.as_str(),
-            self.watcher.mapper().segments(),
-            |s| match s.ended {
-                Some(ended) => *lengths
-                    .entry((s.track.clone(), s.seq))
-                    .or_insert_with(|| segment_samples(&dir.join(&s.file), Some(ended))),
-                None => segment_samples(&dir.join(&s.file), None),
-            },
+        read_track(
+            self.dir.path(),
+            track,
+            self.watcher.mapper(),
+            &mut self.lengths,
         )
     }
 
-    /// The meeting sample up to which the track's audio is settled: recorded, or known to be a
-    /// gap that no later segment can fill.
-    fn horizon(&self, track: Track, reader: &TrackReader, stopped: bool) -> u64 {
-        let end = reader.end();
-        let mapper = self.watcher.mapper();
-        let open = mapper
-            .segments()
-            .iter()
-            .any(|s| s.track == track.as_str() && s.ended.is_none());
-        if stopped || open {
-            end
-        } else {
-            end.max(mapper.latest_t().saturating_sub(SETTLE_MS) * PER_MS)
+    /// How far the track's windows may go now.
+    fn gate(&self, track: Track, reader: &TrackReader, stopped: bool) -> Gate {
+        match &self.run {
+            Run::Nemotron {
+                follower: Some(_), ..
+            } if track == Track::Call => {
+                let Some(snapshot) = &self.snapshot else {
+                    return Gate::Open;
+                };
+                match snapshot.state {
+                    LabelState::Finished | LabelState::Failed => Gate::Open,
+                    _ => {
+                        let settled = snapshot.settled_ms.unwrap_or(0) * PER_MS;
+                        // A follower that stopped moving lets transcription go on without it;
+                        // those passages get their speaker later.
+                        if snapshot.progress.elapsed() >= self.speaker_timing.stall
+                            && reader.end() > settled
+                        {
+                            Gate::Stalled
+                        } else {
+                            Gate::At(settled)
+                        }
+                    }
+                }
+            }
+            Run::Mistral { followers, .. } => {
+                let Some((_, follower)) = followers.iter().find(|(t, _)| *t == track) else {
+                    return Gate::Open;
+                };
+                let snapshot = follower.shared().snapshot();
+                match snapshot.state {
+                    LabelState::Finished => Gate::Open,
+                    LabelState::Failed if stopped => Gate::Failed(
+                        snapshot
+                            .error
+                            .unwrap_or_else(|| "The streaming transcription failed.".into()),
+                    ),
+                    _ => Gate::At(snapshot.settled_ms.unwrap_or(0) * PER_MS),
+                }
+            }
+            _ => Gate::Open,
         }
+    }
+
+    /// Whether the call's words get their speakers from Nemotron's turns.
+    fn labels_by_turns(&self, track: Track) -> bool {
+        track == Track::Call && matches!(self.run, Run::Nemotron { .. })
     }
 
     /// Transcribes the track's next window, or moves past a gap.
     fn advance(&mut self, track: Track, stopped: bool, shared: &Shared) -> Result<Advance, Error> {
         let reader = self.reader(track);
-        let horizon = self.horizon(track, &reader, stopped);
+        let horizon = track_horizon(self.watcher.mapper(), track, &reader, stopped);
         let cursor = self.transcript.cursor(track)?;
+        let (gate, released) = match self.gate(track, &reader, stopped) {
+            Gate::Failed(reason) => return Ok(Advance::GiveUp(reason)),
+            Gate::At(g) => (Some(g), false),
+            Gate::Stalled => (None, false),
+            Gate::Open => (None, true),
+        };
         if cursor >= horizon {
-            return Ok(if stopped {
-                Advance::Complete
-            } else {
-                Advance::Waiting
-            });
+            // With labels, `done` also waits for the follower to finish or fail.
+            if !(stopped && released) {
+                return Ok(Advance::Waiting);
+            }
+            // A stream's answers that came after the window for their audio had gone, as when
+            // the follower padded a pause and counted that audio as answered, have no window
+            // after them: they become passages at their own times before the track is done.
+            if self.recognizer.is_stream() {
+                let (drafts, meta) = self.stream_drafts(track, 0, horizon / PER_MS, true)?;
+                if !meta.is_empty() {
+                    let passages = drafts
+                        .into_iter()
+                        .map(|draft| self.passage(track, draft, None))
+                        .collect();
+                    return self.commit(track, cursor, cursor, "end", passages, &meta);
+                }
+            }
+            return Ok(Advance::Complete);
         }
         if !reader.covered(cursor) {
             let target = match reader.next_audio(cursor) {
@@ -801,7 +1449,10 @@ impl Worker {
                 None if horizon - cursor >= GAP_STEP => horizon,
                 None => return Ok(Advance::Waiting),
             };
-            return self.commit(track, cursor, target, "gap", Vec::new());
+            return self.commit(track, cursor, target, "gap", Vec::new(), &[]);
+        }
+        if gate.is_some_and(|g| cursor >= g) {
+            return Ok(Advance::Waiting);
         }
 
         // A window never runs into a gap (a crash, a lost device, a pause): once the gap is
@@ -817,18 +1468,27 @@ impl Worker {
             cursor
         };
         let read_end = (cursor + (CORE_LIMIT + RIGHT_CONTEXT) as u64).min(limit);
+        // The window ends by the gate; the audio after it still gives recognition its context.
+        let owned_end = gate.map_or(read_end, |g| g.min(read_end));
         let data = reader.read(left, read_end)?;
         let from = (cursor - left) as usize;
-        let last = read_end == limit && (stopped || gap_ahead);
-        let Some(boundary) = next_boundary(&data[from..], last) else {
+        let last = read_end == limit && owned_end == read_end && (stopped || gap_ahead);
+        let cuts = self.speaker_cuts(track, cursor, owned_end)?;
+        let Some(boundary) =
+            next_boundary_with(&data[from..(owned_end - left) as usize], last, &cuts)
+        else {
             return Ok(Advance::Waiting);
         };
         let until = from + boundary.end;
         let end = cursor + boundary.end as u64;
+        let (start_ms, end_ms) = (cursor / PER_MS, end / PER_MS);
 
         let mut drafts = Vec::new();
         let mut language = None;
-        if worth_recognizing(&data[from..until]) {
+        let mut meta = Vec::new();
+        if self.recognizer.is_stream() {
+            (drafts, meta) = self.stream_drafts(track, start_ms, end_ms, false)?;
+        } else if worth_recognizing(&data[from..until]) {
             shared.set(PipelineState::Transcribing);
             let right = if timed { until + RIGHT_CONTEXT } else { until }.min(data.len());
             match self.recognizer.recognize(&data[..right], &self.hints) {
@@ -842,12 +1502,24 @@ impl Worker {
                         seconds(cursor),
                         seconds(end),
                     );
-                    drafts = timed_passages(&owned);
-                    within(&mut drafts, cursor / PER_MS, end / PER_MS);
+                    drafts = if self.labels_by_turns(track) {
+                        let turns = self.window_turns(start_ms, end_ms)?;
+                        speaker_passages(&owned, &turns)
+                    } else {
+                        timed_passages(&owned)
+                    };
+                    within(&mut drafts, start_ms, end_ms);
                     language = t.language;
                 }
                 Ok(Heard::Text(text, lang)) => {
-                    drafts.extend(window_passage(&text, cursor / PER_MS, end / PER_MS));
+                    let mut draft = window_passage(&text, start_ms, end_ms);
+                    if self.labels_by_turns(track) {
+                        let turns = self.window_turns(start_ms, end_ms)?;
+                        if let Some(d) = &mut draft {
+                            d.speaker = window_speaker(&turns, start_ms, end_ms);
+                        }
+                    }
+                    drafts.extend(draft);
                     language = lang;
                 }
                 Err(e) => return Ok(self.recognition_failed(e, stopped, shared)),
@@ -858,16 +1530,108 @@ impl Worker {
             .into_iter()
             .map(|draft| self.passage(track, draft, language.clone()))
             .collect();
-        self.commit(track, cursor, end, boundary.reason.as_str(), passages)
+        self.commit(
+            track,
+            cursor,
+            end,
+            boundary.reason.as_str(),
+            passages,
+            &meta,
+        )
+    }
+
+    /// The stored turns around a window, in ms.
+    fn window_turns(&self, start_ms: u64, end_ms: u64) -> Result<Vec<Turn>, Error> {
+        Ok(self.transcript.turns(
+            Track::Call,
+            start_ms.saturating_sub(TURN_MARGIN_MS),
+            end_ms + TURN_MARGIN_MS,
+        )?)
+    }
+
+    /// Where the window from `cursor` may be cut because one voice hands over to another, in
+    /// samples from the cursor.
+    fn speaker_cuts(&self, track: Track, cursor: u64, owned_end: u64) -> Result<Vec<usize>, Error> {
+        let (start_ms, end_ms) = (cursor / PER_MS, owned_end / PER_MS);
+        if self.labels_by_turns(track) {
+            return Ok(turn_cuts(&self.window_turns(start_ms, end_ms)?, cursor));
+        }
+        match &self.run {
+            Run::Mistral {
+                diarize: true,
+                lost: false,
+                ..
+            } if track == Track::Call => {
+                let map = self.transcript.speaker_map()?;
+                let turns: Vec<Turn> = self
+                    .transcript
+                    .segments(
+                        track,
+                        start_ms.saturating_sub(TURN_MARGIN_MS),
+                        end_ms + TURN_MARGIN_MS,
+                    )?
+                    .into_iter()
+                    .filter_map(|s| {
+                        let speaker = map.get(&(s.epoch, s.label.clone()?))?.clone();
+                        Some(Turn {
+                            speaker,
+                            start: s.start,
+                            end: s.end,
+                        })
+                    })
+                    .collect();
+                Ok(turn_cuts(&turns, cursor))
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// A streamed window's passages: the segments that came after the last one a window took,
+    /// up to the first whose middle lies past the window, clamped to the window. One that came
+    /// late, for time before the window, joins this one. With `rest`, every segment left.
+    fn stream_drafts(
+        &self,
+        track: Track,
+        start_ms: u64,
+        end_ms: u64,
+        rest: bool,
+    ) -> Result<(Vec<Draft>, MetaUpdates), Error> {
+        let (epoch, n) = parse_taken(self.transcript.meta_get(&taken_key(track))?);
+        let mut taken: Vec<StoredSegment> = Vec::new();
+        for s in self.transcript.segments_after(track, epoch, n)? {
+            if !rest && (s.start + s.end) / 2 >= end_ms {
+                break;
+            }
+            taken.push(s);
+        }
+        let Some(last) = taken.last() else {
+            return Ok((Vec::new(), Vec::new()));
+        };
+        let meta = vec![(taken_key(track), format!("{}:{}", last.epoch, last.n))];
+        let diarize = matches!(self.run, Run::Mistral { diarize: true, .. });
+        let map = if track == Track::Call && diarize {
+            self.transcript.speaker_map()?
+        } else {
+            HashMap::new()
+        };
+        let drafts = segment_passages(&taken, start_ms, end_ms, |s| {
+            map.get(&(s.epoch, s.label.clone()?)).cloned()
+        });
+        Ok((drafts, meta))
     }
 
     fn passage(&self, track: Track, draft: Draft, language: Option<String>) -> StoredPassage {
+        let speaker = match track {
+            Track::Mic => Some(speaker_of(Track::Mic).id),
+            Track::Call if self.call_is_one_speaker() => Some(speaker_of(Track::Call).id),
+            Track::Call => draft.speaker.clone(),
+        };
         StoredPassage {
             passage: Passage {
                 // The store gives it the id that goes with its start.
                 id: String::new(),
                 track,
-                speaker: Some(speaker_of(track).id),
+                speaker,
                 start: draft.start,
                 end: draft.end,
                 dictation: self.in_dictation(track, draft.start, draft.end),
@@ -886,11 +1650,12 @@ impl Worker {
         end: u64,
         reason: &str,
         passages: Vec<StoredPassage>,
+        meta: &[(String, String)],
     ) -> Result<Advance, Error> {
         // `None`: another pipeline moved the cursor first; the next look reads it again.
         if let Some(stored) = self
             .transcript
-            .commit_window(track, start, end, reason, passages)?
+            .commit_window_with(track, start, end, reason, passages, meta)?
         {
             for p in stored {
                 self.emit_passage(&p.passage)?;
@@ -1012,5 +1777,15 @@ mod tests {
         assert_eq!(speaker_of(Track::Mic).label, "You");
         assert_eq!(speaker_of(Track::Call).id, "call-1");
         assert_eq!(speaker_of(Track::Call).label, "Speaker 1");
+    }
+
+    #[test]
+    fn labelled_call_speakers_are_numbered() {
+        let speaker = call_speaker("call-10");
+        assert_eq!(speaker.label, "Speaker 10");
+        assert_eq!(speaker.track, Track::Call);
+        assert_eq!(parse_taken(Some("3:17".into())), (3, 17));
+        assert_eq!(parse_taken(Some("x".into())), (0, 0));
+        assert_eq!(parse_taken(None), (0, 0));
     }
 }

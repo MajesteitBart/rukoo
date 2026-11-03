@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, TempDir};
-use voice_core::config::Consent;
+use voice_core::config::{Consent, ConsentMode};
 use voice_core::{ErrorKind, ProviderError};
 use voice_engine::Folder;
 
@@ -28,6 +28,7 @@ fn the_state_has_every_part_api_md_lists() {
         "version",
         "devMode",
         "platform",
+        "features",
         "theme",
         "locale",
         "config",
@@ -35,6 +36,7 @@ fn the_state_has_every_part_api_md_lists() {
         "dictation",
         "rukoo",
         "models",
+        "speakers",
         "storage",
         "updates",
         "ownkey",
@@ -60,6 +62,34 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["models"]["orukeet"]["removable"], false);
     assert_eq!(state["models"]["orukeet"]["active"], "unloaded");
     assert_eq!(state["models"]["nemotron"]["active"], Value::Null);
+    assert_eq!(
+        state["features"],
+        json!({"screen": false, "speakers": true, "sync": false})
+    );
+    // The fake speech can't run Nemotron: it says why, and nothing labels yet.
+    assert_eq!(state["config"]["meetings"]["liveSpeakers"], true);
+    assert_eq!(state["speakers"]["engine"], "nemotron");
+    assert_eq!(state["speakers"]["ready"], false);
+    assert_eq!(state["speakers"]["reason"], "platform");
+    assert_eq!(state["speakers"]["runtime"], Value::Null);
+    assert_eq!(state["speakers"]["live"], json!([]));
+    for feature in ["avx2", "fma", "f16c", "bmi2"] {
+        assert!(state["speakers"]["cpu"][feature].is_boolean(), "{feature}");
+    }
+    let mistral = state["providers"]["audio"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "mistral")
+        .unwrap();
+    assert_eq!(
+        mistral["streamingPrefix"],
+        "voxtral-mini-transcribe-realtime"
+    );
+    assert_eq!(
+        state["providers"]["audio"][0]["streamingPrefix"],
+        Value::Null
+    );
     assert_eq!(state["dictation"]["status"], "modelMissing");
     assert_eq!(state["rukoo"]["state"], "notRunning");
     assert!(
@@ -168,6 +198,29 @@ fn bad_values_same_keys_and_dev_mode_are_refused() {
 }
 
 #[test]
+fn the_speaker_switch_is_voice_s_own_setting() {
+    let h = Harness::new("live-speakers");
+    // An Ownkey import fills Ownkey's "label after Stop"; it doesn't turn labels off.
+    h.config(json!({"meetings_auto_speakers": true}));
+    let engine = h.start();
+    assert_eq!(
+        engine.settings_state()["config"]["meetings"]["liveSpeakers"],
+        true
+    );
+    engine
+        .settings_set("meetings.liveSpeakers", json!(false))
+        .unwrap();
+    let cfg = h.saved_config();
+    assert!(!cfg.meetings_live_speakers);
+    assert!(cfg.meetings_auto_speakers, "Ownkey's value stays as it was");
+    let state = h.sink.last_settings();
+    assert_eq!(state["config"]["meetings"]["liveSpeakers"], false);
+    assert_eq!(state["speakers"]["reason"], "off");
+    assert_eq!(state["speakers"]["ready"], false);
+    engine.shutdown();
+}
+
+#[test]
 fn start_at_login_writes_the_run_value_only_for_an_installed_copy() {
     let mut h = Harness::new("autostart");
     h.dev_mode = false;
@@ -253,6 +306,83 @@ fn a_provider_form_is_checked_and_saved_as_a_whole() {
     save(&engine, json!({"target": "transcription", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-latest", "apiKey": SECRET})).unwrap();
     engine.settings_remove_key("transcription").unwrap();
     assert_eq!(h.saved_config().audio_api_key, "");
+    engine.shutdown();
+}
+
+#[test]
+fn a_realtime_model_is_refused_outside_meetings() {
+    let h = Harness::new("realtime-form");
+    h.config(json!({}));
+    let engine = h.start();
+    let realtime = "voxtral-mini-transcribe-realtime-3";
+    for (target, endpoint) in [
+        (
+            "transcription",
+            "https://api.mistral.ai/v1/audio/transcriptions",
+        ),
+        ("rewriting", "https://api.mistral.ai/v1/chat/completions"),
+    ] {
+        let error = save(&engine, json!({"target": target, "provider": "mistral", "endpoint": endpoint, "model": realtime, "apiKey": SECRET})).unwrap_err();
+        assert_eq!(error.code, "invalid_value", "{target}");
+        assert_eq!(
+            error.message,
+            "Realtime models work for meeting transcription only."
+        );
+    }
+    // The name decides, whatever the provider: a proxy in front of Mistral lists the same ids.
+    let error = save(&engine, json!({"target": "transcription", "provider": "custom", "endpoint": "http://localhost:1234/v1/audio/transcriptions", "model": realtime, "apiKey": null})).unwrap_err();
+    assert_eq!(error.code, "invalid_value", "custom");
+    let cfg = h.saved_config();
+    assert_eq!(cfg.audio_provider, "orukeet", "nothing was saved");
+    assert_ne!(cfg.rewrite_model, realtime);
+    // Meetings take it.
+    save(&engine, json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": realtime, "apiKey": SECRET, "consent": false})).unwrap();
+    assert_eq!(h.saved_config().meetings_audio_model, realtime);
+    let state = engine.settings_state();
+    assert_eq!(state["speakers"]["engine"], "mistral");
+    assert_eq!(state["speakers"]["reason"], "consent");
+    engine.shutdown();
+}
+
+#[test]
+fn mistral_labels_are_not_ready_without_a_meeting_key() {
+    let h = Harness::new("realtime-no-key");
+    h.config(json!({}));
+    let engine = h.start();
+    let mistral = |key: Value, consent: bool| json!({"target": "meetings", "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/audio/transcriptions", "model": "voxtral-mini-transcribe-realtime-3", "apiKey": key, "consent": consent});
+    // Settings calls labels ready only when the meeting's stream can be built.
+    let stream_builds =
+        || voice_core::providers::streaming_speech(&h.saved_config().meeting_audio()).is_ok();
+    save(&engine, mistral(json!(SECRET), true)).unwrap();
+    let state = engine.settings_state();
+    assert_eq!(state["speakers"]["engine"], "mistral");
+    assert_eq!(state["speakers"]["ready"], true);
+    assert!(stream_builds());
+    // Removing the key keeps the agreement, but the stream can't start without a key.
+    engine.settings_remove_key("meetings").unwrap();
+    let cfg = h.saved_config();
+    assert_eq!(cfg.meetings_audio_api_key, "");
+    assert!(
+        cfg.meetings_transcription_consent.is_some(),
+        "consent stays"
+    );
+    assert!(!stream_builds());
+    let state = h.sink.last_settings();
+    assert_eq!(state["config"]["meetings"]["keySaved"], false);
+    assert_eq!(state["speakers"]["engine"], "mistral");
+    assert_eq!(state["speakers"]["ready"], false);
+    assert_eq!(state["speakers"]["reason"], "key");
+    // Without a key and without an agreement, the key comes first: the form that takes it
+    // also asks for the agreement.
+    save(&engine, mistral(json!(""), false)).unwrap();
+    assert_eq!(engine.settings_state()["speakers"]["reason"], "key");
+    save(&engine, mistral(json!(SECRET), false)).unwrap();
+    assert_eq!(engine.settings_state()["speakers"]["reason"], "consent");
+    save(&engine, mistral(Value::Null, true)).unwrap();
+    let state = engine.settings_state();
+    assert_eq!(state["speakers"]["ready"], true);
+    assert_eq!(state["speakers"]["reason"], Value::Null);
+    assert!(stream_builds());
     engine.shutdown();
 }
 
@@ -394,15 +524,17 @@ fn meeting_consent_names_the_provider_and_host() {
         mistral(true, "https://api.mistral.ai/v1/audio/transcriptions"),
     )
     .unwrap();
+    // The batch model sends recorded windows; that agreement doesn't cover a stream.
     assert_eq!(
         engine.settings_state()["config"]["meetings"]["consent"],
-        json!({"provider": "mistral", "host": "api.mistral.ai"})
+        json!({"provider": "mistral", "host": "api.mistral.ai", "mode": "windows"})
     );
     assert_eq!(
         h.saved_config().meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     // Another host needs consent again; the form carries it only when the box is ticked.
@@ -458,10 +590,6 @@ fn model_downloads_report_progress_and_failures() {
     h.config(json!({}));
     let engine = h.start();
     assert_eq!(
-        code(engine.settings_model("nemotron", "download")),
-        "invalid_value"
-    );
-    assert_eq!(
         code(engine.settings_model("whisper", "download")),
         "not_found"
     );
@@ -469,18 +597,24 @@ fn model_downloads_report_progress_and_failures() {
         code(engine.settings_model("orukeet", "remove")),
         "not_removable"
     );
-    engine.settings_model("orukeet", "download").unwrap();
-    wait_for("the failed download", || {
-        engine.settings_state()["models"]["orukeet"]["stage"] == "failed"
-    });
-    let model = engine.settings_state()["models"]["orukeet"].clone();
-    assert_eq!(model["error"], "Checksum mismatch for encoder.int8.onnx.");
-    let stages: Vec<Value> = lock(&h.sink.settings)
-        .iter()
-        .map(|s| s["models"]["orukeet"]["stage"].clone())
-        .collect();
-    assert!(stages.contains(&json!("downloading")), "{stages:?}");
-    assert!(stages.contains(&json!("verifying")), "{stages:?}");
+    // Both models download the same way; Nemotron is no longer refused.
+    for model in ["orukeet", "nemotron"] {
+        engine.settings_model(model, "download").unwrap();
+        wait_for("the failed download", || {
+            engine.settings_state()["models"][model]["stage"] == "failed"
+        });
+        let state = engine.settings_state()["models"][model].clone();
+        assert_eq!(state["error"], "Checksum mismatch for encoder.int8.onnx.");
+        let stages: Vec<Value> = lock(&h.sink.settings)
+            .iter()
+            .map(|s| s["models"][model]["stage"].clone())
+            .collect();
+        assert!(
+            stages.contains(&json!("downloading")),
+            "{model}: {stages:?}"
+        );
+        assert!(stages.contains(&json!("verifying")), "{model}: {stages:?}");
+    }
     engine.shutdown();
 }
 
@@ -622,7 +756,8 @@ fn the_first_start_of_an_installed_copy_imports_ownkey() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let state = engine.settings_state();

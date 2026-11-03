@@ -157,7 +157,16 @@ A voice in the meeting, as Voice labels it.
 { "id": "call-1", "track": "call", "label": "Speaker 1" }
 ```
 
-The user's microphone is the speaker `mic` with the label `You`. Voice 0.1 labels the whole call track as one speaker, `call-1`. With speaker labels, the call gets `call-1`, `call-2` and so on. Rukoo owns the names people give speakers; Voice never learns them.
+The user's microphone is always the speaker `mic` with the label `You`. Voice doesn't tell apart people who share the microphone.
+
+The call track's speakers depend on speaker labels in Voice's Settings:
+
+- Without labels, the whole call is one speaker, `call-1`, labelled `Speaker 1`. Voice sends it when the meeting starts.
+- With labels, each voice Voice tells apart gets its own id, `call-1`, `call-2` and so on, labelled `Speaker 1`, `Speaker 2` with the same number. Voice sends a speaker right before the first passage that names it, so a meeting can show only `You` until someone on the call speaks. Numbers follow the order in which Voice first heard each voice; a number can be missing when a voice never got a passage.
+- An id belongs to one voice for the whole meeting, also when Voice's labelling restarts during the meeting, and Voice never gives it to another voice. Voice can still hear one person as two voices, and Rukoo then shows two speakers.
+- A `speaker` event for an id Rukoo already has carries the same `track` and `label`.
+
+Rukoo owns the names people give speakers; Voice never learns them. Rukoo keeps a name on the speaker id, so it follows every passage that has that id.
 
 ### `passage`
 
@@ -169,7 +178,7 @@ A stretch of transcript.
 
 - `id` is the track, a dash and the start in milliseconds as nine digits. It stays the same when Voice transcribes the passage again.
 - A passage with a higher `revision` replaces the one Rukoo has. Voice sends a new revision when a better transcript or a settled speaker arrives.
-- `speaker` is a speaker id, or `null` while Voice doesn't know.
+- `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another.
 - `dictation` is true when the user was dictating into another app while the meeting recorded. Those words reached the call, but weren't part of the conversation.
 - `language` is a BCP 47 code when the recognizer reports one, otherwise `null`.
 

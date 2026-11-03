@@ -7,7 +7,7 @@ The pill (`pill.html`) and Settings (`settings.html`) are plain HTML, CSS and Ja
 - `tauri.conf.json` sets `app.withGlobalTauri: true`. The pages use `window.__TAURI__.core.invoke(command, args)` and `window.__TAURI__.event.listen(name, handler)`; `lib/bridge.js` wraps both.
 - `frontendDist` is this folder. The pages load `i18n/en.json` and `i18n/nl.json` with `fetch`, so the asset protocol must serve `.json`. Nothing is fetched from the network; Inter is bundled in `fonts/`. `dev/` and `mock/` are development tools and may be left out of the bundle.
 - Arguments are camelCase objects. Tauri maps a top-level argument name to the Rust parameter of the same name in snake_case, so `invoke('pill_ack', { seq })` calls `fn pill_ack(seq: u64)`. Where a command takes one struct, the page passes it under one name (`layout`, `save`, `request`, `preview`), and the Rust parameter has that name. Structs use `#[serde(rename_all = "camelCase")]`.
-- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`.
+- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `busy`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`.
 - Both windows need `core:event:default` in their capability. App commands registered with `invoke_handler` are allowed for every window unless the app defines command permissions; if it does, allow the `pill_*` commands for the `pill` window and the `settings_*` commands for the `settings` window only.
 - Suggested CSP for both windows: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost`. The pages set custom properties in `style` attributes, hence `'unsafe-inline'` for styles only.
 
@@ -157,6 +157,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
+  "features": { "screen": false, "speakers": true, "sync": false },
   "theme": "dark",
   "locale": "en",
   "config": {
@@ -166,18 +167,22 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
     "dictionary": { "vocabulary": ["Rukoo"], "corrections": [{ "from": "rocco", "to": "Rukoo" }] },
     "fillers": { "enabled": true, "languages": ["en", "nl"], "custom": "" },
     "rewriting": { "provider": "mistral", "endpoint": "https://api.mistral.ai/v1/chat/completions", "model": "mistral-small-latest", "keySaved": true, "auto": false, "tone": "auto", "formatting": true, "instructions": "" },
-    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": false },
+    "meetings": { "provider": "orukeet", "endpoint": "", "model": "orukeet-onnx-int8", "keySaved": false, "consent": null, "retention": "days7", "stopKey": "off", "screen": "off", "liveSpeakers": true },
     "ui": { "language": "system", "theme": "system", "pillEdge": "bottom", "hidePillFromCapture": true },
     "updates": { "check": false },
     "storage": { "sync": { "enabled": false, "service": "upcloud", "endpoint": "", "region": "", "bucket": "", "prefix": "", "accessKeyId": "", "secret": "" } }
   },
   "providers": {
-    "audio": [{ "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"] }],
+    "audio": [
+      { "id": "openai", "endpoints": ["https://api.openai.com/v1/audio/transcriptions"], "streamingPrefix": null },
+      { "id": "mistral", "endpoints": ["https://api.mistral.ai/v1/audio/transcriptions"], "streamingPrefix": "voxtral-mini-transcribe-realtime" }
+    ],
     "rewrite": [{ "id": "openai", "endpoints": ["https://api.openai.com/v1/responses", "https://api.openai.com/v1/chat/completions"] }]
   },
   "dictation": { "status": "ready" },
   "rukoo": { "state": "connected", "clientVersion": "2.2.0", "protocol": 1, "port": 49821, "discoveryPath": "C:\\Users\\…\\Rukoo Voice\\bridge.json", "behind": 0 },
   "models": { "orukeet": "ModelState", "nemotron": "ModelState" },
+  "speakers": "SpeakersState",
   "storage": { "folder": "C:\\Users\\…\\Rukoo Voice\\meetings", "usedBytes": 2400000000, "freeBytes": 182000000000 },
   "updates": { "state": "idle", "version": null },
   "ownkey": "OwnkeyState",
@@ -191,16 +196,19 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
 | `platform` | `windows`, `macos` or `linux`. |
+| `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
 | `config` | Every setting, see below. API keys and the bucket secret appear only as `keySaved` flags; `secret` is always `""`. |
 | `providers` | Voice-core's provider registry in Ownkey's order (ownkey-providers.md 2): `audio` is OpenAI, Google, Mistral, Custom, Orukeet; `rewrite` is OpenAI, Anthropic, Google, Mistral, Ollama, OpenRouter, Custom. `endpoints` are the presets, the first is the default. The page translates the labels of `custom` and `orukeet` and shows the brand names for the rest. |
+| `providers.audio[].streamingPrefix` | For Mistral, `voxtral-mini-transcribe-realtime`: a meeting model whose name starts with it streams the meeting instead of sending recorded windows, so its consent is a `stream` agreement. `null` for the other providers, which never stream. The name still marks a realtime model for every provider: `settings_save_provider` refuses it for dictation and rewriting whichever provider lists it, as an OpenAI-compatible proxy in front of Mistral can, and those two forms don't offer it. |
 | `dictation.status` | `ready`, `loadingModel`, `modelMissing`, `noKey` or `noMic`: the status on the top page. |
 | `rukoo.state` | `connected`, `notRunning`, `rukooOutdated` or `voiceOutdated` (from `unsupported_protocol`, PROTOCOL.md Versioning), `refused` (a client sent a wrong token). A refusal shows until a client connects again. |
 | `rukoo.clientVersion`, `rukoo.protocol` | From the connected client's `hello`, or `null`. |
 | `rukoo.port` | The bridge's port on 127.0.0.1, or `null` before it listens. |
 | `rukoo.discoveryPath` | The discovery file's full path (PROTOCOL.md, Where the file is). |
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
-| `models` | A `ModelState` for `orukeet`, and for `nemotron` later than 0.1. |
+| `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
+| `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
 | `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
@@ -234,7 +242,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `meetings.retention` | `days7`, `keep`, `after_transcription` | `days7` | `meetings_retention` |
 | `meetings.stopKey` | `off` or a key | `off` | new |
 | `meetings.screen` | `off`, `frames`, `video` (later) | `off` | new |
-| `meetings.liveSpeakers` | bool (later) | `false` | `meetings_auto_speakers` |
+| `meetings.liveSpeakers` | bool, default `true`, stored as `meetings_live_speakers`: speaker labels for meetings started from then on | `true` | new; Ownkey's `meetings_auto_speakers` ("label after Stop") is kept but not read |
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
@@ -242,7 +250,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 `meetings.retention` applies to meetings started from then on, as in Ownkey: each meeting keeps the choice it started with in its `meeting.json`, so changing it, or importing Ownkey's, never removes older meetings' audio. Meetings from before Voice stored it follow the current choice.
 
-The provider objects carry `provider`, `endpoint`, `model` and `keySaved`. `transcription` adds `language` (`auto`, `en`, `nl`, `de`, `fr`, `es`, `it`, `pt`, `pl`, `ja`, `zh`). `meetings` adds `consent`: `{ "provider": "mistral", "host": "api.mistral.ai" }` or `null`.
+The provider objects carry `provider`, `endpoint`, `model` and `keySaved`. `transcription` adds `language` (`auto`, `en`, `nl`, `de`, `fr`, `es`, `it`, `pt`, `pl`, `ja`, `zh`). `meetings` adds `consent`: `{ "provider": "mistral", "host": "api.mistral.ai", "mode": "windows" }` or `null`. `mode` is `windows` for a model that gets recorded windows and `stream` for a realtime model (`providers.audio[].streamingPrefix`); one doesn't cover the other, so changing between them asks again. An agreement without `mode`, saved before streaming existed, is `windows`.
 
 Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Orukeet (the default) or a cloud provider with consent per provider and host, and a "same" choice would move meeting audio to the cloud whenever someone changed the dictation provider. The import resolves Ownkey's `same` to the provider it pointed at.
 
@@ -292,6 +300,34 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 - `models` are the models found in Ownkey's model folder.
 - `report` is the last import's result, or `null` before any import. Each area is `null` when Ownkey's config didn't have it. `keyImported` says a key came over; the key never reaches the page. `meetings.consent` is `true` only when Ownkey had `meetings_live_transcription_policy == "allow"` for a cloud provider (decision 10). `skipped` lists settings Voice doesn't take over: `summaries` covers `meetings_auto_summary` and `meetings_remote_policy`.
 
+`SpeakersState`:
+
+```json
+{
+  "engine": "nemotron",
+  "ready": true,
+  "reason": null,
+  "detail": null,
+  "missing": [],
+  "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true },
+  "runtime": { "location": "voice", "commit": "97a15af" },
+  "live": [{ "meeting": "m-20261102-101500-1a2b", "mode": "nemotron", "state": "listening", "speakers": 3, "reason": null, "workerPid": 4242 }]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
+| `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
+| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x64), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2), `runtime` (no NeMo runtime verifies next to Voice), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
+| `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
+| `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]`; else `[]`. |
+| `cpu` | This processor's features. |
+| `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (next to Voice), `ownkey` (Ownkey's copy, read only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
+| `live` | One entry per meeting that is transcribing: `mode` `nemotron`, `mistral` or `off`; `state` `off`, `starting`, `matching`, `listening`, `catchingUp`, `restarting`, `finished` or `failed`; `speakers`, the voices labelled so far; `reason`, the code a meeting in mode `off` labels without (the codes above, `stream`, `noCall` for a meeting that records no call track, or `upgrade` for a meeting that a Voice without speaker labels started); `workerPid`, the worker's process id in a development copy, else `null`. `failed` means labels stopped for that meeting while its recording and transcription go on. |
+
+A meeting keeps the labels it started with: a change of the switch, the model or the meeting provider applies to the next meeting.
+
 ### Command `settings_set`
 
 `invoke('settings_set', { key, value })` → nothing. Saves one value from the table above, applies it at once and emits `settings://state`. A key change restarts the hotkey poller; `ui.language` and `ui.theme` re-resolve the language and theme for Settings and the pill at once; `ui.pillEdge` and `ui.hidePillFromCapture` take effect at the pill's next show; `startAtLogin` writes or removes the Run value.
@@ -313,11 +349,11 @@ Errors: `same_key` when the key is already the dictation, rewrite or stop key (t
 | `endpoint`, `model` | Trimmed. For `orukeet`: `""` and `orukeet-onnx-int8`. |
 | `apiKey` | `null` keeps the saved key, `""` saves none, a string replaces it. A key is never carried to another provider: when `provider` differs from the saved one, `null` means no key. |
 | `language` | `transcription` only; `auto` for Orukeet. |
-| `consent` | `meetings` only. `true` saves `consent: { provider, host }` with the host of `endpoint`; `false` clears it. |
+| `consent` | `meetings` only. `true` saves `consent: { provider, host, mode }` with the host of `endpoint` and the mode of `model`; `false` clears it. |
 
-The app repeats Ownkey's checks (ownkey-dictation.md 13.8) and rejects with `need_endpoint_model` when a cloud provider lacks an endpoint or a model. For `transcription` with Orukeet it loads and checks the model before it commits, so a broken model never becomes active; the page shows "Loading Orukeet" until the promise settles. A failure keeps the old settings and rejects with the reason in `message`.
+The app repeats Ownkey's checks (ownkey-dictation.md 13.8) and rejects with `need_endpoint_model` when a cloud provider lacks an endpoint or a model. A realtime model is for meetings only: `transcription` and `rewriting` reject a model whose name starts with a `streamingPrefix`, from any provider, with `invalid_value`, "Realtime models work for meeting transcription only." For `transcription` with Orukeet it loads and checks the model before it commits, so a broken model never becomes active; the page shows "Loading Orukeet" until the promise settles. A failure keeps the old settings and rejects with the reason in `message`.
 
-Consent: the page shows the disclosure and its checkbox when the provider isn't Orukeet and the endpoint's host isn't `localhost`, `127.0.0.1`, `::1` or `0.0.0.0`, which is Ownkey's rule for when to ask. The app uses the same rule to decide whether a meeting's transcription may start: valid consent names the saved provider and the host of the saved endpoint. Without it, the meeting records and its transcription waits.
+Consent: the page shows the disclosure and its checkbox when the provider isn't Orukeet and the endpoint's host isn't `localhost`, `127.0.0.1`, `::1` or `0.0.0.0`, which is Ownkey's rule for when to ask. For a realtime model the disclosure says the meeting streams and that clips of up to 15 s per voice go out after a reconnect, and the checkbox reads "Stream meeting audio to …". The app uses the same rule to decide whether a meeting's transcription may start: valid consent names the saved provider, the host of the saved endpoint and the model's mode. Without it, the meeting records and its transcription, and with a realtime model its labels, wait.
 
 ### Command `settings_remove_key`
 
@@ -333,8 +369,8 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 `invoke('settings_model', { model, action })` → nothing; progress arrives through `settings://state`.
 
-- `model`: `orukeet`, and `nemotron` later.
-- `action`: `download` (into the chosen model folder, or Voice's own `models/`), `cancel`, `remove`. `remove` rejects with `not_removable` unless the model's `removable` is true.
+- `model`: `orukeet` or `nemotron`.
+- `action`: `download` (Orukeet into the chosen model folder or Voice's own `models/`, Nemotron into Voice's own `models/`), `cancel`, `remove`. `remove` rejects with `not_removable` unless the model's `removable` is true, and for `nemotron` with `busy`, "A meeting is labelling speakers with this model.", while a `speakers.live` entry in mode `nemotron` isn't `finished`, `failed` or `off`.
 
 ### Command `settings_choose_folder`
 
@@ -385,8 +421,9 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
-| `&later=1` | The rows designed for later releases: screen recording, speaker labels, bucket sync (`&sync=1` turns sync on) |
+| `&later=1` | Every feature's Settings (`features` all `true`): screen recording, speaker labels, bucket sync (`&sync=1` turns sync on). Without it the mock's `features` are `false`, except those named in `&features=screen,speakers,sync`. |
+| `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 
-`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider or host, keys never carried to another provider, the stop button's layout report, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.
+`node voice/ui/dev/check.js` runs behavior checks against the mocks the same way: typed text surviving redraws, consent asked again for another provider, host or way of sending, keys never carried to another provider, speaker labels' reasons and switch, the stop button's layout report, the snapshot shape check and reduced motion. `test/voice-ui-tokens.test.js` and `test/voice-ui-i18n.test.js` run with `npm test`.

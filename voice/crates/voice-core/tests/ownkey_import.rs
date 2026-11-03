@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 use support::TempDir;
 use voice_core::cleanup::Correction;
-use voice_core::config::{Config, Consent, Retention, RewriteTone, Theme};
+use voice_core::config::{Config, Consent, ConsentMode, Retention, RewriteTone, Theme};
 use voice_core::ownkey::{import, ImportError};
 
 const AUDIO_KEY: &str = "sk-audio-0123456789";
@@ -216,7 +216,8 @@ fn live_transcription_allow_carries_consent_over() {
         cfg.meetings_transcription_consent,
         Some(Consent {
             provider: "mistral".into(),
-            host: "api.mistral.ai".into()
+            host: "api.mistral.ai".into(),
+            mode: ConsentMode::Windows,
         })
     );
     let consent = report.item("consent").unwrap();
@@ -224,6 +225,35 @@ fn live_transcription_allow_carries_consent_over() {
     assert_eq!(
         consent.text,
         "Meeting audio may go to Mistral at api.mistral.ai, as Ownkey allowed"
+    );
+}
+
+#[test]
+fn ownkeys_answer_never_covers_a_realtime_model() {
+    // Ownkey sent recorded windows; a realtime meeting model streams, so Settings asks.
+    let dir = TempDir::new("ownkey-consent-stream");
+    let path = write_ownkey(
+        &dir,
+        &json!({
+            "meetings_audio_provider": "mistral",
+            "meetings_audio_api_key": MEETING_KEY,
+            "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+            "meetings_audio_model": "voxtral-mini-transcribe-realtime-2602",
+            "meetings_live_transcription_policy": "allow"
+        }),
+    );
+    let mut cfg = Config::defaults(false);
+    let report = import(&path).unwrap().apply(&mut cfg, false);
+    assert_eq!(
+        cfg.meetings_audio_model,
+        "voxtral-mini-transcribe-realtime-2602"
+    );
+    assert_eq!(cfg.meetings_transcription_consent, None);
+    let consent = report.item("consent").unwrap();
+    assert!(!consent.imported);
+    assert_eq!(
+        consent.text,
+        "Sending meeting audio to Mistral: Voice asks in Settings first"
     );
 }
 

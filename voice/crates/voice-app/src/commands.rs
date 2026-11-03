@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(meetings["keySaved"], true);
         assert_eq!(
             meetings["consent"],
-            json!({ "provider": "mistral", "host": "api.mistral.ai" })
+            json!({ "provider": "mistral", "host": "api.mistral.ai", "mode": "windows" })
         );
         // The key never shows in the state.
         assert!(!engine.settings_state().to_string().contains("sk-test-4711"));

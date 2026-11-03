@@ -5,19 +5,26 @@
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
+//   later=1: every feature's Settings, for design review; features=speakers,screen,sync: only those.
+//   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|key|consent|mistral|stopped: Speaker labels
+//   in that state, with the feature on.
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
 
 const MB = 1_000_000;
 const NOW = Date.UTC(2026, 9, 30, 15, 42);
 
+// Mistral's realtime models stream meetings.
+const REALTIME = 'voxtral-mini-transcribe-realtime';
+const REALTIME_MODEL = 'voxtral-mini-transcribe-realtime-3';
+
 const PROVIDERS = {
   audio: [
-    { id: 'openai', endpoints: ['https://api.openai.com/v1/audio/transcriptions'] },
-    { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'] },
-    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'] },
-    { id: 'custom', endpoints: ['http://localhost:1234/v1/audio/transcriptions'] },
-    { id: 'orukeet', endpoints: [] }
+    { id: 'openai', endpoints: ['https://api.openai.com/v1/audio/transcriptions'], streamingPrefix: null },
+    { id: 'google', endpoints: ['https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'], streamingPrefix: null },
+    { id: 'mistral', endpoints: ['https://api.mistral.ai/v1/audio/transcriptions'], streamingPrefix: REALTIME },
+    { id: 'custom', endpoints: ['http://localhost:1234/v1/audio/transcriptions'], streamingPrefix: null },
+    { id: 'orukeet', endpoints: [], streamingPrefix: null }
   ],
   rewrite: [
     { id: 'openai', endpoints: ['https://api.openai.com/v1/responses', 'https://api.openai.com/v1/chat/completions'] },
@@ -31,13 +38,14 @@ const PROVIDERS = {
 };
 
 const MODELS = {
-  mistral: ['voxtral-mini-latest', 'voxtral-small-latest', 'mistral-small-latest', 'mistral-medium-latest'],
+  mistral: ['voxtral-mini-latest', 'voxtral-small-latest', REALTIME_MODEL, 'mistral-small-latest', 'mistral-medium-latest'],
   openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1', 'gpt-5.5-mini'],
   google: ['gemini-2.5-flash', 'gemini-2.5-pro'],
   anthropic: ['claude-haiku-4-5', 'claude-sonnet-4-5'],
   openrouter: ['mistralai/mistral-small', 'openai/gpt-4o-mini'],
   ollama: ['llama3.2:3b', 'qwen2.5:7b'],
-  custom: []
+  // An OpenAI-compatible proxy in front of Mistral lists Mistral's ids.
+  custom: ['voxtral-mini-latest', REALTIME_MODEL]
 };
 
 // Ownkey's filler lists and protection table (text_cleanup.py), for a preview close to what the app returns.
@@ -69,6 +77,7 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
     config: {
@@ -102,7 +111,7 @@ function baseState() {
         retention: 'days7',
         stopKey: 'off',
         screen: 'off',
-        liveSpeakers: false
+        liveSpeakers: true
       },
       ui: { language: 'system', theme: 'system', pillEdge: 'bottom', hidePillFromCapture: true },
       updates: { check: false },
@@ -137,6 +146,8 @@ function baseState() {
         error: null
       }
     },
+    // Worked out from the rest on every state (speakersState below).
+    speakers: null,
     storage: { folder: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\meetings', usedBytes: 2.4e9, freeBytes: 182e9 },
     updates: { state: 'idle', version: null },
     ownkey: {
@@ -214,10 +225,94 @@ const SCENARIOS = {
   }
 };
 
+// Speaker labels, ?speakers=<name>. `forced` is what the engine would find wrong with this computer.
+const MISTRAL_MEETINGS = { provider: 'mistral', endpoint: 'https://api.mistral.ai/v1/audio/transcriptions', model: REALTIME_MODEL, keySaved: true };
+const SPEAKER_SCENARIOS = {
+  ready: () => {},
+  off: (s) => {
+    s.config.meetings.liveSpeakers = false;
+  },
+  platform: (s, forced) => {
+    s.platform = 'linux';
+    forced.reason = 'platform';
+  },
+  cpu: (s, forced) => {
+    Object.assign(forced, { reason: 'cpu', missing: ['bmi2'], cpu: { avx2: true, fma: true, f16c: true, bmi2: false } });
+  },
+  runtime: (s, forced) => {
+    forced.reason = 'runtime';
+  },
+  runtimeFailed: (s, forced) => {
+    forced.reason = 'runtimeFailed';
+    forced.detail = 'LoadLibraryExW failed for C:\\Users\\you\\AppData\\Local\\Programs\\Rukoo Voice\\nemo_speech\\nemo_speech_asr_c.dll: The specified module could not be found. (os error 126)';
+  },
+  model: (s) => {
+    Object.assign(s.models.nemotron, { stage: 'missing', location: null, path: null, removable: false });
+  },
+  modelDamaged: (s, forced) => {
+    forced.reason = 'modelDamaged';
+    forced.detail = 'Checksum mismatch for Nemotron-3-Diarization.q8_0.gguf: expected 08456d9e…c7a3a1, got 5e01…9b2c. Remove the model and download it again.';
+  },
+  key: (s) => {
+    Object.assign(s.config.meetings, MISTRAL_MEETINGS, { keySaved: false, consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' } });
+  },
+  consent: (s) => {
+    Object.assign(s.config.meetings, MISTRAL_MEETINGS, { consent: null });
+  },
+  mistral: (s) => {
+    Object.assign(s.config.meetings, MISTRAL_MEETINGS, { consent: { provider: 'mistral', host: 'api.mistral.ai', mode: 'stream' } });
+  },
+  stopped: (s, forced) => {
+    forced.live = [{ meeting: 'm-20261030-171203-4f2a', mode: 'nemotron', state: 'failed', speakers: 3, reason: null, workerPid: null }];
+  }
+};
+
+// SettingsState.speakers as the engine works it out (API.md).
+function speakersState(state, forced) {
+  const m = state.config.meetings;
+  const host = (() => {
+    try {
+      return new URL(m.endpoint).hostname.toLowerCase();
+    } catch {
+      return '';
+    }
+  })();
+  const mistral = m.provider === 'mistral' && String(m.model).startsWith(REALTIME);
+  const installed = state.models.nemotron.stage === 'installed';
+  const streamConsent = m.consent?.provider === 'mistral' && m.consent.host === host && m.consent.mode === 'stream';
+  let reason = null;
+  if (!m.liveSpeakers) reason = 'off';
+  // The stream needs the meeting key before the agreement matters.
+  else if (mistral) reason = !m.keySaved ? 'key' : streamConsent ? null : 'consent';
+  else if (forced.reason) reason = forced.reason;
+  else if (!installed) reason = 'model';
+  return {
+    engine: mistral ? 'mistral' : 'nemotron',
+    ready: reason === null,
+    reason,
+    detail: reason && reason === forced.reason ? forced.detail || null : null,
+    missing: reason === 'cpu' ? forced.missing || [] : [],
+    cpu: forced.cpu || { avx2: true, fma: true, f16c: true, bmi2: true },
+    runtime: !forced.reason && installed ? { location: 'voice', commit: '97a15af' } : null,
+    live: forced.live || []
+  };
+}
+
 export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
   if (params.get('sync') === '1') state.config.storage.sync = { ...state.config.storage.sync, enabled: true, endpoint: 'https://example.upcloudobjects.com', region: 'europe-1', bucket: 'my-meetings' };
+  // Which features' Settings show: all of them for design review, else the ones named.
+  const later = params.get('later') === '1';
+  const named = (params.get('features') || '').split(',').filter(Boolean);
+  for (const name of Object.keys(state.features)) state.features[name] = later || named.includes(name);
+  const forcedSpeakers = {};
+  const speakers = params.get('speakers');
+  if (speakers) {
+    (SPEAKER_SCENARIOS[speakers] || SPEAKER_SCENARIOS.ready)(state, forcedSpeakers);
+    state.features.speakers = true;
+  }
+  state.speakers = speakersState(state, forcedSpeakers);
   const forced = { theme: params.get('theme'), locale: params.get('lang') };
   const handlers = [];
   let downloadTimer = 0;
@@ -230,7 +325,10 @@ export function createMock(params) {
   };
   resolve();
 
-  const snapshot = () => structuredClone(state);
+  const snapshot = () => {
+    state.speakers = speakersState(state, forcedSpeakers);
+    return structuredClone(state);
+  };
   // For dev/check.js: what the app would hold now.
   window.__settingsMockState = snapshot;
   const emit = () => {
@@ -269,8 +367,9 @@ export function createMock(params) {
       if (m.stage === 'downloading' && m.percent >= 100) Object.assign(m, { stage: 'verifying', percent: null });
       else if (m.stage === 'verifying') Object.assign(m, { stage: 'extracting', percent: null });
       else if (m.stage === 'extracting') {
-        Object.assign(m, { stage: 'installed', percent: null, location: 'voice', removable: true, path: 'C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\models\\orukeet-onnx-int8' });
-        if (state.config.transcription.provider === 'orukeet') {
+        const folder = id === 'nemotron' ? 'nemotron-3-diarization' : 'orukeet-onnx-int8';
+        Object.assign(m, { stage: 'installed', percent: null, location: 'voice', removable: true, path: `C:\\Users\\you\\AppData\\Local\\Rukoo Voice\\models\\${folder}` });
+        if (id === 'orukeet' && state.config.transcription.provider === 'orukeet') {
           m.active = 'unloaded';
           state.dictation.status = 'ready';
         }
@@ -305,12 +404,16 @@ export function createMock(params) {
       await wait(save.provider === 'orukeet' ? 1200 : 500);
       if (save.provider !== 'orukeet' && (!save.endpoint || !save.model)) fail('need_endpoint_model', 'Choose an endpoint and model before saving.');
       if (save.provider !== 'orukeet' && save.model === 'fail') fail('failed', 'HTTP 401 from api.mistral.ai: Unauthorized. Check the API key.');
+      if (save.target !== 'meetings' && String(save.model).startsWith(REALTIME)) fail('invalid_value', 'Realtime models work for meeting transcription only.');
       const target = state.config[save.target];
       const sameProvider = target.provider === save.provider;
       Object.assign(target, { provider: save.provider, endpoint: save.endpoint, model: save.model });
       target.keySaved = save.apiKey === null ? sameProvider && target.keySaved : Boolean(save.apiKey);
       if (save.language) target.language = save.language;
-      if (save.target === 'meetings') target.consent = save.consent ? { provider: save.provider, host: host(save.endpoint) } : null;
+      if (save.target === 'meetings') {
+        const mode = String(save.model).startsWith(REALTIME) ? 'stream' : 'windows';
+        target.consent = save.consent ? { provider: save.provider, host: host(save.endpoint), mode } : null;
+      }
       if (save.target === 'transcription') {
         state.models.orukeet.active = save.provider === 'orukeet' && state.models.orukeet.stage === 'installed' ? 'loaded' : null;
         state.dictation.status =
@@ -339,6 +442,8 @@ export function createMock(params) {
       }
       if (action === 'remove') {
         if (!m.removable) fail('not_removable', 'This model belongs to Ownkey; remove it in Ownkey.');
+        const labelling = (forcedSpeakers.live || []).some((l) => l.mode === 'nemotron' && !['finished', 'failed', 'off'].includes(l.state));
+        if (model === 'nemotron' && labelling) fail('busy', 'A meeting is labelling speakers with this model.');
         Object.assign(m, { stage: 'missing', location: null, path: null, removable: false });
         emit();
       }

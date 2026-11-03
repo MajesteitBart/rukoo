@@ -6,8 +6,8 @@
 //! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window and the whole Settings
 //! state), `start_meeting` and `stop_meeting` (what the tray's items call), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
-//! and writes PNGs of the pill and Settings from WebView2. Nothing here sends input or reads the
-//! screen.
+//! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from
+//! WebView2. Nothing here sends input or reads the screen.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -103,6 +103,7 @@ fn capture(
     page: Option<String>,
 ) -> Result<Value, String> {
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let page_name = page.clone();
     let loads = shared.settings_loads.load(Ordering::Relaxed);
     let fresh = app.get_webview_window(settings_window::LABEL).is_none();
     settings_window::open(
@@ -125,11 +126,15 @@ fn capture(
     }
     // The page draws its state after the first settings://state.
     thread::sleep(Duration::from_millis(1500));
+    let name = format!(
+        "voice-settings-{}.png",
+        page_name.as_deref().unwrap_or("main")
+    );
     Ok(json!({
         "pill": png(shared.pill.window(), &dir.join("voice-pill.png")),
         "settings": png(
             app.get_webview_window(settings_window::LABEL),
-            &dir.join("voice-settings-rukoo.png"),
+            &dir.join(name),
         ),
     }))
 }

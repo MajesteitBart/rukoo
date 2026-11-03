@@ -11,6 +11,14 @@ pub const DATA_DIR_ENV: &str = "RUKOO_VOICE_DATA_DIR";
 /// Set and non-empty: the full path of the local speech worker, instead of the one next to the exe.
 pub const LOCAL_EXE_ENV: &str = "RUKOO_VOICE_LOCAL_EXE";
 
+/// Set and non-empty: the full path of the speaker label worker, instead of the one next to the exe.
+pub const SPEAKERS_EXE_ENV: &str = "RUKOO_VOICE_SPEAKERS_EXE";
+/// A development copy only: the NeMo-Speech.cpp runtime folder to use, unchecked.
+pub const NEMO_DIR_ENV: &str = "RUKOO_VOICE_NEMO_DIR";
+/// A development copy only: `cpu`, `runtime` or `model` makes speaker labels unavailable for
+/// that reason, for the live run and screenshots.
+pub const NO_SPEAKERS_ENV: &str = "RUKOO_VOICE_TEST_NO_SPEAKERS";
+
 #[cfg(windows)]
 pub const LOCAL_EXE_NAME: &str = "rukoo-voice-local.exe";
 #[cfg(not(windows))]
@@ -183,6 +191,37 @@ pub fn ownkey_models() -> Option<PathBuf> {
     ownkey_models_in(Platform::current(), &system_env).map(PathBuf::from)
 }
 
+/// The NeMo-Speech.cpp runtime inside the installed Ownkey. Voice loads it read only, and only
+/// when its DLLs match Ownkey's known build.
+pub fn ownkey_nemo_runtime_in(
+    platform: Platform,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match platform {
+        Platform::Windows => {
+            let base = var(env, "LOCALAPPDATA").or_else(|| {
+                home(platform, env).map(|h| join(platform, &h, &["AppData", "Local"]))
+            })?;
+            Some(join(
+                platform,
+                &base,
+                &["Programs", "Ownkey", "backend", "_internal", "nemo_speech"],
+            ))
+        }
+        // Ownkey's speaker labels only ever shipped for Windows.
+        Platform::MacOs | Platform::Linux => None,
+    }
+}
+
+pub fn ownkey_nemo_runtime() -> Option<PathBuf> {
+    ownkey_nemo_runtime_in(Platform::current(), &system_env).map(PathBuf::from)
+}
+
+/// A non-empty environment variable of the running process.
+pub(crate) fn env_var(name: &str) -> Option<String> {
+    var(&system_env, name)
+}
+
 /// The local speech worker: `RUKOO_VOICE_LOCAL_EXE`, otherwise `rukoo-voice-local` next to the running exe.
 pub fn local_worker_exe() -> Option<PathBuf> {
     if let Some(path) = var(&system_env, LOCAL_EXE_ENV) {
@@ -190,4 +229,14 @@ pub fn local_worker_exe() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.join(LOCAL_EXE_NAME))
+}
+
+/// The speaker label worker: `RUKOO_VOICE_SPEAKERS_EXE`, otherwise `rukoo-voice-speakers` next to
+/// the running exe.
+pub fn speakers_worker_exe() -> Option<PathBuf> {
+    if let Some(path) = var(&system_env, SPEAKERS_EXE_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join(crate::speakers::SPEAKERS_EXE_NAME))
 }

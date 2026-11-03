@@ -47,6 +47,9 @@ impl TimedSpeechToText for LocalEngine {
 pub(crate) enum Recognizer {
     Timed(Arc<dyn TimedSpeechToText>),
     Text(Arc<dyn SpeechToText>),
+    /// Mistral's realtime stream: stream followers send the audio and store what comes back,
+    /// and a window reads its stored segments. The pipeline itself makes no network call.
+    Stream,
 }
 
 /// What a recognizer made of one window.
@@ -60,12 +63,18 @@ impl Recognizer {
         matches!(self, Recognizer::Timed(_))
     }
 
+    pub(crate) fn is_stream(&self) -> bool {
+        matches!(self, Recognizer::Stream)
+    }
+
     pub(crate) fn recognize(&self, pcm: &[i16], hints: &Hints) -> Result<Heard, ProviderError> {
         match self {
             Recognizer::Timed(stt) => stt.transcribe_timed(pcm, hints).map(Heard::Timed),
             Recognizer::Text(stt) => stt
                 .transcribe(pcm, hints)
                 .map(|r| Heard::Text(r.text, r.language)),
+            // The pipeline reads a streamed window's segments itself.
+            Recognizer::Stream => Ok(Heard::Text(String::new(), None)),
         }
     }
 }

@@ -399,14 +399,226 @@ fn a_cancelled_download_stops() {
     assert!(!registry.own_dir(&spec).exists());
 }
 
+const GGUF: &[u8] = b"GGUF: pretend these are speaker model weights";
+const WEIGHTS_LICENSE: &[u8] = b"OpenMDW License 1.1";
+
+/// A model of two files, each with its own URL on `server`, like Nemotron's single GGUF.
+fn file_spec(server: &FakeServer) -> ModelSpec {
+    let file = |name: &str, bytes: &[u8]| ModelFile {
+        name: name.into(),
+        size: bytes.len() as u64,
+        sha256: sha256(bytes),
+        url: Some(server.url(&format!("/files/{name}"))),
+    };
+    ModelSpec {
+        id: "nemotron-test".into(),
+        label: "Nemotron test".into(),
+        revision: "rev1".into(),
+        folder: "nemotron-test".into(),
+        settings_page: "Meetings > Speaker labels".into(),
+        custom_folder: false,
+        archive: None,
+        files: vec![
+            file("model.gguf", GGUF),
+            file("LICENSE-WEIGHTS", WEIGHTS_LICENSE),
+        ],
+    }
+}
+
+/// Serves the two files, with `gguf` in place of the model's real bytes.
+fn file_server(gguf: Reply) -> FakeServer {
+    FakeServer::start(move |request| match request.path() {
+        "/files/model.gguf" => gguf.clone(),
+        "/files/LICENSE-WEIGHTS" => Reply::bytes(200, WEIGHTS_LICENSE.to_vec()),
+        _ => Reply::text(404, "gone"),
+    })
+}
+
 #[test]
-fn file_mode_models_are_not_downloaded_yet() {
-    let temp = TempDir::new("nemotron");
-    let registry = ModelRegistry::new(temp.path()).with_ownkey_models(None);
+fn nemotron_downloads_file_by_file() {
+    let nemotron = ModelSpec::nemotron();
+    assert_eq!(nemotron.archive, None);
+    assert_eq!(nemotron.files.len(), 1);
+    assert_eq!(
+        nemotron.files[0].url.as_deref(),
+        Some("https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/f667ed73aee57d40cc39428eb768b4fd87a0a29e/Nemotron-3-Diarization.q8_0.gguf")
+    );
+    assert_eq!(nemotron.settings_page, "Meetings > Speaker labels");
+}
+
+#[test]
+fn the_asset_script_pins_the_same_nemotron() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/speaker-assets.ps1");
+    // A renamed or deleted script fails here rather than passing without a comparison.
+    let text =
+        fs::read_to_string(&script).unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
+    let gguf = &ModelSpec::nemotron().files[0];
+    assert!(
+        text.contains(gguf.url.as_deref().unwrap()),
+        "speaker-assets.ps1 downloads another Nemotron URL"
+    );
+    assert!(
+        text.to_lowercase().contains(&gguf.sha256),
+        "speaker-assets.ps1 checks another Nemotron SHA-256"
+    );
+}
+
+#[test]
+fn file_mode_installs_into_voices_own_folder() {
+    let server = file_server(Reply::bytes(200, GGUF.to_vec()));
+    let temp = TempDir::new("download-files");
+    let spec = file_spec(&server);
+    let ownkey_root = temp.join("ownkey-models");
+    fs::create_dir_all(&ownkey_root).unwrap();
+    let registry =
+        ModelRegistry::new(temp.join("data")).with_ownkey_models(Some(ownkey_root.clone()));
+
+    let mut reports = Vec::new();
+    let located = registry
+        .download(
+            &spec,
+            &mut |progress: Progress| reports.push(progress),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(located.location, Location::Voice);
+    assert_eq!(located.dir, registry.own_dir(&spec));
+    assert_eq!(fs::read(located.dir.join("model.gguf")).unwrap(), GGUF);
+    assert_eq!(
+        fs::read(located.dir.join("LICENSE-WEIGHTS")).unwrap(),
+        WEIGHTS_LICENSE
+    );
+    let mut stages: Vec<Stage> = reports.iter().map(|p| p.stage).collect();
+    stages.dedup();
+    assert_eq!(
+        stages,
+        vec![
+            Stage::Downloading,
+            Stage::Verifying,
+            Stage::Downloading,
+            Stage::Verifying,
+            Stage::Installed
+        ]
+    );
+    // Download progress counts across both files, against the size of both.
+    let total = spec.extracted_size();
+    let downloading: Vec<&Progress> = reports
+        .iter()
+        .filter(|p| p.stage == Stage::Downloading)
+        .collect();
+    assert!(downloading.iter().all(|p| p.total == Some(total)));
+    assert!(downloading.windows(2).all(|w| w[0].done <= w[1].done));
+    assert_eq!(downloading.last().unwrap().done, total);
+    // Stamped, so the first stream needn't hash it again.
+    assert_eq!(
+        registry
+            .verify(&spec, &located, &AtomicBool::new(false))
+            .unwrap(),
+        Verification::Stamp
+    );
+    assert_eq!(registry.locate(&spec), Some(located.clone()));
+    let siblings: Vec<String> = fs::read_dir(located.dir.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(siblings, vec!["rev1"]);
+    assert!(listing(&ownkey_root).is_empty());
+
+    let again = registry
+        .download(&spec, &mut |_| {}, &AtomicBool::new(false))
+        .unwrap_err();
+    assert_eq!(again.kind, ModelErrorKind::Refused);
+}
+
+#[test]
+fn file_mode_failures_leave_no_install_folder() {
+    let mut tampered = GGUF.to_vec();
+    tampered[0] ^= 0x20;
+    let mut longer = GGUF.to_vec();
+    longer.extend_from_slice(b"extra bytes");
+    let cases: Vec<(Reply, &str)> = vec![
+        (
+            Reply::bytes(200, tampered),
+            "Model file checksum does not match: model.gguf. Try downloading again.",
+        ),
+        (
+            Reply::bytes(200, longer),
+            "Model file exceeds its pinned size: model.gguf.",
+        ),
+        (
+            Reply::bytes(200, GGUF[..GGUF.len() / 2].to_vec()),
+            "Model file checksum does not match: model.gguf. Try downloading again.",
+        ),
+        (
+            Reply::text(404, "gone"),
+            "Couldn't download the model: the server answered 404 Not Found.",
+        ),
+    ];
+    for (reply, expected) in cases {
+        let server = file_server(reply);
+        let temp = TempDir::new("download-files-fail");
+        let spec = file_spec(&server);
+        let registry = ModelRegistry::new(temp.join("data")).with_ownkey_models(None);
+        let error = registry
+            .download(&spec, &mut |_| {}, &AtomicBool::new(false))
+            .unwrap_err();
+        assert_eq!(error.message, expected);
+        assert!(!registry.own_dir(&spec).exists());
+        let parent = registry.own_dir(&spec).parent().unwrap().to_path_buf();
+        assert!(
+            listing(&parent).is_empty(),
+            "left behind: {:?}",
+            listing(&parent)
+        );
+        assert_eq!(registry.locate(&spec), None);
+    }
+}
+
+#[test]
+fn a_cancelled_file_download_leaves_nothing() {
+    let server = file_server(Reply::bytes(200, GGUF.to_vec()));
+    let spec = file_spec(&server);
+
+    let temp = TempDir::new("download-files-cancel");
+    let registry = ModelRegistry::new(temp.join("data")).with_ownkey_models(None);
     let error = registry
-        .download(&ModelSpec::nemotron(), &mut |_| {}, &AtomicBool::new(false))
+        .download(&spec, &mut |_| {}, &AtomicBool::new(true))
+        .unwrap_err();
+    assert_eq!(error.kind, ModelErrorKind::Cancelled);
+    assert!(!registry.own_dir(&spec).exists());
+
+    // Cancelled once the download is under way.
+    let cancel = AtomicBool::new(false);
+    let error = registry
+        .download(
+            &spec,
+            &mut |progress: Progress| {
+                if progress.stage == Stage::Downloading {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+    assert_eq!(error.kind, ModelErrorKind::Cancelled);
+    let parent = registry.own_dir(&spec).parent().unwrap().to_path_buf();
+    assert!(listing(&parent).is_empty(), "{:?}", listing(&parent));
+}
+
+#[test]
+fn a_model_without_an_archive_or_urls_is_refused() {
+    let temp = TempDir::new("download-no-source");
+    let registry = ModelRegistry::new(temp.path()).with_ownkey_models(None);
+    let mut spec = spec(None);
+    spec.files[0].url = Some("http://127.0.0.1:9/only-one".into());
+    let error = registry
+        .download(&spec, &mut |_| {}, &AtomicBool::new(false))
         .unwrap_err();
     assert_eq!(error.kind, ModelErrorKind::Refused);
+    assert_eq!(
+        error.message,
+        "Downloading Orukeet test isn't available in this version of Voice."
+    );
 }
 
 #[test]
