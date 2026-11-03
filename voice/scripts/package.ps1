@@ -507,9 +507,10 @@ foreach ($language in @('English', 'Dutch')) {
   }
 }
 # The files the installer puts in the install folder, next to each other. NSIS's own plugins unpack to $PLUGINSDIR.
+# 7-Zip 26 also unpacks uninstall.exe, which the installer writes when it runs; 7-Zip 25 leaves it out.
 $contents = Join-Path $out 'installer-contents'
 Expand-Installer $installer $contents
-$installed = @(Get-ChildItem -LiteralPath $contents -File | ForEach-Object { $_.Name } | Sort-Object)
+$installed = @(Get-ChildItem -LiteralPath $contents -File | Where-Object { $_.Name -ne 'uninstall.exe' } | ForEach-Object { $_.Name } | Sort-Object)
 $expected = @('rukoo-voice.exe', 'rukoo-voice-local.exe', 'rukoo-voice-recorder.exe', 'rukoo-voice-screen.exe', 'rukoo-voice-speakers.exe',
   'THIRD_PARTY_LICENSES.txt', 'THIRD_PARTY_NOTICES.md') | Sort-Object
 if (($installed -join ',') -ne ($expected -join ',')) { throw "The installer holds $($installed -join ', ') instead of $($expected -join ', ')" }
