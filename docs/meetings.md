@@ -62,7 +62,7 @@ Settings → Meetings shows whether Rukoo Voice is connected, and has two switch
   - Linux has no way to hide a window. Keep Rukoo on a monitor you don't share or record.
 - **Agents can read meetings.** Off, the meeting tools give agents nothing from your meetings, and a new chat about a meeting is named after your first message instead of the meeting.
 
-While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. The badge still counts new mail. When Voice stops recording the screen for good, for example because the disk is nearly full, the notifications come back for the rest of the meeting; the ones held until then aren't shown later. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
+While a meeting records the screen, Rukoo holds back its mail and booking notifications, so their text stays out of the frames. It also holds them back while it doesn't know yet what a recording meeting records, as when it connects to Voice mid-meeting. The badge still counts new mail. When Voice stops recording the screen for good, for example because the disk is nearly full, the notifications come back for the rest of the meeting; the ones held until then aren't shown later. Calendar reminders still show, because a missed reminder costs more than its title on the screen.
 
 In meeting mode, the status line at the bottom of the sidebar says how Voice is, and opens these settings.
 
@@ -76,5 +76,6 @@ In meeting mode, the status line at the bottom of the sidebar says how Voice is,
 - Windows' capture border stays around the recorded monitor; Voice doesn't hide it.
 - Other apps' notifications and pop-ups on the recorded monitor end up in the frames. Rukoo holds back only its own.
 - With Rukoo's hide switch off, a meeting started from Rukoo records Rukoo's monitor, because Rukoo is the window you're working in. Move it with Screen in the header or with the pill's monitor button.
+- When Windows doesn't hide a Rukoo window, the meeting's header says "Visible in screen recordings" and Rukoo tries again every second. Until a try works, Rukoo can show in the frames: a meeting Voice starts gets no confirmation from Rukoo and starts its frames after half a second.
 - A Rukoo that isn't connected to Voice when a meeting starts from Voice can show in that meeting's first frames. Voice waits up to 5 seconds only for a Rukoo it has seen since Voice started, so right after Voice restarts it doesn't wait at all.
 - Native file dialogs and system notifications can't be hidden from screen capture.
