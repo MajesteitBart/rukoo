@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use voice_s3_fake::{FakeS3, Op};
 use voice_sync::s3::{Bucket, Part, MAX_LIST_PAGES};
-use voice_sync::{BucketRetention, Service, SyncConfig, SyncErrorKind, UrlStyle};
+use voice_sync::{BucketRetention, Service, SyncConfig, SyncError, SyncErrorKind, UrlStyle};
 
 const SECRET: &str = "secret-that-must-never-show-up";
 
@@ -124,6 +124,30 @@ fn a_listing_of_1500_keys_follows_the_pages() {
         assert_eq!(*size, (i % 7) as u64);
     }
     assert_eq!(ops(&fake, Op::List), 2, "1,000 keys a page");
+}
+
+/// The check runs before every page: once it fails, as when sync is turned off during a long
+/// listing, no further request reaches the bucket.
+#[test]
+fn a_failing_check_stops_a_listing_between_pages() {
+    let fake = start();
+    let b = bucket(&fake);
+    for i in 0..1_500 {
+        b.put(&format!("many/{i:05}"), b"x").unwrap();
+    }
+    let asked = std::cell::Cell::new(0);
+    let off = || {
+        asked.set(asked.get() + 1);
+        if asked.get() > 1 {
+            Err(SyncError::new(SyncErrorKind::Off, "Bucket sync is off."))
+        } else {
+            Ok(())
+        }
+    };
+    let result = b.list_checked("many/", None, &off);
+    assert_eq!(result.unwrap_err().kind, SyncErrorKind::Off);
+    assert_eq!(asked.get(), 2, "checked before each page");
+    assert_eq!(ops(&fake, Op::List), 1, "no request after the check failed");
 }
 
 #[test]

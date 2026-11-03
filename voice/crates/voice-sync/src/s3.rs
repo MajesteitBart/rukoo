@@ -295,11 +295,23 @@ impl Bucket {
     /// before fails the listing, so a bucket that sends tokens in a circle can't keep Voice
     /// listing, and collecting keys, for good.
     pub fn list(&self, prefix: &str, delimiter: Option<&str>) -> Result<Listing, SyncError> {
+        self.list_checked(prefix, delimiter, &|| Ok(()))
+    }
+
+    /// [`Bucket::list`] with `check` run before every page's request: its error stops the listing,
+    /// so turning sync off or moving it to another bucket stops a long listing between pages.
+    pub fn list_checked(
+        &self,
+        prefix: &str,
+        delimiter: Option<&str>,
+        check: &dyn Fn() -> Result<(), SyncError>,
+    ) -> Result<Listing, SyncError> {
         let full = self.full(prefix);
         let mut listing = Listing::default();
         let mut token: Option<String> = None;
         let mut seen = HashSet::new();
         for _ in 0..MAX_LIST_PAGES {
+            check()?;
             let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
             action.with_prefix(full.as_str());
             if let Some(delimiter) = delimiter {

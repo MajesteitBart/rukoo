@@ -392,10 +392,9 @@ pub(crate) fn list_remote(
     remote: &Remote,
     check: &dyn Fn() -> Result<(), SyncError>,
 ) -> Result<Vec<RemoteMeeting>, SyncError> {
-    check()?;
     let listing = remote
         .bucket
-        .list(&names::index_prefix(&remote.kid), None)?;
+        .list_checked(&names::index_prefix(&remote.kid), None, check)?;
     let mut indexes = Vec::new();
     for (object, _) in &listing.keys {
         check()?;
