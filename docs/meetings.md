@@ -46,6 +46,8 @@ Beside the transcript:
 
 The Transcript, Notes and Details tabs are available at every width. In a narrow window each tab takes the whole view.
 
+Notes have a 100,000-character limit on saved Markdown, including its formatting and escaping. If a save exceeds it, Rukoo keeps the last saved copy and shows "Not saved: shorten the notes". The unsaved text stays in the editor while the app is open, including when you switch meetings. Shorten it before closing the app to save your changes.
+
 The sidebar lists the meetings by day, newest first. With the chat open the sidebar becomes a rail, where each meeting shows its day of the month.
 
 ## The agent

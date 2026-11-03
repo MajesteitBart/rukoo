@@ -9076,6 +9076,10 @@
     "message": "Not saved",
     "description": "Meeting view: status beside the notes heading when saving failed; Rukoo tries again with the next change. src/renderer/meeting.js (saveNotes)"
   },
+  "meeting.notes.tooLong": {
+    "message": "Not saved: shorten the notes",
+    "description": "Meeting notes status when serialized Markdown exceeds the storage limit. Saved notes remain unchanged; the pending editor text stays in memory so the user can shorten it. src/renderer/meeting.js (fillNotes, drainNotes)"
+  },
   "meeting.state.recording": {
     "message": "Recording",
     "description": "Meeting view header: state pill while Rukoo Voice records the meeting. src/renderer/meeting.js (stateHtml)"

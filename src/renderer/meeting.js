@@ -1378,9 +1378,10 @@ async function setEvent(eventId) {
 // The notes editor saves a moment after typing stops and when it loses focus, with the revision it started from.
 // queued holds texts waiting while another save runs, by meeting: captured when the save was asked for, so opening
 // another meeting meanwhile can't lose what was typed in the one before.
+// blocked holds oversized drafts for the current session; they leave the saved copy untouched.
 let notesEditor = null;
 let notesMenu = null;
-const N = { id: null, rev: 0, dirty: false, saving: false, queued: new Map(), timer: null };
+const N = { id: null, rev: 0, dirty: false, saving: false, queued: new Map(), blocked: new Map(), timer: null };
 
 function fillNotes(d) {
   const area = $('.meeting .mt-notes-input');
@@ -1388,9 +1389,10 @@ function fillNotes(d) {
   N.id = d.meeting.id;
   N.rev = d.notes ? d.notes.rev : 0;
   N.dirty = false;
-  area.innerHTML = markdownToNotes(d.notes ? d.notes.text : '');
+  const blocked = N.blocked.get(N.id);
+  area.innerHTML = markdownToNotes(blocked ?? (d.notes ? d.notes.text : ''));
   area.contentEditable = "true";
-  notesStatus(d.notes && d.notes.updatedAt ? t('meeting.notes.saved') : '');
+  notesStatus(blocked !== undefined ? t('meeting.notes.tooLong') : d.notes && d.notes.updatedAt ? t('meeting.notes.saved') : '', blocked !== undefined);
 }
 
 function notesStatus(text, error = false) {
@@ -1401,6 +1403,7 @@ function notesStatus(text, error = false) {
 }
 
 function notesTyped() {
+  N.blocked.delete(N.id);
   N.dirty = true;
   notesStatus('');
   clearTimeout(N.timer);
@@ -1412,7 +1415,7 @@ function notesArrived(notes) {
   if (!M.data) return;
   M.data.notes = notes;
   const area = $('.meeting .mt-notes-input');
-  if (!area || N.id !== M.data.meeting.id || N.dirty || N.saving || document.activeElement === area) return;
+  if (!area || N.id !== M.data.meeting.id || N.dirty || N.saving || N.blocked.has(N.id) || document.activeElement === area) return;
   if (notes.rev !== N.rev) {
     N.rev = notes.rev;
     area.innerHTML = markdownToNotes(notes.text);
@@ -1441,7 +1444,15 @@ async function drainNotes() {
       try {
         let res = await api('meetingSaveNotes', id, job.text, job.rev);
         if (res && res.conflict) res = await api('meetingSaveNotes', id, job.text, res.rev);
+        if (res && res.tooLong) {
+          // Keep this draft in memory for returning to the meeting. A permanent limit
+          // failure must not retry forever or hold up another meeting's notes.
+          if (!N.queued.has(id)) N.blocked.set(id, job.text);
+          if (N.id === id && !N.dirty && !N.queued.has(id)) notesStatus(t('meeting.notes.tooLong'), true);
+          continue;
+        }
         if (res && !res.conflict) {
+          N.blocked.delete(id);
           // A newer text queued meanwhile goes out with the revision this save made.
           const next = N.queued.get(id);
           if (next) next.rev = res.rev;

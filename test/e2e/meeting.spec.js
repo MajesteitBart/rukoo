@@ -432,6 +432,47 @@ test('notes sanitize complete valid content while mail keeps its default HTML bu
   expect(result.unsafe).toBe(false);
 });
 
+test('escaped notes over the storage limit keep their saved original and a recoverable editor draft', async () => {
+  test.setTimeout(120000);
+  const id = voiceStarts({ title: 'Oversized notes' });
+  const other = voice.meetingId();
+  voice.append('meeting.started', other, { title: 'Another meeting', startedAt: Date.now() - 3600000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+  voice.append('meeting.state', other, { state: 'done', at: 1000, endedAt: Date.now() - 3599000 });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  const original = '_'.repeat(60000) + '\nEnd marker';
+  await app.evaluate((_e, { id, original }) => global.__semVoice.saveNotes(id, original, 0), { id, original });
+  await expect.poll(() => notes().evaluate((el) => el.textContent.length)).toBe(60010);
+  await notes().press('Control+End');
+  await win.keyboard.type(' revised');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
+  expect(await app.evaluate((_e, { id, original }) => global.__semVoice.get(id).notes.text === original && global.__semVoice.get(id).notes.rev === 1, { id, original })).toBe(true);
+  // A permanently rejected draft must not prevent another meeting's notes from saving.
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Another meeting' }).click();
+  await notes().fill('These notes can save.');
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  await win.locator('.sidebar [data-mt-open]', { hasText: 'Oversized notes' }).click();
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker revised'))).toBe(true);
+  await expect(view().locator('.mt-notes-status')).toHaveText('Not saved: shorten the notes');
+  for (const language of ['en', 'nl']) for (const theme of ['dark', 'light']) {
+    await setLanguage(language);
+    await setTheme(theme);
+    await view().locator('[data-mt-tab="notes"]').click();
+    await setSize(860, 900);
+    await shot(`notes-too-long-${theme}-${language}`);
+  }
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Oversized notes');
+  expect(await notes().evaluate((el) => el.textContent.endsWith('End marker'))).toBe(true);
+  expect(await app.evaluate((_e, { id, original }) => global.__semVoice.get(id).notes.text === original, { id, original })).toBe(true);
+  await notes().fill('Short enough.');
+  await notes().blur();
+  await expect.poll(() => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe('Short enough.');
+});
+
 test('soft breaks preserve note formatting and linked labels after restart', async () => {
   const id = voiceStarts({ title: 'Soft breaks in notes' });
   await openMeetings();

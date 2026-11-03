@@ -21,7 +21,7 @@ function inline(text, slots = []) {
   s = s.replace(/<u>(.*?)<\/u>/g, (_, c) => keep(`<u>${inline(c, slots)}</u>`));
   s = esc(s).replace(/\*\*(\S[\s\S]*?)\*\*/g, '<b>$1</b>').replace(/\*(\S[^*]*?)\*/g, '<i>$1</i>').replace(/~~(\S.*?)~~/g, '<s>$1</s>');
   // Recursive labels share the table that owns their escaped text and code placeholders.
-  for (let i = 0; i <= slots.length; i++) s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
+  for (let i = 0; i <= slots.length && s.includes('\u0000'); i++) s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
   return s;
 }
 

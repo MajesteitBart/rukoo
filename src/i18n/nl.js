@@ -2329,6 +2329,7 @@
   "meeting.notes.saved": "Bewaard",
   "meeting.notes.saving": "Bewaren…",
   "meeting.notes.failed": "Niet bewaard",
+  "meeting.notes.tooLong": "Niet bewaard: kort de notities in",
   "meeting.state.recording": "Neemt op",
   "meeting.state.paused": "Gepauzeerd",
   "meeting.state.processing": "Transcript wordt afgemaakt",

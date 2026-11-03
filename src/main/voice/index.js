@@ -660,7 +660,7 @@ class VoiceService extends EventEmitter {
     const before = this.revOf(id);
     const out = this.store.saveNotes(id, text, rev);
     if (!out) throw new VoiceError('not_found', 'No such meeting.');
-    if (!out.conflict) this.note({ meeting: id, kind: 'notes' }, before);
+    if (!out.conflict && !out.tooLong) this.note({ meeting: id, kind: 'notes' }, before);
     return out;
   }
 

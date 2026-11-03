@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
-const { VoiceStore } = require('../src/main/voice/store');
+const { VoiceStore, NOTES_MAX } = require('../src/main/voice/store');
 const { suggest, candidateEvents, attendeeCandidates, compareSpeakers, speakerOrder } = require('../src/main/voice/speakers');
 
 const M = 'm-20261030-171203-4f2a';
@@ -22,6 +22,23 @@ const passage = (track, start, text, revision = 1, extra = {}) =>
 function store(dir = tempDir('rukoo-voice-store-'), opts = {}) {
   return new VoiceStore({ dataDir: dir, saveMs: 20, now: () => 1793000500000, ...opts }).load();
 }
+
+test('oversized notes leave the saved text and revision untouched, including after restart', () => {
+  const dir = tempDir('rukoo-notes-limit-');
+  const s = store(dir);
+  s.apply(started());
+  const original = '_'.repeat(60000) + '\nEnd marker';
+  assert.deepEqual(s.saveNotes(M, original, 0), { rev: 1 });
+  const before = s.meeting(M).notes;
+  assert.deepEqual(s.saveNotes(M, original.replace(/_/g, '\\_') + ' revised', 1), { tooLong: true, maxLength: NOTES_MAX, rev: 1 });
+  assert.deepEqual(s.meeting(M).notes, before);
+  s.close();
+  const again = store(dir);
+  assert.deepEqual(again.meeting(M).notes, before);
+  assert.deepEqual(again.saveNotes(M, 'x'.repeat(NOTES_MAX), 1), { rev: 2 });
+  assert.equal(again.meeting(M).notes.text.length, NOTES_MAX);
+  again.close();
+});
 
 function script() {
   return [
