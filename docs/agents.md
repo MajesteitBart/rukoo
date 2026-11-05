@@ -160,6 +160,16 @@ Rukoo uses the gateway's [OpenAI-compatible HTTP API](https://docs.openclaw.ai/g
 
    For a gateway on another computer, such as a Mac mini, a home server or a VPS in your tailnet, first turn on "Let OpenClaw use Rukoo from another computer" in the OpenClaw card. Rukoo then also listens on this computer's Tailscale address, and the card shows that address (`http://<Tailscale IP>:47800/mcp`). "Copy OpenClaw setup" now copies a command with that address and a token of its own; the toast says which address went on the clipboard. Run it on the gateway's computer. Windows asks once whether Rukoo may accept connections; allow it for private networks. Rukoo has to be open (it can stay in the tray) for OpenClaw to reach its tools.
 
+   The copied command puts the token in `openclaw.json` as plain text, so `openclaw mcp doctor` warns that `headers.Authorization` contains a literal sensitive value. To keep the token out of the config, give it to the gateway as an environment variable and name the variable in the header. Add the token to `~/.openclaw/.env` (`$OPENCLAW_STATE_DIR/.env` when you set that), replacing an older line when the token changes:
+   ```sh
+   RUKOO_MCP_TOKEN=<token>
+   ```
+   Then run the copied command with `Bearer ${RUKOO_MCP_TOKEN}` in place of the token, in single quotes so your shell leaves it alone:
+   ```sh
+   openclaw mcp set rukoo '{"url":"http://127.0.0.1:47800/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer ${RUKOO_MCP_TOKEN}"}}'
+   ```
+   OpenClaw fills in the variable each time it connects, from the gateway's own environment or from that `.env` file. A gateway that runs as a service doesn't get the variables of your shell, so use the file for it. OpenClaw's secret store doesn't work for this header: OpenClaw 2026.11.1 accepts no SecretRef in MCP headers and doesn't fill `${RUKOO_MCP_TOKEN}` from a store entry. Without the variable, OpenClaw sends the text `${RUKOO_MCP_TOKEN}` and Rukoo answers 401. If `openclaw mcp set` says it "requires exclusive offline state ownership", the running gateway didn't accept the CLI as an operator: stop the gateway, run the command and start the gateway again.
+
 How it works and what it can't do:
 
 - Each turn is one `POST /v1/chat/completions` with `stream: true`. `model` names the agent (`openclaw/<agentId>`) and the OpenAI `user` field is `rukoo:<chat id>`, so the gateway keeps one session per chat. Rukoo sends only your new message with its own instructions; the gateway has the earlier turns.
@@ -171,6 +181,7 @@ How it works and what it can't do:
 - The gateway token gives full operator access to the gateway. Rukoo keeps it encrypted, like the Hermes key, and sends it only to the gateway URL.
 - The MCP token in the copied command is made from the gateway token; it doesn't give access to the gateway. There are two: the one for a gateway on this computer works only on `127.0.0.1`, and the one for another computer works only on the Tailscale address, and only while "Let OpenClaw use Rukoo from another computer" is on. A new gateway token makes new MCP tokens; copy the setup again. If Rukoo's MCP port changes (Settings shows a note), copy it again too.
 - Any device in your tailnet that can reach this computer can try the Tailscale address, as for Hermes; only the token gets in. Use Tailscale's access controls to narrow which devices can reach it.
+- The MCP token stays out of the agent's prompt: the gateway adds the header to its own requests, and with OpenClaw 2026.11.1 neither the token nor the variable's name reaches the model during a turn. An agent that goes looking can still find it: in `openclaw.json`, in the `.env` file or through `exec` in the gateway's environment. OpenClaw's [secrets documentation](https://docs.openclaw.ai/gateway/secrets) says the same of every plaintext credential. A leaked MCP token opens Rukoo's tools only from this computer or, for the remote token, from your tailnet while you allow it. An agent misled by an email could call those tools without the token, so Rukoo's [permission levels](#permission-level) and approvals, not the token, decide what such calls may change.
 - How OpenClaw's MCP client handles Rukoo being closed (it then can't reach the tools) depends on OpenClaw; restarting the gateway or `openclaw mcp doctor rukoo --probe` connects again.
 
 ## Rukoo on your phone
