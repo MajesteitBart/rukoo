@@ -34,7 +34,7 @@ Settings > Agents has a card per agent with its status and a "Test connection" b
 | Agent | How the phone talks to it | How it uses Rukoo's tools on the phone |
 |---|---|---|
 | Clark (Hermes Agent) | The Hermes API server over Tailscale, as on desktop: a Rukoo chat is a Hermes session, a turn is a run | Clark's `rukoo_bridge.py` finds the phone on Tailscale, port 47800, and sends the calls of phone chats there |
-| OpenClaw | The gateway's OpenAI-compatible endpoint over Tailscale | `openclaw mcp set` with the command from Settings > Phone tools > "Copy OpenClaw setup". It replaces the computer's entry, because OpenClaw names one Rukoo |
+| OpenClaw | The gateway's OpenAI-compatible endpoint over Tailscale | `openclaw mcp set` with the command from Settings > Phone tools > "Copy OpenClaw setup". It replaces the computer's entry, because OpenClaw names one Rukoo. To keep its token out of `openclaw.json`, use the variable [described for the desktop](agents.md#openclaw) |
 | Claude Code, Codex | Rukoo on your computer runs them, over the computer's Tailscale address | The computer forwards their Rukoo tool calls to the phone |
 
 For Claude Code and Codex, the computer must be on, with Rukoo open (the tray is enough), Tailscale on, and "Let my phone use this computer" on. Their own permission requests ("Claude Code wants to read a file") show as approval cards on the phone. Phone chats always run with "Ask before actions" on the computer. [Rukoo on your phone](agents.md#rukoo-on-your-phone) describes the computer's side.
