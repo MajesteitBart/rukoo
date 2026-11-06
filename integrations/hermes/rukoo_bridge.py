@@ -88,6 +88,10 @@ HELLO_TIMEOUT_SECONDS = 4
 PHONE_TIMEOUT_SECONDS = 8
 # With Rukoo found, the bridge still looks again now and then, in the background, for Rukoo on other devices.
 SEARCH_AGAIN_SECONDS = 60
+# How often a tool call may make the bridge ask Rukoo for its tools, to tell Hermes about new ones (Catalog below),
+# and how long it waits before telling Hermes the same news again.
+TOOLS_CHECK_SECONDS = 60
+TOOLS_RETELL_SECONDS = 600
 # Straight to Rukoo: a proxy from the environment would get the token and can't reach 100.x anyway.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
@@ -480,7 +484,7 @@ def fetch_instructions(url):
         "jsonrpc": "2.0",
         "id": "instructions",
         "method": "initialize",
-        "params": {"protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {}, "clientInfo": {"name": "rukoo-bridge", "version": "5"}},
+        "params": {"protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {}, "clientInfo": {"name": "rukoo-bridge", "version": "6"}},
     }
     try:
         reply = post(url, hello, LIST_TIMEOUT_SECONDS)
@@ -488,6 +492,84 @@ def fetch_instructions(url):
     except Exception:  # noqa: BLE001 - the instructions from before stay
         return None
     return text if isinstance(text, str) and text else None
+
+
+def combined_tools(devices, message, quiet=False):
+    """(tools, url of the largest list) from every device in devices, or None when none sent its list."""
+    # Prefer the largest catalog for duplicate names (usually the newest app), then URL for a stable tie.
+    # Discovery has no conversation: activity on an older phone must never remove a desktop's tools.
+    def fetch(device):
+        url, name, _ = device
+        try:
+            tools = post(url, message, LIST_TIMEOUT_SECONDS)["result"]["tools"]
+            if not isinstance(tools, list) or any(not isinstance(t, dict) or not isinstance(t.get("name"), str) for t in tools):
+                raise ValueError("invalid tool list")
+            if not quiet:
+                log(f"tools/list: {name} ({url}) supplied {len(tools)} tools")
+            return url, name, tools
+        except Exception as exc:  # noqa: BLE001 - one unavailable device doesn't hide the others
+            if not quiet:
+                log(f"tools/list from {name} failed: {exc}")
+            return None
+
+    lists = [r for r in each(fetch, devices) if r is not None]
+    if not lists:
+        return None
+    lists.sort(key=lambda r: (-len(r[2]), r[0]))
+    combined = {}
+    for _, _, catalog in lists:
+        for tool in catalog:
+            combined.setdefault(tool["name"], tool)
+    if not quiet:
+        log(f"tools/list: serving {len(combined)} tools from {len(lists)} devices")
+    return list(combined.values()), lists[0][0]
+
+
+class Catalog:
+    """Which tools Hermes has. Hermes lists them once, when it starts the bridge, and again only when the bridge
+    says the list changed. Without that, a tool Rukoo gained later, through an update or a newer Rukoo coming
+    online, stays out of the agent's reach until the gateway restarts. A tool call is when the bridge looks: at
+    most once every TOOLS_CHECK_SECONDS, and with the same news at most every TOOLS_RETELL_SECONDS, in case this
+    Hermes ignores it. A Rukoo with fewer tools is no news: calls go to the device with the chat anyway."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.served = None  # the names from the last tools/list, None before the first
+        self.checked_at = 0.0
+        self.told = frozenset()  # every name Hermes was told about since its last tools/list
+        self.told_at = 0.0
+
+    def serve(self, tools):
+        with self.lock:
+            self.served = {tool.get("name") for tool in tools if isinstance(tool, dict)}
+            self.checked_at = time.monotonic()
+            # Hermes asked again, so what it was told is out of date: a tool still missing is news again.
+            self.told, self.told_at = frozenset(), 0.0
+
+    def check_soon(self):
+        with self.lock:
+            if self.served is None or time.monotonic() - self.checked_at < TOOLS_CHECK_SECONDS:
+                return
+            self.checked_at = time.monotonic()
+        threading.Thread(target=self.check, daemon=True).start()
+
+    def check(self):
+        with DEVICES.lock:
+            devices = [(url, name, {}) for url, name in DEVICES.found.items()]
+        live = combined_tools(devices, {"jsonrpc": "2.0", "id": "check", "method": "tools/list"}, quiet=True)
+        if live is None:
+            return
+        with self.lock:
+            new = frozenset(tool["name"] for tool in live[0]) - self.served
+            # Devices with different catalogs come and go: only a name Hermes hasn't heard about is news.
+            if not new or (new <= self.told and time.monotonic() - self.told_at < TOOLS_RETELL_SECONDS):
+                return
+            self.told, self.told_at = self.told | new, time.monotonic()
+        log(f"Rukoo has tools Hermes doesn't have yet ({', '.join(sorted(new))}); telling Hermes the list changed")
+        send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+
+
+CATALOG = Catalog()
 
 
 def list_tools(message):
@@ -498,35 +580,17 @@ def list_tools(message):
         # answered: another bridge protocol, another key, or no Rukoo open.
         why = DEVICES.unreachable()
     else:
-        # Prefer the largest catalog for duplicate names (usually the newest app), then URL for a stable tie.
-        # Discovery has no conversation: activity on an older phone must never remove a desktop's tools.
-        def fetch(device):
-            url, name, _ = device
-            try:
-                tools = post(url, message, LIST_TIMEOUT_SECONDS)["result"]["tools"]
-                if not isinstance(tools, list) or any(not isinstance(t, dict) or not isinstance(t.get("name"), str) for t in tools):
-                    raise ValueError("invalid tool list")
-                log(f"tools/list: {name} ({url}) supplied {len(tools)} tools")
-                return url, name, tools
-            except Exception as exc:  # noqa: BLE001 - one unavailable device doesn't hide the others
-                log(f"tools/list from {name} failed: {exc}")
-                return None
-
-        lists = [r for r in each(fetch, answers) if r is not None]
-        lists.sort(key=lambda r: (-len(r[2]), r[0]))
-        combined = {}
-        for _, _, catalog in lists:
-            for tool in catalog:
-                combined.setdefault(tool["name"], tool)
-        if lists:
-            tools = list(combined.values())
-            log(f"tools/list: serving {len(tools)} tools from {len(lists)} devices")
-            save_cache(tools, fetch_instructions(lists[0][0]) or load_cache()[1])
+        live = combined_tools(answers, message)
+        if live is not None:
+            tools, largest = live
+            save_cache(tools, fetch_instructions(largest) or load_cache()[1])
+            CATALOG.serve(tools)
             return result(message.get("id"), {"tools": tools})
         why = f"Rukoo Mail on {', '.join(a[1] for a in answers)} didn't send its tool list."
     tools, _ = load_cache()
     if tools is None:
         return error(message.get("id"), -32603, f"The Rukoo bridge has no tool list yet. {why}")
+    CATALOG.serve(tools)
     return result(message.get("id"), {"tools": tools})
 
 
@@ -540,6 +604,7 @@ def call_tool(message):
         log("tools/call: Rukoo isn't open anywhere")
         return tool_error(message.get("id"), DEVICES.unreachable())
     url, name = target
+    CATALOG.check_soon()
     # Finding the device counts against the same deadline, so the answer still comes before Hermes gives up.
     timeout = max(10, CALL_TIMEOUT_SECONDS - (time.monotonic() - started))
     try:
@@ -561,8 +626,8 @@ def handle(message):
         requested = (message.get("params") or {}).get("protocolVersion")
         return result(msg_id, {
             "protocolVersion": requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-5"},
+            "capabilities": {"tools": {"listChanged": True}},
+            "serverInfo": {"name": "rukoo", "title": "Rukoo Mail", "version": "bridge-6"},
             # The handshake never waits for Rukoo: the instructions are the ones from the last tool list.
             "instructions": load_cache()[1] or INSTRUCTIONS,
         })

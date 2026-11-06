@@ -1997,6 +1997,101 @@ test('hermes bridge: combines old and new device catalogs regardless of activity
   assert.match(log, /serving 22 tools from 2 devices/);
 });
 
+test('hermes bridge: tells Hermes when Rukoo gains tools after Hermes listed them, and only then', async (t) => {
+  const python = findPython();
+  if (!python) return t.skip('no Python 3.8+ on PATH');
+  const { spawn } = require('child_process');
+  const catalog = JSON.parse(JSON.stringify(require('../src/main/agents/tools').list(null)));
+  // A Rukoo from before the meeting tools, which an update gives six more while Hermes keeps running.
+  const base = catalog.slice(0, 16);
+  const tools = [...base];
+  const offer = (list) => tools.splice(0, tools.length, ...list);
+  const desktop = await fakeRukoo({ key: 'notify-key', tools });
+  const cache = path.join(tmp('bridge-notify'), 'tools.json');
+  // The real bridge on stdio, which looks at every call instead of once a minute, and says when a look is over.
+  const code = [
+    'import sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'import rukoo_bridge as b',
+    'b.TOOLS_CHECK_SECONDS = 0',
+    'check = b.Catalog.check',
+    'def checked(self):',
+    '    try:',
+    '        check(self)',
+    '    finally:',
+    '        b.log("test: check done")',
+    'b.Catalog.check = checked',
+    'b.main()'
+  ].join('\n');
+  const child = spawn(python, ['-c', code, path.join(__dirname, '..', 'integrations', 'hermes')], {
+    env: { ...process.env, RUKOO_KEY: 'notify-key', RUKOO_URL: desktop.url, RUKOO_DISCOVER: '0', RUKOO_CACHE: cache, PYTHONIOENCODING: 'utf-8', PYTHONDONTWRITEBYTECODE: '1' },
+    windowsHide: true
+  });
+  t.after(async () => { child.kill(); await desktop.close(); });
+  const replies = new Map();
+  const notices = [];
+  let log = '';
+  child.stderr.on('data', (b) => { log += b; });
+  readJsonLines(child.stdout, (m) => { if ('id' in m) replies.set(m.id, m); else notices.push(m); });
+  let next = 0;
+  const ask = async (message) => {
+    const id = ++next;
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, ...message }) + '\n');
+    await waitFor(() => replies.has(id), 15000);
+    return replies.get(id);
+  };
+  const checks = () => log.split('test: check done').length - 1;
+  // A tool call, and the bridge's look at Rukoo's tools that comes with it. The check writes a notification before
+  // it says it's done, so the answer to a ping sent after that comes behind any notification on stdout.
+  const call = async () => {
+    const before = checks();
+    const reply = await ask({ method: 'tools/call', params: { name: 'get_context', arguments: {} } });
+    assert.equal(reply.result.content[0].text, 'ok get_context één');
+    await waitFor(() => checks() > before, 15000);
+    await ask({ method: 'ping' });
+  };
+  const names = (list) => list.map((tool) => tool.name).sort().join(', ');
+  const told = (list) => `Rukoo has tools Hermes doesn't have yet (${names(list)}); telling Hermes the list changed`;
+  const init = await ask({ method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+  assert.deepEqual(init.result.capabilities.tools, { listChanged: true });
+  assert.equal(init.result.serverInfo.version, 'bridge-6');
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  assert.equal((await ask({ method: 'tools/list' })).result.tools.length, 16);
+  await call();
+  assert.deepEqual(notices, [], 'nothing new');
+
+  // Rukoo gains three tools while Hermes keeps the sixteen.
+  offer(catalog.slice(0, 19));
+  await call();
+  assert.deepEqual(notices, [{ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }]);
+  assert.ok(log.includes(told(catalog.slice(16, 19))), log);
+  // Hermes hasn't asked again yet. Devices with different catalogs come and go: names it already heard about are
+  // no news, a shrinking list isn't either, and neither is the return of what it was told.
+  await call();
+  offer(catalog.slice(0, 18));
+  await call();
+  offer(catalog.slice(0, 19));
+  await call();
+  assert.equal(notices.length, 1);
+  // A name Hermes hasn't heard about is.
+  offer(catalog);
+  await call();
+  assert.equal(notices.length, 2);
+  assert.ok(log.includes(told(catalog.slice(16))), log);
+  // Hermes asks again, as it does on the notification, and gets them all.
+  assert.deepEqual((await ask({ method: 'tools/list' })).result.tools, catalog);
+  await call();
+  assert.equal(notices.length, 2, 'Hermes has them now');
+  offer(base);
+  await call();
+  assert.equal(notices.length, 2, 'a Rukoo with fewer tools is no news');
+  // Once Hermes has listed the fewer tools, their return is news again, without waiting.
+  assert.equal((await ask({ method: 'tools/list' })).result.tools.length, 16);
+  offer(catalog);
+  await call();
+  assert.equal(notices.length, 3);
+});
+
 test('hermes bridge: picks the right device, sends the token only to Rukoo with the key, and copes when Rukoo is away', async (t) => {
   const python = findPython();
   if (!python) return t.skip('no Python 3.8+ on PATH');
