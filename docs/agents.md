@@ -1,6 +1,6 @@
 # Agents in Rukoo Mail
 
-Rukoo Mail has a chat panel next to the reading pane. In it you hand an email to an agent: a Hermes Agent such as Clark, Claude Code, Codex or an OpenClaw agent. The agent keeps its own tools, memory and integrations. Rukoo adds the chat and a small set of tools the agent uses to read your mail and change what is on your screen. It writes the reply draft, shows a plan or its sources, and asks you before anything happens.
+Rukoo Mail has a chat panel next to the reading pane. In it you hand an email to an agent: a Hermes Agent such as Clark, Claude Code, Codex, an OpenClaw agent, or an agent of your own on Booper or another framework ([custom agents](#custom-agents)). The agent keeps its own tools, memory and integrations. Rukoo adds the chat and a small set of tools the agent uses to read your mail and change what is on your screen. It writes the reply draft, shows a plan or its sources, and asks you before anything happens.
 
 Open the panel with the sparkle button in the title bar or with `Ctrl+J`. While it is open the folders shrink to a rail, so you see the list, the email and the chat. The rail button brings the folders back, and the reading pane's expand button hides the list too, leaving the email and the chat.
 
@@ -137,6 +137,7 @@ A steered message carries your text and what you attached. The notes Rukoo keeps
 | Claude Code | Rukoo starts `claude` (`claude.exe` on Windows) per chat (stream-json) with your own settings, MCP servers, skills and hooks, plus Rukoo's MCP server. | Claude Code installed and signed in |
 | Codex | Rukoo starts one `codex app-server` with your own config and adds Rukoo's MCP server to each thread. | Codex CLI installed and signed in |
 | OpenClaw | Rukoo talks to your OpenClaw gateway's OpenAI-compatible Chat Completions endpoint over HTTP. Each Rukoo chat is one OpenClaw session. | The gateway's address and token, with the endpoint turned on. For Rukoo's tools: `openclaw mcp set` with the command Rukoo copies |
+| [Custom agents](#custom-agents) | Booper and other servers with the Runs API, the way Rukoo talks to Hermes; or any server with an OpenAI-compatible Chat Completions endpoint. | The server's address, and its key if it takes one. For Rukoo's tools: the MCP server Rukoo copies |
 
 Set them up in Settings → Agents. Each card shows the agent's status and has a test button. On Linux, Rukoo looks for Claude Code and Codex in `~/.local/bin` and on its `PATH`. If your desktop session does not include the CLI installation directory, set the executable path in the agent card. On macOS, Rukoo also adds `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` to the agent process PATH, so apps opened from Finder can use Homebrew and npm installations. Rukoo keeps your existing PATH order and does not load shell startup scripts. For installations managed through a shell version manager, launch Rukoo from a terminal with that environment. The agent must already be signed in under your user account.
 
@@ -183,6 +184,53 @@ How it works and what it can't do:
 - Any device in your tailnet that can reach this computer can try the Tailscale address, as for Hermes; only the token gets in. Use Tailscale's access controls to narrow which devices can reach it.
 - The MCP token stays out of the agent's prompt: the gateway adds the header to its own requests, and with OpenClaw 2026.11.1 neither the token nor the variable's name reaches the model during a turn. An agent that goes looking can still find it: in `openclaw.json`, in the `.env` file or through `exec` in the gateway's environment. OpenClaw's [secrets documentation](https://docs.openclaw.ai/gateway/secrets) says the same of every plaintext credential. A leaked MCP token opens Rukoo's tools only from this computer or, for the remote token, from your tailnet while you allow it. An agent misled by an email could call those tools without the token, so Rukoo's [permission levels](#permission-level) and approvals, not the token, decide what such calls may change.
 - How OpenClaw's MCP client handles Rukoo being closed (it then can't reach the tools) depends on OpenClaw; restarting the gateway or `openclaw mcp doctor rukoo --probe` connects again.
+
+## Custom agents
+
+Settings → Agents → Add an agent connects an agent of your own. Rukoo has three kinds:
+
+| Kind | For | How Rukoo talks to it |
+|---|---|---|
+| Booper | An agent on [Booper](https://github.com/MajesteitBart/booper), such as Clark | Booper's app channel serves the Runs API of Hermes Agent, so Rukoo talks to it as it does to Hermes |
+| Runs API agent | Another server with that Runs API, such as a second Hermes | The same |
+| OpenAI-compatible agent | An agent framework or model server with an OpenAI-compatible Chat Completions endpoint, such as LiteLLM, vLLM, Ollama or a framework's own server | `POST /v1/chat/completions` with `stream: true` |
+
+You can add up to eight. Each has its own card with a name, the server's address, its key, a default model and a test button. It shows up in the chat's agent menu under its name, with its kind beside it, and can be the default agent. Removing one forgets its address and key and stops its token for Rukoo's tools at once. Your chats with it stay, but they can't take new messages.
+
+### Booper
+
+1. **Turn on Booper's app channel** in `booper.yaml`: `channels.dudan` with `enabled: true`, the `host` and `port` Rukoo reaches it on (its Tailscale address when Booper runs on another machine), and `tokenEnv` naming the variable that holds its token. Booper's own documentation covers the channel.
+2. **Add Booper in Rukoo.** Settings → Agents → Add an agent → Booper. Fill in the server URL, such as `http://100.64.0.9:8662`, and paste the channel's token as the API key. The card shows whether Booper answers and accepts the token, and which Booper version it runs when Booper says so.
+3. **Let Booper use Rukoo** (optional). "Copy Booper setup" copies the block for `booper.yaml` and the line for Booper's environment that holds Rukoo's token:
+   ```yaml
+   # RUKOO_MCP_AUTHORIZATION=Bearer <token>
+   mcp:
+     servers:
+       rukoo:
+         url: http://127.0.0.1:47800/mcp
+         headersEnv: { Authorization: RUKOO_MCP_AUTHORIZATION }
+         tools: ["*"]
+         safeTools: [get_context, search_mail, read_message, read_attachment, read_chat_file, get_draft, read_skill, list_events, find_free_time]
+   ```
+   `safeTools` lists the tools that only read, which Booper may run again after a restart. Put the variable where Booper's service gets its environment and restart Booper. For a Booper on another computer, first turn on "Let Booper use Rukoo from another computer": the block then has Rukoo's Tailscale address and a token that works only there.
+
+What Booper does differently from Hermes:
+
+- Booper sends its progress only once it has saved it, so the answer shows in one piece when the turn ends, without the agent's text as it writes or its tool calls.
+- The model menu lists Booper's model profiles, with the model behind each. Rukoo sends the effort both as Hermes takes it and as `model_options.reasoning_effort`, which Booper reads.
+- Booper has no approvals of its own for Rukoo to show; Rukoo's approval cards work for its own tools.
+
+### OpenAI-compatible agents
+
+- Each turn is one streamed Chat Completions request. `model` is the chat's model, else the model in Settings, else `default`; a server that serves one agent often ignores it. The OpenAI `user` field is `rukoo:<chat id>`.
+- A plain Chat Completions server keeps no conversation, so Rukoo keeps the chat's earlier turns and sends them with each message, up to 200,000 characters, the oldest first to go. A turn you stop, or whose connection breaks, stays in it with the answer as far as it came. For a server that keeps the conversation itself, turn off "Send earlier messages".
+- The key is optional, for a server on this computer that takes none. The model menu lists what `GET /v1/models` lists. There is no effort menu, no list of the agent's own skills for `$`, and the chat shows the answer's text, not tool calls or reasoning. Stop closes the connection.
+
+### Rukoo's tools for custom agents
+
+Each custom agent gets its own MCP token for Rukoo's tools, made when you first copy its setup. Like OpenClaw's, there are two: one for `127.0.0.1` and one for the Tailscale address, which works only while the agent may use Rukoo from another computer. A new API key doesn't change them. Rukoo keeps what the tokens are made from encrypted with the agent's key, so on Linux the copy needs the desktop keyring, as saving a key does. Rukoo sends a custom agent text only, never a path on this computer, and treats it like Hermes for [permission levels](#permission-level): it names the chat in each call, so its chats can be stricter than Settings, not looser.
+
+A custom agent reaches Rukoo at one address, unlike Clark's bridge, which finds whichever of your devices has Rukoo open. Rukoo for Android doesn't show custom agents yet.
 
 ## Rukoo on your phone
 

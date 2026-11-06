@@ -561,7 +561,8 @@ function errorResult(message) {
 async function callTool(hub, identity, name, args, meta = {}) {
   // Turning an agent off also closes Rukoo to it. A tool error rather than a 401, so the agent keeps the
   // server and can tell the user why.
-  const agentCfg = hub.cfg && hub.cfg.data && hub.cfg.data[identity.agent];
+  // A custom agent's settings are in the custom list (config.agentData); a removed one has none.
+  const agentCfg = hub.cfg && (typeof hub.cfg.agentData === 'function' ? hub.cfg.agentData(identity.agent) : hub.cfg.data && hub.cfg.data[identity.agent]);
   if (agentCfg && agentCfg.enabled === false) {
     return errorResult(`${hub.agentName(identity.agent)} is turned off in Rukoo, so Rukoo's tools are not available. The user can turn it on in Settings > Agents.`);
   }

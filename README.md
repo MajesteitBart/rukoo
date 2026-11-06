@@ -2,7 +2,7 @@
 
 # Rukoo Mail
 
-Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex or OpenClaw.
+Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex, OpenClaw, or one of your own on Booper or another framework.
 
 The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, with the voices on the call named and the screen recorded if you want, backs meetings up encrypted to a bucket you own, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
 
@@ -51,7 +51,7 @@ More in [Calendar](docs/calendar.md) and [Booking page](docs/booking.md).
 
 ### Agents
 
-- The chat panel (`Ctrl+J`) sits next to the email. It works with Hermes Agent (such as Clark), Claude Code, Codex and OpenClaw.
+- The chat panel (`Ctrl+J`) sits next to the email. It works with Hermes Agent (such as Clark), Claude Code, Codex and OpenClaw, and with agents of your own: Booper, another server with the Hermes Runs API, or any OpenAI-compatible agent.
 - Quick actions draft a reply, brief you on the sender, plan follow-ups or summarize. You can edit them and add your own.
 - Agents read your mail and calendar and write drafts through Rukoo's own MCP server. Rukoo never sends mail for them. Anything other people will see, and every event an agent adds, waits for your approval, unless you give a chat a looser [permission level](docs/agents.md#permission-level).
 - `/name` in the chat starts a skill in the Agent Skills format, from Rukoo's own set or from your skills folder.

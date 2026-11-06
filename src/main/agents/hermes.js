@@ -55,6 +55,18 @@ function splitModel(value) {
   return { provider: '', model: text };
 }
 
+// The server a status check found, from its /health: Booper names itself in server ({name, version}); Hermes gives its
+// version alone.
+function serverName(health) {
+  const h = health && typeof health === 'object' ? health : {};
+  const server = h.server && typeof h.server === 'object' ? h.server : null;
+  if (server && typeof server.name === 'string' && /^[\w .-]{1,40}$/.test(server.name.trim())) {
+    const version = typeof server.version === 'string' && /^[\w.+-]{1,40}$/.test(server.version) ? server.version : '';
+    return version ? `${server.name.trim()} ${version}` : server.name.trim();
+  }
+  return typeof h.version === 'string' && h.version ? `Hermes ${h.version}` : 'Hermes';
+}
+
 const CHOICES = {
   once: { id: 'once', label: 'Allow once', kind: 'primary' },
   session: { id: 'session', label: 'Allow for this turn', kind: 'default' },
@@ -91,8 +103,10 @@ function missingText(streamed, segment, output, lost = false) {
 
 class HermesAdapter {
   // timing: test-only overrides of {backoff, pollEvery, pollMisses, stopRetry}.
-  constructor({ id = 'clark', config, hub, log, paths, timing } = {}) {
+  // custom: a custom agent on another server that serves the Runs API, such as Booper (config.js CUSTOM_PRESETS).
+  constructor({ id = 'clark', config, hub, log, paths, timing, custom = false } = {}) {
     this.id = id;
+    this.custom = custom === true;
     this.timing = { backoff: 1000, pollEvery: POLL_EVERY, pollMisses: POLL_MISSES, stopRetry: STOP_RETRY, errorBody: ERROR_BODY_MS, quitAnswer: QUIT_ANSWER_MS, ...(timing || {}) };
     this.config = typeof config === 'function' ? config : () => config || {};
     this.hub = hub || null;
@@ -331,12 +345,18 @@ class HermesAdapter {
         const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities : {};
         // An aggregator's shortlist (the newest few per lab) instead of its whole catalog.
         const featured = Array.isArray(row.featured_models) && row.featured_models.length ? row.featured_models : null;
-        const ids = (featured || (Array.isArray(row.models) ? row.models : [])).filter((m) => typeof m === 'string' && m.trim() && m.length <= 150);
-        for (const id of ids.slice(0, MAX_PER_PROVIDER)) {
-          add({ id: `${slug}::${id}`, label: id, group: String(row.name || slug), efforts: caps[id] && caps[id].reasoning === false ? [] : EFFORTS });
+        // Hermes lists model names; Booper lists {id, label}, with a label that names the model behind its profile.
+        const entries = (featured || (Array.isArray(row.models) ? row.models : []))
+          .map((m) => (typeof m === 'string' ? { id: m, label: m } : m && typeof m.id === 'string' ? { id: m.id, label: typeof m.label === 'string' && m.label.trim() ? m.label.trim() : m.id } : null))
+          .filter((m) => m && m.id.trim() && m.id.length <= 150);
+        for (const m of entries.slice(0, MAX_PER_PROVIDER)) {
+          add({ id: `${slug}::${m.id}`, label: m.label, group: String(row.name || slug), efforts: caps[m.id] && caps[m.id].reasoning === false ? [] : EFFORTS });
         }
       }
-      if (typeof d.model === 'string' && d.model) current = typeof d.provider === 'string' && d.provider ? `${d.provider}::${d.model}` : d.model;
+      // Hermes says model and provider; Booper current_model and current_provider.
+      const model = typeof d.model === 'string' && d.model ? d.model : typeof d.current_model === 'string' ? d.current_model : '';
+      const provider = typeof d.provider === 'string' && d.provider ? d.provider : typeof d.current_provider === 'string' ? d.current_provider : '';
+      if (model) current = provider ? `${provider}::${model}` : model;
     }
     if (ok(routes)) {
       // The first entry is the profile itself, which stands for Hermes' own default; the rest are aliases.
@@ -421,8 +441,7 @@ class HermesAdapter {
       }
       // POST /v1/runs/{id}/steer: an older Hermes has neither the route nor the flag.
       this.steerCap = features.run_steer === true;
-      const version = health.data && health.data.version;
-      return { state: 'ready', detail: version ? `Hermes ${version}` : 'Hermes' };
+      return { state: 'ready', detail: serverName(health.data) };
     } catch (err) {
       const e = err instanceof AgentError ? err : networkError(err, '');
       return { state: e.code === 'not-configured' ? 'unconfigured' : 'offline', detail: e.detail };
@@ -460,7 +479,11 @@ class HermesAdapter {
     const { provider, model } = splitModel(String(turn.model || '').trim() || s.model);
     if (model) body.model = model;
     if (provider) body.provider = provider;
-    if (EFFORTS.includes(turn.effort)) body.model_options = { reasoning: { effort: turn.effort } };
+    if (EFFORTS.includes(turn.effort)) {
+      body.model_options = { reasoning: { effort: turn.effort } };
+      // Booper reads reasoning_effort, the field Hermes' phone app sends; Hermes itself is left as it was.
+      if (this.custom) body.model_options.reasoning_effort = turn.effort;
+    }
     // A retried POST (lost response) must not start the same turn twice.
     const idem = String(turn.id || '').replace(/[^\x21-\x7e]/g, '').slice(0, 200) || crypto.randomUUID();
     const started = await this.submit(body, `rukoo-${idem}`, server, turn.signal);
@@ -1018,4 +1041,4 @@ class HermesAdapter {
   }
 }
 
-module.exports = { HermesAdapter, missingText, splitModel };
+module.exports = { serverName, HermesAdapter, missingText, splitModel };

@@ -9495,6 +9495,94 @@
   "settings.meetings.connection": {
     "message": "Connection",
     "description": "Settings > Meetings: title of the row with the connection status of Rukoo Voice; the status pill is on its right. src/renderer/meeting-settings.js"
+  },
+  "settings.agents.removedAgent": {
+    "message": "Removed agent",
+    "description": "Name shown for a chat whose custom agent the user removed in Settings > Agents. src/renderer/settings.js, src/renderer/agent/panel.js"
+  },
+  "settings.agents.preset.booper": {
+    "message": "Booper",
+    "description": "Settings > Agents: product name of a custom agent on Booper, beside its name and in the agent menus. A product name; keep it."
+  },
+  "settings.agents.preset.runs": {
+    "message": "Runs API agent",
+    "description": "Settings > Agents: kind of a custom agent on a server with the Hermes Runs API, beside its name and in the agent menus."
+  },
+  "settings.agents.preset.openai": {
+    "message": "OpenAI-compatible agent",
+    "description": "Settings > Agents: kind of a custom agent on a server with an OpenAI-compatible Chat Completions endpoint, beside its name and in the agent menus."
+  },
+  "settings.agents.presetHint.booper": {
+    "message": "An agent on Booper, reached through its app channel.",
+    "description": "Settings > Agents > Add an agent: hint under the Booper choice."
+  },
+  "settings.agents.presetHint.runs": {
+    "message": "Any server with the Runs API of Hermes Agent.",
+    "description": "Settings > Agents > Add an agent: hint under the Runs API choice."
+  },
+  "settings.agents.presetHint.openai": {
+    "message": "Any agent framework or model server with an OpenAI-compatible Chat Completions endpoint.",
+    "description": "Settings > Agents > Add an agent: hint under the OpenAI-compatible choice."
+  },
+  "settings.agents.customAdd": {
+    "message": "Add an agent",
+    "description": "Settings > Agents: row, and title of the dialog, that adds a custom agent. src/renderer/settings.js"
+  },
+  "settings.agents.customAddHelp": {
+    "message": "Booper, another Runs API server, or an OpenAI-compatible agent",
+    "description": "Settings > Agents: description of the Add an agent row."
+  },
+  "settings.agents.customRemote": {
+    "message": "Let {name} use Rukoo from another computer",
+    "description": "Settings > Agents, custom agent card: toggle that lets the agent call Rukoo's tools over Tailscale. {name} is the agent's name."
+  },
+  "settings.agents.customRemoteHelp": {
+    "message": "For an agent elsewhere in your tailnet. Rukoo then also listens on its Tailscale address.",
+    "description": "Settings > Agents, custom agent card: description of the remote toggle while it is off."
+  },
+  "settings.agents.customHistory": {
+    "message": "Send earlier messages",
+    "description": "Settings > Agents, OpenAI-compatible agent card: toggle that sends the chat's earlier turns with each message."
+  },
+  "settings.agents.customHistoryHelp": {
+    "message": "For a server that doesn't keep the conversation itself. Turn it off for one that does.",
+    "description": "Settings > Agents, OpenAI-compatible agent card: description of the earlier messages toggle."
+  },
+  "settings.agents.customCopy": {
+    "message": "Copy {name} setup",
+    "description": "Settings > Agents, custom agent card: row that copies what lets the agent use Rukoo's tools. {name} is the agent's name."
+  },
+  "settings.agents.copyBooperHelp": {
+    "message": "The block for booper.yaml and the variable with Rukoo's token. It holds a token, so don't share it.",
+    "description": "Settings > Agents, Booper card: description of the copy setup row."
+  },
+  "settings.agents.copyCustomHelp": {
+    "message": "Rukoo's MCP server, as most agents take it. It holds a token, so don't share it.",
+    "description": "Settings > Agents, custom agent card (not Booper): description of the copy setup row."
+  },
+  "settings.agents.copiedCustom": {
+    "message": "Copied. Add it to {name} on this computer, then restart {name}.",
+    "description": "Settings > Agents: toast after copying a custom agent's setup for an agent on this computer."
+  },
+  "settings.agents.copiedCustomRemote": {
+    "message": "Copied, with {url}. Add it to {name} on its computer, then restart {name}.",
+    "description": "Settings > Agents: toast after copying a custom agent's setup for an agent on another computer. {url} is Rukoo's Tailscale address."
+  },
+  "settings.agents.customRemove": {
+    "message": "Remove {name}",
+    "description": "Settings > Agents, custom agent card: row, and title of the confirmation, that removes the agent."
+  },
+  "settings.agents.customRemoveConfirm": {
+    "message": "Rukoo forgets {name}'s address and key, and the token that gives {name} Rukoo's tools stops working. Your chats with {name} stay, but they can't take new messages.",
+    "description": "Settings > Agents: confirmation before removing a custom agent."
+  },
+  "settings.agents.customRemoveOk": {
+    "message": "Remove",
+    "description": "Settings > Agents: confirm button that removes a custom agent."
+  },
+  "settings.agents.customRemoved": {
+    "message": "{name} removed",
+    "description": "Settings > Agents: toast after removing a custom agent."
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;
