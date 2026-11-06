@@ -236,7 +236,18 @@ export function mountAgentPanel(ctx) {
   // ---------- agents ----------
 
   const currentAgent = () => (P.conv ? P.conv.agent : P.agentId);
-  const agentName = (id) => (id === 'clark' ? (P.config && P.config.clark && P.config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : id === 'openclaw' ? 'OpenClaw' : String(id || ''));
+  // Custom agents (Settings > Agents > Add an agent) come after the built-in ones. A chat with one the user removed
+  // keeps its name until the panel reloads.
+  const customOf = (id) => (P.config && Array.isArray(P.config.custom) && P.config.custom.find((x) => x.id === id)) || null;
+  const agentIds = () => [...AGENTS, ...((P.config && P.config.custom) || []).map((x) => x.id)];
+  const productOf = (id) => {
+    const x = customOf(id);
+    return x ? t(`settings.agents.preset.${x.preset || 'runs'}`) : PRODUCTS[id];
+  };
+  const agentName = (id) => {
+    if (/^cx_[a-z0-9]{10}$/.test(String(id || ''))) return (customOf(id) || {}).name || t('settings.agents.removedAgent');
+    return id === 'clark' ? (P.config && P.config.clark && P.config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : id === 'openclaw' ? 'OpenClaw' : String(id || '');
+  };
   const stateOf = (id) => {
     const s = P.unavailable ? 'unknown' : P.status && P.status[id] ? P.status[id].state : 'starting';
     return STATES.includes(s) ? s : 'unknown';
@@ -247,7 +258,7 @@ export function mountAgentPanel(ctx) {
   const canSteer = (id) => !(P.status && P.status[id] && P.status[id].steer === false);
   const statusText = (id) => t(`agent.status.${stateOf(id)}`);
   const agentRows = () =>
-    AGENTS.map((id) => ({ id, name: agentName(id), label: agentName(id), tag: PRODUCTS[id], status: dotOf(stateOf(id)), checked: id === currentAgent() }));
+    agentIds().map((id) => ({ id, name: agentName(id), label: agentName(id), tag: productOf(id), status: dotOf(stateOf(id)), checked: id === currentAgent() }));
 
   // The config is local and answers at once; status can wait on the network (an offline Hermes server takes
   // seconds). So the default agent and the panel come first, and the status fills in when it arrives.
@@ -259,7 +270,7 @@ export function mountAgentPanel(ctx) {
       P.shortcuts = shortcutList(config.shortcuts);
       P.unavailable = false;
       // A new default in Settings applies to the next new chat; an open chat keeps its own agent.
-      if (AGENTS.includes(config.defaultAgent) && config.defaultAgent !== before) {
+      if (agentIds().includes(config.defaultAgent) && config.defaultAgent !== before) {
         // What was picked for the chat that has not started belongs to the agent before.
         if (!P.conv && P.agentId !== config.defaultAgent) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
         P.agentId = config.defaultAgent;
@@ -695,7 +706,7 @@ export function mountAgentPanel(ctx) {
   // The $ menu offers the skills of the agent on screen: Hermes' from its server, Claude Code's and Codex's from their
   // own setup. Main keeps each list a minute; refresh (the menu opened) asks again for one older than ten seconds.
   async function loadOwnSkills(id = currentAgent(), refresh = false) {
-    if (P.unavailable || !AGENTS.includes(id) || P.loadingSkills.has(id)) return;
+    if (P.unavailable || !agentIds().includes(id) || P.loadingSkills.has(id)) return;
     P.loadingSkills.add(id);
     if (id === currentAgent()) showOwnSkills();
     try {
@@ -746,7 +757,7 @@ export function mountAgentPanel(ctx) {
 
   // refresh: the panel just opened, so main loads a list that is older than half a minute again.
   async function loadModels(id = currentAgent(), refresh = false) {
-    if (P.unavailable || !AGENTS.includes(id)) return;
+    if (P.unavailable || !agentIds().includes(id)) return;
     P.loadingModels.add(id);
     try {
       P.models[id] = await api('agentModels', id, { refresh });
@@ -1100,7 +1111,7 @@ export function mountAgentPanel(ctx) {
   }
 
   function pickAgent(id) {
-    if (!AGENTS.includes(id)) return;
+    if (!agentIds().includes(id)) return;
     // A model or effort picked for one agent means nothing to another; the permission level does.
     if (id !== currentAgent()) P.draft = { model: null, effort: null, permission: P.draft.permission || null };
     P.agentId = id;
@@ -1462,7 +1473,7 @@ export function mountAgentPanel(ctx) {
   // choices let the card say it in the interface language. What the user approves (the values) is shown
   // exactly as the agent sent it; only a proposal loses the tags main keeps for the agent (see untag).
   function localizeApproval(item) {
-    const name = agentName(AGENTS.includes(item.source) ? item.source : P.conv ? P.conv.agent : currentAgent());
+    const name = agentName(agentIds().includes(item.source) ? item.source : P.conv ? P.conv.agent : currentAgent());
     if (item.kind === 'calendar' && item.calendar && typeof item.calendar === 'object') {
       const card = localizeEvent(item, name);
       if (card) return card;

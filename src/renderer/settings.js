@@ -98,7 +98,21 @@ const PERMISSION = [
   { value: 'auto', get label() { return t('agent.permission.auto'); }, get hint() { return t('settings.agents.permissionAutoHint'); } },
   { value: 'full', get label() { return t('agent.permission.full'); }, get hint() { return t('settings.agents.permissionFullHint'); } }
 ];
-const agentName = (config, id) => (id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'openclaw' ? 'OpenClaw' : 'Codex');
+// Custom agents (main: agents/config.js CUSTOM_PRESETS): the user's own agents on a server that speaks the Runs API,
+// such as Booper, or OpenAI's Chat Completions. Their ids start with cx_.
+const isCustom = (id) => /^cx_[a-z0-9]{10}$/.test(String(id || ''));
+const customOf = (config, id) => (config && Array.isArray(config.custom) && config.custom.find((x) => x.id === id)) || null;
+const allAgentIds = (config) => [...AGENT_IDS, ...((config && config.custom) || []).map((x) => x.id)];
+// The settings of an agent: its section, or its entry in the custom list.
+const agentConf = (config, id) => (isCustom(id) ? customOf(config, id) || {} : (config && config[id]) || {});
+// A patch for one agent, in the shape main takes (config.update()).
+const agentPatch = (id, fields) => (isCustom(id) ? { custom: { [id]: fields } } : { [id]: fields });
+const CUSTOM_PRESETS = ['booper', 'runs', 'openai'];
+const productOf = (config, id) => (isCustom(id) ? t(`settings.agents.preset.${(customOf(config, id) || {}).preset || 'runs'}`) : AGENT_PRODUCTS[id]);
+const agentName = (config, id) => {
+  if (isCustom(id)) return (customOf(config, id) || {}).name || t('settings.agents.removedAgent');
+  return id === 'clark' ? (config && config.clark && config.clark.name) || 'Hermes' : id === 'claude' ? 'Claude' : id === 'openclaw' ? 'OpenClaw' : 'Codex';
+};
 const agentStateOf = (status, id) => {
   const s = status && status[id] ? status[id].state : 'starting';
   return AGENT_STATES.includes(s) ? s : 'unknown';
@@ -423,7 +437,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     t('settings.agents.rowDesc', { name: esc(agentName(agentState.config, agentState.config.defaultAgent)), status: t(`agent.status.${agentStateOf(agentState.status, agentState.config.defaultAgent)}`) });
   const showAgentStatuses = (view) => {
     if (!agentState) return;
-    if (view === 'agents') AGENT_IDS.forEach((id) => showAgentStatus(id));
+    if (view === 'agents') allAgentIds(agentState.config).forEach((id) => showAgentStatus(id));
     const desc = view === 'main' && page.querySelector('[data-a="agents"] .desc');
     if (desc) desc.innerHTML = agentsRowDesc();
   };
@@ -442,7 +456,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     <div class="row static agent-status" data-agent-status="${id}">
       <span class="agent-dot" aria-hidden="true"></span>
       <div class="text"><div class="title"></div><div class="desc agent-detail"></div></div>
-      ${id === 'clark' || id === 'openclaw'
+      ${id === 'clark' || id === 'openclaw' || isCustom(id)
         ? `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.testConnection">${esc(t('settings.agents.testConnection'))}</button>`
         : `<button class="btn sm secondary" data-a="agent-test:${id}" data-i18n="settings.agents.test">${esc(t('settings.agents.test'))}</button>`}
     </div>`;
@@ -470,9 +484,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     clark: { label: 'settings.agents.key', placeholder: 'settings.agents.keyPlaceholder', saved: 'settings.agents.keySaved', save: 'settings.agents.keySave', show: 'settings.agents.keyShow', hide: 'settings.agents.keyHide', stored: 'settings.agents.keyStored' },
     openclaw: { label: 'settings.agents.token', placeholder: 'settings.agents.tokenPlaceholder', saved: 'settings.agents.tokenSaved', save: 'settings.agents.tokenSave', show: 'settings.agents.tokenShow', hide: 'settings.agents.tokenHide', stored: 'settings.agents.tokenStored' }
   };
+  const keyText = (id) => KEY_TEXT[isCustom(id) ? 'clark' : id];
   const keyHtml = (id) => {
-    const k = KEY_TEXT[id];
-    const saved = agentState.config[id].hasKey;
+    const k = keyText(id);
+    const saved = agentConf(agentState.config, id).hasKey;
     if (saved && !keyEditing[id]) {
       return `<div class="agent-key"><span class="agent-key-label">${esc(t(k.label))}</span>
         <span class="agent-key-saved">${icons.check}<span>${esc(t(k.saved))}</span></span>
@@ -499,10 +514,19 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const note = !openclaw.hasKey ? t('settings.agents.openclawRemoteNeedsToken') : mcp.note;
     return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
   };
+  // A custom agent's remote row, as OpenClaw's: off, what it is for; on, the address the agent uses.
+  const customRemoteDesc = (id) => {
+    const { mcp = {} } = agentState.config;
+    const x = customOf(agentState.config, id) || {};
+    if (!x.remote) return esc(t('settings.agents.customRemoteHelp', { name: x.name || '' }));
+    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
+    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+  };
   // Which command the copy row puts on the clipboard: for this computer, or for the gateway's computer.
   const openclawCopyDesc = () => t(agentState.config.openclaw.remote ? 'settings.agents.copyOpenClawRemoteHelp' : 'settings.agents.copyOpenClawHelp');
   // Both cards show the Tailscale listener; a toggle on one can open or close it for the other.
   const showAddresses = () => {
+    page.querySelectorAll('[data-custom-address]').forEach((el) => (el.innerHTML = customRemoteDesc(el.dataset.customAddress)));
     const hermes = page.querySelector('[data-agent-address]');
     if (hermes) hermes.innerHTML = remoteDesc();
     const openclaw = page.querySelector('[data-openclaw-address]');
@@ -639,7 +663,27 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const accessRow = (id) => row({ title: t('settings.agents.access'), value: esc(labelOf(ACCESS, c[id].access)), action: `agent-access:${id}` });
     // The product beside the name ("Clark  Hermes Agent"), unless they are the same word.
     const head = (id) =>
-      `<div class="settings-group-title agent-group">${nameSpan(id)}${AGENT_PRODUCTS[id] !== agentName(c, id) ? `<span class="agent-product">${esc(AGENT_PRODUCTS[id])}</span>` : ''}</div>`;
+      `<div class="settings-group-title agent-group">${nameSpan(id)}${productOf(c, id) !== agentName(c, id) ? `<span class="agent-product">${esc(productOf(c, id))}</span>` : ''}</div>`;
+    // A custom agent's card: the server, its key and model, Rukoo's tools for it, and Remove.
+    const customCard = (x) => {
+      const id = x.id;
+      const placeholder = x.preset === 'booper' ? 'http://100.64.0.1:8662' : x.protocol === 'openai' ? 'http://127.0.0.1:8000' : 'http://100.64.0.1:8642';
+      return `${head(id)}
+      <div class="card agent-card" data-custom-card="${id}">
+        ${statusRow(id)}
+        ${row({ title: t('settings.agents.enabled', { name: nameSpan(id) }), action: `agent-enabled:${id}`, toggle: x.enabled !== false })}
+        <div class="form agent-form">
+          ${agentField(id, 'name', t('settings.agents.name'), x.name, t(`settings.agents.preset.${x.preset}`))}
+          ${agentField(id, 'url', t('settings.agents.url'), x.url, placeholder)}
+          <div class="agent-key-box" data-agent-key-box="${id}">${keyHtml(id)}</div>
+          ${agentField(id, 'model', t('settings.agents.model'), x.model, t('settings.agents.optional'))}
+        </div>
+        ${x.protocol === 'openai' ? row({ title: t('settings.agents.customHistory'), desc: esc(t('settings.agents.customHistoryHelp')), action: `agent-custom-history:${id}`, toggle: x.history !== false }) : ''}
+        ${row({ title: t('settings.agents.customRemote', { name: nameSpan(id) }), desc: `<span data-custom-address="${id}">${customRemoteDesc(id)}</span>`, action: `agent-custom-remote:${id}`, toggle: Boolean(x.remote) })}
+        ${row({ title: t('settings.agents.customCopy', { name: nameSpan(id) }), desc: esc(t(x.preset === 'booper' ? 'settings.agents.copyBooperHelp' : 'settings.agents.copyCustomHelp', { name: x.name })), action: `agent-copy-custom:${id}` })}
+        ${row({ title: t('settings.agents.customRemove', { name: nameSpan(id) }), action: `agent-custom-remove:${id}`, cls: 'danger' })}
+      </div>`;
+    };
     return `
       <p class="settings-intro" data-i18n="settings.agents.help">${esc(t('settings.agents.help'))}</p>
       <div class="card">
@@ -693,6 +737,10 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         </div>
         ${row({ title: t('settings.agents.openclawRemote'), desc: `<span data-openclaw-address>${openclawRemoteDesc()}</span>`, action: 'agent-openclaw-remote', toggle: Boolean(c.openclaw.remote) })}
         ${row({ title: t('settings.agents.copyOpenClaw'), desc: esc(openclawCopyDesc()), action: 'agent-copy-openclaw' })}
+      </div>
+      ${(c.custom || []).map(customCard).join('')}
+      <div class="card agent-card">
+        ${row({ title: esc(t('settings.agents.customAdd')), desc: esc(t('settings.agents.customAddHelp')), action: 'agent-custom-add', lead: `<span class="add-ic">${icons.plus}</span>` })}
       </div>
       <div class="settings-group-title">${esc(t('settings.phone.title'))}</div>
       <div class="card agent-card" data-phone-card>${phoneRows()}</div>`;
@@ -826,7 +874,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'agent-shortcuts':
         return go('shortcuts');
       case 'agent-default': {
-        const v = await choiceDialog(t('settings.agents.default'), AGENT_IDS.map((x) => ({ value: x, label: agentName(c, x), hint: AGENT_PRODUCTS[x] })), c.defaultAgent);
+        const v = await choiceDialog(t('settings.agents.default'), allAgentIds(c).map((x) => ({ value: x, label: agentName(c, x), hint: productOf(c, x) })), c.defaultAgent);
         if (v && (await updateAgents({ defaultAgent: v }))) b.querySelector('[data-agent-default]').textContent = agentName(agentState.config, v);
         return;
       }
@@ -836,8 +884,58 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         return;
       }
       case 'agent-enabled':
-        if (await updateAgents({ [id]: { enabled: c[id].enabled === false } })) flip(b, agentState.config[id].enabled !== false);
+        if (await updateAgents(agentPatch(id, { enabled: agentConf(c, id).enabled === false }))) {
+          flip(b, agentConf(agentState.config, id).enabled !== false);
+          if (isCustom(id)) showAddresses();
+        }
         return;
+      case 'agent-custom-add': {
+        const preset = await choiceDialog(
+          t('settings.agents.customAdd'),
+          CUSTOM_PRESETS.map((x) => ({ value: x, label: t(`settings.agents.preset.${x}`), hint: t(`settings.agents.presetHint.${x}`) })),
+          null,
+          { stacked: true }
+        );
+        if (!preset) return;
+        try {
+          await api('agentAddCustom', preset);
+        } catch (err) {
+          return toast(err.message, 5000);
+        }
+        return render();
+      }
+      case 'agent-custom-remove': {
+        const x = customOf(c, id);
+        if (!x) return;
+        if (!(await confirmDialog(t('settings.agents.customRemove', { name: x.name }), t('settings.agents.customRemoveConfirm', { name: x.name }), t('settings.agents.customRemoveOk'), true))) return;
+        try {
+          await api('agentRemoveCustom', id);
+        } catch (err) {
+          return toast(err.message, 5000);
+        }
+        toast(t('settings.agents.customRemoved', { name: x.name }), 4000);
+        return render();
+      }
+      case 'agent-custom-remote':
+        if (await updateAgents(agentPatch(id, { remote: !agentConf(c, id).remote }))) {
+          flip(b, Boolean(agentConf(agentState.config, id).remote));
+          showAddresses();
+        }
+        return;
+      case 'agent-custom-history':
+        if (await updateAgents(agentPatch(id, { history: agentConf(c, id).history === false }))) flip(b, agentConf(agentState.config, id).history !== false);
+        return;
+      case 'agent-copy-custom': {
+        const x = agentConf(c, id);
+        if (x.remote && !(c.mcp && c.mcp.address && c.mcp.remotePort)) return toast(t('settings.agents.openclawNoListener'), 6000);
+        try {
+          const copied = await api('agentCopyCustomSetup', id);
+          toast(copied && copied.remote ? t('settings.agents.copiedCustomRemote', { name: x.name, url: copied.url }) : t('settings.agents.copiedCustom', { name: x.name }), 8000);
+        } catch (err) {
+          toast(err.message, 5000);
+        }
+        return;
+      }
       case 'agent-access': {
         const v = await choiceDialog(t('settings.agents.access'), ACCESS, c[id].access);
         if (v && (await updateAgents({ [id]: { access: v } }))) b.querySelector('.value').textContent = labelOf(ACCESS, v);
@@ -896,7 +994,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         const show = input.type === 'password';
         input.type = show ? 'text' : 'password';
         b.innerHTML = show ? icons.eyeOff : icons.eye;
-        b.title = t(show ? KEY_TEXT[id].hide : KEY_TEXT[id].show);
+        b.title = t(show ? keyText(id).hide : keyText(id).show);
         return;
       }
       case 'agent-key-save': {
@@ -912,7 +1010,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
         keyEditing[id] = false;
         page.querySelector(`[data-agent-key-box="${id}"]`).innerHTML = keyHtml(id);
         showAddresses();
-        toast(t(KEY_TEXT[id].stored));
+        toast(t(keyText(id).stored));
         return testAgent(id);
       }
     }
@@ -922,15 +1020,17 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (!agentState) return;
     const [id, key] = input.dataset.agentField.split('.');
     const value = input.value.trim();
-    if (String(agentState.config[id][key] || '') === value) return;
-    if (!(await updateAgents({ [id]: { [key]: value } }))) {
-      input.value = agentState.config[id][key] || '';
+    if (String(agentConf(agentState.config, id)[key] || '') === value) return;
+    if (!(await updateAgents(agentPatch(id, { [key]: value })))) {
+      input.value = agentConf(agentState.config, id)[key] || '';
       return;
     }
-    input.value = agentState.config[id][key] || '';
+    input.value = agentConf(agentState.config, id)[key] || '';
     toast(t('settings.agents.saved'), 1400);
-    if (id === 'clark' && key === 'name') {
-      page.querySelectorAll('[data-agent-name="clark"]').forEach((el) => (el.textContent = agentName(agentState.config, 'clark')));
+    // A custom agent's heading shows its kind beside a name of the user's own, so it is drawn again.
+    if (isCustom(id) && key === 'name') return render();
+    if ((id === 'clark' || isCustom(id)) && key === 'name') {
+      page.querySelectorAll(`[data-agent-name="${id}"]`).forEach((el) => (el.textContent = agentName(agentState.config, id)));
       const def = page.querySelector('[data-agent-default]');
       if (def) def.textContent = agentName(agentState.config, agentState.config.defaultAgent);
     }
@@ -1231,7 +1331,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       <div class="page-bar"><button class="icon-btn" data-a="back" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button><h1>${title}</h1></div>
       <div class="page-scroll"><div class="page-inner">${body}</div></div>`;
     if (focused) page.querySelector(`[data-a="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
-    if (view === 'agents' && agentState) AGENT_IDS.forEach((id) => showAgentStatus(id));
+    if (view === 'agents' && agentState) allAgentIds(agentState.config).forEach((id) => showAgentStatus(id));
     if ((view === 'main' || view === 'agents') && agentState) refreshAgentStatus(view);
     if (view === 'main') showMailto();
     if (view === 'main' || ACCOUNT_VIEWS.includes(view)) account.fill(view);

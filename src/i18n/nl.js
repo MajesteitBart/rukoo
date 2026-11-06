@@ -2445,7 +2445,29 @@
   "settings.meetings.hiddenNow": "Rukoo is nu verborgen voor schermopnames, omdat er een meeting wordt opgenomen.",
   "settings.meetings.agents": "Agents kunnen meetings lezen",
   "settings.meetings.agentsHelp": "Je agents lezen transcripts en je notities via de meetingtools van Rukoo, gemarkeerd als tekst van anderen. Staat dit uit, dan krijgen ze niets uit je meetings.",
-  "settings.meetings.connection": "Verbinding"
+  "settings.meetings.connection": "Verbinding",
+  "settings.agents.removedAgent": "Verwijderde agent",
+  "settings.agents.preset.booper": "Booper",
+  "settings.agents.preset.runs": "Runs API-agent",
+  "settings.agents.preset.openai": "OpenAI-compatibele agent",
+  "settings.agents.presetHint.booper": "Een agent op Booper, via het app-kanaal.",
+  "settings.agents.presetHint.runs": "Elke server met de Runs API van Hermes Agent.",
+  "settings.agents.presetHint.openai": "Elk agentframework of elke modelserver met een OpenAI-compatibel Chat Completions-endpoint.",
+  "settings.agents.customAdd": "Agent toevoegen",
+  "settings.agents.customAddHelp": "Booper, een andere Runs API-server of een OpenAI-compatibele agent",
+  "settings.agents.customRemote": "{name} vanaf een andere computer toegang geven tot Rukoo",
+  "settings.agents.customRemoteHelp": "Voor een agent elders in je tailnet. Rukoo luistert dan ook op zijn Tailscale-adres.",
+  "settings.agents.customHistory": "Eerdere berichten meesturen",
+  "settings.agents.customHistoryHelp": "Voor een server die het gesprek zelf niet bewaart. Zet het uit voor een server die dat wel doet.",
+  "settings.agents.customCopy": "Instellingen voor {name} kopiëren",
+  "settings.agents.copyBooperHelp": "Het blok voor booper.yaml en de variabele met het token van Rukoo. Er staat een token in, deel het dus niet.",
+  "settings.agents.copyCustomHelp": "De MCP-server van Rukoo, zoals de meeste agents hem aannemen. Er staat een token in, deel het dus niet.",
+  "settings.agents.copiedCustom": "Gekopieerd. Voeg het toe aan {name} op deze computer en start {name} daarna opnieuw.",
+  "settings.agents.copiedCustomRemote": "Gekopieerd, met {url}. Voeg het toe aan {name} op zijn computer en start {name} daarna opnieuw.",
+  "settings.agents.customRemove": "{name} verwijderen",
+  "settings.agents.customRemoveConfirm": "Rukoo vergeet het adres en de sleutel van {name}, en het token waarmee {name} de tools van Rukoo gebruikt werkt niet meer. Je chats met {name} blijven, maar je kunt er geen berichten meer in sturen.",
+  "settings.agents.customRemoveOk": "Verwijderen",
+  "settings.agents.customRemoved": "{name} verwijderd"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;
   else (root.RukooLocales ||= {})['nl'] = messages;

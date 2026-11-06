@@ -6,9 +6,31 @@ const path = require('path');
 const crypto = require('crypto');
 const { PERMISSIONS } = require('./permission');
 
+// The built-in agents. Custom agents (the `custom` list) come on top; agentIds() lists both.
 const AGENT_IDS = ['clark', 'claude', 'codex', 'openclaw'];
 // Agents that keep a secret (the Hermes API key, the OpenClaw gateway token), encrypted in the file as `key`.
+// Every custom agent keeps one too.
 const SECRET_AGENTS = ['clark', 'openclaw'];
+
+// Custom agents: the user's own agents on a server that speaks a protocol Rukoo knows, such as Booper or another
+// agent framework. Each has an id of its own (no ':', which Settings actions split on), a name, a server and a key.
+// protocol 'runs': the Hermes Runs API (hermes.js), which Hermes and Booper serve. protocol 'openai': the
+// OpenAI-compatible Chat Completions endpoint most agent frameworks serve (openai.js). preset only picks the
+// defaults, the wording of the setup Rukoo copies and the card's help; the protocol decides how Rukoo talks to it.
+const CUSTOM_ID = /^cx_[a-z0-9]{10}$/;
+const CUSTOM_MAX = 8;
+const CUSTOM_PROTOCOLS = ['runs', 'openai'];
+const CUSTOM_PRESETS = {
+  booper: { protocol: 'runs', name: 'Booper', url: 'http://127.0.0.1:8662' },
+  runs: { protocol: 'runs', name: 'Runs API agent', url: '' },
+  openai: { protocol: 'openai', name: 'OpenAI-compatible agent', url: 'http://127.0.0.1:8000' }
+};
+// A custom agent as stored. key: the server's API key or token, encrypted ('' or null when the server takes none).
+// seed: a random secret, encrypted, that Rukoo makes its MCP tokens for this agent from (customTokenFor), so the
+// agent gets Rukoo's tools even without a key and a new key doesn't break its setup. remote: the user lets the agent
+// use Rukoo's tools from another computer, which opens the Tailscale listener. history (openai only): Rukoo sends the
+// chat's earlier turns with each message, for a server that keeps no conversation itself.
+const CUSTOM_DEFAULTS = { id: '', protocol: 'runs', preset: 'runs', name: '', enabled: true, url: '', key: null, seed: null, model: '', remote: false, history: true };
 // Where an OpenClaw gateway listens unless it was told otherwise (docs.openclaw.ai/gateway/config-gateway).
 const OPENCLAW_URL = 'http://127.0.0.1:18789';
 const ACCESS = ['ask', 'full'];
@@ -96,6 +118,31 @@ const BRIDGE_DOWNLOAD = 'https://raw.githubusercontent.com/MajesteitBart/rukoo/<
 // A local token that leaks from this computer is then of no use from the tailnet.
 function openclawTokenFor(key, remote = false) {
   return key ? crypto.createHmac('sha256', key).update(remote ? 'rukoo-mcp-openclaw-remote-v1' : 'rukoo-mcp-openclaw-v1').digest('base64url') : '';
+}
+
+// The tokens a custom agent's MCP client sends to Rukoo, made from its seed: one for the 127.0.0.1 listener and one for
+// the Tailscale listener, like OpenClaw's. The agent id goes in too, so two agents never share a token.
+function customTokenFor(seed, id, remote = false) {
+  return seed && id ? crypto.createHmac('sha256', seed).update(`${remote ? 'rukoo-mcp-custom-remote-v1' : 'rukoo-mcp-custom-v1'}:${id}`).digest('base64url') : '';
+}
+
+// The tools of Rukoo's that only read: an agent that reruns an interrupted call of one of these after a restart
+// changes nothing (Booper's safeTools).
+const READ_ONLY_TOOLS = ['get_context', 'search_mail', 'read_message', 'read_attachment', 'read_chat_file', 'get_draft', 'read_skill', 'list_events', 'find_free_time'];
+
+// Custom agents from the file: mergeSection would copy the array without looking at its entries.
+function loadCustom(list) {
+  const out = [];
+  for (const c of Array.isArray(list) ? list : []) {
+    if (out.length >= CUSTOM_MAX) break;
+    if (!isObj(c) || !CUSTOM_ID.test(c.id) || out.some((x) => x.id === c.id)) continue;
+    const entry = mergeSection(CUSTOM_DEFAULTS, c);
+    if (!CUSTOM_PROTOCOLS.includes(entry.protocol)) continue;
+    if (!CUSTOM_PRESETS[entry.preset] || CUSTOM_PRESETS[entry.preset].protocol !== entry.protocol) entry.preset = entry.protocol;
+    entry.name = oneLine(entry.name, 40) || CUSTOM_PRESETS[entry.preset].name;
+    out.push(entry);
+  }
+  return out;
 }
 
 // An OpenClaw agent id as the gateway takes it in `openclaw/<agentId>` (lowercase letters, digits, - and _).
@@ -241,7 +288,8 @@ class AgentConfig {
     const s = isObj(stored) ? stored : {};
     this.data = {
       version: 1,
-      defaultAgent: AGENT_IDS.includes(s.defaultAgent) ? s.defaultAgent : DEFAULTS.defaultAgent,
+      // Checked below, once the custom agents are in.
+      defaultAgent: typeof s.defaultAgent === 'string' ? s.defaultAgent : DEFAULTS.defaultAgent,
       // A file from before the levels has autoMailActions instead, and starts at Ask.
       permission: PERMISSIONS.includes(s.permission) ? s.permission : DEFAULTS.permission,
       shortcuts: storedShortcuts(s.shortcuts),
@@ -250,8 +298,11 @@ class AgentConfig {
       codex: mergeSection(DEFAULTS.codex, s.codex),
       openclaw: mergeSection(DEFAULTS.openclaw, s.openclaw),
       mcp: mergeSection(DEFAULTS.mcp, s.mcp),
-      phone: { enabled: isObj(s.phone) && s.phone.enabled === true, pairings: loadPairings(isObj(s.phone) ? s.phone.pairings : []) }
+      phone: { enabled: isObj(s.phone) && s.phone.enabled === true, pairings: loadPairings(isObj(s.phone) ? s.phone.pairings : []) },
+      custom: loadCustom(s.custom)
     };
+    // A file from a later Rukoo, or an agent removed by hand: the default goes back to Hermes.
+    if (!this.agentIds().includes(this.data.defaultAgent)) this.data.defaultAgent = DEFAULTS.defaultAgent;
     if (this.data.openclaw.agent && !OPENCLAW_AGENT.test(this.data.openclaw.agent)) this.data.openclaw.agent = '';
     for (const id of ['claude', 'codex']) if (!ACCESS.includes(this.data[id].access)) this.data[id].access = 'ask';
     const port = this.data.mcp.port;
@@ -276,14 +327,90 @@ class AgentConfig {
 
   // Raw section for main-process code, with the secret decrypted. Never send this to the renderer.
   get(section) {
+    if (isCustomId(section)) {
+      const c = this.custom(section);
+      if (!c) return null;
+      const { seed, ...rest } = c;
+      return { ...rest, key: this.decrypt(c.key) };
+    }
     if (SECRET_AGENTS.includes(section)) return { ...this.data[section], key: this.decrypt(this.data[section].key) };
     if (this.data[section] && isObj(this.data[section])) return { ...this.data[section] };
     return null;
   }
 
+  // ---------- agents, built in and custom ----------
+
+  // Every agent a chat can have now: the built-in ones, then the custom ones in the order the user added them.
+  agentIds() {
+    return [...AGENT_IDS, ...(this.data.custom || []).map((c) => c.id)];
+  }
+
+  hasAgent(id) {
+    return this.agentIds().includes(id);
+  }
+
+  custom(id) {
+    return (isCustomId(id) && (this.data.custom || []).find((c) => c.id === id)) || null;
+  }
+
+  // The stored settings of an agent (its section, or its entry in the custom list); null for an agent that isn't
+  // there, such as a custom agent the user removed while chats with it remain.
+  agentData(id) {
+    if (isCustomId(id)) return this.custom(id);
+    return AGENT_IDS.includes(id) ? this.data[id] : null;
+  }
+
+  // Whether the agent is there and turned on. A removed custom agent counts as off: its chats stay readable.
+  enabled(id) {
+    const d = this.agentData(id);
+    return Boolean(d) && d.enabled !== false;
+  }
+
   displayName(agent) {
     if (agent === 'clark') return this.data.clark.name || DEFAULTS.clark.name;
+    if (isCustomId(agent)) {
+      const c = this.custom(agent);
+      return c ? c.name : 'Removed agent';
+    }
     return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : agent === 'openclaw' ? 'OpenClaw' : String(agent || '');
+  }
+
+  // Adds a custom agent with the defaults of a preset (CUSTOM_PRESETS) and returns its id.
+  addCustom({ preset = 'runs', random = crypto.randomBytes } = {}) {
+    const p = CUSTOM_PRESETS[preset];
+    if (!p) throw new AgentError('invalid', 'preset must be booper, runs or openai');
+    if (this.data.custom.length >= CUSTOM_MAX) throw new AgentError('invalid', `at most ${CUSTOM_MAX} custom agents`);
+    let id = '';
+    do {
+      id = `cx_${[...random(10)].map((b) => (b % 36).toString(36)).join('')}`;
+    } while (this.data.custom.some((c) => c.id === id));
+    const taken = new Set(this.agentIds().map((a) => this.displayName(a).toLowerCase()));
+    let name = p.name;
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${p.name} ${n}`;
+    // No seed yet: it is made when the user first copies the setup (ensureSeed), so adding an agent works without the
+    // system keyring, which Linux needs for every secret.
+    this.data.custom.push({ ...CUSTOM_DEFAULTS, id, preset, protocol: p.protocol, name, url: p.url });
+    this.save();
+    return id;
+  }
+
+  // The seed the agent's MCP tokens come from, made once. Throws when the system can't keep a secret (Linux without a
+  // keyring), as setSecret does.
+  ensureSeed(id, random = crypto.randomBytes) {
+    const c = this.custom(id);
+    if (!c) throw new AgentError('invalid', 'unknown custom agent');
+    if (c.seed && this.decrypt(c.seed)) return;
+    c.seed = this.secrets.encrypt(random(32).toString('base64url'));
+    this.save();
+  }
+
+  removeCustom(id) {
+    const before = this.data.custom.length;
+    this.data.custom = this.data.custom.filter((c) => c.id !== id);
+    if (this.data.custom.length === before) return false;
+    if (this.data.defaultAgent === id) this.data.defaultAgent = DEFAULTS.defaultAgent;
+    this.save();
+    return true;
   }
 
   // remoteHost wins; otherwise the first Tailscale IPv4 on this machine.
@@ -304,6 +431,8 @@ class AgentConfig {
       claude: { ...d.claude },
       codex: { ...d.codex },
       openclaw: { ...openclaw, hasKey: Boolean(openclawKey) },
+      // Never the key or the seed.
+      custom: (d.custom || []).map(({ key: customKey, seed, ...c }) => ({ ...c, hasKey: Boolean(customKey) })),
       mcp: {
         port: d.mcp.port,
         remote: d.mcp.remote,
@@ -336,7 +465,7 @@ class AgentConfig {
     if (!isObj(patch)) throw new AgentError('invalid', 'patch must be an object');
     const next = clone(this.data);
     if ('defaultAgent' in patch) {
-      if (!AGENT_IDS.includes(patch.defaultAgent)) throw new AgentError('invalid', 'defaultAgent must be clark, claude, codex or openclaw');
+      if (!this.agentIds().includes(patch.defaultAgent)) throw new AgentError('invalid', 'defaultAgent must be clark, claude, codex, openclaw or a custom agent');
       next.defaultAgent = patch.defaultAgent;
     }
     if ('permission' in patch) {
@@ -396,6 +525,21 @@ class AgentConfig {
         s.remoteHost = host;
       }
     });
+    // {custom: {<id>: {...}}}: changes to custom agents that are there. Adding and removing have their own methods.
+    if ('custom' in patch) {
+      if (!isObj(patch.custom)) throw new AgentError('invalid', 'custom must be an object');
+      for (const [id, p] of Object.entries(patch.custom)) {
+        const s = (next.custom || []).find((c) => c.id === id);
+        if (!s) throw new AgentError('invalid', 'unknown custom agent');
+        if (!isObj(p)) throw new AgentError('invalid', 'a custom agent must be an object');
+        if ('enabled' in p) s.enabled = bool(p.enabled, 'custom.enabled');
+        if ('name' in p) s.name = oneLine(text(p.name, 40, 'custom.name'), 40) || CUSTOM_PRESETS[s.preset].name;
+        if ('url' in p) s.url = httpUrl(p.url, 'custom.url');
+        if ('model' in p) s.model = text(p.model, 100, 'custom.model');
+        if ('remote' in p) s.remote = bool(p.remote, 'custom.remote');
+        if ('history' in p) s.history = bool(p.history, 'custom.history');
+      }
+    }
     // Pairings change only through the phone routes and their own methods below, never from a renderer patch.
     section('phone', (p, s) => {
       if ('enabled' in p) s.enabled = bool(p.enabled, 'phone.enabled');
@@ -467,10 +611,11 @@ class AgentConfig {
   }
 
   setSecret(agent, value) {
-    if (!SECRET_AGENTS.includes(agent)) throw new AgentError('invalid', 'only clark and openclaw have a secret');
+    const section = SECRET_AGENTS.includes(agent) ? this.data[agent] : this.custom(agent);
+    if (!section) throw new AgentError('invalid', 'only clark, openclaw and custom agents have a secret');
     if (typeof value !== 'string' || value.length > 4000) throw new AgentError('invalid', 'key must be text');
     const v = value.trim();
-    this.data[agent].key = v ? this.secrets.encrypt(v) : null;
+    section.key = v ? this.secrets.encrypt(v) : null;
     this.save();
     return this.publicView();
   }
@@ -486,6 +631,47 @@ class AgentConfig {
   openclawToken(remote = false) {
     if (remote && !this.data.openclaw.remote) return '';
     return openclawTokenFor(this.get('openclaw').key, remote);
+  }
+
+  // A token a custom agent's MCP client sends (customTokenFor); empty until the agent has a seed (ensureSeed). The
+  // remote one stays empty while the user doesn't let that agent use Rukoo from another computer, or the agent is off.
+  customToken(id, remote = false) {
+    const c = this.custom(id);
+    if (!c || (remote && !(c.remote && c.enabled !== false))) return '';
+    return customTokenFor(this.decrypt(c.seed), id, remote);
+  }
+
+  // What the user pastes on the agent's machine so it gets Rukoo's tools: for Booper the block for booper.yaml and
+  // the environment variable its header comes from, for any other agent the server as most MCP clients take it.
+  // Holds the token, like the OpenClaw command: the agent can't compute it.
+  customSetup(id, { remote = false, host = '127.0.0.1', port = this.runtime.localPort || this.data.mcp.port } = {}) {
+    const c = this.custom(id);
+    const token = this.customToken(id, remote);
+    if (!c || !token || !host || !port) return '';
+    const url = `http://${host}:${port}/mcp`;
+    const where = remote ? 'from another computer in your tailnet' : 'on this computer';
+    if (c.preset === 'booper') {
+      return [
+        `# Rukoo Mail: lets ${c.name} read mail, write drafts and ask for approval in Rukoo, ${where}.`,
+        '# 1. Give Booper this environment variable (in the environment its service starts with), replacing an older one:',
+        `#      RUKOO_MCP_AUTHORIZATION=Bearer ${token}`,
+        '# 2. Merge this block into booper.yaml (keep your other mcp servers) and restart Booper.',
+        'mcp:',
+        '  servers:',
+        '    rukoo:',
+        `      url: ${url}`,
+        '      headersEnv: { Authorization: RUKOO_MCP_AUTHORIZATION }',
+        '      tools: ["*"]',
+        `      safeTools: [${READ_ONLY_TOOLS.join(', ')}]`,
+        ''
+      ].join('\n');
+    }
+    return [
+      `// Rukoo Mail: lets ${c.name} read mail, write drafts and ask for approval in Rukoo, ${where}.`,
+      '// Add this MCP server (Streamable HTTP) to the agent and restart it. The token is a secret.',
+      JSON.stringify({ rukoo: { url, transport: 'streamable-http', headers: { Authorization: `Bearer ${token}` } } }, null, 2),
+      ''
+    ].join('\n');
   }
 
   // The command that adds Rukoo to OpenClaw's MCP servers (docs.openclaw.ai/cli/mcp): Streamable HTTP with the
@@ -533,10 +719,19 @@ class AgentConfig {
   }
 }
 
+function isCustomId(id) {
+  return typeof id === 'string' && CUSTOM_ID.test(id);
+}
+
 module.exports = {
   AgentConfig,
   AgentError,
   AGENT_IDS,
+  CUSTOM_MAX,
+  CUSTOM_PRESETS,
+  READ_ONLY_TOOLS,
+  isCustomId,
+  customTokenFor,
   SECRET_AGENTS,
   EFFORTS,
   DEFAULTS,

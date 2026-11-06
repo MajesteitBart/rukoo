@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { AgentConfig, AgentError, AGENT_IDS, EFFORTS, writeJsonAtomic, tailscaleAddress } = require('./config');
+const { AgentConfig, AgentError, AGENT_IDS, EFFORTS, writeJsonAtomic, tailscaleAddress, isCustomId } = require('./config');
 const { McpServer, INSTRUCTIONS: MCP_INSTRUCTIONS, json: mcpJson } = require('./mcp');
 const { decodeId } = require('../engine');
 const tools = require('./tools');
@@ -64,6 +64,8 @@ const OWN_SKILLS_RETRY_MS = 10 * 1000;
 // Message actions whose text Rukoo wrote (an approval) or that is a whole skill already: no $name in them counts.
 const NO_MENTIONS = new Set(['approved', 'declined', 'skill']);
 const ADAPTERS = { clark: ['./hermes', 'HermesAdapter'], claude: ['./claude', 'ClaudeAdapter'], codex: ['./codex', 'CodexAdapter'], openclaw: ['./openclaw', 'OpenClawAdapter'] };
+// A custom agent's adapter, by its protocol (config.js CUSTOM_PRESETS).
+const CUSTOM_ADAPTERS = { runs: ['./hermes', 'HermesAdapter'], openai: ['./openai', 'OpenAiAdapter'] };
 const DENY_IDS = new Set(['deny', 'decline', 'cancel']);
 // English fallbacks for error notices; the renderer localizes by code.
 const ERROR_TEXT = {
@@ -207,6 +209,7 @@ class AgentHub extends EventEmitter {
     this.statuses = {};
     // Per agent, how many forced status probes have started; see probeStatus().
     this.statusRound = new Map(AGENT_IDS.map((id) => [id, 0]));
+    this.customHashes = new Map();
     this.deltas = new Map();
     this.deltaTimer = null;
     this.saveTimer = null;
@@ -295,35 +298,58 @@ class AgentHub extends EventEmitter {
   }
 
   registerAdapters() {
-    for (const id of AGENT_IDS) {
-      const opts = {
-        id,
-        config: () => this.cfg.get(id),
-        hub: this,
-        log: (...args) => this.log(id, ...args),
-        // attachments: where read_attachment saves files for local agents, so Claude may read them without asking.
-        paths: { workspace: this.workspace, attachments: this.tempBase() }
-      };
-      try {
-        let adapter;
-        if (this.injectedAdapters) {
-          const given = this.injectedAdapters[id];
-          if (!given) continue;
-          adapter = typeof given.runTurn === 'function' ? given : given(opts);
-        } else if (process.env.SEM_AGENT_FAKE === '1') {
-          const { FakeAdapter } = require('./fake');
-          adapter = new FakeAdapter(opts);
-        } else {
-          // Each adapter loads on its own, so one broken or missing module only takes out that agent.
-          const [file, name] = ADAPTERS[id];
-          const Cls = adapterClass(require(file), name);
-          adapter = new Cls(opts);
-        }
-        this.adapters.set(id, adapter);
-      } catch (err) {
-        this.adapterErrors.set(id, clip(err && err.message, 300));
-        this.log(id, 'adapter not loaded:', err && err.message);
+    for (const id of this.cfg.agentIds()) this.registerAdapter(id);
+  }
+
+  // Custom agents come and go while Rukoo runs: adds the adapter of a new one and closes that of a removed one. The
+  // chats of a removed agent stay; they can't send until an agent with that id is back, which none will be.
+  syncCustomAdapters() {
+    const ids = new Set(this.cfg.agentIds());
+    for (const id of ids) if (!this.adapters.has(id) && !this.adapterErrors.has(id)) this.registerAdapter(id);
+    for (const id of [...this.adapters.keys(), ...this.adapterErrors.keys()]) {
+      if (ids.has(id) || !isCustomId(id)) continue;
+      const a = this.adapters.get(id);
+      this.adapters.delete(id);
+      this.adapterErrors.delete(id);
+      this.statusRound.delete(id);
+      const { [id]: _gone, ...rest } = this.statuses || {};
+      this.statuses = rest;
+      if (a && typeof a.dispose === 'function') Promise.resolve().then(() => a.dispose()).catch(() => {});
+    }
+  }
+
+  registerAdapter(id) {
+    if (!this.statusRound.has(id)) this.statusRound.set(id, 0);
+    const custom = isCustomId(id) ? this.cfg.custom(id) : null;
+    const opts = {
+      id,
+      ...(custom ? { custom: true } : {}),
+      config: () => this.cfg.get(id),
+      hub: this,
+      log: (...args) => this.log(id, ...args),
+      // attachments: where read_attachment saves files for local agents, so Claude may read them without asking.
+      paths: { workspace: this.workspace, attachments: this.tempBase() }
+    };
+    try {
+      let adapter;
+      if (this.injectedAdapters) {
+        // Tests give a custom agent's adapter by its id, or one for every custom agent of a protocol.
+        const given = this.injectedAdapters[id] || (custom && this.injectedAdapters[`custom:${custom.protocol}`]);
+        if (!given) return;
+        adapter = typeof given.runTurn === 'function' ? given : given(opts);
+      } else if (process.env.SEM_AGENT_FAKE === '1') {
+        const { FakeAdapter } = require('./fake');
+        adapter = new FakeAdapter(opts);
+      } else {
+        // Each adapter loads on its own, so one broken or missing module only takes out that agent.
+        const [file, name] = custom ? CUSTOM_ADAPTERS[custom.protocol] : ADAPTERS[id];
+        const Cls = adapterClass(require(file), name);
+        adapter = new Cls(opts);
       }
+      this.adapters.set(id, adapter);
+    } catch (err) {
+      this.adapterErrors.set(id, clip(err && err.message, 300));
+      this.log(id, 'adapter not loaded:', err && err.message);
     }
   }
 
@@ -374,8 +400,9 @@ class AgentHub extends EventEmitter {
   // mailbox to the tailnet. The phone's switch opens only the /phone/ routes: /mcp still takes Clark's and
   // OpenClaw's tokens only while their own switches are on (identify()).
   wantsRemote() {
-    const { mcp, openclaw, phone } = this.cfg.data;
-    return Boolean(mcp.remote || (openclaw.remote && openclaw.enabled !== false) || (phone && phone.enabled));
+    const { mcp, openclaw, phone, custom } = this.cfg.data;
+    const customRemote = (custom || []).some((c) => c.remote && c.enabled !== false);
+    return Boolean(mcp.remote || (openclaw.remote && openclaw.enabled !== false) || (phone && phone.enabled) || customRemote);
   }
 
   // The Tailscale listener, only when the user turned it on and this machine has an address.
@@ -499,7 +526,8 @@ class AgentHub extends EventEmitter {
     if (raw !== undefined && !(isObj(raw) && Array.isArray(raw.conversations))) keepAside(true);
     const list = !broken && raw ? raw.conversations : [];
     for (const c of list) {
-      if (!isObj(c) || typeof c.id !== 'string' || !AGENT_IDS.includes(c.agent) || !Array.isArray(c.items)) {
+      // A chat with a custom agent the user removed stays, as a chat that can't send.
+      if (!isObj(c) || typeof c.id !== 'string' || !(this.cfg.hasAgent(c.agent) || isCustomId(c.agent)) || !Array.isArray(c.items)) {
         if (!broken) keepAside(false);
         continue;
       }
@@ -934,8 +962,8 @@ class AgentHub extends EventEmitter {
 
   // meeting: {id, title, eventId} for a chat about a Rukoo Voice meeting, which has no email.
   create({ agent, message = null, meeting = null, origin = 'panel', title = '', model = null, effort = null, permission = null } = {}) {
-    const id = AGENT_IDS.includes(agent) ? agent : this.cfg.data.defaultAgent;
-    if (this.cfg.data[id].enabled === false) throw new AgentError('disabled', `${id} is turned off`);
+    const id = this.cfg.hasAgent(agent) ? agent : this.cfg.data.defaultAgent;
+    if (!this.cfg.enabled(id)) throw new AgentError('disabled', `${id} is turned off`);
     const about = meetingRef(meeting);
     const ref = about ? null : this.messageRef(message);
     const now = Date.now();
@@ -1105,7 +1133,7 @@ class AgentHub extends EventEmitter {
   // model in Settings. A list that fails still offers the model in Settings; error says why. refresh: the panel
   // just opened, so a list older than half a minute is loaded again.
   models(agent, { refresh = false } = {}) {
-    if (!AGENT_IDS.includes(agent)) throw new AgentError('invalid', 'unknown agent');
+    if (!this.cfg.hasAgent(agent)) throw new AgentError('invalid', 'unknown agent');
     const entry = this.modelLists.get(agent);
     if (entry && entry.pending) return entry.pending;
     if (entry && entry.value && Date.now() - entry.at < (refresh || entry.value.error ? MODELS_RETRY_MS : MODELS_TTL_MS)) return Promise.resolve(entry.value);
@@ -1122,7 +1150,7 @@ class AgentHub extends EventEmitter {
 
   async loadModels(agent) {
     const adapter = this.adapters.get(agent);
-    const settingsModel = String(this.cfg.data[agent].model || '').trim();
+    const settingsModel = String((this.cfg.agentData(agent) || {}).model || '').trim();
     let res = null;
     let error = null;
     try {
@@ -1159,7 +1187,7 @@ class AgentHub extends EventEmitter {
   // The skills the agent itself has, for the panel's $ menu: {agent, skills: [{name, description, scope}], error}.
   // refresh: the menu just opened, so a list older than ten seconds is loaded again.
   ownSkills(agent, { refresh = false } = {}) {
-    if (!AGENT_IDS.includes(agent)) throw new AgentError('invalid', 'unknown agent');
+    if (!this.cfg.hasAgent(agent)) throw new AgentError('invalid', 'unknown agent');
     const entry = this.skillLists.get(agent);
     if (entry && entry.pending) return entry.pending;
     if (entry && entry.value && Date.now() - entry.at < (refresh || entry.value.error ? OWN_SKILLS_RETRY_MS : OWN_SKILLS_TTL_MS)) return Promise.resolve(entry.value);
@@ -1176,7 +1204,7 @@ class AgentHub extends EventEmitter {
   async loadOwnSkills(agent) {
     const adapter = this.adapters.get(agent);
     try {
-      if (this.cfg.data[agent].enabled === false) throw new AgentError('disabled', `${agent} is turned off`);
+      if (!this.cfg.enabled(agent)) throw new AgentError('disabled', `${agent} is turned off`);
       if (!adapter || typeof adapter.skills !== 'function') throw new AgentError('unknown', this.adapterErrors.get(agent) || `${agent} cannot list its skills`);
       return { agent, skills: ownskills.cleanList(await withTimeout(adapter.skills(), 20000)), error: null };
     } catch (err) {
@@ -1271,7 +1299,7 @@ class AgentHub extends EventEmitter {
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
     const busy = this.turns.has(c.id) || this.sending.has(c.id);
     if (busy && mode !== 'steer' && mode !== 'queue') throw new AgentError('busy', 'a turn is running');
-    if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
+    if (!this.cfg.enabled(c.agent)) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (skill) {
       const s = this.skills.get(skill);
       if (!s) throw new AgentError('skill-missing', `no skill named ${clip(skill, 80)}`);
@@ -1421,9 +1449,9 @@ class AgentHub extends EventEmitter {
 
   // Hermes usually runs on another machine and reaches Rukoo through its bridge, so a path on this PC means nothing
   // to it, and its Runs API takes text only. An OpenClaw gateway can be elsewhere too, and Rukoo sends it text only.
-  // Claude Code and Codex run here.
+  // Claude Code and Codex run here. A custom agent's server can be anywhere, so it gets text only too.
   localAgent(c) {
-    return c.agent !== 'clark' && c.agent !== 'openclaw';
+    return c.agent !== 'clark' && c.agent !== 'openclaw' && !isCustomId(c.agent);
   }
 
   async runTurn(c, turn, { text, action, firstTurn, recap = false, display = '' }) {
@@ -2220,7 +2248,7 @@ class AgentHub extends EventEmitter {
   nextQueued(cid, entryId = null) {
     if (this.disposed) return null;
     const c = this.conversations.get(cid);
-    if (!c || this.turns.has(cid) || this.sending.has(cid) || this.cfg.data[c.agent].enabled === false) return null;
+    if (!c || this.turns.has(cid) || this.sending.has(cid) || !this.cfg.enabled(c.agent)) return null;
     const at = entryId ? c.queue.findIndex((e) => e.state === 'queued' && e.id === entryId) : c.queue.findIndex((e) => e.state === 'queued' || e.state === 'copying');
     if (at < 0 || c.queue[at].state !== 'queued') return null;
     const [entry] = c.queue.splice(at, 1);
@@ -2234,7 +2262,7 @@ class AgentHub extends EventEmitter {
     if (this.disposed) throw new AgentError('stopped', 'Rukoo is closing');
     const entry = c.queue.find((e) => e.id === entryId && e.state === 'queued');
     if (!entry) throw new AgentError('invalid', 'unknown queued message');
-    if (this.cfg.data[c.agent].enabled === false) throw new AgentError('disabled', `${c.agent} is turned off`);
+    if (!this.cfg.enabled(c.agent)) throw new AgentError('disabled', `${c.agent} is turned off`);
     if (this.turns.has(c.id) || this.sending.has(c.id)) {
       // A quick action, or a message that starts one of the agent's own skills, waits for a turn of its own.
       if (entry.action || entry.startsSkill) throw new AgentError('busy', 'a turn is running');
@@ -2532,6 +2560,11 @@ class AgentHub extends EventEmitter {
     // aren't remote), or on another computer with the remote one, which only the Tailscale listener takes.
     if (this.openclawHash && crypto.timingSafeEqual(this.openclawHash, hash)) found = { agent: 'openclaw', conversationId: null, remote: false };
     if (this.openclawRemoteHash && crypto.timingSafeEqual(this.openclawRemoteHash, hash)) found = { agent: 'openclaw', conversationId: null, remote: true };
+    // A custom agent's MCP client, the same way as OpenClaw's (config.customToken).
+    for (const [agent, h] of this.customHashes || []) {
+      if (h.local && crypto.timingSafeEqual(h.local, hash)) found = { agent, conversationId: null, remote: false };
+      if (h.remote && crypto.timingSafeEqual(h.remote, hash)) found = { agent, conversationId: null, remote: true };
+    }
     return found ? { ...found } : null;
   }
 
@@ -2544,6 +2577,7 @@ class AgentHub extends EventEmitter {
     if (!remote) for (const t of this.tokens) if (t.identity.agent === agent && !t.identity.remote) hashes.push(t.hash);
     if (agent === 'clark' && remote && this.remoteHash && this.cfg.data.mcp.remote) hashes.push(this.remoteHash);
     if (agent === 'openclaw') hashes.push(remote ? this.openclawRemoteHash : this.openclawHash);
+    if (this.customHashes && this.customHashes.has(agent)) hashes.push(this.customHashes.get(agent)[remote ? 'remote' : 'local']);
     return hashes.some((h) => h && this.mediaLinks.bindOf(h.toString('hex')) === bind);
   }
 
@@ -2552,11 +2586,12 @@ class AgentHub extends EventEmitter {
   // on this computer only.
   agentAllowed(agent, remote) {
     const data = this.cfg.data;
-    const own = AGENT_IDS.includes(agent) ? data[agent] : null;
+    const own = this.cfg.agentData(agent);
     if (!own || own.enabled === false) return false;
     if (!remote) return true;
     if (agent === 'clark') return Boolean(data.mcp.remote);
     if (agent === 'openclaw') return Boolean(data.openclaw.remote && data.openclaw.enabled !== false);
+    if (isCustomId(agent)) return Boolean(own.remote);
     return false;
   }
 
@@ -2803,6 +2838,60 @@ class AgentHub extends EventEmitter {
     // Empty while the user doesn't allow a remote gateway (config.openclawToken).
     const openclawRemote = this.cfg.openclawToken(true);
     this.openclawRemoteHash = openclawRemote ? sha256(openclawRemote) : null;
+    // Each custom agent's two tokens; the remote one only while the user lets it use Rukoo from another computer.
+    this.customHashes = new Map();
+    for (const c of this.cfg.data.custom || []) {
+      const local = this.cfg.customToken(c.id);
+      const remote = this.cfg.customToken(c.id, true);
+      this.customHashes.set(c.id, { local: local ? sha256(local) : null, remote: remote ? sha256(remote) : null });
+    }
+  }
+
+  // ---------- custom agents (renderer API) ----------
+
+  // preset: booper, runs or openai (config.js CUSTOM_PRESETS). Returns the new agent's id with the config.
+  addCustomAgent(preset) {
+    const id = this.cfg.addCustom({ preset });
+    this.refreshRemoteHash();
+    this.syncCustomAdapters();
+    this.configChanged();
+    return { id, config: this.config() };
+  }
+
+  // Its chats stay, as chats that can't send. Its turns stop, and its tokens stop working at once.
+  async removeCustomAgent(id) {
+    if (!this.cfg.custom(id)) throw new AgentError('invalid', 'unknown agent');
+    const wanted = this.wantsRemote();
+    for (const turn of [...this.turns.values()]) {
+      const c = this.conversations.get(turn.cid);
+      if (c && c.agent === id) turn.controller.abort();
+    }
+    this.cfg.removeCustom(id);
+    this.refreshRemoteHash();
+    this.syncCustomAdapters();
+    if (this.wantsRemote() !== wanted && this.mcp) await this.startRemote();
+    this.configChanged();
+    return this.config();
+  }
+
+  // What lets a custom agent use Rukoo's tools, on the clipboard (config.customSetup): with the agent allowed on
+  // another computer, Rukoo's Tailscale address and the port its Tailscale listener has; else 127.0.0.1 and the local
+  // port. Returns {remote, url}, never the token.
+  copyCustomSetup(id) {
+    const c = this.cfg.custom(id);
+    if (!c) throw new AgentError('invalid', 'unknown agent');
+    const remote = Boolean(c.remote);
+    const ports = this.mcp ? this.mcp.ports() : { local: null, remote: null };
+    const host = remote ? this.cfg.address() : '127.0.0.1';
+    const port = remote ? ports.remote : ports.local || this.cfg.data.mcp.port;
+    if (!host || !port) throw new AgentError('not-configured', 'Rukoo is not listening on a Tailscale address');
+    // The first copy makes the agent's tokens; from then on the same ones.
+    this.cfg.ensureSeed(id);
+    this.refreshRemoteHash();
+    const setup = this.cfg.customSetup(id, { remote, host, port });
+    if (!setup) throw new AgentError('not-configured', `${c.name} is turned off`);
+    if (this.deps.clipboard) this.deps.clipboard.writeText(setup);
+    return { remote, url: `http://${host}:${port}/mcp` };
   }
 
   // ---------- phone (renderer API, see phonehost.js) ----------
@@ -2882,8 +2971,8 @@ class AgentHub extends EventEmitter {
   }
 
   async agentStatus(id, force = false) {
-    if (!AGENT_IDS.includes(id)) throw new AgentError('invalid', 'unknown agent');
-    if (this.cfg.data[id].enabled === false) return { state: 'disabled', detail: '' };
+    if (!this.cfg.hasAgent(id)) throw new AgentError('invalid', 'unknown agent');
+    if (!this.cfg.enabled(id)) return { state: 'disabled', detail: '' };
     const a = this.adapters.get(id);
     if (!a) return { state: 'unknown', detail: this.adapterErrors.get(id) || 'adapter not available' };
     try {
@@ -2911,7 +3000,7 @@ class AgentHub extends EventEmitter {
   }
 
   async refreshStatus({ force = false } = {}) {
-    const changed = await Promise.all(AGENT_IDS.map((id) => this.probeStatus(id, force)));
+    const changed = await Promise.all(this.cfg.agentIds().map((id) => this.probeStatus(id, force)));
     if (changed.includes(true) || force) this.emitEvent({ kind: 'agents', status: this.statuses });
     return this.statuses;
   }

@@ -1215,7 +1215,8 @@ class PhoneHost {
     if (route === GONE || !isObj(route) || !route.url) {
       return errorResult(`Rukoo could not run ${name}: this chat belongs to Rukoo on a phone, and the phone's connection to this chat has ended. Ask the user to send the message again from the phone.`);
     }
-    const agentCfg = hub.cfg.data[identity.agent];
+    // A custom agent's settings are in the custom list (config.agentData); a removed one has none.
+    const agentCfg = hub.cfg && (typeof hub.cfg.agentData === 'function' ? hub.cfg.agentData(identity.agent) : hub.cfg.data && hub.cfg.data[identity.agent]);
     if (agentCfg && agentCfg.enabled === false) {
       return errorResult(`${hub.agentName(identity.agent)} is turned off in Rukoo, so Rukoo's tools are not available. The user can turn it on in Settings > Agents.`);
     }

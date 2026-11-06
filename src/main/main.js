@@ -1211,6 +1211,9 @@ Object.assign(api, {
   agentStatus: () => agentHub().status(),
   agentCopyHermesSetup: () => agentHub().copyHermesSetup(),
   agentCopyOpenClawSetup: () => agentHub().copyOpenClawSetup(),
+  agentAddCustom: (preset) => agentHub().addCustomAgent(agentText(preset, 20)),
+  agentRemoveCustom: (id) => agentHub().removeCustomAgent(agentId(id)),
+  agentCopyCustomSetup: (id) => agentHub().copyCustomSetup(agentId(id)),
   // A phone that runs Claude Code and Codex chats here (agents/phonehost.js).
   agentPhonePair: (opts) => agentHub().phonePairStart({ allowExport: agentPlain(opts).allowExport === true }),
   agentPhonePairCancel: () => agentHub().phonePairCancel(),
