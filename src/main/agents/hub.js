@@ -2742,6 +2742,12 @@ class AgentHub extends EventEmitter {
   // A call from Claude Code or Codex in a chat a phone runs here goes to that phone's own Rukoo, so the tools act on
   // the phone's mail and screen (phonehost.js route()).
   callTool(identity, name, args, meta) {
+    // A custom agent's identity was taken when its request came in. Removed, turned off or no longer allowed on this
+    // listener since then (its body can come in slowly), it gets nothing.
+    if (identity && isCustomId(identity.agent) && !this.agentAllowed(identity.agent, identity.remote === true)) {
+      const who = this.cfg.custom(identity.agent) ? this.agentName(identity.agent) : 'This agent';
+      return { content: [{ type: 'text', text: `${who} may no longer use Rukoo's tools here. The user can set it up again in Settings > Agents.` }], isError: true };
+    }
     const route = this.phoneHost && this.phoneHost.route(identity, args, meta);
     if (route) return this.phoneHost.forward(route, identity, name, args, meta);
     return tools.callTool(this, identity, name, args, meta);

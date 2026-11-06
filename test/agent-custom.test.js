@@ -183,7 +183,21 @@ test('hub: a custom agent gets an adapter, chats and Rukoo tokens, and loses the
     const status = await hub.agentStatus(id);
     assert.equal(status.state, 'ready');
 
+    // An identity taken from a request whose body comes in after the agent lost that listener, or was removed: the
+    // call itself is refused.
+    const viaTailnet = { agent: id, conversationId: null, remote: true };
+    const viaLoopback = { agent: id, conversationId: null, remote: false };
+    assert.ok(!/may no longer/.test(JSON.stringify(await hub.callTool(viaTailnet, 'get_context', {}))), 'allowed while remote is on');
+    await hub.updateConfig({ custom: { [id]: { remote: false } } });
+    const late = await hub.callTool(viaTailnet, 'get_context', {});
+    assert.equal(late.isError, true);
+    assert.match(late.content[0].text, /may no longer use Rukoo's tools/);
+    assert.ok(!/may no longer/.test(JSON.stringify(await hub.callTool(viaLoopback, 'get_context', {}))), 'the loopback listener still works');
+
     await hub.removeCustomAgent(id);
+    const gone = await hub.callTool(viaLoopback, 'get_context', {});
+    assert.equal(gone.isError, true, 'removal closes a request already under way');
+    assert.match(gone.content[0].text, /^This agent may no longer use Rukoo's tools/);
     assert.ok(!hub.adapters.has(id));
     assert.equal(hub.identify(local), null, 'its tokens stop working at once');
     assert.equal(hub.identify(remote), null);
@@ -360,6 +374,39 @@ test('openai: lists the models, streams the answer and sends the earlier turns o
     assert.deepEqual(s.requests[2].messages.slice(1), [{ role: 'user', content: 'Stateful server' }], 'history off: only the new message');
   } finally {
     s.server.close();
+  }
+});
+
+test('openai: a turn cut off after the server took it stays in the history, marked as cut off', async () => {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      requests.push(JSON.parse(body));
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (requests.length === 1) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Half an answer' } }] })}\n\n`);
+        return setTimeout(() => res.socket.destroy(), 50);
+      }
+      res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const adapter = new OpenAiAdapter({ id: 'cx_ffffffffff', config: () => ({ url: `http://127.0.0.1:${server.address().port}`, history: true }) });
+    const conversation = { id: 'c_cut', provider: {}, items: [] };
+    const first = openaiTurn(conversation, 'The email and the question');
+    const r = await adapter.runTurn(first.turn);
+    assert.equal(r.status, 'error');
+    await adapter.runTurn(openaiTurn(conversation, 'Please continue').turn);
+    assert.deepEqual(requests[1].messages.slice(1), [
+      { role: 'user', content: 'The email and the question' },
+      { role: 'assistant', content: 'Half an answer\n\n[This answer was cut off here.]' },
+      { role: 'user', content: 'Please continue' }
+    ]);
+  } finally {
+    server.close();
   }
 });
 

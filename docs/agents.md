@@ -223,7 +223,7 @@ What Booper does differently from Hermes:
 ### OpenAI-compatible agents
 
 - Each turn is one streamed Chat Completions request. `model` is the chat's model, else the model in Settings, else `default`; a server that serves one agent often ignores it. The OpenAI `user` field is `rukoo:<chat id>`.
-- A plain Chat Completions server keeps no conversation, so Rukoo keeps the chat's earlier turns and sends them with each message, up to 200,000 characters, the oldest first to go. For a server that keeps the conversation itself, turn off "Send earlier messages".
+- A plain Chat Completions server keeps no conversation, so Rukoo keeps the chat's earlier turns and sends them with each message, up to 200,000 characters, the oldest first to go. A turn you stop, or whose connection breaks, stays in it with the answer as far as it came. For a server that keeps the conversation itself, turn off "Send earlier messages".
 - The key is optional, for a server on this computer that takes none. The model menu lists what `GET /v1/models` lists. There is no effort menu, no list of the agent's own skills for `$`, and the chat shows the answer's text, not tool calls or reasoning. Stop closes the connection.
 
 ### Rukoo's tools for custom agents

@@ -210,10 +210,21 @@ class OpenAiAdapter {
       if (!res.ok) throw await this.failed(res);
       if (typeof turn.accepted === 'function') turn.accepted();
       const state = { done: false, finished: false, error: null, text: '' };
-      const result = await this.follow(turn, res, controller, state, s.name);
-      // The turn goes into the history once the server answered it whole; a stopped or failed one is sent again with
-      // the user's next message only as Rukoo's recap says.
-      if (s.history && result.status === 'done') turn.setProvider({ history: trimHistory([...history, { role: 'user', content: turn.input }, { role: 'assistant', content: state.text }]) });
+      // The server had the message, so it goes into the history however the turn ends: Rukoo counts it as delivered
+      // and won't send the email again. An answer cut off by Stop or a broken connection goes in as far as it came.
+      const keep = (complete) => {
+        if (!s.history) return;
+        const answer = complete || !state.text ? state.text : `${state.text}\n\n[This answer was cut off here.]`;
+        turn.setProvider({ history: trimHistory([...history, { role: 'user', content: turn.input }, ...(answer ? [{ role: 'assistant', content: answer }] : [])]) });
+      };
+      let result;
+      try {
+        result = await this.follow(turn, res, controller, state, s.name);
+      } catch (err) {
+        keep(false);
+        throw err;
+      }
+      keep(result.status === 'done');
       return result;
     } finally {
       if (turn.signal) turn.signal.removeEventListener('abort', onAbort);
