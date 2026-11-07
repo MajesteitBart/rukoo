@@ -23,6 +23,7 @@ It follows the same pattern as `~/.hermes/aight_phone_bridge.py`.
 - **Which version.** Rukoo sends its bridge protocol along with the proof, in `X-Rukoo-Bridge-Protocol`. The number covers what the bridge and Rukoo have to agree on: the challenge, the proof, the token and `rukoo/hello`. It goes up only for a change the other side can't follow. When Rukoo's number differs from the bridge's, the bridge sends it no token and reports which of the two is older instead of a wrong key. Bridge version 5 (`serverInfo.version` `bridge-5`) is the first that reads it. A Rukoo from before the header (1.0.0 to 2.0.0) signs the way protocol 2 does.
 - **Which device gets a call.** The bridge asks every Rukoo it found whether it has the chat the call is about (`conversation_id`). That device gets the call. A call without a chat, from WhatsApp for instance, goes to the device you used last: the one with the shortest time since its last keyboard or mouse input.
 - **When it looks.** At start, and in the background once a minute while calls come in. When no known Rukoo answers, it looks again before giving up.
+- **New tools.** Hermes asks for the tool list when it starts the bridge, and again only when the bridge says the list changed. So a tool that Rukoo gains later, through an update or a newer Rukoo coming online, would stay out of the agent's reach until the gateway restarts. From bridge version 6 (`serverInfo.version` `bridge-6`) on, a tool call makes the bridge ask Rukoo for its tools again, at most once a minute. When a Rukoo has tools that Hermes doesn't have yet, the bridge sends Hermes `notifications/tools/list_changed`, and Hermes lists the tools again. A Rukoo with fewer tools doesn't change the list.
 - **Media links.** `get_meeting_media_link` answers with a link to the Rukoo that served the call, and the bridge passes it on unchanged. Clark downloads a media link from its own box with a plain HTTP GET; the link works only from the address that asked for it, for five minutes.
 
 ## Rukoo on an Android phone
@@ -77,6 +78,10 @@ A new API server key locks out Rukoo and the bridge alike until both have it. En
 
 Updating Rukoo doesn't update the bridge. Most releases leave the bridge protocol alone, and the bridge you have keeps working. A release that changes it raises the number, and the bridge then says that it is older than that Rukoo. Download the bridge again with the command from "Copy Hermes setup" and send `/reload-mcp`. One bridge speaks one protocol, so with Rukoo on several devices, update Rukoo on all of them.
 
+New tools in a Rukoo update reach the agent by themselves with `bridge-6` or newer, from the first tool call after the update. With an older bridge, send `/reload-mcp` after updating Rukoo, or Hermes keeps the tool list from when the gateway started the bridge.
+
+A new `rukoo_bridge.py` only takes effect after `/reload-mcp` or `hermes gateway restart`. Hermes keeps running the bridge process it started, even when the file changes.
+
 ## Timeouts and approvals
 
 - The bridge waits up to 115 seconds for a tool call, including the time it takes to find the device. `write_draft` waits for Rukoo's composer, which takes at most 20 seconds. Mail actions answer within 90 seconds. Everything else answers in well under a second.
@@ -97,7 +102,7 @@ Updating Rukoo doesn't update the bridge. Most releases leave the bridge protoco
 | "Rukoo Mail on ... refused the key" | The key changed in Rukoo while the bridge was using it. Same fix as above. |
 | "The Rukoo bridge has no key" | Add `RUKOO_KEY: ${API_SERVER_KEY}` under the entry's `env:` and check that `API_SERVER_KEY` is in `~/.hermes/.env`, then `/reload-mcp`. |
 | `hermes mcp test rukoo` lists no tools and the error says "The Rukoo bridge has no tool list yet" | The bridge has never reached Rukoo from this machine. The rest of the message says why, in the words of one of the rows above. Fix that, then test again. |
-| The agent is missing tools that this Rukoo has | Download the current `rukoo_bridge.py` to the Hermes machine and send `/reload-mcp`. Keep the desktop open during registration. The bridge logs each device's tool count and serves their combined list; updating Rukoo alone does not update the bridge. |
+| The agent is missing tools that this Rukoo has | The agent has what the gateway registered last: look for the last `MCP server 'rukoo' (stdio): registered N tool(s)` in the agent log. Other Hermes processes start a bridge of their own and log the same `serving 22 tools` lines, so those don't show what the gateway has. Send `/reload-mcp` or run `hermes gateway restart`, with the desktop open. To keep it from happening again, download the current `rukoo_bridge.py` first: from `bridge-6` on, the bridge tells Hermes about new tools itself (see [Updating Rukoo](#updating-rukoo)). |
 | The bridge logs "could not get the device list from Tailscale" | `tailscale` isn't on the PATH Hermes gives the bridge. Set `RUKOO_TAILSCALE` to its full path. |
 
 The bridge logs to stderr with the prefix `rukoo-bridge:`, so its lines end up in the gateway log. It logs a line like `Rukoo is open on laptop` whenever the set of devices changes.
