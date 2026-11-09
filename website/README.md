@@ -27,9 +27,13 @@ A change to the template in `tools/build-changelog.mjs` also needs `npm run chan
 
 ## Deploying
 
-`npm run deploy` runs `wrangler deploy` with `wrangler.jsonc`, so it changes the live site. It needs `wrangler login`, or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. The early access form needs two Worker secrets, set with `wrangler secret put`: `RESEND_API_KEY` and `EARLY_ACCESS_TO`, the address the requests go to. Merging a change does not deploy it.
+Merging a change under `website/` into `main` deploys it. The `deploy` job in [`.github/workflows/website.yml`](../.github/workflows/website.yml) runs once the website's tests pass, and runs `npm run deploy`, which is `wrangler deploy` with `wrangler.jsonc`. A failed test means no deploy. To deploy `main` again without a change, run the Website workflow by hand on `main` from the Actions tab.
 
-The account server deploys separately, from `server/`. The site Worker reaches it through the `ACCOUNT` service binding, so deploy the server first when a site change depends on a server change.
+The job reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the GitHub environment `rukoo.io`, which only `main` may use. The token is limited to deploying Workers. Pull requests run the tests but never see the token.
+
+`npm run deploy` also works from your own computer, after `wrangler login` or with those two variables set. The early access form needs two Worker secrets, set with `wrangler secret put`: `RESEND_API_KEY` and `EARLY_ACCESS_TO`, the address the requests go to. A deploy keeps them.
+
+The account server deploys separately, from `server/`. The site Worker reaches it through the `ACCOUNT` service binding, so merge and deploy the server first when a site change depends on a server change.
 
 ## History
 
