@@ -19,8 +19,8 @@ permissions:
 
 concurrency:
   group: website-${{ github.workflow }}-${{ github.ref }}
-  # A newer push to main replaces an older run, so the newest site wins. Each deploy still runs to its end,
-  # because the deploy job has its own concurrency group below.
+  # A new push to a pull request cancels the running check. On main, runs never cancel each other: a deploy that
+  # started always finishes, and a newer run replaces one that is still waiting, so the newest site wins.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -54,9 +54,6 @@ jobs:
     environment:
       name: rukoo.io
       url: https://rukoo.io
-    concurrency:
-      group: website-deploy
-      cancel-in-progress: false
     defaults:
       run:
         working-directory: website
