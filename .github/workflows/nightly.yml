@@ -1,0 +1,240 @@
+name: Nightly desktop packages
+
+# Every night: builds the newest main commit whose "Test and package" run passed, and publishes it as a pre-release
+# for the Nightly update channel (src/main/updates.js). Nights without a new green commit build nothing.
+# The version is the next patch with -nightly.DATE.RUN, so the next stable release is newer than the nightlies before it.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even when the newest green commit already has a nightly'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  # The update check reads 100 releases; this keeps the stable release on that page.
+  KEEP_NIGHTLIES: 14
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      previous: ${{ steps.plan.outputs.previous }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      FORCE: ${{ inputs.force || false }}
+    steps:
+      - id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')
+          if [[ -z "$sha" ]]; then
+            echo "::error::No main commit has a passing Test and package run."
+            exit 1
+          fi
+          newest=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          if [[ "$sha" != "$newest" ]]; then
+            # The built-in token may not tag a commit whose workflow files differ from main's, so an older green
+            # commit is only built when .github/workflows is the same as on main.
+            workflows() { gh api "repos/$GH_REPO/contents/.github?ref=$1" --jq '.[] | select(.name == "workflows") | .sha'; }
+            if [[ "$(workflows "$sha")" != "$(workflows "$newest")" ]]; then
+              echo "::warning::main at ${newest:0:7} hasn't passed Test and package, and the workflows changed since ${sha:0:7}, the newest commit that did. No nightly tonight."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::main at ${newest:0:7} hasn't passed Test and package; building ${sha:0:7}, the newest commit that did."
+          fi
+
+          previous=$(gh release list --exclude-drafts --limit 200 --json tagName,createdAt --jq '[.[] | select(.tagName | test("-nightly\\."))] | sort_by(.createdAt) | last | .tagName // ""')
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          for tag in "$previous" "$latest"; do
+            [[ -n "$tag" ]] || continue
+            if [[ "$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)" == "$sha" && "$FORCE" != true ]]; then
+              echo "${sha:0:7} is already $tag; nothing to build."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          # The version at that commit, without a pre-release part. When it's already a published release, the
+          # nightly is the next patch; otherwise (a bumped version that isn't out yet) it comes before that release.
+          base=$(gh api "repos/$GH_REPO/contents/package.json?ref=$sha" --jq .content | base64 -d | jq -r .version)
+          base=${base%%-*}
+          if [[ "$(gh release view "v$base" --json isDraft --jq .isDraft 2>/dev/null || true)" == false ]]; then
+            IFS=. read -r major minor patch <<< "$base"
+            base="$major.$minor.$((patch + 1))"
+          fi
+          version="$base-nightly.$(date -u +%Y%m%d).$GITHUB_RUN_NUMBER"
+          echo "Building ${sha:0:7} as $version."
+          {
+            echo "build=true"
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "previous=$previous"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            arch: x64
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+          - os: macos-15
+            platform: macos-arm64
+            arch: arm64
+          - os: macos-15-intel
+            platform: macos-x64
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # The commit passed Test and package already, so the packages are built without running the suites again.
+      - run: npm version "$VERSION" --no-git-tag-version
+        shell: bash
+      - name: Build Windows or Linux packages
+        if: runner.os != 'macOS'
+        run: npm run dist -- --${{ matrix.arch }} --publish never
+      - name: Build ad-hoc signed macOS packages
+        if: runner.os == 'macOS'
+        run: npm run dist -- --${{ matrix.arch }} --publish never --config.mac.identity=- --config.mac.notarize=false
+
+      - name: Verify artifacts and write checksums
+        shell: pwsh
+        run: |
+          $version = $env:VERSION
+          $files = @("dist/Rukoo-Mail-Setup-$version.exe", "dist/Rukoo-Mail-Portable-$version.exe", "dist/latest.yml")
+          if ($IsLinux) {
+            $files = @("dist/Rukoo-Mail-$version-x86_64.AppImage", "dist/Rukoo-Mail-$version-amd64.deb", "dist/latest-linux.yml")
+          }
+          if ($IsMacOS) {
+            $files = @("dist/Rukoo-Mail-$version-mac-${{ matrix.arch }}.dmg", "dist/Rukoo-Mail-$version-mac-${{ matrix.arch }}.zip")
+          }
+          $checksums = foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) {
+              throw "Missing or empty nightly package: $file"
+            }
+            if ($file.EndsWith('.yml')) { continue }
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($file))"
+          }
+          [System.IO.File]::WriteAllText("$pwd/dist/SHA256SUMS-${{ matrix.platform }}.txt", ($checksums -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}-nightly
+          path: |
+            dist/Rukoo-Mail-Setup-*.exe
+            dist/Rukoo-Mail-Portable-*.exe
+            dist/Rukoo-Mail-*.AppImage
+            dist/Rukoo-Mail-*.deb
+            dist/Rukoo-Mail-*-mac-*.dmg
+            dist/Rukoo-Mail-*-mac-*.zip
+            dist/SHA256SUMS-*.txt
+            dist/latest.yml
+            dist/latest-linux.yml
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      TAG: v${{ needs.plan.outputs.version }}
+      PREVIOUS: ${{ needs.plan.outputs.previous }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '*-nightly'
+          merge-multiple: true
+          path: release
+
+      - name: Publish the nightly pre-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          cat SHA256SUMS-windows.txt SHA256SUMS-linux.txt SHA256SUMS-macos-arm64.txt SHA256SUMS-macos-x64.txt > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+          {
+            echo "An automatic build of \`main\` at $SHA, for Rukoo's Nightly update channel. It can contain bugs."
+            echo
+            echo "The Mac packages are ad-hoc signed, not Developer ID signed or notarized."
+            if [[ -n "$PREVIOUS" ]]; then
+              echo
+              echo "Changes since $PREVIOUS:"
+              echo
+              gh api "repos/$GH_REPO/compare/$PREVIOUS...$SHA" --jq '.commits[] | "- " + (.commit.message | split("\n")[0])'
+            fi
+          } > ../notes.md
+
+          # A draft first, so the Nightly channel never sees a release without its packages. Re-run failed jobs
+          # continues the draft an earlier attempt left, and only prunes when that attempt already published.
+          state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+          if [[ "$state" == false ]]; then
+            echo "$TAG is already published."
+            exit 0
+          fi
+          if [[ "$state" == missing ]]; then
+            gh release create "$TAG" --draft --prerelease --target "$SHA" --title "$TAG - Nightly build of main" --notes-file ../notes.md
+          fi
+          gh release upload "$TAG" ./*.exe ./*.AppImage ./*.deb ./*.dmg ./*.zip SHA256SUMS.txt latest.yml latest-linux.yml --clobber
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          echo "Published [$TAG](https://github.com/$GH_REPO/releases/tag/$TAG) from ${SHA:0:7}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove older nightlies
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq "[.[] | select(.tagName | test(\"-nightly\\\\.\"))] | sort_by(.createdAt) | reverse | .[$KEEP_NIGHTLIES:] | .[].tagName" |
+          while read -r old; do
+            echo "Removing $old"
+            # A draft left by a failed run has no tag to clean up.
+            if gh api "repos/$GH_REPO/git/ref/tags/$old" --silent 2>/dev/null; then
+              gh release delete "$old" --yes --cleanup-tag
+            else
+              gh release delete "$old" --yes
+            fi
+          done
