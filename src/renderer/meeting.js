@@ -775,19 +775,27 @@ async function monitorMenu(btn) {
   const heading = { heading: t('meeting.screen.liveChoose') };
   showMenu(btn, [heading, { label: t('meeting.monitor.loading'), disabled: true, action: () => {} }], { align: 'right' });
   const opened = menuCount();
-  const stillOpen = () => menuOpen() && menuCount() === opened && btn.isConnected && M.data && M.data.meeting.id === id;
+  // A new line or a Voice status redraws the header while Voice answers; the menu then belongs to the new button.
+  const button = () => (btn.isConnected ? btn : $('.meeting .mt-head [data-mt="screen"]'));
+  // Our menu is the one open; it fills in only while its meeting is shown with a Screen button.
+  const ours = () => menuOpen() && menuCount() === opened;
+  const stillOpen = () => ours() && button() && M.data && M.data.meeting.id === id;
   let info = null;
   try {
     info = await api('meetingScreen', id);
   } catch (err) {
-    if (stillOpen()) closeMenu({ refocus: true });
+    if (ours()) closeMenu({ refocus: Boolean(stillOpen()) });
     if (err && err.voice === 'unknown_command') {
       M.noScreenSwitch = voiceKey();
       renderHead();
     }
     return toast(voiceError(err), 5000);
   }
-  if (!stillOpen()) return;
+  if (!stillOpen()) {
+    // The recording ended or another meeting opened while Voice answered: the menu would stay on Loading.
+    if (ours()) closeMenu();
+    return;
+  }
   const monitors = info && Array.isArray(info.monitors) ? info.monitors.filter((m) => m && typeof m.id === 'string') : [];
   const stopped = !info || info.state === 'stopped';
   const remembered = M.monitors.get(id);
@@ -795,7 +803,7 @@ async function monitorMenu(btn) {
   // Voice may have switched from its pill or fallen back after a display disconnected.
   const selected = info.monitor || M.monitors.get(id);
   showMenu(
-    btn,
+    button(),
     [
       heading,
       ...SCREENS.map((mode) => ({

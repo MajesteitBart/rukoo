@@ -426,6 +426,26 @@ for (const [language, theme, zoom] of [['en', 'dark', 0.8], ['en', 'light', 1], 
   });
 }
 
+test('the Screen menu fills in when a new line redraws the header while Voice is still answering', async () => {
+  const display = { id: 'demo-second', name: 'Demo display 2', width: 1920, height: 1080, primary: false };
+  const id = voiceStarts({ title: 'Redraw demo', screen: 'frames' });
+  await openMeetings();
+  // Voice holds its answer to screen.get until the header has been drawn again.
+  voice.silent.add('screen.get');
+  const asks = () => voice.commands.filter((c) => c.command === 'screen.get');
+  await view().locator('[data-mt="screen"]').evaluate((b) => (b.dataset.before = '1'));
+  await view().locator('[data-mt="screen"]').click();
+  await expect.poll(() => asks().length).toBe(1);
+  say(id, 'call', 1000, 'A new line redraws the header.');
+  await expect(rows()).toHaveCount(1);
+  await expect(view().locator('[data-mt="screen"][data-before]')).toHaveCount(0);
+  voice.silent.delete('screen.get');
+  const reply = { type: 'reply', id: asks()[0].id, ok: true, result: { screen: 'frames', state: 'recording', frames: true, video: false, monitor: display.id, monitors: [display] } };
+  for (const p of voice.peers) if (p.hello) p.send(reply);
+  await expect(menu().locator('button', { hasText: display.name })).toHaveAttribute('aria-checked', 'true');
+  await shot('screen-menu-after-redraw');
+});
+
 test('older Voice hides live screen controls and an unsupported deletion keeps the meeting and notes', async () => {
   const id = voiceStarts({ title: 'Retained notes', screen: 'off' });
   await openMeetings();
