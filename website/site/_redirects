@@ -1,0 +1,13 @@
+# Read by both Cloudflare (rukoo.io) and Netlify (rukoo.bvdm.ai).
+# Downloads go through the site so the page never links to a release asset directly.
+# The asset names carry the version, so these point at one tagged release: on a new release,
+# change the tag and the file names here and the version on the page.
+/download/installer   https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-Setup-2.1.0.exe   302
+/download/portable    https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-Portable-2.1.0.exe   302
+/download/mac-arm64   https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-mac-arm64.dmg   302
+/download/mac-x64     https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-mac-x64.dmg   302
+/download/deb         https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-amd64.deb   302
+/download/appimage    https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-x86_64.AppImage   302
+/download/android     https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Android-0.4.0.apk   302
+/releases             https://github.com/MajesteitBart/rukoo/releases/latest   302
+/github               https://github.com/MajesteitBart/rukoo   302

@@ -1,0 +1,32 @@
+﻿---
+title: "Meeting notes you can write in properly"
+description: "Formatted meeting notes, tidier screen pictures, and meeting chats that start with the meeting."
+date: "2026-11-03T14:41:00Z"
+version: "2.3.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.3.0"
+image: "/img/changelog/v2.3.0-1-wider-notes-editor-beside-the-meeting-text.png"
+draft: false
+---
+Version 2.3.0 polished meetings. It was a focused release with one public code change and a full set of public screenshots.
+
+Meeting notes now use the same formatting and link controls as the mail writer. You can make text bold, add lists and links, and the notes keep their formatting when you reopen them. Under the surface they save in a simple text form that other note apps can read. The notes area beside the meeting text got wider, so you can write without squeezing the text of the call out of sight. The Notes tab can also use the full width when you want room to write.
+
+![Wider notes editor beside the meeting text](/img/changelog/v2.3.0-1-wider-notes-editor-beside-the-meeting-text.png)
+
+*The wider notes editor. The meeting text stays visible while you write. Source: [issue #204](https://github.com/MajesteitBart/rukoo/issues/204).*
+
+Screen pictures in the meeting text got tidier. Pictures that look almost the same, such as a slide that barely changes, now fold together into one compact row. Opening the row shows a strip with the other pictures. A Screen switch remembers whether you want to see screen pictures at all.
+
+![Folded screen pictures opened as a strip](/img/changelog/v2.3.0-2-folded-screen-pictures-opened-as-a-strip.png)
+
+*Nearly identical screen pictures folded into one row, opened here as a strip. Source: [issue #204](https://github.com/MajesteitBart/rukoo/issues/204).*
+
+Chats inside a meeting now start with the meeting as their subject, not with whatever email happened to be open. The phone follows the same rule. Behind the scenes, a Hermes assistant now sees the combined tools of every device that answers, so an older phone that answers first can no longer hide the computer's meeting tools. Each request still goes to the device that owns the chat. If you use Hermes, this version needs one manual step: copy the new connecting file to the Hermes computer and tell your assistant to reload. Updating Rukoo alone does not update that file. The release notes link the setup guide for this step.
+
+![Meeting chat reading the meeting text](/img/changelog/v2.3.0-3-meeting-chat-reading-the-meeting-text.png)
+
+*A chat inside a meeting, with a test assistant reading the meeting text. Source: [issue #204](https://github.com/MajesteitBart/rukoo/issues/204).*
+
+Saving notes got more careful. Typed lines, soft line breaks, formatted links and blank lines inside lists survive a save and a restart. If notes grow too large to save, Rukoo shows an error and keeps the last saved version intact instead of overwriting it with a broken one. Shorten unsaved notes before you close Rukoo in that rare case, because the unsaved text only lives until the app closes. The phone version that traveled with 2.3.0 was 0.5.1.
+
+The release notes end with an honest testing note, and it is worth repeating here. The automatic meeting checks used a pretend Voice and test assistants that follow a script. A live Hermes connection with an older phone in the mix, and real Voice recording and live writing on a real call, had not been verified for this version when it shipped.

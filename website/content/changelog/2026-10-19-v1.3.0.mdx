@@ -1,0 +1,28 @@
+﻿---
+title: "Mac and Linux, and chats that call you back"
+description: "Rukoo arrives on Mac and Linux, and the chat panel shows which chats have a reply ready."
+date: "2026-10-19T10:29:45Z"
+version: "1.3.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v1.3.0"
+image: "/img/changelog/v1.3.0-1-rukoo-inbox-on-a-mac.png"
+draft: false
+---
+Rukoo started as a Windows app. Version 1.3.0 brought it to Mac and Linux computers as well.
+
+On a Mac, Rukoo came as a normal Mac download for both newer and older Macs. It used Mac menus and Mac keyboard shortcuts, showed the unread count on its picture in the Dock, and could open email links. Passwords and assistant keys went into the Mac's own Keychain, where Mac apps keep secrets. On Linux, Rukoo came in two common Linux forms, with a normal app launcher and the same email link choice. Passwords went into the Linux key stores. On both systems, Rukoo could find assistants you had installed in the usual places.
+
+![Rukoo inbox on a Mac](/img/changelog/v1.3.0-1-rukoo-inbox-on-a-mac.png)
+
+*Rukoo on a Mac with an Apple chip. Source: [issue #69](https://github.com/MajesteitBart/rukoo/issues/69).*
+
+![Rukoo inbox on Linux](/img/changelog/v1.3.0-2-rukoo-inbox-on-linux.png)
+
+*Rukoo on Linux. Source: [issue #67](https://github.com/MajesteitBart/rukoo/issues/67).*
+
+The chat panel also learned to keep track of chats you had left alone. A chat kept working when you opened another email. A bell at the top of the panel counted the chats with a reply you had not seen, or with a question waiting for your approval. Orange meant an assistant was waiting for you. Blue meant a reply was ready. The bell's list showed each chat and what it was doing: working, waiting for you, reply ready, stopped with an error, or simply the start of the last message. Picking a chat opened it together with its email, even if that email had moved to another folder in the meantime. With the panel closed, a small dot on the chat button told you something was waiting. Rukoo remembered which replies you had not read after a restart.
+
+![List of chats with replies ready](/img/changelog/v1.3.0-3-list-of-chats-with-replies-ready.png)
+
+*The chat list. Each chat says whether it is working, waiting for you, or done. Source: [issue #77](https://github.com/MajesteitBart/rukoo/issues/77).*
+
+Two practical notes came with the new systems. Mac downloads were only fully approved by Apple when the release was built with Apple developer papers, so some downloads needed an extra OK from the system. On Linux, Rukoo needed your key store unlocked to save account passwords. Without one, the sample account still worked, but real accounts could not be saved.

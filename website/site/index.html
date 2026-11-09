@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rukoo Mail | Email worth opening</title>
+  <meta name="description" content="A free email app for Windows, macOS, Linux and Android. Your accounts in one inbox, your calendars beside it, and your own agents next to the inbox.">
+  <link rel="canonical" href="https://rukoo.io/">
+  <meta name="theme-color" content="#08090a">
+  <meta name="color-scheme" content="dark">
+
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://rukoo.io/">
+  <meta property="og:site_name" content="Rukoo Mail">
+  <meta property="og:title" content="Rukoo Mail. Email worth opening.">
+  <meta property="og:description" content="One inbox for your accounts and calendars, with your own agents beside it. Hand them an email and keep going. Free and open source.">
+  <meta property="og:image" content="https://rukoo.io/img/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Rukoo Mail's inbox with the pigeon logo and the line Email worth opening.">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="icon" href="/assets/rukoo-icon-dark.svg" type="image/svg+xml">
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png">
+  <link rel="preload" href="/assets/fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" as="image" type="image/avif" imagesrcset="/img/hero-dark-1200.avif 1200w, /img/hero-dark-2400.avif 2400w" imagesizes="(min-width: 1264px) 1136px, 92vw" fetchpriority="high">
+  <link rel="stylesheet" href="/styles.css">
+  <script>document.documentElement.classList.add('js')</script>
+  <script type="module" src="/app.js"></script>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Rukoo Mail",
+    "description": "An email client for Windows, macOS, Linux and Android, with calendars and a panel for your own AI agents.",
+    "applicationCategory": "CommunicationApplication",
+    "operatingSystem": "Windows, macOS, Linux, Android",
+    "softwareVersion": "2.1.0",
+    "license": "https://opensource.org/license/mit",
+    "url": "https://rukoo.io/",
+    "downloadUrl": "https://rukoo.io/download/installer",
+    "codeRepository": "https://github.com/MajesteitBart/rukoo",
+    "image": "https://rukoo.io/img/og.png",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+    "author": { "@type": "Person", "name": "Bart van der Meeren", "url": "https://bvdm.ai" }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" data-nav>
+    <div class="wrap">
+      <a class="brand" href="#top" aria-label="Rukoo Mail, back to top">
+        <svg viewBox="0 0 828 268" role="img" aria-hidden="true" data-eyes>
+          <g>
+            <path fill="#bd2dc4" d="M179.99 123L164 123L129 190L99 268L187.5 268C211.45 220.08 200.2 169.21 179.99 123Z"/>
+            <path fill="#16f0a3" d="M149.05 63.04L129 95L79 165L59 225L99 250L119.5 231.5C167 197.23 168.99 176.12 179.99 123C170.72 101.79 159.56 81.55 149.05 63.04Z"/>
+            <path fill="#5a6a96" d="M149.05 63.04C149.68 66.93 150 70.93 150 75C150 132.92 139.21 187.45 77.5 215.5L89 240L54 265L20.32 242.01C24.92 231.19 33.18 220.66 41.24 210.38C58.84 187.95 75.51 166.7 51.4 146.21C41.58 142.96 32.67 137.74 25.12 131.01C9.7 117.26 0 97.26 0 75C0 33.58 33.58 0 75 0C112.35 0 143.32 27.3 149.05 63.04Z"/>
+            <path fill="#99c5f4" d="M142.46 268L7.54 268C15.13 237.81 42.45 215.45 75 215.45C107.55 215.45 134.87 237.81 142.46 268Z"/>
+            <path fill="#99c5f4" d="M105.25 110.55L74.56 97.48C66.41 94.01 61.74 85.37 63.3 76.65C64.86 67.93 72.24 61.45 81.08 61.02C89.93 60.59 97.9 66.34 100.29 74.86L109.31 106.98C109.99 109.4 107.56 111.54 105.25 110.55Z"/>
+            <g class="pg-eye"><circle class="pg-iris" cx="108" cy="36" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="108" cy="36" r="10" fill="#10131f"/><circle cx="104.2" cy="32.2" r="3.2" fill="#fff"/></g></g>
+            <g class="pg-eye"><circle class="pg-iris" cx="35" cy="100" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="35" cy="100" r="10" fill="#10131f"/><circle cx="31.2" cy="96.2" r="3.2" fill="#fff"/></g></g>
+          </g>
+          <g fill="#f7f8f8">
+            <path d="M248 162C248 133.83 270.83 111 299 111L314.8 111C316.57 111 318 112.43 318 114.2L318 135.8C318 137.57 316.57 139 314.8 139L299 139C286.3 139 276 149.3 276 162L276 227.8C276 229.57 274.57 231 272.8 231L251.2 231C249.43 231 248 229.57 248 227.8L248 162Z"/>
+            <path d="M333.2 114L354.8 114C356.57 114 358 115.43 358 117.2L358 177C358 193.29 371.21 206.5 387.5 206.5C403.79 206.5 417 193.290 417 177L417 117.2C417 115.43 418.43 114 420.2 114L441.8 114C443.57 114 445 115.43 445 117.2L445 177C445 208.76 419.26 234.5 387.5 234.5C355.74 234.5 330 208.76 330 177L330 117.2C330 115.43 331.43 114 333.2 114Z"/>
+            <path d="M460 74.2C460 72.43 461.430 71 463.2 71L484.8 71C486.57 71 488 72.43 488 74.2L488 163.67L532.68 116.01C533.28 115.37 534.13 115 535.01 115L564.97 115C567.21 115 568.37 117.68 566.83 119.31L520.6 168.63L571.74 226.75C573.19 228.4 572.02 231 569.82 231L538.93 231C538.01 231 537.13 230.6 536.52 229.910L488 174.77L488 227.8C488 229.57 486.57 231 484.8 231L463.2 231C461.43 231 460 229.57 460 227.8L460 74.2Z"/>
+            <path d="M689.5 172.5C689.5 207.29 661.29 235.5 626.5 235.5C591.71 235.5 563.5 207.29 563.5 172.5C563.5 137.71 591.71 109.5 626.5 109.5C661.29 109.5 689.5 137.71 689.5 172.5ZM660.5 172.5C660.5 153.72 645.28 138.5 626.5 138.5C607.72 138.5 592.5 153.72 592.5 172.5C592.5 191.28 607.72 206.5 626.5 206.5C645.28 206.5 660.5 191.28 660.5 172.5Z"/>
+            <path d="M827.5 172.5C827.5 207.29 799.29 235.5 764.5 235.5C729.71 235.5 701.5 207.29 701.5 172.5C701.5 137.71 729.71 109.5 764.5 109.5C799.29 109.5 827.5 137.71 827.5 172.5ZM798.5 172.5C798.5 153.72 783.28 138.5 764.5 138.5C745.72 138.5 730.5 153.72 730.5 172.5C730.5 191.28 745.72 206.5 764.5 206.5C783.28 206.5 798.5 191.28 798.5 172.5Z"/>
+          </g>
+        </svg>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#agents">Agents</a></li>
+        <li><a href="#categories">Categories</a></li>
+        <li><a href="#booking">Booking</a></li>
+        <li><a href="#why">Why I built this</a></li>
+        <li><a href="#faq">FAQ</a></li>
+        <li><a href="/changelog/">Changelog</a></li>
+      </ul>
+      <div class="nav-end">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/MajesteitBart/rukoo" aria-label="GitHub"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg><span class="label">GitHub</span></a>
+        <a class="btn btn-primary btn-sm" href="#download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- One pigeon, cloned by app.js wherever [data-pigeon] appears. Eyes follow the pointer. -->
+  <template id="tpl-pigeon">
+    <svg viewBox="-6 -6 222 280" aria-hidden="true">
+      <g class="pg-bird">
+        <g class="pg-neck">
+          <path fill="#bd2dc4" d="M179.99 123L164 123L129 190L99 268L187.5 268C211.45 220.08 200.2 169.21 179.99 123Z"/>
+          <path fill="#16f0a3" d="M149.05 63.04L129 95L79 165L59 225L99 250L119.5 231.5C167 197.23 168.99 176.12 179.99 123C170.72 101.79 159.56 81.55 149.05 63.04Z"/>
+        </g>
+        <path fill="#5a6a96" d="M149.05 63.04C149.68 66.93 150 70.93 150 75C150 132.92 139.21 187.45 77.5 215.5L89 240L54 265L20.32 242.01C24.92 231.19 33.18 220.66 41.24 210.38C58.84 187.95 75.51 166.7 51.4 146.21C41.58 142.96 32.67 137.74 25.12 131.01C9.7 117.26 0 97.26 0 75C0 33.58 33.58 0 75 0C112.35 0 143.32 27.3 149.05 63.04Z"/>
+        <path fill="#99c5f4" d="M142.46 268L7.54 268C15.13 237.81 42.45 215.45 75 215.45C107.55 215.45 134.87 237.81 142.46 268Z"/>
+        <path fill="#99c5f4" d="M105.25 110.55L74.56 97.48C66.41 94.01 61.74 85.37 63.3 76.65C64.86 67.93 72.24 61.45 81.080 61.02C89.93 60.59 97.9 66.34 100.29 74.86L109.31 106.98C109.99 109.4 107.56 111.54 105.25 110.55Z"/>
+        <g class="pg-eye"><circle class="pg-iris" cx="108" cy="36" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="108" cy="36" r="10" fill="#10131f"/><circle cx="104.2" cy="32.2" r="3.2" fill="#fff"/></g></g>
+        <g class="pg-eye"><circle class="pg-iris" cx="35" cy="100" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="35" cy="100" r="10" fill="#10131f"/><circle cx="31.2" cy="96.2" r="3.2" fill="#fff"/></g></g>
+      </g>
+    </svg>
+  </template>
+
+  <main id="main">
+    <!-- Hero -->
+    <section class="hero" id="top">
+      <div class="wrap">
+        <div class="hero-copy">
+          <p class="eyebrow rise" style="--i:0"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#envelope-simple"/></svg>Free and open source, for Windows, macOS, Linux and Android</p>
+          <h1 class="rise" style="--i:1">Email that doesn't suck.</h1>
+          <p class="lede rise" style="--i:2">No ads, no UX from the 90s, no turtle speed. And your own agent for the emails you'd rather not handle.</p>
+          <div class="cta-row rise" style="--i:3">
+            <a class="btn btn-primary" href="#download" data-dl-cta><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg><span>Download Rukoo Mail</span></a>
+            <button class="btn btn-ghost btn-film" type="button" data-film-open><span class="play-dot"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#play-fill"/></svg></span>Watch the walkthrough<span class="dur">2:30</span></button>
+          </div>
+        </div>
+
+        <div class="stage hero-stage rise" style="--i:4">
+          <div class="stage-inner">
+            <div class="stage-glow"></div>
+            <div class="peek"><button class="pigeon" type="button" data-pigeon aria-label="Say hello to the pigeon"></button></div>
+            <div class="frame" data-theme-frame>
+              <picture data-theme-img="dark">
+                <source type="image/avif" srcset="/img/hero-dark-1200.avif 1200w, /img/hero-dark-2400.avif 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+                <source type="image/webp" srcset="/img/hero-dark-1200.webp 1200w, /img/hero-dark-2400.webp 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+                <img src="/img/hero-dark-1200.webp" width="2400" height="1502" alt="Rukoo Mail in dark mode: folders, an inbox with sender logos, and a newsletter open with an Unsubscribe button." fetchpriority="high">
+              </picture>
+              <picture data-theme-img="light" class="is-hidden">
+                <source type="image/avif" srcset="/img/hero-light-1200.avif 1200w, /img/hero-light-2400.avif 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+                <source type="image/webp" srcset="/img/hero-light-1200.webp 1200w, /img/hero-light-2400.webp 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+                <img src="/img/hero-light-1200.webp" width="2400" height="1502" alt="The same inbox in light mode." loading="lazy">
+              </picture>
+            </div>
+            <button class="hero-play" type="button" data-film-open aria-label="Play the Rukoo Mail walkthrough, 2 minutes 30 seconds, with sound"><span class="disc"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#play-fill"/></svg>Watch the walkthrough</span></button>
+          </div>
+          <div class="stage-tools">
+            <div class="seg" role="group" aria-label="App theme">
+              <button type="button" data-theme-btn="dark" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#moon"/></svg>Dark</button>
+              <button type="button" data-theme-btn="light" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#sun"/></svg>Light</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inbox -->
+    <section class="section" id="inbox">
+      <div class="wrap split">
+        <div class="split-copy">
+          <h2 class="reveal">One inbox for all your accounts.</h2>
+          <p class="body reveal" style="--i:1">Gmail, Google Workspace and IMAP accounts in one list. Mail from one sender folds into a single row.</p>
+          <div class="toggle-line reveal" style="--i:3">
+            <button class="btn btn-ghost btn-sm" type="button" data-stack-btn aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#caret-down"/></svg><span>Unfold the stack</span></button>
+            <p class="caption">It stays unread until you open it yourself.</p>
+          </div>
+        </div>
+        <div class="split-media reveal" style="--i:1">
+          <div class="shot list-shot" data-stack data-open="false">
+            <picture data-state="folded">
+              <source type="image/avif" srcset="/img/list-folded-480.avif 480w, /img/list-folded-960.avif 960w" sizes="(min-width: 860px) 520px, 92vw">
+              <source type="image/webp" srcset="/img/list-folded-480.webp 480w, /img/list-folded-960.webp 960w" sizes="(min-width: 860px) 520px, 92vw">
+              <img src="/img/list-folded-960.webp" width="957" height="1190" alt="Three-pane inbox with three more messages from Vandebron No Reply folded into one row marked +3." loading="lazy">
+            </picture>
+            <picture data-state="open">
+              <source type="image/avif" srcset="/img/list-open-480.avif 480w, /img/list-open-960.avif 960w" sizes="(min-width: 860px) 520px, 92vw">
+              <source type="image/webp" srcset="/img/list-open-480.webp 480w, /img/list-open-960.webp 960w" sizes="(min-width: 860px) 520px, 92vw">
+              <img src="/img/list-open-960.webp" width="957" height="1190" alt="Four messages from one sender unfolded in the message list." loading="lazy">
+            </picture>
+            <button class="hotspot" type="button" data-stack-hot tabindex="-1" aria-hidden="true"></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Calendar -->
+    <section class="section" id="calendar">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="reveal">Your calendars in the same window.</h2>
+          <p class="body reveal" style="--i:1">Google and CalDAV calendars, one shortcut away from your mail. Create and move events, and answer invitations.</p>
+          <div class="agent-row reveal" style="--i:2">
+            <span class="shortcut"><span class="kbds"><kbd>Ctrl</kbd><kbd>2</kbd></span>Open the calendar</span>
+          </div>
+        </div>
+        <div class="shot cal-shot reveal">
+          <picture>
+            <source type="image/avif" srcset="/img/calendar-1200.avif 1200w, /img/calendar-2400.avif 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+            <source type="image/webp" srcset="/img/calendar-1200.webp 1200w, /img/calendar-2400.webp 2400w" sizes="(min-width: 1264px) 1136px, 92vw">
+            <img src="/img/calendar-1200.webp" width="2423" height="1512" alt="The calendar's week view with an invitation to Quarterly planning open: three guests, a video call link and Yes, Maybe and No." loading="lazy">
+          </picture>
+        </div>
+      </div>
+    </section>
+
+    <!-- Agents -->
+    <section class="section" id="agents">
+      <div class="wrap">
+        <div class="agents-head">
+          <h2 class="reveal">Hand it to your agent. Keep going.</h2>
+          <p class="body reveal" style="--i:1">Some emails need research, a draft or work in another system. Hand those to your own agent, with the tools it already has. Then open the next one.</p>
+          <div class="agent-row reveal" style="--i:2">
+            <ul class="with chips" aria-label="Supported agents">
+              <li class="chip">Hermes Agent</li>
+              <li class="chip">Claude Code</li>
+              <li class="chip">Codex</li>
+              <li class="chip">OpenClaw</li>
+              <li class="chip"><a href="https://github.com/MajesteitBart/rukoo/blob/main/docs/agents.md">Or build your own</a></li>
+            </ul>
+            <span class="shortcut"><span class="kbds"><kbd>Ctrl</kbd><kbd>J</kbd></span>Open agent panel</span>
+          </div>
+        </div>
+
+        <div class="demo reveal" data-demo role="region" aria-label="Interactive replica of the agent panel. Clark drafts a reply to Sanne, then plans the follow-ups and waits for your approval.">
+          <div class="demo-glow" aria-hidden="true"></div>
+          <div class="demo-win">
+            <div class="demo-bar">
+              <span class="mini" data-pigeon-static aria-hidden="true"></span>
+              <div class="demo-search"><svg class="ic" aria-hidden="true"><use href="/assets/icons.svg#magnifying-glass"/></svg>Search in Inbox</div>
+              <span class="demo-spark" aria-hidden="true"><svg class="ic"><use href="/assets/icons.svg#sparkle"/></svg></span>
+            </div>
+            <div class="demo-body">
+              <div class="demo-mail">
+                <!-- Reader: the email Clark is answering -->
+                <div class="demo-pane" data-pane="read">
+                  <div class="demo-tools" aria-hidden="true">
+                    <span class="reply"><svg class="ic"><use href="/assets/icons.svg#arrow-bend-up-left"/></svg>Reply</span>
+                    <svg class="ic"><use href="/assets/icons.svg#arrow-bend-double-up-left"/></svg>
+                    <svg class="ic"><use href="/assets/icons.svg#arrow-right"/></svg>
+                    <span class="sep"></span>
+                    <svg class="ic"><use href="/assets/icons.svg#archive"/></svg>
+                    <svg class="ic"><use href="/assets/icons.svg#trash"/></svg>
+                    <svg class="ic opt"><use href="/assets/icons.svg#folder-simple-plus"/></svg>
+                    <svg class="ic opt"><use href="/assets/icons.svg#envelope-simple"/></svg>
+                    <span class="end"><svg class="ic"><use href="/assets/icons.svg#caret-up"/></svg><svg class="ic"><use href="/assets/icons.svg#caret-down"/></svg><svg class="ic"><use href="/assets/icons.svg#arrows-out-simple"/></svg></span>
+                  </div>
+                  <div class="demo-read">
+                    <div class="demo-subject">Call on Thursday</div>
+                    <div class="demo-from">
+                      <span class="av">SV</span>
+                      <div><b>Sanne de Vries</b><span>to me, Joris Bakker</span></div>
+                      <time>Yesterday 16:12</time>
+                    </div>
+                    <div class="demo-attach"><span class="pdf">PDF</span><div><b>Proposal-v3.pdf</b><span>192 B</span></div></div>
+                    <p class="demo-text">Hi!
+
+Shall we have a call on Thursday at 10:00 to discuss the proposal? I have attached the latest version.
+
+Best,
+Sanne</p>
+                  </div>
+                </div>
+                <!-- Composer: where the draft lands -->
+                <div class="demo-pane" data-pane="compose" hidden>
+                  <div class="demo-compose-head">Reply</div>
+                  <div class="demo-fields">
+                    <div class="demo-field"><span>From</span><span>Demo User &lt;demo@example.com&gt;</span></div>
+                    <div class="demo-field"><span>To</span><span class="to-chip">Sanne de Vries <svg class="ic" aria-hidden="true"><use href="/assets/icons.svg#x"/></svg></span></div>
+                    <div class="demo-field"><span>Subject</span><span>Re: Call on Thursday</span></div>
+                  </div>
+                  <div class="demo-editor" data-editor><span data-typed></span><span class="caret" aria-hidden="true"></span></div>
+                  <div class="demo-foot" aria-hidden="true">
+                    <svg class="ic"><use href="/assets/icons.svg#paperclip"/></svg>
+                    <svg class="ic"><use href="/assets/icons.svg#image"/></svg>
+                    <svg class="ic"><use href="/assets/icons.svg#text-aa"/></svg>
+                    <svg class="ic"><use href="/assets/icons.svg#trash"/></svg>
+                    <span class="drafted" data-drafted><svg class="ic"><use href="/assets/icons.svg#sparkle"/></svg>Drafted by Clark <a>Undo</a></span>
+                    <span class="send">Send <svg class="ic"><use href="/assets/icons.svg#paper-plane-tilt"/></svg></span>
+                  </div>
+                </div>
+              </div>
+
+              <aside class="demo-agent" aria-label="Clark's chat">
+                <div class="ap-head">
+                  <span class="ap-av">C</span>
+                  <div class="ap-who"><b>Clark</b><span>Call on Thursday</span></div>
+                  <span class="ap-icons" aria-hidden="true"><svg class="ic"><use href="/assets/icons.svg#clock-counter-clockwise"/></svg><svg class="ic"><use href="/assets/icons.svg#plus"/></svg><svg class="ic"><use href="/assets/icons.svg#x"/></svg></span>
+                </div>
+                <div class="ap-log" data-log></div>
+                <div class="ap-dock">
+                  <div class="ap-sugg" data-sugg>
+                    <button type="button" data-act="reply">Draft a reply</button>
+                    <button type="button" data-act="tasks">Plan follow-ups</button>
+                  </div>
+                  <div class="ap-input" aria-hidden="true">
+                    <span class="ap-ctx"><span class="av sm">SV</span><b>Call on Thursday</b><span>Sanne de Vries</span><svg class="ic"><use href="/assets/icons.svg#x"/></svg></span>
+                    <div class="ap-ph">Ask Clark about this email...</div>
+                    <div class="ap-row"><span class="who">Clark <svg class="ic" style="width:11px;height:11px"><use href="/assets/icons.svg#caret-down"/></svg></span><span class="go"><svg class="ic"><use href="/assets/icons.svg#arrow-up"/></svg></span></div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>
+          <div class="after-demo">
+            <p class="caption">Bart's Hermes agent is called Clark. Bring your own.</p>
+            <button class="btn btn-ghost btn-sm" type="button" data-replay><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow-counter-clockwise"/></svg>Replay</button>
+          </div>
+        </div>
+
+        <div class="split live reveal">
+          <div class="split-copy">
+            <h3>It works on what you're working on.</h3>
+            <p class="body">No copying emails into a chat, no pasting answers back. Your agent reads the open email and your draft, and its reply lands in your composer.</p>
+            <p class="caption">Here Claude Code kept the line Bart typed into the draft and tightened the rest.</p>
+          </div>
+          <div class="split-media">
+            <div class="shot">
+              <picture>
+                <source type="image/avif" srcset="/img/agent-draft-1130.avif 1130w, /img/agent-draft-2260.avif 2260w" sizes="(min-width: 1264px) 620px, (min-width: 860px) 52vw, 92vw">
+                <source type="image/webp" srcset="/img/agent-draft-1130.webp 1130w, /img/agent-draft-2260.webp 2260w" sizes="(min-width: 1264px) 620px, (min-width: 860px) 52vw, 92vw">
+                <img src="/img/agent-draft-1130.webp" width="2268" height="1700" alt="A reply to Sanne in the composer, marked Drafted by Claude, next to the chat where Claude Code checked the draft and rewrote it with Bart's own line about the pricing table." loading="lazy">
+              </picture>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions-strip reveal">
+          <p class="label">Quick actions, also available as slash commands</p>
+          <ul class="chips">
+            <li class="chip"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#sparkle-fill"/></svg>Draft a reply</li>
+            <li class="chip">Brief me</li>
+            <li class="chip">Plan follow-ups</li>
+            <li class="chip">Tell the team</li>
+            <li class="chip">Update systems</li>
+            <li class="chip">Unsubscribe</li>
+            <li class="chip">Summarize</li>
+            <li class="chip">What needs me today?</li>
+          </ul>
+          <p class="caption">Add your own in Settings. Type <kbd>$</kbd> for your agent's skills.</p>
+        </div>
+
+        <div class="approvals" id="approvals">
+          <div class="reveal">
+            <h3>See the plan. Make the call.</h3>
+            <p class="body">Follow-ups become a plan beside the email. Rukoo asks before a proposed update changes another system or reaches other people.</p>
+          </div>
+          <div class="reveal" style="--i:1">
+            <div class="fact">
+              <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#shield-check"/></svg></span>
+              <strong>You press Send.</strong>
+              <p>Agents can draft replies through Rukoo, but cannot send them.</p>
+            </div>
+            <div class="fact" style="margin-top:22px">
+              <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#chat-circle-dots"/></svg></span>
+              <strong>The panel is optional.</strong>
+              <p>Leave it closed, and Rukoo is just email.</p>
+            </div>
+            <div class="fact" style="margin-top:22px">
+              <span class="badge"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#bell"/></svg></span>
+              <strong>Chats keep working.</strong>
+              <p>A bell shows which chats have a reply ready.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Categories -->
+    <section class="section" id="categories">
+      <div class="wrap">
+        <div class="split">
+          <div class="split-copy">
+            <p class="eyebrow reveal"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#sparkle"/></svg>New in Rukoo 2.0</p>
+            <h2 class="reveal" style="--i:1">Sorted the way you describe it.</h2>
+            <p class="body reveal" style="--i:2">Rukoo sorts your inbox into Needs you, To read, Money, Updates and Promotions, or categories of your own. Describe each one. Jev, TypeSafe's decision model, sorts what Rukoo's rules can't place.</p>
+            <ul class="notes reveal" style="--i:3">
+              <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#sparkle"/></svg><span>Jev is optional and uses your own TypeSafe API key.</span></li>
+              <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#hard-drives"/></svg><span>Nothing moves on your mail server.</span></li>
+            </ul>
+          </div>
+          <div class="split-media reveal" style="--i:1">
+            <div class="shot cat-shot">
+              <picture>
+                <source type="image/avif" srcset="/img/cat-sidebar-1270.avif 1270w, /img/cat-sidebar-640.avif 640w" sizes="(min-width: 860px) 520px, 92vw">
+                <source type="image/webp" srcset="/img/cat-sidebar-1270.webp 1270w, /img/cat-sidebar-640.webp 640w" sizes="(min-width: 860px) 520px, 92vw">
+                <img src="/img/cat-sidebar-1270.webp" width="1270" height="1240" alt="The inbox with Needs you, To read, Money, Updates and Promotions under Inbox in the sidebar, and Needs you open: mail from two accounts that asks for an answer." loading="lazy">
+              </picture>
+            </div>
+          </div>
+        </div>
+        <div class="duo">
+          <figure class="cell reveal" style="margin:0">
+            <picture>
+                <source type="image/avif" srcset="/img/cat-describe-1560.avif 1560w, /img/cat-describe-780.avif 780w" sizes="(min-width: 1264px) 560px, (min-width: 860px) 46vw, 92vw">
+                <source type="image/webp" srcset="/img/cat-describe-1560.webp 1560w, /img/cat-describe-780.webp 780w" sizes="(min-width: 1264px) 560px, (min-width: 860px) 46vw, 92vw">
+                <img src="/img/cat-describe-1560.webp" width="1560" height="1180" alt="Settings, Inbox categories: each category with its description, such as Money: invoices, payment requests, receipts and order confirmations." loading="lazy">
+              </picture>
+            <figcaption class="cell-cap"><strong>Describe each category.</strong> Jev reads the descriptions to decide.</figcaption>
+          </figure>
+          <figure class="cell reveal" style="margin:0;--i:1">
+            <picture>
+                <source type="image/avif" srcset="/img/cat-jev-1560.avif 1560w, /img/cat-jev-780.avif 780w" sizes="(min-width: 1264px) 560px, (min-width: 860px) 46vw, 92vw">
+                <source type="image/webp" srcset="/img/cat-jev-1560.webp 1560w, /img/cat-jev-780.webp 780w" sizes="(min-width: 1264px) 560px, (min-width: 860px) 46vw, 92vw">
+                <img src="/img/cat-jev-1560.webp" width="1560" height="560" alt="Sort with Jev switched on, with the TypeSafe API key set on this computer." loading="lazy">
+              </picture>
+            <figcaption class="cell-cap"><strong>Sort with Jev.</strong> Your key stays on this computer.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Booking -->
+    <section class="section" id="booking">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow reveal"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#calendar-dots"/></svg>New in Rukoo 2.1</p>
+          <h2 class="reveal" style="--i:1">A booking link for people and their agents.</h2>
+          <p class="body reveal" style="--i:2">Your calendars are already in Rukoo, so share your availability from there. Guests pick a time, and the meeting lands in your calendar. They see open times, never your appointments.</p>
+        </div>
+        <div class="book-grid">
+          <figure class="cell book-page reveal" style="margin:0">
+            <picture>
+                <source type="image/avif" srcset="/img/book-page-1760.avif 1760w, /img/book-page-880.avif 880w" sizes="(min-width: 1264px) 680px, (min-width: 860px) 56vw, 92vw">
+                <source type="image/webp" srcset="/img/book-page-1760.webp 1760w, /img/book-page-880.webp 880w" sizes="(min-width: 1264px) 680px, (min-width: 860px) 56vw, 92vw">
+                <img src="/img/book-page-1760.webp" width="1760" height="1160" alt="Bart's booking page at meet.rukoo.io/bart: his introduction, an Intro call of 30 minutes and a Strategy session of 60 minutes, each with its next open times." loading="lazy">
+              </picture>
+            <figcaption class="cell-cap"><strong>meet.rukoo.io/bart.</strong> What a guest sees, in their own time zone.</figcaption>
+          </figure>
+          <figure class="cell book-settings reveal" style="margin:0;--i:1">
+            <picture>
+                <source type="image/avif" srcset="/img/book-settings-1500.avif 1500w, /img/book-settings-750.avif 750w" sizes="(min-width: 1264px) 440px, (min-width: 860px) 36vw, 92vw">
+                <source type="image/webp" srcset="/img/book-settings-1500.webp 1500w, /img/book-settings-750.webp 750w" sizes="(min-width: 1264px) 440px, (min-width: 860px) 36vw, 92vw">
+                <img src="/img/book-settings-1500.webp" width="1500" height="1400" alt="Settings, Booking page: the link with Copy link and Preview page, Take bookings switched on, and the two meeting types." loading="lazy">
+              </picture>
+            <figcaption class="cell-cap"><strong>Your page in Settings.</strong> The link, the meeting types, the hours.</figcaption>
+          </figure>
+        </div>
+        <div class="split agents-book">
+          <div class="split-copy">
+            <h3 class="reveal">And their agent can book too.</h3>
+            <p class="body reveal" style="--i:1">The page has instructions for AI assistants, a JSON API and an MCP endpoint. An agent can find a time, book it, and move or cancel what it booked.</p>
+            <ul class="notes reveal" style="--i:2">
+              <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#shield-check"/></svg><span>A meeting type can need your approval, and you set a daily limit.</span></li>
+              <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#hard-drives"/></svg><span>Your computer can be off. Rukoo adds new bookings when it runs again.</span></li>
+            </ul>
+          </div>
+          <div class="split-media agent-proof">
+            <div class="term reveal" style="--i:1">
+              <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="term-title">Joris's assistant: Claude Code with only the page's MCP endpoint</span></div>
+<pre class="term-body"><code><span class="c"># A real run, shortened</span>
+<span class="p">&gt;</span> Book me a 30-minute intro call with Bart
+  next Thursday afternoon. rukoo.io/bart
+<span class="p">✓</span> get_meeting_types     <span class="c">Intro call, Strategy</span>
+<span class="p">✓</span> find_available_times  <span class="c">Thu 5 Nov</span>
+<span class="p">✓</span> book_meeting          <span class="c">13:00, confirmed</span></code></pre>
+            </div>
+            <figure class="cell book-event reveal" style="margin:0;--i:2">
+              <picture>
+                <source type="image/avif" srcset="/img/book-event-736.avif 736w, /img/book-event-368.avif 368w" sizes="(min-width: 860px) 300px, 70vw">
+                <source type="image/webp" srcset="/img/book-event-736.webp 736w, /img/book-event-368.webp 368w" sizes="(min-width: 860px) 300px, 70vw">
+                <img src="/img/book-event-736.webp" width="736" height="964" alt="The event in Rukoo: Intro call, Bart and Joris Bakker, Thursday 5 November 13:00 to 13:30, booked through your booking page, with his note and Booked via Claude." loading="lazy">
+              </picture>
+              <figcaption class="cell-cap"><strong>In Rukoo's calendar.</strong> Booked via Claude.</figcaption>
+            </figure>
+          </div>
+        </div>
+        <div class="early reveal" id="early-access">
+          <div>
+            <h3>Get early access.</h3>
+            <p class="body">Booking pages and the Rukoo account are invite-only for now. Leave your email and I'll send you an invite.</p>
+          </div>
+          <form class="early-form" action="/api/early-access" method="post" data-early>
+            <label class="field"><span>Name</span><input name="name" type="text" autocomplete="name" maxlength="100" placeholder="Optional"></label>
+            <label class="field"><span>Email</span><input name="email" type="email" autocomplete="email" maxlength="254" required placeholder="you@example.com"></label>
+            <label class="hp" aria-hidden="true">Leave this empty<input name="website" type="text" tabindex="-1" autocomplete="off"></label>
+            <button class="btn btn-primary" type="submit">Get early access</button>
+            <p class="early-status" role="status" aria-live="polite" data-early-status></p>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Platforms and Android -->
+    <section class="section" id="phone">
+      <div class="wrap split reverse">
+        <div class="split-media reveal">
+          <div class="shot phone-shot">
+            <picture>
+                <source type="image/avif" srcset="/img/phone-agent-1300.avif 1300w, /img/phone-agent-650.avif 650w" sizes="(min-width: 860px) 480px, 92vw">
+                <source type="image/webp" srcset="/img/phone-agent-1300.webp 1300w, /img/phone-agent-650.webp 650w" sizes="(min-width: 860px) 480px, 92vw">
+                <img src="/img/phone-agent-1300.webp" width="1968" height="2184" alt="Rukoo for Android on a Fold-sized screen: Sanne's email answered in the composer, next to the Claude Code chat that wrote the reply, running on the paired computer." loading="lazy">
+              </picture>
+          </div>
+        </div>
+        <div class="split-copy">
+          <p class="eyebrow reveal"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#device-mobile"/></svg>Windows, macOS, Linux and Android</p>
+          <h2 class="reveal" style="--i:1">On your desk and in your pocket.</h2>
+          <p class="body reveal" style="--i:2">Rukoo for Android is built for the Galaxy Z Fold7. Pair it with your computer to chat with the Claude Code or Codex running there.</p>
+          <ul class="notes reveal" style="--i:3">
+            <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#warning-circle"/></svg><span>macOS and Android are experimental. The phone needs Android 12 or newer and has no calendar yet.</span></li>
+            <li><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#device-mobile"/></svg><span>There's no iOS app yet. If you want to prompt one into existence, please do.</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Founder note -->
+    <section class="section" id="why">
+      <div class="wrap note">
+        <h2 class="reveal">Why I built this.</h2>
+        <div class="note-body reveal" style="--i:1">
+          <p>I wanted an email app that didn't suck. No ads, no waiting, no juggling accounts. <strong>Just getting through my email without fighting the app.</strong> So I started building Rukoo.</p>
+          <p>Then I started thinking about the emails I didn't want to handle myself. I help founders put AI agents to work, and my own agents already had their tools. Now I hand one of them an email and move on to the next.</p>
+          <p>Rukoo shows them what I'm working on, so I can ask for help halfway through a reply.</p>
+          <p>Next comes a booking link. The person I send it to can hand it to their agent.</p>
+          <p>And yes, "rukoo" is a pigeon's coo. They have some experience with mail.</p>
+          <div class="sig">
+            <button class="pigeon" type="button" data-pigeon aria-label="Say hello to the pigeon"></button>
+            <div><b>Bart van der Meeren</b><a href="https://bvdm.ai">bvdm.ai</a></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Contribute -->
+    <section class="section" id="contribute">
+      <div class="wrap split">
+        <div class="split-copy">
+          <p class="eyebrow reveal"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg>Open source</p>
+          <h2 class="reveal" style="--i:1">Don't like something? Change it.</h2>
+          <p class="body reveal" style="--i:2">It's MIT licensed. Fork it, fix what bugs you and send a pull request. Or open an issue and tell me what's missing.</p>
+          <ul class="ways reveal" style="--i:3">
+            <li><strong>Test it on your Mac.</strong> <a href="https://github.com/MajesteitBart/rukoo/issues/74">Report what works in issue #74.</a></li>
+            <li><strong>Add your language.</strong> English and Dutch so far. <a href="https://github.com/MajesteitBart/rukoo/blob/main/docs/translations.md">Start with the translation guide.</a></li>
+            <li><strong>Teach agents a skill.</strong> <a href="https://github.com/MajesteitBart/rukoo/tree/main/skills">Add yours to skills/.</a></li>
+            <li><strong>Build the iPhone app.</strong> There isn't one yet. <a href="https://github.com/MajesteitBart/rukoo/blob/main/docs/android.md">Start from the Android app.</a></li>
+          </ul>
+          <div class="cta-row reveal" style="--i:4">
+            <a class="btn btn-primary" href="https://github.com/MajesteitBart/rukoo/fork"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg>Fork on GitHub</a>
+            <a class="btn btn-ghost" href="https://github.com/MajesteitBart/rukoo/issues">Browse open issues</a>
+          </div>
+        </div>
+        <div class="split-media reveal" style="--i:1">
+          <div class="term" data-term>
+            <div class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="term-title">Terminal</span><button class="term-copy" type="button" data-term-copy aria-label="Copy the commands"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#copy"/></svg><span>Copy</span></button></div>
+<pre class="term-body"><code><span class="c"># Runs with the demo account</span>
+<span class="p">$</span> <span data-cmd>gh repo fork MajesteitBart/rukoo --clone</span>
+<span class="p">$</span> <span data-cmd>cd rukoo &amp;&amp; npm install</span>
+<span class="p">$</span> <span data-cmd>npm start</span></code></pre>
+            <p class="term-badge"><span>MIT licensed</span><span aria-hidden="true">·</span><span>Windows, macOS, Linux and Android</span></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section class="section" id="download">
+      <div class="wrap">
+        <div class="dl reveal">
+          <div class="perch"><button class="pigeon" type="button" data-pigeon aria-label="Say hello to the pigeon"></button></div>
+          <h2>Give your inbox a new home.</h2>
+          <p class="body">Start with the demo account, then bring your own mail.</p>
+          <div class="dl-platforms" data-dl>
+            <div class="dl-plat" data-os="windows">
+              <div class="dl-plat-head"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#windows-logo"/></svg><b>Windows</b><span>10 and 11</span></div>
+              <a class="dl-link" href="/download/installer" aria-label="Download the Windows installer"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg><b>Installer</b><span>.exe</span></a>
+              <a class="dl-link" href="/download/portable" aria-label="Download the portable Windows .exe"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#package"/></svg><b>Portable</b><span>.exe</span></a>
+            </div>
+            <div class="dl-plat" data-os="mac">
+              <div class="dl-plat-head"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#apple-logo"/></svg><b>macOS</b><span>13 or newer · Experimental</span></div>
+              <a class="dl-link" href="/download/mac-arm64" aria-label="Download for Macs with Apple Silicon"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg><b>Apple Silicon</b><span>.dmg</span></a>
+              <a class="dl-link" href="/download/mac-x64" aria-label="Download for Intel Macs"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg><b>Intel</b><span>.dmg</span></a>
+            </div>
+            <div class="dl-plat" data-os="linux">
+              <div class="dl-plat-head"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#linux-logo"/></svg><b>Linux</b><span>x64</span></div>
+              <a class="dl-link" href="/download/deb" aria-label="Download the Debian package"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download-simple"/></svg><b>Debian, Ubuntu</b><span>.deb</span></a>
+              <a class="dl-link" href="/download/appimage" aria-label="Download the AppImage"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#package"/></svg><b>Any distro</b><span>AppImage</span></a>
+            </div>
+            <div class="dl-plat" data-os="android">
+              <div class="dl-plat-head"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#android-logo"/></svg><b>Android</b><span>12 or newer · Experimental</span></div>
+              <a class="dl-link" href="/download/android" aria-label="Download Rukoo for Android"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#device-mobile"/></svg><b>Phone app</b><span>.apk</span></a>
+            </div>
+          </div>
+          <div class="dl-meta"><span>Version 2.1.0</span><span>MIT license</span><a href="/releases">All downloads and release notes</a></div>
+          <a class="dl-gh" href="https://github.com/MajesteitBart/rukoo"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#github-logo"/></svg>View the source on GitHub</a>
+          <p class="smartscreen"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#warning-circle"/></svg><span>The builds aren't signed yet. Windows may show a SmartScreen prompt: choose "More info", then "Run anyway". The Mac builds aren't notarized, so macOS may block the first start.</span></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section" id="faq">
+      <div class="wrap faq">
+        <div class="split-copy" style="align-content:start">
+          <h2 class="reveal">Before you move in.</h2>
+        </div>
+        <div class="faq-list reveal">
+          <details>
+            <summary>Does it run on a Mac or on Linux?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Yes. Linux x64 as a <code>.deb</code> or AppImage, and macOS 13 or newer on Apple Silicon and Intel. The Mac builds are experimental and not notarized yet. Tell us how it goes in <a href="https://github.com/MajesteitBart/rukoo/issues/74">issue #74</a>.</p>
+          </details>
+          <details>
+            <summary>Which accounts work?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Gmail and Google Workspace sign in with Google. For now that needs your own Google OAuth client: Google may warn that the app is unverified, and a Workspace admin may need to approve it. Other accounts use IMAP and SMTP with a password. Most Outlook.com and some Microsoft 365 accounts need Microsoft OAuth, which Rukoo doesn't support yet. Exchange works over IMAP, not ActiveSync.</p>
+          </details>
+          <details>
+            <summary>Is it free?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Yes, and MIT licensed. Any agent you connect runs on your own account.</p>
+          </details>
+          <details>
+            <summary>Do I need an agent?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">No. To use the panel, connect Hermes Agent or OpenClaw, or sign in to Claude Code or Codex.</p>
+          </details>
+          <details>
+            <summary>Does the agent see all my mail?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">More than the open email. It can read that email and your draft, and search the newest 300 inbox messages and 100 per other folder in every account. Its own permissions also apply.</p>
+          </details>
+          <details>
+            <summary>Where is my data?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Accounts, cached mail and agent chats stay on your computer, in <code>%APPDATA%\Rukoo Mail</code> on Windows, <code>~/Library/Application Support/Rukoo Mail</code> on macOS and <code>~/.config/Rukoo Mail</code> on Linux. Your system encrypts passwords and tokens. Older mail stays on your mail server, and your agent processes the mail it reads. Sender logos load from company websites, and you can turn them off in Settings.</p>
+          </details>
+          <details>
+            <summary>Is there a phone app?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Yes, for Android 12 or newer. It's experimental and built for the Galaxy Z Fold7: mail, categories and the agent chat, but no calendar yet. There's no iPhone app.</p>
+          </details>
+          <details>
+            <summary>What is Jev?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">TypeSafe's decision model. With your own TypeSafe API key, it sorts new inbox mail that Rukoo's rules can't place. For that mail, Rukoo sends TypeSafe the sender, subject, first 1,000 characters and a few header facts, with your category names and descriptions. Without Jev, Rukoo sorts by headers, sender and Gmail's tabs.</p>
+          </details>
+          <details>
+            <summary>Can I get a booking page?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">Yes, from Rukoo 2.1, with a Rukoo account. Hosting at rukoo.io is invite-only for now: <a href="#early-access">get early access</a>. You can also run the server on your own Cloudflare account.</p>
+          </details>
+          <details>
+            <summary>What is a Rukoo account?<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"/></svg></summary>
+            <p class="a">An optional account that syncs your categories, corrections and booking settings between your devices, end-to-end encrypted. The key comes from your password and never reaches the server.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap">
+      <a class="brand" href="#top" aria-label="Rukoo Mail, back to top"><img src="/assets/rukoo-logo-dark.svg" width="828" height="268" alt="" style="height:22px;width:auto"></a>
+      <p>Built by Bart. Named after a pigeon.</p>
+      <nav aria-label="Footer">
+        <a href="https://github.com/MajesteitBart/rukoo">GitHub</a>
+        <a href="https://github.com/MajesteitBart/rukoo/issues">Issues</a>
+        <a href="#contribute">Contribute</a>
+        <a href="/changelog/">Changelog</a>
+        <a href="https://bvdm.ai">bvdm.ai</a>
+      </nav>
+    </div>
+  </footer>
+  <!-- The walkthrough: opened from the hero. Streams from Mux: HLS first (adaptive), the MP4 rendition as fallback. One 16:9 file for every screen. -->
+  <dialog class="film-dialog" data-film aria-label="Rukoo Mail walkthrough">
+    <div class="film-frame" data-film-frame>
+      <video preload="none" playsinline controls data-film-video width="1920" height="1080"
+        data-wide-hls="https://stream.mux.com/1018lThCyrnK6R01faCFLk00pi00JnaLcQcjvAIinB02J4UY.m3u8" data-wide-mp4="https://stream.mux.com/1018lThCyrnK6R01faCFLk00pi00JnaLcQcjvAIinB02J4UY/highest.mp4" data-wide-poster="/media/walkthrough-poster.jpg"
+        data-captions="/media/rukoo-walkthrough.en.vtt"></video>
+    </div>
+    <button class="film-close" type="button" data-film-close aria-label="Close the film"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#x"/></svg></button>
+  </dialog>
+</body>
+</html>

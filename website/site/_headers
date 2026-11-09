@@ -1,0 +1,16 @@
+# Read by both Cloudflare (rukoo.io) and Netlify (rukoo.bvdm.ai). On rukoo.io these apply to the site's own files;
+# the account server and booking pages behind it send their own headers.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Content-Security-Policy: default-src 'self'; img-src 'self' data:; media-src 'self' https://stream.mux.com https://*.mux.com; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-Du+OJKJSbdUgz5nrHeWWINvez6XKDDU/tyj/5c2uvwo='; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+
+/img/*
+  Cache-Control: public, max-age=86400
+
+/assets/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/media/*
+  Cache-Control: public, max-age=3600

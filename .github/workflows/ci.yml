@@ -1,9 +1,16 @@
 name: Test and package
 
+# A change that only touches the website runs website.yml instead of the app's tests.
 on:
   pull_request:
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/website.yml'
   push:
     branches: [main]
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/website.yml'
 
 permissions:
   contents: read

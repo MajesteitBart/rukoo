@@ -1,0 +1,32 @@
+﻿---
+title: "The first release"
+description: "Mail, calendar and assistant chat in one Windows app, with a sample account to try it all."
+date: "2026-10-13T12:33:33Z"
+version: "1.0.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v1.0.0"
+image: "/img/changelog/v1.0.0-1-week-view-with-two-accounts-in-different-c.png"
+draft: false
+---
+The first version already had the three parts that define Rukoo: mail, calendar and assistant chat.
+
+For mail, you could connect Gmail and Google Workspace accounts with "Sign in with Google". You could also connect Yahoo, Outlook, work mail and other accounts in the usual mail app way. All your accounts could share one inbox. You could search, use quick filters such as unread mail, and undo a delete, an archive or a move if you acted too fast. Drafts saved to your mail account while you wrote, so a half-written mail was still there if you closed the app. New mail could show a Windows message, and the button in the taskbar showed how much unread mail you had.
+
+For the calendar, Rukoo showed the calendars of all your Google accounts together. You could look at a week, a day, or a list of what is coming up. You could add, change and delete appointments and answer invitations. If someone changed the same appointment in Google Calendar while you had it open, Rukoo did not quietly overwrite their change. It kept the version question visible instead.
+
+For assistant chat, you could connect your own Hermes assistant, Claude Code or Codex. These are AI assistants that run on your own computer or on a computer you control. In Rukoo they could read mail and write draft replies for you to check. They could not send mail themselves, and they had to ask before doing anything that other people would see. You could add files and other emails to a chat, so the assistant had the full picture. Two ready-made requests came with the app: one to unsubscribe from a sender, and one to ask a sender to delete your data. You could pick which AI model a chat used and how hard it should think.
+
+![Week view with two accounts in different colors](/img/changelog/v1.0.0-1-week-view-with-two-accounts-in-different-c.png)
+
+*The calendar in the first release. Two accounts appear side by side, each in its own color. Source: [issue #16](https://github.com/MajesteitBart/rukoo/issues/16).*
+
+![Chat with files and emails added to the message](/img/changelog/v1.0.0-2-chat-with-files-and-emails-added-to-the-me.png)
+
+*Adding files and other emails to an assistant chat. Each item shows as a small label above the box where you type. Source: [issue #8](https://github.com/MajesteitBart/rukoo/issues/8).*
+
+Rukoo kept running near the clock when you closed the window, so it could tell you about new mail without sitting open on your screen. It worked in English and Dutch, in a light and a dark look, and you could make everything larger or smaller, from 80% to 200%. A sample account with made-up mail and appointments let you try everything without connecting a real account first.
+
+![Settings for keeping Rukoo running near the clock](/img/changelog/v1.0.0-3-settings-for-keeping-rukoo-running-near-th.png)
+
+*The switches that keep Rukoo running after you close or minimize the window. Source: [issue #10](https://github.com/MajesteitBart/rukoo/issues/10).*
+
+Two limits mattered on day one, and both got work in later versions. Signing in with Google needed a small Google project of your own, because Rukoo did not bring one with it. Most Outlook.com and Microsoft 365 mailboxes needed a Microsoft sign-in that Rukoo did not have yet, and the calendar only worked for Google accounts. Each mail folder kept only its newest messages on your computer: 300 for the inbox and 100 for other folders. Older mail stayed on your mail account.

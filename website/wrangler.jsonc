@@ -1,0 +1,31 @@
+// rukoo.io on Cloudflare: the site from site/ plus the Rukoo account server behind it.
+// Deploy with: npm run deploy (needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or wrangler login).
+{
+  "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
+  "name": "rukoo-site",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-10-20",
+
+  // cloudflare/worker.js runs first, so www.rukoo.io redirects for every path; it serves the site's files through
+  // the ASSETS binding and passes everything else on.
+  "assets": { "directory": "./site", "binding": "ASSETS", "run_worker_first": true },
+
+  // The Worker from the rukoo repository's server/ directory, deployed separately as rukoo-account.
+  "services": [{ "binding": "ACCOUNT", "service": "rukoo-account" }],
+
+  "routes": [
+    { "pattern": "rukoo.io", "custom_domain": true },
+    { "pattern": "www.rukoo.io", "custom_domain": true }
+  ],
+  "workers_dev": false,
+
+  // The early access form (cloudflare/early-access.js) emails Bart through Resend. Two secrets, set with
+  // `wrangler secret put`: RESEND_API_KEY and EARLY_ACCESS_TO, the address the requests go to.
+  "vars": { "EARLY_ACCESS_FROM": "Rukoo early access <early-access@bvdm.ai>" },
+  // Five requests a minute from one IP address; more get a 429. Limiters with the same namespace_id share counters
+  // across the account, and the account server uses 1001 to 1003, so the site starts at 2001.
+  "ratelimits": [{ "name": "EARLY_ACCESS_LIMIT", "namespace_id": "2001", "simple": { "limit": 5, "period": 60 } }],
+
+  // Errors stay in Workers Logs; no log line per request.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}
