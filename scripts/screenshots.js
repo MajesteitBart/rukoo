@@ -62,9 +62,13 @@ async function capture(theme, out) {
     await win.click('[data-reader="details"]');
     await shot('05-reader-details.png');
 
+    // Grouping mail from one sender is a setting, off by default. With it on, the read mail from Vandebron No Reply folds.
+    await win.evaluate(() => window.mail.call('updateSettings', { stackSenders: true }));
     await win.click('.stack-btn');
     await shot('06-stack-open.png');
     await win.click('.stack-btn.open');
+    await win.evaluate(() => window.mail.call('updateSettings', { stackSenders: false }));
+    await expect(win.locator('.stack-btn')).toHaveCount(0);
 
     // Replies open in the reading pane.
     await item('Call on Thursday').click();

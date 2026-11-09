@@ -4251,6 +4251,25 @@
     "message": "to unknown recipients",
     "description": "Reading pane recipient summary when the email has no recipients."
   },
+  "reader.related.count": {
+    "message": {
+      "one": "{count} related email",
+      "other": "{count} related emails"
+    },
+    "description": "Reading pane: the toggle above the list of related emails under the open email's header: the rest of its conversation in the synced folders, and mail with the same subject and the same people. {count}: how many. src/renderer/app.js (relatedHtml)"
+  },
+  "reader.related.label": {
+    "message": "Related emails",
+    "description": "Reading pane: screen reader name of the section that lists related emails under the open email's header. src/renderer/app.js (relatedHtml)"
+  },
+  "reader.related.you": {
+    "message": "You",
+    "description": "Reading pane: the sender of a related email the user sent, in the list of related emails. src/renderer/app.js (relatedHtml)"
+  },
+  "reader.related.showAll": {
+    "message": "Show all {count}",
+    "description": "Reading pane: link under the first few related emails that shows the rest. {count}: how many related emails there are in all, always more than five. src/renderer/app.js (relatedHtml)"
+  },
   "reader.unsubscribe.action": {
     "message": "Unsubscribe",
     "description": "reader > unsubscribe. src/renderer/app.js (renderReader); src/renderer/app.js (unsubscribe)"
@@ -5052,6 +5071,14 @@
   "settings.general.density": {
     "message": "Message list",
     "description": "settings > general. src/renderer/settings.js (render); src/renderer/settings.js (openSettings)"
+  },
+  "settings.general.stackSenders": {
+    "message": "Group mail from one sender",
+    "description": "Settings > General: switch that folds a run of emails from one sender into one row of the message list, with a +N count. Off by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.stackSendersHelp": {
+    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row.",
+    "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
   },
   "settings.general.fit": {
     "message": "Fit content to window",

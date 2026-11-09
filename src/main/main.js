@@ -716,6 +716,8 @@ const api = {
   contacts: () => engine.contacts(),
   threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
   get: (id) => engine.getMessage(id),
+  // A long thread's References can name many emails; the newest are at the end.
+  related: (id, references) => engine.related(accountText(id, 2000), Array.isArray(references) ? references.slice(-200).map((r) => accountText(r, 1000)) : []),
   setFlags: (id, flags) => engine.setFlags(id, flags),
   archive: (id) => engine.archive(id),
   canUndo: (id) => engine.canUndo(id),

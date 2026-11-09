@@ -34,7 +34,7 @@ Few people have used Rukoo on a real Mac so far, and Mac builds are only notariz
 - Gmail and Google Workspace accounts use Sign in with Google. Yahoo, Outlook, Exchange and other providers connect over IMAP and SMTP.
 - One inbox for all your accounts, or one account at a time. Search covers the folder, the account or every account.
 - Inbox categories split the inbox like Gmail's tabs, on every account: Needs you, To read, Money, Updates, Promotions and your own. Nothing changes on the mail server. With your own TypeSafe API key, Jev sorts the mail that Rukoo's rules aren't sure about.
-- Three or more messages from one sender fold into one row. Newsletters get an Unsubscribe button.
+- Every email has its own row, and the reading pane lists its related emails, such as your answer in Sent. Newsletters get an Unsubscribe button.
 - You write in the reading pane or in a separate window. Drafts save to the server while you type, and each account can have its own formatted signature.
 - You can undo a delete, archive or move with `Ctrl+Z`. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
 

@@ -108,6 +108,10 @@ export const S = {
   attachmentsOpen: true,
   // Stacks of mail from one sender that the user unfolded.
   openStacks: new Set(),
+  // The related emails under the open email, { id, list }, from main's related(); and the email whose related emails
+  // all show, past the first few.
+  related: null,
+  relatedAll: null,
   // Open the newest message after the next load (at start and on a folder switch).
   autoOpen: true,
   // The inline editor in the reading pane, when one is open.
@@ -118,7 +122,7 @@ export const S = {
 };
 
 // Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar' or 'meeting'.
-const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', ...readPrefs() };
+const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', relatedOpen: true, ...readPrefs() };
 const MODES = ['mail', 'calendar', 'meeting'];
 if (!MODES.includes(prefs.mode)) prefs.mode = 'mail';
 const calendarMode = () => prefs.mode === 'calendar';
@@ -1124,17 +1128,19 @@ function renderList() {
   }
 }
 
-// Three or more messages in a row from one sender, on the same day, fold into one row.
+// With stacks on in Settings, three or more read messages in a row from one sender in one account, on the same day,
+// fold into one row. Unread mail keeps a row of its own, so a stack never hides new mail.
 function stackKey(m) {
-  if (m.role === 'sent' || m.role === 'drafts') return null;
-  return ((m.from && m.from.address) || '').toLowerCase() || null;
+  if (m.role === 'sent' || m.role === 'drafts' || m.unread) return null;
+  const address = ((m.from && m.from.address) || '').toLowerCase();
+  return address ? `${m.accountId}|${address}` : null;
 }
 
 function stackLayout() {
   const list = rows();
   const out = { heads: new Map(), hidden: new Set(), members: new Set() };
   const byDate = S.data.settings.sort === 'date-desc' || S.data.settings.sort === 'date-asc';
-  if (!byDate || S.query.trim()) return out;
+  if (!S.data.settings.stackSenders || !byDate || S.query.trim()) return out;
   for (let i = 0; i < list.length; ) {
     const key = stackKey(list[i]);
     const day = groupLabel(list[i].date);
@@ -1146,7 +1152,7 @@ function stackLayout() {
       // A selected message inside a stack keeps it open, so the selection never hides.
       const forced = rest.some((m) => m.id === S.selectedId || S.checked.has(m.id));
       const open = forced || S.openStacks.has(id);
-      out.heads.set(list[i].id, { id, count: rest.length + 1, open, forced, unread: rest.some((m) => m.unread) });
+      out.heads.set(list[i].id, { id, count: rest.length + 1, open, forced });
       for (const m of rest) (open ? out.members : out.hidden).add(m.id);
     }
     i = j;
@@ -1229,7 +1235,7 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
       ? stack.forced
         ? ''
         : `<button class="stack-btn open" data-stack="${esc(stack.id)}" tabindex="-1" data-i18n-title="mailbox.message.collapse" title="${esc(t('mailbox.message.collapse'))}" aria-expanded="true">${icons.up}</button>`
-      : `<button class="stack-btn ${stack.unread ? 'unread' : ''}" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(t('mailbox.message.stack', { count: stack.count - 1, sender: person(m.from) }))}" aria-expanded="false">+${stack.count - 1}</button>`
+      : `<button class="stack-btn" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(t('mailbox.message.stack', { count: stack.count - 1, sender: person(m.from) }))}" aria-expanded="false">+${stack.count - 1}</button>`
     : '';
   return `<div class="item-wrap ${stacked ? 'stacked' : ''}" data-id="${esc(m.id)}">${swipe}
     <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
@@ -2128,16 +2134,18 @@ async function compose(opts) {
 
 // ---------- reader ----------
 
-// auto: shown without being asked for (the newest message on load); it stays unread.
-export async function openMessage(id, { auto = false } = {}) {
+// auto: shown without being asked for (the newest message on load); it stays unread. known: the message as a related
+// email under another one, for one the list doesn't have, such as a reply in Sent; it opens and is read like a row.
+export async function openMessage(id, { auto = false, known = null } = {}) {
   // Opening a message cancels a reply or forward that is still loading.
   const turn = ++composeTurn;
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn) return;
-  const m = S.list.find((x) => x.id === id);
+  const listed = S.list.find((x) => x.id === id);
+  const m = listed || (known && known.id === id ? known : null);
   // An inbox email the list leaves out, from a notification or the agent, opens in its own category, so its row is
   // on screen and the reading pane keeps it (reconcileReader).
-  if (m && categoriesOn() && !categoryRows().includes(m) && categoryOf(m.category)) {
+  if (listed && categoriesOn() && !categoryRows().includes(m) && categoryOf(m.category)) {
     S.category = m.category;
     S.filter = 'all';
     clearChecks();
@@ -2161,7 +2169,11 @@ export async function openMessage(id, { auto = false } = {}) {
   try {
     const full = await api('get', id);
     if (S.selectedId !== id) return;
+    // The related emails come with the message, so the reading pane draws once. They need its References.
+    const related = await api('related', id, full.references || []).catch(() => []);
+    if (S.selectedId !== id) return;
     S.message = full;
+    S.related = { id, list: related };
   } catch (err) {
     if (S.selectedId !== id) return;
     S.message = { ...(m || {}), error: err.message };
@@ -2276,6 +2288,52 @@ function attachmentsHtml(m) {
   return `<section class="atts ${open ? '' : 'closed'}" data-i18n-aria-label="mailbox.filters.attachments" aria-label="${esc(t('mailbox.filters.attachments'))}">${head}${open ? `<div class="atts-list">${list.map(card).join('')}</div>` : ''}</section>`;
 }
 
+// A subject without Re: and Fwd:, the way main compares subjects (mailutil.js baseSubject).
+function baseSubject(subject) {
+  let s = String(subject || '').trim();
+  for (let prev = null; prev !== s; ) {
+    prev = s;
+    s = s.replace(/^(?:re|fwd?|fw|antw|aw|doorst)(?:\s*\[\d+\])?\s*:\s*/i, '').trim();
+  }
+  return s.toLowerCase().replace(/\s+/g, ' ');
+}
+
+// How many related emails show before "Show all".
+const RELATED_SHOWN = 4;
+
+// The rest of the conversation under the open email, newest first (engine.js related), so the list itself stays one
+// row per email. A row names the sender and what the email says; its subject when that differs from this one's, and
+// its folder or account when that isn't this one's. A click opens it.
+function relatedHtml(m) {
+  const list = S.related && S.related.id === m.id ? S.related.list : [];
+  if (!list.length) return '';
+  const open = prefs.relatedOpen !== false;
+  const all = S.relatedAll === m.id || list.length <= RELATED_SHOWN + 1;
+  const own = ownAddresses();
+  const topic = baseSubject(m.subject);
+  const row = (r) => {
+    const who = own.has(String((r.from && r.from.address) || '').toLowerCase()) ? t('reader.related.you') : person(r.from) || t('mailbox.message.unknownSender');
+    const text = (baseSubject(r.subject) === topic && cleanPreview(r.preview)) || r.subject || t('mailbox.message.noSubject');
+    const acc = r.accountId !== m.accountId && account(r.accountId);
+    const where = acc ? accountLabel(acc) : r.folder !== m.folder ? folderName(r) : '';
+    const draft = r.role === 'drafts' ? `<span class="draft-tag" data-i18n="composer.titles.draft">${esc(t('composer.titles.draft'))}</span>` : '';
+    return `<button class="rel ${r.unread ? 'unread' : ''}" data-related="${esc(r.id)}" title="${esc(r.subject || t('mailbox.message.noSubject'))}">
+      <span class="rel-dot" aria-hidden="true"></span>
+      <span class="rel-who">${draft}${esc(who)}</span>
+      <span class="rel-text">${esc(text)}</span>
+      ${where ? `<span class="pill">${esc(where)}</span>` : ''}
+      <time class="rel-date">${listTime(r.date)}</time>
+    </button>`;
+  };
+  const more = all
+    ? ''
+    : `<button class="link-btn rel-more" data-reader="related-all">${esc(t('reader.related.showAll', { count: list.length }))}</button>`;
+  return `<section class="related ${open ? '' : 'closed'}" data-i18n-aria-label="reader.related.label" aria-label="${esc(t('reader.related.label'))}">
+    <div class="rel-head"><button class="rel-toggle" data-reader="toggle-related" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.related.count', { count: list.length }))}</span></button></div>
+    <div class="rel-body" ${open ? '' : 'inert'}><div class="rel-clip"><div class="rel-list">${(all ? list : list.slice(0, RELATED_SHOWN)).map(row).join('')}</div>${more}</div></div>
+  </section>`;
+}
+
 async function loadPreviews(m) {
   for (const a of m.attachments || []) {
     const key = `${m.id}|${a.index}`;
@@ -2382,6 +2440,7 @@ function renderReader() {
         </header>
         ${m.invite ? '<div class="invite-slot"></div>' : ''}
         ${attachmentsHtml(m)}
+        <div class="related-slot">${relatedHtml(m)}</div>
         ${body}
       </article>
     </div>`;
@@ -2460,6 +2519,12 @@ function bindReader() {
     if (btn.dataset.bulk) return bulkAction(btn.dataset.bulk, btn);
     const m = S.message;
     if (!m) return;
+    if (btn.dataset.related) {
+      const known = S.related && S.related.id === m.id ? S.related.list.find((r) => r.id === btn.dataset.related) : null;
+      // Like a click on a row: a checked email would otherwise stay the target of Delete and the other actions.
+      clearChecks();
+      return openMessage(btn.dataset.related, { known });
+    }
     const item = byId(m.id) || m;
     if (btn.dataset.person !== undefined) return personMenu(btn);
     if (btn.dataset.openAtt) return api('openAttachment', m.id, Number(btn.dataset.openAtt)).catch((err) => toast(err.message));
@@ -2492,6 +2557,24 @@ function bindReader() {
       case 'toggle-atts':
         S.attachmentsOpen = !S.attachmentsOpen;
         return renderReader();
+      // In place, so the email under it doesn't redraw; the list folds away with its header.
+      case 'toggle-related': {
+        prefs.relatedOpen = prefs.relatedOpen === false;
+        savePrefs();
+        const section = btn.closest('.related');
+        section.classList.toggle('closed', !prefs.relatedOpen);
+        section.querySelector('.rel-body').inert = !prefs.relatedOpen;
+        btn.setAttribute('aria-expanded', String(prefs.relatedOpen));
+        return;
+      }
+      case 'related-all': {
+        S.relatedAll = m.id;
+        const slot = $('.reader .related-slot');
+        slot.innerHTML = relatedHtml(m);
+        // The keyboard goes on to the first row that just appeared.
+        slot.querySelectorAll('.rel')[RELATED_SHOWN]?.focus();
+        return;
+      }
       case 'save-all': {
         const n = await api('saveAllAttachments', m.id).catch((err) => toast(err.message, 5000));
         if (n) toast(t('reader.attachments.savedCount', { count: n }));

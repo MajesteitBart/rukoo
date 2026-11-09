@@ -1113,6 +1113,13 @@
   },
   "reader.recipients.summary": "aan {recipients}",
   "reader.recipients.unknown": "aan onbekende ontvangers",
+  "reader.related.count": {
+    "one": "{count} gerelateerde e-mail",
+    "other": "{count} gerelateerde e-mails"
+  },
+  "reader.related.label": "Gerelateerde e-mails",
+  "reader.related.you": "Jij",
+  "reader.related.showAll": "Alle {count} tonen",
   "reader.unsubscribe.action": "Uitschrijven",
   "reader.unsubscribe.done": "Uitgeschreven bij {sender}",
   "reader.unsubscribe.linkHelp": "Rukoo Mail meldt je af via de afmeldlink van de afzender.",
@@ -1318,6 +1325,8 @@
   "settings.general.darkEmails": "E-mails donker weergeven",
   "settings.general.darkEmailsHelp": "Pas de kleuren van HTML-e-mails aan in de donkere stand.",
   "settings.general.density": "Lijstweergave",
+  "settings.general.stackSenders": "Mail van één afzender groeperen",
+  "settings.general.stackSendersHelp": "Drie of meer gelezen e-mails op rij van dezelfde afzender, op dezelfde dag, delen een rij in de lijst. Ongelezen mail krijgt altijd een eigen rij.",
   "settings.general.fit": "Inhoud passend maken",
   "settings.general.fitHelp": "Maak brede e-mail kleiner zodat die in het venster past, tot 80%. Wat dan nog te breed is, kun je opzij scrollen.",
   "settings.general.folders": "Mappen beheren",

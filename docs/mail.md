@@ -29,7 +29,7 @@ The sidebar has Inbox, VIPs, Starred, Drafts, Sent, Archive, Spam, Trash, Saved 
 
 Search sits in the title bar and covers the current folder, the current account or all accounts. Quick filters above the list show Unread, Starred and Attachments.
 
-The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. A run of three or more messages from one sender folds into a single row, marked "+3" for three more. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
+The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked "+2" for two more. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
 
 The newest message opens when you start the app or switch folders. It stays unread until you open it yourself.
 
@@ -38,6 +38,8 @@ Ctrl+click and Shift+click select several messages for one action. Right-click o
 ## Reading
 
 The reading pane has its actions in a toolbar at the top, and the subject moves into it when you scroll. The header reads "to me, Joris Bakker" and opens the full details on request.
+
+Under the header, related emails show the rest of the conversation without grouping it in the list. Rukoo counts mail as related when its Message-ID, In-Reply-To or References headers link it to the open email, or when it has the same subject, apart from Re: and Fwd:, and someone besides you in common. It looks through the folders it syncs in all your accounts, except Trash and Spam, and lists up to 20 emails, newest first. Each row has the sender, what the email says, and its folder or account when that differs from the open email's. A click opens the email, also when it sits in Sent and the list shows the inbox. More than five show four rows and "Show all" for the rest. Folding the section away keeps it folded for the next email until you open it again. Agents in the chat panel find related mail by the same rule.
 
 Newsletters get an Unsubscribe button that uses their List-Unsubscribe link, one-click where the sender supports it. Attachments show as compact cards with image thumbnails and "Save all".
 
@@ -104,7 +106,7 @@ How Rukoo becomes the app for email links depends on the system: see [Windows](p
 
 Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
-Settings has language, theme, zoom, list density, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
+Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
 
@@ -132,7 +134,7 @@ Scrolled down, the subject moves into the toolbar.
 
 ![Reader scrolled down](screenshots/light/03-reader-scrolled.png)
 
-Personal mail reads "to me, Joris Bakker", with the attachment as a card.
+Personal mail reads "to me, Joris Bakker", with the attachment as a card and the answer in Sent under related emails.
 
 ![Personal mail in the reader](screenshots/light/04-reader.png)
 
@@ -140,7 +142,7 @@ The full sender and recipient details, on request.
 
 ![Reader with details open](screenshots/light/05-reader-details.png)
 
-Four messages from Vandebron No Reply, unfolded from one row.
+With Group mail from one sender on, three read messages from Vandebron No Reply, unfolded from one row.
 
 ![A stack of messages unfolded](screenshots/light/06-stack-open.png)
 

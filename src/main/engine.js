@@ -32,6 +32,8 @@ const MOVES_KEPT = 500;
 const MOVE_PAST = 5;
 // Folders whose mail is not archived, even though Gmail's All Mail also holds it.
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
+// How many related emails the reader gets under an email; see related().
+const RELATED_LIMIT = 20;
 
 const DEFAULT_SETTINGS = {
   language: 'en',
@@ -59,6 +61,9 @@ const DEFAULT_SETTINGS = {
   // Calendar choices and defaults; see normalizeCalendar(). Changed only through calendarSettings().
   calendar: calendarDefaults(),
   senderLogos: true,
+  // Three or more emails in a row from one sender, on one day, fold into one row in the list (renderer stackLayout).
+  // Off by default, so every email has its own row.
+  stackSenders: false,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
   // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
@@ -94,6 +99,7 @@ function normalizeSettings(s) {
   s.zoomLevel = normalizeZoom(s.zoomLevel);
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
+  s.stackSenders = s.stackSenders === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
@@ -1688,6 +1694,56 @@ class Engine extends EventEmitter {
       }
     }
     return [...people.values()];
+  }
+
+  // Synced mail related to m: linked by Message-ID, In-Reply-To or References, or with the same subject minus Re:
+  // and Fwd: and someone in common other than the user. m is a full message or one built from the cache; its
+  // References count, which the cache doesn't keep. Newest first, at most limit. skipRoles: folder roles to leave
+  // out; skipSpam: leave out mail from addresses marked as spam, before the limit. Gmail's All Mail repeats the other
+  // folders, so its copy counts only when no other folder has the email.
+  // The agents' get_screen (agents/tools.js threadOf) and the reader's related emails (related()) use this.
+  relatedMessages(m, { limit = 10, skipRoles = [], skipSpam = false } = {}) {
+    const ids = util.threadIds(m);
+    const self = util.normId(m.messageId);
+    const subject = util.baseSubject(m.subject);
+    const own = new Set(this.ownAddresses());
+    const people = (x) => [x.from, ...(x.to || []), ...(x.cc || [])].map((a) => lowerAddr(a && a.address)).filter(Boolean);
+    const theirs = new Set(people(m).filter((a) => !own.has(a)));
+    const seen = new Set();
+    const hits = [];
+    for (const acc of this.accounts) {
+      const cache = this.caches.get(acc.id);
+      if (!cache) continue;
+      const role = (p) => (cache.folders.find((f) => f.path === p) || {}).role;
+      const boxes = Object.entries(cache.boxes)
+        .filter(([p]) => !skipRoles.includes(role(p)))
+        .sort(([a], [b]) => Number(role(a) === 'all') - Number(role(b) === 'all'));
+      for (const [folder, box] of boxes) {
+        for (const r of box.messages) {
+          const id = encodeId(acc.id, folder, r.uid);
+          const mid = util.normId(r.messageId);
+          if (id === m.id || (mid && mid === self) || (skipSpam && this.isSpam(r.from))) continue;
+          const link = util.linked(ids, r);
+          const similar = !link && subject && util.baseSubject(r.subject) === subject && people(r).some((a) => theirs.has(a));
+          if (!link && !similar) continue;
+          const key = mid || id;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          hits.push({ acc, folder, r });
+        }
+      }
+    }
+    hits.sort((a, b) => (b.r.date || 0) - (a.r.date || 0));
+    return hits.slice(0, limit).map(({ acc, folder, r }) => this.publicMessage(acc, folder, r));
+  }
+
+  // The related emails under an email in the reader. references: the email's References, from getMessage. Trash and
+  // spam stay out, like they do from the inbox; so does mail from addresses marked as spam.
+  related(id, references = []) {
+    if (String(id).startsWith('saved:')) return [];
+    const { msg } = this.locate(id);
+    const m = { id, messageId: msg.messageId, inReplyTo: msg.inReplyTo, references, subject: msg.subject, from: msg.from, to: msg.to, cc: msg.cc };
+    return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'], skipSpam: true });
   }
 
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
