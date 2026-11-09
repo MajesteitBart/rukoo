@@ -1,0 +1,34 @@
+﻿---
+title: "Proper signatures and a fourth assistant"
+description: "Formatted signatures with pictures, and OpenClaw joins Hermes, Claude Code and Codex."
+date: "2026-10-21T18:25:08Z"
+version: "1.4.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v1.4.0"
+image: "/img/changelog/v1.4.0-1-the-signature-editor.png"
+draft: false
+---
+Version 1.4.0 fixed signatures, and it added a fourth kind of assistant.
+
+Before this version, a signature was plain text. Now you could paste a formatted signature from Outlook, Gmail or a web page, or build one in Settings with bold text, colors, links, tables and pictures. People who know web code could edit that code directly. It worked as one general signature, or a different one per account, and it appeared in new mail, replies, forwards and drafts, in both the built-in write area and the separate write window. Rukoo stripped out anything that could run code, and the plain-text copy of your mail got a readable version of the same signature. An old plain-text signature kept working as before.
+
+![The signature editor](/img/changelog/v1.4.0-1-the-signature-editor.png)
+
+*Building a formatted signature in Settings. Source: [issue #80](https://github.com/MajesteitBart/rukoo/issues/80).*
+
+![A sent mail with a formatted signature](/img/changelog/v1.4.0-2-a-sent-mail-with-a-formatted-signature.png)
+
+*The same signature at the bottom of a sent mail. Source: [issue #80](https://github.com/MajesteitBart/rukoo/issues/80).*
+
+Pictures in mail were fixed at the same time. Pictures you put in a mail, including pictures in a signature, now traveled in the form that Gmail and Outlook actually show. Before, a mail could look right in Rukoo and arrive without its pictures at the other end.
+
+The fourth assistant is OpenClaw. It joined Hermes, Claude Code and Codex in Settings. You connected it with the address of your OpenClaw computer and its key, and Rukoo showed whether the connection worked. Replies appeared word by word in the chat, each chat kept its own conversation, and the Stop button stopped the work at the other end too. A "Copy OpenClaw setup" button gave you the one command that lets OpenClaw use Rukoo's mail and calendar tools. That worked when OpenClaw ran on the same computer, and also when it ran on another computer in your private Tailscale network, such as a small home server, once you turned on the switch that allows it. Tailscale is a service that links your own devices as if they were on one home network, even when they are far apart.
+
+![OpenClaw connected in Settings](/img/changelog/v1.4.0-3-openclaw-connected-in-settings.png)
+
+*OpenClaw connected. The card shows at a glance whether Rukoo can reach it. Source: [issue #81](https://github.com/MajesteitBart/rukoo/issues/81).*
+
+![An OpenClaw reply appearing in the chat](/img/changelog/v1.4.0-4-an-openclaw-reply-appearing-in-the-chat.png)
+
+*An OpenClaw reply while it is still being written. Source: [issue #81](https://github.com/MajesteitBart/rukoo/issues/81).*
+
+The release notes were open about one limit. OpenClaw in Rukoo had only been tested against a pretend OpenClaw, not yet against a real one over a real network. The chat also showed only OpenClaw's words, not the steps it took to get there.

@@ -1,0 +1,60 @@
+﻿---
+title: "Meetings and updates that install themselves"
+description: "Live meetings in Rukoo, permission levels for chats, better booking pages, and in-place updates."
+date: "2026-11-03T07:44:56Z"
+version: "2.2.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0"
+image: "/img/changelog/v2.2.0-1-meeting-view-with-live-text.png"
+draft: false
+---
+Version 2.2.0 was the largest release since 2.1.0. It added meetings, gave each assistant chat a permission level, improved booking pages again, and taught Rukoo to install its own updates.
+
+Meetings came through a new companion app, Rukoo Voice. Voice has [its own entry on this page](#voice-0-1-0), because it had a release of its own the same morning. Inside Rukoo, meetings live in a new third area called Meet, next to Mail and Calendar. While Voice records, Rukoo shows the written text of the call as it happens, next to your assistant.
+
+You could start a recording from Rukoo, from a calendar appointment with "Record with Rukoo Voice", or from Voice itself. You could pause, continue, mark a moment and stop from either app. Voice told the voices apart while it recorded: Speaker 1, Speaker 2, and so on. You could give each voice a name from the guests of the calendar appointment, and the name stayed on the right voice when Voice corrected a passage or restarted. A meeting could record the screen too, either as still pictures with the text read from the screen, or as video. The pictures appeared in the written text at the moment they were taken, and your assistant could look at a picture or a stretch of the meeting.
+
+You could ask your assistant about the meeting while it ran: "Catch me up", "What did they ask me", "Write the notes", "Draft the follow-up email". The assistant treated the meeting text and the screen text as untrusted material. In plain words, words spoken on a call or shown on a screen could not order the assistant around. The assistant also could not start or stop a recording. While a meeting recorded, Rukoo hid its own windows from screen recordings and screen sharing on Windows and Mac, and held back its own messages while the screen recorded. Settings could turn the hiding off, and could also decide whether assistants may read meetings at all.
+
+![Meeting view with live text](/img/changelog/v2.2.0-1-meeting-view-with-live-text.png)
+
+*The meeting view in Rukoo, with the text of the call as it arrives. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+![Mail, Calendar and Meet switch](/img/changelog/v2.2.0-2-mail-calendar-and-meet-switch.png)
+
+*Meet sits next to Mail and Calendar at the top of the sidebar. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+Each assistant chat got a permission level: Ask, Auto or Full permission. Ask is the careful level Rukoo always had. The assistant asks before it acts. Full permission lets it act without the card. Settings set the normal level for new chats, and a shield next to Send showed and changed the level of the chat on screen. The risk is plain and the settings do not hide it. At Full permission an assistant can delete mail and take other lasting steps without asking.
+
+You could also send a message while the assistant was still working. Sending normally steered the assistant. It read your new message after its current step and adjusted. A second key choice queued your message as the next request instead. A small repair rode along: an email dragged onto the chat now stayed there while the panel redrew itself. Before, a redraw at the wrong moment could quietly drop it.
+
+Writing mail got two helps. Typing @ in the writer let you mention a person by name. Rukoo added that person as a copy recipient, so they saw they were mentioned without becoming the main reader. Right-clicking in the writer gave you spelling suggestions for a word with a red line under it, plus cut, copy and paste. Before, right-clicking there showed nothing.
+
+Booking pages grew in four ways, and these four have public screenshots. Each booking could get its own Zoom, Teams or Jitsi video meeting link. Jitsi works without extra setup. Zoom and Teams need a small app registration of your own with those services. Guests could choose how long the meeting lasts, from lengths you offer. The invitation for a booking carried links to move or cancel it, so the guest did not have to hunt for them. The part of the meeting type editor that says when guests can book got its own clear section, and booking pages showed Rukoo's picture in the browser tab, as normal web pages do.
+
+![Booked appointment with its own video meeting room](/img/changelog/v2.2.0-3-booked-appointment-with-its-own-video-meet.png)
+
+*A booked appointment with its own Jitsi video room. Source: [issue #165](https://github.com/MajesteitBart/rukoo/issues/165).*
+
+![Booking page where the guest chooses the length](/img/changelog/v2.2.0-4-booking-page-where-the-guest-chooses-the-l.png)
+
+*The guest picks the meeting length first, then sees the times that fit. Source: [issue #164](https://github.com/MajesteitBart/rukoo/issues/164).*
+
+![Invitation card scrolled to the move and cancel links](/img/changelog/v2.2.0-5-invitation-card-scrolled-to-the-move-and-c.png)
+
+*The links to move or cancel a booking, inside the invitation itself. Source: [issue #170](https://github.com/MajesteitBart/rukoo/issues/170). See also [issue #166](https://github.com/MajesteitBart/rukoo/issues/166) for the clearer booking hours section and [issue #168](https://github.com/MajesteitBart/rukoo/issues/168) for the browser tab picture.*
+
+Updates changed the most in daily use. Instead of only opening the release page, Rukoo could now download an update and install it in place, keeping your accounts, settings, signatures and chats. You picked a channel: Stable for normal releases, or Nightly if you wanted the newest build each day and accepted rougher edges. The sidebar and Settings showed the download, then "Restart to update". If a download failed, Rukoo fell back to the release page button.
+
+![Update channel in Settings](/img/changelog/v2.2.0-6-update-channel-in-settings.png)
+
+*Choosing Stable or Nightly updates in Settings. Source: [issue #172](https://github.com/MajesteitBart/rukoo/issues/172).*
+
+![Restart to update](/img/changelog/v2.2.0-7-restart-to-update.png)
+
+*An update downloaded and ready. One restart installs it. Source: [issue #172](https://github.com/MajesteitBart/rukoo/issues/172).*
+
+The phone, as version 0.5.0, caught up with the calmer inbox groups from 2.1.1: group labels, "Show in Inbox", and quiet groups. It also offered the same six meeting tools as the computer, so an assistant that reached you through the phone saw one steady list of tools. Those tools answered that meetings live in Rukoo on the computer.
+
+Three small fixes closed the version. In month view, a booking request no longer hides behind "+N more" on a busy day in a long month. A long update text in the sidebar now ends with three dots instead of running off the button. Pressing Escape or Tab in a menu returns the keyboard focus to the menu's button even when the screen redrew in between, which matters if you work without a mouse.
+
+About the screenshots for this version: meetings in Rukoo, booking pages and updates have public screenshots, shown above. The permission levels, steering a working assistant, @ mentions, the writer's spelling menu, who is speaking labels, screen recording details, meeting backup and the phone group changes belong to the private-list batch. This entry describes them from the public release notes and links the public code changes here: [permission levels](https://github.com/MajesteitBart/rukoo/pull/182), [steer or queue](https://github.com/MajesteitBart/rukoo/pull/189), [mentions](https://github.com/MajesteitBart/rukoo/pull/181), [spelling menu](https://github.com/MajesteitBart/rukoo/pull/183), [speaker labels](https://github.com/MajesteitBart/rukoo/pull/197), [screen recording](https://github.com/MajesteitBart/rukoo/pull/198), [meeting backup](https://github.com/MajesteitBart/rukoo/pull/199) and [phone groups](https://github.com/MajesteitBart/rukoo/pull/190).

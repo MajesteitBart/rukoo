@@ -1,0 +1,26 @@
+﻿---
+title: "Calendars for other mail accounts"
+description: "Mail accounts other than Google show their calendars in the same view."
+date: "2026-10-14T10:56:20Z"
+version: "1.1.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v1.1.0"
+image: "/img/changelog/v1.1.0-1-week-view-with-calendars-from-a-mail-accou.png"
+draft: false
+---
+In this version, mail accounts other than Google got their calendars too.
+
+Many mail accounts come with a calendar service of their own. The technical name for that service is CalDAV, and you will see that word in the settings. In plain words, it is the address where your mail provider keeps your appointments. In 1.1.0 you could type that address in the account settings, and Rukoo would check it before saving. Your appointments then appeared in the same calendar view as your Google ones, in the color of that account.
+
+Weekly and monthly appointments showed every time they happened, including a single time that you had moved or skipped in another app. You could add, change and delete appointments, or change just one time in a series. If your calendar service told the organizer for you, you could also answer invitations with Yes, Maybe or No. If the service refused your password, the calendar said so in normal words and gave you a button that took you straight to the right settings page.
+
+![Week view with calendars from a mail account](/img/changelog/v1.1.0-1-week-view-with-calendars-from-a-mail-accou.png)
+
+*Appointments from a normal mail account, shown in the same week view as Google appointments. Source: [issue #18](https://github.com/MajesteitBart/rukoo/issues/18).*
+
+![Invitation with Yes, Maybe and No](/img/changelog/v1.1.0-2-invitation-with-yes-maybe-and-no.png)
+
+*Answering a calendar invitation. Source: [issue #18](https://github.com/MajesteitBart/rukoo/issues/18).*
+
+This version also fixed a small Windows mix-up. If you ran Rukoo from its source code as a developer, the installed app could end up with the wrong picture in the taskbar. After the fix, the two kept their own pictures.
+
+Some care is still built in here. Appointments with guests, rooms or equipment on them cannot be changed from Rukoo when they live on this kind of calendar service, because the service might email the guests or change a room booking without asking you first. You can still read them and, where the service allows it, answer them. Ready-made settings for iCloud and Fastmail were not in yet, and Microsoft sign-in was still missing.

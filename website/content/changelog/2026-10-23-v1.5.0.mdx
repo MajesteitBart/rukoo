@@ -1,0 +1,42 @@
+﻿---
+title: "Rukoo on your phone"
+description: "Rukoo for Android, built for the Galaxy Z Fold7, with assistants on the phone and through your computer."
+date: "2026-10-23T11:41:14Z"
+version: "1.5.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v1.5.0"
+image: "/img/changelog/v1.5.0-1-mail-list-and-open-email-on-the-phone-s-la.png"
+draft: false
+---
+Version 1.5.0 added Rukoo for Android. It was marked as a test version. It was built first for the Samsung Galaxy Z Fold7, the phone that folds open into a small tablet, and it needed Android 12 or newer.
+
+On the phone you got your mail: Gmail with Google sign-in, other mail accounts, and the sample account. You got folders, combined views across accounts, search, swipe actions with Undo, a proper reader for formatted mail, and a writer with formatting. Drafts saved to the Drafts folder of your mail account, so a draft started on the phone was there on the computer. New mail could notify you.
+
+The assistant chat came with it. It had the same quick actions, skills, model choices, plans and approval cards as the computer version. An assistant could write a draft straight into the phone's writer for you to check. A chat message could carry files, photos and the email on your screen. On the Fold7, the small outer screen showed one thing at a time and the large inner screen showed two columns. Folding or unfolding the phone kept your open email, chat and draft where they were.
+
+![Mail list and open email on the phone's large screen](/img/changelog/v1.5.0-1-mail-list-and-open-email-on-the-phone-s-la.png)
+
+*Rukoo for Android on the large inner screen: the list on the left, the open mail on the right. Source: [issue #91](https://github.com/MajesteitBart/rukoo/issues/91).*
+
+![Email and assistant chat with a plan and an approval card](/img/changelog/v1.5.0-2-email-and-assistant-chat-with-a-plan-and-a.png)
+
+*An email with the assistant chat beside it. The assistant shows its plan and asks for approval before it acts. Source: [issue #91](https://github.com/MajesteitBart/rukoo/issues/91).*
+
+![Inbox on the small outer screen](/img/changelog/v1.5.0-3-inbox-on-the-small-outer-screen.png)
+
+*The same inbox on the small outer screen, with one column. Source: [issue #91](https://github.com/MajesteitBart/rukoo/issues/91).*
+
+How the assistants reached the phone split in two. Hermes assistants, including the maintainer's own assistant Clark, and OpenClaw could talk to the phone directly over Tailscale. Claude Code and Codex run on a computer, not on a phone. For them, the phone could borrow your computer. You paired the phone with Rukoo on the computer using an address and a short code, and you could send your accounts and assistant settings over once during pairing. After that, a Claude Code or Codex chat started on the phone ran on the computer, while its mail tools acted on the phone's mail and writer. The computer had to be on, with Rukoo open and Tailscale running. Rukoo only accepted the phone on its Tailscale address, and only while you left the pairing switch on.
+
+![Pairing a phone on the computer](/img/changelog/v1.5.0-4-pairing-a-phone-on-the-computer.png)
+
+*Pairing a phone from Rukoo on the computer. Source: [issue #91](https://github.com/MajesteitBart/rukoo/issues/91).*
+
+Clark learned the same trick from the other side. The phone offered Rukoo's mail tools on its Tailscale address, and the small connecting program on the Hermes computer learned to look for phones as well as computers. A chat with Clark started on the phone could then read the phone's mail and write into the phone's writer.
+
+Three smaller phone records show the level of finish. Folders got a sheet that slides up on the small screen, so they are always in reach. The writer got bold, italic and underline through the normal text selection menu. Files and photos could be attached to a chat, with a clear message when an assistant could not read a file.
+
+![Files sent to an assistant and read back](/img/changelog/v1.5.0-5-files-sent-to-an-assistant-and-read-back.png)
+
+*Files attached to a phone chat, after the assistant read them. Source: [issue #109](https://github.com/MajesteitBart/rukoo/issues/109). See also [issue #107](https://github.com/MajesteitBart/rukoo/issues/107) for folders on the small screen and [issue #108](https://github.com/MajesteitBart/rukoo/issues/108) for formatting in the writer.*
+
+The phone limits were stated plainly, and most of them still apply at the end of this story. The phone had no calendar yet. Mail did not arrive the instant it was sent. The phone checked every few minutes while open and every 15 minutes in the background. The phone writer had no text colors, highlights, indenting or pictures inside the text, so a computer draft that used them lost that styling if you opened and saved it on the phone. The words stayed. Google sign-in on the phone itself, OpenClaw on the phone, and Clark using the phone's tools from a phone chat had not yet been tried on a real phone.

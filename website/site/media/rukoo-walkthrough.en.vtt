@@ -1,0 +1,154 @@
+WEBVTT
+
+00:00:00.268 --> 00:00:02.948
+I wanted an email app that didn't suck,
+
+00:00:02.948 --> 00:00:04.108
+because of ads,
+
+00:00:04.108 --> 00:00:07.578
+UX from the 90s or good old turtle speed.
+
+00:00:07.724 --> 00:00:10.154
+So I started building Rukoo.
+
+00:00:10.665 --> 00:00:12.865
+It brings your accounts into one inbox,
+
+00:00:12.865 --> 00:00:15.215
+with your calendars in the same window.
+
+00:00:17.702 --> 00:00:19.075
+See everything together,
+
+00:00:19.075 --> 00:00:20.972
+or one account on its own.
+
+00:00:22.362 --> 00:00:24.282
+Then I started thinking about the emails
+
+00:00:24.282 --> 00:00:26.392
+I didn't want to handle myself.
+
+00:00:26.658 --> 00:00:28.018
+I already had agents running,
+
+00:00:28.018 --> 00:00:29.431
+with their own tools.
+
+00:00:29.431 --> 00:00:32.288
+So the agent panel ended up next to the inbox.
+
+00:00:33.076 --> 00:00:36.436
+Connect Claude Code, Codex, Hermes or OpenClaw,
+
+00:00:36.436 --> 00:00:38.034
+or build your own connection.
+
+00:00:38.034 --> 00:00:40.381
+Open an email, ask your agent to work on it,
+
+00:00:40.381 --> 00:00:41.704
+and keep going.
+
+00:00:46.786 --> 00:00:48.186
+The conversation keeps running
+
+00:00:48.186 --> 00:00:50.096
+while you deal with the rest.
+
+00:00:51.978 --> 00:00:53.498
+What Rukoo adds is access
+
+00:00:53.498 --> 00:00:55.422
+to what I'm working on right now.
+
+00:00:55.422 --> 00:00:56.755
+Through its MCP server,
+
+00:00:56.755 --> 00:00:58.915
+an agent can read the email I have open
+
+00:00:58.915 --> 00:01:00.302
+and the draft I'm writing,
+
+00:01:00.302 --> 00:01:02.905
+and put a reply right into the composer.
+
+00:01:07.722 --> 00:01:10.912
+If I change that draft, it reads my changes too.
+
+00:01:15.697 --> 00:01:18.604
+Rukoo also categorizes incoming mail.
+
+00:01:18.604 --> 00:01:20.337
+Describe what belongs in each category,
+
+00:01:20.337 --> 00:01:22.657
+and Jev, TypeSafe's decision model,
+
+00:01:22.657 --> 00:01:24.954
+sorts what the rules aren't sure about.
+
+00:01:25.093 --> 00:01:27.173
+If a message lands in the wrong category,
+
+00:01:27.173 --> 00:01:30.083
+correct it, also for that sender's future mail.
+
+00:01:33.053 --> 00:01:35.266
+The latest addition is meeting booking.
+
+00:01:35.266 --> 00:01:36.626
+Choose which calendars count,
+
+00:01:36.626 --> 00:01:39.336
+and the hours and meeting types people can book.
+
+00:01:40.256 --> 00:01:41.323
+Someone picks a time,
+
+00:01:41.323 --> 00:01:43.993
+and Rukoo adds the meeting to your calendar.
+
+00:01:46.248 --> 00:01:47.902
+And the person you send that link to
+
+00:01:47.902 --> 00:01:49.612
+can hand it to their agent.
+
+00:01:50.041 --> 00:01:52.068
+The page has instructions for assistants,
+
+00:01:52.068 --> 00:01:54.858
+an API and an MCP endpoint.
+
+00:01:55.833 --> 00:01:59.543
+An agent can find an available time and book it.
+
+00:02:05.909 --> 00:02:09.402
+Rukoo runs on Windows, Linux, macOS and Android.
+
+00:02:09.402 --> 00:02:10.229
+On my phone,
+
+00:02:10.229 --> 00:02:12.686
+I chat with the agents running on my desktop.
+
+00:02:18.263 --> 00:02:20.183
+It's free and open source.
+
+00:02:20.183 --> 00:02:21.010
+Download it from GitHub,
+
+00:02:21.010 --> 00:02:23.160
+and try the demo account first.
+
+00:02:23.921 --> 00:02:25.841
+There's no iOS app yet.
+
+00:02:25.841 --> 00:02:28.161
+If anyone wants to prompt one into existence,
+
+00:02:28.161 --> 00:02:29.311
+please feel free.

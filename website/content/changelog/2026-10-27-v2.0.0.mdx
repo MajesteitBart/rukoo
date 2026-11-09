@@ -1,0 +1,34 @@
+﻿---
+title: "An inbox that sorts itself"
+description: "Inbox groups such as Needs you and Money, kept in step by a locked Rukoo account."
+date: "2026-10-27T11:05:35Z"
+version: "2.0.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.0.0"
+image: "/img/changelog/v2.0.0-1-inbox-with-group-tabs.png"
+draft: false
+---
+Version 2.0.0 was marked as a test release. It added the two ideas that later versions build on: inbox groups, and a Rukoo account that keeps those groups in step across your devices.
+
+Turn on inbox groups in Settings, and your inbox gets tabs: Needs you, To read, Money, Updates and Promotions, next to All. The idea is close to Gmail's tabs, but it works for every mail account, not only Gmail. You could rename the groups, describe them in your own words, change their colors and order, add your own up to 12, or delete ones you do not want. Nothing moved on your mail account itself. Other mail apps kept seeing your inbox as before. Only Rukoo's view changed.
+
+Rukoo sorted mail by looking at the sender and at the hidden labels mail carries with it, such as "this is a mailing list" or "this was sent automatically". On Gmail accounts it also used Gmail's own tabs. If it put a mail in the wrong group, you picked "Move to category" to correct it. "Also future mail" applied the same choice to that sender from then on. Mail that Rukoo could not place with confidence went to a group you chose for that case.
+
+![Inbox with group tabs](/img/changelog/v2.0.0-1-inbox-with-group-tabs.png)
+
+*The inbox with its group tabs. Source: [issue #117](https://github.com/MajesteitBart/rukoo/issues/117).*
+
+![Moving a mail to another group](/img/changelog/v2.0.0-2-moving-a-mail-to-another-group.png)
+
+*Correcting a mail that landed in the wrong group. Source: [issue #117](https://github.com/MajesteitBart/rukoo/issues/117).*
+
+If you wanted help with the doubtful cases, you could add your own key for a sorting service called Jev, made by a company called TypeSafe. This was off until you added a key. With it on, Rukoo sent Jev the sender, the subject and the first 1,000 characters of each doubtful mail, plus your group names and descriptions, and Jev picked a group. The release notes said plainly where that text went, so you could decide with open eyes.
+
+The Rukoo account kept your groups, the group each mail got, and your corrections the same on all your devices. You made it in Settings with your email address, a password and an invite code. Rukoo locked the data on your device with a key that only your devices have, before anything left the device. Your password never left the device at all. You got a recovery key once, for the day you forget your password. The account page listed your devices so you could sign one out, and it offered the normal account actions: change password, new recovery key, download your data, sign out, delete account. Without an account, groups still worked on one device.
+
+![The Rukoo account page when signed in](/img/changelog/v2.0.0-3-the-rukoo-account-page-when-signed-in.png)
+
+*The Rukoo account page. Source: [issue #117](https://github.com/MajesteitBart/rukoo/issues/117).*
+
+A page called "What's stored and shared" spelled out what the account computer could and could not see. It could see your email address, your device names, when they checked in, and how many locked records you had and how large they were. It could not see your mail, your groups, or what was in them, because it never got the key. At this point the account computer lived at an address run by the maintainer, with the data stored in the European Union. Anyone who copies Rukoo could run their own account computer instead. The phone got the same account and groups in this version, and kept them in step with the computer.
+
+Two warnings belong here, because they still apply. New accounts needed an invite code, until the account computer could check email addresses properly. And if you forget both your password and your recovery key, the account data is gone for good. Nobody can open it for you, because nobody else has the key. That is the price of the lock, and the settings say so before you start.

@@ -1,0 +1,4 @@
+[build]
+  publish = "site"
+
+# Redirects and headers live in site/_redirects and site/_headers, which Netlify and Cloudflare both read.

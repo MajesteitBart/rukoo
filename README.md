@@ -108,7 +108,7 @@ npm test           # unit tests
 npm run test:e2e   # Playwright tests that drive the Electron app
 ```
 
-The main process in `src/main/` handles accounts, mail, the calendar, local storage and agent connections. The renderer in `src/renderer/` is plain HTML, CSS and ES modules, without a framework or bundler, and reaches the main process only through the IPC bridge in `preload.js`. `server/` holds the Cloudflare Worker behind the Rukoo account and booking pages, and `android/` holds the Android app.
+The main process in `src/main/` handles accounts, mail, the calendar, local storage and agent connections. The renderer in `src/renderer/` is plain HTML, CSS and ES modules, without a framework or bundler, and reaches the main process only through the IPC bridge in `preload.js`. `server/` holds the Cloudflare Worker behind the Rukoo account and booking pages, `website/` holds the website at rukoo.io, and `android/` holds the Android app.
 
 [Developing Rukoo](docs/development.md) has the code map, builds and the release steps. [The translation guide](docs/translations.md) explains how to add a language or find a label.
 

@@ -1,0 +1,26 @@
+﻿---
+title: "Calmer inbox groups"
+description: "Group labels on every mail, groups that can stay out of Inbox, and groups that can stay quiet."
+date: "2026-10-30T14:29:56Z"
+version: "2.1.1"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1"
+image: "/img/changelog/v2.1.1-1-calendar-week-with-colors-at-full-strength.png"
+draft: false
+---
+Version 2.1.1 was a small release with one theme: inbox groups that are easier to live with.
+
+Every mail now shows its group as a small colored label wherever groups mix, such as Inbox, All accounts, search results, and the VIP and Unread views. Inside a group's own view, the color sits in the list heading instead. If you have several accounts, the account became a small colored dot on the sender's picture, so it no longer looks like a second group label.
+
+Each group got a "Show in Inbox" switch. Turn it off, and that group's mail leaves your Inbox and All accounts views. Its unread mail stops counting in the inbox count, the account menu, the taskbar badge and the tray picture. You can still find it in the group's own view, in search, and in VIP and Unread. The switch travels with your Rukoo account, so your other devices follow it.
+
+Each group also got its own notifications switch, on by default. Mail in a quiet group sends no computer message. If Jev still has to sort a new mail, its message waits for Jev's answer, at most 20 seconds, so a quiet group's mail does not shout before it is sorted. This switch stays on the computer where you set it. Hiding a group does not quiet it, and quieting it does not hide it. For a group you want out of sight and quiet, you use both switches.
+
+"Mark all as read" now marks what the list shows. In Inbox it leaves hidden groups alone. In a group's view it marks only that group.
+
+Two fixes rode along. Changing the From address to an address of another account now swaps in that account's signature and booking link, in new mail, replies and reopened drafts. Calendar appointments show their calendar's color at full strength. Google's soft colors had come out almost white in the light look and grey in the dark look.
+
+![Calendar week with colors at full strength](/img/changelog/v2.1.1-1-calendar-week-with-colors-at-full-strength.png)
+
+*The week view after the color fix. Each calendar keeps its own clear color. Source: [issue #154](https://github.com/MajesteitBart/rukoo/issues/154).*
+
+About the screenshots for this version: the color fix has public screenshots, shown above. The group label, hide and quiet changes were finished in the batch whose screenshots sit in the private work list, so this page cannot show them. You can read the public code changes here: [labels](https://github.com/MajesteitBart/rukoo/pull/158), [quiet groups](https://github.com/MajesteitBart/rukoo/pull/159), [hidden groups](https://github.com/MajesteitBart/rukoo/pull/160) and [signature swap](https://github.com/MajesteitBart/rukoo/pull/157). The phone did not get "Show in Inbox" in this version. Its inbox still showed every group. That arrived on the phone in [2.2.0](#v2-2-0).

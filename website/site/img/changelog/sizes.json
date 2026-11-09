@@ -1,0 +1,405 @@
+{
+  "v1.0.0-1-week-view-with-two-accounts-in-different-c": {
+    "w": 1440,
+    "h": 900,
+    "widths": [
+      1440,
+      720
+    ]
+  },
+  "v1.0.0-2-chat-with-files-and-emails-added-to-the-me": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.0.0-3-settings-for-keeping-rukoo-running-near-th": {
+    "w": 1200,
+    "h": 820,
+    "widths": [
+      1200,
+      720
+    ]
+  },
+  "v1.1.0-1-week-view-with-calendars-from-a-mail-accou": {
+    "w": 1416,
+    "h": 908,
+    "widths": [
+      1416,
+      720
+    ]
+  },
+  "v1.1.0-2-invitation-with-yes-maybe-and-no": {
+    "w": 1416,
+    "h": 908,
+    "widths": [
+      1416,
+      720
+    ]
+  },
+  "v1.2.0-1-settings-for-arranging-chat-shortcuts": {
+    "w": 1440,
+    "h": 900,
+    "widths": [
+      1440,
+      720
+    ]
+  },
+  "v1.2.0-2-the-dollar-sign-menu-with-an-assistant-s-s": {
+    "w": 380,
+    "h": 860,
+    "widths": [
+      380
+    ]
+  },
+  "v1.2.0-3-a-long-email-one-second-after-opening-it": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.2.0-4-write-window-opened-from-an-email-link-in": {
+    "w": 1253,
+    "h": 972,
+    "widths": [
+      1253,
+      720
+    ]
+  },
+  "v1.3.0-1-rukoo-inbox-on-a-mac": {
+    "w": 1400,
+    "h": 681,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v1.3.0-2-rukoo-inbox-on-linux": {
+    "w": 1500,
+    "h": 1000,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.3.0-3-list-of-chats-with-replies-ready": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.4.0-1-the-signature-editor": {
+    "w": 1400,
+    "h": 900,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v1.4.0-2-a-sent-mail-with-a-formatted-signature": {
+    "w": 1400,
+    "h": 900,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v1.4.0-3-openclaw-connected-in-settings": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.4.0-4-an-openclaw-reply-appearing-in-the-chat": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v1.5.0-1-mail-list-and-open-email-on-the-phone-s-la": {
+    "w": 1968,
+    "h": 2184,
+    "widths": [
+      1968,
+      1440,
+      720
+    ]
+  },
+  "v1.5.0-2-email-and-assistant-chat-with-a-plan-and-a": {
+    "w": 1968,
+    "h": 2184,
+    "widths": [
+      1968,
+      1440,
+      720
+    ]
+  },
+  "v1.5.0-3-inbox-on-the-small-outer-screen": {
+    "w": 1080,
+    "h": 2520,
+    "widths": [
+      1080,
+      720
+    ]
+  },
+  "v1.5.0-4-pairing-a-phone-on-the-computer": {
+    "w": 2103,
+    "h": 1427,
+    "widths": [
+      2103,
+      1440,
+      720
+    ]
+  },
+  "v1.5.0-5-files-sent-to-an-assistant-and-read-back": {
+    "w": 1080,
+    "h": 2520,
+    "widths": [
+      1080,
+      720
+    ]
+  },
+  "v1.6.0-1-chat-shortcuts-on-the-phone-s-small-screen": {
+    "w": 1080,
+    "h": 2520,
+    "widths": [
+      1080,
+      720
+    ]
+  },
+  "v1.6.0-2-previous-and-next-in-the-bottom-bar": {
+    "w": 1968,
+    "h": 2184,
+    "widths": [
+      1968,
+      1440,
+      720
+    ]
+  },
+  "v2.0.0-1-inbox-with-group-tabs": {
+    "w": 1400,
+    "h": 880,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v2.0.0-2-moving-a-mail-to-another-group": {
+    "w": 1400,
+    "h": 880,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v2.0.0-3-the-rukoo-account-page-when-signed-in": {
+    "w": 1200,
+    "h": 860,
+    "widths": [
+      1200,
+      720
+    ]
+  },
+  "v2.1.0-1-month-view-with-the-small-month-in-the-sid": {
+    "w": 2253,
+    "h": 1427,
+    "widths": [
+      2253,
+      1440,
+      720
+    ]
+  },
+  "v2.1.0-2-appointment-window-with-repeat-reminders-a": {
+    "w": 2253,
+    "h": 1427,
+    "widths": [
+      2253,
+      1440,
+      720
+    ]
+  },
+  "v2.1.0-3-free-time-panel-next-to-the-week-view": {
+    "w": 2253,
+    "h": 1427,
+    "widths": [
+      2253,
+      1440,
+      720
+    ]
+  },
+  "v2.1.0-4-booking-page-where-a-guest-picks-a-time": {
+    "w": 1280,
+    "h": 1989,
+    "widths": [
+      1280,
+      720
+    ]
+  },
+  "v2.1.0-5-booking-request-with-accept-and-decline": {
+    "w": 2253,
+    "h": 1427,
+    "widths": [
+      2253,
+      1440,
+      720
+    ]
+  },
+  "v2.1.0-6-what-s-new-guide": {
+    "w": 1400,
+    "h": 880,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v2.1.0-7-groups-under-inbox-quick-actions-and-the-u": {
+    "w": 1400,
+    "h": 880,
+    "widths": [
+      1400,
+      720
+    ]
+  },
+  "v2.1.1-1-calendar-week-with-colors-at-full-strength": {
+    "w": 2400,
+    "h": 1502,
+    "widths": [
+      2400,
+      1440,
+      720
+    ]
+  },
+  "v2.2.0-1-meeting-view-with-live-text": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v2.2.0-2-mail-calendar-and-meet-switch": {
+    "w": 640,
+    "h": 200,
+    "widths": [
+      640
+    ]
+  },
+  "v2.2.0-3-booked-appointment-with-its-own-video-meet": {
+    "w": 1753,
+    "h": 1190,
+    "widths": [
+      1753,
+      1440,
+      720
+    ]
+  },
+  "v2.2.0-4-booking-page-where-the-guest-chooses-the-l": {
+    "w": 1920,
+    "h": 1290,
+    "widths": [
+      1920,
+      1440,
+      720
+    ]
+  },
+  "v2.2.0-5-invitation-card-scrolled-to-the-move-and-c": {
+    "w": 542,
+    "h": 698,
+    "widths": [
+      542
+    ]
+  },
+  "v2.2.0-6-update-channel-in-settings": {
+    "w": 420,
+    "h": 256,
+    "widths": [
+      420
+    ]
+  },
+  "v2.2.0-7-restart-to-update": {
+    "w": 1440,
+    "h": 920,
+    "widths": [
+      1440,
+      720
+    ]
+  },
+  "v2.3.0-1-wider-notes-editor-beside-the-meeting-text": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v2.3.0-2-folded-screen-pictures-opened-as-a-strip": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "v2.3.0-3-meeting-chat-reading-the-meeting-text": {
+    "w": 1500,
+    "h": 950,
+    "widths": [
+      1500,
+      1440,
+      720
+    ]
+  },
+  "voice-v0.1.0-1-voice-pill-while-recording": {
+    "w": 1532,
+    "h": 400,
+    "widths": [
+      1532,
+      1440,
+      720
+    ]
+  },
+  "voice-v0.1.0-2-voice-pill-in-its-different-states": {
+    "w": 1883,
+    "h": 2514,
+    "widths": [
+      1883,
+      1440,
+      720
+    ]
+  },
+  "voice-v0.1.0-3-voice-settings": {
+    "w": 760,
+    "h": 680,
+    "widths": [
+      760,
+      720
+    ]
+  },
+  "voice-v0.1.0-4-asking-before-meeting-sound-goes-online": {
+    "w": 1163,
+    "h": 1266,
+    "widths": [
+      1163,
+      720
+    ]
+  }
+}

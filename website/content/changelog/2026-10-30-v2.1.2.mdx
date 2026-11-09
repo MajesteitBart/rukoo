@@ -1,0 +1,20 @@
+---
+title: "Answer invitations from the mail itself"
+description: "Yes, Maybe and No on the invitation mail, calendar files that open in Rukoo, and a right-click menu in mail."
+date: "2026-10-30T15:33:24Z"
+version: "2.1.2"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2"
+image: ""
+draft: false
+---
+Version 2.1.2 made calendar invitations in mail useful, and gave mails a right-click menu.
+
+An invitation mail now shows a card above the mail with the title, time, video call link, place and guests, and Yes, Maybe and No buttons. If one of your calendars already holds the appointment, your answer goes through that calendar, and Google or your calendar service tells the organizer. If not, Rukoo emails the answer to the organizer from the account the invitation came to. A line under the buttons says which of the two will happen before you click, so there is no guessing. A cancelled appointment shows as cancelled. When a guest answers an appointment of yours, the card shows who answered what.
+
+"Add to calendar" copies the appointment into a calendar you pick, with its time, place, description and repeat rule. Once it sits in your calendar, the card offers "Open in calendar" instead. The copy carries no guests, so later changes from the organizer do not reach it. The card does not hide that.
+
+Calendar files with the ".ics" ending open in Rukoo too. That is the standard file form for a single appointment. An attached file opens as the same card in a small window, and so does a file you open with Rukoo from your file manager. On Windows, the installer puts Rukoo in "Open with" and in the default apps list for these files, without taking the default away from Outlook.
+
+Right-clicking in a mail now gives you a menu that fits what you clicked. A link can open in your browser or copy its address. An email link can start a new mail or copy the address. A picture can open in your picture viewer, copy, or save as a file. Selected text copies, and Select all selects the whole mail. The quoted mail inside a reply has the same menu.
+
+About the screenshots for this version: both changes belong to the batch whose screenshots sit in the private work list. There is no public screenshot to show here. The public code changes are [invitations and calendar files](https://github.com/MajesteitBart/rukoo/pull/162) and [the right-click menu in mail](https://github.com/MajesteitBart/rukoo/pull/161). The phone did not change in this version, and it does not show invitation cards.

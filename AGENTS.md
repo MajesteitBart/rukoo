@@ -10,6 +10,8 @@ The repository also holds Rukoo for Android in `android/`: a native Kotlin and J
 
 Rukoo Voice lives in `voice/`: push-to-talk dictation plus the meeting recorder for Rukoo, replacing Ownkey for Windows. It's a Rust workspace with its own version and releases. [voice/README.md](voice/README.md) has the design and [voice/AGENTS.md](voice/AGENTS.md) the rules for working there.
 
+The website at rukoo.io lives in `website/`: static files in `site/`, served by a Cloudflare Worker that passes every other request on to the account server in `server/`. It has its own `package.json` and no build step for the page. [website/README.md](website/README.md) has the layout and commands.
+
 ## What makes this project special?
 
 - **It is a desktop client connected to real accounts.** A test can change a real mailbox, even when the app runs locally. Choose the profile and account deliberately; use the test-data rules below.
@@ -90,6 +92,7 @@ Run focused checks during development and before pushing finished work. Run both
 - **Changes across several areas:** run `npm test` and `npm run test:e2e` once the focused checks pass.
 - **Packaging:** run `npm run dist` for installer or packaging changes. Outputs belong in ignored `dist/`.
 - **Android:** from `android/`, run `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`. For UI changes, install the debug APK on an emulator and check the cover size (`adb shell wm size 1080x2520`) and the inner size (1968x2184 at density 420), dark and light, English and Dutch; the debug "Test agent" exercises the chat without a network. Use an emulator of your own: other emulators on Bart's machine belong to other work. A change to the phone host or the bridge also needs `node --test test/agent-phonehost.test.js` or the bridge's tests.
+- **Website:** from `website/`, run `npm test`, then `npm run serve` and look at the changed page. A changelog change also needs `npm run changelog`. `npm run deploy` changes the live site at rukoo.io, so deploy only when asked.
 - **Documentation only:** check referenced files, links and commands. Application suites are not required.
 
 Add or update focused tests for changed behavior. Check the actual outcome of asynchronous work, such as the saved draft, synchronized state or completed agent turn. Report failures, skipped tests and unavailable live integrations separately from passing checks. Use the commands in `package.json`; this repo has no lint or typecheck script to borrow from RevenueOS.
@@ -152,6 +155,7 @@ The agent hub coordinates conversations and providers, and Rukoo exposes its own
 - `.agents/skills/rukoo-design/`: development design guidance and references. `skills/` contains user-facing skills shipped with the app; follow [skills/README.md](skills/README.md) for those.
 - `android/`: Rukoo for Android. `app/src/main/java/nl/bvdm/rukoo/` has `mail/`, `agents/`, `mcp/`, `desktop/` and `ui/`, mirroring the desktop's main process and renderer; [docs/android.md](docs/android.md) has the code map. Release signing reads the ignored `android/signing.properties`.
 - `voice/`: Rukoo Voice, with its own README.md and AGENTS.md. Its bridge to Rukoo has a side in `src/main/`; a change to the bridge changes both sides in the same PR.
+- `website/`: the website at rukoo.io and its Worker, with its own `package.json`. `server/` is the account server the Worker forwards to; a site change that needs a new server route changes both.
 - `scripts/`: launch and capture helpers. `dist/`, `test-results/`, `playwright-report/` and `tmp/` are local outputs, not implementation source.
 
 ## Taste

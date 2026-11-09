@@ -1,0 +1,22 @@
+{
+  "name": "rukoo-site",
+  "private": true,
+  "description": "Website for Rukoo Mail at rukoo.io",
+  "type": "module",
+  "scripts": {
+    "images": "node tools/images.mjs",
+    "changelog:images": "node tools/changelog-images.mjs",
+    "changelog": "node tools/build-changelog.mjs",
+    "serve": "npx --yes serve site -l 4321",
+    "deploy": "npx --yes wrangler@4 deploy",
+    "test": "node --test \"cloudflare/*.test.mjs\" \"tools/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@phosphor-icons/core": "^2.1.1",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.3.2",
+    "marked": "^17.0.6",
+    "playwright": "^1.63.0",
+    "sharp": "^0.35.5"
+  }
+}

@@ -1,0 +1,38 @@
+﻿---
+title: "Speak instead of type"
+description: "Rukoo Voice types what you say anywhere in Windows, and records meetings for Rukoo."
+date: "2026-11-03T08:18:49Z"
+version: "Voice 0.1.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0"
+image: "/img/changelog/voice-v0.1.0-1-voice-pill-while-recording.png"
+draft: false
+---
+Rukoo Voice is a small Windows companion app. It does two jobs. It lets you dictate text anywhere in Windows. And it records your meetings for Rukoo. It replaces an older dictation app called Ownkey. Meetings need [Rukoo 2.2.0](#v2-2-0). Voice has its own version numbers and its own downloads.
+
+For dictation, you hold the right Alt key, speak, and let go. Voice types the text into the app you are in. If you select text first and hold the right Ctrl key, you can give a spoken instruction such as "make this shorter", and Voice rewrites the selected text. The words can be typed out on your own computer, with no internet needed, or by an online service with your own key. Rewriting offers the same choice between services on your computer and services online. A personal dictionary, fixed corrections for words it often hears wrong, removal of filler words such as "um", and automatic rewriting all came over from Ownkey. Voice restores your clipboard after it pastes, and it keeps dictated text out of your clipboard history. On its first start it imported Ownkey's settings and reused the speech files Ownkey had already downloaded. It never wrote into Ownkey's folders. The release notes add one practical warning: quit Ownkey before you start Voice, or give one of them other keys, because both listen to the same two keys.
+
+![Voice pill while recording](/img/changelog/voice-v0.1.0-1-voice-pill-while-recording.png)
+
+*The small Voice pill while it records. It never steals the keyboard from the app you are using. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+![Voice pill in its different states](/img/changelog/voice-v0.1.0-2-voice-pill-in-its-different-states.png)
+
+*The pill in its different states. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+For meetings, Voice records your microphone and the sound of the call in a separate recording program. That split is deliberate. If Voice or Rukoo crashes, the recording goes on. If the recorder itself stops, Voice restarts it into the same meeting and marks the gap. Voice writes down what is said while you talk, on your own computer unless you choose an online service, and sends the text to Rukoo as it goes. An online service only receives meeting sound after you agree to it for that service. You can start and stop a meeting from the pill, from the tray near the clock, or from Rukoo. By default, Voice keeps the sound for 7 days after it has been written down, then removes it. The text stays.
+
+Voice told up to eight voices on the call apart while it recorded. Rukoo then turned "Speaker 2" into a name from the guests of the calendar appointment. The numbers kept their meaning when a part of Voice restarted, so Speaker 2 did not suddenly become someone else halfway through. By default this listening happened on your own computer, so the call sound stayed with you. It needed a fairly recent processor, and the settings said in normal words why the labels were off when they were off: the processor misses a needed ability, a speech file is missing, or you have not agreed to send sound online. If you chose an online live service for meetings and agreed to it, that service labeled the voices together with writing the text.
+
+Each meeting could also record the screen: off, still pictures, or video. Voice settings held the normal choice, and Rukoo could choose per meeting. With still pictures, Voice saved a picture each time the screen changed in a clear way, plus the text it could read on that picture, on the same clock as the sound. With video, it saved a film made by your graphics card in small pieces, so a crash lost a second or two at most. Voice recorded one screen at a time, starting with the screen that held the call, and you could switch screens during the meeting. If the disk filled up or the film maker failed, Voice dropped the video first, then the pictures, and never the sound. The pill said what it had dropped. A meeting started from Voice waited up to half a second for Rukoo to hide its windows before screen recording began. Sound never waited.
+
+Voice could back up each meeting to online storage that you rent yourself, such as UpCloud or Cloudflare storage. You had to pass a connection test before backup would turn on. Voice locked every file on your computer before upload, so the storage company could not listen. The key and the storage password were protected by Windows for your user account. You got a recovery code to open meetings on another computer. Without it, nobody can open them, including you. Sound and pictures uploaded during the meeting, video after it. An interrupted upload continued where it stopped. Voice kept any material that had not reached backup yet, as long as 10 gigabytes of disk stayed free. Assistants on another computer could reach meeting sound, a picture or a short film through Rukoo, with a link that worked for five minutes. The key itself never left Voice.
+
+![Voice Settings](/img/changelog/voice-v0.1.0-3-voice-settings.png)
+
+*Voice has its own Settings window, separate from Rukoo. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+![Asking before meeting sound goes online](/img/changelog/voice-v0.1.0-4-asking-before-meeting-sound-goes-online.png)
+
+*Voice asks before meeting sound goes to an online service. Source: [issue #191](https://github.com/MajesteitBart/rukoo/issues/191).*
+
+The limits of this first Voice version were listed plainly. Voice runs on Windows only. Its installer is not signed yet, so Windows warns before the first start and you choose "More info", then "Run anyway". The same warning applies to Rukoo itself. Video needs a graphics card that can make films. Without one, Voice records pictures only. On a busy laptop with four processor cores, speaker labels can fall behind the call. Voice records everything the computer plays, not the sound of one app alone. Its update check, if you turn it on, tells you about a new version. It does not install it.

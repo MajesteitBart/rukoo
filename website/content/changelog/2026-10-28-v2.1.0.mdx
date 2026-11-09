@@ -1,0 +1,58 @@
+﻿---
+title: "A full calendar and booking pages"
+description: "Month view, reminders, free time at a glance, and a page where people can book a time with you."
+date: "2026-10-28T15:32:51Z"
+version: "2.1.0"
+release: "https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.0"
+image: "/img/changelog/v2.1.0-1-month-view-with-the-small-month-in-the-sid.png"
+draft: false
+---
+Version 2.1.0 was the first full 2.x release. It included everything from the [2.0.0 test release](#v2-0-0), now settled. On top of that, it gave the calendar the things you use a calendar for every day, and it gave your Rukoo account a booking page.
+
+The calendar got a month view and a small month in the sidebar for jumping around. You could press G to go to a date and slash to search. You could drag across the week view to create an appointment, and drag appointments to move them or make them longer or shorter, with Undo if you dropped one in the wrong place. The appointment window grew up too. It had guests, repeating appointments with a choice of "only this one, this one and the ones after, or all of them", Google Meet links, reminders, time zone, busy or free, and who may see the appointment. You could move an appointment to another calendar or copy it. Each calendar got its own color. New calendar settings covered the first day of the week, weekends, working hours, and the normal length and reminder for new appointments.
+
+![Month view with the small month in the sidebar](/img/changelog/v2.1.0-1-month-view-with-the-small-month-in-the-sid.png)
+
+*The new month view. The small month in the sidebar jumps to any date. Source: [issue #149](https://github.com/MajesteitBart/rukoo/issues/149).*
+
+![Appointment window with repeat, reminders and time zone](/img/changelog/v2.1.0-2-appointment-window-with-repeat-reminders-a.png)
+
+*The full appointment window, with repeat, reminders, time zone and privacy choices. Source: [issue #149](https://github.com/MajesteitBart/rukoo/issues/149).*
+
+Rukoo also started reminding you. It showed a computer message before your appointments, caught up after your computer had slept, and showed only one reminder when the same meeting sat on two calendars. Google appointments kept their own reminder times. For mail-account calendars, new appointments kept their time zone properly, so a weekly appointment no longer jumped an hour when the clocks changed.
+
+A new panel listed your free time across every calendar that counts. You picked a length, a period and the hours of the day, and Rukoo listed the gaps that fit. If it could not read one of your accounts, it said so by name instead of pretending that time was free. While writing a mail, you could insert the same list into the message, which saves the usual back-and-forth of "does Tuesday work for you".
+
+![Free time panel next to the week view](/img/changelog/v2.1.0-3-free-time-panel-next-to-the-week-view.png)
+
+*Your free time at a glance, next to the week view. Source: [issue #149](https://github.com/MajesteitBart/rukoo/issues/149).*
+
+The booking page took that idea one step further. In Settings you could publish a page at an address with your chosen name, with your meeting types and the hours you offer. Other people opened it in a web browser, in English or Dutch, and picked a time. The page worked even with browser scripts turned off. A booking landed in the calendar you chose. A meeting type could also wait for your OK first, with Accept and Decline buttons right on the calendar. If you moved or deleted a booked appointment, the guest's page updated to match. After a booking, the guest's name, email address and note were kept locked with a key only your devices have, the same idea as the Rukoo account.
+
+![Booking page where a guest picks a time](/img/changelog/v2.1.0-4-booking-page-where-a-guest-picks-a-time.png)
+
+*The booking page a guest sees. Source: [issue #149](https://github.com/MajesteitBart/rukoo/issues/149).*
+
+![Booking request with Accept and Decline](/img/changelog/v2.1.0-5-booking-request-with-accept-and-decline.png)
+
+*A booking that waits for your answer. Accept and Decline sit on the card itself. Source: [issue #149](https://github.com/MajesteitBart/rukoo/issues/149).*
+
+The booking page was also built for other people's assistants. Each page had a short guide that an assistant could read, a ready-made link an assistant could hand to its user, and a way for programs to ask for free times and book them. Your mail signature could end with the line "Want to meet with me? Pick a time, or share this link with your agent." Your own assistants in Rukoo got matching tools. They could list your appointments, find free time, fetch your booking link, and create an appointment after asking you first.
+
+A "What's new" guide walked through the new inbox groups on the first start and set them up in order, and you could open it again later from Settings. The groups themselves moved from tabs above the mail list to a list under Inbox in the sidebar, which left the list more room. On the phone they sat under Inbox in the folder drawer. While Jev sorted, a line in the sidebar counted along, said why it was waiting if the service was busy, and opened a panel with Jev's recent choices when you clicked it.
+
+![What's new guide](/img/changelog/v2.1.0-6-what-s-new-guide.png)
+
+*The "What's new" guide that sets up inbox groups step by step. Source: [code change #126](https://github.com/MajesteitBart/rukoo/pull/126).*
+
+![Groups under Inbox, quick actions and the update button](/img/changelog/v2.1.0-7-groups-under-inbox-quick-actions-and-the-u.png)
+
+*Groups under Inbox in the sidebar, quick action buttons on a mail, and the update button at the bottom. Source: [code change #126](https://github.com/MajesteitBart/rukoo/pull/126).*
+
+You could choose what swiping left and right does to a mail, on touch screens and on the phone, and put up to four quick buttons on a mail under the mouse. Keyboard shortcuts could follow the layout of the mail app you came from: Rukoo, Gmail, Outlook, Apple Mail or Thunderbird. Every six hours, Rukoo asked GitHub whether a newer release existed and showed an "Update to" button that opened the release page. It installed nothing by itself in this version. Installing updates in place arrived in [2.2.0](#v2-2-0).
+
+The phone, as version 0.4.0, got swipe actions, groups under Inbox in the folder drawer, and the new assistant calendar tools. Those tools answered honestly that the phone had no calendar yet.
+
+This version also carried a long list of small fixes. In plain words: account names in the account switcher now match the names in Settings. Setup explains when Gmail and Yahoo need a special app password, before sign-in fails. Unread counts include older inbox mail, not only the newest 300. Odd, deeply nested mails and a failing folder no longer stall the check for new mail. An email attached inside another email stays readable after it moves. An opened mail stays in the Unread view until you open another one, instead of vanishing under your eyes. A mail started from an email link keeps what the link filled in if you close the window. Chat replies and the chat panel behave at in-between zoom sizes. An out-of-date Hermes connecting program is reported as out of date, not as a wrong key. Mac email links and the Mac menu bar picture were fixed. Limits were added on how much a hostile mail server or sorting service could make your device download and keep.
+
+One address changed in this version. New Rukoo accounts live at rukoo.io, and booking pages at meet.rukoo.io. A computer that made its account at the older address with 2.0.0 kept working there. To move, you deleted the account in Settings and made it again, and your booking page name stayed yours.

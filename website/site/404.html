@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wrong address | Rukoo Mail</title>
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#08090a">
+  <link rel="icon" href="/assets/rukoo-icon-dark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script>document.documentElement.classList.add('js')</script>
+  <script type="module" src="/app.js"></script>
+  <style>
+    .lost {
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 40px var(--gutter);
+      background:
+        radial-gradient(40% 40% at 40% 35%, rgba(22, 240, 163, 0.07), transparent 70%),
+        radial-gradient(40% 40% at 62% 40%, rgba(189, 45, 196, 0.08), transparent 70%);
+    }
+    .lost > div { display: grid; justify-items: center; gap: 24px; }
+    .lost .pigeon { width: 150px; }
+    .lost h1 { font-size: clamp(36px, 5vw, 56px); line-height: 1.05; }
+    .lost .caption { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <template id="tpl-pigeon">
+    <svg viewBox="-6 -6 222 280" aria-hidden="true">
+      <g class="pg-bird">
+        <g class="pg-neck">
+          <path fill="#bd2dc4" d="M179.99 123L164 123L129 190L99 268L187.5 268C211.45 220.08 200.2 169.21 179.99 123Z"/>
+          <path fill="#16f0a3" d="M149.05 63.04L129 95L79 165L59 225L99 250L119.5 231.5C167 197.23 168.99 176.12 179.99 123C170.72 101.79 159.56 81.55 149.05 63.04Z"/>
+        </g>
+        <path fill="#5a6a96" d="M149.05 63.04C149.68 66.93 150 70.93 150 75C150 132.92 139.21 187.45 77.5 215.5L89 240L54 265L20.32 242.01C24.92 231.19 33.18 220.66 41.24 210.38C58.84 187.95 75.51 166.7 51.4 146.21C41.58 142.96 32.67 137.74 25.12 131.01C9.7 117.26 0 97.26 0 75C0 33.58 33.58 0 75 0C112.35 0 143.32 27.3 149.05 63.04Z"/>
+        <path fill="#99c5f4" d="M142.46 268L7.54 268C15.13 237.81 42.45 215.45 75 215.45C107.55 215.45 134.87 237.81 142.46 268Z"/>
+        <path fill="#99c5f4" d="M105.25 110.55L74.56 97.48C66.41 94.01 61.74 85.37 63.3 76.65C64.86 67.93 72.24 61.45 81.08 61.02C89.93 60.59 97.9 66.34 100.29 74.86L109.31 106.98C109.99 109.4 107.56 111.54 105.25 110.55Z"/>
+        <g class="pg-eye"><circle class="pg-iris" cx="108" cy="36" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="108" cy="36" r="10" fill="#10131f"/><circle cx="104.2" cy="32.2" r="3.2" fill="#fff"/></g></g>
+        <g class="pg-eye"><circle class="pg-iris" cx="35" cy="100" r="21" fill="#ff7a1a"/><g class="pg-pupil"><circle cx="35" cy="100" r="10" fill="#10131f"/><circle cx="31.2" cy="96.2" r="3.2" fill="#fff"/></g></g>
+      </g>
+    </svg>
+  </template>
+  <main class="lost">
+    <div>
+      <button class="pigeon" type="button" data-pigeon aria-label="Say hello to the pigeon"></button>
+      <h1>This pigeon has the wrong address.</h1>
+      <p class="caption">404</p>
+      <a class="btn btn-primary" href="/">Back to Rukoo Mail</a>
+    </div>
+  </main>
+</body>
+</html>
