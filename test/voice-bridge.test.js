@@ -262,7 +262,8 @@ test('a new Voice data folder: the cursor starts again from its first event, and
   voice.reset();
   voice.append('meeting.started', M2, started('New folder'));
   voice.drop();
-  await until(() => s.store.cursor().instance === voice.instance && s.store.entry(M2), 'the new instance');
+  // The entry is stored before the cursor moves past its event, so wait for both.
+  await until(() => s.store.cursor().instance === voice.instance && s.store.entry(M2) && s.store.cursor().after === 1, 'the new instance');
   assert.notEqual(voice.instance, old);
   assert.deepEqual(voice.hellos.at(-1), { ...voice.hellos.at(-1), instance: old, after: 2 });
   assert.equal(s.store.cursor().after, 1);
