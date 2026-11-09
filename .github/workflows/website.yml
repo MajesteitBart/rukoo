@@ -1,5 +1,7 @@
 name: Website
 
+# Tests the website on every change to it. A change that reaches main also deploys it to rukoo.io, once the tests
+# pass. Run the workflow by hand on main to deploy without a change, for example after a server deploy.
 on:
   pull_request:
     paths:
@@ -10,13 +12,16 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/website.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: website-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request cancels the running check. On main, runs never cancel each other: a deploy that
+  # started always finishes, and a newer run replaces one that is still waiting, so the newest site wins.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -39,3 +44,28 @@ jobs:
           cache-dependency-path: website/package-lock.json
       - run: npm ci
       - run: npm test
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # The environment holds the Cloudflare token and only lets main use it.
+    environment:
+      name: rukoo.io
+      url: https://rukoo.io
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      # No npm ci: deploying needs only Wrangler, so no other package runs next to the token.
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
