@@ -1988,13 +1988,15 @@ body:has(.page) .titlebar-actions {
 .atts {
   padding: 14px 0 2px;
 }
-.atts-head {
+.atts-head,
+.rel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.atts-toggle {
+.atts-toggle,
+.rel-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2004,10 +2006,12 @@ body:has(.page) .titlebar-actions {
   padding: 4px 6px 4px 2px;
   border-radius: 6px;
 }
-.atts-toggle:hover {
+.atts-toggle:hover,
+.rel-toggle:hover {
   color: var(--text);
 }
-.atts-toggle svg {
+.atts-toggle svg,
+.rel-toggle svg {
   width: 15px;
   height: 15px;
   transition: transform 140ms ease;
@@ -2127,7 +2131,7 @@ body:has(.page) .titlebar-actions {
 .related {
   padding: 14px 0 2px;
 }
-.related.closed .atts-toggle svg {
+.related.closed .rel-toggle svg {
   transform: rotate(-90deg);
 }
 .rel-body {

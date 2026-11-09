@@ -177,7 +177,7 @@ test('every email has its own row until stacks are turned on, and then unread ma
 test('related emails under the open email open the rest of the conversation', async () => {
   await item('Call on Thursday').click();
   const related = win.locator('.reader .related');
-  await expect(related.locator('.atts-toggle')).toHaveText('1 gerelateerde e-mail');
+  await expect(related.locator('.rel-toggle')).toHaveText('1 gerelateerde e-mail');
   const answer = related.locator('.rel');
   await expect(answer.locator('.rel-who')).toHaveText('Jij');
   await expect(answer.locator('.rel-text')).toContainText('Thursday at 10:00 works for me');
@@ -194,13 +194,13 @@ test('related emails under the open email open the rest of the conversation', as
   await expect(item('Call on Thursday')).toHaveClass(/selected/);
 
   // Folded away, the list stays folded for the next email too.
-  await related.locator('.atts-toggle').click();
+  await related.locator('.rel-toggle').click();
   await expect(related).toHaveClass(/closed/);
-  await expect(related.locator('.atts-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(related.locator('.rel-toggle')).toHaveAttribute('aria-expanded', 'false');
   await item('Re: Dinner on Saturday').click();
   await expect(win.locator('.reader-subject')).toHaveText('Re: Dinner on Saturday');
   await expect(related).toHaveClass(/closed/);
-  await related.locator('.atts-toggle').click();
+  await related.locator('.rel-toggle').click();
   await expect(related.locator('.rel')).toContainText('Saturday works for me too');
 
   // Mail without a conversation has no section.
@@ -227,7 +227,7 @@ test('related emails under the open email open the rest of the conversation', as
     engine.related = (id) => engine.listMessages({ view: 'inbox' }).filter((m) => m.id !== id).slice(0, 7);
   });
   await item('Call on Thursday').click();
-  await expect(related.locator('.atts-toggle')).toHaveText('7 gerelateerde e-mails');
+  await expect(related.locator('.rel-toggle')).toHaveText('7 gerelateerde e-mails');
   await expect(related.locator('.rel')).toHaveCount(4);
   await related.locator('.rel-more').click();
   await expect(related.locator('.rel')).toHaveCount(7);

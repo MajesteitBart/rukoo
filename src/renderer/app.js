@@ -2329,7 +2329,7 @@ function relatedHtml(m) {
     ? ''
     : `<button class="link-btn rel-more" data-reader="related-all">${esc(t('reader.related.showAll', { count: list.length }))}</button>`;
   return `<section class="related ${open ? '' : 'closed'}" data-i18n-aria-label="reader.related.label" aria-label="${esc(t('reader.related.label'))}">
-    <div class="atts-head"><button class="atts-toggle" data-reader="toggle-related" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.related.count', { count: list.length }))}</span></button></div>
+    <div class="rel-head"><button class="rel-toggle" data-reader="toggle-related" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.related.count', { count: list.length }))}</span></button></div>
     <div class="rel-body" ${open ? '' : 'inert'}><div class="rel-clip"><div class="rel-list">${(all ? list : list.slice(0, RELATED_SHOWN)).map(row).join('')}</div>${more}</div></div>
   </section>`;
 }
