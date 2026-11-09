@@ -2521,6 +2521,8 @@ function bindReader() {
     if (!m) return;
     if (btn.dataset.related) {
       const known = S.related && S.related.id === m.id ? S.related.list.find((r) => r.id === btn.dataset.related) : null;
+      // Like a click on a row: a checked email would otherwise stay the target of Delete and the other actions.
+      clearChecks();
       return openMessage(btn.dataset.related, { known });
     }
     const item = byId(m.id) || m;

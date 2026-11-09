@@ -91,6 +91,12 @@ test('related emails are the conversation and same-subject mail with the same pe
   box.Trash.messages.push({ uid: 9003, messageId: '<binned@example.com>', inReplyTo: call.messageId, subject: 'Re: Call on Thursday', from: me, to: [], date: at });
   box.Junk.messages.push({ uid: 9004, messageId: '<junk@example.com>', inReplyTo: call.messageId, subject: 'Re: Call on Thursday', from: me, to: [], date: at });
   assert.ok(!engine.related(call.id).some((m) => m.uid === 9003 || m.uid === 9004));
+  // A blocked sender is left out before the limit of 20, so its mail can't push the real answer out.
+  for (let i = 0; i < 20; i++)
+    box.INBOX.messages.push({ uid: 9100 + i, messageId: `<flood-${i}@example.com>`, inReplyTo: call.messageId, subject: 'Re: Call on Thursday', from: { address: 'flood@spam.example' }, to: [me], date: at + 1000 + i });
+  engine.updateSettings({ spam: ['flood@spam.example'] }, { quiet: true });
+  assert.ok(engine.related(call.id).some((m) => m.id === answer.id));
+  assert.ok(!engine.related(call.id).some((m) => m.uid >= 9100));
   engine.updateSettings({ spam: ['sanne@example.com'] }, { quiet: true });
   assert.deepEqual(engine.related(answer.id).filter((m) => m.id === call.id), []);
 

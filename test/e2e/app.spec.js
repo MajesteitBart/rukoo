@@ -208,6 +208,19 @@ test('related emails under the open email open the rest of the conversation', as
   await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
   await expect(related).toHaveCount(0);
 
+  // Opening a related email lets go of a checked one, so Delete removes the email on screen.
+  await item('Call on Thursday').click();
+  await item('Call on Thursday').locator('[data-check]').click();
+  await expect(item('Call on Thursday')).toHaveClass(/checked/);
+  await related.locator('.rel').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Re: Call on Thursday');
+  await expect(win.locator('.list-scroll .item.checked')).toHaveCount(0);
+  await win.keyboard.press('Delete');
+  const inTrash = () => win.evaluate(async () => (await window.mail.call('list', { scope: 'all', view: 'trash' })).map((m) => m.subject));
+  await expect.poll(inTrash).toContain('Re: Call on Thursday');
+  expect(await inTrash()).not.toContain('Call on Thursday');
+  await expect(item('Call on Thursday')).toBeVisible();
+
   // A long conversation shows four rows, and the rest on request with the keyboard on the first new row.
   await app.evaluate(() => {
     const engine = global.__semEngine;

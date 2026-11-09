@@ -1699,9 +1699,10 @@ class Engine extends EventEmitter {
   // Synced mail related to m: linked by Message-ID, In-Reply-To or References, or with the same subject minus Re:
   // and Fwd: and someone in common other than the user. m is a full message or one built from the cache; its
   // References count, which the cache doesn't keep. Newest first, at most limit. skipRoles: folder roles to leave
-  // out. Gmail's All Mail repeats the other folders, so its copy counts only when no other folder has the email.
+  // out; skipSpam: leave out mail from addresses marked as spam, before the limit. Gmail's All Mail repeats the other
+  // folders, so its copy counts only when no other folder has the email.
   // The agents' get_screen (agents/tools.js threadOf) and the reader's related emails (related()) use this.
-  relatedMessages(m, { limit = 10, skipRoles = [] } = {}) {
+  relatedMessages(m, { limit = 10, skipRoles = [], skipSpam = false } = {}) {
     const ids = util.threadIds(m);
     const self = util.normId(m.messageId);
     const subject = util.baseSubject(m.subject);
@@ -1721,7 +1722,7 @@ class Engine extends EventEmitter {
         for (const r of box.messages) {
           const id = encodeId(acc.id, folder, r.uid);
           const mid = util.normId(r.messageId);
-          if (id === m.id || (mid && mid === self)) continue;
+          if (id === m.id || (mid && mid === self) || (skipSpam && this.isSpam(r.from))) continue;
           const link = util.linked(ids, r);
           const similar = !link && subject && util.baseSubject(r.subject) === subject && people(r).some((a) => theirs.has(a));
           if (!link && !similar) continue;
@@ -1742,7 +1743,7 @@ class Engine extends EventEmitter {
     if (String(id).startsWith('saved:')) return [];
     const { msg } = this.locate(id);
     const m = { id, messageId: msg.messageId, inReplyTo: msg.inReplyTo, references, subject: msg.subject, from: msg.from, to: msg.to, cc: msg.cc };
-    return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'] }).filter((r) => !this.isSpam(r.from));
+    return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'], skipSpam: true });
   }
 
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
