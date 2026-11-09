@@ -95,6 +95,12 @@ The workflow stops when the tag has no draft, when the draft's title doesn't sta
 
 The app's update check reads the repository from `rukoo.releases` in `package.json`, so a fork points it at its own releases.
 
+### Nightly builds
+
+`.github/workflows/nightly.yml` runs every night at 03:17 UTC. It takes the newest `main` commit whose **Test and package** run passed on push, so a red `main` keeps the nightlies on the last green commit. GitHub's built-in token may not tag a commit whose workflow files differ from `main`'s, so when `.github/workflows/` changed since that commit there is no nightly until `main` is green again. When that commit already has a nightly, or is the latest stable release, nothing is built. Otherwise it builds the same eight packages as a release, without running the suites again, and publishes them as a pre-release for the Nightly update channel, with `latest.yml` and `latest-linux.yml`.
+
+The version is the next patch after the package version followed by `-nightly.<date>.<run>`, for example `v2.3.1-nightly.20261109.42`, so the next stable release is newer than the nightlies before it. When `package.json` already has a version that isn't released yet, the nightlies use that version instead of the next patch. The workflow keeps the 14 newest nightlies and deletes older ones with their tags, so a stable release stays within the 100 releases the update check reads. **Actions → Nightly desktop packages → Run workflow** starts one by hand; `force` builds even when the commit already has a nightly. Nightly Mac packages are ad-hoc signed.
+
 ### Signed Mac builds
 
 CI makes ad-hoc signed Mac packages. These are **not Developer ID signed or notarized**, and Gatekeeper may block downloaded builds. Signed public releases need the maintainer's Apple credentials, which this repository doesn't contain.
