@@ -53,6 +53,54 @@ test('thread contacts are the people on the messages a reply refers to and on th
   await engine.close();
 });
 
+// The reader's related emails, under the open email, instead of threads in the list.
+test('related emails are the conversation and same-subject mail with the same people, newest first', async () => {
+  const { engine, acc } = await freshEngine();
+  const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
+  const call = inbox.find((m) => m.subject === 'Call on Thursday');
+  const answer = engine.listMessages({ scope: acc.id, view: 'sent' }).find((m) => m.subject === 'Re: Call on Thursday');
+  const ids = (list) => list.map((m) => m.id);
+
+  // Linked by In-Reply-To, from either end; the answer in Sent says where it is.
+  assert.deepEqual(ids(engine.related(call.id)), [answer.id]);
+  assert.deepEqual(ids(engine.related(answer.id)), [call.id]);
+  assert.equal(engine.related(call.id)[0].folder, 'Sent');
+
+  // References, which only the full message has, count as well.
+  const parcel = inbox.find((m) => m.subject === 'Your parcel is on its way');
+  assert.deepEqual(engine.related(parcel.id), []);
+  assert.deepEqual(ids(engine.related(parcel.id, [call.messageId])), [answer.id, call.id], 'newest first');
+
+  // Without headers, the same subject from the same sender: the two copies of the contract.
+  const [copy, other] = inbox.filter((m) => m.subject === 'Here is another copy of your contract');
+  assert.deepEqual(ids(engine.related(copy.id)), [other.id]);
+
+  // The same subject needs someone in common other than the user: Joris was on the Cc, a stranger wasn't.
+  const box = engine.caches.get(acc.id).boxes;
+  const me = { name: 'Demo User', address: 'demo@example.com' };
+  const at = call.date + 3600000;
+  box.INBOX.messages.push(
+    { uid: 9001, messageId: '<joris@example.com>', subject: 'RE: call on thursday', from: { name: 'Joris Bakker', address: 'joris@example.com' }, to: [me], date: at },
+    { uid: 9002, messageId: '<stranger@example.com>', subject: 'Call on Thursday', from: { name: 'Someone', address: 'someone@else.example' }, to: [me], date: at }
+  );
+  const joris = ids(engine.related(call.id)).filter((id) => decodeId(id).uid === 9001);
+  assert.equal(joris.length, 1);
+  assert.ok(!engine.related(call.id).some((m) => m.uid === 9002));
+
+  // Trash and Spam stay out, like they do from the inbox, and so does a sender marked as spam.
+  box.Trash.messages.push({ uid: 9003, messageId: '<binned@example.com>', inReplyTo: call.messageId, subject: 'Re: Call on Thursday', from: me, to: [], date: at });
+  box.Junk.messages.push({ uid: 9004, messageId: '<junk@example.com>', inReplyTo: call.messageId, subject: 'Re: Call on Thursday', from: me, to: [], date: at });
+  assert.ok(!engine.related(call.id).some((m) => m.uid === 9003 || m.uid === 9004));
+  engine.updateSettings({ spam: ['sanne@example.com'] }, { quiet: true });
+  assert.deepEqual(engine.related(answer.id).filter((m) => m.id === call.id), []);
+
+  // An email that is the open one under another id, such as Gmail's All Mail copy, is not related to itself.
+  box.INBOX.messages.push({ ...box.Sent.messages.find((m) => m.subject === 'Re: Call on Thursday'), uid: 9005 });
+  assert.ok(!engine.related(answer.id).some((m) => m.uid === 9005));
+  assert.deepEqual(engine.related('saved:nothing'), []);
+  await engine.close();
+});
+
 // #99: the cache keeps the newest 300 inbox messages; the server counts the unread mail older than those.
 test('unread counts include the inbox mail older than the cache, as the server counted it', async () => {
   const { engine, acc, dir } = await freshEngine();

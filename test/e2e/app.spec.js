@@ -142,14 +142,84 @@ test('newsletters can be unsubscribed from in one click', async () => {
   await expect(win.locator('#toast')).toContainText('Uitgeschreven bij ANWB Newsletter');
 });
 
-test('a run of mail from one sender folds into a stack', async () => {
-  const head = item('Your password has changed');
-  await expect(head.locator('.stack-btn')).toHaveText('+3');
-  await expect(win.locator('.item', { hasText: 'Your sign-in details have been updated' })).toHaveCount(0);
+test('every email has its own row until stacks are turned on, and then unread mail still does', async () => {
+  // By default, the four emails in a row from Vandebron No Reply each have a row.
+  for (const subject of ['Your password has changed', 'Your sign-in details have been updated', 'How to change your My Vandebron password', 'Failed sign-in attempt'])
+    await expect(item(subject)).toBeVisible();
+  await expect(win.locator('.stack-btn')).toHaveCount(0);
+
+  await win.click('[data-action="settings"]');
+  await expect(win.locator('[data-a="toggle:stackSenders"] .title')).toHaveText('Mail van één afzender groeperen');
+  await win.click('[data-a="toggle:stackSenders"]');
+  await expect(win.locator('[data-a="toggle:stackSenders"] .switch')).toHaveClass(/on/);
+  await win.click('[data-a="back"]');
+
+  // The unread one keeps its row; the three read ones after it fold into one.
+  await expect(item('Your password has changed').locator('.stack-btn')).toHaveCount(0);
+  const head = item('Your sign-in details have been updated');
+  await expect(head.locator('.stack-btn')).toHaveText('+2');
+  await expect(win.locator('.item', { hasText: 'Failed sign-in attempt' })).toHaveCount(0);
   await head.locator('.stack-btn').click();
-  await expect(item('Your sign-in details have been updated')).toBeVisible();
-  await item('Your password has changed').locator('.stack-btn').click();
-  await expect(win.locator('.item', { hasText: 'Your sign-in details have been updated' })).toHaveCount(0);
+  await expect(item('Failed sign-in attempt')).toBeVisible();
+  await head.locator('.stack-btn').click();
+  await expect(win.locator('.item', { hasText: 'Failed sign-in attempt' })).toHaveCount(0);
+
+  // Mail marked unread leaves the stack, so the stack can't hide it.
+  await win.evaluate(async () => {
+    const list = await window.mail.call('list', { scope: 'all', view: 'inbox' });
+    const m = list.find((x) => x.subject.startsWith('Failed sign-in attempt'));
+    await window.mail.call('setFlags', m.id, { unread: true });
+  });
+  await expect(item('Failed sign-in attempt')).toBeVisible();
+  await expect(win.locator('.stack-btn')).toHaveCount(0);
+});
+
+test('related emails under the open email open the rest of the conversation', async () => {
+  await item('Call on Thursday').click();
+  const related = win.locator('.reader .related');
+  await expect(related.locator('.atts-toggle')).toHaveText('1 gerelateerde e-mail');
+  const answer = related.locator('.rel');
+  await expect(answer.locator('.rel-who')).toHaveText('Jij');
+  await expect(answer.locator('.rel-text')).toContainText('Thursday at 10:00 works for me');
+  await expect(answer.locator('.pill')).toHaveText('Verzonden');
+
+  // The answer is in Sent, which the list doesn't show; it opens in the reading pane all the same.
+  await answer.click();
+  await expect(win.locator('.reader-subject')).toHaveText('Re: Call on Thursday');
+  await expect(win.locator('.list-scroll .item.selected')).toHaveCount(0);
+  const back = related.locator('.rel', { hasText: 'Sanne de Vries' });
+  await expect(back.locator('.pill')).toHaveText('Postvak IN');
+  await back.click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(item('Call on Thursday')).toHaveClass(/selected/);
+
+  // Folded away, the list stays folded for the next email too.
+  await related.locator('.atts-toggle').click();
+  await expect(related).toHaveClass(/closed/);
+  await expect(related.locator('.atts-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await item('Re: Dinner on Saturday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Re: Dinner on Saturday');
+  await expect(related).toHaveClass(/closed/);
+  await related.locator('.atts-toggle').click();
+  await expect(related.locator('.rel')).toContainText('Saturday works for me too');
+
+  // Mail without a conversation has no section.
+  await item('Bencompare').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
+  await expect(related).toHaveCount(0);
+
+  // A long conversation shows four rows, and the rest on request with the keyboard on the first new row.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.related = (id) => engine.listMessages({ view: 'inbox' }).filter((m) => m.id !== id).slice(0, 7);
+  });
+  await item('Call on Thursday').click();
+  await expect(related.locator('.atts-toggle')).toHaveText('7 gerelateerde e-mails');
+  await expect(related.locator('.rel')).toHaveCount(4);
+  await related.locator('.rel-more').click();
+  await expect(related.locator('.rel')).toHaveCount(7);
+  await expect(related.locator('.rel').nth(4)).toBeFocused();
+  await expect(related.locator('.rel-more')).toHaveCount(0);
 });
 
 test('attachments are listed for messages that have them', async () => {
@@ -1499,9 +1569,16 @@ test('the newest message opens even when it is folded into a stack', async () =>
     );
   }
   await win.evaluate(() => window.mail.call('sync'));
-  await win.evaluate(() => window.mail.call('updateSettings', { sort: 'date-asc' }));
+  // Read, because unread mail never folds into a stack.
+  await win.evaluate(async () => {
+    const list = await window.mail.call('list', { scope: 'all', view: 'inbox' });
+    for (const m of list.filter((x) => x.subject.startsWith('Stack '))) await window.mail.call('setFlags', m.id, { unread: false });
+  });
+  await win.evaluate(() => window.mail.call('updateSettings', { sort: 'date-asc', stackSenders: true }));
   await win.click('[data-view="drafts"]');
   await win.click('[data-view="inbox"]');
   await expect(win.locator('.reader-subject')).toHaveText('Stack 3');
   await expect(item('Stack 3')).toHaveClass(/selected/);
+  // Stack 1 heads the stack; the selection keeps it open.
+  await expect(win.locator('.item-wrap.stacked .item', { hasText: 'Stack 3' })).toHaveCount(1);
 });

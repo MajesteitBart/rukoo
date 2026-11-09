@@ -1111,6 +1111,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.folders'), desc: t('settings.general.foldersHelp'), action: 'folders' })}
           ${categoriesPage.rowHtml()}
           ${row({ title: t('settings.general.density'), value: labelOf(DENSITY, s.density), action: 'density' })}
+          ${row({ title: t('settings.general.stackSenders'), desc: t('settings.general.stackSendersHelp'), action: 'toggle:stackSenders', toggle: s.stackSenders === true })}
           ${row({ title: t('settings.general.theme'), value: labelOf(THEMES, s.theme), action: 'theme' })}
           ${zoomRow(s.zoomLevel)}
           ${row({ title: t('settings.general.darkEmails'), desc: t('settings.general.darkEmailsHelp'), action: 'toggle:darkEmails', toggle: s.darkEmails })}

@@ -9,7 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { encodeId, decodeId } = require('../engine');
 const { RISKY, safeName, markOfTheWeb } = require('../files');
-const { htmlToPlain, decodeCharset } = require('../mailutil');
+const { htmlToPlain, decodeCharset, baseSubject, threadIds, linked } = require('../mailutil');
 const mailto = require('../mailto');
 const { toHtml } = require('./markdown');
 const { unsafeBlock, unsafeInline, unsafeValue, unsafeFrom, untag, clipTagged, PDF_FAILED, IMAGE_DATA, FILE_DATA } = require('./context');
@@ -809,68 +809,11 @@ function fullView(engine, m, maxChars = TEXT_MAX) {
   return out;
 }
 
-function baseSubject(subject) {
-  let s = String(subject || '').trim();
-  const prefix = /^(?:re|fwd?|fw|antw|aw|doorst)(?:\s*\[\d+\])?\s*:\s*/i;
-  for (let prev = null; prev !== s; ) {
-    prev = s;
-    s = s.replace(prefix, '').trim();
-  }
-  return s.toLowerCase().replace(/\s+/g, ' ');
-}
-
-function ownAddresses(engine) {
-  return new Set(engine.accounts.flatMap((a) => engine.identities(a).map((i) => lower(i.address))));
-}
-
-const participants = (m) => [m.from, ...(m.to || []), ...(m.cc || [])].map((a) => lower(a && a.address)).filter(Boolean);
-
-// The Message-IDs an email names: its own, the one it answers, and its References.
-function threadIds(m) {
-  return new Set([m.messageId, m.inReplyTo, ...[].concat(m.references || [])].map(normId).filter(Boolean));
-}
-
-// Whether an email is linked by its headers to one that names these ids: it is one of them, it answers one of them,
-// or its References name one. The folder cache has no References; an email a chat keeps can have them.
-function linked(ids, r) {
-  const mid = normId(r.messageId);
-  if ((mid && ids.has(mid)) || (r.inReplyTo && ids.has(normId(r.inReplyTo)))) return true;
-  return [].concat(r.references || []).some((v) => ids.has(normId(v)));
-}
-
 // Related mail: linked by Message-ID/In-Reply-To/References, or the same base subject with someone in common
-// other than the user. Few demo emails have threading headers, so the subject rule carries the rest there.
+// other than the user. Few demo emails have threading headers, so the subject rule carries the rest there. The
+// reader's related emails use the same rule (engine.relatedMessages).
 function threadOf(engine, m, limit = 10) {
-  const ids = threadIds(m);
-  const self = normId(m.messageId);
-  const subject = baseSubject(m.subject);
-  const own = ownAddresses(engine);
-  const theirs = new Set(participants(m).filter((a) => !own.has(a)));
-  const seen = new Set();
-  const hits = [];
-  for (const acc of engine.accounts) {
-    const cache = engine.caches.get(acc.id);
-    if (!cache) continue;
-    const role = (p) => (cache.folders.find((f) => f.path === p) || {}).role;
-    // Gmail's All Mail repeats other folders; look at it last so the real copy wins.
-    const boxes = Object.entries(cache.boxes).sort(([a], [b]) => Number(role(a) === 'all') - Number(role(b) === 'all'));
-    for (const [folder, box] of boxes) {
-      for (const r of box.messages) {
-        const id = encodeId(acc.id, folder, r.uid);
-        const mid = normId(r.messageId);
-        if (id === m.id || (mid && mid === self)) continue;
-        const link = linked(ids, r);
-        const similar = !link && subject && baseSubject(r.subject) === subject && participants(r).some((a) => theirs.has(a));
-        if (!link && !similar) continue;
-        const key = mid || id;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        hits.push({ acc, folder, r });
-      }
-    }
-  }
-  hits.sort((a, b) => (b.r.date || 0) - (a.r.date || 0));
-  return hits.slice(0, limit).map(({ acc, folder, r }) => summary(engine, engine.publicMessage(acc, folder, r)));
+  return engine.relatedMessages(m, { limit }).map((pub) => summary(engine, pub));
 }
 
 // The Message-IDs of earlier mail in an email's thread, within one account, by headers only: the emails it names

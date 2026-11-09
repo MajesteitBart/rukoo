@@ -248,7 +248,41 @@ function unsubscribeInfo(parsed) {
   return url || mail ? { url, mail, oneClick } : null;
 }
 
+// ---------- threads ----------
+
+// A Message-ID as a comparable key: without its angle brackets, in lower case.
+const normId = (v) => String(v || '').trim().replace(/^<|>$/g, '').toLowerCase();
+
+// A subject without the Re: and Fwd: that replies and forwards add, in their Dutch and German forms too, for
+// comparing two subjects.
+function baseSubject(subject) {
+  let s = String(subject || '').trim();
+  const prefix = /^(?:re|fwd?|fw|antw|aw|doorst)(?:\s*\[\d+\])?\s*:\s*/i;
+  for (let prev = null; prev !== s; ) {
+    prev = s;
+    s = s.replace(prefix, '').trim();
+  }
+  return s.toLowerCase().replace(/\s+/g, ' ');
+}
+
+// The Message-IDs an email names: its own, the one it answers, and its References.
+function threadIds(m) {
+  return new Set([m.messageId, m.inReplyTo, ...[].concat(m.references || [])].map(normId).filter(Boolean));
+}
+
+// Whether an email is linked by its headers to one that names these ids: it is one of them, it answers one of them,
+// or its References name one. The folder cache has no References; an email a chat keeps can have them.
+function linked(ids, r) {
+  const mid = normId(r.messageId);
+  if ((mid && ids.has(mid)) || (r.inReplyTo && ids.has(normId(r.inReplyTo)))) return true;
+  return [].concat(r.references || []).some((v) => ids.has(normId(v)));
+}
+
 module.exports = {
+  normId,
+  baseSubject,
+  threadIds,
+  linked,
   ROLE_NAMES,
   unsubscribeInfo,
   folderRole,
