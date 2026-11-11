@@ -80,3 +80,77 @@ test('recipients move between To, Cc and Bcc by dragging, inline and in the comp
   await expect(chips(compose, 'bcc')).toHaveText(['anna@test.invalid']);
   await expect(chips(compose, 'cc')).toHaveText(['joris@test.invalid']);
 });
+
+test('a recipient let go over Send, the text or the subject stays where it was', async () => {
+  const errors = [];
+  win.on('pageerror', (err) => errors.push(err.message));
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  for (const a of ['anna@test.invalid', 'joris@test.invalid']) await type(win, 'to', a);
+
+  await chips(win, 'to').first().dragTo(win.locator('[data-c="send"]'));
+  await chips(win, 'to').first().dragTo(win.locator('.composer .editor'));
+  await chips(win, 'to').last().dragTo(win.locator('[data-field="subject"]'));
+  await expect(chips(win, 'to')).toHaveText(['anna@test.invalid', 'joris@test.invalid']);
+  // The chips are drawn from the composer's own list, not just left on screen: a new address draws them again.
+  await type(win, 'to', 'sanne@test.invalid');
+  await expect(chips(win, 'to')).toHaveText(['anna@test.invalid', 'joris@test.invalid', 'sanne@test.invalid']);
+  await expect(win.locator('.composer .editor')).not.toContainText('test.invalid');
+  await expect(win.locator('[data-field="subject"]')).toHaveValue('');
+  await expect(win.locator('.drop-recipient, .recipient.dragging')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+// Drag events made in the page, for what a mouse in a test can't time: the dragenter Chromium sends instead of a
+// dragover when the element under the pointer changed on the last update before the drop, a list drawn again during
+// the drag, and a drag whose end never reached the composer.
+test('a recipient is taken on dragenter and moves by its address; files dragged over a field are no recipient', async () => {
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  for (const a of ['anna@test.invalid', 'joris@test.invalid', 'sanne@test.invalid']) await type(win, 'to', a);
+  await win.click('[data-c="cc"]');
+
+  const chip = await win.evaluate(() => {
+    const ev = (type, dataTransfer) => new DragEvent(type, { dataTransfer, bubbles: true, cancelable: true });
+    const dt = new DataTransfer();
+    document.querySelectorAll('[data-rfield="to"] .recipient')[1].dispatchEvent(ev('dragstart', dt));
+    const label = document.querySelector('[data-rfield="cc"] label');
+    const result = {
+      taken: !label.dispatchEvent(ev('dragenter', dt)),
+      marked: document.querySelector('[data-rfield="cc"]').classList.contains('drop-recipient'),
+      send: !document.querySelector('[data-c="send"]').dispatchEvent(ev('dragenter', dt)),
+      editor: !document.querySelector('.composer .editor').dispatchEvent(ev('dragover', dt))
+    };
+    // Dropped on Send anyway: nothing happens to the recipients.
+    document.querySelector('[data-c="send"]').dispatchEvent(ev('drop', dt));
+    // To is drawn again while the chip is on its way, as when an agent writes the recipients: anna goes, so
+    // joris is first now.
+    document.querySelector('[data-rfield="to"] [data-remove="0"]').click();
+    label.dispatchEvent(ev('dragover', dt));
+    label.dispatchEvent(ev('drop', dt));
+    return result;
+  });
+  expect(chip).toEqual({ taken: true, marked: true, send: false, editor: false });
+  await expect(chips(win, 'cc')).toHaveText(['joris@test.invalid']);
+  await expect(chips(win, 'to')).toHaveText(['sanne@test.invalid']);
+
+  // A chip drag whose dragend never came, then files from Explorer over Cc: they don't move a recipient.
+  const files = await win.evaluate(() => {
+    const ev = (type, dataTransfer) => new DragEvent(type, { dataTransfer, bubbles: true, cancelable: true });
+    document.querySelector('[data-rfield="to"] .recipient').dispatchEvent(ev('dragstart', new DataTransfer()));
+    const dt = new DataTransfer();
+    dt.items.add(new File(['hello'], 'note.txt', { type: 'text/plain' }));
+    const cc = document.querySelector('[data-rfield="cc"]');
+    cc.dispatchEvent(ev('dragenter', dt));
+    cc.dispatchEvent(ev('dragover', dt));
+    const marked = cc.classList.contains('drop-recipient');
+    cc.dispatchEvent(ev('drop', dt));
+    return { marked };
+  });
+  expect(files).toEqual({ marked: false });
+  await expect(chips(win, 'to')).toHaveText(['sanne@test.invalid']);
+  await expect(chips(win, 'cc')).toHaveText(['joris@test.invalid']);
+  // That drag ends with the next dragend anywhere in the window.
+  await win.evaluate(() => document.dispatchEvent(new DragEvent('dragend')));
+  await expect(win.locator('.recipient.dragging')).toHaveCount(0);
+});

@@ -802,6 +802,11 @@ body:has(.page) .titlebar-actions {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
+/* While an email is dragged, a folder row takes the drop itself rather than its icon, name or count. Chromium refuses a
+   drop when the element under the pointer changed on the last update before it. */
+body.dragging-mail .nav-item * {
+  pointer-events: none;
+}
 
 .sidebar-foot {
   display: flex;
@@ -3441,14 +3446,22 @@ body.compose-window {
 .recipient.dragging {
   opacity: 0.4;
 }
-/* Where a dragged recipient will land: a field of To, Cc and Bcc, or the Cc or Bcc link that opens one. */
-.field.drop-recipient {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
+/* Where a dragged recipient will land: a field of To, Cc and Bcc, or the Cc or Bcc link that opens one. Marked like a
+   folder an email is dragged onto (.nav-item.drop-target). The field's band reaches into the composer's side padding,
+   so the label doesn't sit on its edge. */
+.field.drop-recipient::before {
+  content: '';
+  position: absolute;
+  inset: 3px -8px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  pointer-events: none;
 }
 .cc-links .link-btn.drop-recipient {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--link);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 .recipient button {
   width: 18px;
@@ -3791,7 +3804,7 @@ body.compose-window {
   justify-items: start;
 }
 .composer.drop-files::after {
-  content: 'Loslaten om bij te voegen';
+  content: attr(data-drop-hint);
   position: absolute;
   inset: 8px;
   border: 2px dashed var(--accent);
@@ -3803,6 +3816,11 @@ body.compose-window {
   color: var(--accent);
   pointer-events: none;
   z-index: 50;
+}
+/* While files are dragged over it, the composer itself takes the drop rather than what is in it, like the chat panel
+   (.agentpane.is-drop): a drop that went to an element drawn again just before it never reached the composer. */
+.composer.drop-files * {
+  pointer-events: none;
 }
 
 /* The composer's free-times dialog: four choices in a grid, then a preview of what goes into the message, drawn as

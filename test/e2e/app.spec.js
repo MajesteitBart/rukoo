@@ -297,6 +297,8 @@ test('dragging a message onto a folder moves it', async () => {
   const target = win.locator('[data-folder="Invoices"]');
   await target.dispatchEvent('dragover', { dataTransfer: dt });
   await target.dispatchEvent('drop', { dataTransfer: dt });
+  // A drag ends with a dragend, which lets the sidebar draw itself again.
+  await win.evaluate(() => document.dispatchEvent(new DragEvent('dragend')));
   await expect(win.locator('#toast')).toContainText('Verplaatst naar Invoices');
   await expect(win.locator('.item', { hasText: 'Bencompare' })).toHaveCount(0);
   await win.click('[data-folder="Invoices"]');
