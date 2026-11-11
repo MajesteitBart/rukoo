@@ -348,3 +348,34 @@ test('checkSend refuses what send() would, before anything is built or sent', as
   assert.throws(() => engine.checkSend({ accountId: 'gone', to: ['a@example.com'] }));
   await engine.close();
 });
+
+test('a paused outbox sends nothing while the quit question is open, and resumes with at least the minimum', async () => {
+  const clock = fakeClock();
+  const sent = [];
+  const box = new Outbox({ send: async (p) => sent.push(p.subject), timers: clock.timers, now: clock.now });
+  const { id } = box.queue({ payload: { subject: 'Held' }, ms: 5000 });
+  clock.advance(4000);
+  box.pause();
+  clock.advance(60000);
+  assert.deepEqual(sent, []);
+  assert.equal(box.waiting(), 1);
+  assert.deepEqual(box.resume(5000), [{ id, ms: 5000 }]);
+  clock.advance(4999);
+  assert.equal(box.undo(id) !== null, true);
+  assert.equal(box.size, 0);
+});
+
+test('resume(0) gives an email back the time it had left, and emails on their way are not waiting', async () => {
+  const clock = fakeClock();
+  let release;
+  const box = new Outbox({ send: () => new Promise((r) => (release = r)), timers: clock.timers, now: clock.now });
+  const { id } = box.queue({ payload: {}, ms: 5000 });
+  clock.advance(2000);
+  box.pause();
+  assert.deepEqual(box.resume(0), [{ id, ms: 3000 }]);
+  clock.advance(3000);
+  await Promise.resolve();
+  assert.equal(box.size, 1);
+  assert.equal(box.waiting(), 0);
+  release();
+});

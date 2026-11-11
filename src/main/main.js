@@ -1952,8 +1952,11 @@ app.on('window-all-closed', () => {
 // Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog.
 let quitAsked = false;
 function askQuitWithHeldMail() {
-  if (quitAsked || !outbox || !outbox.size) return true;
-  const count = outbox.size;
+  // Emails already on their way can't be undone: the quit waits for them without asking (will-quit).
+  if (quitAsked || !outbox || !outbox.waiting()) return true;
+  const count = outbox.waiting();
+  // Their clocks stop while the question is open, so none goes unasked behind it.
+  outbox.pause();
   let response;
   if (process.env.SEM_HIDDEN) response = global.__semQuitAnswer || 0;
   else {
@@ -1968,17 +1971,28 @@ function askQuitWithHeldMail() {
       cancelId: 1
     });
   }
-  if (response === 1) return false;
+  if (response === 1) {
+    // Don't quit: each email gets what it had left, and at least a few seconds to undo, with its notice again.
+    const back = outbox.resume(UNDO_AFTER_QUIT_MS);
+    const notify = () => back.forEach((b) => send('send-queued', b));
+    if (win && !win.isDestroyed()) notify();
+    else {
+      // The quit came from closing the last window: a new main window shows the notices once it has loaded.
+      createWindow();
+      win.webContents.once('did-finish-load', () => setTimeout(notify, 500));
+    }
+    return false;
+  }
+  outbox.resume(0);
   quitAsked = true;
   return true;
 }
+const UNDO_AFTER_QUIT_MS = 5000;
 
 app.on('before-quit', (event) => {
   if (!askQuitWithHeldMail()) {
     event.preventDefault();
     restartForUpdate = false;
-    // The emails' Undo notices need the main window; a quit from closing the last window took it away.
-    if (!win) createWindow();
     return;
   }
   quitting = true;

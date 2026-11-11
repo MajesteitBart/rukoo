@@ -43,6 +43,34 @@ class Outbox {
     return { id, until: entry.until };
   }
 
+  // How many emails still wait, so Undo can still take them back. Those on their way don't count.
+  waiting() {
+    return [...this.entries.values()].filter((e) => e.state === 'waiting').length;
+  }
+
+  // Stops the clock of every waiting email, as while the quit question is open. resume(min) starts it again with
+  // what was left, at least min ms, and returns [{ id, ms }] for the notices.
+  pause() {
+    for (const entry of this.entries.values()) {
+      if (entry.state !== 'waiting' || entry.left !== undefined) continue;
+      this.timers.clearTimeout(entry.timer);
+      entry.left = Math.max(0, entry.until - this.now());
+    }
+  }
+
+  resume(min = 0) {
+    const out = [];
+    for (const entry of this.entries.values()) {
+      if (entry.state !== 'waiting' || entry.left === undefined) continue;
+      const ms = Math.max(entry.left, min);
+      delete entry.left;
+      entry.until = this.now() + ms;
+      entry.timer = this.timers.setTimeout(() => this.go(entry), ms);
+      out.push({ id: entry.id, ms });
+    }
+    return out;
+  }
+
   // Takes back an email that still waits: { payload, restore, origin }. null once it is on its way or sent, or for
   // an id this outbox doesn't know.
   undo(id) {
