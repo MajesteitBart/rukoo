@@ -577,6 +577,57 @@ test('a search goes through every folder a batch at a time, and resume searches 
   await engine.close();
 });
 
+test('a search started while another still runs stops that one, which keeps nothing over the newer results', async () => {
+  const { engine, acc } = await smallEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const search = demo.searchFolder.bind(demo);
+  const asked = [];
+  let held = null;
+  let waiting = false;
+  let release;
+  // The server holds back its answer to one folder and query, as the connection's queue does behind another command.
+  demo.searchFolder = async (p, q, opts) => {
+    asked.push(`${p}: ${q}`);
+    if (`${p}: ${q}` === held) {
+      waiting = true;
+      await new Promise((resolve) => (release = resolve));
+    }
+    return search(p, q, opts);
+  };
+  const all = { scope: acc.id, view: 'everything', query: 'contract' };
+  const inSent = (query) => ({ scope: acc.id, view: 'folder', folder: 'Sent', query });
+  const older = (query) =>
+    engine
+      .listMessages(inSent(query))
+      .filter((m) => m.older)
+      .map((m) => m.subject);
+
+  // The search of every folder for 'contract' waits for Sent's answer while the user searches Sent alone. Both find the
+  // same older message there. The first answers last, and the message stays listed under the search on screen.
+  held = 'Sent: contract';
+  const first = engine.searchServer(all);
+  await until(() => waiting);
+  await engine.searchServer(inSent('question about'));
+  assert.deepEqual(older('question about'), ['Question about my contract']);
+  release();
+  await first;
+  assert.deepEqual(older('question about'), ['Question about my contract']);
+  assert.deepEqual(older('contract'), [], 'the stopped search kept nothing');
+
+  // Stopped while it waits for the inbox, it searches no further folder.
+  held = 'INBOX: contract';
+  waiting = false;
+  asked.length = 0;
+  const again = engine.searchServer(all);
+  await until(() => waiting);
+  await engine.searchServer(inSent('my contract'));
+  release();
+  await again;
+  assert.deepEqual(asked, ['INBOX: contract', 'Sent: my contract']);
+  assert.deepEqual(older('my contract'), ['Question about my contract']);
+  await engine.close();
+});
+
 test('a search asks the server nothing for one letter, saved emails or whole folders, and names an account that fails', async () => {
   const { engine, acc } = await smallEngine();
   const demo = engine.session(engine.account(acc.id));

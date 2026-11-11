@@ -1445,6 +1445,8 @@ class Engine extends EventEmitter {
           return;
         }
         for (const p of batch) {
+          // A newer search started: this one stops, and what it finds would replace that one's results.
+          if (this.searching !== run) return;
           const box = cache.boxes[p];
           // Gone since the search started, or all of it in the cache now.
           if (!box || this.olderOnServer(acc.id, p) === 0) continue;
@@ -1465,10 +1467,11 @@ class Engine extends EventEmitter {
           } catch (err) {
             // The account's next folder would fail the same way.
             paths.length = 0;
-            if (this.closed || !this.accounts.includes(acc)) return;
+            if (this.searching !== run || this.closed || !this.accounts.includes(acc)) return;
             out.errors.push(`${acc.email}: ${friendlyError(err, acc)}`);
             return;
           }
+          if (this.searching !== run) return;
           this.keepHits(acc, p, key, res);
           out.more += Math.max(0, res.total - res.messages.length);
         }
