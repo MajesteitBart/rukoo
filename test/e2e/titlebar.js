@@ -4,7 +4,8 @@
 // they are from navigator.windowControlsOverlay: its titlebar-area rectangle is the part of the bar they leave free,
 // in CSS pixels at the page's zoom.
 
-// The free part of the bar, and the visible brand icon, compose title, search and actions in it.
+// The free part of the bar, the window's width, the side bootstrap.js marked for the buttons, and the visible brand
+// icon, compose title, search and actions in the bar.
 function titlebar(page) {
   return page.evaluate(() => {
     const area = navigator.windowControlsOverlay.getTitlebarAreaRect();
@@ -15,6 +16,8 @@ function titlebar(page) {
       return { left: r.left, right: r.right };
     };
     return {
+      width: innerWidth,
+      controls: document.documentElement.dataset.controls ?? null,
       area: { left: area.x, right: area.x + area.width, height: area.height },
       icon: box('.titlebar-icon'),
       title: box('#compose-title'),
@@ -34,4 +37,15 @@ async function clearance(page) {
   };
 }
 
-module.exports = { titlebar, clearance };
+// The title bar with the window buttons on the right, measured from the window's edges as main has always laid it
+// out: the icon 22px from the left edge (16px in a compose window) and the actions 150px from the right edge.
+async function edges(page) {
+  const g = await titlebar(page);
+  return {
+    controls: g.controls,
+    icon: g.icon && Math.round(g.icon.left),
+    actions: g.actions && Math.round(g.width - g.actions.right)
+  };
+}
+
+module.exports = { titlebar, clearance, edges };
