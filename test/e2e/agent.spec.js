@@ -2044,6 +2044,12 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   // On its way: a chip at once, still busy, and Send off with the reason.
   await expect(pendingChips()).toHaveCount(1);
   await expect(pendingChips()).toHaveAttribute('aria-label', 'Adding notes.txt');
+  // Its name shimmers, and holds still with reduced motion.
+  const shimmer = () => pendingChips().locator('.bui-entity__name').evaluate((el) => ({ name: getComputedStyle(el).animationName, running: el.getAnimations().length }));
+  expect((await shimmer()).name).toBe('bui-shimmer-text');
+  await win.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await shimmer()).toEqual({ name: 'none', running: 0 });
+  await win.emulateMedia({ reducedMotion: null });
   const sendButton = win.locator('.agentpane .bui-pb__send');
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveAttribute('title', 'Wait until the files are added, then send.');
