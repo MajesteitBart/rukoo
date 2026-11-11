@@ -7,8 +7,15 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::mpsc::SyncSender;
+use std::sync::Arc;
 
-use voice_screen_files::monitors::MonitorInfo;
+use voice_screen_files::clock::Now;
+use voice_screen_files::frames::Thumb;
+use voice_screen_files::monitors::{MonitorInfo, WindowInfo};
+
+use crate::args::TestSpec;
+use crate::record::Ev;
 
 #[cfg(windows)]
 pub mod windows;
@@ -156,4 +163,171 @@ pub trait VideoMaker: Send + 'static {
         height: u32,
         options: WriterOptions,
     ) -> Result<Self::File, VideoError>;
+}
+
+/// A frame's pixels, BGRA, rows top-down without padding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pixels {
+    pub bgra: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What the platform says about a graphics device: whether Media Foundation's GPU path can use it
+/// (`video`), and whether it is a software rasterizer (`warp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub video: bool,
+    pub warp: bool,
+}
+
+/// The text on an image file a crash left behind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageText {
+    /// The lines read on it.
+    Text(Vec<String>),
+    /// This computer reads no text at all.
+    None,
+    /// The reader failed.
+    Failed,
+}
+
+/// The clocks the screen process reads: interrupt time in 100 ns units, which counts sleep and
+/// every process shares, the awake-only counter of the orphan rule, and the wall clock.
+pub trait Clocks: Send + Sync {
+    /// Interrupt time in 100 ns units: counts sleep.
+    fn boot_100ns(&self) -> u64;
+    /// Unbiased interrupt time in 100 ns units: awake time only, so a computer that slept doesn't
+    /// count as a dead recorder.
+    fn awake_100ns(&self) -> u64;
+    /// Both clocks now, for the meeting clock.
+    fn now(&self) -> Now;
+    /// The clocks at an earlier boot time.
+    fn at_boot(&self, boot: u64) -> Now;
+}
+
+/// The monitors to record and the windows that say which one shows the call.
+pub trait Displays: Send + Sync {
+    /// Every monitor, synthetic ones when a test spec asks for them.
+    fn list(&self, test: Option<&TestSpec>) -> Vec<MonitorInfo>;
+    /// Top-level windows from the foreground window down the Z-order.
+    fn z_order(&self) -> Vec<WindowInfo>;
+    /// The cursor's monitor.
+    fn cursor_monitor(&self) -> Option<String>;
+    /// Whether this computer can capture the screen at all.
+    fn can_capture(&self) -> bool;
+}
+
+/// Free space on the meeting folder's volume, for the drop floors.
+pub trait Disk: Send + Sync {
+    /// Bytes free for this user on the volume of `path`. With `test_file` (the `free-bytes-file`
+    /// test switch) the number written in that file instead, so tests can step through the drop
+    /// thresholds. `None` when neither can be read.
+    fn free_bytes(&self, path: &Path, test_file: Option<&Path>) -> Option<u64>;
+    /// Whether a write failed because the disk is full.
+    fn is_disk_full(&self, e: &std::io::Error) -> bool;
+}
+
+/// The JPEG of a saved frame.
+pub trait Jpeg: Send + Sync {
+    /// The JPEG at `voice_screen_files::frames`'s quality, scaled so its longest side is at most
+    /// its maximum, and the size it got.
+    fn encode(&self, pixels: &Pixels) -> Result<(Vec<u8>, u32, u32), String>;
+}
+
+/// The text on a frame, read on this computer.
+pub trait Reader: Send {
+    /// Whether this computer has a text recognizer.
+    fn available(&self) -> bool;
+    /// The BCP-47 tag of the language it reads.
+    fn language(&self) -> Option<String>;
+    /// The text lines on a saved frame, read the way the frame was saved: upscaled when small
+    /// text reads better that way.
+    fn read_pixels(&self, pixels: &Pixels) -> Result<Vec<String>, String>;
+    /// An image file a crash left without a `frame` line: its pixel size and its text.
+    fn read_image(&self, file: &[u8]) -> Result<(ImageText, (u32, u32)), String>;
+}
+
+/// The 1/8-scale luma thumbnail that decides which frames are saved and which go to the encoder.
+pub trait Thumbs {
+    /// The captured picture this thumbnailer takes.
+    type Frame;
+
+    /// The frame size this thumbnailer takes.
+    fn size(&self) -> (u32, u32);
+    /// The thumbnail of a frame of this thumbnailer's size.
+    fn thumb(&mut self, frame: &Self::Frame) -> Result<Thumb, PlatformError>;
+}
+
+/// Per-thread setup the platform needs, such as COM's multithreaded apartment. Called on every
+/// thread that captures, encodes or reads before it uses the platform.
+pub trait ThreadInit: Send + Sync + 'static {
+    fn init_thread(&self);
+}
+
+/// What the frame worker's threads need from the platform.
+pub struct FrameIo {
+    pub setup: Arc<dyn ThreadInit>,
+    pub jpeg: Arc<dyn Jpeg>,
+    pub disk: Arc<dyn Disk>,
+    /// Makes the text reader; the OCR thread calls it, so the engine is created on that thread.
+    pub reader: Box<dyn FnOnce() -> Box<dyn Reader> + Send>,
+}
+
+/// The platform behind the screen process: the graphics device, the capture, thumbnails, pixels
+/// and the video writer, plus the stateless parts above.
+pub trait Platform: Clone + Send + Sync + Sized + 'static {
+    /// The platform's own captured picture, which travels between the capture, the main thread
+    /// and the encoder.
+    type Frame: Clone + Send + 'static;
+    /// The graphics device, or the platform's equivalent, shared by capture, thumbnails, pixels
+    /// and video.
+    type Device: Clone + Send;
+    type Thumbs: Thumbs<Frame = Self::Frame>;
+    type Video: VideoWriter<Frame = Self::Frame>;
+
+    /// The main thread's setup, before anything else: COM's apartment, DPI awareness.
+    fn init(&self);
+    fn thread_init(&self) -> Arc<dyn ThreadInit>;
+    fn clocks(&self) -> &dyn Clocks;
+    fn displays(&self) -> &dyn Displays;
+    fn disk(&self) -> Arc<dyn Disk>;
+    fn jpeg(&self) -> Arc<dyn Jpeg>;
+    /// A new text reader, on the calling thread.
+    fn reader(&self) -> Box<dyn Reader>;
+    /// Whether the session is locked or on another desktop, so the screen shows the lock screen.
+    fn locked(&self) -> bool;
+    /// Everything the frame worker's threads need.
+    fn frame_io(&self) -> FrameIo;
+
+    /// Creates the graphics device: with video support when `want_video`, else without, else the
+    /// platform's software fallback.
+    fn create_device(&self, want_video: bool, warp: bool) -> Result<Self::Device, PlatformError>;
+    fn device_info(&self, device: &Self::Device) -> DeviceInfo;
+    /// Whether the device was removed, even when no call has failed yet.
+    fn device_removed(&self, device: &Self::Device) -> bool;
+    /// The graphics memory this process uses, for the measurements.
+    fn device_memory(&self, device: &Self::Device) -> Option<u64>;
+    /// A capture of one monitor, real or the test's synthetic screen.
+    fn source(
+        &self,
+        device: Self::Device,
+        test: Option<&TestSpec>,
+        to_main: SyncSender<Ev<Self::Frame>>,
+    ) -> Box<dyn Source>;
+    fn thumbs(
+        &self,
+        device: &Self::Device,
+        width: u32,
+        height: u32,
+    ) -> Result<Self::Thumbs, PlatformError>;
+    /// Reads a captured frame back from the GPU, or its equivalent.
+    fn pixels(
+        &self,
+        device: &Self::Device,
+        frame: &Frame<Self::Frame>,
+    ) -> Result<Pixels, PlatformError>;
+    /// A maker for video files on this device; `None` when this computer has no encoder at all.
+    fn video_maker(&self, device: &Self::Device)
+        -> Option<Box<dyn VideoMaker<File = Self::Video>>>;
 }

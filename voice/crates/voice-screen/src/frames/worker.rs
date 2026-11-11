@@ -20,8 +20,7 @@ use voice_screen_files::frames::clean_text;
 use voice_screen_files::journal::Line;
 use voice_screen_files::paths;
 
-use super::jpeg::{self, Pixels};
-use super::ocr::Ocr;
+use crate::platform::{FrameIo, Jpeg, Pixels, Reader};
 use crate::record::Ev;
 
 /// Frames with a JPEG waiting for OCR before the oldest skips it.
@@ -49,28 +48,6 @@ pub enum FrameDone {
         disk_full: bool,
         error: String,
     },
-}
-
-/// What reads a frame's text: Windows' OCR, or a stand-in in the tests.
-pub trait Reader {
-    fn available(&self) -> bool;
-    /// The BCP-47 tag of the language it reads.
-    fn language(&self) -> Option<String>;
-    fn read_pixels(&self, pixels: &Pixels) -> windows::core::Result<Vec<String>>;
-}
-
-impl Reader for Ocr {
-    fn available(&self) -> bool {
-        Ocr::available(self)
-    }
-
-    fn language(&self) -> Option<String> {
-        Ocr::language(self)
-    }
-
-    fn read_pixels(&self, pixels: &Pixels) -> windows::core::Result<Vec<String>> {
-        Ocr::read_pixels(self, pixels)
-    }
 }
 
 /// A frame whose JPEG is on disk, before its text is read.
@@ -156,22 +133,14 @@ pub struct FrameWorker {
 }
 
 impl FrameWorker {
-    /// Starts the threads with Windows' OCR. `write_fail_at` is the `write-fail=frames@<ms>`
-    /// test switch: from that meeting time every JPEG write fails as a full disk.
+    /// Starts the threads. `write_fail_at` is the `write-fail=frames@<ms>` test switch: from that
+    /// meeting time every JPEG write fails as a full disk; `io` is the platform's encoding, disk
+    /// and text reading.
     pub fn start<F: Clone + Send + 'static>(
         meeting: PathBuf,
         to_main: SyncSender<Ev<F>>,
         write_fail_at: Option<u64>,
-    ) -> FrameWorker {
-        FrameWorker::start_with(meeting, to_main, write_fail_at, || Box::new(Ocr::new()))
-    }
-
-    /// Starts the threads; the OCR thread makes its reader with `reader`.
-    pub fn start_with<F: Clone + Send + 'static>(
-        meeting: PathBuf,
-        to_main: SyncSender<Ev<F>>,
-        write_fail_at: Option<u64>,
-        reader: impl FnOnce() -> Box<dyn Reader> + Send + 'static,
+        io: FrameIo,
     ) -> FrameWorker {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
@@ -180,6 +149,13 @@ impl FrameWorker {
         let (finished_tx, finished) = mpsc::channel::<()>();
         let mut handles = Vec::new();
 
+        let FrameIo {
+            setup,
+            jpeg,
+            disk,
+            reader,
+        } = io;
+        let ocr_setup = setup.clone();
         let (jpeg_shared, jpeg_main, jpeg_finished, jpeg_meeting) = (
             shared.clone(),
             to_main.clone(),
@@ -193,8 +169,15 @@ impl FrameWorker {
                 // thread knows nothing more comes.
                 let _finished = jpeg_finished;
                 let _ended = Ended(&jpeg_shared);
-                crate::com::init_mta();
-                run_jpeg(&jpeg_meeting, &jpeg_shared, &jpeg_main, write_fail_at);
+                setup.init_thread();
+                run_jpeg(
+                    &jpeg_meeting,
+                    &jpeg_shared,
+                    &jpeg_main,
+                    write_fail_at,
+                    jpeg.as_ref(),
+                    disk.as_ref(),
+                );
             });
         match jpeg {
             Ok(handle) => handles.push(handle),
@@ -206,7 +189,7 @@ impl FrameWorker {
             .name("frames-ocr".into())
             .spawn(move || {
                 let _finished = finished_tx;
-                crate::com::init_mta();
+                ocr_setup.init_thread();
                 let reader = reader();
                 run_ocr(&ocr_shared, &to_main, reader.as_ref());
             });
@@ -367,6 +350,8 @@ fn run_jpeg<F: Send>(
     shared: &Shared,
     to_main: &SyncSender<Ev<F>>,
     write_fail_at: Option<u64>,
+    jpeg: &dyn Jpeg,
+    disk: &dyn crate::platform::Disk,
 ) {
     loop {
         let job = {
@@ -386,7 +371,7 @@ fn run_jpeg<F: Send>(
             }
         };
         let FrameJob { id, t, pixels } = job;
-        let written = match write_jpeg(meeting, &id, t, &pixels, write_fail_at) {
+        let written = match write_jpeg(meeting, &id, t, &pixels, write_fail_at, jpeg, disk) {
             Ok(written) => written,
             Err(failed) => {
                 if !emit(to_main, *failed) {
@@ -481,6 +466,8 @@ fn write_jpeg(
     t: u64,
     pixels: &Pixels,
     write_fail_at: Option<u64>,
+    jpeg: &dyn Jpeg,
+    disk: &dyn crate::platform::Disk,
 ) -> Result<Written, Box<FrameDone>> {
     let failed = |disk_full: bool, error: String| {
         Box::new(FrameDone::Failed {
@@ -493,19 +480,14 @@ fn write_jpeg(
     let file = paths::frame_file(id);
     let path = meeting.join(&file);
     let started = Instant::now();
-    let (bytes, width, height) = match jpeg::bitmap(pixels).and_then(|b| jpeg::encode(&b)) {
+    let (bytes, width, height) = match jpeg.encode(pixels) {
         Ok(encoded) => encoded,
-        Err(e) => {
-            return Err(failed(
-                false,
-                format!("JPEG encoding failed: {:#010x}", e.code().0),
-            ))
-        }
+        Err(e) => return Err(failed(false, e)),
     };
     let jpeg_ms = started.elapsed().as_millis();
     let fault = write_fail_at.is_some_and(|at| t >= at);
     if let Err(e) = write_synced(&path, &bytes, fault) {
-        return Err(failed(crate::disk::is_disk_full(&e), e.to_string()));
+        return Err(failed(disk.is_disk_full(&e), e.to_string()));
     }
     Ok(Written {
         id: id.to_string(),
@@ -564,7 +546,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f-000001000.jpg");
         let e = write_synced(&path, b"jpeg", true).unwrap_err();
-        assert!(crate::disk::is_disk_full(&e));
+        assert_eq!(e.raw_os_error(), Some(112));
         assert!(!path.exists() && !path.with_extension("jpg.tmp").exists());
         write_synced(&path, b"jpeg", false).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"jpeg");
@@ -588,7 +570,7 @@ mod tests {
             Some("en-US".into())
         }
 
-        fn read_pixels(&self, _pixels: &Pixels) -> windows::core::Result<Vec<String>> {
+        fn read_pixels(&self, _pixels: &Pixels) -> Result<Vec<String>, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let (lock, cv) = &*self.released;
             let mut released = lock.lock().unwrap();
@@ -596,6 +578,62 @@ mod tests {
                 released = cv.wait(released).unwrap();
             }
             Ok(vec!["Slide text".into()])
+        }
+
+        fn read_image(
+            &self,
+            _file: &[u8],
+        ) -> Result<(crate::platform::ImageText, (u32, u32)), String> {
+            Err("no image".into())
+        }
+    }
+
+    /// The platform's parts stand-in for these tests: a JPEG that is its pixels' length, a disk
+    /// that never fails, and no thread setup. No graphics API is involved, so the threads run on
+    /// every platform.
+    fn fake_io(reader: impl Reader + 'static) -> FrameIo {
+        use crate::platform::{Disk, ImageText, ThreadInit};
+
+        struct Setup;
+
+        impl ThreadInit for Setup {
+            fn init_thread(&self) {}
+        }
+
+        struct FakeJpeg;
+
+        impl Jpeg for FakeJpeg {
+            fn encode(&self, pixels: &Pixels) -> Result<(Vec<u8>, u32, u32), String> {
+                Ok((
+                    vec![0xFF, 0xD8, pixels.bgra.len() as u8],
+                    pixels.width,
+                    pixels.height,
+                ))
+            }
+        }
+
+        struct FakeDisk;
+
+        impl Disk for FakeDisk {
+            fn free_bytes(
+                &self,
+                _path: &std::path::Path,
+                _test_file: Option<&std::path::Path>,
+            ) -> Option<u64> {
+                Some(1 << 40)
+            }
+
+            fn is_disk_full(&self, e: &io::Error) -> bool {
+                e.raw_os_error() == Some(112)
+            }
+        }
+
+        let _ = ImageText::None;
+        FrameIo {
+            setup: Arc::new(Setup),
+            jpeg: Arc::new(FakeJpeg),
+            disk: Arc::new(FakeDisk),
+            reader: Box::new(move || Box::new(reader)),
         }
     }
 
@@ -650,7 +688,6 @@ mod tests {
     /// JPEG and a `skipped` line at once. Once OCR comes back the rest are read.
     #[test]
     fn a_hung_ocr_holds_few_frames_and_skips_the_rest() {
-        crate::com::init_mta();
         let meeting = temp_meeting("hung-ocr");
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -659,8 +696,7 @@ mod tests {
             calls: calls.clone(),
         };
         let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
-        let mut worker =
-            FrameWorker::start_with(meeting.clone(), tx, None, move || Box::new(reader));
+        let mut worker = FrameWorker::start(meeting.clone(), tx, None, fake_io(reader));
         let total = 40u64;
         let (mut sent, mut most) = (0u64, 0usize);
         let mut lines = BTreeMap::new();
@@ -718,7 +754,6 @@ mod tests {
     /// each with its JPEG, and the late answer of the hung call adds no second line.
     #[test]
     fn skip_ocr_journals_the_frames_a_hung_ocr_holds() {
-        crate::com::init_mta();
         let meeting = temp_meeting("skip-ocr");
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -727,8 +762,7 @@ mod tests {
             calls: calls.clone(),
         };
         let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
-        let mut worker =
-            FrameWorker::start_with(meeting.clone(), tx, None, move || Box::new(reader));
+        let mut worker = FrameWorker::start(meeting.clone(), tx, None, fake_io(reader));
         for n in 0..3 {
             while !worker.accepts() {
                 std::thread::sleep(Duration::from_millis(2));

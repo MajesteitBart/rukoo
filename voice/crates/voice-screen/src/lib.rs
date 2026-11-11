@@ -8,9 +8,13 @@
 use std::fmt;
 
 pub mod args;
+pub mod finalize;
 pub mod inspect;
 pub mod platform;
+pub mod record;
 pub mod video;
+
+pub mod frames;
 
 #[cfg(windows)]
 pub mod capture;
@@ -21,13 +25,7 @@ mod com;
 #[cfg(windows)]
 pub mod disk;
 #[cfg(windows)]
-pub mod finalize;
-#[cfg(windows)]
-pub mod frames;
-#[cfg(windows)]
 pub mod probe;
-#[cfg(windows)]
-pub mod record;
 
 /// The screen process's own version, written into `session` lines.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -117,10 +115,11 @@ pub fn run(args: &[String]) -> Result<(), ExitError> {
             }
         }
         #[cfg(windows)]
-        args::Cmd::Record(opts) => record::record(opts),
+        args::Cmd::Record(opts) => record::record(platform::windows::WindowsPlatform::new(), opts),
         #[cfg(windows)]
         args::Cmd::Finalize { meeting, reason } => {
-            let done = finalize::finalize(&meeting, &reason)?;
+            let platform = platform::windows::WindowsPlatform::new();
+            let done = finalize::finalize(&platform, &meeting, &reason)?;
             print_line(&done.to_json().to_string());
             Ok(())
         }

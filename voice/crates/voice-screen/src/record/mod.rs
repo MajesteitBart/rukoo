@@ -29,11 +29,9 @@ use voice_screen_files::screenfile::{self, ScreenFile};
 use voice_screen_files::timeline::{TimelineFollower, TimelineLine};
 
 use crate::args::{Mode, RecordOptions, TestSpec};
-use crate::capture::{monitors_win, synthetic, wgc, Picture};
-use crate::clockwin;
 use crate::finalize;
-use crate::frames::ocr::Ocr;
 use crate::frames::worker::FrameWorker;
+use crate::platform::Platform;
 use crate::{log, ExitError, VERSION};
 
 mod screen;
@@ -66,9 +64,9 @@ const SESSION_WAIT: Duration = Duration::from_secs(5);
 /// No new timeline line and no status request for this long, awake: the recorder is gone.
 const ORPHAN: Duration = Duration::from_secs(60);
 
-pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
-    crate::com::init_mta();
-    crate::com::dpi_aware();
+/// Records one monitor into the meeting, on `platform`'s graphics device and encoders.
+pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitError> {
+    platform.init();
     let dir = opts.meeting.clone();
     if !dir.is_dir() {
         return Err(ExitError::usage(format!(
@@ -92,7 +90,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             "the meeting already has a screen recording; continue it with --resume",
         ));
     }
-    let monitor_list = list_monitors(opts.test.as_ref());
+    let monitor_list = platform.displays().list(opts.test.as_ref());
     let pinned = match &opts.monitor {
         Some(id) => Some(
             monitor_list
@@ -106,8 +104,8 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if monitor_list.is_empty() {
         return Err(ExitError::failed("there is no monitor to record"));
     }
-    if opts.test.is_none() && !wgc::supported() {
-        return Err(ExitError::failed("this Windows can't capture the screen"));
+    if opts.test.is_none() && !platform.displays().can_capture() {
+        return Err(ExitError::failed("this computer can't capture the screen"));
     }
     let frames_dir = paths::screen_dir(&dir).join("frames");
     fs::create_dir_all(&frames_dir)
@@ -128,12 +126,12 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if resumed {
         let (_, video_end) = finalize::close_open_video(&dir, &mut journal, &lines, &history);
         last_seen = last_seen.max(video_end);
-        let ocr = Ocr::new();
+        let reader = platform.reader();
         last_seen = last_seen.max(finalize::journal_orphans(
             &dir,
             &mut journal,
             &history,
-            &ocr,
+            reader.as_ref(),
         ));
     }
     finalize::remove_temp_files(&dir);
@@ -146,9 +144,9 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     loop {
         for line in follower.poll().unwrap_or_default() {
             timeline.read(&line);
-            clock.feed(&line, clockwin::now());
+            clock.feed(&line, platform.clocks().now());
         }
-        if timeline.sessions > 0 && clock.at(clockwin::now()).is_some() {
+        if timeline.sessions > 0 && clock.at(platform.clocks().now()).is_some() {
             break;
         }
         if Instant::now() >= deadline {
@@ -166,7 +164,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         .map_err(|e| ExitError::failed(e.to_string()))?
         .port();
     let token = control::new_token().map_err(|e| ExitError::failed(e.to_string()))?;
-    let now = clockwin::now();
+    let now = platform.clocks().now();
     let t0 = clock.at(now).unwrap_or(0);
     let session = history.sessions + 1;
     let line = Line::Session {
@@ -209,7 +207,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     journal.sync();
     let drops = DropState::from_history(&history, opts.mode == Mode::Video);
 
-    let (events, rx) = mpsc::sync_channel::<Ev<Picture>>(EVENT_QUEUE);
+    let (events, rx) = mpsc::sync_channel::<Ev<P::Frame>>(EVENT_QUEUE);
     let (requests, request_rx) = mpsc::sync_channel::<Request>(16);
     control::serve(listener, token.clone(), requests)
         .map_err(|e| ExitError::failed(format!("can't start the control port: {e}")))?;
@@ -242,7 +240,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     });
     let monitor = pinned
         .or(previous_monitor)
-        .unwrap_or_else(|| choose_monitor(opts.test.as_ref(), &monitor_list));
+        .unwrap_or_else(|| choose_monitor(&platform, opts.test.as_ref(), &monitor_list));
     let video_seq = history
         .last_video_seq
         .max(finalize::highest_video_seq(&dir));
@@ -250,10 +248,16 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         Some((Part::Frames, at)) => Some(at),
         _ => None,
     };
-    let worker = FrameWorker::start(dir.clone(), events.clone(), write_fail_frames);
-    let awake = clockwin::awake_100ns();
+    let worker = FrameWorker::start(
+        dir.clone(),
+        events.clone(),
+        write_fail_frames,
+        platform.frame_io(),
+    );
+    let awake = platform.clocks().awake_100ns();
     let orphan = orphan_after();
     let mut screen = Screen {
+        platform,
         dir,
         mode: opts.mode,
         device_fault_at: opts.test.as_ref().and_then(|t| t.device_lost_at_ms),
@@ -263,7 +267,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         follower,
         drops,
         events,
-        d3d: None,
+        device: None,
         source: None,
         thumbs: None,
         saver: Saver::new(),
@@ -340,21 +344,18 @@ fn orphan_after() -> Duration {
     ORPHAN
 }
 
-fn list_monitors(test: Option<&TestSpec>) -> Vec<MonitorInfo> {
-    match test {
-        Some(spec) => synthetic::monitors(spec),
-        None => monitors_win::list(),
-    }
-}
-
 /// The monitor that shows the call (spec 2.7): the topmost real window's, else the cursor's,
 /// else the primary.
-fn choose_monitor(test: Option<&TestSpec>, list: &[MonitorInfo]) -> MonitorInfo {
+fn choose_monitor<P: Platform>(
+    platform: &P,
+    test: Option<&TestSpec>,
+    list: &[MonitorInfo],
+) -> MonitorInfo {
     let id = match test {
         Some(_) => monitors::choose(&[], None, list),
         None => monitors::choose(
-            &monitors_win::z_order(),
-            monitors_win::cursor_monitor().as_deref(),
+            &platform.displays().z_order(),
+            platform.displays().cursor_monitor().as_deref(),
             list,
         ),
     };

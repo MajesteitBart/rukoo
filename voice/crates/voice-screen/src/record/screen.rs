@@ -26,21 +26,13 @@ use voice_screen_files::policy::{
 use voice_screen_files::screenfile;
 use voice_screen_files::timeline::{TimelineFollower, TimelineLine};
 
-use super::list_monitors;
 use crate::args::{Mode, TestSpec};
-use crate::capture::d3d::{self, is_device_lost, D3D};
-use crate::capture::{monitors_win, session, synthetic, wgc, CapturedFrame, Picture};
-use crate::clockwin;
 use crate::finalize;
-use crate::frames::jpeg;
-use crate::frames::thumb::Thumbnailer;
 use crate::frames::worker::{FrameDone, FrameJob, FrameWorker};
 use crate::log;
-use crate::platform::Source;
-use crate::platform::{VideoError, WriterOptions};
+use crate::platform::{Frame, Platform, PlatformError, Source, Thumbs, VideoError, WriterOptions};
 use crate::video::thread::{self as video_thread, VideoStart, VideoThread};
-use crate::video::writer::WinVideoMaker;
-use crate::video::{mf, FPS};
+use crate::video::FPS;
 
 /// What reaches the main thread. `F` is the platform's own frame type.
 pub enum Ev<F> {
@@ -90,14 +82,8 @@ enum StartFail {
     Platform(crate::platform::PlatformError),
 }
 
-impl From<windows::core::Error> for StartFail {
-    fn from(e: windows::core::Error) -> StartFail {
-        StartFail::Platform(e.into())
-    }
-}
-
-impl From<crate::platform::PlatformError> for StartFail {
-    fn from(e: crate::platform::PlatformError) -> StartFail {
+impl From<PlatformError> for StartFail {
+    fn from(e: PlatformError) -> StartFail {
         StartFail::Platform(e)
     }
 }
@@ -109,13 +95,14 @@ pub(crate) struct Stopping {
 }
 
 /// The last captured frame, offered again while the screen is still.
-pub(crate) struct Last {
-    frame: CapturedFrame,
+pub(crate) struct Last<F> {
+    frame: Frame<F>,
     thumb: Option<Thumb>,
     offered_t: u64,
 }
 
-pub(crate) struct Screen {
+pub(crate) struct Screen<P: Platform> {
+    pub(crate) platform: P,
     pub(crate) dir: PathBuf,
     pub(crate) mode: Mode,
     pub(crate) test: Option<TestSpec>,
@@ -123,10 +110,10 @@ pub(crate) struct Screen {
     pub(crate) clock: ScreenClock,
     pub(crate) follower: TimelineFollower,
     pub(crate) drops: DropState,
-    pub(crate) events: SyncSender<Ev<Picture>>,
-    pub(crate) d3d: Option<D3D>,
+    pub(crate) events: SyncSender<Ev<P::Frame>>,
+    pub(crate) device: Option<P::Device>,
     pub(crate) source: Option<Box<dyn Source>>,
-    pub(crate) thumbs: Option<Thumbnailer>,
+    pub(crate) thumbs: Option<P::Thumbs>,
     pub(crate) saver: Saver,
     pub(crate) worker: FrameWorker,
     /// Names the running capture session; frames of older ones are dropped.
@@ -139,7 +126,7 @@ pub(crate) struct Screen {
     pub(crate) monitor: MonitorInfo,
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pub(crate) pinned: Option<String>,
-    pub(crate) video: Option<VideoThread<crate::video::writer::VideoWriter>>,
+    pub(crate) video: Option<VideoThread<P::Video>>,
     /// Which frames of the open video file go to the encoder.
     pub(crate) gate: VideoGate,
     pub(crate) video_seq: u64,
@@ -158,7 +145,7 @@ pub(crate) struct Screen {
     pub(crate) locked: bool,
     pub(crate) frames_saved: u64,
     pub(crate) last_frame_id: Option<String>,
-    pub(crate) last: Option<Last>,
+    pub(crate) last: Option<Last<P::Frame>>,
     pub(crate) last_thumb_at: Option<Instant>,
     pub(crate) device_fault_at: Option<u64>,
     /// Device creations still to fail, from the `device-lost-at=<ms>x<n>` test switch.
@@ -182,8 +169,8 @@ pub(crate) struct Screen {
     pub(crate) mode_changes: u64,
 }
 
-impl Screen {
-    pub(crate) fn run(mut self, rx: Receiver<Ev<Picture>>) {
+impl<P: Platform> Screen<P> {
+    pub(crate) fn run(mut self, rx: Receiver<Ev<P::Frame>>) {
         let mut next_tick = Instant::now();
         while self.stop.is_none() {
             let wait = next_tick.saturating_duration_since(Instant::now());
@@ -195,7 +182,7 @@ impl Screen {
                         EVENT_QUEUE,
                         &mut self,
                         |s| s.stop.is_none(),
-                        Screen::handle,
+                        Screen::<P>::handle,
                     );
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -209,7 +196,7 @@ impl Screen {
         self.finish(&rx);
     }
 
-    fn handle(&mut self, event: Ev<Picture>) {
+    fn handle(&mut self, event: Ev<P::Frame>) {
         match event {
             Ev::Frame(frame) => self.on_frame(frame),
             Ev::FrameDone(done) => self.on_frame_done(done),
@@ -236,30 +223,34 @@ impl Screen {
 
     /// Meeting time now, never backward.
     fn now_t(&mut self) -> u64 {
-        self.clock.at(clockwin::now()).unwrap_or(0)
+        let now = self.platform.clocks().now();
+        self.clock.at(now).unwrap_or(0)
     }
 
     // ---- capture -------------------------------------------------------------------------
 
-    fn make_device(&mut self) -> windows::core::Result<D3D> {
+    fn make_device(&mut self) -> Result<P::Device, PlatformError> {
         if self.create_failures > 0 {
             self.create_failures -= 1;
-            return Err(windows::core::Error::new(
-                windows::Win32::Graphics::Dxgi::DXGI_ERROR_DEVICE_REMOVED,
-                "device-lost-at test switch",
-            ));
+            return Err(PlatformError {
+                device_lost: true,
+                // `DXGI_ERROR_DEVICE_REMOVED`, as a removed device reports it.
+                code: "0x887a0005".into(),
+                message: "device-lost-at test switch".into(),
+            });
         }
         let warp = self.test.as_ref().is_some_and(|t| t.warp);
         if self.no_video_devices > 0 {
             self.no_video_devices -= 1;
             log("no-video-device test switch: a graphics device without video support");
-            return d3d::create(false, warp);
+            return self.platform.create_device(false, warp);
         }
-        d3d::create(self.mode == Mode::Video && self.drops.video.is_none(), warp)
+        self.platform
+            .create_device(self.mode == Mode::Video && self.drops.video.is_none(), warp)
     }
 
     /// Whether a new graphics device must have video support: the video still records and
-    /// this computer gave the process such a device before. `d3d::create` falls back to a
+    /// this computer gave the process such a device before. `create_device` falls back to a
     /// device without it, which suits frames only, and to WARP, which never has it; after a lost
     /// device that fallback mustn't count as a recovery while the video needs the real one
     /// (spec 2.5).
@@ -268,31 +259,36 @@ impl Screen {
     }
 
     fn try_start(&mut self) -> Result<(), StartFail> {
-        if self.d3d.is_none() {
+        if self.device.is_none() {
             let device = self.make_device()?;
-            let kind = match (device.warp, device.video) {
+            let info = self.platform.device_info(&device);
+            let kind = match (info.warp, info.video) {
                 (true, _) => "WARP",
                 (false, true) => "GPU with video support",
                 (false, false) => "GPU",
             };
-            if self.needs_video_device() && !device.video {
+            if self.needs_video_device() && !info.video {
                 log(format_args!(
                     "graphics device: {kind}, without the video support the video needs"
                 ));
                 return Err(StartFail::NoVideo);
             }
             log(format_args!("graphics device: {kind}"));
-            self.had_video_device |= device.video;
-            self.d3d = Some(device);
+            self.had_video_device |= info.video;
+            self.device = Some(device);
             self.source = None;
             self.thumbs = None;
         }
-        let device = self.d3d.clone().ok_or_else(windows::core::Error::empty)?;
+        let device = self
+            .device
+            .clone()
+            .ok_or_else(|| PlatformError::new("no graphics device"))?;
         if self.source.is_none() {
-            self.source = Some(match &self.test {
-                Some(spec) => Box::new(synthetic::new(device, self.events.clone(), spec)),
-                None => Box::new(wgc::new(device, self.events.clone())),
-            });
+            self.source = Some(self.platform.source(
+                device,
+                self.test.as_ref(),
+                self.events.clone(),
+            ));
         }
         self.generation += 1;
         let generation = self.generation;
@@ -324,7 +320,7 @@ impl Screen {
             // tries again and drops the video when the retries are spent.
             Err(StartFail::NoVideo) => self.on_device_lost(),
             Err(StartFail::Platform(e)) => {
-                if e.device_lost && self.d3d.is_some() {
+                if e.device_lost && self.device.is_some() {
                     self.on_device_lost();
                     return;
                 }
@@ -348,7 +344,7 @@ impl Screen {
         self.stop_capture();
         self.source = None;
         self.thumbs = None;
-        self.d3d = None;
+        self.device = None;
     }
 
     fn change_mode(&mut self, mode: Mode, monitor: Option<&str>) -> Result<(), &'static str> {
@@ -431,7 +427,8 @@ impl Screen {
     /// goes away, when it waits for it to come back (spec 2.7).
     fn monitors(&mut self, fresh: bool) -> Vec<MonitorInfo> {
         if fresh || self.monitor_cache.0.elapsed() >= MONITOR_CACHE {
-            self.monitor_cache = (Instant::now(), list_monitors(self.test.as_ref()));
+            let list = self.platform.displays().list(self.test.as_ref());
+            self.monitor_cache = (Instant::now(), list);
         }
         let mut list = self.monitor_cache.1.clone();
         if let Some(at) = self.test.as_ref().and_then(|t| t.monitor_gone_at_ms) {
@@ -477,8 +474,8 @@ impl Screen {
         let next = match &self.test {
             Some(_) => list.first().map(|m| m.id.clone()),
             None => monitors::choose(
-                &monitors_win::z_order(),
-                monitors_win::cursor_monitor().as_deref(),
+                &self.platform.displays().z_order(),
+                self.platform.displays().cursor_monitor().as_deref(),
                 &list,
             ),
         };
@@ -577,7 +574,7 @@ impl Screen {
 
     // ---- frames --------------------------------------------------------------------------
 
-    fn on_frame(&mut self, frame: CapturedFrame) {
+    fn on_frame(&mut self, frame: Frame<P::Frame>) {
         if frame.generation != self.generation
             || !self.capturing
             || self.paused
@@ -586,7 +583,7 @@ impl Screen {
         {
             return;
         }
-        let now = clockwin::at_boot(frame.boot);
+        let now = self.platform.clocks().at_boot(frame.boot);
         let Some(t) = self.clock.at(now) else {
             return;
         };
@@ -641,7 +638,7 @@ impl Screen {
     }
 
     /// `thumb` is this frame's thumbnail, when one was read.
-    fn frames_frame(&mut self, frame: CapturedFrame, t: u64, thumb: Option<Thumb>) {
+    fn frames_frame(&mut self, frame: Frame<P::Frame>, t: u64, thumb: Option<Thumb>) {
         // A frame with small changes has no thumbnail of its own; a re-offer reads it, so a
         // change never stays measured on an older picture.
         let own = own_thumb(
@@ -666,14 +663,14 @@ impl Screen {
         }
     }
 
-    fn thumb(&mut self, frame: &CapturedFrame) -> Option<Thumb> {
-        let d3d = self.d3d.clone()?;
+    fn thumb(&mut self, frame: &Frame<P::Frame>) -> Option<Thumb> {
+        let device = self.device.clone()?;
         if self
             .thumbs
             .as_ref()
             .is_none_or(|t| t.size() != (frame.width, frame.height))
         {
-            match Thumbnailer::new(&d3d, frame.width, frame.height) {
+            match self.platform.thumbs(&device, frame.width, frame.height) {
                 Ok(thumbs) => self.thumbs = Some(thumbs),
                 Err(e) => {
                     self.graphics_failed(&e, "thumbnail");
@@ -681,7 +678,7 @@ impl Screen {
                 }
             }
         }
-        match self.thumbs.as_mut()?.thumb(&frame.picture.0) {
+        match self.thumbs.as_mut()?.thumb(&frame.picture) {
             Ok(thumb) => Some(thumb),
             Err(e) => {
                 self.graphics_failed(&e, "thumbnail");
@@ -690,11 +687,16 @@ impl Screen {
         }
     }
 
-    fn graphics_failed(&mut self, e: &windows::core::Error, what: &str) {
-        if is_device_lost(e) || self.d3d.as_ref().is_some_and(D3D::removed) {
+    fn graphics_failed(&mut self, e: &PlatformError, what: &str) {
+        if e.device_lost
+            || self
+                .device
+                .as_ref()
+                .is_some_and(|d| self.platform.device_removed(d))
+        {
             self.on_device_lost();
         } else {
-            log(format_args!("{what} failed: {:#010x}", e.code().0));
+            log(format_args!("{what} failed: {}", e.code));
         }
     }
 
@@ -728,7 +730,7 @@ impl Screen {
         }
     }
 
-    fn save(&mut self, frame: &CapturedFrame, t: u64, thumb: Thumb) {
+    fn save(&mut self, frame: &Frame<P::Frame>, t: u64, thumb: Thumb) {
         if self.drops.frames.is_some() {
             return;
         }
@@ -736,7 +738,7 @@ impl Screen {
         if self.last_frame_id.as_deref() == Some(id.as_str()) {
             return;
         }
-        let Some(d3d) = self.d3d.clone() else {
+        let Some(device) = self.device.clone() else {
             return;
         };
         // The JPEG thread is behind: the saver offers this change again, and it is saved once
@@ -744,7 +746,7 @@ impl Screen {
         if !self.worker.accepts() {
             return;
         }
-        match jpeg::pixels(&d3d, frame) {
+        match self.platform.pixels(&device, frame) {
             Ok(pixels) => {
                 let job = FrameJob {
                     id: id.clone(),
@@ -802,7 +804,7 @@ impl Screen {
 
     /// Makes sure a video file at the frame's size is open when the video records; whether one
     /// is.
-    fn open_video(&mut self, frame: &CapturedFrame, t: u64) -> bool {
+    fn open_video(&mut self, frame: &Frame<P::Frame>, t: u64) -> bool {
         if !self.video_wanted() {
             return false;
         }
@@ -819,7 +821,7 @@ impl Screen {
 
     /// Sends the frame to the encoder while the screen moves, and otherwise keeps it as the
     /// newest picture for the next re-submit (`voice_screen_files::gate`).
-    fn video_frame(&mut self, frame: &CapturedFrame, thumb: Option<&Thumb>) {
+    fn video_frame(&mut self, frame: &Frame<P::Frame>, thumb: Option<&Thumb>) {
         let gate = self.gate.frame(frame.dirty, thumb);
         if let Some(video) = &self.video {
             match gate {
@@ -833,12 +835,12 @@ impl Screen {
         self.video_seq.max(finalize::highest_video_seq(&self.dir)) + 1
     }
 
-    fn start_video(&mut self, frame: &CapturedFrame, t: u64) {
-        let Some(mf) = mf::shared() else {
-            self.drop_video_encoder("Media Foundation isn't available");
+    fn start_video(&mut self, frame: &Frame<P::Frame>, t: u64) {
+        let Some(device) = self.device.clone() else {
             return;
         };
-        let Some(d3d) = self.d3d.clone() else {
+        let Some(maker) = self.platform.video_maker(&device) else {
+            self.drop_video_encoder("this computer has no video encoder");
             return;
         };
         let seq = self.next_video_seq();
@@ -862,7 +864,6 @@ impl Screen {
             height: frame.height,
             options,
         };
-        let maker = Box::new(WinVideoMaker::new(mf, d3d));
         match video_thread::start(start, maker, self.events.clone()) {
             Ok(video) => {
                 self.video_seq = seq;
@@ -997,7 +998,8 @@ impl Screen {
             None => Duration::from_millis(DISK_CHECK_MS),
         };
         self.next_disk_check = Instant::now() + every;
-        let Some(free) = crate::disk::free_bytes(&self.dir, test_file.as_deref()) else {
+        let disk = self.platform.disk();
+        let Some(free) = disk.free_bytes(&self.dir, test_file.as_deref()) else {
             return;
         };
         for (part, reason) in self.drops.on_free_bytes(free) {
@@ -1042,12 +1044,13 @@ impl Screen {
             }
         };
         if !lines.is_empty() {
-            self.last_activity = clockwin::awake_100ns();
+            self.last_activity = self.platform.clocks().awake_100ns();
         }
         for line in lines {
             match &line {
                 TimelineLine::Session { .. } | TimelineLine::Heartbeat { .. } => {
-                    if let Fed::Reanchored { jump_ms } = self.clock.feed(&line, clockwin::now()) {
+                    let now = self.platform.clocks().now();
+                    if let Fed::Reanchored { jump_ms } = self.clock.feed(&line, now) {
                         if jump_ms.abs() > REANCHOR_SPLIT_MS {
                             log(format_args!("the recorder's clock moved {jump_ms} ms"));
                             self.end_video("clock");
@@ -1095,7 +1098,7 @@ impl Screen {
 
     fn check_lock(&mut self) {
         self.next_lock_check = Instant::now() + LOCK_CHECK;
-        let locked = session::locked();
+        let locked = self.platform.locked();
         if locked == self.locked {
             return;
         }
@@ -1147,7 +1150,12 @@ impl Screen {
                 self.on_monitor_lost();
             }
         }
-        if self.capturing && self.d3d.as_ref().is_some_and(D3D::removed) {
+        if self
+            .capturing
+            .then(|| self.device.clone())
+            .flatten()
+            .is_some_and(|d| self.platform.device_removed(&d))
+        {
             self.on_device_lost();
         }
         // The capture's `Closed` notice shares the queue with frames and is lost when the queue
@@ -1157,13 +1165,14 @@ impl Screen {
             self.on_monitor_lost();
         }
         if let Some(video) = &self.video {
-            video.tick(clockwin::boot_100ns());
+            video.tick(self.platform.clocks().boot_100ns());
         }
         self.reoffer();
         if now >= self.next_memory_log {
             self.next_memory_log = now + MEMORY_LOG;
             if crate::dev_mode() {
-                if let Some(bytes) = self.d3d.as_ref().and_then(D3D::memory_in_use) {
+                let device = self.device.clone();
+                if let Some(bytes) = device.and_then(|d| self.platform.device_memory(&d)) {
                     let dropped = self.video.as_ref().map_or(0, VideoThread::dropped);
                     log(format_args!(
                         "gpu memory in use: {} MB; frames saved: {}; video frames the encoder dropped: {dropped}",
@@ -1173,7 +1182,7 @@ impl Screen {
                 }
             }
         }
-        let awake = clockwin::awake_100ns();
+        let awake = self.platform.clocks().awake_100ns();
         if awake.saturating_sub(self.last_activity) >= self.orphan_100ns
             && awake.saturating_sub(self.last_status) >= self.orphan_100ns
         {
@@ -1184,7 +1193,7 @@ impl Screen {
     }
 
     fn heartbeat(&mut self) {
-        let now = clockwin::now();
+        let now = self.platform.clocks().now();
         let t = self.clock.at(now).unwrap_or(0);
         let open = self
             .video
@@ -1217,7 +1226,7 @@ impl Screen {
 
     /// Stops capturing, ends the video, lets OCR finish, writes `stop`, removes `screen.json`
     /// and only then answers a `stop` request.
-    fn finish(&mut self, rx: &Receiver<Ev<Picture>>) {
+    fn finish(&mut self, rx: &Receiver<Ev<P::Frame>>) {
         let stopping = self.stop.take().unwrap_or(Stopping {
             t: 0,
             reason: "interrupted".into(),
@@ -1281,7 +1290,7 @@ impl Screen {
         }
     }
 
-    fn handle_stopping(&mut self, event: Ev<Picture>, replies: &mut Vec<Sender<Value>>) {
+    fn handle_stopping(&mut self, event: Ev<P::Frame>, replies: &mut Vec<Sender<Value>>) {
         match event {
             Ev::FrameDone(done) => self.on_frame_done(done),
             Ev::Control(request) => match request.body["cmd"].as_str() {
@@ -1303,7 +1312,7 @@ impl Screen {
     fn on_control(&mut self, request: Request) {
         let reply = match request.body["cmd"].as_str() {
             Some("status") => {
-                self.last_status = clockwin::awake_100ns();
+                self.last_status = self.platform.clocks().awake_100ns();
                 self.status()
             }
             Some("monitors") => {

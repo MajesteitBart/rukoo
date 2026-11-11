@@ -2,7 +2,11 @@
 //! `voice_screen_files::frames::Saver` which ones to keep; a kept frame becomes a JPEG and the
 //! text Windows reads on it.
 
-pub mod jpeg;
-pub mod ocr;
-pub mod thumb;
 pub mod worker;
+
+#[cfg(windows)]
+pub mod jpeg;
+#[cfg(windows)]
+pub mod ocr;
+#[cfg(windows)]
+pub mod thumb;
