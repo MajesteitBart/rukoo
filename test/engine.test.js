@@ -581,6 +581,34 @@ test('a later flag change to an email waits for an earlier write to it, and its 
   await engine.close();
 });
 
+test('read, star and archive of one email reach the server in the order they were made', async () => {
+  const { engine, acc } = await freshEngine();
+  const target = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.unread && !m.starred);
+  const gate = gatedWrites(engine, acc);
+  const session = engine.session(acc);
+  const move = session.move.bind(session);
+  let moves = 0;
+  session.move = (...args) => {
+    moves++;
+    return move(...args);
+  };
+  // Marking it read is slow; the email is starred and archived before the server has answered.
+  const openRead = gate((uid, patch) => uid === target.uid && patch.unread === false);
+  const reading = engine.setFlags(target.id, { unread: false });
+  const starring = engine.setFlags(target.id, { starred: true });
+  const archiving = engine.archive(target.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(moves, 0, 'the move waits for the flag changes made before it');
+  openRead();
+  await Promise.all([reading, starring, archiving]);
+  await engine.syncAccount(acc.id);
+  const archived = engine.listMessages({ scope: acc.id, view: 'archive' }).find((m) => m.messageId === target.messageId);
+  assert.ok(archived, 'the email is in the archive');
+  assert.equal(archived.unread, false);
+  assert.equal(archived.starred, true, 'the star reached the email before it moved');
+  await engine.close();
+});
+
 test('send to self lands in inbox and sent; drafts round trip', async () => {
   const { engine, acc } = await freshEngine();
   await engine.send({ accountId: acc.id, to: ['demo@example.com'], subject: 'Test message', html: '<p>Hello <b>world</b></p>' });

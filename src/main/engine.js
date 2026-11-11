@@ -878,9 +878,12 @@ class Engine extends EventEmitter {
     };
   }
 
+  // Runs op once the earlier changes to this email have reached the server, so a move or delete never overtakes a
+  // flag write still on its way to the old folder and uid.
   async withPending(acc, folder, uid, patch, op) {
     const hold = this.holdPending(acc.id, folder, uid, patch);
     try {
+      await hold.before;
       return await op();
     } finally {
       hold.release();
