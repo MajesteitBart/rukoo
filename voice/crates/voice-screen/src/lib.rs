@@ -22,13 +22,15 @@ pub mod video;
 
 pub mod frames;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod capture;
 #[cfg(windows)]
 pub mod clockwin;
+#[cfg(target_os = "macos")]
+pub mod clock_mac;
 #[cfg(windows)]
 mod com;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod disk;
 #[cfg(windows)]
 pub mod probe;
