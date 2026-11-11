@@ -169,6 +169,11 @@ test('an email moves to another category, and its sender follows on request', as
   await win.locator('.scrim .radio-row', { hasText: 'To read' }).click();
   await expect(win.locator('#toast')).toContainText('Moved to To read');
   await expect(win.locator('.list-scroll .item', { hasText: 'ANWB Newsletter' })).toHaveCount(0);
+  // Ctrl+Z undoes things elsewhere; it doesn't send the sender's future mail there too.
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  await expect(win.locator('#toast')).toContainText('Moved to To read');
+  await expect(win.locator('#toast')).toHaveClass(/show/);
   await win.locator('#toast button', { hasText: 'Also future mail' }).click();
   await expect(win.locator('#toast')).toContainText('Mail from ANWB Newsletter goes to To read from now on');
 
@@ -345,10 +350,12 @@ test('new mail in a muted category sends no notification', async () => {
 
 test('new mail in Inbox and in a category Inbox leaves out: the list shows the one, a toast the other, and Show opens the category', async () => {
   await turnOn();
-  await settings().locator('[data-a="cat-edit:updates"]').click();
-  await win.locator('.scrim .dialog [role="switch"]', { hasText: 'Show in Inbox' }).click();
-  await win.locator('.scrim .dialog .buttons button', { hasText: 'Save' }).click();
-  await expect(settings().locator('[data-a="cat-edit:updates"] .cat-off')).toHaveCount(1);
+  for (const id of ['updates', 'promotions']) {
+    await settings().locator(`[data-a="cat-edit:${id}"]`).click();
+    await win.locator('.scrim .dialog [role="switch"]', { hasText: 'Show in Inbox' }).click();
+    await win.locator('.scrim .dialog .buttons button', { hasText: 'Save' }).click();
+    await expect(settings().locator(`[data-a="cat-edit:${id}"] .cat-off`)).toHaveCount(1);
+  }
   await closeSettings();
   await expect(win.locator('.list-title h1')).toHaveText('Inbox');
   // In front, where a toast stands in for the desktop notification. Those are recorded, should one come.
@@ -398,6 +405,19 @@ test('new mail in Inbox and in a category Inbox leaves out: the list shows the o
   await expect(win.locator('.nav-item.nav-sub.active')).toContainText('Updates');
   await expect(items().filter({ hasText: 'Your code is 123456' })).toHaveCount(1);
   await expect(items().filter({ hasText: 'Card used abroad' })).toHaveCount(1);
+
+  // One for Updates and one for Promotions, both kept out of Inbox: the toast counts them without naming either, and
+  // Show goes to Updates, the higher of the two in the sidebar.
+  await inboxRow().click();
+  await expect(win.locator('.list-title h1')).toHaveText('Inbox');
+  await arrive([
+    ['Shop <newsletter@shop.example>', 'Twenty percent off this weekend'],
+    ['App <noreply@app.example>', 'Your password was changed']
+  ]);
+  await expect(toastEl().locator('span')).toHaveText('2 new emails');
+  await toastEl().locator('button', { hasText: 'Show' }).click();
+  await expect(win.locator('.nav-item.nav-sub.active')).toContainText('Updates');
+  await expect(items().filter({ hasText: 'Your password was changed' })).toHaveCount(1);
   expect(await app.evaluate(() => global.__shown)).toEqual([]);
 });
 

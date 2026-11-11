@@ -3758,7 +3758,7 @@
       "one": "{count} new email in {category}",
       "other": "{count} new emails in {category}"
     },
-    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for several new emails in an inbox category that Inbox itself doesn't show (its Show in Inbox switch is off); its Show button opens that category. {count}: how many, at least 2. {category}: the category's name, such as Updates. src/renderer/app.js (newMailToast)"
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for several new emails that are all in one inbox category Inbox itself doesn't show (its Show in Inbox switch is off); its Show button opens that category. Emails spread over several categories get mailbox.newMail.count instead. {count}: how many, at least 2. {category}: the category's name, such as Updates. src/renderer/app.js (newMailToast)"
   },
   "mailbox.newMail.from": {
     "message": "New email from {sender}",

@@ -43,7 +43,7 @@ import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
-import { splitNewMail, addToToast, newMailTab } from './new-mail.js';
+import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -1948,6 +1948,8 @@ async function moveToCategory(list) {
   toast(t('mailbox.categories.moved', { name }), {
     action: {
       label: t('mailbox.categories.always'),
+      // Ctrl+Z after a move means undo, which this isn't.
+      shortcut: false,
       run: async () => {
         try {
           await api('categoriesMove', ids, id, { sender: true });
@@ -2882,23 +2884,15 @@ function newMailToast(mails) {
   const now = Date.now();
   const all = addToToast(now - newToast.at < NEW_TOAST_MS ? newToast.mails : [], mails);
   newToast = { mails: all, at: now };
-  const one = all.length === 1 ? all[0] : null;
-  // Several emails go to Inbox, or to their category when Inbox doesn't show it; the toast names that category.
-  const tab = one ? null : categoryOf(newMailTab(all, S.categories));
-  let message;
-  if (one) {
-    const sender = one.from || t('mailbox.message.unknownSender');
-    message = one.subject ? t('mailbox.newMail.fromSubject', { sender, subject: one.subject }) : t('mailbox.newMail.from', { sender });
-  } else {
-    message = tab ? t('mailbox.newMail.countIn', { count: all.length, category: tab.name }) : t('mailbox.newMail.count', { count: all.length });
-  }
+  // Several emails go to Inbox, or to their category when Inbox doesn't show it.
+  const { message, open, tab } = newMailToastFor(all, S.categories, t);
   if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000 });
   // Once its button was used, the next new mail gets a toast of its own.
   const run = () => {
     newToast = { mails: [], at: 0 };
-    return one ? openNotified(one.id) : showNotified(tab && tab.id);
+    return open ? openNotified(open) : showNotified(tab);
   };
-  toast(message, { wait: true, action: { label: t(one ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
+  toast(message, { wait: true, action: { label: t(open ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
 }
 
 // Settings > General's sound for new mail: the coo from rukoo.io, quietly. Main says when (newMailSound()).

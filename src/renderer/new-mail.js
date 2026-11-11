@@ -50,3 +50,20 @@ export function newMailTab(mails, categories) {
   }
   return tab;
 }
+
+// The toast for new mail elsewhere: { message, open, tab }. open: the id of the one email its Open shows; tab: for
+// several, where Show goes (newMailTab). It names that category only when all of the emails are in it, so a batch
+// spread over Updates and Promotions gets the plain count. t: the i18n function (i18n.js).
+export function newMailToastFor(mails, categories, t) {
+  if (mails.length === 1) {
+    const [m] = mails;
+    const sender = m.from || t('mailbox.message.unknownSender');
+    const message = m.subject ? t('mailbox.newMail.fromSubject', { sender, subject: m.subject }) : t('mailbox.newMail.from', { sender });
+    return { message, open: m.id, tab: null };
+  }
+  const tab = newMailTab(mails, categories);
+  const category = tab && mails.every((m) => m.category === tab) ? categories.categories.find((c) => c.id === tab) : null;
+  const count = mails.length;
+  const message = category ? t('mailbox.newMail.countIn', { count, category: category.name }) : t('mailbox.newMail.count', { count });
+  return { message, open: null, tab };
+}

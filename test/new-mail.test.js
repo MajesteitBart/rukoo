@@ -53,3 +53,33 @@ test("Show goes to the category tab that holds the emails when Inbox doesn't sho
   assert.equal(newMailTab([mail('a', 'updates'), mail('b', 'updates')], { ...categories, enabled: false }), null, 'categories off: Inbox shows all mail');
   assert.equal(newMailTab([mail('a', 'updates')], null), null);
 });
+
+test('the toast names a category only when all of its emails are in it', async () => {
+  const { newMailToastFor } = await load();
+  // The English wording, enough to read the result.
+  const words = {
+    'mailbox.newMail.count': (p) => `${p.count} new emails`,
+    'mailbox.newMail.countIn': (p) => `${p.count} new emails in ${p.category}`,
+    'mailbox.newMail.fromSubject': (p) => `New email from ${p.sender}: ${p.subject}`,
+    'mailbox.newMail.from': (p) => `New email from ${p.sender}`,
+    'mailbox.message.unknownSender': () => 'Unknown sender'
+  };
+  const t = (key, p) => words[key](p);
+  const categories = {
+    enabled: true,
+    categories: [
+      { id: 'needs-you', name: 'Needs you', inbox: true },
+      { id: 'updates', name: 'Updates', inbox: false },
+      { id: 'promotions', name: 'Promotions', inbox: false }
+    ]
+  };
+  assert.deepEqual(newMailToastFor([mail('a', 'updates'), mail('b', 'updates')], categories, t), { message: '2 new emails in Updates', open: null, tab: 'updates' });
+  // Inbox open, one email in hidden Updates and one in hidden Promotions: Show still goes to Updates, but the toast
+  // doesn't say both are there.
+  assert.deepEqual(newMailToastFor([mail('a', 'updates'), mail('b', 'promotions')], categories, t), { message: '2 new emails', open: null, tab: 'updates' });
+  assert.deepEqual(newMailToastFor([mail('a', 'updates'), mail('b', 'updates'), mail('c', 'needs-you')], categories, t), { message: '3 new emails', open: null, tab: 'updates' });
+  assert.deepEqual(newMailToastFor([mail('a', 'needs-you'), mail('b', null)], categories, t), { message: '2 new emails', open: null, tab: null });
+
+  assert.deepEqual(newMailToastFor([mail('a', 'updates')], categories, t), { message: 'New email from Sender a: Subject a', open: 'a', tab: null });
+  assert.equal(newMailToastFor([{ id: 'x', from: '', subject: '' }], null, t).message, 'New email from Unknown sender');
+});

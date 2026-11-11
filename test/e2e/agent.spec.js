@@ -1054,6 +1054,12 @@ test('Show on an approval toast opens that chat and leaves the unread answer in 
   await app.evaluate((_e, cid) => global.__semAgents.send(cid, { text: 'Add the proposal task; ask for approval first' }), c);
   const toast = win.locator('#toast');
   await expect(toast).toContainText('An agent is waiting for your approval', { timeout: 10000 });
+  // Ctrl+Z undoes things in the mail; it leaves the toast up and the chat closed.
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  await expect(toast).toHaveClass(/show/);
+  await expect(toast.locator('button')).toHaveText('Show');
+  await expect(pane()).toBeHidden();
   await toast.locator('button', { hasText: 'Show' }).click();
 
   // The panel opens on C, its approval card included; the email on screen stays.
