@@ -465,6 +465,48 @@ test('flags, delete to trash and permanent delete', async () => {
   await engine.close();
 });
 
+test('flags for many emails change the cache at once, hold through a sync, and a failure is put back', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = () => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread);
+  const list = unread();
+  assert.ok(list.length >= 3, 'the demo inbox has unread mail');
+  const ids = list.map((m) => m.id);
+  const session = engine.session(acc);
+  const setFlags = session.setFlags.bind(session);
+  // The server is slow with the first email, so the rest wait behind it.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const first = decodeId(ids[0]).uid;
+  session.setFlags = async (p, uid, patch) => {
+    if (uid === first) await held;
+    return setFlags(p, uid, patch);
+  };
+  let updates = 0;
+  engine.on('updated', () => updates++);
+  const marking = engine.setFlagsMany([...ids, 'saved:gone'], { unread: false });
+  assert.equal(unread().length, 0, 'the cache changed for all of them before the server answered');
+  assert.equal(updates, 1, 'the list redraws once');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread().length, 0, 'a sync in between keeps the change');
+  release();
+  assert.equal(await marking, ids.length, 'the saved email that is not in the cache is skipped');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread().length, 0, 'the server has them read');
+
+  // Undo marks the same emails unread again; one the server refuses goes back to read and the call fails.
+  const refused = decodeId(ids[1]).uid;
+  session.setFlags = async (p, uid, patch) => {
+    if (uid === refused) throw new Error('NO STORE failed');
+    return setFlags(p, uid, patch);
+  };
+  await assert.rejects(engine.setFlagsMany(ids, { unread: true }), /STORE failed/);
+  assert.deepEqual(
+    unread().map((m) => m.id).sort(),
+    ids.filter((id) => id !== ids[1]).sort()
+  );
+  await engine.close();
+});
+
 test('send to self lands in inbox and sent; drafts round trip', async () => {
   const { engine, acc } = await freshEngine();
   await engine.send({ accountId: acc.id, to: ['demo@example.com'], subject: 'Test message', html: '<p>Hello <b>world</b></p>' });

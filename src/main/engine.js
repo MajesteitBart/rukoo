@@ -1389,13 +1389,48 @@ class Engine extends EventEmitter {
     }
   }
 
-  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
-  async markAllRead(scope, view, folder, { category = null } = {}) {
-    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
-    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
-    for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
-    return list.length;
+  // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
+  // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
+  // Emails no longer in the cache are skipped. A failure puts that email back and throws once the rest are done.
+  async setFlagsMany(ids, flags) {
+    const patch = {};
+    for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
+    const found = [];
+    for (const id of new Set(ids)) {
+      try {
+        found.push({ id, ...this.locate(id) });
+      } catch (_) {
+        // Moved or deleted since the list showed it.
+      }
+    }
+    const accounts = new Set(found.map((f) => f.acc.id));
+    for (const f of found) {
+      Object.assign(f.msg, patch);
+      const key = this.pendingKey(f.acc.id, f.folder, f.uid);
+      this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+    }
+    for (const id of accounts) this.changed(id);
+    let failed = null;
+    for (const f of found) {
+      try {
+        await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+      } catch (err) {
+        failed = failed || err;
+        try {
+          const now = this.locate(f.id).msg;
+          for (const k of Object.keys(patch)) now[k] = !patch[k];
+        } catch (_) {
+          // The message left the cache in the meantime.
+        }
+      } finally {
+        this.pending.delete(this.pendingKey(f.acc.id, f.folder, f.uid));
+      }
+    }
+    if (failed) {
+      for (const id of accounts) this.changed(id);
+      throw new Error(friendlyError(failed));
+    }
+    return found.length;
   }
 
   removeFromCache(acc, folder, uid) {

@@ -1138,7 +1138,8 @@ function stackKey(m) {
 
 function stackLayout() {
   const list = rows();
-  const out = { heads: new Map(), hidden: new Set(), members: new Set() };
+  // heads: a stack's first row, by its id; headOf: the first row of the stack an email is folded into.
+  const out = { heads: new Map(), hidden: new Set(), members: new Set(), headOf: new Map() };
   const byDate = S.data.settings.sort === 'date-desc' || S.data.settings.sort === 'date-asc';
   if (!S.data.settings.stackSenders || !byDate || S.query.trim()) return out;
   for (let i = 0; i < list.length; ) {
@@ -1152,12 +1153,52 @@ function stackLayout() {
       // A selected message inside a stack keeps it open, so the selection never hides.
       const forced = rest.some((m) => m.id === S.selectedId || S.checked.has(m.id));
       const open = forced || S.openStacks.has(id);
-      out.heads.set(list[i].id, { id, count: rest.length + 1, open, forced });
-      for (const m of rest) (open ? out.members : out.hidden).add(m.id);
+      out.heads.set(list[i].id, { id, count: rest.length + 1, open, forced, ids: rest.map((m) => m.id) });
+      for (const m of rest) {
+        (open ? out.members : out.hidden).add(m.id);
+        out.headOf.set(m.id, list[i].id);
+      }
     }
     i = j;
   }
   return out;
+}
+
+// → opens the stack at the cursor and ← closes it, from its first row or from an email inside it, which then hands
+// the cursor to the first row. A row outside a stack leaves the arrows alone. They act in the list, or with nothing
+// focused, so they still scroll the open email and resize the dividers. A stack with checked emails inside stays open,
+// as it does on screen.
+function stackArrow(e) {
+  if (e.target !== document.body && !e.target.closest?.('.list-scroll')) return false;
+  const at = cursor();
+  const layout = stackLayout();
+  const headId = layout.heads.has(at) ? at : layout.headOf.get(at);
+  const stack = headId && layout.heads.get(headId);
+  if (!stack) return false;
+  if (e.key === 'ArrowRight') {
+    if (stack.open) return false;
+    S.openStacks.add(stack.id);
+    renderList();
+    return true;
+  }
+  if (!stack.open || stack.ids.some((id) => S.checked.has(id))) return false;
+  const fold = () => {
+    S.openStacks.delete(stack.id);
+    S.cursorId = headId;
+    renderList();
+    revealRow(headId);
+  };
+  // The open email keeps its stack open, so the first row opens in its place. With the editor in the reading pane
+  // that waits until the editor has let go.
+  if (stack.ids.includes(S.selectedId)) {
+    const opening = openMessage(headId);
+    if (S.selectedId !== headId) {
+      opening.then(() => S.selectedId === headId && fold());
+      return true;
+    }
+  }
+  fold();
+  return true;
 }
 
 // The rows on screen, in order: the list without the folded stack members.
@@ -1230,14 +1271,16 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
   const atCursor = (S.cursorId || S.selectedId) === m.id;
   const who = m.role === 'sent' || draft ? (m.to || [])[0] : m.from;
   const preview = cleanPreview(m.preview);
+  // A folded stack shows a pile and the count of the emails under it; the arrow keys open and close it (stackArrow).
+  const stackLabel = stack && (stack.open ? t('mailbox.message.collapse') : t('mailbox.message.stack', { count: stack.count - 1, sender: person(m.from) }));
   const stackBtn = stack
     ? stack.open
       ? stack.forced
         ? ''
-        : `<button class="stack-btn open" data-stack="${esc(stack.id)}" tabindex="-1" data-i18n-title="mailbox.message.collapse" title="${esc(t('mailbox.message.collapse'))}" aria-expanded="true">${icons.up}</button>`
-      : `<button class="stack-btn" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(t('mailbox.message.stack', { count: stack.count - 1, sender: person(m.from) }))}" aria-expanded="false">+${stack.count - 1}</button>`
+        : `<button class="stack-btn open" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(`${stackLabel} (←)`)}" aria-label="${esc(stackLabel)}" aria-expanded="true">${icons.up}</button>`
+      : `<button class="stack-btn" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(`${stackLabel} (→)`)}" aria-label="${esc(stackLabel)}" aria-expanded="false">${icons.stack}<span>+${stack.count - 1}</span></button>`
     : '';
-  return `<div class="item-wrap ${stacked ? 'stacked' : ''}" data-id="${esc(m.id)}">${swipe}
+  return `<div class="item-wrap ${stacked ? 'stacked' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}">${swipe}
     <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
       <span class="unread-dot" aria-hidden="true"></span>
       <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" tabindex="-1">${icons.check}</button></div>
@@ -1503,7 +1546,7 @@ function listAction(action, btn) {
     case 'list-more': {
       const compact = S.data.settings.density === 'compact';
       return showMenu(btn, [
-        { icon: 'mailOpen', get label() { return t('mailbox.actions.readAll'); }, action: markAllRead },
+        { icon: 'mailOpen', get label() { return t('mailbox.actions.readAll'); }, shortcut: keyLabel('readAll'), action: markAllRead },
         { icon: 'sync', get label() { return t('mailbox.actions.sync'); }, shortcut: keyLabel('sync'), action: syncNow },
         { separator: true },
         { get label() { return t('mailbox.actions.compact'); }, checked: compact, action: () => setDensity(compact ? 'standard' : 'compact') },
@@ -1522,10 +1565,15 @@ async function setDensity(density) {
   refresh();
 }
 
+// Marks what the list shows read: the folder, account or category tab, narrowed by a quick filter or a search, with
+// the emails folded into stacks. Undo, in the notice or with Ctrl+Z, marks the same emails unread again.
 async function markAllRead() {
-  // With inbox categories, Inbox and each category mark what they list, not the whole inbox (engine.markAllRead).
-  const n = await api('markAllRead', S.scope, S.view, S.folder, categoriesOn() && categoryOf(S.category) ? S.category : null);
-  toast(n ? t('mailbox.actions.readCount', { count: n }) : t('mailbox.actions.alreadyRead'));
+  const list = rows().filter((m) => m.unread && m.role !== 'saved');
+  if (!list.length) return toast(t('mailbox.actions.alreadyRead'));
+  const ids = list.map((m) => m.id);
+  const undo = () => setUnread(ids.map((id) => byId(id) || list.find((m) => m.id === id)), true);
+  toast(t('mailbox.actions.readCount', { count: list.length }), { action: { get label() { return t('common.actions.undo'); }, run: undo } });
+  await setUnread(list, false);
 }
 
 export async function syncNow() {
@@ -1680,22 +1728,25 @@ function bindDivider() {
 
 // ---------- actions ----------
 
+// One call for all of them: main changes its cache at once, so a sync or redraw halfway can't show some as they were.
 async function setUnread(list, unread) {
   list = list.filter((m) => m.role !== 'saved');
+  if (!list.length) return;
   for (const m of list) m.unread = unread;
   renderList();
-  for (const m of list) await api('setFlags', m.id, { unread }).catch((err) => toast(err.message));
+  await api('setFlagsMany', list.map((m) => m.id), { unread }).catch((err) => toast(err.message));
 }
 
 async function setStarred(list, starred) {
   list = list.filter((m) => m.role !== 'saved');
+  if (!list.length) return;
   for (const m of list) {
     m.starred = starred;
     if (S.message && S.message.id === m.id) S.message.starred = starred;
   }
   renderList();
   if (S.message && list.some((m) => m.id === S.message.id)) renderReader();
-  for (const m of list) await api('setFlags', m.id, { starred }).catch((err) => toast(err.message));
+  await api('setFlagsMany', list.map((m) => m.id), { starred }).catch((err) => toast(err.message));
 }
 
 // The shortcut that marks as read (or unread), or the scheme's toggle when it has one for both.
@@ -2695,6 +2746,11 @@ document.addEventListener('keydown', (e) => {
     if (runToastAction()) e.preventDefault();
     return;
   }
+  // Before Esc's own meaning: Shift+Esc marks the list read and leaves the selection and the editor as they are.
+  if (action === 'readAll') {
+    e.preventDefault();
+    return markAllRead();
+  }
   const list = targets();
   const m = S.composer ? null : S.message;
   if (e.key === 'Escape') {
@@ -2713,6 +2769,10 @@ document.addEventListener('keydown', (e) => {
     return compose({ mode: 'draft', id: m.id });
   }
   if (action && shortcutAction(action, list, m, e) !== false) {
+    e.preventDefault();
+    return;
+  }
+  if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !ctrl && !e.altKey && !e.shiftKey && stackArrow(e)) {
     e.preventDefault();
     return;
   }

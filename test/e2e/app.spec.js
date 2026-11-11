@@ -174,6 +174,58 @@ test('every email has its own row until stacks are turned on, and then unread ma
   await expect(win.locator('.stack-btn')).toHaveCount(0);
 });
 
+// #152: a stack says what it is, and the arrow keys open and close it.
+test('the arrow keys open and close a stack, also from an email inside it', async () => {
+  const head = item('Your sign-in details have been updated');
+  const member = win.locator('.list-scroll .item', { hasText: 'How to change your My Vandebron password' });
+  const last = win.locator('.list-scroll .item', { hasText: 'Failed sign-in attempt' });
+  // Without stacks, the arrows do nothing in the list.
+  await head.click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowLeft');
+  await win.keyboard.press('ArrowRight');
+  await expect(win.locator('.reader-subject')).toHaveText('Your sign-in details have been updated');
+  await expect(last).toBeVisible();
+
+  await win.evaluate(() => window.mail.call('updateSettings', { stackSenders: true }));
+  const chip = head.locator('.stack-btn');
+  await expect(chip).toHaveText('+2');
+  await expect(chip.locator('svg')).toHaveCount(1);
+  await expect(chip).toHaveAttribute('aria-label', 'Nog 2 e-mails van Vandebron No Reply');
+  await expect(chip).toHaveAttribute('title', 'Nog 2 e-mails van Vandebron No Reply (→)');
+  await expect(last).toHaveCount(0);
+  // The row keeps room for the edge of the pile under it.
+  await expect(win.locator('.item-wrap.folded')).toHaveCount(1);
+  await expect(win.locator('.item-wrap.folded')).toHaveCSS('padding-bottom', '4px');
+
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowRight');
+  await expect(last).toBeVisible();
+  await expect(win.locator('.item-wrap.folded')).toHaveCount(0);
+  await expect(chip).toHaveAttribute('aria-expanded', 'true');
+  await expect(chip).toHaveAttribute('title', 'Inklappen (←)');
+  await win.keyboard.press('ArrowLeft');
+  await expect(last).toHaveCount(0);
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+
+  // From an email inside, ← closes the stack and opens its first row.
+  await win.keyboard.press('ArrowRight');
+  await win.keyboard.press('ArrowDown');
+  await expect(win.locator('.reader-subject')).toHaveText('How to change your My Vandebron password');
+  await expect(member).toHaveClass(/selected/);
+  await win.keyboard.press('ArrowLeft');
+  await expect(member).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveText('Your sign-in details have been updated');
+  await expect(head).toHaveClass(/selected/);
+
+  // A row outside a stack leaves the arrows alone.
+  await item('Sign in to Bencompare').click();
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('ArrowRight');
+  await expect(last).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveText('Sign in to Bencompare');
+});
+
 test('related emails under the open email open the rest of the conversation', async () => {
   await item('Call on Thursday').click();
   const related = win.locator('.reader .related');
@@ -275,6 +327,82 @@ test('archive from the toolbar, undo with Ctrl+Z', async () => {
   await win.locator('.list-scroll').focus();
   await win.keyboard.press('Control+z');
   await expect(item('Bencompare')).toBeVisible();
+});
+
+// #211: Mark all as read covers what the list shows, has a shortcut and can be undone.
+test('Shift+Esc marks what the list shows read, with a filter or a search, and Undo brings it back', async () => {
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(inboxCount).toHaveText('7');
+  // The More menu and Settings show the shortcut.
+  await win.click('[data-action="list-more"]');
+  await expect(win.locator('.menu button', { hasText: 'Alles als gelezen markeren' }).locator('kbd')).toHaveText('Shift+Esc');
+  await win.keyboard.press('Escape');
+  await win.click('[data-action="settings"]');
+  const page = win.locator('.page.settings');
+  await page.locator('[data-a="keyboard"]').click();
+  await expect(page.locator('.row', { hasText: 'Alles als gelezen markeren' }).locator('kbd')).toHaveText('Shift+Esc');
+  while (await page.count()) await page.locator('[data-a="back"]').click();
+
+  // With the Starred filter on, only the starred unread email is marked.
+  await win.evaluate(async () => {
+    const list = await window.mail.call('list', { scope: 'all', view: 'inbox' });
+    await window.mail.call('setFlags', list.find((x) => x.subject === 'Call on Thursday').id, { starred: true });
+  });
+  await win.click('[data-filter="starred"]');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('1 e-mail als gelezen gemarkeerd');
+  await expect(item('Call on Thursday')).not.toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('6');
+  await win.click('#toast button:has-text("Ongedaan maken")');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('7');
+  await win.click('[data-filter="all"]');
+
+  // A search marks its results and leaves the rest of Inbox unread.
+  await win.fill('#search', 'Vandebron');
+  await expect(win.locator('.list-title h1')).toHaveText('Zoekresultaten');
+  const found = await win.locator('.list-scroll .item.unread').count();
+  expect(found).toBeGreaterThan(1);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText(`${found} e-mails als gelezen gemarkeerd`);
+  await expect(win.locator('.list-scroll .item.unread')).toHaveCount(0);
+  await expect(inboxCount).toHaveText(String(7 - found));
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toHaveText('Alles is al gelezen');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(item('You updated some of your Google Account details')).toHaveClass(/unread/);
+});
+
+test('with the Unread filter, Shift+Esc keeps the open email, Ctrl+Z undoes it, and an open editor stays', async () => {
+  await item('Call on Thursday').click();
+  await expect(item('Call on Thursday')).not.toHaveClass(/unread/);
+  await win.click('[data-filter="unread"]');
+  const rows = win.locator('.list-scroll .item');
+  await expect(rows).toHaveCount(7);
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 e-mails als gelezen gemarkeerd');
+  // The list empties except for the email on screen, which the Unread filter keeps (#146).
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('Call on Thursday');
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect(win.locator('.nav-item[data-view="inbox"] .count')).toHaveCount(0);
+  await win.keyboard.press('Control+z');
+  await expect(rows).toHaveCount(7);
+  await expect(win.locator('.nav-item[data-view="inbox"] .count')).toHaveText('6');
+
+  // Esc closes the editor; Shift+Esc doesn't.
+  await composer(() => win.keyboard.press('Control+r'));
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 e-mails als gelezen gemarkeerd');
+  await expect(rows).toHaveCount(1);
+  await expect(win.locator('.composer')).toHaveCount(1);
 });
 
 test('Ctrl+click selects several messages for one action', async () => {
