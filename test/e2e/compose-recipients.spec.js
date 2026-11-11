@@ -164,3 +164,45 @@ test('a recipient is taken on dragenter and moves by its address; files dragged 
   await win.evaluate(() => document.dispatchEvent(new DragEvent('dragend')));
   await expect(win.locator('.recipient.dragging')).toHaveCount(0);
 });
+
+// A chip drag in this window whose dragend never came leaves the composer thinking one of its chips is still on its way.
+// A chip from another compose window has the same type, and its drop here must not move that chip: the drop has to
+// bring back the drag's own token.
+test('a chip from another compose window moves no recipient here, even after a drag here that never ended', async () => {
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  for (const a of ['anna@test.invalid', 'joris@test.invalid']) await type(win, 'to', a);
+  await win.click('[data-c="cc"]');
+  await type(win, 'cc', 'sanne@test.invalid');
+  const [compose] = await Promise.all([app.waitForEvent('window'), win.click('[data-c="popout"]')]);
+  compose.on('dialog', () => {});
+  const errors = [];
+  compose.on('pageerror', (err) => errors.push(err.message));
+  await compose.waitForSelector('.compose .editor');
+  await expect(chips(compose, 'to')).toHaveText(['anna@test.invalid', 'joris@test.invalid']);
+  await expect(chips(compose, 'cc')).toHaveText(['sanne@test.invalid']);
+
+  const dropped = await compose.evaluate(() => {
+    const ev = (type, dataTransfer) => new DragEvent(type, { dataTransfer, bubbles: true, cancelable: true });
+    // anna's drag starts here and its end never arrives.
+    document.querySelector('[data-rfield="to"] .recipient').dispatchEvent(ev('dragstart', new DataTransfer()));
+    // A chip from another compose window, with that window's token.
+    const dt = new DataTransfer();
+    dt.setData('application/x-rukoo-recipient', 'another-compose-window');
+    const cc = document.querySelector('[data-rfield="cc"]');
+    cc.dispatchEvent(ev('dragenter', dt));
+    cc.dispatchEvent(ev('dragover', dt));
+    return !cc.dispatchEvent(ev('drop', dt));
+  });
+  // Taken, so nothing else in the window acts on it, but neither list changes.
+  expect(dropped).toBe(true);
+  await expect(chips(compose, 'to')).toHaveText(['anna@test.invalid', 'joris@test.invalid']);
+  await expect(chips(compose, 'cc')).toHaveText(['sanne@test.invalid']);
+  await expect(compose.locator('.drop-recipient, .recipient.dragging')).toHaveCount(0);
+
+  // The chips are still drawn from the composer's own lists, and a drag of its own still moves one.
+  await chips(compose, 'to').first().dragTo(compose.locator('[data-rfield="cc"]'));
+  await expect(chips(compose, 'cc')).toHaveText(['sanne@test.invalid', 'anna@test.invalid']);
+  await expect(chips(compose, 'to')).toHaveText(['joris@test.invalid']);
+  expect(errors).toEqual([]);
+});

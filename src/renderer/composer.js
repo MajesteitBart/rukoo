@@ -1023,8 +1023,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // only on those fields and links: let go over Send, the text or another control, the recipient stays where it was.
   const CHIP_TYPE = 'application/x-rukoo-recipient';
   const RECIPIENT_FIELDS = ['to', 'cc', 'bcc'];
-  // { from, address } while one of this composer's chips is dragged. The address rather than the chip's place in
-  // its list: an agent can write the recipients while the chip is on its way.
+  // { from, address, token } while one of this composer's chips is dragged. The address rather than the chip's place
+  // in its list: an agent can write the recipients while the chip is on its way. The token is the drag's CHIP_TYPE
+  // data, and a drop moves a recipient only when it brings that token back: a drag whose end never arrived leaves
+  // `dragged` set, and a chip from another compose window has the same type. Drag data can only be read on drop.
   let dragged = null;
   // Where a chip let go here goes: { to, mark } with the field and the element that shows it, or null.
   const dropField = (e) => {
@@ -1049,10 +1051,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const from = chip && !editor.contains(chip) ? chip.closest('.field[data-rfield]')?.dataset.rfield : null;
     const entry = RECIPIENT_FIELDS.includes(from) ? st[from][Number(chip.dataset.chip)] : null;
     if (!entry) return;
-    const drag = { from, address: entry.address };
+    const drag = { from, address: entry.address, token: crypto.randomUUID() };
     dragged = drag;
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData(CHIP_TYPE, entry.address);
+    e.dataTransfer.setData(CHIP_TYPE, drag.token);
     chip.classList.add('dragging');
     closeSuggest();
     afterDrag(() => dragged === drag && endChipDrag());
@@ -1079,9 +1081,12 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     if (!target) return;
     e.preventDefault();
     e.stopPropagation();
-    const { from, address } = dragged;
+    const { from, address, token } = dragged;
     const { to } = target;
+    // A chip from somewhere else: whatever drag `dragged` was left from is over, and no list changes.
+    const ours = e.dataTransfer.getData(CHIP_TYPE) === token;
     endChipDrag();
+    if (!ours) return;
     const index = st[from].findIndex((a) => sameAddress(a.address, address));
     if (to === from || index < 0) return;
     const [moved] = st[from].splice(index, 1);
