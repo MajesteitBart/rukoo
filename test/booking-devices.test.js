@@ -353,8 +353,37 @@ test("a session locked after ten wrong passwords keeps the booking page and the 
   assert.ok(srv.accounts.has('host@example.com'));
   assert.equal(desk.account.signedIn, true);
   assert.equal(desk.booking.status(), 'on');
+  // Turning the page off from this session waits for the lock as well, with the sign-in lock's message.
+  await assert.rejects(desk.booking.disable(), (err) => err.code === 'locked');
+  assert.equal(srv.pages.get('bart').bookings.size, 1);
+  assert.equal(desk.booking.status(), 'on');
 
   // After the lock, the same password deletes both.
+  srv.now = () => Date.now() + 16 * 60000;
+  await desk.account.deleteAccount(PASSWORD);
+  assert.equal(srv.accounts.has('host@example.com'), false);
+  assert.equal(srv.pages.get('bart').bookings.size, 0);
+});
+
+test('a locked session that checks the password with a sign-in, as Rukoo from 2.1.0 does, stops at the booking page', async (t) => {
+  // Without POST /v1/password/check this desktop takes the steps of the released ones: a sign-in of its own, the
+  // booking page, then the account. The sign-in leaves the session's lock alone and the server refuses the page.
+  const srv = await server(t, { passwordCheck: false });
+  const desk = await computer(t, srv);
+  await desk.booking.enable(ENABLE);
+  await srv.book({ handle: 'bart', type: '30min', start: slot(3, 10) });
+  for (let i = 0; i < 10; i++) await desk.account.newRecoveryKey('a mistyped password!!').catch(() => {});
+
+  srv.calls.length = 0;
+  await assert.rejects(desk.account.deleteAccount(PASSWORD), (err) => err.code === 'deleteFirst');
+  const routes = srv.calls.map((c) => c.route);
+  assert.ok(routes.indexOf('POST /v1/login') < routes.indexOf('DELETE /v1/booking'));
+  assert.equal(routes.includes('DELETE /v1/account'), false);
+  assert.equal(srv.pages.get('bart').enabled, true);
+  assert.equal(srv.pages.get('bart').bookings.size, 1);
+  assert.ok(srv.accounts.has('host@example.com'));
+  assert.equal(desk.account.signedIn, true);
+
   srv.now = () => Date.now() + 16 * 60000;
   await desk.account.deleteAccount(PASSWORD);
   assert.equal(srv.accounts.has('host@example.com'), false);

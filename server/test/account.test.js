@@ -411,19 +411,41 @@ describe('the lock after failed attempts', () => {
     expect((await login(person)).status).toBe(200);
   });
 
-  it("ends every session's lock with a sign-in that has the right password", async () => {
+  it("keeps a session's count when the account's owner signs in on another device", async () => {
+    // A stolen session guesses nine times; the owner signs in elsewhere meanwhile. The thief's next guess is the tenth.
+    const person = await signup();
+    for (let i = 0; i < 9; i++) expect((await recovery(person.token, key())).status).toBe(403);
+    expect((await login(person, 'Phone')).status).toBe(200);
+    expect((await wrongLogin(person)).status).toBe(401);
+    expect((await login(person, 'Tablet')).status).toBe(200);
+    const tenth = await recovery(person.token, key());
+    expect(tenth.status).toBe(429);
+    expect(tenth.body.error).toBe('locked');
+  });
+
+  it("keeps a session's lock when the account's owner signs in on another device", async () => {
     const person = await signup();
     const phone = (await login(person, 'Phone')).body.token;
     for (let i = 0; i < 10; i++) await recovery(person.token, key());
-    for (let i = 0; i < 10; i++) await recovery(phone, key());
     expect((await recovery(person.token, person.authKey)).status).toBe(429);
 
-    // A wrong sign-in leaves the sessions' locks alone; the right one proves the password and ends them.
-    expect((await wrongLogin(person)).status).toBe(401);
-    expect((await recovery(person.token, person.authKey)).status).toBe(429);
-    expect((await login(person)).status).toBe(200);
-    expect((await recovery(person.token, person.authKey)).status).toBe(204);
+    later(5 * MINUTE);
+    const tablet = await login(person, 'Tablet');
+    expect(tablet.status).toBe(200);
+    const after = await recovery(person.token, person.authKey);
+    expect(after.status).toBe(429);
+    expect(Number(after.headers.get('retry-after'))).toBeGreaterThan(9 * 60);
+    expect(Number(after.headers.get('retry-after'))).toBeLessThanOrEqual(10 * 60);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(
+      429
+    );
+    // The device that signed in, and the one that was signed in already, have their own counts.
     expect((await recovery(phone, person.authKey)).status).toBe(204);
+    expect((await recovery(tablet.body.token, person.authKey)).status).toBe(204);
+    expect(await tables(person.email)).toContain('account');
+
+    later(11 * MINUTE);
+    expect((await recovery(person.token, person.authKey)).status).toBe(204);
   });
 
   it('adds a count to the sessions of an account made before sessions had one', async () => {

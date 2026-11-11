@@ -284,6 +284,8 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
       return [200, ownerJson(acc, session, page)];
     },
     'DELETE /v1/booking': ({ acc, session }) => {
+      // A session whose password checks are locked deletes nothing (PROTOCOL.md, DELETE /v1/booking).
+      if ((session.lockedUntil || 0) > control.now()) return [429, { error: 'locked' }];
       const page = pageOf(acc);
       if (page && page !== 'lost') {
         // The booking device, or the one an earlier turn-off left unaware; never the session that turns it off now.
@@ -503,8 +505,6 @@ function startAccountServer({ signups = 'open', invites = [], limit = 1000, juri
     'POST /v1/login': ({ body }) => {
       const acc = accounts.get(body.email);
       if (!acc || acc.auth !== sha(body.authKey)) return [401, { error: 'unauthorized' }];
-      // The right password ends every session's lock as well.
-      for (const s of sessions.values()) if (s.email === acc.email) Object.assign(s, { failures: 0, failedAt: 0, lockedUntil: 0 });
       const tok = newSession(acc, body.device);
       return [200, { token: tok, wrappedKey: acc.wrappedKey, account: accountView(acc, tok) }];
     },
