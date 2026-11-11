@@ -3375,6 +3375,10 @@
     "message": "{hostname} is not a public address",
     "description": "errors > network. src/main/net.js (publicLookup)"
   },
+  "errors.search.refused": {
+    "message": "The mail server didn't run the search.",
+    "description": "errors > search. The IMAP server turned down the search of older mail than Rukoo keeps. Shown after the account's address under the search results. src/main/imap.js (searchUids)"
+  },
   "errors.send.identity": {
     "message": "You cannot send as {address} from this account.",
     "description": "errors > send. src/main/engine.js"
@@ -3775,6 +3779,48 @@
   "mailbox.move.title": {
     "message": "Move to",
     "description": "mailbox > move. src/renderer/app.js (pickFolder)"
+  },
+  "mailbox.older.available": {
+    "message": "{count} more on the server",
+    "description": "Message list, the row at the end of a folder: how many older emails are on the server and not in the list yet, beside the Load older emails button. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.failed": {
+    "message": "Couldn't search older mail on the server. {error}",
+    "description": "Message list, under search results: the search of older mail on the server failed. {error} names the account and the reason. A Retry button follows. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.found": {
+    "message": {
+      "one": "Found {count} older email on the server",
+      "other": "Found {count} older emails on the server"
+    },
+    "description": "Message list, under search results: how many of the results are older mail that the server search found, beyond the emails Rukoo keeps. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.load": {
+    "message": "Load older emails",
+    "description": "Message list, the row at the end of a folder: button that fetches the next batch of older emails from the server into the list. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.loadFailed": {
+    "message": "Couldn't load older emails. {error}",
+    "description": "Toast after Load older emails failed. {error} names the account and the reason. src/renderer/app.js (loadOlder)"
+  },
+  "mailbox.older.loading": {
+    "message": "Loading older emails…",
+    "description": "Message list, the row at the end of a folder: the accessible name of the Load older emails button while the server sends them; the button shows a spinner. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.more": {
+    "message": {
+      "one": "{count} more older email matches. Add a word to narrow the search.",
+      "other": "{count} more older emails match. Add a word to narrow the search."
+    },
+    "description": "Message list, under search results: the server found more older matches than it sent (the newest 50 per folder). {count} is how many more. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.none": {
+    "message": "No older mail on the server matches",
+    "description": "Message list, under search results: the search of older mail on the server found nothing beyond the emails Rukoo keeps. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.searching": {
+    "message": "Searching older mail on the server…",
+    "description": "Message list, under search results or in place of an empty result: Rukoo is searching the server for older mail than it keeps. src/renderer/app.js (olderHtml, listHtml)"
   },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",

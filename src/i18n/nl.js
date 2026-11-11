@@ -849,6 +849,7 @@
   "errors.message.savedMissing": "Opgeslagen e-mail niet gevonden.",
   "errors.message.serverMissing": "Bericht niet gevonden op de server.",
   "errors.network.privateHost": "{hostname} is geen openbaar adres",
+  "errors.search.refused": "De mailserver heeft de zoekopdracht niet uitgevoerd.",
   "errors.send.identity": "Je kunt niet verzenden als {address} vanaf dit account.",
   "errors.send.noRecipients": "Voeg minstens één ontvanger toe.",
   "errors.undo.expired": "Dit kan niet meer ongedaan worden gemaakt.",
@@ -974,6 +975,21 @@
   "mailbox.move.noArchive": "Er is geen archiefmap",
   "mailbox.move.one": "Verplaatst naar {folder}",
   "mailbox.move.title": "Verplaatsen naar",
+  "mailbox.older.available": "nog {count} op de server",
+  "mailbox.older.failed": "Rukoo kon oudere mail op de server niet doorzoeken. {error}",
+  "mailbox.older.found": {
+    "one": "{count} oudere e-mail gevonden op de server",
+    "other": "{count} oudere e-mails gevonden op de server"
+  },
+  "mailbox.older.load": "Oudere e-mails laden",
+  "mailbox.older.loadFailed": "Rukoo kon geen oudere e-mails laden. {error}",
+  "mailbox.older.loading": "Oudere e-mails laden…",
+  "mailbox.older.more": {
+    "one": "Nog {count} oudere e-mail komt overeen. Voeg een woord toe om gerichter te zoeken.",
+    "other": "Nog {count} oudere e-mails komen overeen. Voeg een woord toe om gerichter te zoeken."
+  },
+  "mailbox.older.none": "Geen oudere mail op de server gevonden",
+  "mailbox.older.searching": "Oudere mail op de server doorzoeken…",
   "mailbox.saved.save": "Opslaan in Opgeslagen e-mails",
   "mailbox.saved.saved": "Opgeslagen in Opgeslagen e-mails",
   "mailbox.search.account": "Dit account",

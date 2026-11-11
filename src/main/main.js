@@ -694,6 +694,11 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+// The list a call about older mail is for: scope, view, folder and search, as the renderer lists them.
+const olderOpts = (o) => {
+  const v = o && typeof o === 'object' ? o : {};
+  return { scope: accountText(v.scope, 200) || 'all', view: accountText(v.view, 50) || 'inbox', folder: accountText(v.folder, 2000) || null, query: accountText(v.query, 500) };
+};
 // The calendar calls' arguments, checked in calendar/ipc.js (which has its own tests).
 const {
   calendarRange,
@@ -713,6 +718,11 @@ const api = {
   state: () => ({ ...engine.state(), bookingUrl: booking ? booking.url() : null, bookingLocale: booking ? booking.locale() : null }),
   list: (opts) => engine.listMessages(opts),
   counts: (scope) => engine.counts(scope),
+  // Mail older than the cache keeps: what Load older and the server search can reach from the list on screen, Load
+  // older itself, and the server search under a search's results. opts as for list.
+  olderState: (opts) => engine.olderState(olderOpts(opts)),
+  loadOlder: (opts) => engine.loadOlder(olderOpts(opts)),
+  searchServer: (opts) => engine.searchServer(olderOpts(opts)),
   contacts: () => engine.contacts(),
   threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
   get: (id) => engine.getMessage(id),

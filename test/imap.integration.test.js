@@ -92,6 +92,75 @@ test('real IMAP/SMTP account: add, sync, preview, flags, send, append, delete', 
   await engine.close();
 });
 
+// #112, with a window of two messages instead of the inbox's 300: Load older, and the search of older mail on the server.
+test('real IMAP account: a search and Load older reach mail older than the window', { timeout: 180000 }, async (t) => {
+  const eth = await testAccount();
+  if (!eth) return t.skip('Ethereal not reachable');
+
+  const engine = new Engine({ dataDir: tempDir('sem-imap-'), limits: { inbox: 2, default: 2, batch: 2, extra: 10 } }).init();
+  try {
+    const acc = await engine.addAccount({ provider: 'other', email: eth.user, password: eth.pass, imap: eth.imap, smtp: eth.smtp });
+    await engine.syncAccount(acc.id);
+    const session = engine.session(engine.account(acc.id));
+    // A word no other mail has. The oldest message has it in its subject, the second in a Cc address.
+    const tag = `needle${Date.now().toString(36)}`;
+    for (let n = 1; n <= 5; n++) {
+      const raw = await ImapAccount.compose({
+        from: { name: 'Archive sender', address: 'archive@example.com' },
+        to: [{ name: '', address: eth.user }],
+        cc: n === 2 ? [{ name: '', address: `${tag}@example.com` }] : [],
+        subject: n === 1 ? `Old invoice ${tag}` : `Filler ${n}`,
+        text: `Message ${n}`
+      });
+      await session.append('INBOX', raw, []);
+    }
+    await engine.syncAccount(acc.id);
+    const inbox = { scope: acc.id, view: 'inbox' };
+    assert.deepEqual(engine.listMessages(inbox).map((m) => m.subject).sort(), ['Filler 4', 'Filler 5']);
+    assert.ok(engine.olderCount(inbox) >= 3);
+    assert.deepEqual(engine.listMessages({ ...inbox, query: tag }), [], 'the cache has neither');
+
+    // In the folder, the account and all accounts the server finds both, by subject and by Cc.
+    for (const opts of [{ view: 'inbox' }, { view: 'folder', folder: 'INBOX' }, { view: 'everything' }, { scope: 'all', view: 'everything' }]) {
+      const where = { scope: acc.id, ...opts };
+      assert.deepEqual(await engine.searchServer({ ...where, query: tag }), { more: 0, errors: [] }, JSON.stringify(opts));
+      const found = engine.listMessages({ ...where, query: tag }).map((m) => [m.subject, m.older]);
+      assert.deepEqual(found.sort(), [['Filler 2', true], [`Old invoice ${tag}`, true]], JSON.stringify(opts));
+    }
+
+    // The older message opens and takes a flag on the server.
+    const needle = engine.listMessages({ ...inbox, query: tag }).find((m) => m.subject.startsWith('Old invoice'));
+    assert.match((await engine.getMessage(needle.id)).text, /Message 1/);
+    await engine.setFlags(needle.id, { starred: true });
+    const flagged = await session.searchFolder('INBOX', tag, { criteria: { flagged: true } });
+    assert.deepEqual(flagged.messages.map((m) => m.subject), [`Old invoice ${tag}`]);
+
+    // Deleting it moves it to the trash, or removes it where there is none; a move there can be undone.
+    const removed = await engine.remove(needle.id, { force: true });
+    assert.ok(['trash', 'deleted'].includes(removed));
+    assert.ok(!engine.listMessages({ ...inbox, query: tag }).some((m) => m.id === needle.id));
+    t.diagnostic(`delete: ${removed}, undo: ${engine.canUndo(needle.id)}`);
+    if (removed === 'trash' && engine.canUndo(needle.id)) {
+      const back = await engine.undoMove(needle.id);
+      assert.ok(engine.listMessages(inbox).some((m) => m.id === back && !m.older), 'back in the inbox, in the window');
+    }
+
+    // Load older brings the next two of the inbox into the list: a window of four, of the four or five left.
+    await engine.syncAccount(acc.id);
+    assert.equal(engine.listMessages(inbox).length, 2);
+    const more = engine.olderCount(inbox);
+    await engine.loadOlder(inbox);
+    const after = engine.listMessages(inbox).map((m) => m.subject);
+    assert.equal(after.length, 4);
+    assert.ok(after.includes('Filler 3'), after.join(', '));
+    assert.equal(engine.olderCount(inbox), more - 2);
+    await engine.syncAccount(acc.id);
+    assert.equal(engine.listMessages(inbox).length, 4, 'a sync keeps the wider window');
+  } finally {
+    await engine.close();
+  }
+});
+
 // #99, with a window of two messages instead of the inbox's 300.
 test('real IMAP account: the unread mail below the synced window is counted on the server', { timeout: 120000 }, async (t) => {
   const eth = await testAccount();
