@@ -29,7 +29,9 @@ The sidebar has Inbox, VIPs, Starred, Drafts, Sent, Archive, Spam, Trash, Saved 
 
 Search sits in the title bar and covers the current folder, the current account or all accounts. Quick filters above the list show Unread, Starred and Attachments.
 
-The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked "+2" for two more. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
+The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked with a pile and "+2" for two more. `→` opens the group at the selected row and `←` closes it again, also from an email inside it. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
+
+Mark all as read, in the More options menu above the list or with `Shift+Esc`, marks what the list shows: the folder, account or category, narrowed by a quick filter or a search, with the emails in groups. The notice that follows can undo it, and so can `Ctrl+Z`. When the mail server refuses some of the emails, they stay unread and the notice says how many were marked; its undo then covers those. With the Unread filter on, the list empties except for the email you have open.
 
 The newest message opens when you start the app or switch folders. It stays unread until you open it yourself.
 
@@ -83,6 +85,8 @@ Rukoo's own keys in the main window:
 | `Shift+↑`, `Shift+↓` | Extend the selection |
 | `Ctrl+A` | Select all |
 | `Ctrl+Q`, `Ctrl+U` | Mark read, mark unread |
+| `Shift+Esc` | Mark all in the list read |
+| `→`, `←` | Open and close a group of mail from one sender |
 | `Ctrl+Shift+V` | Move |
 | `Delete` | Delete |
 | `Ctrl+Z` | Undo |

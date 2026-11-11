@@ -3433,7 +3433,7 @@
   },
   "mailbox.actions.readAll": {
     "message": "Mark all as read",
-    "description": "mailbox > actions. src/renderer/app.js (listAction)"
+    "description": "Message list: item in the list's More menu that marks every unread email the list shows read, with the folder or category, quick filter and search as they are. Shows its shortcut (Shift+Esc by default). src/renderer/app.js (listAction, markAllRead)"
   },
   "mailbox.actions.readCount": {
     "message": {
@@ -3445,6 +3445,10 @@
   "mailbox.actions.readShortcut": {
     "message": "Mark as read (Ctrl+Q)",
     "description": "mailbox > actions. src/renderer/app.js (renderListTools)"
+  },
+  "mailbox.actions.readSome": {
+    "message": "Marked {count} of {total} emails as read. {error}",
+    "description": "Message list: notice after Mark all as read when the mail server refused some of the emails, which stay unread. Its Undo button (and Ctrl+Z) marks the {count} emails that were marked unread again. {count}: emails marked read, {total}: unread emails the list showed, {error}: the server's first refusal, a full sentence. src/renderer/app.js (markAllRead)"
   },
   "mailbox.actions.star": {
     "message": "Star",
@@ -3705,7 +3709,7 @@
   },
   "mailbox.message.collapse": {
     "message": "Collapse",
-    "description": "mailbox > message. src/renderer/app.js (itemHtml)"
+    "description": "Message list: tooltip and accessible name of the button that folds an open stack of emails from one sender again. The tooltip adds the key that does it, (←). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.noRecipient": {
     "message": "(No recipient)",
@@ -3736,7 +3740,7 @@
       "one": "{count} more email from {sender}",
       "other": "{count} more emails from {sender}"
     },
-    "description": "mailbox > message. Message list: tooltip on the collapsed sender stack button."
+    "description": "Message list: tooltip and accessible name of the button on a folded stack of read emails from one sender, which shows a pile icon and +{count}. {count}: the emails folded under the first one; {sender}: the sender's name. The tooltip adds the key that opens the stack, (→). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.vip": {
     "message": "VIP",
@@ -5077,7 +5081,7 @@
     "description": "Settings > General: switch that folds a run of emails from one sender into one row of the message list, with a +N count. Off by default. src/renderer/settings.js (render)"
   },
   "settings.general.stackSendersHelp": {
-    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row.",
+    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row. Right arrow and Left arrow open and close a group.",
     "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
   },
   "settings.general.fit": {
@@ -8453,7 +8457,7 @@
     "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
   },
   "settings.keyboard.fixed": {
-    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears.",
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group.",
     "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.compose": {
@@ -8491,6 +8495,10 @@
   "settings.keyboard.actions.toggleRead": {
     "message": "Mark as read or unread",
     "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.readAll": {
+    "message": "Mark all as read",
+    "description": "Settings > Keyboard shortcuts: name of the action that marks every unread email the list shows read, in the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.star": {
     "message": "Star",
