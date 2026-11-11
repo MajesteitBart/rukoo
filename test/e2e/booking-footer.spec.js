@@ -188,6 +188,32 @@ test('Settings has the footer beside the signature, with a preview, its text and
   expect((await call('state')).accounts[0].bookingFooter).toBe(false);
 });
 
+test('the footer rows follow the booking page while Signatures or an account page stays open', async () => {
+  await call('updateSettings', { bookingFooter: true });
+  await win.click('[data-action="settings"]');
+  const page = win.locator('.page.settings');
+  await page.locator('[data-a="signatures"]').click();
+  const row = page.locator('[data-a="booking-footer"]');
+  await expect(row.locator('.desc')).toHaveText('Shows once your booking page is on.');
+  await expect(row.locator('.sig-preview')).toHaveCount(0);
+
+  // Turned on elsewhere, as an agent or another window would: the link shows without leaving the page.
+  await pageOn();
+  await expect(row.locator('.desc')).toHaveText('Every new message ends with a line and your booking link.');
+  await expect(row.locator('.sig-preview')).toHaveText(FOOTER_EN);
+  // The booking page's language is the footer's.
+  await call('bookingSave', { locale: 'nl' });
+  await expect(row.locator('.sig-preview')).toHaveText(FOOTER_NL);
+
+  // The account's page follows as well: turning the booking page off takes the link away.
+  await page.locator('[data-a="back"]').click();
+  await page.locator('.row:has-text("demo@example.com")').first().click();
+  const acc = page.locator('[data-a^="booking-acc-footer:"]');
+  await expect(acc.locator('.sig-preview')).toHaveText(FOOTER_NL);
+  await call('bookingDisable');
+  await expect(acc.locator('.sig-preview')).toHaveCount(0);
+});
+
 test('free times with the link use the default duration of a type guests can book at several lengths', async () => {
   await pageOn();
   const [type] = (await call('bookingState')).settings.types;
