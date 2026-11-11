@@ -673,6 +673,59 @@ test('typing instead of continuing starts a new chat about the email on screen',
   ]);
 });
 
+test('a late answer to the email lookup leaves the chat the user just started on screen', async () => {
+  // Main holds one of its answers to the panel's lookups for the email on screen until the test lets it go. The
+  // answer is worked out when asked, before the user's new chat exists, as on a slow main process.
+  await app.evaluate(() => {
+    const hub = global.__semAgents;
+    global.__lookup = { hold: null, held: [] };
+    for (const name of ['findFor', 'relatedFor']) {
+      const real = hub[name].bind(hub);
+      hub[name] = (ref) => {
+        const answer = real(ref);
+        if (global.__lookup.hold !== name) return answer;
+        return new Promise((resolve) => global.__lookup.held.push(() => resolve(answer)));
+      };
+    }
+  });
+  const hold = (name) => app.evaluate((_e, name) => (global.__lookup.hold = name), name);
+  const held = () => app.evaluate(() => global.__lookup.held.length);
+  // Answers what was held, then waits for the panel to have handled it: replies come in the order main sends them,
+  // and a chat the late answer opens takes one more round trip.
+  const release = async () => {
+    await app.evaluate(() => {
+      global.__lookup.hold = null;
+      for (const go of global.__lookup.held.splice(0)) go();
+    });
+    for (let i = 0; i < 2; i++) await win.evaluate(() => window.mail.invoke('agentList'));
+  };
+  const empty = win.locator('.agentpane .bui-rec__title');
+
+  // An email without a chat: the answer that there is no earlier chat to offer comes after the user sent.
+  await hold('relatedFor');
+  await openChat('Call on Thursday');
+  await expect.poll(held).toBe(1);
+  await say('Hello');
+  await expect(transcript().locator('.bui-ub')).toHaveText('Hello');
+  await release();
+  await expect(empty).toHaveCount(0);
+  await expect(transcript()).toContainText('You asked: "Hello"', { timeout: 10000 });
+
+  // An email with a chat: the older chat main found doesn't replace the new one.
+  await item('Your parcel is on its way').click();
+  await expect(empty).toBeVisible();
+  await hold('findFor');
+  await item('Call on Thursday').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await expect.poll(held).toBe(1);
+  await say('Again');
+  await expect(transcript().locator('.bui-ub')).toHaveText('Again');
+  await release();
+  await expect(transcript()).toContainText('You asked: "Again"', { timeout: 10000 });
+  await expect(transcript()).not.toContainText('Hello');
+  expect(await app.evaluate(() => global.__semAgents.list().map((c) => c.message.subject))).toEqual(['Call on Thursday', 'Call on Thursday']);
+});
+
 test('the panel docks in wide windows, slides over the reader in narrower ones and fills narrow ones', async () => {
   await openChat('Call on Thursday');
   // The title bar holds the only sparkle button; the reading pane toolbar has none.
@@ -1991,6 +2044,12 @@ test('nothing goes while a dropped file is still being added: Enter keeps the te
   // On its way: a chip at once, still busy, and Send off with the reason.
   await expect(pendingChips()).toHaveCount(1);
   await expect(pendingChips()).toHaveAttribute('aria-label', 'Adding notes.txt');
+  // Its name shimmers, and holds still with reduced motion.
+  const shimmer = () => pendingChips().locator('.bui-entity__name').evaluate((el) => ({ name: getComputedStyle(el).animationName, running: el.getAnimations().length }));
+  expect((await shimmer()).name).toBe('bui-shimmer-text');
+  await win.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await shimmer()).toEqual({ name: 'none', running: 0 });
+  await win.emulateMedia({ reducedMotion: null });
   const sendButton = win.locator('.agentpane .bui-pb__send');
   await expect(sendButton).toBeDisabled();
   await expect(sendButton).toHaveAttribute('title', 'Wait until the files are added, then send.');

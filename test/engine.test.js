@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { Engine, decodeId } = require('../src/main/engine');
+const { t } = require('../src/i18n');
 
 async function freshEngine() {
   const dir = tempDir('sem-test-');
@@ -362,6 +363,42 @@ test('a folder that fails to sync leaves the others current, and the account sho
   state = engine.state().accounts[0];
   assert.equal(state.error, null);
   assert.ok(state.lastSync >= before);
+  await engine.close();
+});
+
+test('a sync the user asked for fails with the text the account shows, for one account and for all', async () => {
+  const { engine, acc } = await freshEngine();
+  const s = engine.session(acc);
+  const syncFolder = s.syncFolder.bind(s);
+  s.syncFolder = async (folder, options) => {
+    if (folder === 'Sent') throw Object.assign(new Error('Command failed'), { responseText: 'Sent is temporarily unavailable' });
+    return syncFolder(folder, options);
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'Sent is temporarily unavailable' });
+  assert.equal(engine.state().accounts[0].error, 'Sent is temporarily unavailable');
+  await assert.rejects(engine.syncNow(), { message: `${acc.email}: Sent is temporarily unavailable` });
+  // An error friendlyError translates comes out translated.
+  s.syncFolder = async () => {
+    throw new Error('connect ETIMEDOUT 192.0.2.1:993');
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'The connection to the server timed out.' });
+  s.syncFolder = syncFolder;
+  assert.equal(await engine.syncNow(acc.id), undefined);
+  await engine.close();
+});
+
+test('a refused password at Gmail points to the app password in the sync toast and the sidebar', async () => {
+  const { engine, acc } = await freshEngine();
+  const s = engine.session(acc);
+  // The demo session stands in; the account looks like a Gmail account that signs in with a password.
+  Object.assign(engine.account(acc.id), { type: 'imap', provider: 'google', auth: 'password' });
+  s.listFolders = async () => {
+    throw Object.assign(new Error('Command failed'), { authenticationFailed: true, responseText: 'Invalid credentials (Failure)' });
+  };
+  const expected = t('errors.connection.googleAppPassword');
+  await assert.rejects(engine.syncNow(acc.id), { message: expected });
+  assert.equal(engine.state().accounts[0].error, expected);
+  await assert.rejects(engine.syncNow(), { message: `${acc.email}: ${expected}` });
   await engine.close();
 });
 
