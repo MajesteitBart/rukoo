@@ -19,8 +19,14 @@ const { normalizeZoom } = require('./zoom');
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
 const LIMITS = { inbox: 300, default: 100 };
-// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch().
+// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch(). A larger one
+// shows its text before its attachments when it is opened; see readableSource().
 const PREFETCH = { count: 30, maxBytes: 1024 * 1024 };
+// An empty picture without a size of its own, in place of an inline picture that is still on its way. The reader
+// sizes pictures by their own proportions (mailframe.js), so a transparent pixel would turn a 560 x 120 banner into a
+// square. This one keeps the box the picture's width and height give it, and takes no room without them. Encoded
+// without quotes or spaces, so it fits any attribute or url() the empty address stood in.
+const BLANK_IMAGE = 'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%220%22%20height=%220%22/%3E';
 const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk', archive: 'archive' };
 // Earlier versions put this signature under every mail by default; it is now opt-in.
 const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
@@ -1222,12 +1228,15 @@ class Engine extends EventEmitter {
   }
 
   // One download per message at a time. A message the user opens while it waits as background work is fetched
-  // again in the user's turn, rather than behind the rest of the prefetch.
+  // again in the user's turn, rather than behind the rest of the prefetch. What waits for the background download
+  // then has the message as soon as the user's download brings it.
   download(acc, box, folder, uid, file, background) {
     const running = this.downloads.get(file);
     if (running && (background || !running.background)) return running.raw;
     const entry = { background };
-    entry.raw = this.session(acc)
+    entry.raw = new Promise((resolve, reject) => (entry.settle = { resolve, reject }));
+    if (running) entry.raw.then(running.settle.resolve, () => {});
+    this.session(acc)
       .fetchSource(folder, uid, { background })
       .then((raw) => {
         // Not kept for an account removed in the meantime, or a folder whose uids were reassigned: their bodies
@@ -1247,9 +1256,43 @@ class Engine extends EventEmitter {
       })
       .finally(() => {
         if (this.downloads.get(file) === entry) this.downloads.delete(file);
-      });
+      })
+      .then(entry.settle.resolve, entry.settle.reject);
     this.downloads.set(file, entry);
     return entry.raw;
+  }
+
+  // Resolves once the whole message is on disk, so the next getMessage reads it from there: at once when it is, or
+  // when its download lands. That download is background work, or the user's with now (an attachment they opened).
+  // false when the message couldn't be kept.
+  async downloaded(id, { now = false } = {}) {
+    if (String(id).startsWith('saved:')) return true;
+    const { acc, box, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    if (!fs.existsSync(file)) await (now ? this.rawSource(id) : this.download(acc, box, folder, uid, file, true));
+    return fs.existsSync(file);
+  }
+
+  // A large message the user opens before it is downloaded: its text, invitation and inline pictures, with the
+  // attachments left empty (ImapAccount.fetchReadable), so the reader shows it without waiting for them. The whole
+  // message follows as background work; downloaded() says when it is in. null to read the whole message now: one that
+  // is saved, small, on disk or on its way in the user's turn, or whose account or server can't split it.
+  async readableSource(id) {
+    if (String(id).startsWith('saved:')) return null;
+    const { acc, box, msg, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    const session = this.session(acc);
+    const running = this.downloads.get(file);
+    if ((msg.size || 0) <= PREFETCH.maxBytes || typeof session.fetchReadable !== 'function' || (running && !running.background) || fs.existsSync(file)) return null;
+    let source = null;
+    try {
+      source = await session.fetchReadable(folder, uid);
+    } catch (_) {
+      // A server that doesn't give the parts: the whole message, as before.
+    }
+    if (!source) return null;
+    this.download(acc, box, folder, uid, file, true).catch(() => {});
+    return source;
   }
 
   // Downloads the newest inbox messages ahead of time, so opening one reads it from disk. The fetches run as
@@ -1292,21 +1335,33 @@ class Engine extends EventEmitter {
     }
   }
 
-  async getMessage(id) {
-    const raw = await this.rawSource(id);
-    const parsed = await simpleParser(raw);
+  // fast: for the reader, which can show a large message before its attachments are in (readableSource). The result
+  // then has partial set, attachment sizes from the server, and nothing in place of the inline pictures that didn't
+  // come with the text. Everything else gets the whole message.
+  async getMessage(id, { fast = false } = {}) {
+    const skeleton = fast ? await this.readableSource(id) : null;
+    const parsed = await simpleParser(skeleton || (await this.rawSource(id)));
+    // The size of an attachment the skeleton left empty.
+    const omitted = (a) => {
+      const v = skeleton && a.headers && typeof a.headers.get === 'function' ? a.headers.get(util.OMITTED.toLowerCase()) : null;
+      return v != null && /^\d+$/.test(String(v)) ? Number(v) : null;
+    };
     const base = String(id).startsWith('saved:')
       ? { ...this.saved.find((s) => s.id === id) }
       : (() => {
           const { acc, folder, msg } = this.locate(id);
           return this.publicMessage(acc, folder, msg);
         })();
-    const html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    let html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    // An inline picture the skeleton left empty is an empty data: address, which shows as a broken image. A blank one
+    // keeps its place until the whole message is in.
+    if (skeleton) html = html.replace(/data:image\/[\w.+-]+;base64,(?=["')\s>]|$)/gi, BLANK_IMAGE);
     // An invitation's calendar part in the body (calendar: true) shows as its card in the reader, not as an attachment;
     // agents still see it as one, as before. An .ics attachment stays a plain attachment.
     const part = invite.calendarPart(parsed.attachments);
     const body = new Set(part ? part.hidden : []);
     return {
+      ...(skeleton ? { partial: true } : {}),
       ...base,
       from: util.addressFromParsed(parsed.from)[0] || base.from,
       to: util.addressFromParsed(parsed.to),
@@ -1328,7 +1383,7 @@ class Engine extends EventEmitter {
           index,
           filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }),
           contentType: a.contentType,
-          size: a.size,
+          size: omitted(a) ?? a.size,
           related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid)),
           ...(body.has(index) ? { calendar: true } : {})
         }))

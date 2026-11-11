@@ -433,6 +433,172 @@ test('a message the user opens during its background download is fetched again i
   await engine.close();
 });
 
+// #56: a large message the user opens shows its text before its attachments are in.
+const MB = 1024 * 1024;
+async function largeMessage(engine, acc, subject = 'Quarterly report') {
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const raw = await new MailComposer({
+    from: 'Sanne <sanne@example.com>',
+    to: 'demo@example.com',
+    subject,
+    text: 'The report is attached.',
+    html: '<p>The report is attached.</p>',
+    attachments: [
+      { filename: 'report.pdf', content: Buffer.alloc(3 * MB, 7), contentType: 'application/pdf' },
+      { filename: 'chart.png', content: Buffer.alloc(300 * 1024, 2), contentType: 'image/png' }
+    ]
+  })
+    .compile()
+    .build();
+  await engine.session(engine.account(acc.id)).append('INBOX', raw);
+  await engine.syncAccount(acc.id);
+  await prefetched(engine, acc);
+  return engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === subject);
+}
+
+// Holds the session's background downloads until the test lets them go; the user's go through at once.
+function holdBackground(engine, acc) {
+  const session = engine.session(acc);
+  const real = session.fetchSource.bind(session);
+  const calls = [];
+  const held = [];
+  session.fetchSource = (p, u, opts = {}) => {
+    calls.push(opts.background ? 'background' : 'user');
+    if (!opts.background) return real(p, u, opts);
+    return new Promise((resolve, reject) => held.push(() => real(p, u, opts).then(resolve, reject)));
+  };
+  return { calls, held };
+}
+
+const listed = (m) => m.attachments.map((a) => [a.index, a.filename, a.contentType]);
+
+test('a large message opens with its text and attachment cards, and the whole message follows in the background', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await largeMessage(engine, acc);
+  const { box, folder, uid } = engine.locate(m.id);
+  const file = engine.bodyFile(acc, box, folder, uid);
+  assert.ok(!fs.existsSync(file), 'too large for the download ahead of time');
+  const { calls, held } = holdBackground(engine, acc);
+
+  const partial = await engine.getMessage(m.id, { fast: true });
+  assert.equal(partial.partial, true);
+  assert.match(partial.html, /The report is attached/);
+  assert.equal(partial.messageId, m.messageId);
+  assert.deepEqual(calls, ['background'], 'only the background download, nothing in the user turn');
+  assert.ok(!fs.existsSync(file));
+
+  // Opened again while the download waits: the text again, and still one download.
+  assert.equal((await engine.getMessage(m.id, { fast: true })).partial, true);
+  assert.equal(engine.downloads.size, 1);
+
+  const done = engine.downloaded(m.id);
+  held.forEach((go) => go());
+  assert.equal(await done, true);
+  assert.ok(fs.existsSync(file));
+  const whole = await engine.getMessage(m.id, { fast: true });
+  assert.equal(whole.partial, undefined, 'read from disk now');
+  assert.equal(whole.html, partial.html);
+  assert.deepEqual(listed(partial), listed(whole), 'the same attachments with the same index');
+  partial.attachments.forEach((a, i) => assert.ok(Math.abs(a.size - whole.attachments[i].size) < whole.attachments[i].size * 0.03, `${a.size} for ${whole.attachments[i].size}`));
+  assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+  assert.equal((await engine.attachment(m.id, whole.attachments[0].index)).content.length, 3 * MB);
+  assert.deepEqual(calls, ['background']);
+  await engine.close();
+});
+
+test('saving an attachment of a partly shown message gets it whole, and the reader need not wait for the background download', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await largeMessage(engine, acc);
+  const { calls, held } = holdBackground(engine, acc);
+  const partial = await engine.getMessage(m.id, { fast: true });
+  const pdf = partial.attachments.find((a) => a.filename === 'report.pdf');
+  const done = engine.downloaded(m.id);
+  // In the user's turn: the attachment is the whole one, and what waited for the background download has it now.
+  const a = await engine.attachment(m.id, pdf.index);
+  assert.equal(a.filename, 'report.pdf');
+  assert.equal(a.content.length, 3 * MB);
+  assert.equal(await done, true);
+  assert.deepEqual(calls, ['background', 'user']);
+  // Reply, forward, unsubscribe and the agent's tools read the message without fast: whole, from disk now.
+  const full = await engine.getMessage(m.id);
+  assert.equal(full.partial, undefined);
+  assert.deepEqual(listed(full), listed(partial));
+  held.forEach((go) => go());
+  await until(() => engine.downloads.size === 0);
+  await engine.close();
+});
+
+test('an inline picture over the budget waits for the whole message, with a blank in its place', async () => {
+  const { engine, acc } = await freshEngine();
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const raw = await new MailComposer({
+    from: 'sanne@example.com',
+    to: 'demo@example.com',
+    subject: 'Banner',
+    html: '<p>Our new banner:</p><img id="banner" src="cid:banner@example.com"><img id="logo" src="cid:logo@example.com">',
+    attachments: [
+      { filename: 'banner.png', content: Buffer.concat([png, Buffer.alloc(2200 * 1024)]), cid: 'banner@example.com' },
+      { filename: 'logo.png', content: png, cid: 'logo@example.com' },
+      { filename: 'report.pdf', content: Buffer.alloc(3 * MB, 7), contentType: 'application/pdf' }
+    ]
+  })
+    .compile()
+    .build();
+  await engine.session(engine.account(acc.id)).append('INBOX', raw);
+  await engine.syncAccount(acc.id);
+  await prefetched(engine, acc);
+  const m = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((x) => x.subject === 'Banner');
+  const partial = await engine.getMessage(m.id, { fast: true });
+  assert.equal(partial.partial, true);
+  assert.match(partial.html, /id="banner" src="data:image\/svg\+xml,/);
+  assert.match(partial.html, /id="logo" src="data:image\/png;base64,iVBOR/, 'a small picture comes with the text');
+  assert.deepEqual(partial.attachments.map((a) => a.filename), ['report.pdf']);
+  assert.equal(await engine.downloaded(m.id), true);
+  const whole = await engine.getMessage(m.id, { fast: true });
+  assert.match(whole.html, /id="banner" src="data:image\/png;base64,iVBOR/);
+  await engine.close();
+});
+
+test('the whole message comes at once when it is small, saved, on disk, or the split fails', async () => {
+  const { engine, acc } = await freshEngine();
+  await prefetched(engine, acc);
+  const session = engine.session(acc);
+  const asked = [];
+  const readable = session.fetchReadable.bind(session);
+  session.fetchReadable = (...args) => {
+    asked.push(args[1]);
+    return readable(...args);
+  };
+  // Small: downloaded ahead of time, or quick enough to fetch whole.
+  const small = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.hasAttachments);
+  assert.equal((await engine.getMessage(small.id, { fast: true })).partial, undefined);
+  const saved = await engine.saveToDevice(small.id);
+  assert.equal((await engine.getMessage(saved, { fast: true })).partial, undefined);
+  assert.equal(await engine.downloaded(saved), true);
+  assert.deepEqual(asked, []);
+
+  // Large, but without fast: what every caller other than the reader gets.
+  const large = await largeMessage(engine, acc);
+  assert.equal((await engine.getMessage(large.id)).partial, undefined);
+  assert.deepEqual(asked, []);
+  // On disk now, so fast reads it from there.
+  assert.equal((await engine.getMessage(large.id, { fast: true })).partial, undefined);
+
+  // A server that doesn't answer the parts, or an account that can't split: the whole message, as before.
+  const other = await largeMessage(engine, acc, 'Another report');
+  session.fetchReadable = async () => {
+    throw new Error('BAD Unknown section');
+  };
+  const whole = await engine.getMessage(other.id, { fast: true });
+  assert.equal(whole.partial, undefined);
+  assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+  const third = await largeMessage(engine, acc, 'A third report');
+  session.fetchReadable = undefined;
+  assert.equal((await engine.getMessage(third.id, { fast: true })).partial, undefined);
+  await engine.close();
+});
+
 test('bodies of messages that left the synced folders are removed', async () => {
   const { engine, acc, dir } = await freshEngine();
   await prefetched(engine, acc);
