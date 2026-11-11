@@ -19,6 +19,8 @@ use crate::record::Ev;
 
 #[cfg(windows)]
 pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 /// A captured frame: the platform's own picture, and what it says about it. `width` and `height`
 /// are even (an odd last column or row is cropped). `boot` is when it was composed, in interrupt
