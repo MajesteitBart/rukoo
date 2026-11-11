@@ -1,7 +1,7 @@
 //! Behaviour of the recorder binary beyond the two crash tests: finalize, resume numbering,
 //! pause and marks, the tap and the connections it holds, dictation stretches, control
-//! authentication, the file source, call-track padding, a slow device open, the length limit and
-//! refused starts. All with synthetic or file sources.
+//! authentication, the file source, call-track padding, a slow device open, slow disk syncs, the
+//! length limit and refused starts. All with synthetic or file sources.
 
 mod common;
 
@@ -774,7 +774,13 @@ fn segments_rotate_without_gaps() {
 #[test]
 fn a_new_default_device_moves_the_track() {
     let m = TempMeeting::new("default-change");
-    let mut child = m.record(&["mic=synthetic:tone:440,switch-at=1000"], &[]);
+    // Every sync takes 800 ms. Closing the old segment must not hold up the new device: its
+    // stream would drop the old one's queued audio for that long, and the new lines would come
+    // late.
+    let mut child = m.record(
+        &["mic=synthetic:tone:440,switch-at=1000"],
+        &["--test-sync-delay-ms", "800"],
+    );
     let (mut client, token) = m.connect(1);
     m.wait_for_heartbeat(4_500);
     command(&mut client, &token, json!({ "cmd": "stop" }));
@@ -786,19 +792,25 @@ fn a_new_default_device_moves_the_track() {
     assert_eq!(moved.len(), 1, "{moved:?}");
     assert_eq!(moved[0]["reason"], "default");
     assert_eq!(moved[0]["device"], "Synthetic 440 Hz tone 2");
-    // The default is polled every 2 s.
     let at = t(moved[0]);
-    assert!(
-        (1_000..=1_000 + 2_000 + SLACK_MS).contains(&at),
-        "moved at {at}"
-    );
     let opened = of_kind(&lines, "track");
     assert_eq!(opened.len(), 2);
     assert!(opened[1]["deviceId"].as_str().unwrap().ends_with("#2"));
     let segs = segments(&m, &lines, "mic");
     assert_eq!(segs.len(), 2, "{segs:?}");
-    assert!(segs[0].end() <= at);
+    // The default is polled every 2 s; the old device's audio ends at the poll.
+    let gone = segs[0].end();
+    assert!(
+        (1_000..=1_000 + 2_000 + SLACK_MS).contains(&gone),
+        "the old device ends at {gone}"
+    );
+    assert!(gone <= at, "the old device ends at {gone}, moved at {at}");
     assert!(segs[1].t >= at);
+    assert!(
+        segs[1].t - gone <= SLACK_MS,
+        "the old device ends at {gone}, the new one starts at {}",
+        segs[1].t
+    );
     for seg in &segs {
         assert_tone(&seg.pcm, 440.0, &format!("mic segment {}", seg.seq));
     }
@@ -830,11 +842,122 @@ fn idle_loopback_is_padded_only_while_healthy() {
     assert_eq!(call[1].t, back);
     assert!(call[1].end() + 20 >= stop);
     assert!(call.iter().all(|s| s.pcm.iter().all(|&v| v == 0)));
-    let heartbeat_while_lost = of_kind(&lines, "heartbeat")
-        .into_iter()
-        .find(|l| t(l) > lost + 100 && t(l) < back)
+    // By position, not by time: a heartbeat written between the failure and its handling has a
+    // later `t` than `device_lost` and still lists the segment.
+    let lost_at = lines
+        .iter()
+        .position(|l| l["kind"] == "device_lost")
+        .unwrap();
+    let back_at = lines.iter().position(|l| l["kind"] == "device").unwrap();
+    let heartbeat_while_lost = lines[lost_at..back_at]
+        .iter()
+        .find(|l| l["kind"] == "heartbeat")
         .unwrap();
     assert_eq!(heartbeat_while_lost["samples"], json!({}));
+}
+
+#[test]
+fn padding_catches_up_after_a_long_stall() {
+    let m = TempMeeting::new("pad-stall");
+    // Moving the microphone to the new default blocks the recorder thread for 1.5 s, longer than
+    // a call segment. The idle call track then trails the clock by more than a segment, and its
+    // padding must still continue each segment where the previous one ended. The first open
+    // takes 1.5 s too, so the switch comes after it.
+    let mut child = m.record(
+        &[
+            "mic=synthetic:tone:440,switch-at=2500,open-ms=1500",
+            "call=synthetic:idle",
+        ],
+        &["--segment-ms", "1000"],
+    );
+    let (mut client, token) = m.connect(1);
+    let moved = wait_until(WAIT_TIMEOUT, || {
+        of_kind(&m.lines_so_far(), "device").first().map(|l| t(l))
+    });
+    m.wait_for_heartbeat(moved + 2_000);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    let stop = t(lines.last().unwrap());
+    let call = segments(&m, &lines, "call");
+    assert!(call.len() >= 4, "{call:?}");
+    for pair in call.windows(2) {
+        assert_eq!(pair[0].pcm.len(), 16_000, "call {} isn't full", pair[0].seq);
+        assert_eq!(
+            pair[1].t,
+            pair[0].end(),
+            "call {} doesn't continue {}",
+            pair[1].seq,
+            pair[0].seq
+        );
+    }
+    assert!(call.last().unwrap().end() + 20 >= stop);
+    assert!(call.iter().all(|s| s.pcm.iter().all(|&v| v == 0)));
+}
+
+#[test]
+fn slow_syncs_at_the_start_are_not_recording_time() {
+    let m = TempMeeting::new("slow-start");
+    // The timeline and recorder.json are synced before the tracks open; at 400 ms a sync, those
+    // syncs used to count as recording time before the first segment of every track.
+    let mut child = m.record(
+        &["mic=synthetic:tone:440", "call=synthetic:idle"],
+        &["--test-sync-delay-ms", "400"],
+    );
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(1_500);
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    for opened in of_kind(&lines, "track") {
+        assert!(t(opened) <= SLACK_MS, "{opened}");
+    }
+    for track in ["mic", "call"] {
+        let first = &segments(&m, &lines, track)[0];
+        assert!(first.t <= SLACK_MS, "{track} starts at {}", first.t);
+    }
+}
+
+#[test]
+fn a_stop_during_a_slow_sync_ends_where_it_arrived() {
+    let m = TempMeeting::new("slow-stop");
+    let mut child = m.record(
+        &["mic=synthetic:tone:440", "call=synthetic:idle"],
+        &["--test-sync-delay-ms", "1000"],
+    );
+    let (mut client, token) = m.connect(1);
+    // The fifth heartbeat comes with the first periodic sync, three syncs of 1 s each here. The
+    // stop is sent while it runs.
+    let fifth = wait_until(WAIT_TIMEOUT, || {
+        of_kind(&m.lines_so_far(), "heartbeat").get(4).map(|l| t(l))
+    });
+    let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    let stop = lines.last().unwrap();
+    assert_eq!(stop["kind"], "stop");
+    assert_eq!(reply["t"], stop["t"]);
+    let stop = t(stop);
+    // The reply waits for the disk; the stop itself arrived right after the heartbeat.
+    assert!(
+        stop <= fifth + SLACK_MS,
+        "stopped at {stop}, the heartbeat before it at {fifth}"
+    );
+    for line in &lines {
+        assert!(t(line) <= stop, "{line} after the stop at {stop}");
+    }
+    // Every track reaches the stop: no tail of audio the timeline doesn't explain.
+    for track in ["mic", "call"] {
+        let end = segments(&m, &lines, track).last().unwrap().end();
+        assert!(
+            end + SLACK_MS >= stop,
+            "{track} ends at {end}, stop at {stop}"
+        );
+    }
 }
 
 #[test]

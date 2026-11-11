@@ -67,7 +67,13 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 - A reader ignores a last line without a newline, any line that doesn't parse, and kinds and fields it doesn't know. Before a recorder or `finalize` writes to a timeline, it cuts off a last line without a newline.
 - `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept, never by a step of the wall clock. Pauses don't stop the clock.
 - On Windows, `session` and `heartbeat` lines also carry `boot`: the Windows interrupt time read right after `t`, in 100 ns units. It counts sleep and comes from the same counter as the recorder's monotonic clock, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs.
-- Lines appear in the order they were written, which is close to the order of `t` but not exactly: `segment_end` carries the end computed from the samples, a padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`, and `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
+- Lines appear in the order they were written, which is close to the order of `t` but not exactly, so readers take the order of events from `t`, never from the order of the lines. A line can have a lower `t` than a line written before it:
+  - `segment_end` carries the end computed from the samples.
+  - A padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`.
+  - A `segment` that continues a full one starts where that one ended, which can be before a `heartbeat` written ahead of it.
+  - `device_lost` carries the moment the device reported the failure, which can be before a `heartbeat` that still lists the track's segment.
+  - `mark` and `dictation` carry the moment their request arrived, or the moment the recorder ended a dictation itself.
+- `stop` carries the moment the stop command arrived, or the moment the recorder stopped by itself, but never a `t` lower than a line before it, so it is last by `t` too.
 
 | `kind` | Fields | When |
 |---|---|---|
@@ -127,7 +133,7 @@ rukoo-voice-recorder devices
 
 The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default) and `,open-ms=<ms>` (every open takes this long on the recorder's thread, as a Bluetooth headset switching profile can). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
 
-Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--segment-ms <ms>` the 30 s segment length.
+Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, and `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes.
 
 | Exit code | Meaning |
 |---|---|
@@ -145,7 +151,7 @@ Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--
 - A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed.
 - A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
-- On stop it pads healthy loopback tracks up to that moment, closes every segment, writes `stop`, removes `recorder.json` and only then replies.
+- On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, writes `stop`, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
 - On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
 
 ### `recorder.json`
@@ -154,7 +160,7 @@ Two options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit and `--
 { "pid": 14152, "port": 51544, "token": "q7hR0lJ3x2b8Yc5vN1mK4sT9wE6uA0dF3gH2jL5pZ8o", "session": 1, "startedAt": 1793384408939 }
 ```
 
-The recorder writes it after the `session` line, to a temporary name that it renames into place. `token` is 32 random bytes as base64url, made fresh for every session. A recorder is live only when it answers `status` on that port with that token; the file alone, or a running `pid`, proves nothing.
+The recorder writes it to a temporary name and syncs it before the session starts, so the disk's time doesn't count as recording time, and renames it into place after the `session` line. `token` is 32 random bytes as base64url, made fresh for every session. A recorder is live only when it answers `status` on that port with that token; the file alone, or a running `pid`, proves nothing.
 
 ### `finalize`
 
