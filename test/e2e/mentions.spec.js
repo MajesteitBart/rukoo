@@ -386,3 +386,31 @@ for (const surface of ['inline', 'window']) {
     await expect(chips(page, 'bcc')).toHaveText(['Sanne de Vries']);
   });
 }
+
+// WCAG's contrast ratio between two computed colors, such as 'rgb(37, 38, 45)'.
+function contrast(a, b) {
+  const luminance = (color) => {
+    const [r, g, bl] = color
+      .match(/\d+(\.\d+)?/g)
+      .slice(0, 3)
+      .map((v) => Number(v) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// The row Enter picks has the selected-row grey. The hover grey it had is darker than the list in the dark theme,
+// 1.02 to 1, so nothing showed which recipient Enter would add.
+test('the recipient suggestion Enter picks stands out from the list in the dark theme', async () => {
+  await launch();
+  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
+  await expect(win.locator('html')).not.toHaveClass(/light/);
+  await newMessage();
+  await win.fill('[data-rinput="to"]', 'joris');
+  const active = win.locator('[data-rfield="to"] .suggest button.active');
+  await expect(active).toContainText('joris@example.com');
+  const [row, list] = await active.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el.parentElement).backgroundColor]);
+  expect(contrast(row, list)).toBeGreaterThanOrEqual(1.1);
+});

@@ -3471,9 +3471,11 @@ body.compose-window {
   padding: 6px 10px;
   border-radius: 6px;
 }
+/* The keyboard's row, which Enter picks: the selected-row grey, as in the @-mention list. The dark --hover is
+   darker than --raised, so it doesn't show on this surface. */
 .suggest button.active,
 .suggest button:hover {
-  background: var(--hover);
+  background: var(--sel);
 }
 .suggest .addr {
   color: var(--text-3);
