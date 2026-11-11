@@ -528,8 +528,8 @@ test('saving an attachment of a partly shown message gets it whole, and the read
   await engine.close();
 });
 
-test('an inline picture over the budget waits for the whole message, with a blank in its place', async () => {
-  const { engine, acc } = await freshEngine();
+// A large message with a banner over the inline-picture budget, a small logo and a report.
+async function bannerMessage(engine, acc) {
   const MailComposer = require('nodemailer/lib/mail-composer');
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
   const raw = await new MailComposer({
@@ -548,7 +548,12 @@ test('an inline picture over the budget waits for the whole message, with a blan
   await engine.session(engine.account(acc.id)).append('INBOX', raw);
   await engine.syncAccount(acc.id);
   await prefetched(engine, acc);
-  const m = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((x) => x.subject === 'Banner');
+  return engine.listMessages({ scope: acc.id, view: 'inbox' }).find((x) => x.subject === 'Banner');
+}
+
+test('an inline picture over the budget waits for the whole message, with a blank in its place', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await bannerMessage(engine, acc);
   const partial = await engine.getMessage(m.id, { fast: true });
   assert.equal(partial.partial, true);
   assert.match(partial.html, /id="banner" src="data:image\/svg\+xml,/);
@@ -557,6 +562,48 @@ test('an inline picture over the budget waits for the whole message, with a blan
   assert.equal(await engine.downloaded(m.id), true);
   const whole = await engine.getMessage(m.id, { fast: true });
   assert.match(whole.html, /id="banner" src="data:image\/png;base64,iVBOR/);
+  await engine.close();
+});
+
+// The reader reads a partly shown message again once downloaded() says it is in (app.js completeMessage). A message
+// that came in but couldn't be kept is only whole without fast.
+test('a large message that comes in but cannot be kept on disk is still read whole without fast', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await bannerMessage(engine, acc);
+  const { box, folder, uid } = engine.locate(m.id);
+  const file = engine.bodyFile(acc, box, folder, uid);
+  const { calls, held } = holdBackground(engine, acc);
+  // A full disk: no body can be written.
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (f, ...rest) => {
+    if (String(f).startsWith(path.dirname(file))) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    return write.call(fs, f, ...rest);
+  };
+  try {
+    const partial = await engine.getMessage(m.id, { fast: true });
+    assert.equal(partial.partial, true);
+    const done = engine.downloaded(m.id);
+    await Promise.all(held.splice(0).map((go) => go()));
+    assert.equal(await done, false, 'it came in, but is not on disk');
+    assert.ok(!fs.existsSync(file));
+    // With fast, the text alone again.
+    const again = await engine.getMessage(m.id, { fast: true });
+    assert.equal(again.partial, true);
+    assert.match(again.html, /id="banner" src="data:image\/svg\+xml,/);
+    // Without: whole, from the server once more, with the banner and the report's exact size.
+    const whole = await engine.getMessage(m.id);
+    assert.equal(whole.partial, undefined);
+    assert.match(whole.html, /id="banner" src="data:image\/png;base64,iVBOR/);
+    assert.deepEqual(listed(whole), listed(partial));
+    assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+    assert.deepEqual(calls, ['background', 'background', 'user']);
+    await Promise.all(held.splice(0).map((go) => go()));
+    await until(() => engine.downloads.size === 0);
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    fs.writeFileSync = write;
+  }
+  assert.ok(!fs.existsSync(file));
   await engine.close();
 });
 

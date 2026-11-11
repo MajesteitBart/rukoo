@@ -1264,7 +1264,8 @@ class Engine extends EventEmitter {
 
   // Resolves once the whole message is on disk, so the next getMessage reads it from there: at once when it is, or
   // when its download lands. That download is background work, or the user's with now (an attachment they opened).
-  // false when the message couldn't be kept.
+  // false when it came in but couldn't be kept, on a full disk for example: getMessage without fast then reads it whole
+  // from the server again, and with fast still gives the text alone.
   async downloaded(id, { now = false } = {}) {
     if (String(id).startsWith('saved:')) return true;
     const { acc, box, folder, uid } = this.locate(id);

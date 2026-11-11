@@ -366,6 +366,33 @@ test('a partly shown message whose background download failed completes once an 
   expect((await fetches()).filter((kind) => kind === 'user')).toHaveLength(1);
 });
 
+// A full disk: the main process can't write a message to the profile.
+const fullDisk = () =>
+  app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const { sep } = process.mainModule.require('path');
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (String(file).includes(`${sep}bodies${sep}`)) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return write.call(fs, file, ...rest);
+    };
+  });
+
+test('a partly shown message that comes in but cannot be kept still completes', async () => {
+  await largeMessage();
+  await fullDisk();
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await release('background');
+  // The whole message came in once but isn't on disk: the reader reads it whole again in the user's turn, and the
+  // thumbnail does the same, as for any message that can't be kept.
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await expect(mailFrame().locator('#intro')).toHaveText('The quarterly report is attached.');
+  expect(await fetches()).toEqual(['background', 'user', 'user']);
+});
+
 test('star toggles and shows up under Sterren', async () => {
   await item('Bencompare').hover();
   await item('Bencompare').locator('[data-star]').click();

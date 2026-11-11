@@ -2190,11 +2190,15 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
 
 // A large message shows its text before its attachments are in (engine.js readableSource). Once the whole message is
 // on disk it is read again: the attachments get their exact sizes and thumbnails, and inline pictures that didn't come
-// with the text appear. The email itself only redraws when it changed, and keeps its scroll position then.
-async function completeMessage(id) {
+// with the text appear. One that came in but couldn't be kept, on a full disk, is read whole once more in the user's
+// turn, as the reader reads any message it can't keep. kept is what downloaded said, when the caller already asked.
+// The email itself only redraws when it changed, and keeps its scroll position then.
+async function completeMessage(id, kept) {
   const still = () => S.selectedId === id && S.message && S.message.id === id && S.message.partial;
-  if (!(await api('downloaded', id).catch(() => false)) || !still()) return;
-  const full = await api('get', id, { fast: true }).catch(() => null);
+  // null when the download failed: the reader stays as it is until an attachment is opened (wholeMessage).
+  if (kept === undefined) kept = await api('downloaded', id).catch(() => null);
+  if (kept == null || !still()) return;
+  const full = await (kept ? api('get', id, { fast: true }) : api('get', id)).catch(() => null);
   if (!full || full.partial || !still()) return;
   const before = S.message;
   // With the flags the reader shows, which a star or read change on its way may set ahead of main.
@@ -2242,7 +2246,7 @@ async function wholeMessage(m, key) {
     clearTimeout(timer);
     if (fetchingAtts.has(`${m.id}|${key}`)) attachmentSpinner(m.id, key, false);
   }
-  if (kept && S.message && S.message.id === m.id && S.message.partial) completeMessage(m.id);
+  if (S.message && S.message.id === m.id && S.message.partial) completeMessage(m.id, kept);
 }
 
 export function closeReader() {
