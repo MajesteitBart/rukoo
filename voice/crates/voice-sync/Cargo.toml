@@ -25,6 +25,10 @@ ureq = "=3.5.0"
 url = "2"
 zeroize = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The login keychain's generic passwords (protect/keychain.rs).
+security-framework = "=3.7.0"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
   "Win32_Foundation",
