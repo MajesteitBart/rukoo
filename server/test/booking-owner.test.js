@@ -7,6 +7,7 @@ import {
   call,
   key as randomKey,
   login,
+  sealed,
   signup
 } from './helpers.js';
 import { DAY, HOUR, bookingStub, host, hostKey, hours, meetingType, newHandle, page, publish, slotAhead } from './booking-helpers.js';
@@ -492,6 +493,41 @@ describe('deleting the account', () => {
     expect((await call('DELETE', '/v1/account', { token: alice.token, body: { authKey: alice.authKey } })).status).toBe(204);
     const again = await signup({ email: alice.email });
     expect((await publish(again, page(handle, await hostKey()))).body.error).toBe('handle_reserved');
+  });
+
+  // Ten wrong passwords for a new recovery key: the session's own password checks are locked for 15 minutes.
+  async function lockSession(person) {
+    for (let i = 0; i < 10; i++) {
+      await call('POST', '/v1/recovery', {
+        token: person.token,
+        body: { authKey: randomKey(), recoveryAuth: randomKey(), recoveryWrappedKey: sealed() }
+      });
+    }
+  }
+
+  it("refuses a locked session's password check before the device deletes the page, as the deletion would", async () => {
+    const { person, handle } = await host(signup);
+    await bookDirect(handle, tenAm(4));
+    await lockSession(person);
+    const checked = await call('POST', '/v1/password/check', { token: person.token, body: { authKey: person.authKey } });
+    expect(checked.status).toBe(429);
+    // The device stops there: the page keeps its booking, and the deletion would have been refused the same way.
+    expect((await call('GET', '/v1/booking/bookings', { token: person.token })).body.bookings).toHaveLength(1);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(429);
+  });
+
+  it('deletes the account after a sign-in of its own checked the password, also on a session that locked its checks', async () => {
+    // Rukoo for desktop from 2.1.0 checks the password with a sign-in, deletes the page and then the account. The
+    // sign-in ends the session's lock, so the account doesn't outlive its deleted page.
+    const { person, handle } = await host(signup);
+    await bookDirect(handle, tenAm(4));
+    await lockSession(person);
+    const signedIn = await login(person, 'Same desktop');
+    expect(signedIn.status).toBe(200);
+    expect((await call('POST', '/v1/logout', { token: signedIn.body.token })).status).toBe(204);
+    expect((await call('DELETE', '/v1/booking', { token: person.token })).status).toBe(204);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(204);
+    expect(await tables(await accountStub(person.email))).toEqual([]);
   });
 });
 

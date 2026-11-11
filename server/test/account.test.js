@@ -47,6 +47,11 @@ function recovery(token, authKey) {
   return call('POST', '/v1/recovery', { token, body: { authKey, recoveryAuth: key(), recoveryWrappedKey: sealed() } });
 }
 
+// The signed-in call that only checks the password, which a device sends before it deletes the booking page.
+function check(token, authKey) {
+  return call('POST', '/v1/password/check', { token, body: { authKey } });
+}
+
 // Moves the clock forward for the Worker and its objects, which run in the same isolate as the tests.
 function later(ms) {
   vi.setSystemTime(Date.now() + ms);
@@ -342,6 +347,7 @@ describe('the lock after failed attempts', () => {
 
     // A device that is signed in checks the password as usual: a wrong one is 403, the right one goes through.
     expect((await recovery(person.token, key())).status).toBe(403);
+    expect((await check(person.token, person.authKey)).status).toBe(204);
     const next = { recoveryAuth: key(), recoveryWrappedKey: sealed() };
     const replaced = await call('POST', '/v1/recovery', { token: person.token, body: { authKey: person.authKey, ...next } });
     expect(replaced.status).toBe(204);
@@ -375,11 +381,9 @@ describe('the lock after failed attempts', () => {
     expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(
       429
     );
-    // Nothing else is locked: the session works for calls without the password, and other devices and sign-ins
-    // aren't affected.
+    // Nothing else is locked: the session works for calls without the password, and other devices aren't affected.
     expect((await call('GET', '/v1/account', { token: person.token })).status).toBe(200);
     expect((await recovery(phone, person.authKey)).status).toBe(204);
-    expect((await login(person)).status).toBe(200);
 
     later(14 * MINUTE);
     const stillLocked = await recovery(person.token, person.authKey);
@@ -407,6 +411,21 @@ describe('the lock after failed attempts', () => {
     expect((await login(person)).status).toBe(200);
   });
 
+  it("ends every session's lock with a sign-in that has the right password", async () => {
+    const person = await signup();
+    const phone = (await login(person, 'Phone')).body.token;
+    for (let i = 0; i < 10; i++) await recovery(person.token, key());
+    for (let i = 0; i < 10; i++) await recovery(phone, key());
+    expect((await recovery(person.token, person.authKey)).status).toBe(429);
+
+    // A wrong sign-in leaves the sessions' locks alone; the right one proves the password and ends them.
+    expect((await wrongLogin(person)).status).toBe(401);
+    expect((await recovery(person.token, person.authKey)).status).toBe(429);
+    expect((await login(person)).status).toBe(200);
+    expect((await recovery(person.token, person.authKey)).status).toBe(204);
+    expect((await recovery(phone, person.authKey)).status).toBe(204);
+  });
+
   it('adds a count to the sessions of an account made before sessions had one', async () => {
     const person = await signup();
     // The sessions table as servers before this one made it.
@@ -425,6 +444,67 @@ describe('the lock after failed attempts', () => {
     for (let i = 0; i < 9; i++) expect((await recovery(person.token, key())).status).toBe(403);
     expect((await recovery(person.token, key())).status).toBe(429);
     expect((await call('GET', '/v1/account', { token: person.token })).status).toBe(200);
+  });
+});
+
+describe('checking the password on a session', () => {
+  // Everything about the account that a check must leave alone, with the bytes made comparable.
+  async function snapshot(email) {
+    return runInDurableObject(await accountStub(email), (instance, state) => {
+      const plain = (row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([name, value]) => [name, value instanceof ArrayBuffer ? toBase64url(new Uint8Array(value)) : value])
+        );
+      return {
+        account: plain(state.storage.sql.exec('SELECT * FROM account').one()),
+        sessions: state.storage.sql.exec('SELECT * FROM sessions ORDER BY id').toArray().map(plain)
+      };
+    });
+  }
+
+  it('answers 204 for the right password and changes nothing', async () => {
+    const person = await signup();
+    const before = await snapshot(person.email);
+    const res = await check(person.token, person.authKey);
+    expect(res.status).toBe(204);
+    expect(res.text).toBe('');
+    expect(await snapshot(person.email)).toEqual(before);
+  });
+
+  it('counts a wrong password toward the same lock as deleting the account', async () => {
+    const person = await signup();
+    const wrong = await check(person.token, key());
+    expect(wrong.status).toBe(403);
+    expect(wrong.body.error).toBe('wrong_password');
+    // Eight more on other password calls, and the tenth on the check locks the session.
+    for (let i = 0; i < 8; i++) expect((await recovery(person.token, key())).status).toBe(403);
+    const tenth = await check(person.token, key());
+    expect(tenth.status).toBe(429);
+    expect(tenth.body.error).toBe('locked');
+
+    // Ten wrong passwords for new recovery keys lock the check the same way. The check and the deletion refuse the
+    // right password alike, so a device that stops at the check deletes nothing.
+    const other = await signup();
+    for (let i = 0; i < 10; i++) await recovery(other.token, key());
+    const refused = await check(other.token, other.authKey);
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get('retry-after'))).toBe(15 * 60);
+    expect((await call('DELETE', '/v1/account', { token: other.token, body: { authKey: other.authKey } })).status).toBe(429);
+    expect(await tables(other.email)).toContain('account');
+
+    later(16 * MINUTE);
+    expect((await check(other.token, other.authKey)).status).toBe(204);
+    expect((await call('DELETE', '/v1/account', { token: other.token, body: { authKey: other.authKey } })).status).toBe(204);
+    expect(await tables(other.email)).toEqual([]);
+  });
+
+  it('answers 401 without a live session and 400 without a key', async () => {
+    const person = await signup();
+    expect((await call('POST', '/v1/password/check', { body: { authKey: person.authKey } })).status).toBe(401);
+    expect((await call('POST', '/v1/password/check', { token: person.token, body: { authKey: 'short' } })).status).toBe(400);
+    expect((await call('POST', '/v1/password/check', { token: person.token, body: {} })).status).toBe(400);
+    expect((await call('POST', '/v1/logout', { token: person.token })).status).toBe(204);
+    expect((await check(person.token, person.authKey)).status).toBe(401);
   });
 });
 

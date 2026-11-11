@@ -135,7 +135,7 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 `{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`.
 
-Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
+Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. A successful sign-in also resets every session's own count and ends its lock. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
 
 An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
 
@@ -160,8 +160,7 @@ Signs that device out. → `204`.
 
 ### `POST /v1/password`
 
-This call, `POST /v1/recovery` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts don't count toward the account's lock, so a device that is signed in can still use these calls while someone else's failed sign-ins lock the account. Each session counts its own instead: ten wrong passwords from one session within 15 minutes of the first lock that session's password checks for 15 minutes, with `429 locked` and `Retry-After` as for sign-ins. The session keeps working for everything else, and other sessions aren't affected. A right password resets the session's count.
-
+This call, `POST /v1/recovery`, `POST /v1/password/check` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts don't count toward the account's lock, so a device that is signed in can still use these calls while someone else's failed sign-ins lock the account. Each session counts its own instead: ten wrong passwords from one session within 15 minutes of the first lock that session's password checks for 15 minutes, with `429 locked` and `Retry-After` as for sign-ins. The session keeps working for everything else, and other sessions aren't affected. A right password resets the session's count. A successful sign-in to the account (`POST /v1/login`) resets it too and ends the lock.
 
 `{ "authKey", "kdf", "salt", "newAuthKey", "wrappedKey" }`, where `authKey` proves the current password and `wrappedKey` is the data key wrapped with the new one. Signs out every other device. → `204`.
 
@@ -169,13 +168,17 @@ This call, `POST /v1/recovery` and `DELETE /v1/account` check the password again
 
 `{ "authKey", "recoveryAuth", "recoveryWrappedKey" }`: replaces the recovery key. → `204`.
 
+### `POST /v1/password/check`
+
+`{ "authKey" }` → `204` when `authKey` is the password, and changes nothing else. A wrong one counts toward this session's lock, as with `POST /v1/password`. A device calls it before it deletes something that `DELETE /v1/account` can't bring back, such as the booking page, and stops on `403 wrong_password` or `429 locked`. The deletion counts toward the same lock, so it gets the same answer. A server from before this call answers `404`; the device then checks the password with a sign-in of its own (`POST /v1/login`) and ends that session at once.
+
 ### `POST /v1/recover/start` and `POST /v1/recover/finish`
 
 For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and returns `{ "recoveryWrappedKey", "kdf" }`. `finish` takes `{ "email", "recoveryAuth", "kdf", "salt", "authKey", "wrappedKey", "device" }`, sets the new password, signs out every device and returns `{ "token", "account" }`. Failed attempts count toward the same lock as sign-ins.
 
 ### `DELETE /v1/account`
 
-`{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't prove the address, so a new account with the same email gets the handle only with the key.
+`{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't prove the address, so a new account with the same email gets the handle only with the key. A device that deletes the booking page first checks the password with `POST /v1/password/check` before it does.
 
 ### `GET /v1/records?since=<seq>&limit=<n>`
 
@@ -361,7 +364,7 @@ The stored profile works both ways too. A Worker rolled back to before several l
 
 ### `DELETE /v1/booking`
 
-Turns the page off and deletes everything on it: the profile, open times, busy times and every booking. The handle stays reserved for this account (see Handles). → `204`. From another session than the booking device's, it also holds back that device's next publish until it has read the page ([One booking device](#one-booking-device)). An account without a handle also gets `204`, and so does one whose handle another account took after the reservation ran out: nothing of this account is on it. A device deletes the page first when the account is deleted, and stops if that fails; it skips this step on a server whose `/v1/info` doesn't list `booking` in `features`, and takes a `404` from a server without these routes as done. The server also wipes a page whose account no longer exists within two days (see Retention).
+Turns the page off and deletes everything on it: the profile, open times, busy times and every booking. The handle stays reserved for this account (see Handles). → `204`. From another session than the booking device's, it also holds back that device's next publish until it has read the page ([One booking device](#one-booking-device)). An account without a handle also gets `204`, and so does one whose handle another account took after the reservation ran out: nothing of this account is on it. A device deletes the page first when the account is deleted, after `POST /v1/password/check` accepted the password, and stops if either fails; it skips this step on a server whose `/v1/info` doesn't list `booking` in `features`, and takes a `404` from a server without these routes as done. The server also wipes a page whose account no longer exists within two days (see Retention).
 
 ### `GET /v1/booking/handles/<handle>`
 

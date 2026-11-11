@@ -222,7 +222,17 @@ export class Account extends DurableObject {
     const check = this.#check('authVerifier', hash, now);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or password is wrong.');
-    const sessionId = this.ctx.storage.transactionSync(() => this.#addSession(tokenHash, input.device, now));
+    const sessionId = this.ctx.storage.transactionSync(() => {
+      // The right password, proven here, also ends every session's own count and lock. Rukoo for desktop 2.1.0 and
+      // later builds without POST /v1/password/check check the password with a sign-in of their own, delete the
+      // booking page and then delete the account on their session. Once the page is gone, the session's lock must not
+      // refuse that deletion.
+      this.sql.exec(
+        'UPDATE sessions SET failures = 0, failedAt = 0, lockedUntil = 0 WHERE failures > 0 OR lockedUntil > ?',
+        now
+      );
+      return this.#addSession(tokenHash, input.device, now);
+    });
     const { wrappedKey } = this.#account();
     return reply(200, {
       token,
@@ -282,6 +292,14 @@ export class Account extends DurableObject {
         return reply(204);
       })
     );
+  }
+
+  // Checks the password and changes nothing but this session's count (PROTOCOL.md, POST /v1/password/check). A device
+  // asks before it deletes what doesn't come back, such as the booking page, ahead of DELETE /v1/account: this counts
+  // toward the same lock as that deletion, so the answer holds for it.
+  async checkPassword(token, input) {
+    const hash = await sha256(input.authKey);
+    return this.#signedIn(token, (session, now) => this.#withPassword(session, hash, now, () => reply(204)));
   }
 
   async recoverStart(input) {
@@ -463,7 +481,7 @@ export class Account extends DurableObject {
   // For signed-in calls that ask for the password again. A wrong one is 403, not 401, so the app can tell it apart
   // from an ended session. These attempts count per session, not toward the account's lock: anyone who knows the
   // email address can lock that one, and the session already proves the device. A stolen session still gets only
-  // ten guesses every 15 minutes.
+  // ten guesses every 15 minutes, and nine more when the account's owner signs in meanwhile (login).
   #withPassword(session, hash, now, fn) {
     const { authVerifier } = this.#account();
     const check = this.#attempt('sessions', session, sameBytes(new Uint8Array(authVerifier), hash), now);
