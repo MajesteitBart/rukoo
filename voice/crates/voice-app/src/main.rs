@@ -14,6 +14,8 @@ mod devhook;
 mod engine;
 mod fake;
 mod logging;
+#[cfg(target_os = "macos")]
+mod notify_mac;
 mod pill;
 mod selftest;
 mod settings_window;
