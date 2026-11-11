@@ -515,6 +515,7 @@ impl Recorder {
             self.pad(i, PAD_THRESHOLD_MS);
             self.flush_pending(i);
         }
+        self.write_synced();
         if now >= schedule.heartbeat {
             schedule.heartbeat = later(schedule.heartbeat, HEARTBEAT, now);
             self.write_heartbeat();
@@ -998,7 +999,7 @@ impl Recorder {
         }
     }
 
-    /// Closes the segment file and writes `segment_end`.
+    /// Closes the segment file; its `segment_end` follows once it is on disk.
     fn end_segment(&mut self, i: usize) {
         if let Some(segment) = self.take_segment(i) {
             self.close_file(i, segment);
@@ -1015,23 +1016,33 @@ impl Recorder {
         Some(segment)
     }
 
-    /// Hands a segment the track took out to the syncer, which puts it on disk and closes it, and
-    /// writes its `segment_end`. Its header already counts every sample. Returns where its audio
-    /// ends, in ms rounded up.
+    /// Hands a segment the track took out to the syncer, which puts it on disk and closes it. Its
+    /// header already counts every sample. The `segment_end` line goes with it and comes back to
+    /// [`Recorder::write_synced`] once the segment is on disk: written now, an earlier sync of the
+    /// timeline that is still waiting or running could put the line on disk ahead of the audio.
+    /// Returns where its audio ends, in ms rounded up.
     fn close_file(&mut self, i: usize, segment: Segment) -> u64 {
         let track = &self.tracks[i];
         let samples = segment.writer.samples();
-        self.syncer.close(
-            format!("{} segment {}", track.name, segment.seq),
-            segment.writer.into_file(),
-        );
-        self.journal.write(Line::SegmentEnd {
+        let end = Line::SegmentEnd {
             t: segment.t + samples_to_ms(samples),
             track: track.name.clone(),
             seq: segment.seq,
             samples,
-        });
+        };
+        self.syncer.close(
+            format!("{} segment {}", track.name, segment.seq),
+            segment.writer.into_file(),
+            end,
+        );
         (segment.t * SAMPLES_PER_MS + samples).div_ceil(SAMPLES_PER_MS)
+    }
+
+    /// Writes the `segment_end` lines of the segments the syncer has put on disk.
+    fn write_synced(&mut self) {
+        for line in self.syncer.synced() {
+            self.journal.write(line);
+        }
     }
 
     /// Writes what's pending and ends the segment. With `pad_to`, a healthy loopback track is
@@ -1131,7 +1142,6 @@ impl Recorder {
                 t = t.max(end);
             }
         }
-        let t = t.max(self.journal.latest);
         for track in &mut self.tracks {
             track.state = State::Lost {
                 error: "Stopped.".into(),
@@ -1139,14 +1149,18 @@ impl Recorder {
             };
             track.taps.clear();
         }
+        // A stop means the recording is on disk. The syncer puts every segment it holds there
+        // first; then come their `segment_end` lines and `stop`, last in the file and by `t`, and
+        // the sync of the timeline.
+        for line in self.syncer.finish() {
+            self.journal.write(line);
+        }
+        let t = t.max(self.journal.latest);
         self.journal.write(Line::Stop {
             t,
             wall,
             reason: stopping.reason,
         });
-        // A stop means the recording is on disk: every segment the syncer holds first, then the
-        // timeline that names them.
-        self.syncer.finish();
         self.journal.sync();
         meeting::remove_recorder_file(&self.dir);
         if let Some(reply) = stopping.reply {
