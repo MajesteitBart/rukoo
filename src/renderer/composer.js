@@ -309,7 +309,7 @@ function recipientsHtml(list) {
   return list
     .map(
       (a, i) =>
-        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
+        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" draggable="true" data-chip="${i}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
     )
     .join('');
 }
@@ -1017,6 +1017,59 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       renderAttachments();
     }
   }
+
+  // A recipient dragged from one of To, Cc and Bcc onto another moves there. The Cc and Bcc links beside To take
+  // a drop too, opening the field they name. Only this composer's own chips are accepted, never text or files.
+  const CHIP_TYPE = 'application/x-rukoo-recipient';
+  let dragged = null;
+  const dropField = (e) => {
+    if (!dragged) return null;
+    const link = e.target.closest?.('[data-c]');
+    if (link && page.contains(link)) return link.dataset.c;
+    const field = e.target.closest?.('.field[data-rfield]');
+    return field && page.contains(field) ? field.dataset.rfield : null;
+  };
+  const clearDropMarks = () => page.querySelectorAll('.drop-recipient').forEach((el) => el.classList.remove('drop-recipient'));
+  page.addEventListener('dragstart', (e) => {
+    const chip = e.target.closest?.('.recipient[data-chip]');
+    if (!chip) return;
+    const from = chip.closest('[data-rfield]').dataset.rfield;
+    dragged = { from, index: Number(chip.dataset.chip) };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(CHIP_TYPE, st[from][dragged.index]?.address || '');
+    chip.classList.add('dragging');
+    closeSuggest();
+  });
+  page.addEventListener('dragend', () => {
+    dragged = null;
+    clearDropMarks();
+    page.querySelectorAll('.recipient.dragging').forEach((el) => el.classList.remove('dragging'));
+  });
+  page.addEventListener('dragover', (e) => {
+    const to = dropField(e);
+    clearDropMarks();
+    if (!to) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = to === dragged.from ? 'none' : 'move';
+    if (to !== dragged.from) (e.target.closest('[data-c]') || $(`[data-rfield="${to}"]`, page)).classList.add('drop-recipient');
+  });
+  page.addEventListener('drop', (e) => {
+    const to = dropField(e);
+    if (!to) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { from, index } = dragged;
+    dragged = null;
+    clearDropMarks();
+    if (to === from) return;
+    const [person] = st[from].splice(index, 1);
+    if (!person) return;
+    if (!st[to].some((a) => sameAddress(a.address, person.address))) st[to].push(person);
+    if (to !== 'to') showField(to, true);
+    changed();
+    renderRecipients(from);
+    renderRecipients(to);
+  });
 
   // Files dropped on the editor become attachments.
   const dropTarget = inline ? page : document;
