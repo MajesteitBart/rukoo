@@ -748,7 +748,7 @@
   "composer.undoSend.undone": "Verzenden ongedaan gemaakt",
   "composer.undoSend.late": "Te laat om ongedaan te maken: de e-mail is al onderweg",
   "composer.undoSend.quitUnsure": "Rukoo werd afgesloten voordat bekend was of deze e-mail is verzonden. Kijk in Verzonden voordat je hem opnieuw verstuurt.",
-  "composer.undoSend.quitFailed": "Rukoo kon deze e-mail bij het afsluiten niet versturen en ook niet in Concepten bewaren: {error}",
+  "composer.undoSend.quitFailed": "Rukoo kon deze e-mail tijdens het afsluiten niet versturen en ook niet in Concepten bewaren: {error}",
   "errors.account.duplicate": "Dit account is al toegevoegd.",
   "errors.account.identity": "Dit adres hoort niet bij dit account.",
   "errors.account.invalidEmail": "Voer een geldig e-mailadres in.",

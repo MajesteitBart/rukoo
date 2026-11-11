@@ -244,13 +244,46 @@ test('an email a quit can neither send nor keep in Drafts opens again at the nex
   await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
   const again = app.windows().find((w) => w !== win);
   await again.waitForSelector('.composer .editor');
-  await expect(again.locator('.dialog')).toContainText("couldn't send this email when it quit");
+  await expect(again.locator('.dialog')).toContainText("couldn't send this email while it was quitting");
   await expect(again.locator('.dialog')).toContainText('Mailbox full');
   await again.locator('.dialog .buttons button').click();
   await expect(again.locator('[data-field="subject"]')).toHaveValue('Not lost on quit');
   await expect(again.locator('.editor')).toContainText('Still here after the restart.');
   await expect(again.locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
   expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+});
+
+test('an email that fails while a quit waits for an answer opens again when the quit is called off', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    engine.saveDraft = async () => {
+      throw new Error('No connection');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Failed during a quit', text: 'Back after Cancel.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  // An editor with unsaved text holds the quit with its question. That comes from beforeunload, which Electron
+  // answers by keeping the window; with a listener of its own, Playwright doesn't try to answer it too.
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  win.on('dialog', () => {});
+  await app.evaluate(({ app }) => {
+    app.quit();
+  });
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+  await sendWaiting();
+
+  const [again] = await Promise.all([app.waitForEvent('window'), win.click('.scrim .buttons button:text-is("Cancel")')]);
+  await again.waitForSelector('.composer .editor');
+  await expect(again.locator('.dialog')).toContainText("couldn't send this email while it was quitting");
+  await expect(again.locator('.dialog')).toContainText('Mailbox full');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('[data-field="subject"]')).toHaveValue('Failed during a quit');
+  await expect(again.locator('.editor')).toContainText('Back after Cancel.');
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
 });
 
 test('an older email that goes leaves the Undo of a newer one in place', async () => {

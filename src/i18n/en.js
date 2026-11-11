@@ -2972,8 +2972,8 @@
     "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
   },
   "composer.undoSend.quitFailed": {
-    "message": "Rukoo couldn't send this email when it quit, or keep it in Drafts: {error}",
-    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email the server refused while Rukoo quit, which couldn't be saved to Drafts either; error is the server's message. src/main/main.js (waitedMailFailed)"
+    "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",
+    "description": "Shown under 'Sending failed' in a compose window that opens an email the server refused while Rukoo was quitting, which couldn't be saved to Drafts either: at the next start, or at once when the quit was called off. error is the server's message. src/main/main.js (waitedMailFailed)"
   },
   "errors.account.duplicate": {
     "message": "This account has already been added.",

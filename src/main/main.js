@@ -535,6 +535,8 @@ function answered(id, closed) {
     quitAsks.clear();
     quitting = false;
     restartForUpdate = false;
+    // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays.
+    openUnsent(unsent.splice(0));
     // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
     // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
     if (!win && (process.platform === 'darwin' || engine.settings.closeToTray)) createWindow({ hidden: true });
@@ -556,8 +558,8 @@ function endSession() {
   clearInterval(syncTimer);
   // Email that waits out its Undo notice goes now, as far as Windows leaves Rukoo the time. It is written down first,
   // so the next start opens what Windows cut off, and again once the sends are done, with only what didn't go.
+  keepUnsent();
   if (outbox && outbox.size) {
-    keepUnsent();
     outbox
       .flush()
       .then(() => {
@@ -745,9 +747,12 @@ function mailSent(payload, id = null) {
 }
 
 // Emails a quit could neither send nor keep in Drafts: { restore, error }. They are written to unsent.json in the
-// profile, and the next start opens each in a compose window with its error (reopenUnsent).
+// profile, and the next start opens each in a compose window with its error (reopenUnsent). A quit that is called
+// off opens them right away (answered()).
 const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
+// Whether this run wrote the file, so a later write with nothing left removes only its own.
+let unsentWritten = false;
 
 // Writes down what the quit leaves: the emails refused and not saved, and those still on their way, whose fate
 // nobody can know now. They aren't sent again by themselves: the user checks Sent first.
@@ -755,10 +760,21 @@ function keepUnsent() {
   const unsure = outbox ? outbox.left().map((e) => ({ restore: e.restore, error: t('composer.undoSend.quitUnsure') })) : [];
   const list = [...unsent, ...unsure].filter((u) => u.restore);
   try {
-    if (list.length) fs.writeFileSync(unsentFile(), JSON.stringify(list));
-    else fs.rmSync(unsentFile(), { force: true });
+    if (list.length) {
+      fs.writeFileSync(unsentFile(), JSON.stringify(list));
+      unsentWritten = true;
+    } else if (unsentWritten) {
+      fs.rmSync(unsentFile(), { force: true });
+      unsentWritten = false;
+    }
   } catch (_) {
     // A profile that can't be written to keeps nothing.
+  }
+}
+
+function openUnsent(list) {
+  for (const u of list) {
+    if (u && u.restore && typeof u.restore === 'object') openComposeWindow({ ...(u.restore.opts || {}), restore: u.restore, sendError: String(u.error || '') });
   }
 }
 
@@ -770,9 +786,7 @@ function reopenUnsent() {
   } catch (_) {
     return;
   }
-  for (const u of Array.isArray(list) ? list.slice(0, 20) : []) {
-    if (u && u.restore && typeof u.restore === 'object') openComposeWindow({ ...(u.restore.opts || {}), restore: u.restore, sendError: String(u.error || '') });
-  }
+  openUnsent(Array.isArray(list) ? list : []);
 }
 
 // The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
@@ -1924,18 +1938,17 @@ function closeAgents() {
 const SEND_QUIT_WAIT = 30000;
 let quitWaited = false;
 app.on('will-quit', (event) => {
-  if (quitWaited || (!hub && !(outbox && outbox.size))) return;
+  if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length)) return;
   quitWaited = true;
   event.preventDefault();
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  // The sends change the mail cache after before-quit saved it, so it is saved again.
-  const mail =
-    outbox && outbox.size
-      ? Promise.race([outbox.flush(), wait(SEND_QUIT_WAIT)]).then(() => {
-          keepUnsent();
-          engine.flush();
-        })
-      : null;
+  // The sends change the mail cache after before-quit saved it, so it is saved again. What they leave is written
+  // down, also when they failed earlier in the quit, while a window still asked about its changes.
+  const sending = Boolean(outbox && outbox.size);
+  const mail = (sending ? Promise.race([outbox.flush(), wait(SEND_QUIT_WAIT)]) : Promise.resolve()).then(() => {
+    keepUnsent();
+    if (sending) engine.flush();
+  });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
