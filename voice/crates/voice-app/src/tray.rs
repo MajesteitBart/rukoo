@@ -181,6 +181,9 @@ impl Tray {
                     on_action(TrayAction::Settings);
                 }
             })
+            // A menu bar icon is a template image: macOS draws it from its alpha in black or white to match
+            // the menu bar, so it stays readable in both themes. The mark's outline becomes the glyph.
+            .icon_as_template(cfg!(target_os = "macos"))
             .build(&self.app)?;
         #[cfg(windows)]
         {
