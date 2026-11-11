@@ -1763,6 +1763,7 @@
   "settings.general.macMenuBarIconHelp": "Voeg Rukoo toe aan de menubalk. Rukoo blijft altijd actief wanneer je het venster sluit; open het opnieuw via het Dock. Druk op ⌘+Q om te stoppen. Als je dit uitzet, wordt minimaliseren naar de menubalk ook uitgezet.",
   "settings.general.macMinimize": "Minimaliseren naar menubalk",
   "settings.general.macMinimizeHelp": "Verberg het geminimaliseerde venster en toon een menubalkicoon. Open Rukoo opnieuw via dat icoon of het Dock.",
+  "settings.general.macZoomHelp": "Gebruik ⌘+Plus en ⌘+Min. Met ⌘+0 ga je terug naar 100%.",
   "setup.title": "E-mail instellen",
   "account.errors.invalid": "De server nam het verzoek niet aan. Werk Rukoo bij en probeer het opnieuw.",
   "account.errors.unauthorized": "Het e-mailadres, het wachtwoord of de herstelsleutel klopt niet.",

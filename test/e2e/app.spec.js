@@ -279,7 +279,8 @@ test('archive from the toolbar, undo with Ctrl+Z', async () => {
 
 test('Ctrl+click selects several messages for one action', async () => {
   await item('Bencompare').click();
-  await item('You updated some of your Google Account details').click({ modifiers: ['Control'] });
+  // Command on a Mac, where Control+click opens the context menu.
+  await item('You updated some of your Google Account details').click({ modifiers: ['ControlOrMeta'] });
   await expect(win.locator('.list-tools.selecting .sel-count')).toHaveText('2 geselecteerd');
   await expect(win.locator('.reader .multi .t')).toHaveText('2 e-mails geselecteerd');
   await win.click('.list-tools [data-bulk="delete"]');

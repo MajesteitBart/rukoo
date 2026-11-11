@@ -21,6 +21,8 @@ npm run dist
 
 This builds the packages for the current platform in `dist/`: the Windows installer and portable executable, the macOS DMG and ZIP, or the Linux x64 AppImage and `.deb`. `npm run dist:win`, `npm run dist:mac` and `npm run dist:linux` pick a platform explicitly.
 
+On a Mac, use `npm run dist:mac`. It builds both architectures and signs the app ad-hoc, as CI does. Plain `npm run dist` looks for a Developer ID Application certificate in your keychain and, without one, leaves the app unsigned. macOS doesn't deliver notifications from an unsigned app, so test notifications with an ad-hoc or Developer ID signed build.
+
 ## Tests
 
 ```bash
@@ -30,7 +32,7 @@ npm run test:e2e  # Playwright drives the real Electron app; chat tests use scri
 
 The live IMAP tests create a throwaway mailbox on [Ethereal](https://ethereal.email) and skip themselves when it's unreachable.
 
-Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS, and runs the Mac-specific Electron tests on both Intel and Apple Silicon, again against the built app. On Windows and Ubuntu it splits the Electron tests over three runners with `--shard=N/3 --fully-parallel`, so a run takes about a third of the time and a failed shard can be rerun on its own. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
+Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS. On macOS it runs the unit tests and only the Mac-specific Electron tests in `test/e2e/macos.spec.js`, on both Intel and Apple Silicon, from source and again against the built app. On Windows and Ubuntu it splits the Electron tests over three runners with `--shard=N/3 --fully-parallel`, so a run takes about a third of the time and a failed shard can be rerun on its own. When you run the whole Electron suite on a Mac yourself, the cases written for Windows or Linux behavior skip themselves, and `macos.spec.js` checks the Mac side. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
 
 ## Screenshots
 

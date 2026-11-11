@@ -6812,6 +6812,10 @@
     "message": "Hide the minimized window and show a menu bar icon. Reopen Rukoo from that icon or the Dock.",
     "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
   },
+  "settings.general.macZoomHelp": {
+    "message": "Use ⌘+Plus and ⌘+Minus. ⌘+0 goes back to 100%.",
+    "description": "macOS Settings > General: explanation below Zoom, naming the keyboard shortcuts. Replaces settings.general.zoomHelp on a Mac, where the mouse wheel doesn't zoom. src/renderer/settings.js (zoomRow)"
+  },
   "setup.title": {
     "message": "Set up email",
     "description": "setup. src/renderer/setup.js (showGrid)"

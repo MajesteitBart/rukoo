@@ -375,7 +375,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const zoomRow = (level) => `
     <div class="row static" data-zoom>
       <div class="text"><div class="title">${esc(t('settings.general.zoom'))}</div>
-        <div class="desc">${esc(t('settings.general.zoomHelp'))}</div>
+        <div class="desc">${esc(t(window.mail.platform === 'darwin' ? 'settings.general.macZoomHelp' : 'settings.general.zoomHelp'))}</div>
         <div class="value" data-zoom-value>${esc(t('settings.general.zoomValue', { percent: level }))}</div></div>
       <button class="btn sm secondary" data-a="zoom-reset" ${level === 100 ? 'disabled' : ''}>${esc(t('settings.general.zoomReset'))}</button>
     </div>`;
