@@ -842,19 +842,19 @@ class Engine extends EventEmitter {
   async syncAll() {
     const errors = [];
     await Promise.all(
-      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err)}`)))
+      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err, a)}`)))
     );
     if (errors.length) throw new Error(errors.join('\n'));
   }
 
   // The sync the user asked for, of one account or of all. A failure reads the way the sidebar shows it for the
-  // account (friendlyError).
+  // account (friendlyError), with the account so a refused password at Gmail or Yahoo points to its app password.
   async syncNow(accountId = null) {
     if (!accountId) return this.syncAll();
     try {
       await this.syncAccount(accountId);
     } catch (err) {
-      throw new Error(friendlyError(err));
+      throw new Error(friendlyError(err, this.accounts.find((a) => a.id === accountId)));
     }
   }
 
@@ -930,9 +930,9 @@ class Engine extends EventEmitter {
       }
       // The last sync stays the last one that got through every folder.
       if (!failed) cache.lastSync = Date.now();
-      cache.error = failed ? friendlyError(failed) : null;
+      cache.error = failed ? friendlyError(failed, acc) : null;
     } catch (err) {
-      cache.error = friendlyError(err);
+      cache.error = friendlyError(err, acc);
       this.changed(id);
       throw err;
     }
