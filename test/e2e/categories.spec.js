@@ -320,7 +320,7 @@ test('new mail in a muted category sends no notification', async () => {
   // The window hears only of the mail that notifies, so a muted category gets no toast, pill or sound there either.
   await win.evaluate(() => {
     window.__newMail = [];
-    window.mail.on(({ type, payload }) => type === 'new-mail' && window.__newMail.push(payload.subject));
+    window.mail.on(({ type, payload }) => type === 'new-mail' && window.__newMail.push(...payload.mails.map((m) => m.subject)));
   });
   const shown = await app.evaluate(async ({ Notification, BrowserWindow }) => {
     // Notifications are recorded instead of shown, as for a window in the background.
@@ -341,6 +341,64 @@ test('new mail in a muted category sends no notification', async () => {
   expect(shown).toEqual(['Sanne de Vries']);
   await expect.poll(() => win.evaluate(() => window.__newMail)).toEqual(['Lunch on Friday?']);
   await expect(win.locator('.item', { hasText: 'New sign-in' })).toHaveCount(1);
+});
+
+test('new mail in Inbox and in a category Inbox leaves out: the list shows the one, a toast the other, and Show opens the category', async () => {
+  await turnOn();
+  await settings().locator('[data-a="cat-edit:updates"]').click();
+  await win.locator('.scrim .dialog [role="switch"]', { hasText: 'Show in Inbox' }).click();
+  await win.locator('.scrim .dialog .buttons button', { hasText: 'Save' }).click();
+  await expect(settings().locator('[data-a="cat-edit:updates"] .cat-off')).toHaveCount(1);
+  await closeSettings();
+  await expect(win.locator('.list-title h1')).toHaveText('Inbox');
+  // In front, where a toast stands in for the desktop notification. Those are recorded, should one come.
+  await app.evaluate(({ Notification, BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].isFocused = () => true;
+    global.__shown = [];
+    Notification.prototype.show = function () {
+      global.__shown.push(this.title);
+    };
+  });
+  // Emails land in the demo inbox, and one sync finds them all.
+  const arrive = (mails) =>
+    app.evaluate(async (_e, mails) => {
+      const engine = global.__semEngine;
+      for (const [n, [from, subject]] of mails.entries()) {
+        const raw = [`From: ${from}`, 'To: demo@example.com', `Subject: ${subject}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${Date.now()}.${n}@example.com>`, '', 'Hello'];
+        await engine.session(engine.accounts[0]).append('INBOX', raw.join('\r\n'));
+      }
+      await engine.syncAll();
+    }, mails);
+  const items = () => win.locator('.list-scroll .item');
+  const toastEl = () => win.locator('#toast');
+
+  // Sanne's email is at the top of Inbox; the sign-in alert, which the rules put in Updates, gets the toast.
+  await arrive([
+    ['Sanne de Vries <sanne@example.com>', 'Lunch on Friday?'],
+    ['App <noreply@app.example>', 'New sign-in']
+  ]);
+  await expect(toastEl()).toContainText('New email from App: New sign-in');
+  await expect(items().filter({ hasText: 'Lunch on Friday?' })).toBeInViewport();
+  await expect(items().filter({ hasText: 'New sign-in' })).toHaveCount(0);
+  await expect(win.locator('.new-pill')).toBeHidden();
+  await toastEl().locator('button', { hasText: 'Open' }).click();
+  await expect(win.locator('.list-title h1')).toHaveText('Updates');
+  await expect(win.locator('.reader-subject')).toHaveText('New sign-in');
+
+  // Two alerts for Updates while Inbox is on screen: the toast says where they are, and Show goes there.
+  await inboxRow().click();
+  await expect(win.locator('.list-title h1')).toHaveText('Inbox');
+  await arrive([
+    ['App <noreply@app.example>', 'Your code is 123456'],
+    ['Bank <alerts@bank.example>', 'Card used abroad']
+  ]);
+  await expect(toastEl()).toContainText('2 new emails in Updates');
+  await toastEl().locator('button', { hasText: 'Show' }).click();
+  await expect(win.locator('.list-title h1')).toHaveText('Updates');
+  await expect(win.locator('.nav-item.nav-sub.active')).toContainText('Updates');
+  await expect(items().filter({ hasText: 'Your code is 123456' })).toHaveCount(1);
+  await expect(items().filter({ hasText: 'Card used abroad' })).toHaveCount(1);
+  expect(await app.evaluate(() => global.__shown)).toEqual([]);
 });
 
 test('Jev needs a key and says what it shares', async () => {

@@ -43,6 +43,7 @@ import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
+import { splitNewMail, addToToast, newMailTab } from './new-mail.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -2803,7 +2804,7 @@ function drawBadge(count) {
 // them has been in view. While the list is scrolled away from all of them, a pill at the top counts them.
 const newRows = new Set();
 // The emails the new-mail toast counts, and when it showed, so mail from the next account in the same sync adds to it.
-let newToast = { ids: [], at: 0 };
+let newToast = { mails: [], at: 0 };
 const NEW_TOAST_MS = 8000;
 let coo = null;
 
@@ -2863,30 +2864,39 @@ async function openNotified(id) {
   openMessage(id);
 }
 
-// The new-mail toast's Show: Inbox, as from the sidebar.
-function showInbox() {
+// The new-mail toast's Show: Inbox as from the sidebar, or the category tab that holds the emails when Inbox leaves
+// them out (newMailTab).
+function showNotified(tab) {
   setMode('mail');
   S.scope = 'all';
   S.view = 'inbox';
   S.folder = null;
-  S.category = null;
+  S.category = categoryOf(tab) ? tab : null;
   changeView();
 }
 
 // While the window is in front, a toast stands in for the desktop notification for mail the list on screen doesn't
 // show. It waits for an Undo that is up, and Ctrl+Z leaves it alone. Over Settings it only says so.
-function newMailToast(p) {
+// mails: [{ id, from, subject, category }].
+function newMailToast(mails) {
   const now = Date.now();
-  const ids = now - newToast.at < NEW_TOAST_MS ? [...new Set([...newToast.ids, ...p.ids])] : p.ids;
-  newToast = { ids, at: now };
-  const one = ids.length === 1;
-  const sender = p.from || t('mailbox.message.unknownSender');
-  const message = !one ? t('mailbox.newMail.count', { count: ids.length }) : p.subject ? t('mailbox.newMail.fromSubject', { sender, subject: p.subject }) : t('mailbox.newMail.from', { sender });
+  const all = addToToast(now - newToast.at < NEW_TOAST_MS ? newToast.mails : [], mails);
+  newToast = { mails: all, at: now };
+  const one = all.length === 1 ? all[0] : null;
+  // Several emails go to Inbox, or to their category when Inbox doesn't show it; the toast names that category.
+  const tab = one ? null : categoryOf(newMailTab(all, S.categories));
+  let message;
+  if (one) {
+    const sender = one.from || t('mailbox.message.unknownSender');
+    message = one.subject ? t('mailbox.newMail.fromSubject', { sender, subject: one.subject }) : t('mailbox.newMail.from', { sender });
+  } else {
+    message = tab ? t('mailbox.newMail.countIn', { count: all.length, category: tab.name }) : t('mailbox.newMail.count', { count: all.length });
+  }
   if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000 });
   // Once its button was used, the next new mail gets a toast of its own.
   const run = () => {
-    newToast = { ids: [], at: 0 };
-    return one ? openNotified(ids[0]) : showInbox();
+    newToast = { mails: [], at: 0 };
+    return one ? openNotified(one.id) : showNotified(tab && tab.id);
   };
   toast(message, { wait: true, action: { label: t(one ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
 }
@@ -2898,21 +2908,21 @@ function playCoo() {
   coo.play().catch(() => {});
 }
 
-// p: { ids, from, subject, toast, sound }. Rows in the list on screen are the cue themselves, or the pill points at
-// them; for mail elsewhere a toast says so, when main says the window is in front with notifications on.
+// p: { mails: [{ id, from, subject, category }], toast, sound }. Rows in the list on screen are the cue themselves, or
+// the pill points at them; for the rest of the batch a toast says so, when main says the window is in front with
+// notifications on. One sync can bring both.
 async function onNewMail(p) {
-  if (!p || !Array.isArray(p.ids) || !p.ids.length) return;
+  const mails = p && Array.isArray(p.mails) ? p.mails.filter((m) => m && m.id) : [];
+  if (!mails.length) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
   await refresh();
-  const shown = new Set(visibleRows().map((m) => m.id));
-  const here = listOnScreen() ? p.ids.filter((id) => shown.has(id)) : [];
+  const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
-    for (const id of here) newRows.add(id);
+    for (const m of here) newRows.add(m.id);
     updateNewPill();
-    return;
   }
-  if (p.toast) newMailToast(p);
+  if (elsewhere.length && p.toast) newMailToast(elsewhere);
 }
 
 // ---------- events from main ----------

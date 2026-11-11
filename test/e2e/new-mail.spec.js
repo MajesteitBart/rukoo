@@ -151,7 +151,7 @@ test('new mail the list on screen does not show gets a toast while the window is
   await focused(false);
   await arrive('One more thing');
   await expect.poll(() => app.evaluate(() => global.__shown.map((n) => n.body.split('\n')[0]))).toEqual(['One more thing']);
-  expect((await heard()).at(-1)).toMatchObject({ from: 'Sanne de Vries', subject: 'One more thing', toast: false, sound: false });
+  expect((await heard()).at(-1)).toMatchObject({ mails: [{ from: 'Sanne de Vries', subject: 'One more thing' }], toast: false, sound: false });
   // The sound is off, so the system's own plays.
   expect((await app.evaluate(() => global.__shown))[0].silent).toBe(false);
 });

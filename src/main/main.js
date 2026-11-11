@@ -310,6 +310,16 @@ function newMailSound() {
   return true;
 }
 
+// A new email's inbox category now: Jev may have sorted it since it came in with one. null while categories are off.
+function categoryNow(m) {
+  try {
+    const { acc, msg } = engine.locate(m.id);
+    return engine.categoryOf ? engine.categoryOf(acc, msg) : null;
+  } catch (_) {
+    return m.category || null;
+  }
+}
+
 // Now, or once Jev sorted the mail, so the window may have come forward meanwhile, and the screen recording may have
 // started. messages: the emails these notices are for. The main window hears of them too (app.js onNewMail): its list
 // shows them, or a toast does while the window is in front, where the desktop notification stays away.
@@ -320,11 +330,14 @@ function showMailNotices(list, messages = []) {
   }
   const focused = Boolean(win && !win.isDestroyed() && win.isFocused());
   if (messages.length) {
-    const first = messages[0];
     send('new-mail', {
-      ids: messages.map((m) => m.id),
-      from: (first.from && (first.from.name || first.from.address)) || '',
-      subject: String(first.subject || '').slice(0, 200),
+      // Each email, so the window can say who one of them is from and where several of them are (newMailTab).
+      mails: messages.map((m) => ({
+        id: m.id,
+        from: String((m.from && (m.from.name || m.from.address)) || '').slice(0, 200),
+        subject: String(m.subject || '').slice(0, 200),
+        category: categoryNow(m)
+      })),
       toast: Boolean(engine.settings.notifications) && focused,
       sound: newMailSound()
     });

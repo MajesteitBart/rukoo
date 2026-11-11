@@ -966,6 +966,10 @@
     "one": "{count} nieuwe e-mail",
     "other": "{count} nieuwe e-mails"
   },
+  "mailbox.newMail.countIn": {
+    "one": "{count} nieuwe e-mail in {category}",
+    "other": "{count} nieuwe e-mails in {category}"
+  },
   "mailbox.newMail.from": "Nieuwe e-mail van {sender}",
   "mailbox.newMail.fromSubject": "Nieuwe e-mail van {sender}: {subject}",
   "mailbox.newMail.open": "Openen",

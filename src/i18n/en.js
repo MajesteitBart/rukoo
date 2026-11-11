@@ -3753,6 +3753,13 @@
     },
     "description": "mailbox > new mail. New mail that came in while Rukoo's window is open: the pill at the top of the message list while the list is scrolled away from the new emails, and the toast for new mail the list on screen doesn't show. {count}: how many. src/renderer/app.js (updateNewPill, newMailToast)"
   },
+  "mailbox.newMail.countIn": {
+    "message": {
+      "one": "{count} new email in {category}",
+      "other": "{count} new emails in {category}"
+    },
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for several new emails in an inbox category that Inbox itself doesn't show (its Show in Inbox switch is off); its Show button opens that category. {count}: how many, at least 2. {category}: the category's name, such as Updates. src/renderer/app.js (newMailToast)"
+  },
   "mailbox.newMail.from": {
     "message": "New email from {sender}",
     "description": "mailbox > new mail. Toast while Rukoo's window is in front, for one new email without a subject that the list on screen doesn't show; it stands in for the desktop notification. {sender}: the sender's name or address. src/renderer/app.js (newMailToast)"
@@ -3767,7 +3774,7 @@
   },
   "mailbox.newMail.show": {
     "message": "Show",
-    "description": "mailbox > new mail. Action on the toast for several new emails: goes to Inbox. src/renderer/app.js (newMailToast)"
+    "description": "mailbox > new mail. Action on the toast for several new emails: goes to Inbox, or to the inbox category that holds them when Inbox itself doesn't show it. src/renderer/app.js (newMailToast)"
   },
   "mailbox.move.alreadyThere": {
     "message": "These emails are already there",
