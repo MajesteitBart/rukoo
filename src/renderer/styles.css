@@ -453,15 +453,19 @@ kbd {
   display: flex;
   align-items: center;
   z-index: 100;
-  /* Room for native window buttons on Windows and Linux. */
-  padding-right: 150px;
+  /* Room for the native window buttons on Windows and Linux. The titlebar-area rectangle is the part of the bar they
+   * leave free, in CSS pixels at the current zoom: the buttons sit right of it, left of it on a Linux desktop with
+   * GNOME's button-layout "close,minimize,maximize:", or on both sides. Without the rectangle the bar keeps 150px. */
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)) + 12px);
 }
 .titlebar-brand {
   width: var(--sidebar-w);
   flex: none;
   display: flex;
   align-items: center;
-  padding-left: 22px;
+  /* After the window buttons when they are on the left. That padding is wider than the icon rail: the brand grows
+   * to fit it, which keeps the search clear of the buttons and leaves no room for the icon, as on macOS. */
+  padding-left: calc(22px + env(titlebar-area-x, 0px));
   overflow: hidden;
   pointer-events: none;
 }
@@ -3308,7 +3312,7 @@ body.compose-window {
   width: auto;
   min-width: 0;
   flex: 1;
-  padding-left: 16px;
+  padding-left: calc(16px + env(titlebar-area-x, 0px));
 }
 .compose-window .titlebar-name {
   font-size: 12.5px;
