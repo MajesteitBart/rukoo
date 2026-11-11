@@ -581,6 +581,37 @@ test('a later flag change to an email waits for an earlier write to it, and its 
   await engine.close();
 });
 
+test('when Mark all as read and its Undo both fail, the email keeps what the server holds', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // The server refuses both writes to a; Undo starts while the first is still on its way.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false, { fail: true });
+  const openUndo = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === true, { fail: true });
+  const marking = engine.setFlagsMany([a], { unread: false });
+  const undoing = engine.setFlagsMany([a], { unread: true });
+  openRead();
+  assert.deepEqual((await marking).failed, [a]);
+  assert.equal(unread(a), true, 'the first failure leaves what Undo shows');
+  openUndo();
+  assert.deepEqual((await undoing).failed, [a]);
+  assert.equal(unread(a), true, 'neither write reached the server, so the email is still unread');
+
+  // When the first write does reach the server and only Undo fails, the email shows the server's read state.
+  const openUndoB = gate((uid, patch) => uid === decodeId(b).uid && patch.unread === true, { fail: true });
+  const markingB = engine.setFlagsMany([b], { unread: false });
+  const undoingB = engine.setFlags(b, { unread: true });
+  await markingB;
+  openUndoB();
+  await assert.rejects(undoingB, /STORE failed/);
+  assert.equal(unread(b), false, 'the server took the first write');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(a), true);
+  assert.equal(unread(b), false);
+  await engine.close();
+});
+
 test('read, star and archive of one email reach the server in the order they were made', async () => {
   const { engine, acc } = await freshEngine();
   const target = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.unread && !m.starred);

@@ -856,18 +856,29 @@ class Engine extends EventEmitter {
   // before the command cannot undo it in the cache. Changes to the same email line up in the order they were made: a
   // sync sees them merged with the latest on top, and each one lets go of its own only, so an earlier change that
   // finishes never drops a later one (such as Undo of a Mark all as read that is still on its way).
-  // before: settles when the earlier changes to this email have. overtaken(k): a later change also sets field k.
-  holdPending(accountId, folder, uid, patch) {
+  // The changes to one email share a base: the fields as the server last took them, taken from current (the email
+  // before this change) the first time a change sets a field, and moved up by each change that reaches the server.
+  // before: settles when the earlier changes to this email have. confirm(): the server took this change.
+  // rollback(): what a failure puts back, the base of each field no later change has set since.
+  holdPending(accountId, folder, uid, patch, current = null) {
     const key = this.pendingKey(accountId, folder, uid);
     const earlier = this.pending.get(key) || [];
+    const base = earlier.length ? earlier[0].base : {};
+    if (current) for (const k of Object.keys(patch)) if (!(k in base)) base[k] = Boolean(current[k]);
     let settle;
-    const hold = { patch, settled: new Promise((resolve) => (settle = resolve)) };
+    const hold = { patch, base, settled: new Promise((resolve) => (settle = resolve)) };
     this.pending.set(key, [...earlier, hold]);
     return {
       before: Promise.all(earlier.map((h) => h.settled)),
-      overtaken: (k) => {
+      confirm: () => {
+        for (const k of Object.keys(patch)) if (k in base) base[k] = patch[k];
+      },
+      rollback: () => {
         const all = this.pending.get(key) || [];
-        return all.slice(all.indexOf(hold) + 1).some((h) => k in h.patch);
+        const later = all.slice(all.indexOf(hold) + 1);
+        const back = {};
+        for (const k of Object.keys(patch)) if (k in base && !later.some((h) => k in h.patch)) back[k] = base[k];
+        return back;
       },
       release: () => {
         settle();
@@ -1406,8 +1417,9 @@ class Engine extends EventEmitter {
   // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
   // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
   // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
-  // Emails no longer in the cache are skipped. A failure puts that email back, unless a later change has set the flag
-  // since. Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
+  // Emails no longer in the cache are skipped. A failure puts the flag back to what the server last took, unless a
+  // later change has set it since, so a refused Undo of a refused Mark all as read leaves the email as it was.
+  // Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
   async setFlagsMany(ids, flags) {
     const patch = {};
     for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
@@ -1421,8 +1433,8 @@ class Engine extends EventEmitter {
     }
     const accounts = new Set(found.map((f) => f.acc.id));
     for (const f of found) {
+      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
       Object.assign(f.msg, patch);
-      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch);
     }
     for (const id of accounts) this.changed(id);
     const done = [];
@@ -1432,14 +1444,14 @@ class Engine extends EventEmitter {
       try {
         await f.hold.before;
         await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+        f.hold.confirm();
         done.push(f.id);
       } catch (err) {
         failed.push(f.id);
         error = error || friendlyError(err);
         // Revert on whatever object the cache holds now; a sync may have replaced it.
         try {
-          const now = this.locate(f.id).msg;
-          for (const k of Object.keys(patch)) if (!f.hold.overtaken(k)) now[k] = !patch[k];
+          Object.assign(this.locate(f.id).msg, f.hold.rollback());
         } catch (_) {
           // The message left the cache in the meantime.
         }
