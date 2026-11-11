@@ -1701,6 +1701,18 @@
     "message": "Right Alt",
     "description": "Settings: key name in key lists and descriptions. Also AltGr on many layouts. voice/ui/settings.js (keyName)."
   },
+  "settings.keys.rightCommand": {
+    "message": "Right Command",
+    "description": "Settings: key name on macOS, where Right Command is Voice's rewrite key by default. voice/ui/settings.js (KEY_NAMES)."
+  },
+  "settings.keys.rightOption": {
+    "message": "Right Option",
+    "description": "Settings: macOS name of the physical key stored as right alt; Right Option is Voice's dictation key by default. voice/ui/settings.js (MAC_KEY_NAMES)."
+  },
+  "settings.keys.rightControl": {
+    "message": "Right Control",
+    "description": "Settings: macOS name of the key stored as right ctrl. voice/ui/settings.js (MAC_KEY_NAMES)."
+  },
   "settings.keys.rightCtrl": {
     "message": "Right Ctrl",
     "description": "Settings: key name in key lists and descriptions. voice/ui/settings.js (keyName)."

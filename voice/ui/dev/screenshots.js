@@ -170,6 +170,14 @@ async function main() {
         for (const lang of LANGS) {
           for (const name of SETTINGS_PAGES) await settings(path.join(out, 'settings', `${theme}-${lang}`, `${name}.png`), `page=${name}&theme=${theme}&lang=${lang}`);
           for (const [name, query] of SCENARIOS) await settings(path.join(out, 'settings', `${theme}-${lang}`, `${name}.png`), `${query}&theme=${theme}&lang=${lang}`);
+          // The macOS key picker: Mac names, and only keys a Mac keyboard has.
+          await size(760, 680);
+          await page.goto(`${base}settings.html?mock=1&page=main&platform=macos&theme=${theme}&lang=${lang}`);
+          await page.waitForSelector('[data-a="choose:dictation.hotkey"]');
+          await page.click('[data-a="choose:dictation.hotkey"]');
+          await page.waitForTimeout(300);
+          await shot(path.join(out, 'settings', `${theme}-${lang}`, 'dictation-key-macos.png'));
+          await page.keyboard.press('Escape');
         }
       // A narrow window, at Settings' minimum width.
       for (const [theme, lang] of [

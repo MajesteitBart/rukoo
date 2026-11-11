@@ -252,8 +252,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Key | Values | Default | From Ownkey's |
 |---|---|---|---|
-| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt`; `f13` in dev mode | `hotkey` |
-| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl`; `f14` in dev mode | `rewrite_hotkey` |
+| `dictation.hotkey` | `right alt`, `right command`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
+| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl` on Windows; `right command` on macOS; `f14` in dev mode | `rewrite_hotkey` |
 | `dictation.pasteMode` | bool | `true` | `paste_mode` |
 | `dictation.readyChime` | bool | `false` | `ready_chime` |
 | `dictation.startAtLogin` | bool; `dev_mode` error in dev mode | `true` for an installed copy | the Run key |
@@ -280,6 +280,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
+
+A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: a key stored on another platform still parses and is shown by its own name.
 
 Bucket sync, saved in `config.json` under `storage_sync`:
 

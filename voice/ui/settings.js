@@ -14,12 +14,21 @@ const LATER = mocked && params.get('later') === '1';
 const feature = (name) => LATER || state?.features?.[name] === true;
 
 const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
+// A Mac keyboard has no Pause or Scroll Lock, and adds Right Command. Right Option is the same key
+// as Right Alt, so it keeps that name in the config and gets a Mac label here.
+const MAC_HOTKEYS = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15'];
 const KEY_NAMES = {
   'right alt': 'settings.keys.rightAlt',
+  'right command': 'settings.keys.rightCommand',
   'right ctrl': 'settings.keys.rightCtrl',
   'right shift': 'settings.keys.rightShift',
   pause: 'settings.keys.pause',
   'scroll lock': 'settings.keys.scrollLock'
+};
+// macOS names, as System Settings and the keyboard print them.
+const MAC_KEY_NAMES = {
+  'right alt': 'settings.keys.rightOption',
+  'right ctrl': 'settings.keys.rightControl'
 };
 // The keys a choice can't share, with the hint that says who has it.
 const KEY_ROLES = {
@@ -160,7 +169,13 @@ function setPath(object, key, value) {
   target[last] = value;
 }
 
-const keyName = (key) => (key === 'off' || !key ? t('common.off') : KEY_NAMES[key] ? t(KEY_NAMES[key]) : key.toUpperCase());
+const macos = () => state?.platform === 'macos';
+const hotkeyList = () => (macos() ? MAC_HOTKEYS : HOTKEYS);
+const keyName = (key) => {
+  if (key === 'off' || !key) return t('common.off');
+  const name = macos() ? MAC_KEY_NAMES[key] || KEY_NAMES[key] : KEY_NAMES[key];
+  return name ? t(name) : key.toUpperCase();
+};
 const kbd = (key) => `<kbd>${esc(keyName(key))}</kbd>`;
 const labelOf = (pairs, value) => {
   const found = pairs.find(([v]) => v === value);
@@ -1300,7 +1315,7 @@ async function keyChoice(role) {
       .filter(([key]) => key && key !== 'off')
   );
   const ownkeyKeys = state.ownkey.running ? state.ownkey.keys : [];
-  const keys = role === 'dictation.hotkey' ? HOTKEYS : ['off', ...HOTKEYS];
+  const keys = role === 'dictation.hotkey' ? hotkeyList() : ['off', ...hotkeyList()];
   const options = keys.map((key) => ({
     value: key,
     label: keyName(key),

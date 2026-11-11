@@ -23,16 +23,6 @@ use voice_engine::{
 
 pub const SCENARIOS: &[&str] = &["idle", "meeting", "dictation", "cycle", "first-run"];
 
-const KEYS: &[&str] = &[
-    "right alt",
-    "right ctrl",
-    "right shift",
-    "f13",
-    "f14",
-    "f15",
-    "pause",
-    "scroll lock",
-];
 const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
 /// Mistral's realtime models stream meetings; nothing else does.
 const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
@@ -755,11 +745,8 @@ fn installed_model(id: &str, data_dir: &Path) -> Value {
 fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
     let discovery = voice_protocol::paths::bridge_path_here(voice_protocol::Side::Voice)
         .unwrap_or_else(|| data_dir.join("bridge.json"));
-    let (dictate, rewrite) = if dev_mode {
-        ("f13", "f14")
-    } else {
-        ("right alt", "right ctrl")
-    };
+    let (dictate, rewrite) =
+        voice_core::config::default_hotkeys_on(dev_mode, cfg!(target_os = "macos"));
     json!({
         "seq": 0,
         "version": version,
@@ -983,7 +970,10 @@ impl EngineApi for FakeEngine {
             };
             match key {
                 "dictation.hotkey" | "dictation.rewriteHotkey" | "meetings.stopKey" => {
-                    one_of(KEYS, key != "dictation.hotkey")?;
+                    one_of(
+                        voice_core::config::offered_hotkeys(),
+                        key != "dictation.hotkey",
+                    )?;
                     let v = value.as_str().unwrap_or_default();
                     if v != "off" && hotkeys(key).iter().any(|k| k == v) {
                         return Err(ApiError::new("same_key", format!("{v} is already in use")));

@@ -32,6 +32,22 @@ check('a key list greys out the other keys in use and saves the choice', async (
   assert.match(await page.locator('[data-section="status"]').innerText(), /Hold F13 to dictate/);
 });
 
+check('a Mac key list shows Mac names and only the keys a Mac has', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  const labels = await page.locator('.radio-row .rl').allInnerTexts();
+  for (const name of ['Right Option', 'Right Command', 'Right Control', 'Right Shift', 'F13', 'F14', 'F15']) {
+    assert.ok(labels.includes(name), `${name} is offered on a Mac: ${labels.join()}`);
+  }
+  for (const name of ['Right Alt', 'Pause', 'Scroll Lock']) {
+    assert.ok(!labels.includes(name), `${name} isn't a Mac key: ${labels.join()}`);
+  }
+  assert.equal(await page.locator('.radio-row', { hasText: 'Right Command' }).isDisabled(), true, 'the rewrite key is taken');
+  await page.locator('.radio-row', { hasText: 'F15' }).click();
+  assert.equal((await mockState()).config.dictation.hotkey, 'f15');
+});
+
 check('Escape goes back one page, and the back button too', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&page=dictionary');
   assert.equal(await page.locator('h1').innerText(), 'Dictionary');
@@ -47,7 +63,7 @@ check('text being typed survives the download progress redrawing its card', asyn
   await page.click('[data-a="model:orukeet:download"]');
   const minutes = page.locator('[data-field="local.idleMinutes"]');
   await minutes.click();
-  await minutes.press('Control+A');
+  await minutes.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
   for (const key of ['4', '5']) {
     await page.keyboard.type(key);
     await page.waitForTimeout(450);
