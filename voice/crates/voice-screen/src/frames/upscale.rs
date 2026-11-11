@@ -101,7 +101,9 @@ mod tests {
     #[test]
     fn scaling_down_averages_blocks() {
         let white_black = Pixels {
-            bgra: vec![255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 255],
+            bgra: vec![
+                255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 255,
+            ],
             width: 2,
             height: 2,
         };

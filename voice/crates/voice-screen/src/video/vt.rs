@@ -20,9 +20,9 @@ use objc2_core_foundation::{
     CFString, CFType,
 };
 use objc2_core_media::{
-    kCMSampleAttachmentKey_NotSync, CMBlockBuffer, CMFormatDescription, CMTime, CMVideoCodecType,
-    CMVideoFormatDescriptionGetDimensions, CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
-    CMSampleBuffer,
+    kCMSampleAttachmentKey_NotSync, CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMTime,
+    CMVideoCodecType, CMVideoFormatDescriptionGetDimensions,
+    CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
 };
 use objc2_core_video::{CVImageBuffer, CVPixelBuffer};
 use objc2_video_toolbox::{
@@ -30,12 +30,14 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_EncoderID, kVTCompressionPropertyKey_ExpectedFrameRate,
     kVTCompressionPropertyKey_MaxKeyFrameInterval, kVTCompressionPropertyKey_ProfileLevel,
     kVTCompressionPropertyKey_RealTime,
-    kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTProfileLevel_H264_High_AutoLevel, kVTVideoEncoderList_CodecType,
-    kVTVideoEncoderList_DisplayName, kVTVideoEncoderList_EncoderID, kVTVideoEncoderList_EncoderName,
-    kVTVideoEncoderList_IsHardwareAccelerated, kVTVideoEncoderSpecification_EncoderID,
-    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, VTCopyVideoEncoderList,
-    VTCompressionSession, VTEncodeInfoFlags, VTSession, VTSessionCopyProperty, VTSessionSetProperty,
+    kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
+    kVTVideoEncoderList_CodecType, kVTVideoEncoderList_DisplayName, kVTVideoEncoderList_EncoderID,
+    kVTVideoEncoderList_EncoderName, kVTVideoEncoderList_IsHardwareAccelerated,
+    kVTVideoEncoderSpecification_EncoderID,
+    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, VTCompressionSession,
+    VTCopyVideoEncoderList, VTEncodeInfoFlags, VTSession, VTSessionCopyProperty,
+    VTSessionSetProperty,
 };
 use voice_screen_files::caps::EncoderInfo;
 
@@ -100,7 +102,9 @@ impl Kind {
                 // SAFETY: the static boolean outlives the dictionary, which retains it.
                 let value: &CFBoolean = unsafe { kCFBooleanTrue }?;
                 Some(CFDictionary::from_slices(
-                    &[unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder }],
+                    &[unsafe {
+                        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder
+                    }],
                     &[as_cf_type(value)],
                 ))
             }
@@ -170,7 +174,9 @@ impl Encoder {
         // SAFETY: the session is valid; preparing it allocates its encoder.
         let status = unsafe { encoder.session.prepare_to_encode_frames() };
         if status != 0 {
-            return Err(format!("VTCompressionSessionPrepareToEncodeFrames failed: {status}"));
+            return Err(format!(
+                "VTCompressionSessionPrepareToEncodeFrames failed: {status}"
+            ));
         }
         Ok(encoder)
     }
@@ -179,9 +185,15 @@ impl Encoder {
         let pixels = u64::from(self.width) * u64::from(self.height);
         let bitrate = (pixels * 2).min(8_000_000) as i32;
         // An encoder that refuses one setting still records, as on Windows.
-        let _ = self.set_int(unsafe { kVTCompressionPropertyKey_MaxKeyFrameInterval }, FPS as i32);
+        let _ = self.set_int(
+            unsafe { kVTCompressionPropertyKey_MaxKeyFrameInterval },
+            FPS as i32,
+        );
         let _ = self.set_bool(unsafe { kVTCompressionPropertyKey_RealTime }, true);
-        let _ = self.set_bool(unsafe { kVTCompressionPropertyKey_AllowFrameReordering }, false);
+        let _ = self.set_bool(
+            unsafe { kVTCompressionPropertyKey_AllowFrameReordering },
+            false,
+        );
         let _ = self.set_int(unsafe { kVTCompressionPropertyKey_AverageBitRate }, bitrate);
         let _ = self.set_int(
             unsafe { kVTCompressionPropertyKey_ExpectedFrameRate },
@@ -195,7 +207,8 @@ impl Encoder {
 
     fn set(&self, key: &CFString, value: &CFType) -> Result<(), String> {
         // SAFETY: the session is valid and the value is a CF object it retains.
-        let status = unsafe { VTSessionSetProperty(as_vt_session(&self.session), key, Some(value)) };
+        let status =
+            unsafe { VTSessionSetProperty(as_vt_session(&self.session), key, Some(value)) };
         if status != 0 {
             return Err(format!("VTSessionSetProperty failed: {status}"));
         }
@@ -278,7 +291,9 @@ impl Encoder {
         // SAFETY: completing with a non-numeric time flushes every pending frame.
         let status = unsafe { self.session.complete_frames(CMTime::new(0, 0)) };
         if status != 0 {
-            return Err(format!("VTCompressionSessionCompleteFrames failed: {status}"));
+            return Err(format!(
+                "VTCompressionSessionCompleteFrames failed: {status}"
+            ));
         }
         let mut state = self.sink.state();
         while state.completed < submitted {
@@ -512,7 +527,8 @@ pub struct ListedEncoder {
 pub fn encoder_list() -> Vec<ListedEncoder> {
     let mut list: *const CFArray = std::ptr::null();
     // SAFETY: the call fills in the array pointer, which is released below.
-    let status = unsafe { VTCopyVideoEncoderList(None, NonNull::new(&mut list).expect("a pointer")) };
+    let status =
+        unsafe { VTCopyVideoEncoderList(None, NonNull::new(&mut list).expect("a pointer")) };
     let Some(list) = NonNull::new(list.cast_mut()) else {
         return Vec::new();
     };
@@ -550,11 +566,7 @@ pub fn encoder_list() -> Vec<ListedEncoder> {
             .get(unsafe { kVTVideoEncoderList_IsHardwareAccelerated })
             .and_then(|value| as_bool(&value))
             .unwrap_or_else(|| id.contains(".ave."));
-        encoders.push(ListedEncoder {
-            name,
-            id,
-            hardware,
-        });
+        encoders.push(ListedEncoder { name, id, hardware });
     }
     encoders.sort_by_key(|e| !e.hardware);
     encoders
@@ -571,7 +583,6 @@ pub fn hardware_available() -> bool {
             return false;
         }
         // The list is a hint; a session that requires hardware is the proof.
-        // A session that requires hardware is the proof; the list alone can be wrong.
         Encoder::create(320, 180, Kind::Hardware).is_ok()
     })
 }
@@ -681,7 +692,10 @@ mod tests {
         let (width, height) = (320u32, 180u32);
         let mut encoder = Encoder::create(width, height, Kind::Software).unwrap();
         encoder.identify();
-        assert!(!encoder.description().1, "the software encoder is hardware?");
+        assert!(
+            !encoder.description().1,
+            "the software encoder is hardware?"
+        );
         let picture = PixelBuffer::new(width, height).unwrap();
         picture.fill([0x20, 0x60, 0xa0, 0xff]);
         let first = encoder.encode(&picture, 0, true).unwrap();

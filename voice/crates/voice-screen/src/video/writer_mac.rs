@@ -81,8 +81,8 @@ impl MacVideoWriter {
             true => Kind::Software,
             false => Kind::Hardware,
         };
-        let mut encoder = Encoder::create(video_width, video_height, kind)
-            .map_err(VideoError::Encoder)?;
+        let mut encoder =
+            Encoder::create(video_width, video_height, kind).map_err(VideoError::Encoder)?;
         // The file needs the encoder's SPS and PPS, which VideoToolbox only hands out with the
         // first sample: one black frame before the file exists gives them.
         let black = PixelBuffer::new(video_width, video_height)
@@ -174,10 +174,9 @@ impl MacVideoWriter {
     /// or the last one again at `boot_now`, so a still screen still gets a keyframe and a
     /// fragment boundary every 1 to 2 s.
     pub fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {
-        let (Some(start), Some(last)) = (self.start_boot, self.last_boot) else {
+        let (Some(_), Some(last)) = (self.start_boot, self.last_boot) else {
             return Ok(());
         };
-        let _ = start;
         if boot_now.saturating_sub(last) < RESUBMIT {
             return Ok(());
         }
@@ -407,7 +406,10 @@ mod tests {
         writer.finish().unwrap();
         let index = mp4::index_path(&path).unwrap();
         assert_eq!(index.complete_len, index.file_len);
-        assert_eq!(end_t, 1_000 + index.to_ms(index.fragments.last().unwrap().end()));
+        assert_eq!(
+            end_t,
+            1_000 + index.to_ms(index.fragments.last().unwrap().end())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -433,7 +435,10 @@ mod tests {
         writer.tick(ms(300)).unwrap();
         writer.hold(&picture(30), ms(350));
         writer.write(&picture(40), ms(400)).unwrap();
-        assert!(writer.held.is_none(), "a frame written drops an older held one");
+        assert!(
+            writer.held.is_none(),
+            "a frame written drops an older held one"
+        );
         writer.hold(&picture(50), ms(390));
         assert!(writer.held.is_none(), "older than the last frame written");
         writer.hold(&picture(60), ms(450));
@@ -498,5 +503,4 @@ mod tests {
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }

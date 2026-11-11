@@ -18,7 +18,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
-    CFAttributedString, CGAffineTransform, CFDictionary, CFRetained, CFString, CFType,
+    CFAttributedString, CFDictionary, CFRetained, CFString, CFType, CGAffineTransform,
 };
 use objc2_core_graphics::{CGColorSpace, CGContext};
 use objc2_core_text::{kCTFontAttributeName, CTFont, CTLine};
@@ -269,15 +269,13 @@ impl Canvas {
                 std::ptr::null(),
             )
         };
-        let attributes: CFRetained<CFDictionary<CFString, CFType>> = CFDictionary::from_slices(
-            &[unsafe { kCTFontAttributeName }],
-            &[as_cf_type(&*font)],
-        );
+        let attributes: CFRetained<CFDictionary<CFString, CFType>> =
+            CFDictionary::from_slices(&[unsafe { kCTFontAttributeName }], &[as_cf_type(&*font)]);
         let string = CFString::from_str(text);
         // SAFETY: the attributed string and the line retain their parts for their lifetime.
-        let Some(attributed) = (unsafe {
-            CFAttributedString::new(None, Some(&string), Some(opaque(&attributes)))
-        }) else {
+        let Some(attributed) =
+            (unsafe { CFAttributedString::new(None, Some(&string), Some(opaque(&attributes))) })
+        else {
             return;
         };
         let line = unsafe { CTLine::with_attributed_string(&attributed) };

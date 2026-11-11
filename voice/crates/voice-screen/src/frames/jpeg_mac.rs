@@ -67,13 +67,17 @@ pub fn decode_image(bytes: &[u8]) -> Result<CFRetained<CGImage>, String> {
     let source = unsafe { CGImageSource::with_data(&data, None) }
         .ok_or_else(|| "the image doesn't open".to_string())?;
     // SAFETY: the file has at least one image; the source retains the data.
-    unsafe { source.image_at_index(0, None) }.ok_or_else(|| "the image holds no picture".to_string())
+    unsafe { source.image_at_index(0, None) }
+        .ok_or_else(|| "the image holds no picture".to_string())
 }
 
 /// The pixel size of an image file.
 pub fn decode_size(bytes: &[u8]) -> Result<(u32, u32), String> {
     let image = decode_image(bytes)?;
-    Ok((CGImage::width(Some(&image)) as u32, CGImage::height(Some(&image)) as u32))
+    Ok((
+        CGImage::width(Some(&image)) as u32,
+        CGImage::height(Some(&image)) as u32,
+    ))
 }
 
 #[cfg(test)]

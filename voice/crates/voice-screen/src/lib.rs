@@ -24,10 +24,10 @@ pub mod frames;
 
 #[cfg(any(windows, target_os = "macos"))]
 pub mod capture;
-#[cfg(windows)]
-pub mod clockwin;
 #[cfg(target_os = "macos")]
 pub mod clock_mac;
+#[cfg(windows)]
+pub mod clockwin;
 #[cfg(windows)]
 mod com;
 #[cfg(any(windows, target_os = "macos"))]

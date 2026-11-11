@@ -95,7 +95,10 @@ mod tests {
         let base = timebase();
         assert!(base.numer > 0 && base.denom > 0, "{base:?}");
         let ns_per_tick = f64::from(base.numer) / f64::from(base.denom);
-        assert!((1.0..=100.0).contains(&ns_per_tick), "{ns_per_tick} ns a tick");
+        assert!(
+            (1.0..=100.0).contains(&ns_per_tick),
+            "{ns_per_tick} ns a tick"
+        );
         assert_eq!(to_100ns(0), 0);
     }
 

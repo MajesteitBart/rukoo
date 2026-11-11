@@ -45,7 +45,8 @@ impl Thumbnailer {
                 for y in top..bottom {
                     // SAFETY: the row is inside the locked buffer, which has `height` rows of
                     // `row` bytes and at least `width * 4` bytes in each.
-                    let pixels = unsafe { std::slice::from_raw_parts(base.add(y * row), right * 4) };
+                    let pixels =
+                        unsafe { std::slice::from_raw_parts(base.add(y * row), right * 4) };
                     for px in pixels[left * 4..].chunks_exact(4) {
                         sum += u32::from(luma_of(px[0], px[1], px[2]));
                         count += 1;

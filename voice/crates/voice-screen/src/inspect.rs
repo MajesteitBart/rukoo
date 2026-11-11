@@ -88,8 +88,12 @@ fn file_size(path: &Path, index: &mp4::Index) -> Option<(u32, u32)> {
     // height, as `voice_screen_files::fmp4` writes them.
     let at = moov.windows(8).position(|window| &window[4..] == b"avc1")?;
     let payload = at + 8;
-    let width = u32::from(u16::from_be_bytes(moov.get(payload + 24..payload + 26)?.try_into().ok()?));
-    let height = u32::from(u16::from_be_bytes(moov.get(payload + 26..payload + 28)?.try_into().ok()?));
+    let width = u32::from(u16::from_be_bytes(
+        moov.get(payload + 24..payload + 26)?.try_into().ok()?,
+    ));
+    let height = u32::from(u16::from_be_bytes(
+        moov.get(payload + 26..payload + 28)?.try_into().ok()?,
+    ));
     Some((width, height))
 }
 

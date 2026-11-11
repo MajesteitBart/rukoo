@@ -15,9 +15,9 @@ use crate::args::TestSpec;
 use crate::capture::mac::PixelBuffer;
 use crate::capture::{monitors_mac, session_mac, synthetic_mac};
 use crate::clock_mac;
+use crate::frames::jpeg_mac;
 use crate::frames::ocr_vision::VisionReader;
 use crate::frames::thumb_mac::Thumbnailer;
-use crate::frames::jpeg_mac;
 use crate::record::Ev;
 use crate::video::writer_mac::{MacVideoMaker, MacVideoWriter};
 
@@ -147,7 +147,11 @@ impl Platform for MacPlatform {
         Ok(Thumbnailer::new(width, height))
     }
 
-    fn pixels(&self, _device: &MacDevice, frame: &Frame<PixelBuffer>) -> Result<Pixels, PlatformError> {
+    fn pixels(
+        &self,
+        _device: &MacDevice,
+        frame: &Frame<PixelBuffer>,
+    ) -> Result<Pixels, PlatformError> {
         frame
             .picture
             .pixels()

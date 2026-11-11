@@ -191,7 +191,11 @@ mod tests {
     /// The user's language wins when Vision reads it: a Dutch Mac reads Dutch first.
     #[test]
     fn the_preferred_language_comes_first() {
-        let supported = vec!["de-DE".to_string(), "nl-NL".to_string(), "en-US".to_string()];
+        let supported = vec![
+            "de-DE".to_string(),
+            "nl-NL".to_string(),
+            "en-US".to_string(),
+        ];
         let chosen = choose_language(&supported).unwrap();
         assert!(supported.contains(&chosen), "{chosen}");
         assert_eq!(choose_language(&[]), None);
