@@ -77,6 +77,27 @@ impl PixelBuffer {
         Some(buffer)
     }
 
+    /// The Core Video buffer itself, for VideoToolbox and Vision.
+    pub fn buffer(&self) -> &CVPixelBuffer {
+        &self.buffer
+    }
+
+    /// Sets every pixel to `bgra`, alphas included.
+    pub fn fill(&self, bgra: [u8; 4]) {
+        let Some(mut locked) = self.lock() else {
+            return;
+        };
+        let row = self.width() as usize * 4;
+        for y in 0..self.height() as usize {
+            let start = unsafe { locked.base_mut().add(y * locked.bytes_per_row()) };
+            // SAFETY: the row is at least `row` bytes long inside the locked buffer.
+            let pixels = unsafe { std::slice::from_raw_parts_mut(start, row) };
+            for px in pixels.chunks_exact_mut(4) {
+                px.copy_from_slice(&bgra);
+            }
+        }
+    }
+
     pub fn width(&self) -> u32 {
         CVPixelBufferGetWidth(&self.buffer) as u32
     }
