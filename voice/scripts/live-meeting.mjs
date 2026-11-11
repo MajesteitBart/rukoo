@@ -4,25 +4,30 @@
 //
 //   node voice/scripts/live-meeting.mjs [--skip-build] [--release] [--screen off|frames|video] [--real-screen]
 //                                       [--choose-monitor=<\\.\DISPLAYn>] [--visible-rukoo] [--speakers[=cpu|runtime|model]]
+//                                       [--models <dir>] [--nemo-dir <dir>]
 //                                       [--sync] [--remote-fetch=<ssh target>]
 //                                       [--measure=screen [--seconds=<n>] | --measure=speakers [--minutes=<n>] | --measure=sync]
 //
 // Windows and macOS. Everything it starts lives under tmp/live/<time>/ in this checkout: Voice's data folder
 // (RUKOO_VOICE_DATA_DIR), Rukoo's profile (SEM_DATA_DIR), the discovery file both get as RUKOO_VOICE_BRIDGE, and the
-// speech. Captures of the apps' own windows go to tmp/live-shots/. Orukeet is read from Ownkey's model folder on
-// Windows, read only. Nothing touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and
-// every process it started is stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else
-// voice/target, and the programs run from there: debug builds unless --release is given, release builds for
-// --measure=screen. Rukoo's MCP server listens on port 47810, not the 47800 an installed Rukoo uses.
+// speech. Captures of the apps' own windows go to tmp/live-shots/. --models seeds the run's data folder with a models
+// root in Voice's layout (<root>/orukeet/<revision>) without another copy: an APFS clone on macOS, a hard link
+// elsewhere, a copy as the last resort. Without --models it uses /Users/agent/rukoo/tmp/voice-macos/models when that
+// holds Orukeet, so a Mac run transcribes; Windows still reads Ownkey's model folder when it isn't given one. Nothing
+// touches the installed apps, the clipboard or the keyboard, nothing plays out loud, and every process it started is
+// stopped by its process id. Cargo builds into CARGO_TARGET_DIR when it is set, else voice/target, and the programs
+// run from there: debug builds unless --release is given, release builds for --measure=screen. Rukoo's MCP server
+// listens on port 47810, not the 47800 an installed Rukoo uses.
 //
 // On macOS the default run is --screen off, because the macOS screen process doesn't record yet: --screen frames or
 // video, --real-screen, --choose-monitor, --visible-rukoo, --measure and --sync refuse with a message that says what
-// they would need. The speech comes from `say` with two installed English voices (the SAPI path stays on Windows), and
-// --speakers refuses because Voice has no speaker worker on macOS. The screen process, window-protection, WebView2
-// capture and video checks are skipped, each with a line in the report that says why. Voice transcribes through the
-// meeting provider in Settings > Meetings; a Mac without Orukeet installed and without a provider key can't run the
-// passage checks, and this script never downloads a model or uses a key, so those checks are skipped with that reason
-// in the report and the missing prerequisite is the one failed check.
+// they would need. The speech comes from `say` with two installed English voices (the SAPI path stays on Windows). The
+// screen process, window-protection, WebView2 capture and video checks are skipped, each with a line in the report that
+// says why. --speakers is decided by Voice: when its Settings > Speaker labels reports reason "platform" the run
+// refuses with that message, and on a build where the macOS speaker worker exists it runs with --nemo-dir (or
+// /Users/agent/rukoo/tmp/voice-macos/nemo-arm64/nemo_speech) and the AMI excerpt and Nemotron from the shared folder.
+// A run without a model or a provider key still reports that as its one failed prerequisite and skips the passage
+// checks: the script seeds a model but never downloads one and never uses a key.
 //
 // The checks: passages with the expected words reach Rukoo on both tracks before the stop; the pill shows the
 // recording; Rukoo's windows are protected from capture; frames with their text reach Rukoo while it records and
@@ -65,11 +70,22 @@
 // gets a name; the speaker worker is killed and its voice keeps that id afterwards, and again after the Voice
 // restart; after done at least 90% of the call's passage time went to the right speaker
 // (scripts/lib/speaker-score.mjs) and no passage moved from one id to another between revisions. It doesn't combine
-// with --real-screen, whose slides follow the SAPI call. Windows only: on macOS Voice reports speaker labels as
-// unavailable (reason "platform"), so the flag refuses rather than runs without labels.
+// with --real-screen, whose slides follow the SAPI call. `--nemo-dir` names the NeMo-Speech.cpp runtime (else
+// RUKOO_VOICE_NEMO_DIR, else the shared folder, else Voice's lookup), and the AMI excerpt and Nemotron come from the
+// shared speaker-assets folder. When Voice reports speaker labels unavailable for the platform (Settings' reason
+// "platform"), the run refuses instead of recording a meeting without labels.
 //
 // --speakers=cpu|runtime|model runs a short meeting with RUKOO_VOICE_TEST_NO_SPEAKERS set to that reason: the call
 // is one speaker, call-1, Settings > Speaker labels says why, and Voice captures that page.
+//
+// --models <dir> seeds each fresh Voice data folder from a models root in Voice's layout (<root>/orukeet/<revision>):
+// an APFS clone with cp -c on macOS, a hard link or a copy elsewhere, so the model costs no second 487 MB and Voice
+// finds it, hashes it once and keeps its stamp, as after an install. It defaults to
+// /Users/agent/rukoo/tmp/voice-macos/models when that holds Orukeet, on every platform. The run never downloads a
+// model; --models points at one fetched once, for example with Voice's own Settings > Transcription code.
+//
+// --nemo-dir <dir> is the NeMo-Speech.cpp runtime folder for --speakers (a local macOS arm64 build, for instance); it
+// becomes RUKOO_VOICE_NEMO_DIR for Voice. Without it the shared build under nemo-arm64/ is used when present.
 //
 // --measure=speakers measures labels on and off (spec RUK-109 section 7): the worker's real-time factor through its
 // --self-test, then two meetings started from Voice in fresh data folders, labels on and labels off, each --minutes
@@ -122,6 +138,30 @@ const DEFAULT_SCREEN = MAC ? 'off' : 'frames';
 const SCREEN_NEEDS = 'the screen process does not record on macOS yet (voice/crates/voice-screen exits with "needs Windows"; the macOS screen recorder is a later step), so the live run needs --screen off';
 const SCREEN_SKIP = 'the macOS screen process does not record yet (the screen recorder is a later step), so this run has no screen to record, switch or inspect';
 const PROTECTION_SKIP = 'window protection belongs to the Windows screen-capture checks; the macOS screen recorder is not in this build, so there is no capture to hide Rukoo from';
+const CAPTURE_SKIP = 'WebView2 captures are Windows-only; the macOS WKWebView capture is a later step, so only Rukoo\'s own window is captured';
+
+// This Mac's shared Voice folder: the downloaded models, the speaker runtime and the speaker assets. Each run's data
+// folder is seeded from it, so a fresh checkout doesn't download 487 MB or 100 MB again. --models and --nemo-dir point
+// elsewhere.
+const SHARED = '/Users/agent/rukoo/tmp/voice-macos';
+const SHARED_MODELS = path.join(SHARED, 'models');
+const SHARED_ASSETS = path.join(SHARED, 'speaker-assets');
+const SHARED_NEMO = path.join(SHARED, 'nemo-arm64', 'nemo_speech');
+// ModelSpec::orukeet() in voice-core: the folder and revision under a models root, the same path under Voice's data
+// folder, and the files it checks.
+const ORUKEET = {
+  id: 'orukeet-onnx-int8',
+  folder: 'orukeet',
+  revision: '55a984d46f68323301837194ce647c702f55facc',
+  files: ['encoder.int8.onnx', 'decoder.int8.onnx', 'joiner.int8.onnx', 'tokens.txt', 'bpe.vocab', 'LICENSE-WEIGHTS', 'NOTICE.md']
+};
+const ORUKEET_REL = path.join(ORUKEET.folder, ORUKEET.revision);
+const ORUKEET_DIR = path.join('models', ORUKEET_REL);
+// What --speakers needs when Voice itself says the platform can't label speakers.
+const SPEAKER_NEEDS =
+  "Speaker labels are unavailable on this Mac: Voice's Settings > Speaker labels reports reason \"platform\" through the status hook. " +
+  'Speaker labels on macOS need the arm64 NeMo-Speech.cpp runtime (voice/nemo-runtime/build-macos.sh) pointed at with --nemo-dir or ' +
+  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and the macOS speaker labels from the voice-macos-s5a-speakers branch`;
 
 class Refusal extends Error {}
 
@@ -133,19 +173,12 @@ function refuseOnMac(out) {
   if (out.chooseMonitor) no.push(`--choose-monitor: ${SCREEN_NEEDS}`);
   if (out.visibleRukoo) no.push(`--visible-rukoo: ${SCREEN_NEEDS}`);
   if (out.measure) no.push(`--measure=${out.measure}: the measurements use voice/scripts/measure.ps1, the screen's own timings and the speaker worker, which are Windows-only`);
-  if (out.speakers !== null) {
-    no.push(
-      "--speakers: Voice's Settings > Speaker labels reports speaker labels as unavailable on macOS (reason \"platform\") in this build, " +
-        "because the speaker worker has no macOS path and the NeMo-Speech.cpp runtime is Windows-only here. It would need the arm64 NeMo-Speech.cpp runtime " +
-        "built by voice/nemo-runtime/build-macos.sh (step 5), the Nemotron model, the AMI excerpt, and the macOS speaker labels from the voice-macos-s5a-speakers branch"
-    );
-  }
   if (out.sync) no.push("--sync: bucket sync's keys need the macOS Keychain protector (voice-sync/src/protect/keychain.rs) in this build, and Voice reports sync as unavailable without it; run without --sync");
   if (no.length) throw new Refusal(`The live run refuses these flags on macOS for now:\n  ${no.join('\n  ')}`);
 }
 
 function parseArgs(argv) {
-  const out = { skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5 };
+  const out = { skipBuild: false, release: false, screen: DEFAULT_SCREEN, screenGiven: false, realScreen: false, chooseMonitor: null, visibleRukoo: false, speakers: null, sync: false, remoteFetch: null, measure: null, seconds: 600, minutes: 5, models: null, nemoDir: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const eq = arg.indexOf('=');
@@ -158,6 +191,14 @@ function parseArgs(argv) {
         break;
       case '--release':
         out.release = true;
+        break;
+      case '--models':
+        out.models = next();
+        if (!out.models) throw new Error('--models takes a models root: <root>/orukeet/<revision>/ holds the model');
+        break;
+      case '--nemo-dir':
+        out.nemoDir = next();
+        if (!out.nemoDir) throw new Error('--nemo-dir takes the folder holding the NeMo-Speech.cpp runtime (runtime.json and the libraries)');
         break;
       case '--speakers':
         if (value !== null && !REASONS.includes(value)) throw new Error(`--speakers takes no value or one of ${REASONS.join(', ')}`);
@@ -250,7 +291,20 @@ const SPEAKERS_EXE = path.join(BIN, `rukoo-voice-speakers${EXE_SUFFIX}`);
 const SCREEN_EXE = path.join(BIN, `rukoo-voice-screen${EXE_SUFFIX}`);
 const FAKE_S3 = path.join(BIN, `rukoo-voice-fake-s3${EXE_SUFFIX}`);
 const SHERPA = process.env.SHERPA_ONNX_ARCHIVE_DIR || path.join(ROOT, 'tmp', 'sherpa-archive');
-const ASSETS = path.join(ROOT, 'tmp', 'speaker-assets');
+// The models root this run seeds from: --models, else the shared folder when it holds the pinned Orukeet.
+const MODELS = ARGS.models
+  ? path.resolve(ARGS.models)
+  : fs.existsSync(path.join(SHARED_MODELS, ORUKEET_REL, 'encoder.int8.onnx'))
+    ? SHARED_MODELS
+    : null;
+const NEMO_DIR = ARGS.nemoDir ? path.resolve(ARGS.nemoDir) : null;
+// The speaker assets: this Mac's shared copy (AMI and Nemotron), else the checkout's tmp, which the asset scripts fill.
+const ASSETS =
+  MAC &&
+  fs.existsSync(path.join(SHARED_ASSETS, 'ami', 'ami_en2002d_2132.wav')) &&
+  fs.existsSync(path.join(SHARED_ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf'))
+    ? SHARED_ASSETS
+    : path.join(ROOT, 'tmp', 'speaker-assets');
 const AMI_WAV = path.join(ASSETS, 'ami', 'ami_en2002d_2132.wav');
 const AMI_RTTM = path.join(ASSETS, 'ami', 'ami_en2002d_2132.rttm');
 const NEMOTRON = path.join(ASSETS, 'nemotron', 'Nemotron-3-Diarization.q8_0.gguf');
@@ -312,11 +366,23 @@ const THEM = {
 const SECRETS = { secret: `test-secret-${crypto.randomBytes(12).toString('hex')}`, code: null };
 
 // The ssh target stays out of the report.
-const report = { started: new Date().toISOString(), run: RUN, platform: process.platform, options: { ...ARGS, remoteFetch: Boolean(ARGS.remoteFetch) }, checks: [], notes: [], screen: {}, measurements: {} };
+const report = {
+  started: new Date().toISOString(),
+  run: RUN,
+  platform: process.platform,
+  options: { ...ARGS, remoteFetch: Boolean(ARGS.remoteFetch) },
+  checks: [],
+  notes: [],
+  screen: {},
+  measurements: {},
+  models: { root: MODELS, seeded: [] }
+};
 const started = { voice: [], rukoo: null, screens: null, measure: [], dataDirs: [], fake: [] };
 let failed = 0;
 let skipped = 0;
 let nemoDir = null;
+// Whether this run's data folder holds the seeded Orukeet, so its stamp is worth checking.
+let seededOrukeet = false;
 // Whether meetings transcribe in this run (macOS decides it from Voice's Settings; Windows keeps its Orukeet in
 // Ownkey's folder and doesn't ask).
 let TRANSCRIPT = { ready: true };
@@ -445,17 +511,35 @@ function build() {
 
 // The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
 // names a published archive (the script skips it before that).
+// On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS the same
+// folder comes from this Mac's shared copy, or from voice/scripts/speaker-assets.mjs when that branch provides it (the
+// runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
 function assets() {
-  const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
-    encoding: 'utf8',
-    windowsHide: true
-  });
-  if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.ps1 failed: ${out.stderr || out.stdout}`);
-  if (process.env.RUKOO_VOICE_NEMO_DIR) nemoDir = process.env.RUKOO_VOICE_NEMO_DIR;
+  if (WIN) {
+    const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.ps1 failed: ${out.stderr || out.stdout}`);
+  } else {
+    const script = path.join(VOICE, 'scripts', 'speaker-assets.mjs');
+    if (fs.existsSync(script)) {
+      const args = [script, '--out', ASSETS, '--model', '--ami'];
+      if (NEMO_DIR) args.push('--nemo-dir', NEMO_DIR);
+      const out = spawnSync(process.execPath, args, { encoding: 'utf8' });
+      if (out.status !== 0 || !fs.existsSync(AMI_WAV)) throw new Error(`speaker-assets.mjs failed: ${out.stderr || out.stdout}`);
+    } else if (!fs.existsSync(AMI_WAV) || !fs.existsSync(NEMOTRON)) {
+      throw new Error(`speaker assets are missing: ${AMI_WAV} and ${NEMOTRON}. Fetch them with voice/scripts/speaker-assets.mjs, or put them in ${ASSETS}`);
+    }
+  }
+  if (NEMO_DIR && fs.existsSync(path.join(NEMO_DIR, 'runtime.json'))) nemoDir = NEMO_DIR;
+  else if (process.env.RUKOO_VOICE_NEMO_DIR) nemoDir = process.env.RUKOO_VOICE_NEMO_DIR;
   else if (fs.existsSync(path.join(ASSETS, 'nemo_speech', 'runtime.json'))) nemoDir = path.join(ASSETS, 'nemo_speech');
+  else if (fs.existsSync(path.join(SHARED_NEMO, 'runtime.json'))) nemoDir = SHARED_NEMO;
   if (nemoDir) {
     const runtime = JSON.parse(fs.readFileSync(path.join(nemoDir, 'runtime.json'), 'utf8').replace(/^﻿/, ''));
-    note(`NeMo runtime: ${nemoDir} (${runtime.name || 'unnamed'}, commit ${String(runtime.commit || '').slice(0, 7)}, MSVC ${runtime.toolset?.msvc || '?'})`);
+    const toolset = runtime.toolset?.msvc ? `MSVC ${runtime.toolset.msvc}` : runtime.build ? 'this platform' : '?';
+    note(`NeMo runtime: ${nemoDir} (${runtime.name || 'unnamed'}, commit ${String(runtime.commit || '').slice(0, 7)}, ${toolset})`);
   } else {
     note("NeMo runtime: Voice's own lookup (next to the exe, then Ownkey's copy, read only)");
   }
@@ -666,9 +750,60 @@ function partOffsets(track) {
 
 // A fresh data folder: the model as a hard link in Voice's own models folder, so the run doesn't depend on Ownkey
 // having it (Voice still prefers Ownkey's copy when there is one), and the settings the run asks for.
+// A file into the new data folder without a second copy on disk: an APFS clone with `cp -c` on macOS (Node's
+// COPYFILE_FICLONE answers ENOSYS on this build), a hard link elsewhere, and a plain copy as the last resort.
+function seedFile(src, dst) {
+  if (MAC) {
+    const out = spawnSync('/bin/cp', ['-c', src, dst], { encoding: 'utf8' });
+    if (out.status === 0) return 'clone';
+  } else {
+    try {
+      fs.linkSync(src, dst);
+      return 'link';
+    } catch (_) {
+      // Another filesystem, or a platform that refuses links: copy below.
+    }
+  }
+  fs.copyFileSync(src, dst);
+  return 'copy';
+}
+
+// A model in Voice's own layout under the data folder, as an install would have it. The cost is one clone per file on
+// APFS and nothing on disk; a copy counts against free space and is reported.
+function seedModel(name, from, to, files) {
+  fs.mkdirSync(to, { recursive: true });
+  const free = () => {
+    const s = fs.statfsSync(VOICE_DATA);
+    return s.bavail * s.bsize;
+  };
+  const before = free();
+  const how = new Set();
+  let bytes = 0;
+  for (const file of files) {
+    const dst = path.join(to, file);
+    if (fs.existsSync(dst)) continue;
+    bytes += fs.statSync(path.join(from, file)).size;
+    how.add(seedFile(path.join(from, file), dst));
+  }
+  const freeDropBytes = Math.max(0, before - free());
+  const entry = { model: name, from, to, files: files.length, bytes, how: [...how], freeDropBytes };
+  report.models.seeded.push(entry);
+  note(`seeded ${name} from ${from}: ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB by ${entry.how.join('/')}, ${(freeDropBytes / 1e6).toFixed(1)} MB of disk used`);
+  return entry;
+}
+
 function prepareVoiceData(config = null) {
   fs.mkdirSync(VOICE_DATA, { recursive: true });
   started.dataDirs.push(VOICE_DATA);
+  if (MODELS) {
+    const from = path.join(MODELS, ORUKEET_REL);
+    if (ORUKEET.files.every((file) => fs.existsSync(path.join(from, file)))) {
+      seedModel('Orukeet', from, path.join(VOICE_DATA, ORUKEET_DIR), ORUKEET.files);
+      seededOrukeet = true;
+    } else {
+      note(`no Orukeet under ${from}: meetings can't transcribe until a model is there`);
+    }
+  }
   if (AMI && fs.existsSync(NEMOTRON)) {
     const dir = path.join(VOICE_DATA, NEMOTRON_DIR);
     fs.mkdirSync(dir, { recursive: true });
@@ -1601,12 +1736,14 @@ function transcriptionOf(settings) {
   const model = settings.models?.orukeet || {};
   if (provider === 'orukeet') {
     if (model.stage === 'installed') return { ready: true, provider, via: `Orukeet at ${model.path}` };
+    const missing = MODELS ? path.join(MODELS, ORUKEET_REL) : 'no --models folder and no shared model folder';
     return {
       ready: false,
       provider,
       reason:
-        `Voice transcribes meetings with Orukeet, which isn't installed on this Mac (Settings > Transcription offers ${Math.round((model.sizeBytes || 486807585) / 1e6)} MB) ` +
-        `and no cloud meeting provider has a key; this run may not download a model or use a key. Install Orukeet, or choose a meeting provider and its key in Settings > Meetings, and run again`
+        `Voice transcribes meetings with Orukeet, and this run found no model: ${missing} is missing the pinned files. ` +
+        `Put them under <root>/${ORUKEET_REL} and pass --models <root>, or install Orukeet in Settings > Transcription; ` +
+        `no cloud meeting provider has a key either, and this run never downloads a model or uses a key`
     };
   }
   const local = /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(where.endpoint || '');
@@ -1621,7 +1758,7 @@ async function pair(monitor) {
   await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
   const first = await hook('status');
   check('Voice runs the real engine in a development copy', first.settings.devMode === true && first.pid === voice.pid, { pid: first.pid });
-  if (MAC) {
+  if (MAC || ARGS.models) {
     TRANSCRIPT = transcriptionOf(first.settings);
     report.transcription = TRANSCRIPT;
     if (TRANSCRIPT.ready) note(`transcription: ${TRANSCRIPT.via}`);
@@ -1632,9 +1769,13 @@ async function pair(monitor) {
       check('meetings can transcribe on this Mac', false, TRANSCRIPT.reason);
     }
   }
-  if (SPEAKERS === true) {
-    const sp = first.settings.speakers;
-    check('Settings > Speaker labels is ready with Nemotron', sp.ready === true && sp.engine === 'nemotron', { reason: sp.reason, detail: sp.detail, runtime: sp.runtime });
+  if (SPEAKERS !== null) {
+    // Decided by what Voice reports, not by the platform: the macOS speaker branch makes this true and the run goes on.
+    const sp = first.settings.speakers || {};
+    if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
+    if (SPEAKERS === true) {
+      check('Settings > Speaker labels is ready with Nemotron', sp.ready === true && sp.engine === 'nemotron', { reason: sp.reason, detail: sp.detail, runtime: sp.runtime });
+    }
   }
   await startRukoo();
   await until('Rukoo to connect to Voice', rukoo.connected, 30000);
@@ -1703,6 +1844,13 @@ async function killScreen(id) {
   const audioGaps = (m.marks || []).filter((k) => k.kind === 'gap');
   check('neither audio track has a gap from the screen process\'s crash', audio.length === 0 && audioGaps.length === 0, { timeline: audio, marks: audioGaps });
   return back;
+}
+
+// Voice hashes a model the first time it loads it and keeps the result in <data>/models/verified.json.
+function seededModelStamp() {
+  const stamps = readJson(path.join(VOICE_DATA, 'models', 'verified.json'));
+  const dir = path.join(VOICE_DATA, ORUKEET_DIR);
+  return Boolean((stamps?.entries || []).some((e) => e.model === ORUKEET.id && e.revision === ORUKEET.revision && e.dir === dir));
 }
 
 // Without a transcriber, what the run can still prove about the audio: both synthetic tracks write their files, and
@@ -1792,6 +1940,7 @@ async function standardRun(voice, offsets) {
         mic: live.passages.filter((p) => p.track === 'mic').length,
         call: live.passages.filter((p) => p.track === 'call').length
       });
+      if (seededOrukeet) check('Voice hashed the seeded Orukeet once and wrote its stamp', seededModelStamp(), { stamp: path.join(VOICE_DATA, 'models', 'verified.json') });
     } else {
       skip('passages with the expected words reached Rukoo on both tracks before the stop', TRANSCRIPT.reason);
       await recordedTracks(id, 'the meeting from Rukoo');
@@ -1819,7 +1968,7 @@ async function standardRun(voice, offsets) {
       await win.locator('.meeting').first().waitFor({ timeout: 20000 });
       await sleep(1000);
       await captureRukoo(path.join(SHOTS, 'rukoo-meeting-live.png'));
-      skip('Voice captured its pill and Settings > Rukoo from WebView2', 'WebView2 captures are Windows-only; the macOS WKWebView capture is a later step, so only Rukoo\'s own window is captured');
+      skip('Voice captured its pill and Settings > Rukoo from WebView2', CAPTURE_SKIP);
     }
 
     // 3b. The screen process dies; Voice's watchdog starts it again and the audio doesn't notice.
@@ -2402,6 +2551,8 @@ async function withoutLabels(reason) {
   await until('the discovery file', () => fs.existsSync(BRIDGE), 60000);
   const status = await hook('status');
   const sp = status.settings.speakers;
+  // A platform that can't label speakers can't show any of the other reasons either.
+  if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
   check(`Settings > Speaker labels says why: ${reason}`, sp.ready === false && sp.reason === reason, { reason: sp.reason, missing: sp.missing, detail: sp.detail });
   await startRukoo();
   await until('Rukoo to connect to Voice', rukoo.connected, 30000);
@@ -2417,8 +2568,11 @@ async function withoutLabels(reason) {
   const entry = await labelsOf(id);
   check(`the meeting's labels are off with reason ${reason}`, entry?.mode === 'off' && entry?.reason === reason, entry);
   const dir = path.join(SHOTS, `speakers-${reason}`);
-  const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
-  check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
+  if (MAC) skip('Voice captured Settings > Speaker labels', CAPTURE_SKIP);
+  else {
+    const shots = await hook('capture', { dir, page: 'speakers' }, 90000);
+    check('Voice captured Settings > Speaker labels', !shots.settings.error, shots.settings);
+  }
 
   // Every AMI voice has spoken once a whole loop has gone by.
   await until('a whole loop of the AMI excerpt', () => meetingNow(id) > AMI_MS + 15000, 180000, 1000);
@@ -3227,11 +3381,15 @@ async function cleanup() {
 }
 
 let error = null;
+let refused = null;
 try {
   await main();
 } catch (err) {
-  error = err;
-  check('the run finished', false, err.message);
+  if (err instanceof Refusal) refused = err;
+  else {
+    error = err;
+    check('the run finished', false, err.message);
+  }
 } finally {
   await cleanup();
   // With every process stopped, nothing holds a file open: the whole run folder, both data folders, the hooks, the
@@ -3248,9 +3406,11 @@ try {
   report.finished = new Date().toISOString();
   report.failed = failed;
   report.skipped = skipped;
+  if (refused) report.refused = refused.message;
   fs.mkdirSync(RUN, { recursive: true });
   fs.writeFileSync(path.join(RUN, 'report.json'), JSON.stringify(report, null, 2));
-  console.log(`\n${failed ? `${failed} check(s) failed` : 'every check passed'}${skipped ? `, ${skipped} skipped (see the skip lines and the report)` : ''}; report: ${path.join(RUN, 'report.json')}`);
+  if (refused) console.error(`\n${refused.message}\nNothing was recorded; report: ${path.join(RUN, 'report.json')}`);
+  else console.log(`\n${failed ? `${failed} check(s) failed` : 'every check passed'}${skipped ? `, ${skipped} skipped (see the skip lines and the report)` : ''}; report: ${path.join(RUN, 'report.json')}`);
   if (error) console.error(error);
-  process.exit(failed ? 1 : 0);
+  process.exit(failed ? 1 : refused ? 2 : 0);
 }
