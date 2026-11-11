@@ -150,6 +150,12 @@ The account's tests against a real server skip unless `RUKOO_ACCOUNT_TEST_SERVER
 RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:8790 RUKOO_ACCOUNT_TEST_NODE=$(which node) ./gradlew testDebugUnitTest --tests 'nl.bvdm.rukoo.account.*'
 ```
 
+`app/src/androidTest` holds tests that need Android's own TLS: the account client counts each answer's bytes on the plain socket underneath TLS, and only a device shows that Android's TLS reads through that socket. CI doesn't run them. Run them on an emulator of your own after changing how the account client connects; `ANDROID_SERIAL` picks the emulator when more than one runs, and leaving the APKs installed keeps the debug app's data:
+
+```sh
+ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
 On an emulator, `adb shell wm size 1080x2520` gives the cover screen's size and `adb shell wm size 1968x2184` with density 420 the inner screen's.
 
 Code map, under `android/app/src/main/java/nl/bvdm/rukoo/`:
