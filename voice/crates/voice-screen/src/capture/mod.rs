@@ -18,7 +18,13 @@ pub mod synthetic;
 pub mod wgc;
 
 #[cfg(target_os = "macos")]
+pub mod mac;
+#[cfg(target_os = "macos")]
+pub mod monitors_mac;
+#[cfg(target_os = "macos")]
 pub mod session_mac;
+#[cfg(target_os = "macos")]
+pub mod synthetic_mac;
 
 #[cfg(windows)]
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
