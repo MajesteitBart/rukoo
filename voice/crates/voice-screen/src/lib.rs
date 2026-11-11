@@ -4,6 +4,12 @@
 //!
 //! The binary `rukoo-voice-screen` runs as its own process, so a graphics driver, encoder or OCR
 //! crash never costs audio.
+//!
+//! `record` and `video::thread` are the orchestration and build on every platform; everything an
+//! operating system provides for them — capture, the graphics device, thumbnails, pixels, the
+//! video writer, JPEG, OCR, the clocks, the monitors and free space — sits behind the traits in
+//! `platform`. The Windows backend is `platform::windows`; the commands still refuse to record
+//! where there is none.
 
 use std::fmt;
 

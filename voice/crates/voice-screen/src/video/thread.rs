@@ -1,8 +1,9 @@
 //! One encoder thread per video file. The main thread hands it frames through a queue of four;
 //! when the encoder falls behind, the oldest frame goes. Frames held back on a still screen
-//! (`hold`) replace each other; the writer puts the newest in at its next re-submit. The sink
-//! writer lives and dies on this thread, and a `Finalize` that hangs costs only this thread: `end`
-//! gives up after its timeout and the file stays readable to its last fragment.
+//! (`hold`) replace each other; the writer puts the newest in at its next re-submit. The
+//! platform's writer (`platform::VideoWriter`) lives and dies on this thread, and a finish that
+//! hangs costs only this thread: `end` gives up after its timeout and the file stays readable to
+//! its last fragment.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

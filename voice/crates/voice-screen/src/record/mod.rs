@@ -3,7 +3,7 @@
 //! This module starts the session: it refuses a live `screen.json`, a journal with `stop` or one
 //! without `--resume`, opens the journal, repairs what a dead session left open, waits for the
 //! recorder's `session` line, binds the control port, chooses the monitor and hands the running
-//! session to [`screen::Screen`]. The session's own loop, journal and drop rules are there.
+//! session to `screen::Screen`. The session's own loop, journal and drop rules are there.
 //!
 //! Startup order (spec 4.2): refuse a live `screen.json` (4), a journal with `stop` (3) or a
 //! journal without `--resume` (3); open the journal; on `--resume` repair the open video file,

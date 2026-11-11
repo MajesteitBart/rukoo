@@ -1150,13 +1150,12 @@ impl<P: Platform> Screen<P> {
                 self.on_monitor_lost();
             }
         }
-        if self
-            .capturing
-            .then(|| self.device.clone())
-            .flatten()
-            .is_some_and(|d| self.platform.device_removed(&d))
-        {
-            self.on_device_lost();
+        if self.capturing {
+            if let Some(device) = self.device.clone() {
+                if self.platform.device_removed(&device) {
+                    self.on_device_lost();
+                }
+            }
         }
         // The capture's `Closed` notice shares the queue with frames and is lost when the queue
         // is full, so a recorded monitor that left the list counts as gone as well.
