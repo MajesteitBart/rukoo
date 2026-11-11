@@ -465,6 +465,19 @@ kbd {
   overflow: hidden;
   pointer-events: none;
 }
+/* Window buttons on the left, or on both sides, on Linux: bootstrap.js sets data-controls="left". The bar then follows
+ * the window controls overlay's titlebar-area rectangle, the part of the bar the buttons leave free, in CSS pixels at
+ * the current zoom. The brand starts after the buttons, and the actions end 12px before any buttons on the right or
+ * the window's edge. The brand's padding is wider than the icon rail: the brand grows to fit it, which keeps the
+ * search clear of the buttons and leaves no room for the icon, as on macOS. */
+:root[data-controls="left"] .titlebar {
+  padding-right: calc(
+    100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - env(titlebar-area-x, 0px))) + 12px
+  );
+}
+:root[data-controls="left"] .titlebar-brand {
+  padding-left: calc(22px + env(titlebar-area-x, 0px));
+}
 /* Traffic lights stay in native screen pixels while page zoom scales this bar.
  * Keep the brand width aligned with the sidebar and reserve the left inset inside it. */
 :root[data-platform="darwin"] .titlebar {
@@ -3309,6 +3322,9 @@ body.compose-window {
   min-width: 0;
   flex: 1;
   padding-left: 16px;
+}
+:root[data-controls="left"] .compose-window .titlebar-brand {
+  padding-left: calc(16px + env(titlebar-area-x, 0px));
 }
 .compose-window .titlebar-name {
   font-size: 12.5px;
