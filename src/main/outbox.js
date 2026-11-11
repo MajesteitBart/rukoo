@@ -171,4 +171,14 @@ class Handoff {
   }
 }
 
-module.exports = { Outbox, Handoff };
+// A refused email that went to Drafts after its editor had closed (waitedMailFailed in main.js): what opens that
+// editor again on the stored draft. id: the stored draft, or null when the save couldn't say which it is. The save
+// replaced the draft the email's attachments were copied from, so pendingRemap asks the editor to point them at the
+// stored draft first, as it does after a save of its own (composer.js settleAttachments). A send or save that reads
+// them from the replaced draft fails.
+function savedToDrafts(restore, id) {
+  const r = restore && typeof restore === 'object' ? restore : {};
+  return { ...r, state: { ...(r.state && typeof r.state === 'object' ? r.state : {}), draftId: id || null, pendingRemap: true } };
+}
+
+module.exports = { Outbox, Handoff, savedToDrafts };

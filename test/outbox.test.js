@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
-const { Outbox, Handoff } = require('../src/main/outbox');
+const { Outbox, Handoff, savedToDrafts } = require('../src/main/outbox');
 const { Engine } = require('../src/main/engine');
 
 // Timers that only fire when the test says so.
@@ -282,6 +282,42 @@ test('a page that reloads gets back what it had claimed but not opened, with a n
   clock.advance(10000);
   assert.deepEqual(elsewhere, [['b'], ['a']]);
   assert.equal(box.size, 0);
+});
+
+// ---------- a refused email that went to Drafts ----------
+
+// The quit's Drafts save of a refused email (main.js waitedMailFailed) replaces the draft its editor had saved, which
+// is where the email's attachments are copied from. Its editor opens again on the stored draft and copies them from
+// there (composer.js settleAttachments), or a send or save can't read them.
+test('a refused email that went to Drafts opens again on the stored draft, with its attachments copied from there', async () => {
+  const engine = new Engine({ dataDir: tempDir('sem-undo-send-') }).init();
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const original = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+  const mail = { accountId: acc.id, to: ['demo@example.com'], subject: 'Fwd: Call on Thursday', html: '<p>Here is the proposal.</p>' };
+  // The editor saved its forward, and copies the attachment from that draft from then on.
+  const first = await engine.saveDraft({ ...mail, forwardId: original.id, forwardIndexes: [0] });
+  const payload = { ...mail, forwardId: first, forwardIndexes: [0], draftId: first };
+  const restore = {
+    opts: { mode: 'forward', id: original.id, accountId: null },
+    html: '<p>Here is the proposal.</p>',
+    state: { draftId: first, forwardId: first, subject: mail.subject, attachments: [{ forwardIndex: 0, filename: 'Proposal-v3.pdf', size: 192 }] }
+  };
+
+  const second = await engine.saveDraft(payload);
+  await assert.rejects(engine.forwardAttachments(payload), 'the draft the attachment came from is gone');
+  const reopened = savedToDrafts(restore, second);
+  assert.deepEqual(reopened, { ...restore, state: { ...restore.state, draftId: second, pendingRemap: true } });
+  assert.equal(restore.state.draftId, first, 'what main held is left as it was');
+  const stored = await engine.getMessage(second);
+  assert.deepEqual(stored.attachments.map((a) => a.filename), ['Proposal-v3.pdf']);
+  const copied = await engine.forwardAttachments({ forwardId: second, forwardIndexes: stored.attachments.map((a) => a.index) });
+  assert.deepEqual(copied.map((a) => a.filename), ['Proposal-v3.pdf']);
+
+  // A save that couldn't say which draft it stored leaves the editor nothing to copy from, which it says on Send.
+  assert.deepEqual(savedToDrafts(restore, null).state, { ...restore.state, draftId: null, pendingRemap: true });
+  assert.deepEqual(savedToDrafts(null, second), { state: { draftId: second, pendingRemap: true } });
+  await engine.close();
 });
 
 // ---------- the setting and the checks Send makes before it waits ----------

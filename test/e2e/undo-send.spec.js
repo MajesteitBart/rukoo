@@ -309,9 +309,9 @@ test('an email that fails while a quit waits for an answer opens again when the 
 
 // The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is
 // called off before that save is done. ok: the save then stores the draft, or fails. The refused email opens again in
-// the reading pane, which keeps the other editor's text as a draft.
-async function refusedWhileQuitIsCalledOff(subject, text, ok) {
-  await newMessage(win, { to: 'someone@example.com', subject, text });
+// the reading pane, which keeps the other editor's text as a draft. write: writes the email to someone@example.com.
+async function refusedWhileQuitIsCalledOff(subject, text, ok, write = () => newMessage(win, { to: 'someone@example.com', subject, text })) {
+  await write();
   await composer().locator('[data-c="send"]').click();
   await composerGone();
   await app.evaluate((_e, subject) => {
@@ -367,6 +367,48 @@ test('an email that reached Drafts after the quit is called off opens again on t
   await win.keyboard.press('Control+s');
   await expect(composer()).toHaveAttribute('data-dirty', 'false');
   expect((await subjects('drafts')).filter((s) => s === 'Called off, saved')).toHaveLength(1);
+});
+
+// The quit's save replaces the draft the email's attachment was copied from; its editor copies it from the stored
+// draft instead (outbox.js savedToDrafts), so the email still goes with it.
+test('an email saved with an attachment that reached Drafts after the quit is called off still goes with it', async () => {
+  const subject = 'Proposal, saved first';
+  await refusedWhileQuitIsCalledOff(subject, 'Here is the proposal.', true, async () => {
+    await item('Sanne de Vries').click();
+    await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
+    await win.click('[data-reader="forward"]');
+    const c = composer();
+    await c.locator('[data-rinput="to"]').fill('someone@example.com');
+    await c.locator('[data-rinput="to"]').press('Enter');
+    await c.locator('[data-field="subject"]').fill(subject);
+    await c.locator('.editor').click();
+    await win.keyboard.type('Here is the proposal.');
+    // Saved: from here on the attachment is copied from this draft.
+    await win.keyboard.press('Control+s');
+    await expect(c).toHaveAttribute('data-dirty', 'false');
+  });
+  const c = composer();
+  await expect(c.locator('.compose-attachments')).toContainText('Proposal-v3.pdf');
+  expect((await subjects('drafts')).filter((s) => s === subject)).toHaveLength(1);
+
+  // The server takes it this time.
+  await app.evaluate(() => {
+    delete global.__semEngine.send;
+  });
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await sendWaiting();
+  await expect(notice()).toContainText('Email sent');
+  await expect(win.locator('.dialog')).toHaveCount(0);
+  const attached = await app.evaluate(async (_e, subject) => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    const copy = engine.listMessages({ scope: id, view: 'sent' }).find((m) => m.subject === subject);
+    return copy ? (await engine.getMessage(copy.id)).attachments.map((a) => a.filename) : null;
+  }, subject);
+  expect(attached).toEqual(['Proposal-v3.pdf']);
+  expect(await subjects('drafts')).not.toContain(subject);
 });
 
 // The main window had nothing to ask and closed during the quit, so calling the quit off in a compose window brings

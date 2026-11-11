@@ -20,7 +20,7 @@ const {
   session
 } = require('electron');
 const { Engine } = require('./engine');
-const { Outbox, Handoff } = require('./outbox');
+const { Outbox, Handoff, savedToDrafts } = require('./outbox');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
@@ -839,8 +839,10 @@ async function waitedMailFailed(entry, err) {
       return;
     }
     // The quit was called off while the email went to Drafts, and answered() has already opened what the quit kept.
-    // Rukoo stays, so this one opens like any refused email; when the save stored a draft, its editor goes on with it.
-    if (saved) restore = { ...restore, state: { ...(restore.state || {}), draftId: saved.id || null } };
+    // Rukoo stays, so this one opens like any refused email; when the save stored a draft, its editor goes on with it,
+    // attachments included. The restore travels as it is from here: to the main window, a compose window, or
+    // unsent.json when a later quit comes first.
+    if (saved) restore = savedToDrafts(restore, saved.id);
   }
   if (entry.origin === 'main' && win && !win.isDestroyed()) {
     if (!win.isVisible() || win.isMinimized()) showWindow();

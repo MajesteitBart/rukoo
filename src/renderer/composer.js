@@ -460,6 +460,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // too). From here on it is an ordinary editor: popping it out or a later Undo send starts from what it holds then.
   const restored = Boolean(opts.restore);
   const sendError = opts.sendError || null;
+  // Saved to Drafts after this editor had closed (outbox.js savedToDrafts): its attachments still point at the draft
+  // that save replaced, until settleAttachments() points them at st.draftId.
+  const savedElsewhere = restored && Boolean(opts.restore.state && opts.restore.state.pendingRemap === true);
   if (restored) opts = { ...opts, restore: null, sendError: null };
   // Stable for the life of this composer: the chat panel ties an agent's draft card to it.
   const key = crypto.randomUUID();
@@ -1158,8 +1161,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     return true;
   }
 
-  // Set after a save whose attachments could not be read back yet; settled before the next save or send.
-  let pendingRemap = null;
+  // Set after a save whose attachments could not be read back yet; settled before the next save or send. Also set
+  // from the start for an editor that opens again on a draft main saved for it.
+  let pendingRemap = savedElsewhere && st.attachments.length ? { id: st.draftId, sent: st.attachments.slice() } : null;
   async function settleAttachments() {
     if (!pendingRemap) return;
     const { id, sent } = pendingRemap;
@@ -1172,8 +1176,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     renderAttachments();
   }
 
-  // Saves run one at a time; a save requested during another runs after it.
-  let saving = Promise.resolve(true);
+  // Saves run one at a time; a save requested during another runs after it. An editor that opens again on a draft
+  // main saved for it first points its attachments at that draft; when that can't be done now, the next save or send
+  // tries again and says so.
+  let saving = pendingRemap ? settleAttachments().catch(() => {}).then(() => true) : Promise.resolve(true);
   function saveDraft({ auto }) {
     clearTimeout(autosaveTimer);
     saving = saving.then(async () => {
