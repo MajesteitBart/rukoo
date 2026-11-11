@@ -135,7 +135,7 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 `{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`.
 
-Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
+Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
 
 An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
 
@@ -160,7 +160,7 @@ Signs that device out. → `204`.
 
 ### `POST /v1/password`
 
-This call, `POST /v1/recovery` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts count toward the same lock as sign-ins.
+This call, `POST /v1/recovery` and `DELETE /v1/account` check the password again with `authKey`. A wrong one gives `403 wrong_password`, never 401, so the device can tell a typo from a session that ended. These attempts don't count toward the account's lock, so a device that is signed in can still use these calls while someone else's failed sign-ins lock the account. Each session counts its own instead: ten wrong passwords from one session within 15 minutes of the first lock that session's password checks for 15 minutes, with `429 locked` and `Retry-After` as for sign-ins. The session keeps working for everything else, and other sessions aren't affected. A right password resets the session's count.
 
 
 `{ "authKey", "kdf", "salt", "newAuthKey", "wrappedKey" }`, where `authKey` proves the current password and `wrappedKey` is the data key wrapped with the new one. Signs out every other device. → `204`.

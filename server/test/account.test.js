@@ -42,6 +42,11 @@ function wrongLogin(person) {
   return call('POST', '/v1/login', { body: { email: person.email, authKey: key(), device: device() } });
 }
 
+// A signed-in call that checks the password again: a new recovery key.
+function recovery(token, authKey) {
+  return call('POST', '/v1/recovery', { token, body: { authKey, recoveryAuth: key(), recoveryWrappedKey: sealed() } });
+}
+
 // Moves the clock forward for the Worker and its objects, which run in the same isolate as the tests.
 function later(ms) {
   vi.setSystemTime(Date.now() + ms);
@@ -329,20 +334,96 @@ describe('the lock after failed attempts', () => {
     expect((await login(person)).status).toBe(429);
   });
 
-  it('counts a wrong password on signed-in calls too', async () => {
+  it("doesn't stop a signed-in device from changing the password, the recovery key or deleting the account", async () => {
+    // Someone who only knows the address locks sign-ins.
     const person = await signup();
+    for (let i = 0; i < 10; i++) await wrongLogin(person);
+    expect((await login(person)).status).toBe(429);
+
+    // A device that is signed in checks the password as usual: a wrong one is 403, the right one goes through.
+    expect((await recovery(person.token, key())).status).toBe(403);
+    const next = { recoveryAuth: key(), recoveryWrappedKey: sealed() };
+    const replaced = await call('POST', '/v1/recovery', { token: person.token, body: { authKey: person.authKey, ...next } });
+    expect(replaced.status).toBe(204);
+    const newAuthKey = key();
+    const changed = await call('POST', '/v1/password', {
+      token: person.token,
+      body: { authKey: person.authKey, kdf: KDF, salt: salt(), newAuthKey, wrappedKey: sealed() }
+    });
+    expect(changed.status).toBe(204);
+
+    // Neither moved the account's lock: sign-ins wait for it to end, also with the new password.
+    expect((await login({ email: person.email, authKey: newAuthKey })).status).toBe(429);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: newAuthKey } })).status).toBe(204);
+    expect(await tables(person.email)).toEqual([]);
+  });
+
+  it("locks one session's password checks after ten wrong passwords, for 15 minutes", async () => {
+    const person = await signup();
+    const phone = (await login(person, 'Phone')).body.token;
     for (let i = 0; i < 9; i++) {
       const res = await call('DELETE', '/v1/account', { token: person.token, body: { authKey: key() } });
       expect(res.status).toBe(403);
     }
-    const tenth = await call('POST', '/v1/recovery', {
-      token: person.token,
-      body: { authKey: key(), recoveryAuth: key(), recoveryWrappedKey: sealed() }
-    });
+    const tenth = await recovery(person.token, key());
     expect(tenth.status).toBe(429);
     expect(tenth.body.error).toBe('locked');
-    expect((await login(person)).status).toBe(429);
-    // The session itself still works for everything that doesn't ask for the password.
+    expect(Number(tenth.headers.get('retry-after'))).toBe(15 * 60);
+
+    // Even the right password is refused on this session while it is locked.
+    expect((await recovery(person.token, person.authKey)).status).toBe(429);
+    expect((await call('DELETE', '/v1/account', { token: person.token, body: { authKey: person.authKey } })).status).toBe(
+      429
+    );
+    // Nothing else is locked: the session works for calls without the password, and other devices and sign-ins
+    // aren't affected.
+    expect((await call('GET', '/v1/account', { token: person.token })).status).toBe(200);
+    expect((await recovery(phone, person.authKey)).status).toBe(204);
+    expect((await login(person)).status).toBe(200);
+
+    later(14 * MINUTE);
+    const stillLocked = await recovery(person.token, person.authKey);
+    expect(stillLocked.status).toBe(429);
+    expect(Number(stillLocked.headers.get('retry-after'))).toBeLessThanOrEqual(60);
+
+    later(2 * MINUTE);
+    expect((await recovery(person.token, person.authKey)).status).toBe(204);
+  });
+
+  it("starts a session's count again after the right password, and forgets its failures after 15 minutes", async () => {
+    const person = await signup();
+    for (let i = 0; i < 9; i++) await recovery(person.token, key());
+    expect((await recovery(person.token, person.authKey)).status).toBe(204);
+    for (let i = 0; i < 9; i++) expect((await recovery(person.token, key())).status).toBe(403);
+    later(16 * MINUTE);
+    for (let i = 0; i < 9; i++) expect((await recovery(person.token, key())).status).toBe(403);
+    expect((await recovery(person.token, person.authKey)).status).toBe(204);
+  });
+
+  it("doesn't count a session's wrong passwords toward the account's lock", async () => {
+    const person = await signup();
+    for (let i = 0; i < 9; i++) await wrongLogin(person);
+    expect((await recovery(person.token, key())).status).toBe(403);
+    expect((await login(person)).status).toBe(200);
+  });
+
+  it('adds a count to the sessions of an account made before sessions had one', async () => {
+    const person = await signup();
+    // The sessions table as servers before this one made it.
+    await runInDurableObject(await accountStub(person.email), (instance, state) => {
+      for (const column of ['failures', 'failedAt', 'lockedUntil']) {
+        state.storage.sql.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+      }
+      instance.migrate();
+      instance.migrate();
+      expect(state.storage.sql.exec('SELECT failures, failedAt, lockedUntil FROM sessions').one()).toEqual({
+        failures: 0,
+        failedAt: 0,
+        lockedUntil: 0
+      });
+    });
+    for (let i = 0; i < 9; i++) expect((await recovery(person.token, key())).status).toBe(403);
+    expect((await recovery(person.token, key())).status).toBe(429);
     expect((await call('GET', '/v1/account', { token: person.token })).status).toBe(200);
   });
 });
@@ -403,7 +484,17 @@ describe('sessions', () => {
       state.storage.sql.exec('SELECT * FROM sessions').toArray()
     );
     expect(stored).toHaveLength(1);
-    expect(Object.keys(stored[0]).sort()).toEqual(['createdAt', 'id', 'lastSeenAt', 'name', 'platform', 'tokenHash']);
+    expect(Object.keys(stored[0]).sort()).toEqual([
+      'createdAt',
+      'failedAt',
+      'failures',
+      'id',
+      'lastSeenAt',
+      'lockedUntil',
+      'name',
+      'platform',
+      'tokenHash'
+    ]);
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(person.token)));
     expect(new Uint8Array(stored[0].tokenHash)).toEqual(hash);
   });
