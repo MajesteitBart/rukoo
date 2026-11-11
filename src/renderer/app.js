@@ -19,6 +19,8 @@ import {
   initials,
   cleanPreview,
   toast,
+  dropToast,
+  showingToast,
   runToastAction,
   showMenu,
   closeMenu,
@@ -229,6 +231,8 @@ async function refreshOnce() {
     S.composer?.retheme(data);
   }
   renderShell();
+  // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
+  if (first) takeSendFailures();
   if (!data.accounts.length) {
     if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
     return;
@@ -2078,7 +2082,8 @@ async function printMessage(id) {
 // Each request to write (or to open a message) takes a number; a request that a newer one overtook
 // while it waited stops, so a slow reply can never replace the message you started after it.
 // still: the caller's check after each wait that its reason to write holds (the agent panel: whether its chat is
-// still on screen); without it the request stops.
+// still on screen); without it the request stops. claim: asked once the reading pane is free, right before the editor
+// takes its place; false stops the request (a refused email that opened elsewhere meanwhile, reopenRefused).
 let composeTurn = 0;
 
 async function compose(opts) {
@@ -2089,11 +2094,13 @@ async function compose(opts) {
   if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  const { still, ...rest } = opts;
-  const full = { accountId, ...rest };
+  const { still, claim, ...rest } = opts;
+  // An editor that opens again after Undo send brings its own mode, account and the email it answers.
+  const restore = rest.restore || null;
+  const full = restore ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null } : { accountId, ...rest };
   const holds = () => !still || still();
-  let message = null;
-  if (full.id) {
+  let message = restore ? restore.original || null : null;
+  if (full.id && !restore) {
     try {
       message = await api('get', full.id);
     } catch (err) {
@@ -2106,6 +2113,7 @@ async function compose(opts) {
   // Whatever is being written now is kept as a draft before the new message takes its place.
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn || S.composer || !holds()) return;
+  if (claim && (!(await claim()) || turn !== composeTurn || S.composer || !holds())) return;
   const host = $('.reader');
   host.innerHTML = '';
   S.expanded = false;
@@ -2130,6 +2138,87 @@ async function compose(opts) {
   renderShell();
   agentViewChanged();
   return S.composer;
+}
+
+// The mode, email and account an editor that opens again had (composer.js undoState).
+function restoreOpts(restore) {
+  const o = restore.opts && typeof restore.opts === 'object' ? restore.opts : {};
+  return { mode: typeof o.mode === 'string' ? o.mode : 'new', id: typeof o.id === 'string' ? o.id : null, ...(typeof o.accountId === 'string' ? { accountId: o.accountId } : {}) };
+}
+
+// ---------- undo send ----------
+
+// After Send, while the email waits in main's outbox (Settings > General > Undo send). Undo, or Ctrl+Z, takes it back;
+// a newer notice takes this one's place, and the email then goes when its time is up. "Email sent" follows from
+// main ('send-done'). undoNotice: the email whose notice shows, and its action.
+let undoNotice = null;
+function offerUndoSend({ id, ms }) {
+  const action = { get label() { return t('common.actions.undo'); }, run: () => undoSend(id) };
+  undoNotice = { id, action };
+  toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
+}
+
+// An email that waited went. A newer email's notice keeps its Undo instead of making way for "Email sent".
+function waitedMailSent({ id }) {
+  if (undoNotice && undoNotice.id !== id && showingToast(undoNotice.action)) return;
+  toast(t('composer.status.sent'));
+}
+
+// The emails the server refused after their wait, which main holds for this window until their editors are open
+// (refused in main.js): asked for when told ('send-failed'), and once the first state is drawn, so a window that was
+// still loading when an email failed opens it too. Each one's notice goes, and its editor opens again with the error:
+// the first in the reading pane, any others in compose windows (main opens those), so none of them pushes another
+// out. Main lets each go only once it is open, so the ones this page dies before opening still open elsewhere. One
+// round at a time: a second 'send-failed' asks after the first round, and finds only what is new.
+let takingFailures = Promise.resolve();
+function takeSendFailures() {
+  takingFailures = takingFailures.then(takeSendFailuresNow, takeSendFailuresNow);
+  return takingFailures;
+}
+
+async function takeSendFailuresNow() {
+  if (!S.data || !$('.reader')) return;
+  const list = await api('sendFailures').catch(() => []);
+  for (const [i, { id, restore, error }] of list.entries()) {
+    if (!restore || typeof restore !== 'object') continue;
+    if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
+    if (i === 0) await reopenRefused(id, restore, String(error || ''));
+    else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+  }
+}
+
+// A refused email back in the reading pane. It is claimed only once the pane is free, after the editor there saved
+// its text, so main still has it if this page dies during that save, and the pane leaves it alone when main opened
+// it elsewhere meanwhile. Main lets it go once the editor is open; when the pane can't take it, main opens it in a
+// compose window.
+async function reopenRefused(id, restore, sendError) {
+  setMode('mail');
+  const claim = () => api('claimRefused', id).catch(() => false);
+  const editor = await compose({ restore, sendError, claim }).catch(() => null);
+  if (editor) await api('refusedOpened', id).catch(() => {});
+  else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+}
+
+async function undoSend(id) {
+  let res;
+  try {
+    res = await api('undoSend', id);
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  if (!res || res.late) return toast(t('composer.undoSend.late'));
+  // An email written in a compose window opens in a new one; main did that.
+  if (res.restore) await reopenComposer(res.restore);
+  toast(t('composer.undoSend.undone'));
+}
+
+// The editor of an email that waited, back in the reading pane. When the pane can't take it (its own editor is busy
+// asking or saving), it opens in a compose window, so the email is never lost. sendError: why the server refused it.
+async function reopenComposer(restore, sendError = null) {
+  setMode('mail');
+  const editor = await compose({ restore, sendError }).catch(() => null);
+  if (editor) return;
+  await api('openCompose', { ...restoreOpts(restore), restore, sendError }).catch((err) => toast(err.message, 5000));
 }
 
 // ---------- reader ----------
@@ -2826,6 +2915,10 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // Undo send (main.js): an email waits after Send, or the server refused one that waited and its editor opens again.
+  if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
+  if (type === 'send-done' && payload) waitedMailSent(payload);
+  if (type === 'send-failed') takeSendFailures();
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
     toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);

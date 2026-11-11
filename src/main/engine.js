@@ -34,6 +34,10 @@ const MOVE_PAST = 5;
 const SYSTEM_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk'];
 // How many related emails the reader gets under an email; see related().
 const RELATED_LIMIT = 20;
+// Settings > General > Undo send: how many seconds Send waits before the email goes (main.js and outbox.js), as
+// Apple Mail and Gmail offer it. 0 is off. The renderer's list in settings.js offers the same values.
+const UNDO_SEND_SECONDS = [0, 5, 10, 20, 30];
+const UNDO_SEND_DEFAULT = 5;
 
 const DEFAULT_SETTINGS = {
   language: 'en',
@@ -64,6 +68,8 @@ const DEFAULT_SETTINGS = {
   // Three or more emails in a row from one sender, on one day, fold into one row in the list (renderer stackLayout).
   // Off by default, so every email has its own row.
   stackSenders: false,
+  // Seconds an email waits after Send, so the notice that follows can take it back; one of UNDO_SEND_SECONDS.
+  undoSend: UNDO_SEND_DEFAULT,
   // Percent, shared by the main window and the compose windows; see zoom.js.
   zoomLevel: 100,
   // Closing the main window hides it and Rukoo keeps running in the tray; minimizing can do the same. See main.js.
@@ -100,6 +106,7 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.stackSenders = s.stackSenders === true;
+  s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
@@ -238,6 +245,11 @@ function lowerAddr(a) {
 // A Message-ID header as a comparable key: no angle brackets, lower case.
 function messageKey(v) {
   return String(v || '').trim().replace(/[<>]/g, '').toLowerCase();
+}
+
+// Recipients of an email to send: { name, address } objects or bare addresses, without empty ones.
+function addressList(list) {
+  return (list || []).map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a)).filter((a) => a && a.address);
 }
 
 class Engine extends EventEmitter {
@@ -1601,18 +1613,14 @@ class Engine extends EventEmitter {
   // ---------- compose ----------
 
   async buildMail(acc, payload) {
-    const addrs = (list) =>
-      (list || [])
-        .map((a) => (typeof a === 'string' ? { name: '', address: a.trim() } : a))
-        .filter((a) => a.address);
     const from = this.identity(acc, payload.from || null);
     if (!from) throw new Error(t('errors.send.identity', { address: payload.from }));
     const inline = util.inlineDataImages(payload.html || '');
     return {
       from: { name: from.name || acc.name || '', address: from.address },
-      to: addrs(payload.to),
-      cc: addrs(payload.cc),
-      bcc: addrs(payload.bcc),
+      to: addressList(payload.to),
+      cc: addressList(payload.cc),
+      bcc: addressList(payload.bcc),
       subject: payload.subject || '',
       html: inline.html || undefined,
       text: payload.text || (payload.html ? util.htmlToPlain(payload.html) : ''),
@@ -1746,16 +1754,26 @@ class Engine extends EventEmitter {
     return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'], skipSpam: true });
   }
 
+  // What send() refuses before it builds the mail: an unknown account or sender address, no recipients, an address
+  // that isn't one. Main asks first when Send waits for its Undo notice (outbox.js), so the open editor still shows
+  // the mistake. Returns the account.
+  checkSend(payload) {
+    const acc = this.account(payload.accountId);
+    if (!this.identity(acc, payload.from || null)) throw new Error(t('errors.send.identity', { address: payload.from }));
+    const people = [...addressList(payload.to), ...addressList(payload.cc), ...addressList(payload.bcc)];
+    if (!people.length) throw new Error(t('errors.send.noRecipients'));
+    for (const a of people) {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
+    }
+    return acc;
+  }
+
   // icalEvent: an iCalendar part for the message ({ method, content }), only from the main process: the answer to an
   // invitation (see answerInvite in main.js). It goes as the text/calendar alternative and as invite.ics.
   async send(payload, { icalEvent = null } = {}) {
-    const acc = this.account(payload.accountId);
+    const acc = this.checkSend(payload);
     const mail = await this.buildMail(acc, payload);
     if (icalEvent) mail.icalEvent = { method: icalEvent.method, content: icalEvent.content, filename: 'invite.ics' };
-    if (!mail.to.length && !mail.cc.length && !mail.bcc.length) throw new Error(t('errors.send.noRecipients'));
-    for (const a of [...mail.to, ...mail.cc, ...mail.bcc]) {
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a.address)) throw new Error(t('common.errors.invalidEmailValue', { address: a.address }));
-    }
     const raw = await this.session(acc).send(mail);
     // Sending takes a while. New account settings meanwhile close the session it started on, so the Sent copy goes
     // through the session the account has now; an account removed meanwhile keeps no copy.

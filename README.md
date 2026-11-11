@@ -36,7 +36,7 @@ Few people have used Rukoo on a real Mac so far, and Mac builds are only notariz
 - Inbox categories split the inbox like Gmail's tabs, on every account: Needs you, To read, Money, Updates, Promotions and your own. Nothing changes on the mail server. With your own TypeSafe API key, Jev sorts the mail that Rukoo's rules aren't sure about.
 - Every email has its own row, and the reading pane lists its related emails, such as your answer in Sent. Newsletters get an Unsubscribe button.
 - You write in the reading pane or in a separate window. Drafts save to the server while you type, and each account can have its own formatted signature.
-- You can undo a delete, archive or move with `Ctrl+Z`. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
+- You can undo a delete, archive or move with `Ctrl+Z`, and take an email back for a few seconds after Send. The keyboard shortcuts can follow Gmail, Outlook, Apple Mail or Thunderbird, and on a touch screen you choose what a swipe does.
 
 More in [Mail](docs/mail.md) and [Inbox categories](docs/categories.md).
 
