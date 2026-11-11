@@ -556,6 +556,9 @@ function endSession() {
   quitting = true;
   quitAsks.clear();
   clearInterval(syncTimer);
+  // Refused emails the main window hasn't opened yet go to the list for the next start (quitting is set), so one the
+  // window opens now, in a session about to end, can't drop out of that list between the two writes below.
+  refused.letGo();
   // Email that waits out its Undo notice goes now, as far as Windows leaves Rukoo the time. It is written down first,
   // so the next start opens what Windows cut off, and again once the sends are done, with only what didn't go.
   keepUnsent();
@@ -755,10 +758,11 @@ const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json
 let unsentWritten = false;
 
 // Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
-// one is here; the window takes them (sendFailures) once it listens and has drawn its first state. So a main window
-// that is still loading when the server refuses an email, as after a quit called off in a compose window, gets it
-// all the same. A main window that closes or crashes first, or hasn't taken one within 15 seconds, leaves it to a
-// compose window, and during a quit to the next start.
+// one is here; the window asks for them (sendFailures) once it listens and has drawn its first state, so a main
+// window that is still loading when the server refuses an email, as after a quit called off in a compose window,
+// gets it all the same. Main keeps each one until the window says its editor is open with it (refusedOpened). A main
+// window that closes or crashes before that, or hasn't claimed one within 15 seconds, leaves it to a compose window,
+// and during a quit to the next start. outbox.js Handoff has the rules.
 const refused = new Handoff({
   ms: 15000,
   elsewhere: (list) => {
@@ -769,10 +773,16 @@ const refused = new Handoff({
   }
 });
 
+// Test mode only: lets end-to-end tests see what is held, and shorten the 15 seconds.
+if (process.env.SEM_HIDDEN) global.__semRefused = refused;
+
 function holdRefused(item) {
   refused.hold(item);
   send('send-failed', { id: item.id });
 }
+
+// Only the main window's page opens held refused emails; a compose window asking gets none.
+const fromMainWindow = (sender) => Boolean(win && !win.isDestroyed() && sender === win.webContents);
 
 // Writes down what the quit leaves: the emails refused and not saved or not yet opened, and those still on their
 // way, whose fate nobody can know now. They aren't sent again by themselves: the user checks Sent first.
@@ -834,7 +844,7 @@ async function waitedMailFailed(entry, err) {
   }
   if (entry.origin === 'main' && win && !win.isDestroyed()) {
     if (!win.isVisible() || win.isMinimized()) showWindow();
-    // Held until the window takes it; the failed email's notice goes with it (the renderer's takeSendFailures).
+    // Held until the window has opened it; the failed email's notice goes with it (the renderer's takeSendFailures).
     holdRefused({ id: entry.id, restore, error });
     return;
   }
@@ -1590,9 +1600,16 @@ const windowApi = {
     openComposeWindow({ ...(entry.restore.opts || {}), restore: entry.restore });
     return { window: true };
   },
-  // The refused emails held for the main window (holdRefused): [{ id, restore, error }]. Taking them is the window's
-  // word that it opens them, so main lets them go.
-  sendFailures: (sender) => (win && !win.isDestroyed() && sender === win.webContents ? refused.take() : []),
+  // The refused emails held for the main window (holdRefused) that it hasn't claimed yet: [{ id, restore, error }].
+  // Main keeps them until the window says each one is open (refusedOpened), or asks main to open it (openRefused).
+  sendFailures: (sender) => (fromMainWindow(sender) ? refused.waiting() : []),
+  // The reading pane is free and takes this refused email now. false when it opened elsewhere meanwhile, or another
+  // call of the window claimed it: the window then leaves it alone.
+  claimRefused: (sender, id) => fromMainWindow(sender) && refused.claim(String(id || '')),
+  // Its editor is open with it, so main lets it go. Nothing happens for one that is no longer held.
+  refusedOpened: (sender, id) => fromMainWindow(sender) && refused.ack(String(id || '')),
+  // The reading pane couldn't take it after all: it opens in a compose window, unless it opened elsewhere already.
+  openRefused: (sender, id) => fromMainWindow(sender) && refused.release(String(id || '')),
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
     return c ? c.opts : null;
@@ -1709,6 +1726,8 @@ function createWindow({ hidden = false } = {}) {
     refused.letGo();
   });
   win.webContents.on('render-process-gone', () => refused.letGo());
+  // A new page asks again for the refused emails the old one had claimed but not opened.
+  win.webContents.on('did-navigate', () => refused.unclaim());
   // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
   // loads too, and the panel that opened it keeps listening.
   win.webContents.on('did-start-navigation', (details) => {

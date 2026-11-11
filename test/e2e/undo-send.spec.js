@@ -42,6 +42,8 @@ const composer = () => win.locator('.composer');
 const composerGone = () => expect(composer()).toHaveCount(0, { timeout: 10000 });
 const waiting = () => app.evaluate(() => global.__semOutbox.size);
 const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
+// Refused emails main holds for the main window until their editors are open (main.js refused).
+const held = () => app.evaluate(() => global.__semRefused.size);
 // The subjects in a view of the demo account, after a sync.
 const subjects = (view) =>
   app.evaluate(async (_e, view) => {
@@ -511,6 +513,8 @@ test('an email the server refuses after the wait opens again with its text and t
   await expect(composer().locator('[data-field="subject"]')).toHaveValue('Refused later');
   await expect(composer().locator('.editor')).toContainText('Keep every word of this.');
   await expect(composer().locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+  // Its editor is open, so main let it go.
+  await expect.poll(held).toBe(0);
 });
 
 test('a refused email still comes back when the main window holds an editor that is busy asking', async () => {
@@ -533,6 +537,152 @@ test('a refused email still comes back when the main window holds an editor that
   await expect(popped.locator('[data-field="subject"]')).toHaveValue('Refused while busy');
   await expect(popped.locator('.editor')).toContainText('Still here.');
   await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
+  expect(await held()).toBe(0);
+});
+
+// The server refuses every email, and the Drafts saves of the editor with this subject hold until the test lets them
+// go (global.__saves). The test also notes when the main window asks main for refused emails, and what its claims get.
+async function refuseAndHoldSaves(subject) {
+  await app.evaluate((_e, subject) => {
+    const engine = global.__semEngine;
+    const saveDraft = engine.saveDraft.bind(engine);
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    global.__saves = [];
+    engine.saveDraft = (payload) =>
+      payload.subject === subject ? new Promise((resolve, reject) => global.__saves.push(() => saveDraft(payload).then(resolve, reject))) : saveDraft(payload);
+    const refused = global.__semRefused;
+    const waiting = refused.waiting.bind(refused);
+    const claim = refused.claim.bind(refused);
+    global.__asked = 0;
+    global.__claims = [];
+    refused.waiting = () => {
+      global.__asked += 1;
+      return waiting();
+    };
+    refused.claim = (id) => {
+      const ok = claim(id);
+      global.__claims.push(ok);
+      return ok;
+    };
+  }, subject);
+}
+
+async function sendRefused(subject) {
+  await newMessage(win, { to: 'someone@example.com', subject, text: `${subject}, every word.` });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+}
+
+// Two emails are refused at once while the reading pane holds an editor whose Drafts save is slow, and the main
+// window's page crashes while the first refused email waits for that save. Main still holds both, so each opens once,
+// in a compose window.
+test('refused emails the main window had not opened yet still open, once each, when its page crashes halfway', async () => {
+  await refuseAndHoldSaves('Half written');
+  await sendRefused('First refused');
+  await sendRefused('Second refused');
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  const opened = [];
+  app.on('window', (page) => opened.push(page));
+  await sendWaiting();
+  // The page asked for both, and its reading pane waits for the other editor's save before it takes the first.
+  await expect.poll(() => app.evaluate(() => global.__asked)).toBeGreaterThan(0);
+  await expect.poll(() => app.evaluate(() => global.__saves.length)).toBeGreaterThan(0);
+  expect(await held()).toBe(2);
+  expect(await app.evaluate(() => global.__claims)).toEqual([]);
+  expect(opened).toHaveLength(0);
+
+  await app.evaluate(({ BrowserWindow }) => {
+    const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html'));
+    main.webContents.forcefullyCrashRenderer();
+  });
+  await expect.poll(() => opened.length).toBe(2);
+  const reopened = [];
+  for (const page of opened) {
+    page.on('dialog', () => {});
+    await page.waitForSelector('.composer .editor');
+    await expect(page.locator('.dialog')).toContainText('Mailbox full');
+    await page.locator('.dialog .buttons button').click();
+    const subject = await page.locator('[data-field="subject"]').inputValue();
+    await expect(page.locator('.editor')).toContainText(`${subject}, every word.`);
+    reopened.push(subject);
+  }
+  expect(reopened.sort()).toEqual(['First refused', 'Second refused']);
+  expect(await held()).toBe(0);
+  expect(opened).toHaveLength(2);
+});
+
+// The fallback opens a refused email in a compose window while the reading pane still waits for another editor's
+// slow save. When that save is done, the pane's claim finds nothing, so the email doesn't open a second time there.
+test('a refused email the fallback opened while the reading pane was busy saving does not open there too', async () => {
+  await refuseAndHoldSaves('Half written');
+  await sendRefused('Opened once');
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  // 3 seconds instead of 15, for this test.
+  await app.evaluate(() => {
+    global.__semRefused.ms = 3000;
+  });
+  const opened = [];
+  app.on('window', (page) => opened.push(page));
+  await sendWaiting();
+  await expect.poll(() => app.evaluate(() => global.__asked)).toBeGreaterThan(0);
+  await expect.poll(() => opened.length, { timeout: 15000 }).toBe(1);
+  const [popped] = opened;
+  popped.on('dialog', () => {});
+  await popped.waitForSelector('.composer .editor');
+  await expect(popped.locator('.dialog')).toContainText('Mailbox full');
+  expect(await held()).toBe(0);
+  // The pane was still waiting for the save all along.
+  expect(await app.evaluate(() => global.__claims)).toEqual([]);
+  expect(await app.evaluate(() => global.__saves.length)).toBeGreaterThan(0);
+
+  await app.evaluate(() => global.__saves.splice(0).forEach((go) => go()));
+  // The other editor went to Drafts and closed; the refused email doesn't take its place.
+  await composerGone();
+  await expect.poll(() => app.evaluate(() => global.__claims)).toEqual([false]);
+  await win.evaluate(() => window.mail.call('state'));
+  await expect(composer()).toHaveCount(0);
+  expect(opened).toHaveLength(1);
+  await popped.locator('.dialog .buttons button').click();
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Opened once');
+  await expect(popped.locator('.editor')).toContainText('Opened once, every word.');
+  expect(await subjects('drafts')).toContain('Half written');
+});
+
+// Windows ends the session while the main window's reading pane waits to take a refused email. The email goes to the
+// list for the next start, which opens it once, although the pane takes its turn after the session ended.
+test('a refused email the main window had not opened when the Windows session ends opens at the next start', async () => {
+  await refuseAndHoldSaves('Half written');
+  await sendRefused('Cut off');
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  await sendWaiting();
+  await expect.poll(() => app.evaluate(() => global.__saves.length)).toBeGreaterThan(0);
+  expect(await held()).toBe(1);
+
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
+  expect(await held()).toBe(0);
+  const file = path.join(dataDir, 'data', 'unsent.json');
+  const kept = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+  expect(kept()).toHaveLength(1);
+  expect(JSON.stringify(kept())).toContain('Cut off, every word.');
+  // The pane's turn comes after the session ended, and it finds nothing to open.
+  await app.evaluate(() => global.__saves.splice(0).forEach((go) => go()));
+  await expect.poll(() => app.evaluate(() => global.__claims)).toEqual([false]);
+  await expect(composer()).toHaveCount(0);
+  expect(app.windows()).toHaveLength(1);
+
+  await closeApp(app);
+  expect(kept()).toHaveLength(1);
+  await launch();
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
+  const again = app.windows().find((w) => w !== win);
+  await again.waitForSelector('.composer .editor');
+  await expect(again.locator('.dialog')).toContainText('Mailbox full');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('[data-field="subject"]')).toHaveValue('Cut off');
+  await expect(again.locator('.editor')).toContainText('Cut off, every word.');
+  expect(fs.existsSync(file)).toBe(false);
 });
 
 test('Undo once the email is on its way says it is too late', async () => {

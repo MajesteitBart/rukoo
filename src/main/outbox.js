@@ -79,50 +79,95 @@ class Outbox {
   }
 }
 
-// Refused emails main keeps for the main window until its page takes them (holdRefused in main.js). Taking them is
-// the page's word that it opens them, so a page that is still loading, and can't hear an event yet, loses none. One
-// the page hasn't taken within ms goes to elsewhere([item]); letGo() sends every one still held there, for a window
-// that closed or crashed first. timers is the clock, which the tests replace.
+// Refused emails main keeps for the main window until its page has opened them (holdRefused in main.js). Each item
+// has an id. The page asks what waits (waiting()), claims one when its reading pane is free to take it (claim()),
+// and says so once the editor is open with it (ack()). Until that ack the email stays here, so a page that is still
+// loading, or crashes, closes or reloads halfway through a batch, loses none: letGo() sends every one still held to
+// elsewhere(items), and a quit writes them down from list(). An email opens once: an ack, claim or release for one
+// that is no longer held does nothing.
+//
+// One nobody claimed within ms goes to elsewhere([item]) by itself, for a page that never asks. A claim stops that
+// timer: the editor opens a moment later, and the timer would then open the email a second time. A page that
+// reloads starts over (unclaim()). release(id) sends one to elsewhere() at the page's request, when its reading pane
+// can't take it after all. timers is the clock, which the tests replace.
 class Handoff {
   constructor({ elsewhere, ms, timers = { setTimeout, clearTimeout } }) {
     this.elsewhere = elsewhere;
     this.ms = ms;
     this.timers = timers;
-    // [{ item, timer }], oldest first.
-    this.held = [];
+    // id -> { item, timer, claimed }, oldest first.
+    this.held = new Map();
   }
 
   get size() {
-    return this.held.length;
+    return this.held.size;
   }
 
-  // What is held, oldest first.
+  // Every email still held, claimed or not, oldest first.
   list() {
-    return this.held.map((h) => h.item);
+    return [...this.held.values()].map((h) => h.item);
+  }
+
+  // Those the page hasn't claimed yet, oldest first. They stay held.
+  waiting() {
+    return [...this.held.values()].filter((h) => !h.claimed).map((h) => h.item);
   }
 
   hold(item) {
-    const held = { item, timer: null };
-    held.timer = this.timers.setTimeout(() => {
-      const i = this.held.indexOf(held);
-      if (i < 0) return;
-      this.held.splice(i, 1);
-      this.elsewhere([item]);
-    }, this.ms);
-    this.held.push(held);
+    this.drop(item.id);
+    const held = { item, timer: null, claimed: false };
+    this.held.set(item.id, held);
+    this.arm(held);
   }
 
-  // Everything held, which is no longer kept here.
-  take() {
-    return this.held.splice(0).map((h) => {
-      this.timers.clearTimeout(h.timer);
-      return h.item;
-    });
+  // The page's reading pane takes this one now. false when it is gone, or another call already claimed it.
+  claim(id) {
+    const held = this.held.get(id);
+    if (!held || held.claimed) return false;
+    held.claimed = true;
+    this.timers.clearTimeout(held.timer);
+    return true;
+  }
+
+  // The page reloaded: what it had claimed but not opened waits for the new page, with a new timer.
+  unclaim() {
+    for (const held of this.held.values()) {
+      if (!held.claimed) continue;
+      held.claimed = false;
+      this.arm(held);
+    }
+  }
+
+  // Its editor is open with the email, which main no longer keeps. false for an id that is not held.
+  ack(id) {
+    return Boolean(this.drop(id));
+  }
+
+  // Opens one elsewhere at the page's request. false when it is no longer held.
+  release(id) {
+    const held = this.drop(id);
+    if (held) this.elsewhere([held.item]);
+    return Boolean(held);
   }
 
   letGo() {
-    const items = this.take();
+    const items = [...this.held.keys()].map((id) => this.drop(id).item);
     if (items.length) this.elsewhere(items);
+  }
+
+  arm(held) {
+    held.timer = this.timers.setTimeout(() => {
+      if (this.held.get(held.item.id) !== held || held.claimed) return;
+      this.release(held.item.id);
+    }, this.ms);
+  }
+
+  drop(id) {
+    const held = this.held.get(id);
+    if (!held) return null;
+    this.timers.clearTimeout(held.timer);
+    this.held.delete(id);
+    return held;
   }
 }
 

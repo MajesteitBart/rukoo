@@ -171,50 +171,117 @@ function handoff() {
   return { box, clock, elsewhere };
 }
 
-test('a refused email stays held until the main window takes it, then nothing else opens it', () => {
+test('a refused email stays held after the main window lists it, until its editor is open', () => {
   const { box, clock, elsewhere } = handoff();
   box.hold({ id: 'a', restore: { html: 'a' }, error: 'Mailbox full' });
   box.hold({ id: 'b', restore: { html: 'b' }, error: 'Mailbox full' });
-  assert.equal(box.size, 2);
-  assert.deepEqual(box.list().map((i) => i.id), ['a', 'b'], 'listed for a quit to write down');
-  // A page that is still loading takes nothing yet; once it does, it gets every one, oldest first.
+  // A page that is still loading asks for nothing yet; once it asks, it gets every one, oldest first.
   clock.advance(14999);
-  assert.deepEqual(box.take(), [
+  assert.deepEqual(box.waiting(), [
     { id: 'a', restore: { html: 'a' }, error: 'Mailbox full' },
     { id: 'b', restore: { html: 'b' }, error: 'Mailbox full' }
   ]);
-  assert.equal(box.size, 0);
-  assert.equal(clock.pending(), 0, 'their timers are gone');
-  assert.deepEqual(box.take(), [], 'a second take finds nothing');
-  box.letGo();
+  assert.equal(box.size, 2, 'asking takes nothing away');
+  assert.equal(box.claim('a'), true);
+  assert.deepEqual(box.waiting().map((i) => i.id), ['b'], 'a claimed one is not offered again');
+  assert.deepEqual(box.list().map((i) => i.id), ['a', 'b'], 'but a quit still writes it down');
+  assert.equal(box.ack('a'), true);
+  assert.equal(box.ack('a'), false, 'a second ack does nothing');
+  assert.equal(box.ack('nobody'), false, 'nor does one for an unknown id');
+  assert.deepEqual(box.list().map((i) => i.id), ['b']);
+  // The claim stopped a's fallback; b, listed but not claimed, still has its own.
+  clock.advance(1);
+  assert.deepEqual(elsewhere, [['b']]);
   clock.advance(60000);
-  assert.deepEqual(elsewhere, []);
+  assert.deepEqual(elsewhere, [['b']]);
+  assert.equal(box.size, 0);
 });
 
-test('a refused email the main window does not take in time opens elsewhere, once', () => {
+test('a page that dies halfway through a batch leaves every email it had not opened to elsewhere, once', () => {
+  // The first email's editor waits for the reading pane's slow draft save, so nothing is claimed yet.
+  {
+    const { box, clock, elsewhere } = handoff();
+    box.hold({ id: 'a', restore: {}, error: 'x' });
+    box.hold({ id: 'b', restore: {}, error: 'x' });
+    assert.deepEqual(box.waiting().map((i) => i.id), ['a', 'b']);
+    box.letGo();
+    assert.deepEqual(elsewhere, [['a', 'b']]);
+    clock.advance(60000);
+    assert.deepEqual(elsewhere, [['a', 'b']], 'their timers do not open them a second time');
+  }
+  // The first is open, the second claimed but its editor not open yet, the third not reached.
+  {
+    const { box, clock, elsewhere } = handoff();
+    for (const id of ['a', 'b', 'c']) box.hold({ id, restore: {}, error: 'x' });
+    box.waiting();
+    assert.equal(box.claim('a'), true);
+    assert.equal(box.ack('a'), true);
+    assert.equal(box.claim('b'), true);
+    box.letGo();
+    assert.deepEqual(elsewhere, [['b', 'c']]);
+    assert.equal(box.size, 0);
+    // What the dead page would still say changes nothing.
+    assert.equal(box.ack('b'), false);
+    assert.equal(box.claim('c'), false);
+    assert.equal(box.release('c'), false);
+    clock.advance(60000);
+    assert.deepEqual(elsewhere, [['b', 'c']]);
+    box.letGo();
+    assert.deepEqual(elsewhere, [['b', 'c']], 'nothing held, nothing opens');
+  }
+});
+
+test('the 15 second fallback opens only what nobody claimed, and a late claim or ack finds nothing', () => {
   const { box, clock, elsewhere } = handoff();
   box.hold({ id: 'a', restore: {}, error: 'x' });
   clock.advance(5000);
   box.hold({ id: 'b', restore: {}, error: 'x' });
+  // The page listed both, then waited for its reading pane past a's 15 seconds.
+  box.waiting();
   clock.advance(10000);
   assert.deepEqual(elsewhere, [['a']]);
-  assert.deepEqual(box.list().map((i) => i.id), ['b'], 'the newer one still waits for the window');
-  clock.advance(5000);
-  assert.deepEqual(elsewhere, [['a'], ['b']]);
-  assert.deepEqual(box.take(), []);
+  assert.equal(box.claim('a'), false, 'the pane leaves a alone');
+  assert.equal(box.release('a'), false, 'and asking main to open it elsewhere does nothing');
+  assert.equal(box.ack('a'), false);
+  // b is claimed in time, so its fallback can't open it while the editor opens.
+  assert.equal(box.claim('b'), true);
+  clock.advance(60000);
+  assert.deepEqual(elsewhere, [['a']]);
+  assert.equal(box.ack('b'), true);
+  assert.equal(box.size, 0);
 });
 
-test('a main window that closes or crashes before it takes them lets every held email go elsewhere', () => {
-  const { box, clock, elsewhere } = handoff();
-  box.letGo();
-  assert.deepEqual(elsewhere, [], 'nothing held, nothing opens');
+test('two calls asking at once open each email once', () => {
+  const { box, elsewhere } = handoff();
   box.hold({ id: 'a', restore: {}, error: 'x' });
   box.hold({ id: 'b', restore: {}, error: 'x' });
-  box.letGo();
-  assert.deepEqual(elsewhere, [['a', 'b']]);
+  const first = box.waiting().map((i) => i.id);
+  const second = box.waiting().map((i) => i.id);
+  assert.deepEqual(first, second);
+  assert.equal(box.claim('a'), true);
+  assert.equal(box.claim('a'), false, 'only one reading pane takes a');
+  assert.equal(box.release('b'), true);
+  assert.equal(box.release('b'), false, 'b opens in one compose window');
+  // The reading pane couldn't take a after all: main opens the claimed email in a compose window instead.
+  assert.equal(box.release('a'), true);
+  assert.deepEqual(elsewhere, [['b'], ['a']]);
   assert.equal(box.size, 0);
-  clock.advance(60000);
-  assert.deepEqual(elsewhere, [['a', 'b']], 'their timers do not open them a second time');
+});
+
+test('a page that reloads gets back what it had claimed but not opened, with a new fallback', () => {
+  const { box, clock, elsewhere } = handoff();
+  box.hold({ id: 'a', restore: {}, error: 'x' });
+  box.hold({ id: 'b', restore: {}, error: 'x' });
+  box.claim('a');
+  clock.advance(10000);
+  box.unclaim();
+  assert.deepEqual(box.waiting().map((i) => i.id), ['a', 'b'], 'the new page is offered both');
+  // b keeps its first timer; a gets 15 seconds from the reload.
+  clock.advance(5000);
+  assert.deepEqual(elsewhere, [['b']]);
+  clock.advance(10000);
+  assert.deepEqual(elsewhere, [['b'], ['a']]);
+  assert.equal(box.size, 0);
 });
 
 // ---------- the setting and the checks Send makes before it waits ----------
