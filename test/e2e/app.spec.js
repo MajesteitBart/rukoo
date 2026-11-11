@@ -1507,6 +1507,8 @@ test('a folder that fails to sync leaves the folders after it current, and the n
   await win.click('.sync-status');
   await expect(win.locator('.sync-status')).toHaveText('Synchronisatie mislukt');
   await expect(win.locator('.sync-status')).toHaveAttribute('title', 'demo@example.com: Sent is temporarily unavailable');
+  // The toast for the one account says it as the sidebar does (#135).
+  await expect(win.locator('#toast')).toHaveText('Sent is temporarily unavailable');
   await expect(item('Nieuw in het postvak')).toBeVisible();
   await expect.poll(announced).toEqual(['Nieuw in het postvak']);
   // Archief synced in the same run, not when it was opened.
@@ -1523,6 +1525,20 @@ test('a folder that fails to sync leaves the folders after it current, and the n
   await expect(win.locator('#toast')).toContainText('Gesynchroniseerd');
   await expect(win.locator('.sync-status')).toHaveText('Zojuist bijgewerkt');
   expect(await announced()).toEqual(['Nieuw in het postvak']);
+});
+
+test('a sync that times out says so in the toast, in Dutch and in English', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.session(engine.accounts[0]).syncFolder = () => Promise.reject(new Error('connect ETIMEDOUT 192.0.2.1:993'));
+  });
+  await win.click('.sync-status');
+  await expect(win.locator('.sync-status')).toHaveText('Synchronisatie mislukt');
+  await expect(win.locator('#toast')).toHaveText('Er is een time-out opgetreden bij het verbinden met de server.');
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));
+  await expect(win.locator('.sync-status')).toHaveText('Sync failed');
+  await win.click('.sync-status');
+  await expect(win.locator('#toast')).toHaveText('The connection to the server timed out.');
 });
 
 // ---------- regressions from the critique review ----------

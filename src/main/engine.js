@@ -847,6 +847,17 @@ class Engine extends EventEmitter {
     if (errors.length) throw new Error(errors.join('\n'));
   }
 
+  // The sync the user asked for, of one account or of all. A failure reads the way the sidebar shows it for the
+  // account (friendlyError).
+  async syncNow(accountId = null) {
+    if (!accountId) return this.syncAll();
+    try {
+      await this.syncAccount(accountId);
+    } catch (err) {
+      throw new Error(friendlyError(err));
+    }
+  }
+
   pendingKey(accountId, folder, uid) {
     return `${accountId}\n${folder}\n${uid}`;
   }

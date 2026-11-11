@@ -365,6 +365,27 @@ test('a folder that fails to sync leaves the others current, and the account sho
   await engine.close();
 });
 
+test('a sync the user asked for fails with the text the account shows, for one account and for all', async () => {
+  const { engine, acc } = await freshEngine();
+  const s = engine.session(acc);
+  const syncFolder = s.syncFolder.bind(s);
+  s.syncFolder = async (folder, options) => {
+    if (folder === 'Sent') throw Object.assign(new Error('Command failed'), { responseText: 'Sent is temporarily unavailable' });
+    return syncFolder(folder, options);
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'Sent is temporarily unavailable' });
+  assert.equal(engine.state().accounts[0].error, 'Sent is temporarily unavailable');
+  await assert.rejects(engine.syncNow(), { message: `${acc.email}: Sent is temporarily unavailable` });
+  // An error friendlyError translates comes out translated.
+  s.syncFolder = async () => {
+    throw new Error('connect ETIMEDOUT 192.0.2.1:993');
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'The connection to the server timed out.' });
+  s.syncFolder = syncFolder;
+  assert.equal(await engine.syncNow(acc.id), undefined);
+  await engine.close();
+});
+
 test('a sync that fails because the engine closed opens no new session for the next folder', async () => {
   const { engine, acc } = await freshEngine();
   let resume;
