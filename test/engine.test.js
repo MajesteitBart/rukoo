@@ -368,6 +368,38 @@ test('older mail found on the server opens, changes flags, moves and comes back 
   await engine.close();
 });
 
+test('marking older unread mail found on the server through setFlagsMany counts it at once, and a refusal keeps the count', async () => {
+  const { engine, acc } = await smallEngine();
+  const demo = engine.session(engine.account(acc.id));
+  await engine.searchServer({ scope: acc.id, view: 'inbox', query: 'thursday' });
+  const hit = engine.listMessages({ scope: acc.id, view: 'inbox', query: 'thursday' }).find((m) => m.older);
+  assert.equal(hit.unread, true);
+  const box = () => engine.caches.get(acc.id).boxes.INBOX;
+  box().olderUnseen = 7;
+  const older = () => box().olderUnseen;
+
+  // Read lowers the count by one, unread raises it again; marking it read twice counts once.
+  assert.deepEqual(await engine.setFlagsMany([hit.id], { unread: false }), { done: [hit.id], failed: [], error: null });
+  assert.equal(older(), 6);
+  await engine.setFlagsMany([hit.id], { unread: false });
+  assert.equal(older(), 6);
+  await engine.setFlagsMany([hit.id], { unread: true });
+  assert.equal(older(), 7);
+  assert.equal(engine.recounts.size, 0);
+
+  // A server that turns the change down leaves the count and the flag as they were.
+  demo.setFlags = async () => {
+    throw new Error('offline');
+  };
+  const { failed, error } = await engine.setFlagsMany([hit.id], { unread: false });
+  assert.deepEqual(failed, [hit.id]);
+  assert.match(error, /offline/);
+  assert.equal(older(), 7);
+  assert.equal(engine.olderHit(acc.id, 'INBOX', hit.uid).unread, true);
+  assert.equal(engine.recounts.size, 0);
+  await engine.close();
+});
+
 test('a sync drops older mail found on the server once the window holds it, and all of it when the uids change', async () => {
   const { engine, acc } = await smallEngine();
   const list = (query) => engine.listMessages({ scope: acc.id, view: 'inbox', query });

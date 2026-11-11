@@ -1760,7 +1760,15 @@ class Engine extends EventEmitter {
     const accounts = new Set(found.map((f) => f.acc.id));
     for (const f of found) {
       f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
+      // Older inbox mail the server search found is in the server's count of older unread mail (olderUnread()), which
+      // only the next sync redoes. The change stays in this.recounts until the server answers; see carryRecounts().
+      const n = f.older && patch.unread !== undefined && patch.unread !== Boolean(f.msg.unread) ? (patch.unread ? 1 : -1) : 0;
+      f.change = n ? { accountId: f.acc.id, folder: f.folder, uid: f.uid, unread: patch.unread, n, box: f.box } : null;
       Object.assign(f.msg, patch);
+      if (f.change) {
+        this.recountOlder(f.box, n);
+        this.recounts.add(f.change);
+      }
     }
     for (const id of accounts) this.changed(id);
     const done = [];
@@ -1775,14 +1783,19 @@ class Engine extends EventEmitter {
       } catch (err) {
         failed.push(f.id);
         error = error || friendlyError(err);
-        // Revert on whatever object the cache holds now; a sync may have replaced it.
+        // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again. The count
+        // goes back only with the flag: a later change that set it since counted from the flag as this one left it.
+        const back = f.hold.rollback();
         try {
-          Object.assign(this.locate(f.id).msg, f.hold.rollback());
+          Object.assign(this.locate(f.id).msg, back);
         } catch (_) {
           // The message left the cache in the meantime.
         }
+        const c = f.change;
+        if (c && 'unread' in back && this.caches.get(f.acc.id) && this.caches.get(f.acc.id).boxes[f.folder] === c.box) this.recountOlder(c.box, -c.n);
       } finally {
         f.hold.release();
+        if (f.change) this.recounts.delete(f.change);
       }
     }
     if (failed.length) for (const id of accounts) this.changed(id);
