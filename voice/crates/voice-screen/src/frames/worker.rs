@@ -158,18 +158,18 @@ pub struct FrameWorker {
 impl FrameWorker {
     /// Starts the threads with Windows' OCR. `write_fail_at` is the `write-fail=frames@<ms>`
     /// test switch: from that meeting time every JPEG write fails as a full disk.
-    pub fn start(
+    pub fn start<F: Clone + Send + 'static>(
         meeting: PathBuf,
-        to_main: SyncSender<Ev>,
+        to_main: SyncSender<Ev<F>>,
         write_fail_at: Option<u64>,
     ) -> FrameWorker {
         FrameWorker::start_with(meeting, to_main, write_fail_at, || Box::new(Ocr::new()))
     }
 
     /// Starts the threads; the OCR thread makes its reader with `reader`.
-    pub fn start_with(
+    pub fn start_with<F: Clone + Send + 'static>(
         meeting: PathBuf,
-        to_main: SyncSender<Ev>,
+        to_main: SyncSender<Ev<F>>,
         write_fail_at: Option<u64>,
         reader: impl FnOnce() -> Box<dyn Reader> + Send + 'static,
     ) -> FrameWorker {
@@ -348,7 +348,7 @@ impl Drop for Ended<'_> {
 }
 
 /// Hands an event to the main thread; false once it is gone.
-fn emit(to_main: &SyncSender<Ev>, done: FrameDone) -> bool {
+fn emit<F: Send>(to_main: &SyncSender<Ev<F>>, done: FrameDone) -> bool {
     let mut event = Ev::FrameDone(done);
     loop {
         match to_main.try_send(event) {
@@ -362,7 +362,12 @@ fn emit(to_main: &SyncSender<Ev>, done: FrameDone) -> bool {
     }
 }
 
-fn run_jpeg(meeting: &Path, shared: &Shared, to_main: &SyncSender<Ev>, write_fail_at: Option<u64>) {
+fn run_jpeg<F: Send>(
+    meeting: &Path,
+    shared: &Shared,
+    to_main: &SyncSender<Ev<F>>,
+    write_fail_at: Option<u64>,
+) {
     loop {
         let job = {
             let mut state = shared.state();
@@ -417,7 +422,7 @@ fn run_jpeg(meeting: &Path, shared: &Shared, to_main: &SyncSender<Ev>, write_fai
     }
 }
 
-fn run_ocr(shared: &Shared, to_main: &SyncSender<Ev>, reader: &dyn Reader) {
+fn run_ocr<F: Send>(shared: &Shared, to_main: &SyncSender<Ev<F>>, reader: &dyn Reader) {
     let language = reader.language();
     shared.state().language = language.clone();
     loop {
@@ -608,7 +613,7 @@ mod tests {
     }
 
     /// Takes every `frame` line the threads sent so far.
-    fn collect(rx: &mpsc::Receiver<Ev>, lines: &mut BTreeMap<String, (String, String)>) {
+    fn collect(rx: &mpsc::Receiver<Ev<()>>, lines: &mut BTreeMap<String, (String, String)>) {
         while let Ok(event) = rx.try_recv() {
             match event {
                 Ev::FrameDone(FrameDone::Saved(Line::Frame { id, file, ocr, .. })) => {
@@ -624,7 +629,7 @@ mod tests {
     }
 
     fn wait_for(
-        rx: &mpsc::Receiver<Ev>,
+        rx: &mpsc::Receiver<Ev<()>>,
         lines: &mut BTreeMap<String, (String, String)>,
         count: usize,
     ) {
@@ -653,7 +658,7 @@ mod tests {
             released: released.clone(),
             calls: calls.clone(),
         };
-        let (tx, rx) = mpsc::sync_channel::<Ev>(64);
+        let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
         let mut worker =
             FrameWorker::start_with(meeting.clone(), tx, None, move || Box::new(reader));
         let total = 40u64;
@@ -721,7 +726,7 @@ mod tests {
             released: released.clone(),
             calls: calls.clone(),
         };
-        let (tx, rx) = mpsc::sync_channel::<Ev>(64);
+        let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
         let mut worker =
             FrameWorker::start_with(meeting.clone(), tx, None, move || Box::new(reader));
         for n in 0..3 {

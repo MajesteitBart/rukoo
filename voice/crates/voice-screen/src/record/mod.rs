@@ -29,7 +29,7 @@ use voice_screen_files::screenfile::{self, ScreenFile};
 use voice_screen_files::timeline::{TimelineFollower, TimelineLine};
 
 use crate::args::{Mode, RecordOptions, TestSpec};
-use crate::capture::{monitors_win, synthetic, wgc};
+use crate::capture::{monitors_win, synthetic, wgc, Picture};
 use crate::clockwin;
 use crate::finalize;
 use crate::frames::ocr::Ocr;
@@ -209,7 +209,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     journal.sync();
     let drops = DropState::from_history(&history, opts.mode == Mode::Video);
 
-    let (events, rx) = mpsc::sync_channel(EVENT_QUEUE);
+    let (events, rx) = mpsc::sync_channel::<Ev<Picture>>(EVENT_QUEUE);
     let (requests, request_rx) = mpsc::sync_channel::<Request>(16);
     control::serve(listener, token.clone(), requests)
         .map_err(|e| ExitError::failed(format!("can't start the control port: {e}")))?;

@@ -24,7 +24,7 @@ pub struct Pixels {
 /// Reads a captured frame back from the GPU.
 pub fn pixels(d3d: &D3D, frame: &CapturedFrame) -> windows::core::Result<Pixels> {
     Ok(Pixels {
-        bgra: d3d.read_bgra(&frame.texture, frame.width, frame.height)?,
+        bgra: d3d.read_bgra(&frame.picture.0, frame.width, frame.height)?,
         width: frame.width,
         height: frame.height,
     })

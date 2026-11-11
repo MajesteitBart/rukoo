@@ -9,6 +9,7 @@ use std::fmt;
 
 pub mod args;
 pub mod inspect;
+pub mod platform;
 pub mod video;
 
 #[cfg(windows)]

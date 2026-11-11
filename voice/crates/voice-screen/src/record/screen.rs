@@ -29,21 +29,23 @@ use voice_screen_files::timeline::{TimelineFollower, TimelineLine};
 use super::list_monitors;
 use crate::args::{Mode, TestSpec};
 use crate::capture::d3d::{self, is_device_lost, D3D};
-use crate::capture::{monitors_win, session, synthetic, wgc, CapturedFrame, Source};
+use crate::capture::{monitors_win, session, synthetic, wgc, CapturedFrame, Picture};
 use crate::clockwin;
 use crate::finalize;
 use crate::frames::jpeg;
 use crate::frames::thumb::Thumbnailer;
 use crate::frames::worker::{FrameDone, FrameJob, FrameWorker};
 use crate::log;
+use crate::platform::Source;
+use crate::platform::{VideoError, WriterOptions};
 use crate::video::thread::{self as video_thread, VideoStart, VideoThread};
-use crate::video::writer::{VideoError, WriterOptions};
+use crate::video::writer::WinVideoMaker;
 use crate::video::{mf, FPS};
 
-/// What reaches the main thread.
-pub enum Ev {
+/// What reaches the main thread. `F` is the platform's own frame type.
+pub enum Ev<F> {
     /// A captured frame.
-    Frame(CapturedFrame),
+    Frame(crate::platform::Frame<F>),
     /// The worker wrote a JPEG and read it, or failed to.
     FrameDone(FrameDone),
     /// A control port request with a good token.
@@ -85,12 +87,18 @@ const TEST_DISK_CHECK: Duration = Duration::from_millis(500);
 enum StartFail {
     /// The new graphics device lacks the video support the video needs.
     NoVideo,
-    Windows(windows::core::Error),
+    Platform(crate::platform::PlatformError),
 }
 
 impl From<windows::core::Error> for StartFail {
     fn from(e: windows::core::Error) -> StartFail {
-        StartFail::Windows(e)
+        StartFail::Platform(e.into())
+    }
+}
+
+impl From<crate::platform::PlatformError> for StartFail {
+    fn from(e: crate::platform::PlatformError) -> StartFail {
+        StartFail::Platform(e)
     }
 }
 
@@ -115,7 +123,7 @@ pub(crate) struct Screen {
     pub(crate) clock: ScreenClock,
     pub(crate) follower: TimelineFollower,
     pub(crate) drops: DropState,
-    pub(crate) events: SyncSender<Ev>,
+    pub(crate) events: SyncSender<Ev<Picture>>,
     pub(crate) d3d: Option<D3D>,
     pub(crate) source: Option<Box<dyn Source>>,
     pub(crate) thumbs: Option<Thumbnailer>,
@@ -131,7 +139,7 @@ pub(crate) struct Screen {
     pub(crate) monitor: MonitorInfo,
     /// `--monitor`: the only monitor this process may record (spec 2.7).
     pub(crate) pinned: Option<String>,
-    pub(crate) video: Option<VideoThread>,
+    pub(crate) video: Option<VideoThread<crate::video::writer::VideoWriter>>,
     /// Which frames of the open video file go to the encoder.
     pub(crate) gate: VideoGate,
     pub(crate) video_seq: u64,
@@ -175,7 +183,7 @@ pub(crate) struct Screen {
 }
 
 impl Screen {
-    pub(crate) fn run(mut self, rx: Receiver<Ev>) {
+    pub(crate) fn run(mut self, rx: Receiver<Ev<Picture>>) {
         let mut next_tick = Instant::now();
         while self.stop.is_none() {
             let wait = next_tick.saturating_duration_since(Instant::now());
@@ -201,7 +209,7 @@ impl Screen {
         self.finish(&rx);
     }
 
-    fn handle(&mut self, event: Ev) {
+    fn handle(&mut self, event: Ev<Picture>) {
         match event {
             Ev::Frame(frame) => self.on_frame(frame),
             Ev::FrameDone(done) => self.on_frame_done(done),
@@ -315,17 +323,12 @@ impl Screen {
             // Only a device without video support came: recover as from a lost device, which
             // tries again and drops the video when the retries are spent.
             Err(StartFail::NoVideo) => self.on_device_lost(),
-            Err(StartFail::Windows(e)) => {
-                if is_device_lost(&e) && self.d3d.is_some() {
+            Err(StartFail::Platform(e)) => {
+                if e.device_lost && self.d3d.is_some() {
                     self.on_device_lost();
                     return;
                 }
-                log(format_args!(
-                    "can't capture {}: {:#010x} {}",
-                    self.monitor.id,
-                    e.code().0,
-                    e.message()
-                ));
+                log(format_args!("can't capture {}: {e}", self.monitor.id));
                 self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
             }
         }
@@ -537,10 +540,10 @@ impl Screen {
                             std::thread::sleep(DEVICE_RETRY_PAUSE);
                             step = episode.on_device_without_video();
                         }
-                        Err(StartFail::Windows(e)) => {
+                        Err(StartFail::Platform(e)) => {
                             log(format_args!(
-                                "recreating the graphics device failed: {:#010x}",
-                                e.code().0
+                                "recreating the graphics device failed: {}",
+                                e.code
                             ));
                             self.release_device();
                             std::thread::sleep(DEVICE_RETRY_PAUSE);
@@ -678,7 +681,7 @@ impl Screen {
                 }
             }
         }
-        match self.thumbs.as_mut()?.thumb(&frame.texture) {
+        match self.thumbs.as_mut()?.thumb(&frame.picture.0) {
             Ok(thumb) => Some(thumb),
             Err(e) => {
                 self.graphics_failed(&e, "thumbnail");
@@ -820,8 +823,8 @@ impl Screen {
         let gate = self.gate.frame(frame.dirty, thumb);
         if let Some(video) = &self.video {
             match gate {
-                Gate::Send => video.send(frame.texture.clone(), frame.boot),
-                Gate::Hold => video.hold(frame.texture.clone(), frame.boot),
+                Gate::Send => video.send(frame.picture.clone(), frame.boot),
+                Gate::Hold => video.hold(frame.picture.clone(), frame.boot),
             }
         }
     }
@@ -852,8 +855,6 @@ impl Screen {
             },
         };
         let start = VideoStart {
-            mf,
-            d3d,
             path: self.dir.join(&file),
             file: file.clone(),
             seq,
@@ -861,7 +862,8 @@ impl Screen {
             height: frame.height,
             options,
         };
-        match video_thread::start(start, self.events.clone()) {
+        let maker = Box::new(WinVideoMaker::new(mf, d3d));
+        match video_thread::start(start, maker, self.events.clone()) {
             Ok(video) => {
                 self.video_seq = seq;
                 log(format_args!(
@@ -1215,7 +1217,7 @@ impl Screen {
 
     /// Stops capturing, ends the video, lets OCR finish, writes `stop`, removes `screen.json`
     /// and only then answers a `stop` request.
-    fn finish(&mut self, rx: &Receiver<Ev>) {
+    fn finish(&mut self, rx: &Receiver<Ev<Picture>>) {
         let stopping = self.stop.take().unwrap_or(Stopping {
             t: 0,
             reason: "interrupted".into(),
@@ -1279,7 +1281,7 @@ impl Screen {
         }
     }
 
-    fn handle_stopping(&mut self, event: Ev, replies: &mut Vec<Sender<Value>>) {
+    fn handle_stopping(&mut self, event: Ev<Picture>, replies: &mut Vec<Sender<Value>>) {
         match event {
             Ev::FrameDone(done) => self.on_frame_done(done),
             Ev::Control(request) => match request.body["cmd"].as_str() {
