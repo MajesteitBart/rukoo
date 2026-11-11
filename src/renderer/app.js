@@ -43,6 +43,7 @@ import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
+import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -415,6 +416,7 @@ function renderShell() {
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
           <div class="list-tools"></div>
+          <button class="new-pill" data-action="new-mail" hidden></button>
           <div class="list-scroll" tabindex="0" role="listbox" aria-multiselectable="true" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}"></div>
         </section>
         <div class="divider" role="separator" aria-orientation="vertical" data-i18n-aria-label="mailbox.layout.listWidth" aria-label="${esc(t('mailbox.layout.listWidth'))}" tabindex="0"></div>
@@ -980,6 +982,7 @@ function changeView() {
   S.filter = 'all';
   S.keptId = null;
   S.checked.clear();
+  newRows.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
   if (S.selectedId) closeReader();
@@ -1121,6 +1124,7 @@ function renderList() {
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
   renderShell();
+  updateNewPill();
   // The reader showed the selection; it follows what is left of it, as after a move or delete.
   if (pruned) {
     if (S.checked.size > 1 || $('.reader .multi')) renderReader();
@@ -1482,11 +1486,14 @@ function bindList() {
     $$('.nav-item.drop-target').forEach((x) => x.classList.remove('drop-target'));
   });
   scroll.addEventListener('pointerdown', () => scroll.classList.remove('kbd'));
+  scroll.addEventListener('scroll', () => newRows.size && updateNewPill(), { passive: true });
   bindSwipe(pane);
 }
 
 function listAction(action, btn) {
   switch (action) {
+    case 'new-mail':
+      return showNewRows();
     case 'sync':
       return syncNow();
     case 'search-clear':
@@ -1941,6 +1948,8 @@ async function moveToCategory(list) {
   toast(t('mailbox.categories.moved', { name }), {
     action: {
       label: t('mailbox.categories.always'),
+      // Ctrl+Z after a move means undo, which this isn't.
+      shortcut: false,
       run: async () => {
         try {
           await api('categoriesMove', ids, id, { sender: true });
@@ -2791,6 +2800,125 @@ function drawBadge(count) {
   return api('setBadge', c.toDataURL(), count);
 }
 
+// ---------- new mail ----------
+
+// New mail main told this window about (main.js showMailNotices) whose rows are in the list on screen, until one of
+// them has been in view. While the list is scrolled away from all of them, a pill at the top counts them.
+const newRows = new Set();
+// The emails the new-mail toast counts, and when it showed, so mail from the next account in the same sync adds to it.
+let newToast = { mails: [], at: 0 };
+const NEW_TOAST_MS = 8000;
+let coo = null;
+
+// Mail mode, with no Settings page over the list, and the list not behind the reader in a narrow window.
+function listOnScreen() {
+  const scroll = $('.list-scroll');
+  return prefs.mode === 'mail' && !$('#overlays .page') && Boolean(scroll && scroll.getClientRects().length);
+}
+
+function updateNewPill() {
+  const pill = $('.new-pill');
+  if (!pill) return;
+  if (newRows.size) {
+    const shown = new Set(visibleRows().map((m) => m.id));
+    for (const id of newRows) if (!shown.has(id)) newRows.delete(id);
+  }
+  const scroll = $('.list-scroll');
+  const els = newRows.size && listOnScreen() ? $$('.list-scroll .item').filter((el) => newRows.has(el.dataset.id)) : [];
+  if (!els.length) {
+    pill.hidden = true;
+    return;
+  }
+  const box = scroll.getBoundingClientRect();
+  const rects = els.map((el) => el.getBoundingClientRect());
+  if (rects.some((r) => r.bottom > box.top && r.top < box.bottom)) {
+    newRows.clear();
+    pill.hidden = true;
+    return;
+  }
+  const up = rects[0].bottom <= box.top;
+  drawHtml(pill, `${up ? icons.up : icons.down}<span>${esc(t('mailbox.newMail.count', { count: els.length }))}</span>`);
+  pill.style.top = `${scroll.offsetTop + 8}px`;
+  pill.hidden = false;
+}
+
+// The pill's click: the first new row comes into view, below the day heading that sticks to the top.
+function showNewRows() {
+  const scroll = $('.list-scroll');
+  const el = $$('.list-scroll .item').find((x) => newRows.has(x.dataset.id));
+  if (!el) return updateNewPill();
+  const gap = ($('.list-scroll .group-head')?.offsetHeight || 0) + 4;
+  const top = scroll.scrollTop + el.getBoundingClientRect().top - scroll.getBoundingClientRect().top - gap;
+  scroll.focus({ preventScroll: true });
+  scroll.scrollTo({ top: Math.max(0, top), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+}
+
+// A desktop notification's click, or the new-mail toast's Open: the email in Inbox.
+async function openNotified(id) {
+  setMode('mail');
+  S.scope = 'all';
+  S.view = 'inbox';
+  S.folder = null;
+  S.category = null;
+  S.query = '';
+  S.filter = 'all';
+  await refresh();
+  openMessage(id);
+}
+
+// The new-mail toast's Show: Inbox as from the sidebar, or the category tab that holds the emails when Inbox leaves
+// them out (newMailTab).
+function showNotified(tab) {
+  setMode('mail');
+  S.scope = 'all';
+  S.view = 'inbox';
+  S.folder = null;
+  S.category = categoryOf(tab) ? tab : null;
+  changeView();
+}
+
+// While the window is in front, a toast stands in for the desktop notification for mail the list on screen doesn't
+// show. It waits for an Undo that is up, and Ctrl+Z leaves it alone. Over Settings it only says so.
+// mails: [{ id, from, subject, category }].
+function newMailToast(mails) {
+  const now = Date.now();
+  const all = addToToast(now - newToast.at < NEW_TOAST_MS ? newToast.mails : [], mails);
+  newToast = { mails: all, at: now };
+  // Several emails go to Inbox, or to their category when Inbox doesn't show it.
+  const { message, open, tab } = newMailToastFor(all, S.categories, t);
+  if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000 });
+  // Once its button was used, the next new mail gets a toast of its own.
+  const run = () => {
+    newToast = { mails: [], at: 0 };
+    return open ? openNotified(open) : showNotified(tab);
+  };
+  toast(message, { wait: true, action: { label: t(open ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
+}
+
+// Settings > General's sound for new mail: the coo from rukoo.io, quietly. Main says when (newMailSound()).
+function playCoo() {
+  coo ||= Object.assign(new Audio('assets/coo.mp3'), { volume: 0.5 });
+  coo.currentTime = 0;
+  coo.play().catch(() => {});
+}
+
+// p: { mails: [{ id, from, subject, category }], toast, sound }. Rows in the list on screen are the cue themselves, or
+// the pill points at them; for the rest of the batch a toast says so, when main says the window is in front with
+// notifications on. One sync can bring both.
+async function onNewMail(p) {
+  const mails = p && Array.isArray(p.mails) ? p.mails.filter((m) => m && m.id) : [];
+  if (!mails.length) return;
+  if (p.sound) playCoo();
+  if (!S.data || !S.data.accounts.length) return;
+  await refresh();
+  const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
+  if (here.length) {
+    for (const m of here) newRows.add(m.id);
+    updateNewPill();
+  }
+  if (elsewhere.length && p.toast) newMailToast(elsewhere);
+}
+
 // ---------- events from main ----------
 
 window.mail.on(async ({ type, payload }) => {
@@ -2835,17 +2963,8 @@ window.mail.on(async ({ type, payload }) => {
     if (S.message) renderReader();
     S.composer?.retheme(S.data);
   }
-  if (type === 'open-message') {
-    setMode('mail');
-    S.scope = 'all';
-    S.view = 'inbox';
-    S.folder = null;
-    S.category = null;
-    S.query = '';
-    S.filter = 'all';
-    await refresh();
-    openMessage(payload);
-  }
+  if (type === 'open-message') await openNotified(payload);
+  if (type === 'new-mail') await onNewMail(payload);
 });
 
 onSystemThemeChange(() => {

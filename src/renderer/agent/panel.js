@@ -2238,7 +2238,7 @@ export function mountAgentPanel(ctx) {
   function onItem({ conversationId, item }) {
     // An agent waiting for you in a chat that is not on screen: say so instead of letting it hang.
     if (item.type === 'approval' && item.status === 'pending' && (!ctx.agentOpen() || !P.conv || P.conv.id !== conversationId)) {
-      toast(t('agent.panel.needsYou'), { action: { label: t('agent.panel.show'), run: () => reveal(conversationId) } });
+      toast(t('agent.panel.needsYou'), { action: { label: t('agent.panel.show'), shortcut: false, run: () => reveal(conversationId) } });
     }
     // A message moves its chat up the list (main's lastMessageAt), and an approval card waits for the user. New text
     // comes as deltas, which leave the order alone.
@@ -2347,7 +2347,7 @@ export function mountAgentPanel(ctx) {
     const isBackground = () => !(P.conv && P.conv.id === cid) || !ctx.agentOpen() || P.conv.origin === 'external';
     const background = isBackground();
     const blocked = () => {
-      if (background) toast(t('agent.panel.draftBlocked', { name }), { action: { label: t('agent.panel.show'), run: () => reveal(cid) } });
+      if (background) toast(t('agent.panel.draftBlocked', { name }), { action: { label: t('agent.panel.show'), shortcut: false, run: () => reveal(cid) } });
       return busy();
     };
     let c = S.composer;

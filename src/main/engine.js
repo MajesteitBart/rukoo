@@ -42,6 +42,8 @@ const DEFAULT_SETTINGS = {
   fitContent: true,
   darkEmails: true,
   notifications: true,
+  // A short sound for new mail, played by the main window (main.js showMailNotices). Off by default.
+  newMailSound: false,
   badge: 'new',
   density: 'standard',
   sort: 'date-desc',
@@ -100,6 +102,7 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.stackSenders = s.stackSenders === true;
+  s.newMailSound = s.newMailSound === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;

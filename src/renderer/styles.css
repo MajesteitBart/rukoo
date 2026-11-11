@@ -1260,6 +1260,62 @@ body:has(.page) .titlebar-actions {
   padding: 0 6px 16px;
   outline: none;
 }
+/* New mail above or below what the list shows (app.js updateNewPill). It floats over the top of the list, above the
+   sticky day heading; app.js sets top. The chevron says which way the mail is. */
+.new-pill {
+  position: absolute;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  max-width: calc(100% - 32px);
+  padding: 0 12px 0 8px;
+  border-radius: 9999px;
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: new-pill-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: background 120ms ease;
+}
+.new-pill[hidden] {
+  display: none;
+}
+.new-pill:hover {
+  background: var(--hover);
+}
+.new-pill:active {
+  transform: translateX(-50%) scale(0.96);
+}
+.new-pill svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--accent);
+  stroke-width: 2;
+}
+.new-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes new-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .new-pill {
+    animation: none;
+  }
+}
 .group-head {
   position: sticky;
   top: 0;

@@ -497,6 +497,23 @@ test('new-mail event fires only for mail after the first sync', async () => {
   await engine.close();
 });
 
+test('the sound for new mail is off until turned on, and stays a switch in an edited settings file', async () => {
+  const dir = tempDir('sem-test-');
+  try {
+    const engine = new Engine({ dataDir: dir }).init();
+    assert.equal(engine.settings.newMailSound, false);
+    engine.updateSettings({ newMailSound: true });
+    const again = new Engine({ dataDir: dir }).init();
+    assert.equal(again.settings.newMailSound, true);
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ newMailSound: 'yes' }));
+    const edited = new Engine({ dataDir: dir }).init();
+    assert.equal(edited.settings.newMailSound, false);
+    await Promise.all([engine.close(), again.close(), edited.close()]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('vip, spam, search, saved and persistence across restarts', async () => {
   const { engine, acc, dir } = await freshEngine();
   assert.equal(engine.toggleVip('sanne@example.com'), true);

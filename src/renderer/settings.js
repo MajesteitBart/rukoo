@@ -264,6 +264,18 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   };
   // While the pairing code shows: what the dialog does with the phone events from main (paired, expired, burned).
   let pairWatch = null;
+  // The test notification row: whether this system offers Rukoo notifications at all (main's
+  // Notification.isSupported()), and what the last test came to (desktop.js testNotice), or testing while one is on its
+  // way. Whether the system allows them can't be asked, so the test is how to find out.
+  const notices = { supported: null, test: null, testing: false };
+  const noticesDesc = () => {
+    const r = notices.test;
+    if (notices.testing) return t('settings.general.testNotificationSending');
+    if ((r && r.result === 'unavailable') || notices.supported === false) return t('settings.general.notificationsUnavailable');
+    if (r && r.result === 'sent') return t('settings.general.testNotificationSent');
+    if (r && r.result === 'failed') return r.error ? t('settings.general.testNotificationFailedReason', { reason: r.error }) : t('settings.general.testNotificationFailed');
+    return t('settings.general.testNotificationHelp');
+  };
 
   // Live status (sync times, errors) matters on the overview pages; forms must not be reset under the user.
   const unsubscribe = window.mail.on(({ type, payload }) => {
@@ -1066,6 +1078,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || view === 'account' || BOOKING_VIEWS.includes(view) ? bookingPage.prepare(view, state) : null,
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
       view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
+      view === 'main' ? api('notificationState').then((n) => (notices.supported = n.supported)).catch(() => null) : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -1120,6 +1133,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.fit'), desc: t('settings.general.fitHelp'), action: 'toggle:fitContent', toggle: s.fitContent })}
           ${row({ title: t('settings.general.logos'), desc: t('settings.general.logosHelp'), action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
+          ${row({ title: t('settings.general.newMailSound'), desc: t('settings.general.newMailSoundHelp'), action: 'toggle:newMailSound', toggle: s.newMailSound === true })}
+          ${row({ title: t('settings.general.testNotification'), desc: esc(noticesDesc()), action: 'notify-test' })}
           ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
@@ -1393,6 +1408,15 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     if (a.startsWith('video-') && (await videoPage.click(a))) return;
     // Main answers with a 'zoom' event, which updates the row.
     if (a === 'zoom-reset') return api('setZoom', 100);
+    if (a === 'notify-test') {
+      if (notices.testing) return;
+      notices.testing = true;
+      const desc = b.querySelector('.desc');
+      if (desc) desc.textContent = noticesDesc();
+      notices.test = await api('testNotification').catch((err) => ({ result: 'failed', error: err.message }));
+      notices.testing = false;
+      return render();
+    }
     if (a === 'mailto-use') {
       b.disabled = true;
       try {

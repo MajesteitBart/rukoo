@@ -962,6 +962,18 @@
   },
   "mailbox.message.vip": "VIP",
   "mailbox.message.account": "Account: {account}",
+  "mailbox.newMail.count": {
+    "one": "{count} nieuwe e-mail",
+    "other": "{count} nieuwe e-mails"
+  },
+  "mailbox.newMail.countIn": {
+    "one": "{count} nieuwe e-mail in {category}",
+    "other": "{count} nieuwe e-mails in {category}"
+  },
+  "mailbox.newMail.from": "Nieuwe e-mail van {sender}",
+  "mailbox.newMail.fromSubject": "Nieuwe e-mail van {sender}: {subject}",
+  "mailbox.newMail.open": "Openen",
+  "mailbox.newMail.show": "Tonen",
   "mailbox.move.alreadyThere": "Die e-mails staan daar al",
   "mailbox.move.count": {
     "one": "{count} e-mail verplaatst naar {folder}",
@@ -1051,6 +1063,8 @@
     "other": "{count} nieuwe e-mails"
   },
   "native.notifications.newOne": "1 nieuwe e-mail",
+  "native.notifications.testBody": "Zo verschijnt nieuwe mail.",
+  "native.notifications.testTitle": "Testmelding van Rukoo Mail",
   "native.tray.compose": "Nieuw bericht",
   "native.tray.open": "Rukoo openen",
   "native.tray.quit": "Afsluiten",
@@ -1349,7 +1363,16 @@
   "settings.general.minimizeToTray": "Minimaliseren naar het systeemvak",
   "settings.general.minimizeToTrayHelp": "Bij minimaliseren gaat het venster naar het systeemvak in plaats van naar de taakbalk.",
   "settings.general.notifications": "Meldingen",
-  "settings.general.notificationsHelp": "Toon een desktopmelding bij nieuwe e-mails.",
+  "settings.general.notificationsHelp": "Toon een melding bij nieuwe e-mails: op het bureaublad, of in Rukoo als het venster vooraan staat.",
+  "settings.general.newMailSound": "Geluid bij nieuwe mail",
+  "settings.general.newMailSoundHelp": "Speel een kort roekoe-geluid als er nieuwe e-mails binnenkomen. Het blijft stil terwijl Rukoo Voice een vergadering opneemt.",
+  "settings.general.notificationsUnavailable": "Deze computer biedt Rukoo geen meldingen aan.",
+  "settings.general.testNotification": "Testmelding sturen",
+  "settings.general.testNotificationFailed": "Het systeem toonde hem niet. Kijk of je systeem meldingen van Rukoo Mail toestaat.",
+  "settings.general.testNotificationFailedReason": "Het systeem toonde hem niet ({reason}). Kijk of je systeem meldingen van Rukoo Mail toestaat.",
+  "settings.general.testNotificationHelp": "Toont er nu een, ook als Rukoo vooraan staat, zodat je kunt zien of meldingen je bereiken.",
+  "settings.general.testNotificationSending": "Versturen…",
+  "settings.general.testNotificationSent": "Verstuurd. Niets gezien? Kijk of je systeem meldingen van Rukoo Mail toestaat.",
   "settings.general.signature": "Handtekening",
   "settings.general.spam": "Spamadressen",
   "settings.general.spamHelp": "Bewerk je lijst met spamafzenders.",
