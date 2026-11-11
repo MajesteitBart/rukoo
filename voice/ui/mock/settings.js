@@ -92,6 +92,8 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    // macOS permissions, from the preflight calls; other platforms have none (API.md).
+    permissions: null,
     features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
@@ -666,6 +668,7 @@ export function createMock(params) {
     },
     settings_open_folder: () => null,
     settings_open_link: () => null,
+    settings_open_permission: () => null,
     settings_clean_preview: ({ preview }) => clean(preview.text, preview),
     settings_check_updates: async () => {
       await wait(900);

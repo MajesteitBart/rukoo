@@ -38,6 +38,20 @@ windows = { version = "=0.62.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# The macOS permission preflights: the microphone's authorization status and the two CG preflights.
+# The versions tauri and wry use, so one objc2 is shared.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "AVCaptureDevice",
+  "AVMediaFormat",
+] }
+objc2-core-graphics = "=0.3.2"
+objc2-io-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "hidsystem",
+] }
+
 [dev-dependencies]
 # The screen tests run the screen process from their own test binary, as the controller tests run
 # the recorder.

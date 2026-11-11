@@ -752,6 +752,9 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
+        // The fake engine still reads this computer's privacy permissions: they are part of the
+        // machine, not of a scripted state. Windows and Linux have none (null).
+        "permissions": voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions),
         // Every feature is in this Voice: screen recording, speaker labels and bucket sync.
         "features": { "screen": true, "speakers": true, "sync": true },
         "theme": "dark",

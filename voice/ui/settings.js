@@ -128,7 +128,17 @@ const SPEAKER_REASONS = {
   consent: 'settings.speakers.reason.consent'
 };
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
-const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'about'];
+const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permissions', 'about'];
+
+// macOS privacy permissions, in the order System Settings groups them. The names are the ones
+// System Settings shows; each row says why Voice needs it (voice/ui/API.md, SettingsState.permissions).
+const PERMISSIONS = [
+  ['microphone', 'settings.permissions.microphone', 'settings.permissions.microphoneWhy'],
+  ['systemAudio', 'settings.permissions.systemAudio', 'settings.permissions.systemAudioWhy'],
+  ['inputMonitoring', 'settings.permissions.inputMonitoring', 'settings.permissions.inputMonitoringWhy'],
+  ['accessibility', 'settings.permissions.accessibility', 'settings.permissions.accessibilityWhy'],
+  ['screenRecording', 'settings.permissions.screenRecording', 'settings.permissions.screenRecordingWhy']
+];
 
 const page = document.getElementById('page');
 
@@ -346,6 +356,48 @@ function speakersRow() {
   });
 }
 
+// A permission's state, calm: "Not asked yet" and "Unknown" are not errors (plan S1).
+function permissionStatus(value) {
+  switch (value) {
+    case 'granted':
+      return status('ok', t('settings.permissions.state.on'));
+    case 'notAsked':
+      return status('off', t('settings.permissions.state.notAsked'));
+    case 'unknown':
+      return status('off', t('settings.permissions.state.unknown'));
+    default:
+      return status('off', t('settings.permissions.state.off'));
+  }
+}
+
+// Settings > Permissions, on macOS only. macOS ties a grant to the app's signature, so an update
+// drops them while System Settings keeps showing the old entry switched on (plan D4). The state
+// comes from the preflight calls, and the row says what to do when it is off.
+function permissionsCard() {
+  const permissions = state.permissions || {};
+  return card(
+    PERMISSIONS.map(([id, name, why]) => {
+      const value = permissions[id] || 'unknown';
+      const note =
+        value === 'denied'
+          ? t('settings.permissions.denied', { name: t(name) })
+          : value === 'notAsked'
+            ? t('settings.permissions.notAskedHelp')
+            : id === 'systemAudio' && value === 'unknown'
+              ? t('settings.permissions.systemAudioUnknown')
+              : '';
+      return row({
+        title: t(name),
+        desc: t(why),
+        below: note ? `<div class="desc note">${icons.info}<span>${esc(note)}</span></div>` : '',
+        side: `<div class="side">${permissionStatus(value)}<button class="btn sm secondary" data-a="permission:${id}">${esc(
+          t('settings.permissions.open')
+        )}</button></div>`
+      });
+    }).join('')
+  );
+}
+
 // ---------- pages ----------
 
 function mainPage() {
@@ -451,6 +503,9 @@ function mainPage() {
       section('dictation', groupTitle(t('settings.groups.dictation'), 'dictation') + dictationCard),
       section('meetings', groupTitle(t('settings.groups.meetings'), 'meetings') + meetingsCard),
       section('general', groupTitle(t('settings.groups.general'), 'general') + generalCard),
+      ...(macos()
+        ? [section('permissions', groupTitle(t('settings.groups.permissions'), 'permissions') + paragraph(t('settings.permissions.intro')) + permissionsCard())]
+        : []),
       section('about', groupTitle(t('settings.groups.about'), 'about') + aboutCard)
     ]
   };
@@ -1567,6 +1622,10 @@ async function act(action, button) {
       return invoke('settings_open_folder', { folder: arg }).catch((error) => showError(t('settings.errors.failed'), error?.message));
     case 'link':
       return invoke('settings_open_link', { link: arg }).catch(() => {});
+    case 'permission':
+      return invoke('settings_open_permission', { permission: arg }).catch((error) =>
+        showError(t('settings.permissions.openFailed'), error?.message)
+      );
     case 'dict-mode':
       dictionary = { correcting: !dictionary.correcting, error: '' };
       render();
@@ -2143,6 +2202,23 @@ function applyState(next, { first = false } = {}) {
   // A meeting started recording the screen, from the pill, a key or Rukoo: a key dialog closes (RUK-110 D18).
   if (keyDialog && next.sync?.screenRecording) keyDialog();
 }
+
+// macOS permissions change in System Settings while Settings is open, so read them again when the
+// window gets the focus. Only that part is taken from the answer: the app's settings events carry
+// every other change in order.
+async function refreshPermissions() {
+  if (!state || !macos()) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.permissions || !state || state.platform !== 'macos') return;
+    if (JSON.stringify(next.permissions) === JSON.stringify(state.permissions)) return;
+    state.permissions = next.permissions;
+    render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+window.addEventListener('focus', refreshPermissions);
 
 async function start() {
   await connect('settings');
