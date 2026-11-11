@@ -27,7 +27,7 @@ While the client's consent screen is unverified, Google shows a warning before y
 
 The sidebar has Inbox, VIPs, Starred, Drafts, Sent, Archive, Spam, Trash, Saved emails and your own folders. [Inbox categories](categories.md) show under Inbox. The sidebar collapses to an icon rail, and does so by itself in narrow windows. The "+" next to Folders makes a new folder.
 
-Search sits in the title bar and covers the current folder, the current account or all accounts. Quick filters above the list show Unread, Starred and Attachments.
+Search sits in the title bar and covers the current folder, the current account or all accounts, including older mail on the server; see [What Rukoo keeps on your computer](#what-rukoo-keeps-on-your-computer). Quick filters above the list show Unread, Starred and Attachments.
 
 The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked "+2" for two more. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
 
@@ -112,7 +112,11 @@ Settings has language, theme, zoom, list density, grouping mail from one sender,
 
 Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally. Older mail stays on the server, but the inbox's unread count still includes it: each sync asks the server how many of the older inbox messages are unread. The sidebar's Inbox count, the account menu, the tray tooltip and a taskbar or Dock badge set to count unread mail use that total.
 
-The list itself only holds those 300 messages, so the Unread filter counts them. The list's header shows both numbers, for example "7 unread, 434 more in older mail". Older mail from senders you marked as spam counts too, because Rukoo doesn't have its headers. Mark all as read only reaches the 300 messages Rukoo keeps.
+The list itself only holds those 300 messages, so the Unread filter counts them. The list's header shows both numbers, for example "7 unread, 434 more in older mail". Older mail from senders you marked as spam counts too, because Rukoo doesn't have its headers. Mark all as read only reaches the messages the list holds.
+
+At the end of a folder's list, "Load older emails" brings in the next 100 older messages from the server and says how many more are there. A folder keeps what you loaded over syncs and restarts, up to 1,000 messages more than it normally keeps. New mail moves that window along, as it does the normal one. In the unified inbox it loads from every account's inbox.
+
+A search covers the mail Rukoo keeps first. Once you stop typing, Rukoo also searches the server for older mail in the folders the search covers: the folder, every synced folder of the account, or those of every account. It searches 12 folders per account at a time and lists what it has found while it searches the next ones. Plain IMAP servers compare the subject, the sender and the To and Cc addresses. Gmail uses its own search, which also looks at the message text, except in Spam and Trash. The older results show in the list with the rest, the newest 50 per folder, and open, move, delete and undo like any other email. Each sync updates them, so a message read or deleted on another device shows that here too. A line at the end of the results says how many came from the server, or that the server couldn't be searched. Rukoo forgets older search results when it quits.
 
 The list holds headers and a short preview, and a message's full content downloads when you open it. After each sync Rukoo also downloads the newest 30 inbox messages of up to 1 MB each, so they open without waiting for the server. Those downloads don't mark anything read, and Rukoo deletes a downloaded message once it drops out of the folders it keeps. A message that isn't downloaded yet comes over a second connection to the server, so opening it doesn't wait for a running sync. A sync only asks for the flags of messages Rukoo already has.
 

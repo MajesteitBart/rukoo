@@ -1644,6 +1644,58 @@ body:has(.page) .titlebar-actions {
 .empty .btn {
   margin-top: 10px;
 }
+.list-scroll .empty .spinner {
+  width: 18px;
+  height: 18px;
+  margin: 0 0 6px;
+  border-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+  border-top-color: var(--text-2);
+}
+
+/* The row at the end of the list: Load older, or how the search of older mail on the server went. */
+.list-older {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  padding: 14px 12px 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: pretty;
+}
+.list-older .t {
+  color: var(--text-2);
+}
+.list-older .h {
+  font-variant-numeric: tabular-nums;
+}
+.list-older .spinner {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  border-color: color-mix(in srgb, var(--text-3) 40%, transparent);
+  border-top-color: var(--text-2);
+}
+.list-older .btn {
+  gap: 6px;
+  padding-left: 10px;
+}
+.list-older .btn .ic {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.list-older .btn:disabled {
+  cursor: progress;
+}
+.empty + .list-older {
+  margin-top: -48px;
+}
 
 /* ---------- divider ---------- */
 

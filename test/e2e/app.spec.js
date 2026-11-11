@@ -777,6 +777,106 @@ test('search can cover all folders', async () => {
   await expect(win.locator('.item .pill').first()).toBeVisible();
 });
 
+// #112: mail older than the newest messages Rukoo keeps. The demo inbox keeps 6 of its 16 here instead of 300, and
+// Sent 2 of 3; Load older adds 6 at a time, 8 at most.
+async function smallWindow() {
+  await app.evaluate(async () => {
+    const engine = global.__semEngine;
+    while (engine.syncs.size) await new Promise((r) => setTimeout(r, 50));
+    engine.limits = { ...engine.limits, inbox: 6, default: 2, batch: 6, extra: 8 };
+    await engine.syncAccount(engine.accounts[0].id);
+  });
+}
+
+test('Load older emails at the end of the list brings in older mail, and the unread count stays the same', async () => {
+  await smallWindow();
+  const row = win.locator('.list-older');
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(win.locator('.item')).toHaveCount(6);
+  await expect(row).toContainText('nog 10 op de server');
+  await expect(inboxCount).toHaveText('7');
+  await expect(win.locator('.item', { hasText: 'Call on Thursday' })).toHaveCount(0);
+
+  await slowDown('loadOlder', 600);
+  await row.getByRole('button', { name: 'Oudere e-mails laden' }).click();
+  await expect(row.getByRole('button', { name: 'Oudere e-mails laden…' })).toBeDisabled();
+  await expect(win.locator('.item')).toHaveCount(12);
+  await expect(row).toContainText('nog 4 op de server');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  // Its unread mail moved from the server's count into the list's.
+  await expect(inboxCount).toHaveText('7');
+  await expect(win.locator('.filter[data-filter="unread"] .n')).toHaveText('7');
+
+  // Up to the most a folder adds; then the row goes and only a search reaches further back.
+  await row.getByRole('button', { name: 'Oudere e-mails laden' }).click();
+  await expect(win.locator('.item')).toHaveCount(14);
+  await expect(row).toHaveCount(0);
+  await win.fill('#search', 'tax administration');
+  await expect(item('You have a new message')).toBeVisible();
+});
+
+test('a search finds older mail on the server, which opens, deletes and comes back with undo', async () => {
+  await smallWindow();
+  const row = win.locator('.list-older');
+  const sub = win.locator('.list-title .sub');
+  // While the server is searched an empty result says so, and the header leaves out a count until it answers.
+  await slowDown('searchServer', 800);
+  await win.fill('#search', 'parcel');
+  await expect(win.locator('.empty')).toContainText('Oudere mail op de server doorzoeken…');
+  await expect(sub).toHaveText('"parcel" in Postvak IN');
+  await expect(win.locator('.item')).toHaveCount(1);
+  await expect(sub).toHaveText('1 voor "parcel" in Postvak IN');
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
+  await item('Your parcel is on its way').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('parcel');
+
+  await win.click('[data-reader="delete"]');
+  await expect(win.locator('#toast')).toContainText('Prullenbak');
+  await expect(win.locator('.item', { hasText: 'Your parcel' })).toHaveCount(0);
+  await win.click('#toast button:has-text("Ongedaan maken")');
+  await expect(win.locator('#toast')).toContainText('Teruggezet');
+  await expect(item('Your parcel is on its way')).toBeVisible();
+  // Back in the inbox it is among the newest uids, so the list holds it from now on.
+  await win.locator('#search').press('Escape');
+  await expect(win.locator('.list-title h1')).toHaveText('Postvak IN');
+  await expect(item('Your parcel is on its way')).toBeVisible();
+});
+
+test('a search of all folders finds older sent mail, and a server that fails says so and can be tried again', async () => {
+  await smallWindow();
+  // One folder per call to main: the older contract mail is in Sent, the second folder, so the list asks for the next.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.search = { ...engine.search, folders: 1 };
+  });
+  const row = win.locator('.list-older');
+  await win.fill('#search', 'contract');
+  await expect(row).toHaveText('Geen oudere mail op de server gevonden');
+  await expect(win.locator('.item')).toHaveCount(2);
+  await win.click('.search-scope');
+  await win.click('.menu button:has-text("Alle mappen")');
+  await expect(item('Question about my contract')).toBeVisible();
+  await expect(win.locator('.item')).toHaveCount(3);
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
+
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.realSearchServer = engine.searchServer;
+    engine.searchServer = async () => ({ more: 0, errors: ['demo@example.com: De server is niet bereikbaar.'] });
+  });
+  await win.fill('#search', 'dinner');
+  await expect(row).toContainText('Rukoo kon oudere mail op de server niet doorzoeken. demo@example.com: De server is niet bereikbaar.');
+  await expect(item('Dinner on Saturday')).toBeVisible();
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.searchServer = engine.realSearchServer;
+  });
+  await row.getByRole('button', { name: 'Opnieuw proberen' }).click();
+  await expect(item('Re: Dinner on Saturday')).toBeVisible();
+  await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
+});
+
 test('user folders load on demand', async () => {
   await win.click('[data-folder="Invoices"]');
   await expect(win.locator('.list-title h1')).toHaveText('Invoices');

@@ -317,6 +317,11 @@ function seed(now = Date.now()) {
         return msg;
       })
     };
+    // Uids grow with the date, as on a server where mail arrived in order, so the newest mail is the window a sync
+    // keeps and Load older reaches back in time. The Message-IDs keep the order of the lists above.
+    const made = boxes[pathName].messages;
+    const uids = made.map((m) => m.uid);
+    made.sort((a, b) => a.date - b.date || b.uid - a.uid).forEach((m, i) => (m.uid = uids[i]));
     boxes[pathName].uidNext = uid;
   };
   fill('INBOX', inbox);
@@ -332,6 +337,32 @@ function seed(now = Date.now()) {
     msg.references = [msg.inReplyTo];
   }
   return { boxes, nextUid: uid };
+}
+
+// A stored demo message's flags in the cache's form.
+function flagState(flags) {
+  return { unread: !flags.includes('\\Seen'), starred: flags.includes('\\Flagged'), answered: flags.includes('\\Answered') };
+}
+
+// A stored demo message in the cache's form, as ImapAccount's syncFolder gives it.
+function describe(m) {
+  return {
+    uid: m.uid,
+    messageId: m.messageId,
+    inReplyTo: m.inReplyTo || null,
+    subject: m.subject,
+    from: m.from,
+    to: m.to,
+    cc: m.cc,
+    replyTo: [],
+    date: m.date,
+    preview: util.makePreview(m.text || (m.html ? util.htmlToPlain(m.html) : '')),
+    ...flagState(m.flags),
+    // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
+    hasAttachments: (m.attachments || []).some((a) => !a.cid),
+    size: (m.html || m.text || '').length,
+    signals: mailSignals(m.headers)
+  };
 }
 
 class DemoAccount {
@@ -386,35 +417,41 @@ class DemoAccount {
     return name;
   }
 
-  // olderUnseen: also how many messages older than the window are unread, as ImapAccount.syncFolder reports it.
-  async syncFolder(p, { limit = 200, olderUnseen = false } = {}) {
+  // limit: a number, or a function that gives it, as for ImapAccount.syncFolder. olderUnseen: also how many messages
+  // older than the window are unread, and keep: the flags of these older uids, both as ImapAccount.syncFolder reports
+  // them.
+  async syncFolder(p, { limit = 200, olderUnseen = false, uidValidity = null, keep = null } = {}) {
     const box = this.box(p);
-    const list = box.messages.slice(-limit);
-    const older = box.messages.slice(0, Math.max(0, box.messages.length - limit));
+    const size = typeof limit === 'function' ? limit() : limit;
+    const list = box.messages.slice(-size);
+    const older = box.messages.slice(0, Math.max(0, box.messages.length - size));
+    const uids = keep && uidValidity && String(uidValidity) === String(box.uidValidity) ? new Set(typeof keep === 'function' ? keep() : keep) : null;
+    const kept = uids ? older.filter((m) => uids.has(m.uid)) : [];
     return {
       uidValidity: box.uidValidity,
       exists: box.messages.length,
       ...(olderUnseen ? { olderUnseen: older.filter((m) => !m.flags.includes('\\Seen')).length } : {}),
-      messages: list.map((m) => ({
-        uid: m.uid,
-        messageId: m.messageId,
-        inReplyTo: m.inReplyTo || null,
-        subject: m.subject,
-        from: m.from,
-        to: m.to,
-        cc: m.cc,
-        replyTo: [],
-        date: m.date,
-        preview: util.makePreview(m.text || (m.html ? util.htmlToPlain(m.html) : '')),
-        unread: !m.flags.includes('\\Seen'),
-        starred: m.flags.includes('\\Flagged'),
-        answered: m.flags.includes('\\Answered'),
-        // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
-        hasAttachments: (m.attachments || []).some((a) => !a.cid),
-        size: (m.html || m.text || '').length,
-        signals: mailSignals(m.headers)
-      }))
+      messages: list.map(describe),
+      ...(uids && uids.size ? { kept: kept.map((m) => ({ uid: m.uid, ...flagState(m.flags) })) } : {})
     };
+  }
+
+  // Older mail that matches query, as ImapAccount.searchFolder finds it without Gmail's search: the subject, sender or
+  // a recipient contains it, in any case. criteria: seen and flagged, the ones searchServer() asks for.
+  async searchFolder(p, query, { below = null, limit = 50, criteria = {} } = {}) {
+    const box = this.box(p);
+    const q = String(query).toLowerCase();
+    const has = (v) => String(v || '').toLowerCase().includes(q);
+    const person = (a) => has(a && a.name) || has(a && a.address);
+    const flagged = (m, flag, want) => want === undefined || m.flags.includes(flag) === want;
+    const hits = box.messages.filter(
+      (m) =>
+        (!below || m.uid < below) &&
+        flagged(m, '\\Seen', criteria.seen) &&
+        flagged(m, '\\Flagged', criteria.flagged) &&
+        (has(m.subject) || person(m.from) || [...(m.to || []), ...(m.cc || [])].some(person))
+    );
+    return { uidValidity: box.uidValidity, total: hits.length, messages: hits.slice(-limit).map(describe) };
   }
 
   async fetchSource(p, uid) {

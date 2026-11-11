@@ -38,6 +38,7 @@ import { openSetup } from './setup.js';
 import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
+import { planServerSearch as planSearch } from './server-search.js';
 import * as calendar from './calendar.js';
 import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
@@ -118,7 +119,13 @@ export const S = {
   composer: null,
   // Inbox categories from main (categories/), and the tab on screen: a category id, or null for all of the inbox.
   categories: null,
-  category: null
+  category: null,
+  // Mail older than the cache keeps. olderMore: how many older emails Load older can bring into the list on screen;
+  // loadingOlder: the list it is loading for (olderKey()). server: the server search under a search's results,
+  // { key, query, state: 'searching', 'done' or 'failed', more, error }; null while nothing is searched.
+  olderMore: 0,
+  loadingOlder: null,
+  server: null
 };
 
 // Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar' or 'meeting'.
@@ -211,10 +218,17 @@ async function refreshOnce() {
   const query = searchingAll()
     ? { scope: S.searchScope === 'all' ? 'all' : S.scope, view: 'everything', query: S.query }
     : { scope: S.scope, view: S.view, folder: S.folder, query: S.query };
-  const [list, counts, categories] = await Promise.all([api('list', query), api('counts', S.scope), api('categoriesState').catch(() => S.categories)]);
+  const [list, counts, categories, older] = await Promise.all([
+    api('list', query),
+    api('counts', S.scope),
+    api('categoriesState').catch(() => S.categories),
+    api('olderState', query).catch(() => ({ more: 0, server: 0 }))
+  ]);
   S.list = list;
   S.counts = counts;
   S.categories = categories;
+  S.olderMore = older.more;
+  planServerSearch(query, older.server);
   setCategories(categories);
   setKeymap(data.settings.keymap);
   if (S.updates === undefined) S.updates = await api('updatesState').catch(() => null);
@@ -253,6 +267,96 @@ async function refreshOnce() {
     else calendar.show();
   }
   if (meetingMode() && !meeting.isOpen()) meeting.show();
+}
+
+// ---------- older mail ----------
+
+// The list on screen, as Load older takes it.
+function olderKey() {
+  return JSON.stringify([S.scope, S.view, S.folder || null]);
+}
+
+// Under a search's results Rukoo also searches the server for older mail than it keeps, once the typing stops, when
+// the folders searched have any (onServer, from olderState). query is the request the list on screen came from, which
+// the search follows (server-search.js). A search with another text, scope or folder starts again; a result for one
+// that is no longer on screen is dropped.
+let serverTimer = null;
+function planServerSearch(query, onServer) {
+  const next = planSearch(S.server, query, onServer);
+  if (next === S.server) return;
+  clearTimeout(serverTimer);
+  S.server = next;
+  if (next) serverTimer = setTimeout(() => searchServer(next.key), 450);
+}
+
+// Main searches a few folders per account at a time (engine.searchServer()), so this asks for the next ones until none
+// are left, and the list shows what the folders searched so far found meanwhile. A search no longer on screen stops.
+async function searchServer(key) {
+  const s = S.server;
+  if (!s || s.key !== key) return;
+  let more = 0;
+  const errors = [];
+  for (let resume = false; ; resume = true) {
+    let res;
+    try {
+      res = await api('searchServer', { ...s.query, resume });
+    } catch (err) {
+      res = { errors: [err.message] };
+    }
+    if (S.server !== s) return;
+    more += res.more || 0;
+    errors.push(...(res.errors || []));
+    if (!res.remaining) break;
+    await refresh().catch(() => {});
+    if (S.server !== s) return;
+  }
+  S.server = { ...s, state: errors.length ? 'failed' : 'done', more, error: errors.join('\n') };
+  refresh();
+}
+
+function retryServerSearch() {
+  if (!S.server) return;
+  S.server = { ...S.server, state: 'searching' };
+  renderList();
+  searchServer(S.server.key);
+}
+
+async function loadOlder() {
+  if (S.loadingOlder) return;
+  const key = olderKey();
+  const focused = document.activeElement && document.activeElement.closest('.list-older');
+  S.loadingOlder = key;
+  renderList();
+  try {
+    await api('loadOlder', { scope: S.scope, view: S.view, folder: S.folder });
+  } catch (err) {
+    toast(t('mailbox.older.loadFailed', { error: err.message }), 6000);
+  }
+  S.loadingOlder = null;
+  await refresh();
+  // The button is drawn again; the keyboard stays on it, or on the list once everything is in.
+  if (focused && olderKey() === key) ($('.list-older .btn') || $('.list-scroll'))?.focus();
+}
+
+// The row at the end of the list. Without a search: Load older, while the server has more of the folders listed.
+// Under a search: how the search of older mail on the server went.
+function olderHtml() {
+  if (S.query.trim()) {
+    const s = S.server;
+    if (!s) return '';
+    if (s.state === 'searching') return `<div class="list-older"><span class="spinner"></span><span class="t">${esc(t('mailbox.older.searching'))}</span></div>`;
+    if (s.state === 'failed') {
+      return `<div class="list-older failed"><span class="t">${esc(t('mailbox.older.failed', { error: s.error }))}</span><button class="btn secondary sm" data-action="older-retry" data-i18n="common.actions.retry">${esc(t('common.actions.retry'))}</button></div>`;
+    }
+    const n = rows().filter((m) => m.older).length;
+    const more = s.more ? `<span class="h">${esc(t('mailbox.older.more', { count: s.more }))}</span>` : '';
+    return `<div class="list-older"><span class="t">${esc(n ? t('mailbox.older.found', { count: n }) : t('mailbox.older.none'))}</span>${more}</div>`;
+  }
+  if (!S.olderMore || S.view === 'saved') return '';
+  // While it loads, the spinner takes the icon's place, so the button keeps its width; its name says it is loading.
+  const loading = S.loadingOlder === olderKey();
+  const busy = loading ? ` disabled aria-busy="true" aria-label="${esc(t('mailbox.older.loading'))}"` : '';
+  return `<div class="list-older"><button class="btn secondary sm" data-action="older-load"${busy}><span class="ic">${loading ? '<span class="spinner"></span>' : icons.down}</span>${esc(t('mailbox.older.load'))}</button><span class="h">${esc(t('mailbox.older.available', { count: S.olderMore }))}</span></div>`;
 }
 
 // Show the newest message instead of an empty reading pane. It stays unread until you open it yourself.
@@ -1013,9 +1117,18 @@ function senderLine(m) {
   return person(m.from) || t('mailbox.message.unknownSender');
 }
 
+// A search that found nothing in the cache while the server is still searched: the list waits for the server's answer.
+function waitingForServer() {
+  return Boolean(S.query.trim() && S.server && S.server.state === 'searching' && !rows().length);
+}
+
 function listTitle() {
   if (S.query.trim()) {
-    return { title: t('mailbox.search.results'), sub: t('mailbox.search.summary', { count: rows().length, query: S.query.trim(), scope: S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase() }) };
+    const query = S.query.trim();
+    const scope = S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase();
+    // Without a count until the server answers, which would otherwise say 0 above "Searching older mail".
+    const sub = waitingForServer() ? t('mailbox.search.summaryWaiting', { query, scope }) : t('mailbox.search.summary', { count: rows().length, query, scope });
+    return { title: t('mailbox.search.results'), sub };
   }
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? categoryRows().filter((m) => m.unread).length : 0;
@@ -1174,6 +1287,10 @@ function listHtml() {
     const failed = scoped.find((a) => a.error);
     let msg = t('mailbox.empty.folder');
     let hint = '';
+    // Nothing in the cache yet, while the server is searched: that answer is the one to wait for.
+    if (waitingForServer()) {
+      return `<div class="empty"><span class="spinner"></span><div class="h">${esc(t('mailbox.older.searching'))}</div></div>`;
+    }
     if (S.query.trim()) {
       msg = t('mailbox.empty.search');
       hint = S.searchScope === 'view' ? t('mailbox.empty.searchAll') : t('mailbox.empty.searchOther');
@@ -1186,7 +1303,9 @@ function listHtml() {
     const error = failed && !syncing ? `<p class="error">${esc(failed.email)}: ${esc(failed.error)}</p>` : '';
     const searchAll =
       S.query.trim() && S.searchScope === 'view' ? `<button class="btn secondary sm" data-action="search-everywhere" data-i18n="mailbox.empty.searchAllAction">${esc(t('mailbox.empty.searchAllAction'))}</button>` : '';
-    return `<div class="empty">${icons.mailOpen}<div class="t">${msg}</div>${hint && !hint.startsWith('<') ? `<div class="h">${hint}</div>` : hint}${searchAll}${error}</div>`;
+    // A failed server search says so; a filter that finds nothing can still load older mail.
+    const older = !S.query.trim() || (S.server && S.server.state === 'failed') ? olderHtml() : '';
+    return `<div class="empty">${icons.mailOpen}<div class="t">${msg}</div>${hint && !hint.startsWith('<') ? `<div class="h">${hint}</div>` : hint}${searchAll}${error}</div>${older}`;
   }
   const byDate = S.data.settings.sort === 'date-desc' || S.data.settings.sort === 'date-asc';
   const opts = {
@@ -1206,7 +1325,7 @@ function listHtml() {
     out += itemHtml(m, { ...opts, stack: layout.heads.get(m.id), stacked: layout.members.has(m.id) });
   }
   wantLogos(list);
-  return out;
+  return out + olderHtml();
 }
 
 function itemHtml(m, { multi, showFolder, stack, stacked }) {
@@ -1494,6 +1613,10 @@ function listAction(action, btn) {
     case 'search-everywhere':
       S.searchScope = S.data.accounts.length > 1 && S.scope !== 'all' ? 'account' : 'all';
       return refresh();
+    case 'older-load':
+      return loadOlder();
+    case 'older-retry':
+      return retryServerSearch();
     case 'check-all': {
       const list = rows();
       const all = list.every((m) => S.checked.has(m.id));
