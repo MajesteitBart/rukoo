@@ -74,7 +74,7 @@ jobs:
           }
           $missing = @('RUKOO_VOICE_TEST_NEMO_DIR', 'RUKOO_VOICE_TEST_NEMOTRON', 'RUKOO_VOICE_TEST_AMI') | Where-Object { -not $found.Contains($_) }
           if ($missing) {
-            $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).archive
+            $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).targets.'windows-x86_64'.archive
             if ($published) {
               Write-Host "::error::Speaker label assets missing: $($missing -join ', '). The runtime is published, so the AMI and runtime tests must run; rerun the job."
               exit 1
