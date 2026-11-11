@@ -134,20 +134,30 @@ test('a recipient is taken on dragenter and moves by its address; files dragged 
   await expect(chips(win, 'cc')).toHaveText(['joris@test.invalid']);
   await expect(chips(win, 'to')).toHaveText(['sanne@test.invalid']);
 
-  // A chip drag whose dragend never came, then files from Explorer over Cc: they don't move a recipient.
+  // A chip drag whose dragend never came, as when its chip was drawn again and it was let go outside the window, then a
+  // file from Explorer over Cc: it moves no recipient, and the composer takes it as an attachment. The file comes from
+  // a file input, so it has a path on disk the way a file from Explorer does.
+  const file = path.join(dataDir, 'note.txt');
+  fs.writeFileSync(file, 'hello');
+  await win.evaluate(() => document.body.append(Object.assign(document.createElement('input'), { type: 'file', id: 'test-file', hidden: true })));
+  await win.setInputFiles('#test-file', file);
   const files = await win.evaluate(() => {
     const ev = (type, dataTransfer) => new DragEvent(type, { dataTransfer, bubbles: true, cancelable: true });
     document.querySelector('[data-rfield="to"] .recipient').dispatchEvent(ev('dragstart', new DataTransfer()));
+    const input = document.getElementById('test-file');
     const dt = new DataTransfer();
-    dt.items.add(new File(['hello'], 'note.txt', { type: 'text/plain' }));
+    dt.items.add(input.files[0]);
+    input.remove();
     const cc = document.querySelector('[data-rfield="cc"]');
-    cc.dispatchEvent(ev('dragenter', dt));
+    const taken = !cc.dispatchEvent(ev('dragenter', dt));
     cc.dispatchEvent(ev('dragover', dt));
-    const marked = cc.classList.contains('drop-recipient');
-    cc.dispatchEvent(ev('drop', dt));
-    return { marked };
+    const result = { taken, overlay: document.querySelector('.composer').classList.contains('drop-files'), marked: cc.classList.contains('drop-recipient') };
+    result.dropped = !cc.dispatchEvent(ev('drop', dt));
+    return result;
   });
-  expect(files).toEqual({ marked: false });
+  expect(files).toEqual({ taken: true, overlay: true, marked: false, dropped: true });
+  await expect(win.locator('.composer .att-chip .n')).toHaveText(['note.txt']);
+  await expect(win.locator('.composer.drop-files')).toHaveCount(0);
   await expect(chips(win, 'to')).toHaveText(['sanne@test.invalid']);
   await expect(chips(win, 'cc')).toHaveText(['joris@test.invalid']);
   // That drag ends with the next dragend anywhere in the window.

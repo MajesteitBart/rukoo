@@ -1098,14 +1098,17 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   const dropTarget = inline ? page : document;
   page.dataset.dropHint = t('composer.attachments.dropHint');
   // A drag that began in the composer, such as an image moved within the text, is left to the editor. Chromium gives a
-  // dragged image Files too, but it is no file to attach.
-  let innerDrag = false;
-  page.addEventListener('dragstart', () => {
-    innerDrag = true;
-    afterDrag(() => (innerDrag = false));
-  });
+  // dragged image Files too, but it is no file to attach. Such a drag carries a mark of its own rather than setting a
+  // flag here: a drag whose source was drawn again ends without a dragend reaching the composer, and a flag left set
+  // would turn away the next files from Explorer.
+  const INNER_TYPE = 'application/x-rukoo-composer';
+  page.addEventListener('dragstart', (e) => e.dataTransfer?.setData(INNER_TYPE, '1'));
+  const filesDrag = (e) => {
+    const types = [...(e.dataTransfer?.types || [])];
+    return types.includes('Files') && !types.includes(INNER_TYPE);
+  };
   const acceptFiles = (e) => {
-    if (innerDrag || ![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    if (!filesDrag(e)) return;
     e.preventDefault();
     page.classList.add('drop-files');
   };
@@ -1116,7 +1119,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   });
   listen(dropTarget, 'drop', (e) => {
     page.classList.remove('drop-files');
-    const files = innerDrag ? [] : [...(e.dataTransfer.files || [])];
+    const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
     for (const f of files) {

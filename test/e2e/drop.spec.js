@@ -157,7 +157,8 @@ test('files dragged over the composer are taken on dragenter by the composer its
   expect(await filesEnd(win, 'dragleave')).toEqual({ overlay: false, text: true });
 
   // An image moved within the text carries Files too, but it is the editor's: no overlay, and the editor keeps the
-  // drop. Once that drag is over, files are taken again (below).
+  // drop. Files from Explorer right after it are taken again (below), also when that drag's dragend never reached the
+  // composer.
   const inner = await win.evaluate(() => {
     const editor = document.querySelector('.composer .editor');
     const img = document.createElement('img');
@@ -169,7 +170,6 @@ test('files dragged over the composer are taken on dragenter by the composer its
     const taken = !editor.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true, cancelable: true }));
     const overlay = document.querySelector('.composer').classList.contains('drop-files');
     const editorKeepsDrop = editor.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
-    document.dispatchEvent(new DragEvent('dragend'));
     img.remove();
     return { taken, overlay, editorKeepsDrop };
   });
