@@ -188,6 +188,12 @@ function prefilled(st, opts) {
 
 const COMPOSE_MODES = ['new', 'reply', 'replyAll', 'forward', 'draft'];
 const textOr = (v, fallback = null) => (typeof v === 'string' ? v : fallback);
+// Recipients as the editor held them, every one and as typed. The limits of addressList() are for what an agent
+// hands in.
+const keptPeople = (list) =>
+  (Array.isArray(list) ? list : [])
+    .filter((a) => a && typeof a.address === 'string' && a.address.trim())
+    .map((a) => ({ name: textOr(a.name, ''), address: a.address }));
 
 // An editor that opens again after Undo send, or after the server refused an email that waited: what undoState()
 // kept, on top of what its mode fills in. m: the email a reply or forward answers, kept with it. It came back
@@ -204,12 +210,12 @@ function restoredState(data, opts, m) {
     const own = acc.identities.find((i) => sameAddress(i.address, kept.from));
     s.from = own ? own.address : acc.defaultFrom;
   }
-  s.to = addressList(kept.to);
-  s.cc = addressList(kept.cc);
-  s.bcc = addressList(kept.bcc);
+  s.to = keptPeople(kept.to);
+  s.cc = keptPeople(kept.cc);
+  s.bcc = keptPeople(kept.bcc);
   s.showCc = kept.showCc === true || s.cc.length > 0;
   s.showBcc = kept.showBcc === true || s.bcc.length > 0;
-  s.subject = textOr(kept.subject, '').slice(0, 1000);
+  s.subject = textOr(kept.subject, '');
   s.attachments = (Array.isArray(kept.attachments) ? kept.attachments : [])
     .filter((a) => a && typeof a.filename === 'string' && (typeof a.path === 'string' || Number.isInteger(a.forwardIndex)))
     .map((a) => keyed(typeof a.path === 'string' ? { path: a.path, filename: a.filename, size: Number(a.size) || 0 } : { forwardIndex: a.forwardIndex, filename: a.filename, size: Number(a.size) || 0 }));

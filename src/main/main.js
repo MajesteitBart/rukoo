@@ -795,21 +795,28 @@ function reopenUnsent() {
 // when that fails too, to the next start.
 async function waitedMailFailed(entry, err) {
   const error = (err && err.message) || String(err);
+  let restore = entry.restore || {};
   if (quitting) {
+    let saved = null;
     try {
-      await api.saveDraft(entry.payload);
+      saved = { id: await api.saveDraft(entry.payload) };
     } catch (_) {
-      unsent.push({ restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) });
+      // Kept below for the next start, or opened now when the quit was called off meanwhile.
     }
-    return;
+    if (quitting) {
+      if (!saved) unsent.push({ restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) });
+      return;
+    }
+    // The quit was called off while the email went to Drafts, and answered() has already opened what the quit kept.
+    // Rukoo stays, so this one opens like any refused email; when the save stored a draft, its editor goes on with it.
+    if (saved) restore = { ...restore, state: { ...(restore.state || {}), draftId: saved.id || null } };
   }
   if (entry.origin === 'main' && win && !win.isDestroyed()) {
     if (!win.isVisible() || win.isMinimized()) showWindow();
     // The failed email's notice goes with it; see the renderer's waitedMailFailed.
-    send('send-failed', { id: entry.id, restore: entry.restore, error });
+    send('send-failed', { id: entry.id, restore, error });
     return;
   }
-  const restore = entry.restore || {};
   openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
 }
 // ---- /undo send ----
@@ -1937,7 +1944,11 @@ function closeAgents() {
 // what is still on its way then, or was refused and couldn't go to Drafts, opens again at the next start.
 const SEND_QUIT_WAIT = 30000;
 let quitWaited = false;
+// While those sends run, a second quit (Quit again in the tray, or the last window closing after a quit from a test)
+// waits for them too. Cut short, the emails on their way would be neither surely sent nor written down.
+let quitSending = false;
 app.on('will-quit', (event) => {
+  if (quitSending) return event.preventDefault();
   if (quitWaited || (!hub && !(outbox && outbox.size) && !unsent.length)) return;
   quitWaited = true;
   event.preventDefault();
@@ -1945,9 +1956,11 @@ app.on('will-quit', (event) => {
   // The sends change the mail cache after before-quit saved it, so it is saved again. What they leave is written
   // down, also when they failed earlier in the quit, while a window still asked about its changes.
   const sending = Boolean(outbox && outbox.size);
+  quitSending = sending;
   const mail = (sending ? Promise.race([outbox.flush(), wait(SEND_QUIT_WAIT)]) : Promise.resolve()).then(() => {
     keepUnsent();
     if (sending) engine.flush();
+    quitSending = false;
   });
   const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented

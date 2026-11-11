@@ -208,14 +208,33 @@ test('Settings > General > Undo send offers Off to 30 seconds in English and Dut
   expect(await subjects('sent')).toContain('Straight out');
 });
 
-test('quitting with an email that waits sends it before Rukoo exits', async () => {
+test('quitting with an email that waits sends it before Rukoo exits, also when a second quit comes meanwhile', async () => {
   await newMessage(win, { to: 'demo@example.com', subject: 'Sent while quitting', text: 'Out before the exit.' });
   await composer().locator('[data-c="send"]').click();
   await composerGone();
   await expect(notice()).toContainText('Sending email…');
   expect(await waiting()).toBe(1);
 
-  await closeApp(app);
+  // The send holds until the test lets it go, so the second quit (Quit again in the tray) comes while it runs.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const send = engine.send.bind(engine);
+    engine.send = async (...args) => {
+      await new Promise((resolve) => (global.__releaseSend = resolve));
+      return send(...args);
+    };
+  });
+  const exited = app.waitForEvent('close');
+  await app.evaluate(({ app }) => {
+    app.quit();
+  });
+  await expect.poll(() => app.evaluate(() => typeof global.__releaseSend)).toBe('function');
+  await app.evaluate(({ app }) => {
+    app.quit();
+  });
+  expect(await waiting()).toBe(1);
+  await app.evaluate(() => global.__releaseSend()).catch(() => {});
+  await exited;
   await launch();
   await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
   await expect(item('Sent while quitting')).toBeVisible({ timeout: 10000 });
@@ -284,6 +303,91 @@ test('an email that fails while a quit waits for an answer opens again when the 
   await expect(again.locator('[data-field="subject"]')).toHaveValue('Failed during a quit');
   await expect(again.locator('.editor')).toContainText('Back after Cancel.');
   await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
+});
+
+// The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is
+// called off before that save is done. ok: the save then stores the draft, or fails. The refused email opens again in
+// the reading pane, which keeps the other editor's text as a draft.
+async function refusedWhileQuitIsCalledOff(subject, text, ok) {
+  await newMessage(win, { to: 'someone@example.com', subject, text });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await app.evaluate((_e, subject) => {
+    const engine = global.__semEngine;
+    const saveDraft = engine.saveDraft.bind(engine);
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    // Only the quit's save of the refused email holds, until the test lets it go.
+    engine.saveDraft = (payload) =>
+      payload.subject === subject && !global.__settleSave
+        ? new Promise((resolve, reject) => (global.__settleSave = (stored) => (stored ? resolve(saveDraft(payload)) : reject(new Error('No connection')))))
+        : saveDraft(payload);
+  }, subject);
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  win.on('dialog', () => {});
+  await app.evaluate(({ app }) => {
+    app.quit();
+  });
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+  await app.evaluate(() => {
+    global.__semOutbox.flush();
+  });
+  await expect.poll(() => app.evaluate(() => typeof global.__settleSave)).toBe('function');
+  await win.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  // A call from the window reaches main after the window's answer to the quit, so the quit is called off by now.
+  await win.evaluate(() => window.mail.call('state'));
+  await app.evaluate((_e, ok) => global.__settleSave(ok), ok);
+
+  const dialog = win.locator('.dialog');
+  await expect(dialog.locator('h2')).toHaveText('Sending failed');
+  await expect(dialog).toContainText('Mailbox full');
+  await dialog.locator('.buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue(subject);
+  await expect(composer().locator('.editor')).toContainText(text);
+  await expect(composer().locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+  expect(await waiting()).toBe(0);
+  expect(await subjects('drafts')).toContain('Half written');
+}
+
+test('an email whose Drafts save fails after the quit is called off opens again with its error', async () => {
+  await refusedWhileQuitIsCalledOff('Called off, not saved', 'Nothing of this is lost.', false);
+  expect(await subjects('drafts')).not.toContain('Called off, not saved');
+});
+
+test('an email that reached Drafts after the quit is called off opens again on that draft, with its error', async () => {
+  await refusedWhileQuitIsCalledOff('Called off, saved', 'Kept in Drafts as well.', true);
+  expect((await subjects('drafts')).filter((s) => s === 'Called off, saved')).toHaveLength(1);
+  // Its editor goes on with the stored draft instead of keeping a second one.
+  await composer().locator('.editor').click();
+  await win.keyboard.type(' Edited.');
+  await win.keyboard.press('Control+s');
+  await expect(composer()).toHaveAttribute('data-dirty', 'false');
+  expect((await subjects('drafts')).filter((s) => s === 'Called off, saved')).toHaveLength(1);
+});
+
+test('Undo brings back every recipient and the whole subject, past the limits on what an agent hands in', async () => {
+  const many = Array.from({ length: 101 }, (_, i) => `person${i}@example.com`);
+  const subject = `A long subject ${'x'.repeat(986)}`;
+  expect(subject).toHaveLength(1001);
+  await win.click('[data-action="compose"]');
+  const c = composer();
+  // A pasted list becomes one recipient per address.
+  await c.locator('[data-rinput="to"]').fill(many.join(', '));
+  await expect(c.locator('[data-rfield="to"] .recipient')).toHaveCount(101);
+  await c.locator('[data-field="subject"]').fill(subject);
+  await c.locator('.editor').click();
+  await win.keyboard.type('For all of you.');
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await notice().locator('button').click();
+
+  await expect(c.locator('.editor')).toContainText('For all of you.');
+  await expect(c.locator('[data-field="subject"]')).toHaveValue(subject);
+  await expect(c.locator('[data-rfield="to"] .recipient')).toHaveCount(101);
+  expect(await c.locator('[data-rfield="to"] .recipient').evaluateAll((els) => els.map((el) => el.title))).toEqual(many);
+  expect(await waiting()).toBe(0);
 });
 
 test('an older email that goes leaves the Undo of a newer one in place', async () => {
