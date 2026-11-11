@@ -371,21 +371,23 @@ class Doc {
     // The bytes strings and comments may still run on past where their object seemed to end, all together: four
     // times the file. Each run on spends what it looks through, also when it finds no end, so strings that never
     // close can't each look through the rest of the file, while the few a broken writer left open still leave room.
-    // A string that this leaves cut makes the text partial.
+    // A string that this leaves cut makes the text partial, and spent keeps that when the object is then read as if
+    // nothing ran on: a string that ran on to its end before it doesn't undo the loss.
     let room = 4 * s.length;
+    let spent = false;
     // Runs a string or comment that the end of lex cut on, from from: find(from, limit) says where it ends, and
     // lex.end moves to the first endobj or header after that. Returns where it ends, or -1 where it doesn't.
     const past = (lex, from, find) => {
       if (from >= s.length) return -1;
       if (room <= 0) {
-        this.partial = true;
+        spent = this.partial = true;
         return -1;
       }
       const limit = Math.min(s.length, from + room);
       const at = find(from, limit);
       if (at < 0) {
         room -= limit - from;
-        if (limit < s.length) this.partial = true;
+        if (limit < s.length) spent = this.partial = true;
         return -1;
       }
       bound.lastIndex = at + 1;
@@ -420,7 +422,7 @@ class Doc {
       if (lex.grown) {
         if (!lex.ended && (s.startsWith('endobj', lex.pos) || s.startsWith('stream', lex.pos))) valueEnd = lex.pos;
         else {
-          this.partial = partial;
+          this.partial = partial || spent;
           lex = new Lexer(s, at, Math.min(endobj, next), this);
           entry = { value: value(lex, lex.token()), start: -1, end: -1 };
           valueEnd = lex.pos;

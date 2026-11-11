@@ -207,6 +207,14 @@ function refChain(n) {
 // long, so each one looks through almost all of it.
 const openStrings = (n) => plainPage(`${START}${' '.repeat(10000)}`, { before: '11 0 obj<</Title( endobj\n'.repeat(n) });
 
+// The same n titles, then font 5 again with "t" as "x" and two strings that endobj cuts: the first runs on to its
+// end, the second only 20000 bytes on, with what the n titles left. Short of that, the font is read without them.
+const spentStrings = (n) =>
+  plainPage(START, {
+    before: '11 0 obj<</Title( endobj\n'.repeat(n),
+    after: `5 0 obj<</Title(endobj x)/Subject(endobj ${' '.repeat(20000)})/Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding<</Differences[116/x]>>>>endobj\n`
+  });
+
 const cmapPdf = (body) => makePdf([['Hi']], { type0: true, cmap: cmapOf(body) });
 
 // A saved state holds the font. After `saves` saves in F1, F2 is set and saved once more, then F1 again, and the
@@ -241,7 +249,9 @@ function silentCaps() {
       savedStates: { pdf: savedFont(64), read: 'start' },
       // Strings that never close, each looking through the rest of the file for its end: once they have looked
       // through it four times, the strings after them stay cut.
-      openStrings: { pdf: openStrings(5), read: 'start' }
+      openStrings: { pdf: openStrings(5), read: 'start' },
+      // A string that ran on to its end doesn't undo a later one in the same object that room left cut.
+      spentStrings: { pdf: spentStrings(4), read: 'start' }
     },
     // Right at the limits: read in full.
     within: {
@@ -250,7 +260,8 @@ function silentCaps() {
       refChain: { pdf: refChain(6), read: 'lost' },
       deepTree: { pdf: deepTree(60), read: 'deep' },
       savedStates: { pdf: savedFont(63), read: 'H' },
-      openStrings: { pdf: openStrings(4), read: 'start' }
+      openStrings: { pdf: openStrings(4), read: 'start' },
+      spentStrings: { pdf: spentStrings(3), read: 'sxarx' }
     }
   };
 }
