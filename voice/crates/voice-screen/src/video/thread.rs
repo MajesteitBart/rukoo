@@ -59,7 +59,7 @@ struct Shared<F> {
 
 /// A running video file.
 pub struct VideoThread<W: VideoWriter> {
-    shared: Arc<Shared<W::Frame>>,
+    shared: Arc<Shared<W::Picture>>,
     done: Receiver<Result<u64, VideoError>>,
     end_t: Arc<AtomicU64>,
     pub seq: u64,
@@ -79,7 +79,7 @@ pub struct VideoThread<W: VideoWriter> {
 pub fn start<W: VideoWriter>(
     spec: VideoStart,
     mut maker: Box<dyn VideoMaker<File = W>>,
-    to_main: SyncSender<Ev<W::Frame>>,
+    to_main: SyncSender<Ev<W::Picture>>,
 ) -> Result<VideoThread<W>, VideoError> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
@@ -152,8 +152,8 @@ pub fn start<W: VideoWriter>(
 
 fn run<W: VideoWriter>(
     mut writer: W,
-    shared: &Shared<W::Frame>,
-    to_main: &SyncSender<Ev<W::Frame>>,
+    shared: &Shared<W::Picture>,
+    to_main: &SyncSender<Ev<W::Picture>>,
     seq: u64,
     end_t: &AtomicU64,
     done: mpsc::Sender<Result<u64, VideoError>>,
@@ -174,14 +174,14 @@ fn run<W: VideoWriter>(
         };
         if !failed {
             let mut result = Ok(());
-            for (frame, boot) in frames {
-                result = writer.write(&frame, boot);
+            for (picture, boot) in frames {
+                result = writer.write(&picture, boot);
                 if result.is_err() {
                     break;
                 }
             }
-            if let Some((frame, boot)) = held {
-                writer.hold(&frame, boot);
+            if let Some((picture, boot)) = held {
+                writer.hold(&picture, boot);
             }
             if let (Ok(()), Some(boot)) = (&result, tick) {
                 result = writer.tick(boot);
@@ -227,7 +227,7 @@ fn report<F>(shared: &Shared<F>, to_main: &SyncSender<Ev<F>>, mut event: Ev<F>) 
 
 impl<W: VideoWriter> VideoThread<W> {
     /// Queues a frame; with four waiting, the oldest goes.
-    pub fn send(&self, frame: W::Frame, boot: u64) {
+    pub fn send(&self, picture: W::Picture, boot: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.frames.len() >= QUEUE {
             state.frames.pop_front();
@@ -236,15 +236,15 @@ impl<W: VideoWriter> VideoThread<W> {
         if state.held.as_ref().is_some_and(|(_, at)| *at <= boot) {
             state.held = None;
         }
-        state.frames.push_back((frame, boot));
+        state.frames.push_back((picture, boot));
         self.shared.ready.notify_one();
     }
 
     /// Keeps a frame of a still screen as the newest picture, for the writer's next re-submit.
     /// It isn't a sample of its own, and a newer one replaces it.
-    pub fn hold(&self, frame: W::Frame, boot: u64) {
+    pub fn hold(&self, picture: W::Picture, boot: u64) {
         let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.held = Some((frame, boot));
+        state.held = Some((picture, boot));
     }
 
     /// Lets the writer put in the held frame, or its last frame again, after a quarter second

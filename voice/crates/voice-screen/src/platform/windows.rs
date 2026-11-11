@@ -59,7 +59,7 @@ impl Default for WindowsPlatform {
 }
 
 impl Platform for WindowsPlatform {
-    type Frame = Texture;
+    type Picture = Texture;
     type Device = D3D;
     type Thumbs = Thumbnailer;
     type Video = crate::video::writer::VideoWriter;
@@ -261,14 +261,14 @@ impl Reader for WinReader {
 }
 
 impl Thumbs for Thumbnailer {
-    type Frame = Texture;
+    type Picture = Texture;
 
     fn size(&self) -> (u32, u32) {
         Thumbnailer::size(self)
     }
 
-    fn thumb(&mut self, frame: &Texture) -> Result<Thumb, PlatformError> {
-        Ok(Thumbnailer::thumb(self, &frame.0)?)
+    fn thumb(&mut self, picture: &Texture) -> Result<Thumb, PlatformError> {
+        Ok(Thumbnailer::thumb(self, &picture.0)?)
     }
 }
 

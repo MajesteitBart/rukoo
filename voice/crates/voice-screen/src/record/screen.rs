@@ -110,7 +110,7 @@ pub(crate) struct Screen<P: Platform> {
     pub(crate) clock: ScreenClock,
     pub(crate) follower: TimelineFollower,
     pub(crate) drops: DropState,
-    pub(crate) events: SyncSender<Ev<P::Frame>>,
+    pub(crate) events: SyncSender<Ev<P::Picture>>,
     pub(crate) device: Option<P::Device>,
     pub(crate) source: Option<Box<dyn Source>>,
     pub(crate) thumbs: Option<P::Thumbs>,
@@ -145,7 +145,7 @@ pub(crate) struct Screen<P: Platform> {
     pub(crate) locked: bool,
     pub(crate) frames_saved: u64,
     pub(crate) last_frame_id: Option<String>,
-    pub(crate) last: Option<Last<P::Frame>>,
+    pub(crate) last: Option<Last<P::Picture>>,
     pub(crate) last_thumb_at: Option<Instant>,
     pub(crate) device_fault_at: Option<u64>,
     /// Device creations still to fail, from the `device-lost-at=<ms>x<n>` test switch.
@@ -170,7 +170,7 @@ pub(crate) struct Screen<P: Platform> {
 }
 
 impl<P: Platform> Screen<P> {
-    pub(crate) fn run(mut self, rx: Receiver<Ev<P::Frame>>) {
+    pub(crate) fn run(mut self, rx: Receiver<Ev<P::Picture>>) {
         let mut next_tick = Instant::now();
         while self.stop.is_none() {
             let wait = next_tick.saturating_duration_since(Instant::now());
@@ -196,7 +196,7 @@ impl<P: Platform> Screen<P> {
         self.finish(&rx);
     }
 
-    fn handle(&mut self, event: Ev<P::Frame>) {
+    fn handle(&mut self, event: Ev<P::Picture>) {
         match event {
             Ev::Frame(frame) => self.on_frame(frame),
             Ev::FrameDone(done) => self.on_frame_done(done),
@@ -574,7 +574,7 @@ impl<P: Platform> Screen<P> {
 
     // ---- frames --------------------------------------------------------------------------
 
-    fn on_frame(&mut self, frame: Frame<P::Frame>) {
+    fn on_frame(&mut self, frame: Frame<P::Picture>) {
         if frame.generation != self.generation
             || !self.capturing
             || self.paused
@@ -638,7 +638,7 @@ impl<P: Platform> Screen<P> {
     }
 
     /// `thumb` is this frame's thumbnail, when one was read.
-    fn frames_frame(&mut self, frame: Frame<P::Frame>, t: u64, thumb: Option<Thumb>) {
+    fn frames_frame(&mut self, frame: Frame<P::Picture>, t: u64, thumb: Option<Thumb>) {
         // A frame with small changes has no thumbnail of its own; a re-offer reads it, so a
         // change never stays measured on an older picture.
         let own = own_thumb(
@@ -663,7 +663,7 @@ impl<P: Platform> Screen<P> {
         }
     }
 
-    fn thumb(&mut self, frame: &Frame<P::Frame>) -> Option<Thumb> {
+    fn thumb(&mut self, frame: &Frame<P::Picture>) -> Option<Thumb> {
         let device = self.device.clone()?;
         if self
             .thumbs
@@ -730,7 +730,7 @@ impl<P: Platform> Screen<P> {
         }
     }
 
-    fn save(&mut self, frame: &Frame<P::Frame>, t: u64, thumb: Thumb) {
+    fn save(&mut self, frame: &Frame<P::Picture>, t: u64, thumb: Thumb) {
         if self.drops.frames.is_some() {
             return;
         }
@@ -804,7 +804,7 @@ impl<P: Platform> Screen<P> {
 
     /// Makes sure a video file at the frame's size is open when the video records; whether one
     /// is.
-    fn open_video(&mut self, frame: &Frame<P::Frame>, t: u64) -> bool {
+    fn open_video(&mut self, frame: &Frame<P::Picture>, t: u64) -> bool {
         if !self.video_wanted() {
             return false;
         }
@@ -821,7 +821,7 @@ impl<P: Platform> Screen<P> {
 
     /// Sends the frame to the encoder while the screen moves, and otherwise keeps it as the
     /// newest picture for the next re-submit (`voice_screen_files::gate`).
-    fn video_frame(&mut self, frame: &Frame<P::Frame>, thumb: Option<&Thumb>) {
+    fn video_frame(&mut self, frame: &Frame<P::Picture>, thumb: Option<&Thumb>) {
         let gate = self.gate.frame(frame.dirty, thumb);
         if let Some(video) = &self.video {
             match gate {
@@ -835,7 +835,7 @@ impl<P: Platform> Screen<P> {
         self.video_seq.max(finalize::highest_video_seq(&self.dir)) + 1
     }
 
-    fn start_video(&mut self, frame: &Frame<P::Frame>, t: u64) {
+    fn start_video(&mut self, frame: &Frame<P::Picture>, t: u64) {
         let Some(device) = self.device.clone() else {
             return;
         };
@@ -1225,7 +1225,7 @@ impl<P: Platform> Screen<P> {
 
     /// Stops capturing, ends the video, lets OCR finish, writes `stop`, removes `screen.json`
     /// and only then answers a `stop` request.
-    fn finish(&mut self, rx: &Receiver<Ev<P::Frame>>) {
+    fn finish(&mut self, rx: &Receiver<Ev<P::Picture>>) {
         let stopping = self.stop.take().unwrap_or(Stopping {
             t: 0,
             reason: "interrupted".into(),
@@ -1289,7 +1289,7 @@ impl<P: Platform> Screen<P> {
         }
     }
 
-    fn handle_stopping(&mut self, event: Ev<P::Frame>, replies: &mut Vec<Sender<Value>>) {
+    fn handle_stopping(&mut self, event: Ev<P::Picture>, replies: &mut Vec<Sender<Value>>) {
         match event {
             Ev::FrameDone(done) => self.on_frame_done(done),
             Ev::Control(request) => match request.body["cmd"].as_str() {

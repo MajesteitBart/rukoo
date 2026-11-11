@@ -121,14 +121,14 @@ pub struct WriterOptions {
 pub trait VideoWriter: 'static {
     /// The captured picture this writer takes, the platform's own frame type. It travels to the
     /// encoder's thread, so it must be sendable.
-    type Frame: Send;
+    type Picture: Send;
 
     /// Writes the frame captured at `boot` (interrupt time). It goes into the file when the next
     /// frame, a re-submit or the end gives its duration.
-    fn write(&mut self, frame: &Self::Frame, boot: u64) -> Result<(), VideoError>;
+    fn write(&mut self, picture: &Self::Picture, boot: u64) -> Result<(), VideoError>;
     /// Keeps the frame captured at `boot` for the next re-submit, unless the last frame written is
     /// newer. A newer held frame replaces it; a written one drops it.
-    fn hold(&mut self, frame: &Self::Frame, boot: u64);
+    fn hold(&mut self, picture: &Self::Picture, boot: u64);
     /// After a quarter second without a new sample, the held frame goes in at its capture time,
     /// or the last one again at `boot_now`, so a still screen still gets a keyframe and a fragment
     /// boundary every 1 to 2 s.
@@ -251,12 +251,12 @@ pub trait Reader: Send {
 /// The 1/8-scale luma thumbnail that decides which frames are saved and which go to the encoder.
 pub trait Thumbs {
     /// The captured picture this thumbnailer takes.
-    type Frame;
+    type Picture;
 
     /// The frame size this thumbnailer takes.
     fn size(&self) -> (u32, u32);
     /// The thumbnail of a frame of this thumbnailer's size.
-    fn thumb(&mut self, frame: &Self::Frame) -> Result<Thumb, PlatformError>;
+    fn thumb(&mut self, picture: &Self::Picture) -> Result<Thumb, PlatformError>;
 }
 
 /// Per-thread setup the platform needs, such as COM's multithreaded apartment. Called on every
@@ -279,12 +279,12 @@ pub struct FrameIo {
 pub trait Platform: Clone + Send + Sync + Sized + 'static {
     /// The platform's own captured picture, which travels between the capture, the main thread
     /// and the encoder.
-    type Frame: Clone + Send + 'static;
+    type Picture: Clone + Send + 'static;
     /// The graphics device, or the platform's equivalent, shared by capture, thumbnails, pixels
     /// and video.
     type Device: Clone + Send;
-    type Thumbs: Thumbs<Frame = Self::Frame>;
-    type Video: VideoWriter<Frame = Self::Frame>;
+    type Thumbs: Thumbs<Picture = Self::Picture>;
+    type Video: VideoWriter<Picture = Self::Picture>;
 
     /// The main thread's setup, before anything else: COM's apartment, DPI awareness.
     fn init(&self);
@@ -313,7 +313,7 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
         &self,
         device: Self::Device,
         test: Option<&TestSpec>,
-        to_main: SyncSender<Ev<Self::Frame>>,
+        to_main: SyncSender<Ev<Self::Picture>>,
     ) -> Box<dyn Source>;
     fn thumbs(
         &self,
@@ -325,7 +325,7 @@ pub trait Platform: Clone + Send + Sync + Sized + 'static {
     fn pixels(
         &self,
         device: &Self::Device,
-        frame: &Frame<Self::Frame>,
+        frame: &Frame<Self::Picture>,
     ) -> Result<Pixels, PlatformError>;
     /// A maker for video files on this device; `None` when this computer has no encoder at all.
     fn video_maker(&self, device: &Self::Device)

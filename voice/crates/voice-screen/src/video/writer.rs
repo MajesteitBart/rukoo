@@ -610,14 +610,14 @@ impl VideoWriter {
 /// The Windows sink writer behind the platform's writer trait. The methods are the writer's own;
 /// this only names the frame type the orchestration hands over.
 impl PlatformWriter for VideoWriter {
-    type Frame = crate::capture::Texture;
+    type Picture = crate::capture::Texture;
 
-    fn write(&mut self, frame: &crate::capture::Texture, boot: u64) -> Result<(), VideoError> {
-        VideoWriter::write(self, &frame.0, boot)
+    fn write(&mut self, picture: &crate::capture::Texture, boot: u64) -> Result<(), VideoError> {
+        VideoWriter::write(self, &picture.0, boot)
     }
 
-    fn hold(&mut self, frame: &crate::capture::Texture, boot: u64) {
-        VideoWriter::hold(self, &frame.0, boot);
+    fn hold(&mut self, picture: &crate::capture::Texture, boot: u64) {
+        VideoWriter::hold(self, &picture.0, boot);
     }
 
     fn tick(&mut self, boot_now: u64) -> Result<(), VideoError> {

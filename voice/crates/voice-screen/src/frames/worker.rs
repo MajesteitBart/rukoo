@@ -1,8 +1,8 @@
 //! The JPEG and OCR threads. The main thread queues the frames it decided to keep. The JPEG
 //! thread writes each one (`.jpg.tmp`, synced, renamed) and hands it to the OCR thread, which
 //! reads its text and hands the `frame` line back for the journal. OCR can fall behind, or hang
-//! in `RecognizeAsync`, without slowing capture and without holding more than a few frames'
-//! pixels: with `QUEUE` frames waiting for OCR, the oldest is journaled with its JPEG and
+//! in the platform's recognition call, without slowing capture and without holding more than a
+//! few frames' pixels: with `QUEUE` frames waiting for OCR, the oldest is journaled with its JPEG and
 //! `ocr: "skipped"` (spec 2.5), and with `JPEG_QUEUE` frames waiting for their JPEG the main
 //! thread keeps its next frame for later (`accepts`). So at most `HELD` frames' pixels are
 //! held, whatever OCR does.

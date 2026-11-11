@@ -207,7 +207,7 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
     journal.sync();
     let drops = DropState::from_history(&history, opts.mode == Mode::Video);
 
-    let (events, rx) = mpsc::sync_channel::<Ev<P::Frame>>(EVENT_QUEUE);
+    let (events, rx) = mpsc::sync_channel::<Ev<P::Picture>>(EVENT_QUEUE);
     let (requests, request_rx) = mpsc::sync_channel::<Request>(16);
     control::serve(listener, token.clone(), requests)
         .map_err(|e| ExitError::failed(format!("can't start the control port: {e}")))?;

@@ -159,13 +159,13 @@ struct FakeThumbs {
 }
 
 impl Thumbs for FakeThumbs {
-    type Frame = ();
+    type Picture = ();
 
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
-    fn thumb(&mut self, _frame: &()) -> Result<Thumb, PlatformError> {
+    fn thumb(&mut self, _picture: &()) -> Result<Thumb, PlatformError> {
         let (w, h) = (self.width / 8, self.height / 8);
         let luma = (self.taken.wrapping_mul(40) % 256) as u8;
         self.taken += 1;
@@ -204,9 +204,9 @@ impl FakeWriter {
 }
 
 impl VideoWriter for FakeWriter {
-    type Frame = ();
+    type Picture = ();
 
-    fn write(&mut self, _frame: &(), boot: u64) -> Result<(), VideoError> {
+    fn write(&mut self, _picture: &(), boot: u64) -> Result<(), VideoError> {
         self.start_boot.get_or_insert(boot);
         self.last_boot = boot;
         self.note("write");
@@ -215,7 +215,7 @@ impl VideoWriter for FakeWriter {
         fs::write(&self.path, bytes).map_err(|e| VideoError::Disk(e.to_string()))
     }
 
-    fn hold(&mut self, _frame: &(), _boot: u64) {
+    fn hold(&mut self, _picture: &(), _boot: u64) {
         self.note("hold");
     }
 
@@ -355,7 +355,7 @@ impl FakePlatform {
 }
 
 impl Platform for FakePlatform {
-    type Frame = ();
+    type Picture = ();
     type Device = FakeDevice;
     type Thumbs = FakeThumbs;
     type Video = FakeWriter;
