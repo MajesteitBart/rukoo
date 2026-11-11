@@ -2975,6 +2975,22 @@
     "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",
     "description": "Shown under 'Sending failed' in a compose window that opens an email the server refused while Rukoo was quitting, which couldn't be saved to Drafts either: at the next start, or at once when the quit was called off. error is the server's message. src/main/main.js (waitedMailFailed)"
   },
+  "composer.undoSend.quitTitle": {
+    "message": { "one": "{count} email is still waiting to be sent", "other": "{count} emails are still waiting to be sent" },
+    "description": "Title of the question when you quit Rukoo while an email still waits out its Undo send notice. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitHelp": {
+    "message": "Send them now and quit, or stay in Rukoo so you can still undo.",
+    "description": "Text under that question. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitSend": {
+    "message": "Send and quit",
+    "description": "Button in that question: sends the waiting emails at once, then quits. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitStay": {
+    "message": "Don't quit",
+    "description": "Button in that question: calls the quit off; the emails keep waiting. src/main/main.js (askQuitWithHeldMail)"
+  },
   "errors.account.duplicate": {
     "message": "This account has already been added.",
     "description": "errors > account. src/main/engine.js"

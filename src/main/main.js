@@ -535,6 +535,7 @@ function answered(id, closed) {
     quitAsks.clear();
     quitting = false;
     restartForUpdate = false;
+    quitAsked = false;
     // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays.
     openUnsent(unsent.splice(0));
     // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
@@ -1946,7 +1947,40 @@ app.on('window-all-closed', () => {
 });
 
 // Quit in the tray menu, the last window closing, and the e2e teardown all come through here.
-app.on('before-quit', () => {
+// Quitting while email still waits out its Undo notice asks first: Send and quit (the default) or Don't quit, which
+// keeps the emails waiting. Asked once per quit; a quit from the Windows session ending never asks (endSession).
+// Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog.
+let quitAsked = false;
+function askQuitWithHeldMail() {
+  if (quitAsked || !outbox || !outbox.size) return true;
+  const count = outbox.size;
+  let response;
+  if (process.env.SEM_HIDDEN) response = global.__semQuitAnswer || 0;
+  else {
+    const parent = win && !win.isDestroyed() && win.isVisible() ? win : null;
+    response = dialog.showMessageBoxSync(parent, {
+      type: 'question',
+      title: 'Rukoo Mail',
+      message: t('composer.undoSend.quitTitle', { count }),
+      detail: t('composer.undoSend.quitHelp'),
+      buttons: [t('composer.undoSend.quitSend'), t('composer.undoSend.quitStay')],
+      defaultId: 0,
+      cancelId: 1
+    });
+  }
+  if (response === 1) return false;
+  quitAsked = true;
+  return true;
+}
+
+app.on('before-quit', (event) => {
+  if (!askQuitWithHeldMail()) {
+    event.preventDefault();
+    restartForUpdate = false;
+    // The emails' Undo notices need the main window; a quit from closing the last window took it away.
+    if (!win) createWindow();
+    return;
+  }
   quitting = true;
   // Every quit asks the windows afresh; one that still has a question open says so again from its beforeunload.
   quitAsks.clear();
@@ -1987,8 +2021,8 @@ function closeAgents() {
   if (!agentsClosing) agentsClosing = hub.dispose().catch(() => {});
   return agentsClosing;
 }
-// Email that still waits out its Undo notice goes before Rukoo exits, without asking: the windows that could take it
-// back have closed. The sends get SEND_QUIT_WAIT, so a server that stops answering can't hold the quit for ever;
+// Email that still waits out its Undo notice goes before Rukoo exits, once before-quit asked (askQuitWithHeldMail):
+// the windows that could take it back have closed. The sends get SEND_QUIT_WAIT, so a server that stops answering can't hold the quit for ever;
 // what is still on its way then, or was refused and couldn't go to Drafts, opens again at the next start.
 const SEND_QUIT_WAIT = 30000;
 let quitWaited = false;

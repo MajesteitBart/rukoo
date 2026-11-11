@@ -210,6 +210,28 @@ test('Settings > General > Undo send offers Off to 30 seconds in English and Dut
   expect(await subjects('sent')).toContain('Straight out');
 });
 
+test("quitting with an email that waits asks first, and Don't quit keeps it waiting for Undo", async () => {
+  await newMessage(win, { to: 'demo@example.com', subject: 'Kept by the question', text: 'Still undoable.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  expect(await waiting()).toBe(1);
+  // Don't quit: Rukoo stays, the email still waits, and Undo still brings it back.
+  await app.evaluate(({ app }) => {
+    global.__semQuitAnswer = 1;
+    app.quit();
+  });
+  expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBeGreaterThan(0);
+  expect(await waiting()).toBe(1);
+  await notice().locator('button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Kept by the question');
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).not.toContain('Kept by the question');
+  await app.evaluate(() => {
+    global.__semQuitAnswer = 0;
+  });
+});
+
 test('quitting with an email that waits sends it before Rukoo exits, also when a second quit comes meanwhile', async () => {
   await newMessage(win, { to: 'demo@example.com', subject: 'Sent while quitting', text: 'Out before the exit.' });
   await composer().locator('[data-c="send"]').click();
