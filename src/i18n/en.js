@@ -3446,6 +3446,10 @@
     "message": "Mark as read (Ctrl+Q)",
     "description": "mailbox > actions. src/renderer/app.js (renderListTools)"
   },
+  "mailbox.actions.readSome": {
+    "message": "Marked {count} of {total} emails as read. {error}",
+    "description": "Message list: notice after Mark all as read when the mail server refused some of the emails, which stay unread. Its Undo button (and Ctrl+Z) marks the {count} emails that were marked unread again. {count}: emails marked read, {total}: unread emails the list showed, {error}: the server's first refusal, a full sentence. src/renderer/app.js (markAllRead)"
+  },
   "mailbox.actions.star": {
     "message": "Star",
     "description": "mailbox > actions. src/renderer/app.js (renderListTools)"

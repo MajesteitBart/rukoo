@@ -405,6 +405,33 @@ test('with the Unread filter, Shift+Esc keeps the open email, Ctrl+Z undoes it, 
   await expect(win.locator('.composer')).toHaveCount(1);
 });
 
+test('when the server refuses one email, Mark all as read says so and its Undo still reaches the rest', async () => {
+  const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
+  await expect(inboxCount).toHaveText('7');
+  // The demo server refuses to mark this one email read.
+  await app.evaluate((_, subject) => {
+    const engine = global.__semEngine;
+    const m = engine.listMessages({ scope: engine.accounts[0].id, view: 'inbox' }).find((x) => x.subject === subject);
+    const { acc, uid } = engine.locate(m.id);
+    const session = engine.session(acc);
+    const write = session.setFlags.bind(session);
+    session.setFlags = async (p, u, patch) => {
+      if (u === uid && patch.unread === false) throw new Error('The server refused the change.');
+      return write(p, u, patch);
+    };
+  }, 'Call on Thursday');
+  await win.locator('.list-scroll').focus();
+  await win.keyboard.press('Shift+Escape');
+  await expect(win.locator('#toast')).toContainText('6 van 7 e-mails als gelezen gemarkeerd. The server refused the change.');
+  await expect(win.locator('#toast button')).toHaveText('Ongedaan maken');
+  await expect(item('Call on Thursday')).toHaveClass(/unread/);
+  await expect(inboxCount).toHaveText('1');
+  // Ctrl+Z still undoes the six it marked.
+  await win.keyboard.press('Control+z');
+  await expect(win.locator('.list-scroll .item.unread')).toHaveCount(7);
+  await expect(inboxCount).toHaveText('7');
+});
+
 test('Ctrl+click selects several messages for one action', async () => {
   await item('Bencompare').click();
   await item('You updated some of your Google Account details').click({ modifiers: ['Control'] });

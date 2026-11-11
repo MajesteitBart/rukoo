@@ -489,21 +489,95 @@ test('flags for many emails change the cache at once, hold through a sync, and a
   await engine.syncAccount(acc.id);
   assert.equal(unread().length, 0, 'a sync in between keeps the change');
   release();
-  assert.equal(await marking, ids.length, 'the saved email that is not in the cache is skipped');
+  assert.deepEqual(await marking, { done: ids, failed: [], error: null }, 'the saved email that is not in the cache is skipped');
   await engine.syncAccount(acc.id);
   assert.equal(unread().length, 0, 'the server has them read');
 
-  // Undo marks the same emails unread again; one the server refuses goes back to read and the call fails.
+  // Undo marks the same emails unread again; one the server refuses goes back to read and is named with the error.
   const refused = decodeId(ids[1]).uid;
   session.setFlags = async (p, uid, patch) => {
     if (uid === refused) throw new Error('NO STORE failed');
     return setFlags(p, uid, patch);
   };
-  await assert.rejects(engine.setFlagsMany(ids, { unread: true }), /STORE failed/);
+  const undo = await engine.setFlagsMany(ids, { unread: true });
+  assert.deepEqual(undo.done, ids.filter((id) => id !== ids[1]));
+  assert.deepEqual(undo.failed, [ids[1]]);
+  assert.match(undo.error, /STORE failed/);
   assert.deepEqual(
     unread().map((m) => m.id).sort(),
     ids.filter((id) => id !== ids[1]).sort()
   );
+  await engine.close();
+});
+
+// The demo server's flag writes wait at gates the test opens, or fail there. A gate stops the first write it matches.
+function gatedWrites(engine, acc) {
+  const session = engine.session(acc);
+  const write = session.setFlags.bind(session);
+  const gates = [];
+  session.setFlags = async (p, uid, patch) => {
+    const at = gates.findIndex((g) => g.match(uid, patch));
+    const gate = at < 0 ? null : gates.splice(at, 1)[0];
+    if (gate) await gate.opened;
+    if (gate && gate.fail) throw new Error('NO STORE failed');
+    return write(p, uid, patch);
+  };
+  return (match, { fail = false } = {}) => {
+    let open;
+    gates.push({ match, fail, opened: new Promise((resolve) => (open = resolve)) });
+    return open;
+  };
+}
+
+test('a batch of flags that finishes after Undo started leaves Undo in the cache, through a sync, and on the server', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // Mark all read is slow with the first email, and Undo marks both unread again before it is done.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
+  const openUndo = gate((uid, patch) => patch.unread === true);
+  const marking = engine.setFlagsMany([a, b], { unread: false });
+  const undoing = engine.setFlagsMany([a, b], { unread: true });
+  assert.ok(unread(a) && unread(b), 'Undo shows at once');
+  openRead();
+  await marking;
+  // The server has both read and Undo hasn't reached it yet: a sync now must keep what Undo shows.
+  await engine.syncAccount(acc.id);
+  assert.ok(unread(a) && unread(b), 'a sync while Undo is on its way keeps it');
+  openUndo();
+  await undoing;
+  await engine.syncAccount(acc.id);
+  assert.ok(unread(a) && unread(b), 'the server ends with Undo');
+  await engine.close();
+});
+
+test('a later flag change to an email waits for an earlier write to it, and its failure leaves the later change', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b, c] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // Mark all read is slow with the first email; meanwhile the second is marked unread again on its own.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
+  const marking = engine.setFlagsMany([a, b], { unread: false });
+  const single = engine.setFlags(b, { unread: true });
+  openRead();
+  await Promise.all([marking, single]);
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(a), false);
+  assert.equal(unread(b), true, 'the server keeps the later change');
+
+  // The server refuses the first write, while a second one marking the same email read is waiting: the cache keeps
+  // the second, which then reaches the server.
+  const openRefusal = gate((uid) => uid === decodeId(c).uid, { fail: true });
+  const refused = engine.setFlagsMany([c], { unread: false });
+  const again = engine.setFlags(c, { unread: false });
+  openRefusal();
+  await refused.catch(() => {});
+  assert.equal(unread(c), false, 'the failure does not put back what the later change set');
+  await again;
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(c), false);
   await engine.close();
 });
 

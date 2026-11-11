@@ -869,6 +869,7 @@
     "other": "{count} e-mails als gelezen gemarkeerd"
   },
   "mailbox.actions.readShortcut": "Markeren als gelezen (Ctrl+Q)",
+  "mailbox.actions.readSome": "{count} van {total} e-mails als gelezen gemarkeerd. {error}",
   "mailbox.actions.star": "Ster",
   "mailbox.actions.sync": "Synchroniseren",
   "mailbox.actions.unread": "Markeren als ongelezen",

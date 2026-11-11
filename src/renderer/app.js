@@ -1566,14 +1566,24 @@ async function setDensity(density) {
 }
 
 // Marks what the list shows read: the folder, account or category tab, narrowed by a quick filter or a search, with
-// the emails folded into stacks. Undo, in the notice or with Ctrl+Z, marks the same emails unread again.
+// the emails folded into stacks. Undo, in the notice or with Ctrl+Z, marks the same emails unread again. When the
+// server refuses some, the notice that says so keeps an Undo for the ones it did mark.
 async function markAllRead() {
   const list = rows().filter((m) => m.unread && m.role !== 'saved');
   if (!list.length) return toast(t('mailbox.actions.alreadyRead'));
-  const ids = list.map((m) => m.id);
-  const undo = () => setUnread(ids.map((id) => byId(id) || list.find((m) => m.id === id)), true);
-  toast(t('mailbox.actions.readCount', { count: list.length }), { action: { get label() { return t('common.actions.undo'); }, run: undo } });
-  await setUnread(list, false);
+  let undone = false;
+  const offerUndo = (message, ids) => {
+    const run = () => {
+      undone = true;
+      setUnread(ids.map((id) => byId(id) || list.find((m) => m.id === id)), true);
+    };
+    toast(message, { action: { get label() { return t('common.actions.undo'); }, run } });
+  };
+  offerUndo(t('mailbox.actions.readCount', { count: list.length }), list.map((m) => m.id));
+  const { done, error } = await setUnread(list, false, { quiet: true });
+  if (!error) return;
+  if (!done.length || undone) return toast(error);
+  offerUndo(t('mailbox.actions.readSome', { count: done.length, total: list.length, error }), done);
 }
 
 export async function syncNow() {
@@ -1729,12 +1739,20 @@ function bindDivider() {
 // ---------- actions ----------
 
 // One call for all of them: main changes its cache at once, so a sync or redraw halfway can't show some as they were.
-async function setUnread(list, unread) {
+// Resolves with the ids the server took (done) and its first refusal (error), which shows in a notice unless the
+// caller reports it itself (quiet).
+async function flagMany(list, flags, quiet) {
+  const res = await api('setFlagsMany', list.map((m) => m.id), flags).catch((err) => ({ done: [], error: err.message }));
+  if (res.error && !quiet) toast(res.error);
+  return res;
+}
+
+async function setUnread(list, unread, { quiet = false } = {}) {
   list = list.filter((m) => m.role !== 'saved');
-  if (!list.length) return;
+  if (!list.length) return { done: [], error: null };
   for (const m of list) m.unread = unread;
   renderList();
-  await api('setFlagsMany', list.map((m) => m.id), { unread }).catch((err) => toast(err.message));
+  return flagMany(list, { unread }, quiet);
 }
 
 async function setStarred(list, starred) {
@@ -1746,7 +1764,7 @@ async function setStarred(list, starred) {
   }
   renderList();
   if (S.message && list.some((m) => m.id === S.message.id)) renderReader();
-  await api('setFlagsMany', list.map((m) => m.id), { starred }).catch((err) => toast(err.message));
+  await flagMany(list, { starred });
 }
 
 // The shortcut that marks as read (or unread), or the scheme's toggle when it has one for both.

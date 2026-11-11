@@ -258,7 +258,8 @@ class Engine extends EventEmitter {
     this.syncs = new Map();
     this.saved = [];
     this.saveTimers = new Map();
-    // Local changes whose IMAP command has not finished yet; re-applied over sync results.
+    // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
+    // sync results. See holdPending().
     this.pending = new Map();
     // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
     this.undoable = new Map();
@@ -851,15 +852,38 @@ class Engine extends EventEmitter {
     return `${accountId}\n${folder}\n${uid}`;
   }
 
-  // Tracks an optimistic change until its IMAP command settles, so a sync that read
-  // server state just before the command cannot undo it in the cache.
+  // Holds an optimistic change to one email until its IMAP command settles, so a sync that read server state just
+  // before the command cannot undo it in the cache. Changes to the same email line up in the order they were made: a
+  // sync sees them merged with the latest on top, and each one lets go of its own only, so an earlier change that
+  // finishes never drops a later one (such as Undo of a Mark all as read that is still on its way).
+  // before: settles when the earlier changes to this email have. overtaken(k): a later change also sets field k.
+  holdPending(accountId, folder, uid, patch) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const earlier = this.pending.get(key) || [];
+    let settle;
+    const hold = { patch, settled: new Promise((resolve) => (settle = resolve)) };
+    this.pending.set(key, [...earlier, hold]);
+    return {
+      before: Promise.all(earlier.map((h) => h.settled)),
+      overtaken: (k) => {
+        const all = this.pending.get(key) || [];
+        return all.slice(all.indexOf(hold) + 1).some((h) => k in h.patch);
+      },
+      release: () => {
+        settle();
+        const rest = (this.pending.get(key) || []).filter((h) => h !== hold);
+        if (rest.length) this.pending.set(key, rest);
+        else this.pending.delete(key);
+      },
+    };
+  }
+
   async withPending(acc, folder, uid, patch, op) {
-    const key = this.pendingKey(acc.id, folder, uid);
-    this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+    const hold = this.holdPending(acc.id, folder, uid, patch);
     try {
       return await op();
     } finally {
-      this.pending.delete(key);
+      hold.release();
     }
   }
 
@@ -867,7 +891,8 @@ class Engine extends EventEmitter {
     if (!this.pending.size) return messages;
     const out = [];
     for (const m of messages) {
-      const p = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const holds = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const p = holds && Object.assign({}, ...holds.map((h) => h.patch));
       if (!p) out.push(m);
       else if (!p.removed) out.push({ ...m, ...p });
     }
@@ -1368,30 +1393,18 @@ class Engine extends EventEmitter {
     return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType, charset };
   }
 
+  // One email's flags. An email no longer in the cache, or a server that refuses, throws.
   async setFlags(id, flags) {
-    const { acc, msg, folder, uid } = this.locate(id);
-    const patch = {};
-    for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
-    Object.assign(msg, patch);
-    this.changed(acc.id);
-    try {
-      await this.withPending(acc, folder, uid, patch, () => this.session(acc).setFlags(folder, uid, patch));
-    } catch (err) {
-      // Revert on whatever object the cache holds now; a sync may have replaced it.
-      try {
-        const now = this.locate(id).msg;
-        for (const k of Object.keys(patch)) now[k] = !patch[k];
-      } catch (_) {
-        // The message left the cache in the meantime.
-      }
-      this.changed(acc.id);
-      throw new Error(friendlyError(err));
-    }
+    this.locate(id);
+    const { error } = await this.setFlagsMany([id], flags);
+    if (error) throw new Error(error);
   }
 
   // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
   // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
-  // Emails no longer in the cache are skipped. A failure puts that email back and throws once the rest are done.
+  // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
+  // Emails no longer in the cache are skipped. A failure puts that email back, unless a later change has set the flag
+  // since. Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
   async setFlagsMany(ids, flags) {
     const patch = {};
     for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
@@ -1406,31 +1419,33 @@ class Engine extends EventEmitter {
     const accounts = new Set(found.map((f) => f.acc.id));
     for (const f of found) {
       Object.assign(f.msg, patch);
-      const key = this.pendingKey(f.acc.id, f.folder, f.uid);
-      this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch);
     }
     for (const id of accounts) this.changed(id);
-    let failed = null;
+    const done = [];
+    const failed = [];
+    let error = null;
     for (const f of found) {
       try {
+        await f.hold.before;
         await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+        done.push(f.id);
       } catch (err) {
-        failed = failed || err;
+        failed.push(f.id);
+        error = error || friendlyError(err);
+        // Revert on whatever object the cache holds now; a sync may have replaced it.
         try {
           const now = this.locate(f.id).msg;
-          for (const k of Object.keys(patch)) now[k] = !patch[k];
+          for (const k of Object.keys(patch)) if (!f.hold.overtaken(k)) now[k] = !patch[k];
         } catch (_) {
           // The message left the cache in the meantime.
         }
       } finally {
-        this.pending.delete(this.pendingKey(f.acc.id, f.folder, f.uid));
+        f.hold.release();
       }
     }
-    if (failed) {
-      for (const id of accounts) this.changed(id);
-      throw new Error(friendlyError(failed));
-    }
-    return found.length;
+    if (failed.length) for (const id of accounts) this.changed(id);
+    return { done, failed, error };
   }
 
   removeFromCache(acc, folder, uid) {
