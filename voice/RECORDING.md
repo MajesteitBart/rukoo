@@ -46,7 +46,7 @@ Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonica
 
 A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. A power cut can lose up to the last 5 s.
 
-While it records on Windows, the recorder holds the timeline and the open segment with read and delete sharing only. Other processes can read them, and a second writer can't open them.
+While it records, the recorder keeps a second writer out of the timeline and of every segment it has open: on Windows it shares them for reading and deleting only, and on macOS and Linux it holds an exclusive lock on each open file. Other processes can read them, and a second writer can't open them. The lock goes with the process, so a recorder that was hard-killed leaves its meeting writable.
 
 ### Reading
 
@@ -240,7 +240,7 @@ The screen process writes it after its `session` line, to a temporary name that 
 
 ### The screen journal
 
-`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records on Windows, the screen process holds the journal with read and delete sharing only, so a second screen process can't open it.
+`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records, the screen process keeps a second screen process out of the journal: on Windows with read and delete sharing only, on macOS and Linux with an exclusive lock on the open file.
 
 | `kind` | Fields | When |
 |---|---|---|
