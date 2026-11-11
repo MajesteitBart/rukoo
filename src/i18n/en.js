@@ -2955,6 +2955,18 @@
     "message": "Reply all",
     "description": "composer > titles. src/renderer/app.js (messageMenu); src/renderer/composer.js"
   },
+  "composer.undoSend.queued": {
+    "message": "Sending email…",
+    "description": "Notice in the main window right after Send while Undo send (Settings > General) holds the email, with an Undo button; it shows for the chosen number of seconds, then the email goes and 'Email sent' (composer.status.sent) follows. src/renderer/app.js (offerUndoSend)"
+  },
+  "composer.undoSend.undone": {
+    "message": "Sending undone",
+    "description": "Notice after Undo in the 'Sending email…' notice: the email was not sent and its editor is open again. src/renderer/app.js (undoSend)"
+  },
+  "composer.undoSend.late": {
+    "message": "Too late to undo: the email is already on its way",
+    "description": "Notice after Undo in the 'Sending email…' notice when the waiting time had just run out and the email was being sent or was sent. src/renderer/app.js (undoSend)"
+  },
   "errors.account.duplicate": {
     "message": "This account has already been added.",
     "description": "errors > account. src/main/engine.js"
@@ -5080,6 +5092,14 @@
     "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row.",
     "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
   },
+  "settings.general.undoSend": {
+    "message": "Undo send",
+    "description": "Settings > General: row title for how long an email waits after Send, so the notice that follows can take it back. Opens a choice of Off or 5 to 30 seconds (settings.undoSend.*). src/renderer/settings.js (render)"
+  },
+  "settings.general.undoSendHelp": {
+    "message": "After you press Send, the email waits this long, so you can still take it back.",
+    "description": "Settings > General: explanation under the Undo send row. src/renderer/settings.js (render)"
+  },
   "settings.general.fit": {
     "message": "Fit content to window",
     "description": "settings > general. src/renderer/settings.js (render)"
@@ -6551,6 +6571,14 @@
   "settings.sync.thirtyMinutes": {
     "message": "Every 30 minutes",
     "description": "settings > sync. src/renderer/settings.js"
+  },
+  "settings.undoSend.off": {
+    "message": "Off",
+    "description": "Settings > General > Undo send: choice that sends email right away, without an Undo notice. src/renderer/settings.js (UNDO_SEND)"
+  },
+  "settings.undoSend.seconds": {
+    "message": { "one": "{count} second", "other": "{count} seconds" },
+    "description": "Settings > General > Undo send: choice for how long an email waits after Send; count is 5, 10, 20 or 30. src/renderer/settings.js (UNDO_SEND)"
   },
   "settings.theme.dark": {
     "message": "Dark",

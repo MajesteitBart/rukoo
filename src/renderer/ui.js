@@ -196,6 +196,13 @@ export function toast(message, opts = {}) {
   };
 }
 
+// Takes a toast away before its time, while it still shows action: a newer toast keeps its place.
+export function dropToast(action) {
+  if (!action || toastAction !== action) return;
+  clearTimeout(toastTimer);
+  hideToast();
+}
+
 export function runToastAction() {
   const action = toastAction;
   if (!action) return false;

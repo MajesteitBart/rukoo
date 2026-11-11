@@ -19,6 +19,7 @@ import {
   initials,
   cleanPreview,
   toast,
+  dropToast,
   runToastAction,
   showMenu,
   closeMenu,
@@ -2090,10 +2091,12 @@ async function compose(opts) {
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
   const { still, ...rest } = opts;
-  const full = { accountId, ...rest };
+  // An editor that opens again after Undo send brings its own mode, account and the email it answers.
+  const restore = rest.restore || null;
+  const full = restore ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null } : { accountId, ...rest };
   const holds = () => !still || still();
-  let message = null;
-  if (full.id) {
+  let message = restore ? restore.original || null : null;
+  if (full.id && !restore) {
     try {
       message = await api('get', full.id);
     } catch (err) {
@@ -2130,6 +2133,52 @@ async function compose(opts) {
   renderShell();
   agentViewChanged();
   return S.composer;
+}
+
+// The mode, email and account an editor that opens again had (composer.js undoState).
+function restoreOpts(restore) {
+  const o = restore.opts && typeof restore.opts === 'object' ? restore.opts : {};
+  return { mode: typeof o.mode === 'string' ? o.mode : 'new', id: typeof o.id === 'string' ? o.id : null, ...(typeof o.accountId === 'string' ? { accountId: o.accountId } : {}) };
+}
+
+// ---------- undo send ----------
+
+// After Send, while the email waits in main's outbox (Settings > General > Undo send). Undo, or Ctrl+Z, takes it back;
+// a newer notice takes this one's place, and the email then goes when its time is up. Main says "Email sent" after.
+// undoNotice: the email whose notice shows, and its action, so the notice goes when that email fails.
+let undoNotice = null;
+function offerUndoSend({ id, ms }) {
+  const action = { get label() { return t('common.actions.undo'); }, run: () => undoSend(id) };
+  undoNotice = { id, action };
+  toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
+}
+
+// The server refused an email that waited: its notice goes, and its editor opens again with the error.
+function waitedMailFailed({ id, restore, error }) {
+  if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
+  reopenComposer(restore, String(error || ''));
+}
+
+async function undoSend(id) {
+  let res;
+  try {
+    res = await api('undoSend', id);
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  if (!res || res.late) return toast(t('composer.undoSend.late'));
+  // An email written in a compose window opens in a new one; main did that.
+  if (res.restore) await reopenComposer(res.restore);
+  toast(t('composer.undoSend.undone'));
+}
+
+// The editor of an email that waited, back in the reading pane. When the pane can't take it (its own editor is busy
+// asking or saving), it opens in a compose window, so the email is never lost. sendError: why the server refused it.
+async function reopenComposer(restore, sendError = null) {
+  setMode('mail');
+  const editor = await compose({ restore, sendError }).catch(() => null);
+  if (editor) return;
+  await api('openCompose', { ...restoreOpts(restore), restore, sendError }).catch((err) => toast(err.message, 5000));
 }
 
 // ---------- reader ----------
@@ -2826,6 +2875,9 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // Undo send (main.js): an email waits after Send, or the server refused one that waited and its editor opens again.
+  if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
+  if (type === 'send-failed' && payload && payload.restore) waitedMailFailed(payload);
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
     toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);

@@ -1,0 +1,294 @@
+// Undo send (#104): Send holds the email for the time in Settings > General > Undo send, the main window's notice
+// takes it back, and its editor opens again with everything in it. Test runs send at once unless SEM_UNDO_SEND=1
+// (main.js undoSendDelay), so this file turns it on. No test waits out a notice: they take the email back, or send
+// it now through the outbox's flush(), which is what a quit does.
+const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+const { tempDir, removeDir } = require('../tmp');
+const { closeApp } = require('./close');
+
+let app;
+let win;
+let dataDir;
+
+async function launch() {
+  const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1', SEM_UNDO_SEND: '1' };
+  delete env.ELECTRON_RUN_AS_NODE;
+  app = await electron.launch({ args: ['.'], cwd: path.join(__dirname, '..', '..'), env });
+  win = await app.firstWindow();
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+}
+
+test.beforeEach(async () => {
+  dataDir = tempDir('sem-e2e-');
+  fs.mkdirSync(path.join(dataDir, 'data'));
+  // 30 seconds, so no notice runs out while a test looks at it.
+  fs.writeFileSync(path.join(dataDir, 'data', 'settings.json'), JSON.stringify({ language: 'en', undoSend: 30 }));
+  await launch();
+  await win.waitForSelector('.provider-grid');
+  await win.click('[data-s="demo"]');
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+});
+
+test.afterEach(async () => {
+  await closeApp(app);
+  removeDir(dataDir);
+});
+
+const item = (text) => win.locator('.item', { hasText: text }).first();
+const notice = () => win.locator('#toast');
+const composer = () => win.locator('.composer');
+const composerGone = () => expect(composer()).toHaveCount(0, { timeout: 10000 });
+const waiting = () => app.evaluate(() => global.__semOutbox.size);
+const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
+// The subjects in a view of the demo account, after a sync.
+const subjects = (view) =>
+  app.evaluate(async (_e, view) => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    return engine.listMessages({ scope: id, view }).map((m) => m.subject);
+  }, view);
+
+async function newMessage(page, { to, subject, text }) {
+  await page.click('[data-action="compose"]');
+  const c = page.locator('.composer');
+  await c.locator('[data-rinput="to"]').fill(to);
+  await c.locator('[data-rinput="to"]').press('Enter');
+  await c.locator('[data-field="subject"]').fill(subject);
+  await c.locator('.editor').click();
+  await page.keyboard.type(text);
+  return c;
+}
+
+test('Undo in the notice brings a reply back in the reading pane as it was, and nothing goes', async () => {
+  await item('Sanne de Vries').click();
+  await expect(win.locator('.reader-subject')).toHaveText('Call on Thursday');
+  await win.click('[data-reader="replyAll"]');
+  const c = composer();
+  await expect(c.locator('.editor')).toBeVisible();
+  await c.locator('[data-field="subject"]').fill('Re: Call on Thursday, held');
+  await c.locator('.editor').click();
+  await win.keyboard.type('Thursday at ten works for me.');
+  // The earlier mail is left out, and stays out.
+  await c.locator('.quote-pill').click();
+  await c.locator('[data-c="include"]').click();
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  await expect(notice().locator('button')).toHaveText('Undo');
+  expect((await notice().locator('button').boundingBox()).height).toBeGreaterThanOrEqual(24);
+  expect(await waiting()).toBe(1);
+
+  await notice().locator('button').click();
+  await expect(c.locator('.editor')).toContainText('Thursday at ten works for me.');
+  await expect(notice()).toContainText('Sending undone');
+  await expect(c.locator('.composer-title')).toHaveText('Reply all');
+  await expect(c.locator('[data-rfield="to"] .recipient')).toHaveText(['Sanne de Vries']);
+  await expect(c.locator('[data-rfield="cc"] .recipient')).toHaveText(['Joris Bakker']);
+  await expect(c.locator('[data-field="subject"]')).toHaveValue('Re: Call on Thursday, held');
+  await expect(c.locator('.quote-pill')).toHaveText('··· excluded');
+  // Back but not saved anywhere yet, so it counts as unsaved.
+  await expect(c).toHaveAttribute('data-dirty', 'true');
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).not.toContain('Re: Call on Thursday, held');
+
+  // Sent after all, it is still the reply: the email it answers is marked answered, and the Sent copy refers to it
+  // without the earlier mail.
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await sendWaiting();
+  await expect(notice()).toContainText('Email sent');
+  const sent = await app.evaluate(async () => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    const original = engine.listMessages({ scope: id, view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+    const copy = engine.listMessages({ scope: id, view: 'sent' }).find((m) => m.subject === 'Re: Call on Thursday, held');
+    const full = await engine.getMessage(copy.id);
+    const source = await engine.getMessage(original.id);
+    return { answered: original.answered, linked: full.inReplyTo === source.messageId, to: full.to.map((a) => a.address), cc: full.cc.map((a) => a.address), html: full.html };
+  });
+  expect(sent.answered).toBe(true);
+  expect(sent.linked).toBe(true);
+  expect(sent.to).toEqual(['sanne@example.com']);
+  expect(sent.cc).toEqual(['joris@example.com']);
+  expect(sent.html).toContain('Thursday at ten works for me.');
+  expect(sent.html).not.toContain('Shall we have a call on Thursday');
+});
+
+test('a held email keeps its draft until it goes, and Ctrl+Z takes it back too', async () => {
+  const c = await newMessage(win, { to: 'demo@example.com', subject: 'Held, then sent', text: 'On its way after the notice.' });
+  await win.keyboard.press('Control+s');
+  await expect(c).toHaveAttribute('data-dirty', 'false');
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  expect(await subjects('drafts')).toContain('Held, then sent');
+
+  // The keyboard path to the notice's Undo.
+  await win.keyboard.press('Control+z');
+  await expect(c.locator('[data-field="subject"]')).toHaveValue('Held, then sent');
+  await expect(c.locator('.editor')).toContainText('On its way after the notice.');
+  await expect(c.locator('[data-rfield="to"] .recipient')).toHaveText(['demo@example.com']);
+  expect(await waiting()).toBe(0);
+
+  await c.locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  expect(await subjects('drafts')).toContain('Held, then sent');
+  expect(await subjects('sent')).not.toContain('Held, then sent');
+  await sendWaiting();
+  await expect(notice()).toContainText('Email sent');
+  await expect(notice().locator('button')).toHaveCount(0);
+  expect(await subjects('sent')).toContain('Held, then sent');
+  expect(await subjects('drafts')).not.toContain('Held, then sent');
+  await expect(item('Held, then sent')).toBeVisible({ timeout: 10000 });
+});
+
+test('an email from a compose window comes back in a new compose window, with its attachment', async () => {
+  await item('Sanne de Vries').click();
+  await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
+  await win.click('[data-reader="forward"]');
+  await expect(composer().locator('.editor')).toBeVisible();
+  const [popped] = await Promise.all([app.waitForEvent('window'), composer().locator('[data-c="popout"]').click()]);
+  await popped.waitForSelector('.composer .editor');
+  await popped.fill('[data-rinput="to"]', 'demo@example.com');
+  await popped.press('[data-rinput="to"]', 'Enter');
+  await popped.click('.editor');
+  await popped.keyboard.type('Here is the proposal.');
+  await Promise.all([popped.waitForEvent('close'), popped.click('[data-c="send"]')]);
+
+  // The notice is in the main window, which also gets the editor back in a window of its own.
+  await expect(notice()).toContainText('Sending email…');
+  const [again] = await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
+  await again.waitForSelector('.composer .editor');
+  await expect(again.locator('.editor')).toContainText('Here is the proposal.');
+  await expect(again.locator('[data-rfield="to"] .recipient')).toHaveText(['demo@example.com']);
+  await expect(again.locator('[data-field="subject"]')).toHaveValue('Fwd: Call on Thursday');
+  await expect(again.locator('.compose-attachments')).toContainText('Proposal-v3.pdf');
+  await expect(composer()).toHaveCount(0);
+  expect(await waiting()).toBe(0);
+
+  await Promise.all([again.waitForEvent('close'), again.click('[data-c="send"]')]);
+  await sendWaiting();
+  await expect(notice()).toContainText('Email sent');
+  await expect(item('Fwd: Call on Thursday')).toBeVisible({ timeout: 10000 });
+  await item('Fwd: Call on Thursday').click();
+  await expect(win.locator('.att-name')).toHaveText('Proposal-v3.pdf');
+});
+
+test('Settings > General > Undo send offers Off to 30 seconds in English and Dutch, and Off sends at once', async () => {
+  await win.click('[data-action="settings"]');
+  const row = win.locator('[data-a="undo-send"]');
+  await expect(row.locator('.title')).toHaveText('Undo send');
+  await expect(row.locator('.value')).toHaveText('30 seconds');
+  await row.click();
+  await expect(win.locator('.radio-row')).toHaveText(['Off', '5 seconds', '10 seconds', '20 seconds', '30 seconds']);
+  await win.click('.radio-row:has-text("Off")');
+  await expect(row.locator('.value')).toHaveText('Off');
+  expect(await app.evaluate(() => global.__semEngine.settings.undoSend)).toBe(0);
+
+  await win.click('[data-a="language"]');
+  await win.click('.radio-row:has-text("Nederlands")');
+  await expect(row.locator('.title')).toHaveText('Verzenden ongedaan maken');
+  await expect(row.locator('.value')).toHaveText('Uit');
+  await row.click();
+  await expect(win.locator('.radio-row')).toHaveText(['Uit', '5 seconden', '10 seconden', '20 seconden', '30 seconden']);
+  await win.keyboard.press('Escape');
+  await win.click('[data-a="back"]');
+
+  await newMessage(win, { to: 'demo@example.com', subject: 'Straight out', text: 'No waiting.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('E-mail verzonden');
+  await expect(notice().locator('button')).toHaveCount(0);
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).toContain('Straight out');
+});
+
+test('quitting with an email that waits sends it before Rukoo exits', async () => {
+  await newMessage(win, { to: 'demo@example.com', subject: 'Sent while quitting', text: 'Out before the exit.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  expect(await waiting()).toBe(1);
+
+  await closeApp(app);
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await expect(item('Sent while quitting')).toBeVisible({ timeout: 10000 });
+  await win.click('[data-view="sent"]');
+  await expect(item('Sent while quitting')).toBeVisible();
+});
+
+test('an email the server refuses after the wait opens again with its text and the error', async () => {
+  await app.evaluate(() => {
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Refused later', text: 'Keep every word of this.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  await sendWaiting();
+  const dialog = win.locator('.dialog');
+  await expect(dialog.locator('h2')).toHaveText('Sending failed');
+  await expect(dialog).toContainText('Mailbox full');
+  // The notice of the email that failed is gone with it.
+  await expect(notice()).not.toHaveClass(/show/);
+  await dialog.locator('.buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Refused later');
+  await expect(composer().locator('.editor')).toContainText('Keep every word of this.');
+  await expect(composer().locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+});
+
+test('a refused email still comes back when the main window holds an editor that is busy asking', async () => {
+  await app.evaluate(() => {
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Refused while busy', text: 'Still here.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  // Another editor with unsaved text, asking whether to keep it: the reading pane can't take the refused email.
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim .dialog')).toBeVisible();
+  const [popped] = await Promise.all([app.waitForEvent('window'), sendWaiting()]);
+  await popped.waitForSelector('.composer .editor');
+  await expect(popped.locator('.dialog')).toContainText('Mailbox full');
+  await popped.locator('.dialog .buttons button').click();
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Refused while busy');
+  await expect(popped.locator('.editor')).toContainText('Still here.');
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
+});
+
+test('Undo once the email is on its way says it is too late', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const send = engine.send.bind(engine);
+    engine.send = async (...args) => {
+      await new Promise((resolve) => (global.__releaseSend = resolve));
+      return send(...args);
+    };
+  });
+  await newMessage(win, { to: 'demo@example.com', subject: 'Too late', text: 'Already going.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice().locator('button')).toHaveText('Undo');
+  // The wait is over and the send has started; it holds until released.
+  await app.evaluate(() => {
+    global.__semOutbox.flush();
+  });
+  await expect.poll(() => app.evaluate(() => typeof global.__releaseSend)).toBe('function');
+  await notice().locator('button').click();
+  await expect(notice()).toContainText('Too late to undo');
+  await expect(composer()).toHaveCount(0);
+  await app.evaluate(() => global.__releaseSend());
+  await expect(notice()).toContainText('Email sent');
+  expect(await subjects('sent')).toContain('Too late');
+});

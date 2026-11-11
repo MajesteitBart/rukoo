@@ -51,6 +51,12 @@ const INTERVALS = [
   { value: 30, get label() { return t('settings.sync.thirtyMinutes'); } },
   { value: 60, get label() { return t('settings.sync.hour'); } }
 ];
+// Settings > General > Undo send: seconds an email waits after Send (main's outbox.js). Main allows the same values
+// (engine.js UNDO_SEND_SECONDS).
+const UNDO_SEND = [
+  { value: 0, get label() { return t('settings.undoSend.off'); } },
+  ...[5, 10, 20, 30].map((count) => ({ value: count, get label() { return t('settings.undoSend.seconds', { count }); } }))
+];
 // Settings > About: which releases the update check offers (main's updates.js).
 const CHANNELS = [
   { value: 'stable', get label() { return t('settings.updates.stable'); }, get hint() { return t('settings.updates.stableHint'); } },
@@ -1125,6 +1131,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIcon' : 'settings.general.closeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMenuBarIconHelp' : 'settings.general.closeToTrayHelp'), action: 'toggle:closeToTray', toggle: window.mail.platform === 'darwin' ? s.closeToTray || s.minimizeToTray : s.closeToTray })}
           ${row({ title: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimize' : 'settings.general.minimizeToTray'), desc: t(window.mail.platform === 'darwin' ? 'settings.general.macMinimizeHelp' : 'settings.general.minimizeToTrayHelp'), action: 'toggle:minimizeToTray', toggle: s.minimizeToTray })}
           ${mailtoRow()}
+          ${row({ title: t('settings.general.undoSend'), desc: t('settings.general.undoSendHelp'), value: labelOf(UNDO_SEND, Number(s.undoSend)), action: 'undo-send' })}
           ${signatureRow(signatureHtml(s.signature, s.signatureHtml), 'signature')}
           ${footerRow}
           ${row({ title: t('settings.general.spam'), desc: t('settings.general.spamHelp'), action: 'spam' })}
@@ -1549,6 +1556,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       case 'interval': {
         const v = await choiceDialog(t('settings.general.sync'), INTERVALS, Number(s.syncInterval));
         if (v !== null && v !== undefined) set({ syncInterval: v });
+        return;
+      }
+      case 'undo-send': {
+        const v = await choiceDialog(t('settings.general.undoSend'), UNDO_SEND, Number(s.undoSend));
+        if (v !== null && v !== undefined) set({ undoSend: v });
         return;
       }
       case 'signature': {

@@ -20,6 +20,7 @@ const {
   session
 } = require('electron');
 const { Engine } = require('./engine');
+const { Outbox } = require('./outbox');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
@@ -123,6 +124,8 @@ let tray = null;
 let quitting = false;
 // The windows (by webContents id) that hold the quit while they ask.
 const quitAsks = new Set();
+// Emails that wait out their Undo notice after Send (outbox.js).
+let outbox = null;
 // ---- agents ----
 let hub = null;
 // Holds the agent events the chat panel must not miss until it listens; see agents/gate.js.
@@ -551,6 +554,8 @@ function endSession() {
   quitting = true;
   quitAsks.clear();
   clearInterval(syncTimer);
+  // Email that waits out its Undo notice goes now, as far as Windows leaves Rukoo the time.
+  if (outbox && outbox.size) outbox.flush().then(() => engine.flush()).catch(() => {});
   engine.flush();
   if (calendars) calendars.flush();
   if (account) account.close();
@@ -600,13 +605,19 @@ function composeOptions(input = {}) {
     cc: people(input.cc),
     bcc: people(input.bcc),
     subject: text(input.subject, 1000),
-    body: text(input.body, 20000)
+    body: text(input.body, 20000),
+    // An editor that opens again after Undo send, or after the server refused an email that waited: what it held
+    // (composer.js undoState, which checks each field again), and the server's error.
+    restore: input.restore && typeof input.restore === 'object' && !Array.isArray(input.restore) ? input.restore : null,
+    sendError: input.sendError ? text(input.sendError, 2000) : null
   };
 }
 
 function openComposeWindow(input) {
   const opts = composeOptions(input);
-  if (opts.mode === 'draft' && opts.id) {
+  // A draft that opens again after Undo send had its window closed; it can't be open in another one.
+  const restoredDraft = opts.restore && opts.restore.state && typeof opts.restore.state.draftId === 'string' ? opts.restore.state.draftId : null;
+  if (opts.mode === 'draft' && opts.id && !opts.restore) {
     const open = [...composeWindows.values()].find((c) => c.draftId === opts.id && !c.win.isDestroyed());
     if (open) {
       open.win.show();
@@ -636,7 +647,7 @@ function openComposeWindow(input) {
   // Before it first shows, so a meeting that records never captures it (protectWindows).
   if (captureHidden) w.setContentProtection(true);
   const id = w.webContents.id;
-  composeWindows.set(id, { win: w, opts, draftId: opts.mode === 'draft' ? opts.id : null });
+  composeWindows.set(id, { win: w, opts, draftId: opts.restore ? restoredDraft : opts.mode === 'draft' ? opts.id : null });
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
   forwardEditMenu(w);
@@ -707,6 +718,39 @@ const {
   calendarFreeOpts
 } = require('./calendar/ipc');
 
+// ---- undo send ----
+// How long Send waits for its Undo notice, in ms (Settings > General > Undo send; outbox.js). Test runs send at once
+// unless SEM_UNDO_SEND=1, so the suites that only write mail don't wait out each notice.
+function undoSendDelay() {
+  if (process.env.SEM_HIDDEN && process.env.SEM_UNDO_SEND !== '1') return 0;
+  return (Number(engine.settings.undoSend) || 0) * 1000;
+}
+
+// An email went. Sending removed its draft, so an agent's draft cards that pointed at it keep none.
+function mailSent(payload) {
+  if (hub && payload && payload.draftId) hub.draftMoved(String(payload.draftId), null);
+  send('toast', t('composer.status.sent'));
+}
+
+// The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
+// error: in the main window's reading pane when it was written there, otherwise in a compose window. The main
+// window comes forward from the tray for it. During a quit nobody would see that, so the email goes to Drafts.
+async function waitedMailFailed(entry, err) {
+  const error = (err && err.message) || String(err);
+  if (quitting) {
+    await api.saveDraft(entry.payload).catch(() => {});
+    return;
+  }
+  if (entry.origin === 'main' && win && !win.isDestroyed()) {
+    if (!win.isVisible() || win.isMinimized()) showWindow();
+    send('send-failed', { id: entry.id, restore: entry.restore, error });
+    return;
+  }
+  const restore = entry.restore || {};
+  openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
+}
+// ---- /undo send ----
+
 // Every renderer call goes through this table; nothing else is reachable from the UI.
 const api = {
   // The booking page's address while it is on, and its language, for the footer and the composer (contracts f).
@@ -730,13 +774,6 @@ const api = {
   markSpam: (id) => engine.markSpam(id),
   removeSpam: (address) => engine.updateSettings({ spam: engine.settings.spam.filter((a) => a !== address) }),
   saveToDevice: (id) => engine.saveToDevice(id),
-  send: async (payload) => {
-    await engine.send(payload);
-    // Sending removed the draft; an agent's draft cards that pointed at it keep none.
-    if (hub && payload && payload.draftId) hub.draftMoved(String(payload.draftId), null);
-    send('toast', t('composer.status.sent'));
-    return true;
-  },
   openCompose: (opts) => openComposeWindow(opts),
   // A draft already open in a compose window is brought forward there instead of opening twice.
   draftWindow: (id) => {
@@ -1436,6 +1473,32 @@ const windowApi = {
     markOfTheWeb(res.filePath);
     return res.filePath;
   },
+  // Send in an editor. With Undo send on, the email waits in the outbox while the main window shows the notice, and
+  // the answer is { queued, ms }; otherwise it goes now and the answer is true. restore: what opens the editor again
+  // (composer.js undoState). A send without one, or without a main window for the notice, goes at once.
+  send: async (sender, payload, restore) => {
+    const ms = undoSendDelay();
+    if (ms > 0 && restore && typeof restore === 'object' && win && !win.isDestroyed()) {
+      // Refused now, while the editor is still open to show why.
+      engine.checkSend(payload);
+      const { id } = outbox.queue({ payload, restore, origin: sender === win.webContents ? 'main' : 'window', ms });
+      send('send-queued', { id, ms });
+      return { queued: id, ms };
+    }
+    await engine.send(payload);
+    mailSent(payload);
+    return true;
+  },
+  // Undo in the notice after Send. The email stops waiting and its editor opens again: the answer carries it for the
+  // main window's reading pane, or a compose window opens for an email written in one. { late: true } once the
+  // email is on its way.
+  undoSend: (sender, id) => {
+    const entry = outbox.undo(String(id || ''));
+    if (!entry) return { late: true };
+    if (entry.origin === 'main' && win && !win.isDestroyed() && sender === win.webContents) return { restore: entry.restore };
+    openComposeWindow({ ...(entry.restore.opts || {}), restore: entry.restore });
+    return { window: true };
+  },
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
     return c ? c.opts : null;
@@ -1622,6 +1685,8 @@ app.whenReady().then(() => {
   engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google }).init();
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
+  outbox = new Outbox({ send: (payload) => engine.send(payload), sent: (entry) => mailSent(entry.payload), failed: waitedMailFailed });
+  if (process.env.SEM_HIDDEN) global.__semOutbox = outbox;
   engine.on('updated', () => {
     // The Mac menu follows the language; elsewhere the menu stays off and needs no update.
     if (process.platform === 'darwin') updateApplicationMenu();
@@ -1802,17 +1867,24 @@ function closeAgents() {
   if (!agentsClosing) agentsClosing = hub.dispose().catch(() => {});
   return agentsClosing;
 }
+// Email that still waits out its Undo notice goes before Rukoo exits, without asking: the windows that could take it
+// back have closed. A send gets SEND_QUIT_WAIT, so a server that stops answering can't hold the quit for ever.
+const SEND_QUIT_WAIT = 30000;
 let quitWaited = false;
 app.on('will-quit', (event) => {
-  if (!hub || quitWaited) return;
+  if (quitWaited || (!hub && !(outbox && outbox.size))) return;
   quitWaited = true;
   event.preventDefault();
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // The sends change the mail cache after before-quit saved it, so it is saved again.
+  const mail = outbox && outbox.size ? Promise.race([outbox.flush(), wait(SEND_QUIT_WAIT)]).then(() => engine.flush()) : null;
+  const agents = hub ? Promise.race([closeAgents(), wait(QUIT_WAIT)]) : null;
   // Every window is closed and the engine flushed by now, so exit outright: app.quit() after a prevented
   // will-quit does not finish quitting.
   // A downloaded update installs now, with nothing of Rukoo left running that it could interrupt. Only while it is
   // still what the check offers: not after a switch back to Stable. With the check turned off, only Restart to update
   // installs, since Check now can still download one.
-  Promise.race([closeAgents(), new Promise((resolve) => setTimeout(resolve, QUIT_WAIT))]).finally(() => {
+  Promise.all([mail, agents]).finally(() => {
     const offered = updates && updates.available;
     if (installer && offered && installer.version === offered.version && (restartForUpdate || engine.settings.checkUpdates !== false)) {
       installer.install({ restart: restartForUpdate });
