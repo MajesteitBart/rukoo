@@ -362,4 +362,25 @@ mod tests {
     fn background_thread_is_harmless() {
         background_thread();
     }
+
+    /// The thread really runs at UTILITY afterwards, so a preparation or an upload yields to a
+    /// recording without being starved of disk access the way BACKGROUND would.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn background_thread_asks_for_utility() {
+        let class = std::thread::spawn(|| {
+            background_thread();
+            let mut class = libc::qos_class_t::QOS_CLASS_DEFAULT;
+            let mut priority = 0;
+            // SAFETY: `pthread_self` names this thread, and both out-pointers are valid.
+            let result = unsafe {
+                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut priority)
+            };
+            assert_eq!(result, 0);
+            class
+        })
+        .join()
+        .expect("the thread ran");
+        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_UTILITY as u32);
+    }
 }

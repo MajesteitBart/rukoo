@@ -1847,3 +1847,24 @@ fn to_usize(n: u64) -> usize {
 pub(crate) fn local(what: &str, e: &io::Error) -> SyncError {
     SyncError::new(SyncErrorKind::Local, format!("{what}: {e}"))
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn the_worker_thread_lowers_its_quality_of_service() {
+        let class = std::thread::spawn(|| {
+            super::background_thread();
+            let mut class = libc::qos_class_t::QOS_CLASS_DEFAULT;
+            let mut priority = 0;
+            // SAFETY: `pthread_self` names this thread, and both out-pointers are valid.
+            let result = unsafe {
+                libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut priority)
+            };
+            assert_eq!(result, 0);
+            class
+        })
+        .join()
+        .expect("the thread ran");
+        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_UTILITY as u32);
+    }
+}
