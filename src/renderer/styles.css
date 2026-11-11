@@ -1462,7 +1462,7 @@ body:has(.page) .titlebar-actions {
   margin-top: 1px;
 }
 
-/* Stacks, when they are on: read mail in a row from one sender folds into one row with a count. */
+/* Stacks, when they are on: read mail in a row from one sender folds into one row with a pile icon and a count. */
 .stack-btn {
   height: 18px;
   min-width: 26px;
@@ -1472,9 +1472,22 @@ body:has(.page) .titlebar-actions {
   color: var(--text-2);
   font-size: 11px;
   font-weight: 650;
-  display: inline-grid;
-  place-items: center;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   flex: none;
+  position: relative;
+}
+/* A 24px target around the 18px chip, so a near miss doesn't open the email instead. */
+.stack-btn::before {
+  content: '';
+  position: absolute;
+  inset: -3px -2px;
+}
+.stack-btn:not(.open) {
+  padding-left: 5px;
 }
 .stack-btn:hover {
   background: var(--active);
@@ -1484,13 +1497,21 @@ body:has(.page) .titlebar-actions {
   width: 13px;
   height: 13px;
 }
+/* The edge of the next card in the pile, under a folded row. The row keeps room for it: the row's wrap clips what
+   sticks out, for swipes. */
+.item-wrap.folded {
+  padding-bottom: 4px;
+}
+.item-wrap.folded .swipe-bg {
+  bottom: 4px;
+}
 .item.folded::after {
   content: '';
   position: absolute;
   left: 22px;
   right: 22px;
-  bottom: -3px;
-  height: 4px;
+  bottom: -4px;
+  height: 5px;
   border-radius: 0 0 6px 6px;
   border: 1px solid var(--border);
   border-top: 0;

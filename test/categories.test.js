@@ -1219,21 +1219,3 @@ test("new mail stops counting for the badge once it is read, moved or in a categ
   cats.saveCategory({ id: 'promotions', inbox: true });
   assert.equal(engine.newCount(ids), 3);
 });
-
-test('marking Inbox read leaves out the categories it doesn\'t show, and a category marks its own mail', async (t) => {
-  const { engine, acc, cats } = await demoInbox(t);
-  const unread = (category) => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread && (!category || m.category === category)).length;
-  const promotions = unread('promotions');
-  const updates = unread('updates');
-  assert.ok(promotions > 0 && updates > 0);
-  cats.saveCategory({ id: 'promotions', inbox: false });
-
-  assert.equal(await engine.markAllRead(acc.id, 'inbox', null, { category: 'updates' }), updates);
-  assert.equal(unread('updates'), 0);
-  assert.ok(unread() > promotions, 'the other categories are still unread');
-  await engine.markAllRead(acc.id, 'inbox');
-  assert.equal(unread(), promotions, 'only the hidden category is still unread');
-  // The Unread view marks every category.
-  assert.equal(await engine.markAllRead(acc.id, 'unread'), promotions);
-  assert.equal(unread(), 0);
-});

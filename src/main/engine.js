@@ -269,7 +269,8 @@ class Engine extends EventEmitter {
     this.syncs = new Map();
     this.saved = [];
     this.saveTimers = new Map();
-    // Local changes whose IMAP command has not finished yet; re-applied over sync results.
+    // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
+    // sync results. See holdPending().
     this.pending = new Map();
     // Those of them that changed an inbox's count of older unread mail; see carryRecounts().
     this.recounts = new Set();
@@ -874,17 +875,54 @@ class Engine extends EventEmitter {
     return `${accountId}\n${folder}\n${uid}`;
   }
 
-  // Tracks an optimistic change until its IMAP command settles, so a sync that read
-  // server state just before the command cannot undo it in the cache. recount: what the change did to the inbox's
-  // count of older unread mail, as setFlags() and removeFromCache() give it.
+  // Holds an optimistic change to one email until its IMAP command settles, so a sync that read server state just
+  // before the command cannot undo it in the cache. Changes to the same email line up in the order they were made: a
+  // sync sees them merged with the latest on top, and each one lets go of its own only, so an earlier change that
+  // finishes never drops a later one (such as Undo of a Mark all as read that is still on its way).
+  // The changes to one email share a base: the fields as the server last took them, taken from current (the email
+  // before this change) the first time a change sets a field, and moved up by each change that reaches the server.
+  // before: settles when the earlier changes to this email have. confirm(): the server took this change.
+  // rollback(): what a failure puts back, the base of each field no later change has set since.
+  holdPending(accountId, folder, uid, patch, current = null) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const earlier = this.pending.get(key) || [];
+    const base = earlier.length ? earlier[0].base : {};
+    if (current) for (const k of Object.keys(patch)) if (!(k in base)) base[k] = Boolean(current[k]);
+    let settle;
+    const hold = { patch, base, settled: new Promise((resolve) => (settle = resolve)) };
+    this.pending.set(key, [...earlier, hold]);
+    return {
+      before: Promise.all(earlier.map((h) => h.settled)),
+      confirm: () => {
+        for (const k of Object.keys(patch)) if (k in base) base[k] = patch[k];
+      },
+      rollback: () => {
+        const all = this.pending.get(key) || [];
+        const later = all.slice(all.indexOf(hold) + 1);
+        const back = {};
+        for (const k of Object.keys(patch)) if (k in base && !later.some((h) => k in h.patch)) back[k] = base[k];
+        return back;
+      },
+      release: () => {
+        settle();
+        const rest = (this.pending.get(key) || []).filter((h) => h !== hold);
+        if (rest.length) this.pending.set(key, rest);
+        else this.pending.delete(key);
+      },
+    };
+  }
+
+  // Runs op once the earlier changes to this email have reached the server, so a move or delete never overtakes a
+  // flag write still on its way to the old folder and uid. recount: what the change did to the inbox's count of older
+  // unread mail, as removeFromCache() gives it; it stays in this.recounts until the command settles.
   async withPending(acc, folder, uid, patch, op, recount = null) {
-    const key = this.pendingKey(acc.id, folder, uid);
-    this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+    const hold = this.holdPending(acc.id, folder, uid, patch);
     if (recount) this.recounts.add(recount);
     try {
+      await hold.before;
       return await op();
     } finally {
-      this.pending.delete(key);
+      hold.release();
       if (recount) this.recounts.delete(recount);
     }
   }
@@ -893,7 +931,8 @@ class Engine extends EventEmitter {
     if (!this.pending.size) return messages;
     const out = [];
     for (const m of messages) {
-      const p = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const holds = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const p = holds && Object.assign({}, ...holds.map((h) => h.patch));
       if (!p) out.push(m);
       else if (!p.removed) out.push({ ...m, ...p });
     }
@@ -1694,30 +1733,60 @@ class Engine extends EventEmitter {
     return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType, charset };
   }
 
+  // One email's flags. An email no longer in the cache, or a server that refuses, throws.
   async setFlags(id, flags) {
-    const { acc, box, msg, folder, uid, older } = this.locate(id);
+    this.locate(id);
+    const { error } = await this.setFlagsMany([id], flags);
+    if (error) throw new Error(error);
+  }
+
+  // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
+  // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
+  // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
+  // Emails no longer in the cache are skipped. A failure puts the flag back to what the server last took, unless a
+  // later change has set it since, so a refused Undo of a refused Mark all as read leaves the email as it was.
+  // Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
+  async setFlagsMany(ids, flags) {
     const patch = {};
     for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
-    // Older inbox mail is in the server's count of older unread mail (olderUnread()), which only the next sync redoes.
-    const recount = older && patch.unread !== undefined && patch.unread !== msg.unread ? (patch.unread ? 1 : -1) : 0;
-    const change = recount ? { accountId: acc.id, folder, uid, unread: patch.unread, n: recount, box } : null;
-    Object.assign(msg, patch);
-    this.recountOlder(box, recount);
-    this.changed(acc.id);
-    try {
-      await this.withPending(acc, folder, uid, patch, () => this.session(acc).setFlags(folder, uid, patch), change);
-    } catch (err) {
-      // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again.
+    const found = [];
+    for (const id of new Set(ids)) {
       try {
-        const now = this.locate(id).msg;
-        for (const k of Object.keys(patch)) now[k] = !patch[k];
+        found.push({ id, ...this.locate(id) });
       } catch (_) {
-        // The message left the cache in the meantime.
+        // Moved or deleted since the list showed it.
       }
-      if (change && this.caches.get(acc.id) && this.caches.get(acc.id).boxes[folder] === change.box) this.recountOlder(change.box, -recount);
-      this.changed(acc.id);
-      throw new Error(friendlyError(err));
     }
+    const accounts = new Set(found.map((f) => f.acc.id));
+    for (const f of found) {
+      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
+      Object.assign(f.msg, patch);
+    }
+    for (const id of accounts) this.changed(id);
+    const done = [];
+    const failed = [];
+    let error = null;
+    for (const f of found) {
+      try {
+        await f.hold.before;
+        await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+        f.hold.confirm();
+        done.push(f.id);
+      } catch (err) {
+        failed.push(f.id);
+        error = error || friendlyError(err);
+        // Revert on whatever object the cache holds now; a sync may have replaced it.
+        try {
+          Object.assign(this.locate(f.id).msg, f.hold.rollback());
+        } catch (_) {
+          // The message left the cache in the meantime.
+        }
+      } finally {
+        f.hold.release();
+      }
+    }
+    if (failed.length) for (const id of accounts) this.changed(id);
+    return { done, failed, error };
   }
 
   // Changes an inbox's count of older unread mail by n, when the server gave one.
@@ -1743,15 +1812,6 @@ class Engine extends EventEmitter {
       r.box = lacking.has(r.uid) ? box : null;
       this.recountOlder(r.box, r.n);
     }
-  }
-
-  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
-  async markAllRead(scope, view, folder, { category = null } = {}) {
-    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
-    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
-    for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
-    return list.length;
   }
 
   // Takes a message out of the cache, as a move or delete does before the server answers, older mail the server
