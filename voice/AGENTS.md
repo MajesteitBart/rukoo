@@ -10,9 +10,10 @@ When a design decision changes, update README.md in the same PR.
 
 ## Build and test
 
-Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local speech worker links sherpa-onnx statically; its build downloads a 123 MB archive once per target folder, unless `SHERPA_ONNX_ARCHIVE_DIR` points at a folder that already holds `sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib.tar.bz2`.
+Voice is a Rust workspace in this folder. Run cargo from `voice/`. The local speech worker links sherpa-onnx statically; its build downloads an archive once per target folder, 123 MB as `sherpa-onnx-v2.0.1-win-x64-static-MT-Release-lib.tar.bz2` on Windows and 20 MB as `sherpa-onnx-v2.0.1-osx-arm64-static-lib.tar.bz2` on macOS, unless `SHERPA_ONNX_ARCHIVE_DIR` points at a folder that already holds it.
 
 - Everything, as Windows CI runs it: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
+- macOS CI runs those three commands too, builds the five programs and runs the bridge interop test. The screen process's tests are Windows-only until it records on macOS.
 - The two recorder tests this file requires: `cargo test -p voice-recorder --test crash`.
 - The screen process's crash tests: `cargo test -p voice-screen --test crash`. Each test runs the real recorder and the real screen process on a synthetic screen with Microsoft's software encoder, as Windows CI does; the test binary plays both programs through `VOICE_SCREEN_TEST_ROLE`. `VOICE_SCREEN_TEST_SPEC_EXTRA=warp` runs them on WARP, the software graphics device of a CI runner, and `VOICE_SCREEN_TEST_ORPHAN_MS` shortens the 60 s rule that stops a screen process without a recorder.
 - `cargo test -p voice-screen --test crash -- --ignored` needs a hardware H.264 encoder. `hard_kill_with_hardware_encoder` hard-kills the screen process on the GPU path; run it again with `VOICE_SCREEN_TEST_SIZE=1440x2560` for a portrait monitor. `spike_hardware_encoder_scales_large_monitors` checks the sizes the encoder takes. `spike_real_capture_cadence` captures the real screen, so it skips itself unless `VOICE_SCREEN_TEST_REAL_SCREEN=1` and `VOICE_SCREEN_TEST_REAL_DIR` names a scratch folder under `tmp\`; cover every display with demo windows first.
