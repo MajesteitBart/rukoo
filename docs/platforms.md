@@ -29,6 +29,8 @@ The bundled Electron version needs macOS 13 or newer. Choose `arm64` for Apple S
 
 Release builds are ad-hoc signed unless the release notes confirm Developer ID signing and notarization. Gatekeeper may block an ad-hoc signed download.
 
+Notifications need Rukoo Mail to be allowed under **System Settings → Notifications**. An ad-hoc signed build may not show them at all, and macOS doesn't tell Rukoo when it drops one. **Settings → General → Send a test notification** shows whether one reaches you. Rukoo never shows a desktop notification for new mail while its window is in front; the window shows the mail itself then (see [Notifications](mail.md#notifications-and-settings)). Sound for new mail, in the same place, plays whether or not notifications arrive.
+
 The red close button hides the main window while mail keeps syncing. Click Rukoo in the Dock to return to the same reader or draft. **Rukoo Mail → Quit Rukoo Mail** or **⌘Q** quits, asking about unsaved drafts. A separate compose window still asks about its unsaved draft when closed. Tray behavior is off by default; unread counts can appear on the Dock icon.
 
 Use Command instead of Ctrl for mail, compose, calendar and zoom shortcuts. Mark as read is **⌘ShiftU**, mark as unread is **⌘U**, and **⌘Q** stays Quit. The native Edit menu supports copy, paste, undo and selection, and shortcuts in the interface show ⌘. Zoom and traffic-light spacing apply to both main and compose windows.

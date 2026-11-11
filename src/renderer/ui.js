@@ -161,18 +161,35 @@ export const isLight = () => document.documentElement.classList.contains('light'
 
 let toastTimer = null;
 let toastAction = null;
+// The toast on screen was one that waits (opts.wait), and the one waiting for the toasts before it to go.
+let toastWaits = false;
+let toastWaiting = null;
 
-function hideToast() {
-  document.getElementById('toast')?.classList.remove('show');
-  toastAction = null;
+function showWaiting() {
+  const next = toastWaiting;
+  toastWaiting = null;
+  if (next) toast(next.message, next.opts);
 }
 
-// opts: a duration in ms, or { ms, action: { label, run } }. A toast with an action stays longer
-// and its action also runs on Ctrl+Z (see runToastAction).
+function hideToast({ next = true } = {}) {
+  document.getElementById('toast')?.classList.remove('show');
+  toastAction = null;
+  if (next) showWaiting();
+}
+
+// opts: a duration in ms, or { ms, action: { label, run, shortcut }, wait }. A toast with an action stays longer
+// and its action also runs on Ctrl+Z (see runToastAction), unless shortcut is false. wait: while a toast with an
+// action is up, such as Undo, this one waits until the toasts before it have gone, instead of taking their place. It
+// does replace a toast that waited itself.
 export function toast(message, opts = {}) {
   if (typeof opts === 'number') opts = { ms: opts };
   const el = document.getElementById('toast');
   if (!el) return;
+  if (opts.wait) {
+    toastWaiting = toastAction && !toastWaits ? { message, opts } : null;
+    if (toastWaiting) return;
+  }
+  toastWaits = Boolean(opts.wait);
   const ms = opts.ms || (opts.action ? 8000 : 2600);
   el.textContent = '';
   const text = document.createElement('span');
@@ -182,7 +199,7 @@ export function toast(message, opts = {}) {
   if (toastAction) {
     const b = document.createElement('button');
     b.textContent = toastAction.label;
-    b.addEventListener('click', runToastAction);
+    b.addEventListener('click', () => runToastAction({ click: true }));
     el.appendChild(b);
   }
   el.classList.toggle('has-action', Boolean(toastAction));
@@ -196,11 +213,16 @@ export function toast(message, opts = {}) {
   };
 }
 
-export function runToastAction() {
+// Ctrl+Z, or click: true for the toast's button. A toast that waits comes after what the action says, such as
+// "Restored", or once the action is done when it says nothing.
+export function runToastAction({ click = false } = {}) {
   const action = toastAction;
-  if (!action) return false;
-  hideToast();
-  action.run();
+  if (!action || (!click && action.shortcut === false)) return false;
+  hideToast({ next: false });
+  const done = () => {
+    if (!document.getElementById('toast')?.classList.contains('show')) showWaiting();
+  };
+  Promise.resolve(action.run()).then(done, done);
   return true;
 }
 

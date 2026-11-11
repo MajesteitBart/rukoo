@@ -1688,6 +1688,43 @@ test('mail notifications wait while a meeting records the screen; the badge stil
   expect(await app.evaluate(() => global.__semShown)).toEqual([]);
 });
 
+test('the sound for new mail stays quiet while a meeting records, and plays again after it', async () => {
+  await app.evaluate(({ Notification }) => {
+    global.__semShown = [];
+    Notification.prototype.show = function () {
+      global.__semShown.push(this.title);
+    };
+  });
+  // The sound is counted, never played, and the window's word from main is kept.
+  await win.evaluate(() => {
+    window.__coos = 0;
+    HTMLMediaElement.prototype.play = function () {
+      window.__coos++;
+      return Promise.resolve();
+    };
+    window.__newMail = [];
+    window.mail.on(({ type, payload }) => type === 'new-mail' && window.__newMail.push(payload));
+  });
+  await win.evaluate(() => window.mail.call('updateSettings', { newMailSound: true }));
+  const mail = (id) => app.evaluate((_e, id) => global.__semEngine.emit('new-mail', [{ id, subject: 'Invoice for October', from: { name: 'Demo', address: 'demo@example.com' } }]), id);
+  const heard = () => win.evaluate(() => window.__newMail.map((p) => p.sound));
+
+  // A meeting without the screen: the mail shows as usual, without the sound, which its call track would record.
+  const id = voiceStarts({ title: 'Weekly', screen: 'off' });
+  await expect.poll(() => app.evaluate(() => global.__semVoice.recording())).toBe(id);
+  expect(await app.evaluate(() => global.__semVoice.screenRecording())).toBe(false);
+  await mail('demo:quiet-1');
+  await expect.poll(heard).toEqual([false]);
+  expect(await win.evaluate(() => window.__coos)).toBe(0);
+
+  voice.append('meeting.state', id, { state: 'done', at: 5000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect.poll(() => app.evaluate(() => global.__semVoice.recording())).toBe(null);
+  await mail('demo:quiet-2');
+  await expect.poll(heard).toEqual([false, true]);
+  await expect.poll(() => win.evaluate(() => window.__coos)).toBe(1);
+});
+
 test('screenshots: screen frames, the record and screen menus and the chips, in both themes and languages, wide and narrow', async () => {
   test.setTimeout(180000);
   voice.handlers['screen.get'] = () => ({

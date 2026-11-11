@@ -3746,6 +3746,29 @@
     "message": "Account: {account}",
     "description": "mailbox > message. Screen reader label of the dot in an account's color on the sender's picture, in a list of several accounts. {account}: the account's display name or address. src/renderer/app.js (itemHtml)"
   },
+  "mailbox.newMail.count": {
+    "message": {
+      "one": "{count} new email",
+      "other": "{count} new emails"
+    },
+    "description": "mailbox > new mail. New mail that came in while Rukoo's window is open: the pill at the top of the message list while the list is scrolled away from the new emails, and the toast for new mail the list on screen doesn't show. {count}: how many. src/renderer/app.js (updateNewPill, newMailToast)"
+  },
+  "mailbox.newMail.from": {
+    "message": "New email from {sender}",
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for one new email without a subject that the list on screen doesn't show; it stands in for the desktop notification. {sender}: the sender's name or address. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.fromSubject": {
+    "message": "New email from {sender}: {subject}",
+    "description": "mailbox > new mail. Toast while Rukoo's window is in front, for one new email that the list on screen doesn't show; it stands in for the desktop notification. {sender}: the sender's name or address. {subject}: the email's subject. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.open": {
+    "message": "Open",
+    "description": "mailbox > new mail. Action on the toast for one new email: opens it in Inbox. src/renderer/app.js (newMailToast)"
+  },
+  "mailbox.newMail.show": {
+    "message": "Show",
+    "description": "mailbox > new mail. Action on the toast for several new emails: goes to Inbox. src/renderer/app.js (newMailToast)"
+  },
   "mailbox.move.alreadyThere": {
     "message": "These emails are already there",
     "description": "mailbox > move. src/renderer/app.js (moveMessages)"
@@ -4038,6 +4061,14 @@
   "native.notifications.newOne": {
     "message": "1 new email",
     "description": "native > notifications. Windows taskbar badge: singular unread/new email description."
+  },
+  "native.notifications.testBody": {
+    "message": "This is how new mail shows up.",
+    "description": "native > notifications. Body of the test notification from Settings > General > Send a test notification. src/main/main.js (testNotification)"
+  },
+  "native.notifications.testTitle": {
+    "message": "Test notification from Rukoo Mail",
+    "description": "native > notifications. Title of the test notification from Settings > General > Send a test notification. src/main/main.js (testNotification)"
   },
   "native.tray.compose": {
     "message": "New message",
@@ -5169,8 +5200,44 @@
     "description": "settings > general. src/renderer/settings.js (render)"
   },
   "settings.general.notificationsHelp": {
-    "message": "Show a desktop notification for new emails.",
-    "description": "settings > general. src/renderer/settings.js (render)"
+    "message": "Show a notification for new emails: on the desktop, or inside Rukoo while its window is in front.",
+    "description": "settings > general. Settings > General: explanation below Notifications. While Rukoo's window is in front, a message at the bottom of the window takes the place of the desktop notification. src/renderer/settings.js (render)"
+  },
+  "settings.general.newMailSound": {
+    "message": "Sound for new mail",
+    "description": "settings > general. Settings > General: title of the switch that plays a short sound when new email arrives. Off by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.newMailSoundHelp": {
+    "message": "Play a short coo when new emails arrive. It stays quiet while Rukoo Voice records a meeting.",
+    "description": "settings > general. Settings > General: explanation below Sound for new mail. The coo is the pigeon sound from the Rukoo website; Rukoo Voice is the meeting recorder. src/renderer/settings.js (render)"
+  },
+  "settings.general.notificationsUnavailable": {
+    "message": "This computer doesn't offer notifications to Rukoo.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system has no notifications for Rukoo, such as a Linux desktop without a notification service. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotification": {
+    "message": "Send a test notification",
+    "description": "settings > general. Settings > General: title of the row that shows a desktop notification now, to check that notifications reach the user. src/renderer/settings.js (render)"
+  },
+  "settings.general.testNotificationFailed": {
+    "message": "The system didn't show it. Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system refused the notification without a reason. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationFailedReason": {
+    "message": "The system didn't show it ({reason}). Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification when the system refused the notification. {reason}: the system's own message, often in English. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationHelp": {
+    "message": "Shows one now, also while Rukoo is in front, so you can check that notifications reach you.",
+    "description": "settings > general. Settings > General: explanation below Send a test notification before a test. Rukoo normally shows no desktop notification while its window is in front. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationSending": {
+    "message": "Sending…",
+    "description": "settings > general. Settings > General: below Send a test notification while the test is on its way. src/renderer/settings.js (noticesDesc)"
+  },
+  "settings.general.testNotificationSent": {
+    "message": "Sent. Didn't see it? Check that your system allows notifications from Rukoo Mail.",
+    "description": "settings > general. Settings > General: below Send a test notification once the system took the notification. Rukoo cannot see whether it appeared, so the text says where to look if it did not. src/renderer/settings.js (noticesDesc)"
   },
   "settings.general.signature": {
     "message": "Signature",

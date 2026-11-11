@@ -25,7 +25,7 @@ The builds aren't signed yet, so Windows SmartScreen warns before the first star
 
 No mail account at hand? Pick the demo account during setup. It has sample mail and a sample calendar.
 
-Few people have used Rukoo on a real Mac so far, and Mac builds are only notarized when the release notes say so. If you try it, please tell us what works and what breaks in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74). [Platforms](docs/platforms.md) covers the tray, email links and profile folders on each system.
+Few people have used Rukoo on a real Mac so far, and Mac builds are only notarized when the release notes say so. If you try it, please tell us what works and what breaks in [issue #74](https://github.com/MajesteitBart/rukoo/issues/74). Notifications may not appear on an ad-hoc signed Mac build; Settings → General → Send a test notification shows whether they do. [Platforms](docs/platforms.md) covers the tray, email links, notifications and profile folders on each system.
 
 ## What it does
 

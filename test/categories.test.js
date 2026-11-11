@@ -734,12 +734,19 @@ test('categories can be added, renamed, reordered and deleted, within limits', (
 
 // ---- notifications per category (notices.js) ----
 
-// What MailNotices asked to put on screen: one list of notices per call.
+// What MailNotices asked to put on screen: one list of notices per call, and the emails each call was for.
 function notifier(t, cats) {
   const shown = [];
-  const notices = new MailNotices({ categories: cats, show: (list) => shown.push(list) });
+  const emails = [];
+  const notices = new MailNotices({
+    categories: cats,
+    show: (list, messages) => {
+      shown.push(list);
+      emails.push(messages.map((m) => m.subject));
+    }
+  });
   t.after(() => notices.close());
-  return { notices, shown, titles: () => shown.map((list) => list.map((n) => n.title)) };
+  return { notices, shown, titles: () => shown.map((list) => list.map((n) => n.title)), subjects: () => emails };
 }
 
 // The engine's 'new-mail' message for an email in the fake inbox.
@@ -808,13 +815,15 @@ test('a held notification goes by the category Jev gives the email', async (t) =
   const jevs = heldJev();
   const msgs = [...inbox(), club()];
   const { cats, acc } = setup(t, msgs, { jevImpl: jevs.fake });
-  const { notices, titles } = notifier(t, cats);
+  const { notices, titles, subjects } = notifier(t, cats);
   cats.setEnabled(true);
   cats.setJev({ key: 'KEY', on: true });
   cats.setNotify('money', false);
   // Sanne's email and the club's go to Jev; the login alert is sure, and shows at once.
   notices.add([1, 3, 4].map((uid) => arrived(cats, acc, msgs.find((m) => m.uid === uid))));
   assert.deepEqual(titles(), [['App']]);
+  // The main window hears of the same emails as the notifications (main.js showMailNotices).
+  assert.deepEqual(subjects(), [[msgs.find((m) => m.uid === 3).subject]]);
   const sorting = cats.sort();
   await settle();
   assert.deepEqual(jevs.asked().sort(), ['Can you sign this?', 'Meeting notes']);
@@ -824,6 +833,7 @@ test('a held notification goes by the category Jev gives the email', async (t) =
   jevs.answer('Meeting notes', 'to-read');
   await sorting;
   assert.deepEqual(titles(), [['App'], ['Club']], "Jev put Sanne's email in Money, which is muted");
+  assert.deepEqual(subjects()[1], ['Meeting notes'], 'nor does the window hear of it');
   assert.equal(notices.batches.size, 0);
   t.mock.timers.tick(HOLD);
   assert.equal(titles().length, 2, 'the wait has nothing left to do');

@@ -317,6 +317,11 @@ test('new mail in a muted category sends no notification', async () => {
   await win.locator('.scrim .dialog .buttons button', { hasText: 'Save' }).click();
   await expect(settings().locator('[data-a="cat-edit:updates"] .cat-muted')).toHaveCount(1);
   await closeSettings();
+  // The window hears only of the mail that notifies, so a muted category gets no toast, pill or sound there either.
+  await win.evaluate(() => {
+    window.__newMail = [];
+    window.mail.on(({ type, payload }) => type === 'new-mail' && window.__newMail.push(payload.subject));
+  });
   const shown = await app.evaluate(async ({ Notification, BrowserWindow }) => {
     // Notifications are recorded instead of shown, as for a window in the background.
     BrowserWindow.getAllWindows()[0].isFocused = () => false;
@@ -334,6 +339,7 @@ test('new mail in a muted category sends no notification', async () => {
     return global.__shown.map((n) => n.title);
   });
   expect(shown).toEqual(['Sanne de Vries']);
+  await expect.poll(() => win.evaluate(() => window.__newMail)).toEqual(['Lunch on Friday?']);
   await expect(win.locator('.item', { hasText: 'New sign-in' })).toHaveCount(1);
 });
 

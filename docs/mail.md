@@ -104,9 +104,13 @@ How Rukoo becomes the app for email links depends on the system: see [Windows](p
 
 ## Notifications and settings
 
-Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
+Rukoo shows desktop notifications for new mail, but not while its window is in front. The window shows the mail then: new rows appear in the list, a pill at the top of the list counts them while it's scrolled away from them, and a toast at the bottom names mail the list on screen doesn't show, with Open or Show to go there. A category whose notifications you turned off stays quiet in the window too, and Settings → General → Notifications turns the toast off with the desktop notifications.
 
-Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
+Sound for new mail, in Settings → General, plays a short coo when mail comes in, once for mail that arrives together. It's off by default. While it's on, Rukoo's notifications for new mail are silent, so you hear one sound. It stays quiet while [Rukoo Voice](meetings.md) records a meeting, because the recording would pick it up. Send a test notification, also in Settings → General, shows a notification right away, even with the window in front, and says whether the system took it. Rukoo can't ask Windows or macOS whether notifications are allowed, so the test is how to find out.
+
+Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
+
+Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, the sound for new mail, a test notification, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
 
