@@ -11,6 +11,7 @@ pub mod disk;
 pub mod meeting;
 pub mod record;
 pub mod source;
+mod syncer;
 pub mod timeline;
 mod token;
 

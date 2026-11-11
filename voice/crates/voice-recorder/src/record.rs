@@ -19,6 +19,7 @@ use crate::control::{self, Command, Reply};
 use crate::disk;
 use crate::meeting::{self, RecorderFile};
 use crate::source::{Backend, Capture, DeviceInfo, Failure, Sink, SourceSpec, StreamFlags};
+use crate::syncer::{self, Syncer};
 use crate::timeline::{self, samples_to_ms, History, Line, TimelineWriter};
 use crate::{token, ExitError, VERSION};
 
@@ -44,6 +45,8 @@ const STALL: Duration = Duration::from_secs(5);
 const RESYNC_MS: u64 = 100;
 /// About 20 s of 10 ms blocks from two tracks.
 const EVENT_QUEUE: usize = 4_096;
+/// A heartbeat this long after the one before is logged: something held up the recorder thread.
+const LATE_HEARTBEAT_MS: u64 = 1_500;
 
 #[derive(Debug)]
 pub struct RecordOptions {
@@ -207,6 +210,8 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let (events, rx) = mpsc::sync_channel(EVENT_QUEUE);
     control::spawn(listener, token, events.clone())
         .map_err(|e| ExitError::failed(format!("can't start the control thread: {e}")))?;
+    let syncer = Syncer::start()
+        .map_err(|e| ExitError::failed(format!("can't start the sync thread: {e}")))?;
 
     let started = Stamp::now();
     let wall = started.wall;
@@ -243,8 +248,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if history.paused {
         journal.write(Line::Pause { t: start_t });
     }
-    // A client finds the recorder from here on, and the session line is there to read. The
-    // periodic sync puts the new lines on disk.
+    // A client finds the recorder from here on, and the session line is there to read.
     recorder_file
         .publish()
         .map_err(|e| ExitError::failed(format!("can't write recorder.json: {e}")))?;
@@ -275,6 +279,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let mut recorder = Recorder {
         dir,
         journal,
+        syncer,
         clock,
         backend,
         events,
@@ -292,11 +297,13 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             recorder.mark_lost(i, error, recorder.clock.now());
         }
     }
+    // The new session's lines go to disk now, without waiting for the first periodic sync.
+    recorder.sync();
     recorder.run(rx);
     Ok(())
 }
 
-fn log(message: impl Display) {
+pub(crate) fn log(message: impl Display) {
     let _ = writeln!(io::stderr(), "rukoo-voice-recorder: {message}");
 }
 
@@ -425,6 +432,9 @@ fn later(previous: Instant, period: Duration, now: Instant) -> Instant {
 struct Recorder {
     dir: PathBuf,
     journal: Journal,
+    /// Puts the segments and the timeline on disk; this thread never waits for the disk while it
+    /// records.
+    syncer: Syncer,
     clock: MeetingClock,
     backend: Backend,
     events: SyncSender<Event>,
@@ -775,29 +785,23 @@ impl Recorder {
     }
 
     /// The device failed at meeting time `at`: end the segment, then drop the stream and retry
-    /// every second. Closing the segment syncs it to disk, which can take a while; the loss
-    /// still counts from `at`.
+    /// every second. The loss counts from `at`, however late this thread got to it.
     fn lose(&mut self, i: usize, error: String, at: u64) {
         self.close_segment(i, None);
         self.mark_lost(i, error, at);
     }
 
-    /// The stream must be rebuilt at meeting time `at`, usually on a new default device. The old
-    /// segment gets everything the old stream delivered, but goes to disk only once the new stream
-    /// runs: waiting for the disk first would drop the old stream's queued audio for that long and
-    /// stamp the new device late.
+    /// The stream must be rebuilt at meeting time `at`, usually on a new default device. Ending
+    /// the old segment doesn't wait for the disk, so the old stream's queued audio isn't dropped
+    /// for the length of a sync and the new device isn't stamped late.
     fn rebuild(&mut self, i: usize, reason: String, at: u64) {
-        let old = self.detach_segment(i, None);
+        self.close_segment(i, None);
         // Drop the old stream before opening the new one.
         self.tracks[i].state = State::Lost {
             error: reason,
             next_try: Instant::now(),
         };
-        let opened = self.try_open(i, false);
-        if let Some(segment) = old {
-            self.close_file(i, segment);
-        }
-        if let Err(error) = opened {
+        if let Err(error) = self.try_open(i, false) {
             self.mark_lost(i, error, at);
         }
     }
@@ -932,7 +936,13 @@ impl Recorder {
             track.seq += 1;
             let seq = track.seq;
             let file = meeting::segment_file(&track.name, seq);
-            match SegmentWriter::create(&self.dir.join(&file)) {
+            let started = Instant::now();
+            let created = SegmentWriter::create(&self.dir.join(&file));
+            let took = started.elapsed();
+            if took > syncer::SLOW {
+                log(format_args!("creating {file} took {} ms", took.as_millis()));
+            }
+            match created {
                 Ok(writer) => {
                     track.segment = Some(Segment { writer, seq, t });
                     track.cover_from = None;
@@ -1005,17 +1015,16 @@ impl Recorder {
         Some(segment)
     }
 
-    /// Puts a segment the track took out on disk and writes its `segment_end`. Returns where its
-    /// audio ends, in ms rounded up.
+    /// Hands a segment the track took out to the syncer, which puts it on disk and closes it, and
+    /// writes its `segment_end`. Its header already counts every sample. Returns where its audio
+    /// ends, in ms rounded up.
     fn close_file(&mut self, i: usize, segment: Segment) -> u64 {
         let track = &self.tracks[i];
         let samples = segment.writer.samples();
-        if let Err(e) = disk::sync(&segment.writer.into_file()) {
-            log(format_args!(
-                "{}: can't sync segment {}: {e}",
-                track.name, segment.seq
-            ));
-        }
+        self.syncer.close(
+            format!("{} segment {}", track.name, segment.seq),
+            segment.writer.into_file(),
+        );
         self.journal.write(Line::SegmentEnd {
             t: segment.t + samples_to_ms(samples),
             track: track.name.clone(),
@@ -1025,9 +1034,9 @@ impl Recorder {
         (segment.t * SAMPLES_PER_MS + samples).div_ceil(SAMPLES_PER_MS)
     }
 
-    /// Writes what's pending and takes the segment out of the track, without putting it on disk.
-    /// With `pad_to`, a healthy loopback track is first padded up to that meeting time.
-    fn detach_segment(&mut self, i: usize, pad_to: Option<u64>) -> Option<Segment> {
+    /// Writes what's pending and ends the segment. With `pad_to`, a healthy loopback track is
+    /// first padded up to that meeting time. Returns where the closed segment's audio ends, in ms.
+    fn close_segment(&mut self, i: usize, pad_to: Option<u64>) -> Option<u64> {
         // The resampler holds back about a millisecond; it belongs to this segment.
         if let State::Open(live) = &mut self.tracks[i].state {
             let tail = live.resampler.flush();
@@ -1040,13 +1049,7 @@ impl Recorder {
         }
         self.flush_pending(i);
         self.tracks[i].pending.clear();
-        self.take_segment(i)
-    }
-
-    /// Writes what's pending and ends the segment. With `pad_to`, a healthy loopback track is
-    /// first padded up to that meeting time. Returns where the closed segment's audio ends, in ms.
-    fn close_segment(&mut self, i: usize, pad_to: Option<u64>) -> Option<u64> {
-        let segment = self.detach_segment(i, pad_to)?;
+        let segment = self.take_segment(i)?;
         Some(self.close_file(i, segment))
     }
 
@@ -1074,18 +1077,35 @@ impl Recorder {
             boot,
             samples,
         });
+        // Something held up this thread; the slow-call lines around this one say what.
+        let since = t.saturating_sub(self.heartbeat.0);
+        if since > LATE_HEARTBEAT_MS {
+            log(format_args!("heartbeat {since} ms after the one before"));
+        }
         self.heartbeat = (t, stamp);
     }
 
+    /// Hands the open segments and the timeline to the syncer, through handles of their own.
+    /// While the previous periodic sync is still waiting or running, this one is skipped.
     fn sync(&mut self) {
-        for track in &self.tracks {
-            if let Some(segment) = &track.segment {
-                if let Err(e) = disk::sync(segment.writer.file()) {
-                    log(format_args!("{}: can't sync: {e}", track.name));
-                }
+        if !self.syncer.periodic_due() {
+            return;
+        }
+        let mut files = Vec::with_capacity(self.tracks.len() + 1);
+        let open = self.tracks.iter().filter_map(|track| {
+            let segment = track.segment.as_ref()?;
+            Some((
+                format!("{} segment {}", track.name, segment.seq),
+                segment.writer.file(),
+            ))
+        });
+        for (what, file) in open.chain([("the timeline".to_string(), self.journal.writer.file())]) {
+            match file.try_clone() {
+                Ok(file) => files.push((what, file)),
+                Err(e) => log(format_args!("can't sync {what}: {e}")),
             }
         }
-        self.journal.sync();
+        self.syncer.periodic(files);
     }
 
     fn finish(&mut self) {
@@ -1095,9 +1115,9 @@ impl Recorder {
             arrived: None,
         });
         // The recording ends when the stop arrived, for every track at once, however long this
-        // thread took to get to it and the closing syncs take; stopping the streams afterwards can
-        // take a while too. Audio queued behind the stop isn't written, so the tracks end there.
-        // It never ends before a line already written.
+        // thread took to get to it and the disk takes; stopping the streams afterwards can take a
+        // while too. Audio queued behind the stop isn't written, so the tracks end there. It never
+        // ends before a line already written.
         let (now, wall_now) = (self.clock.now(), wall_ms());
         let at = stopping
             .arrived
@@ -1124,6 +1144,9 @@ impl Recorder {
             wall,
             reason: stopping.reason,
         });
+        // A stop means the recording is on disk: every segment the syncer holds first, then the
+        // timeline that names them.
+        self.syncer.finish();
         self.journal.sync();
         meeting::remove_recorder_file(&self.dir);
         if let Some(reply) = stopping.reply {

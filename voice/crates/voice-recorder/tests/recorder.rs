@@ -961,6 +961,56 @@ fn a_stop_during_a_slow_sync_ends_where_it_arrived() {
 }
 
 #[test]
+fn a_slow_disk_never_holds_up_the_heartbeats() {
+    let m = TempMeeting::new("slow-disk");
+    // Every sync takes 1.5 s, longer than a heartbeat period: the segments that close every 3 s,
+    // the periodic sync and the timeline. None of it may hold up the recording.
+    let mut child = m.record(
+        &["mic=synthetic:tone:440", "call=synthetic:idle"],
+        &["--segment-ms", "3000", "--test-sync-delay-ms", "1500"],
+    );
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(7_000);
+    let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(wait_exit(&mut child).success());
+
+    let lines = m.lines();
+    let heartbeats: Vec<u64> = of_kind(&lines, "heartbeat").iter().map(|l| t(l)).collect();
+    assert!(heartbeats.len() >= 6, "{heartbeats:?}");
+    for pair in heartbeats.windows(2) {
+        assert!(
+            pair[1] - pair[0] <= 1_300,
+            "heartbeats {} and {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    // The stop replied once every file was on disk; the segments are whole and follow each
+    // other.
+    assert_eq!(lines.last().unwrap()["kind"], "stop");
+    for track in ["mic", "call"] {
+        let segs = segments(&m, &lines, track);
+        assert!(segs.len() >= 3, "{track}: {segs:?}");
+        for pair in segs.windows(2) {
+            assert_eq!(
+                pair[0].pcm.len(),
+                48_000,
+                "{track} {} isn't full",
+                pair[0].seq
+            );
+            assert_eq!(pair[1].t, pair[0].end(), "{track} {} moved", pair[1].seq);
+        }
+    }
+    for seg in segments(&m, &lines, "mic") {
+        assert_tone(&seg.pcm, 440.0, &format!("mic segment {}", seg.seq));
+    }
+    // The slow syncs are logged, so a stalled recording can be told from a slow disk.
+    let log = fs::read_to_string(m.root.join("stderr-1.log")).unwrap();
+    assert!(log.contains("took"), "{log}");
+}
+
+#[test]
 fn length_limit_stops_the_recording() {
     let m = TempMeeting::new("limit");
     let mut child = m.record(&["mic=synthetic:tone:440"], &["--limit-ms", "1500"]);

@@ -41,10 +41,10 @@ Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonica
 1. The recorder creates the file, refusing an existing one, with a header that counts 0 samples: RIFF size 36, data size 0.
 2. It writes the `segment` line.
 3. Every 100 to 200 ms it appends the new samples, then rewrites the RIFF size (offset 4) and the data size (offset 40) in a single write. The samples come first, so the header never counts samples that aren't on disk.
-4. It syncs the file to disk every 5 s, and when the segment closes.
-5. It closes the segment and writes the `segment_end` line.
+4. It syncs the file to disk every 5 s, and when the segment closes. The syncs run on a thread of their own, in the order the recorder asks for them, so a slow disk never holds up the audio, the heartbeats or a time in the timeline. A periodic sync is skipped while the one before it hasn't finished.
+5. It closes the segment: it hands the file to that thread, which syncs and closes it, and writes the `segment_end` line. The segment is synced before any later sync of the timeline.
 
-A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. A power cut can lose up to the last 5 s.
+A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. A power cut can lose up to the last 5 s, plus however long the disk takes to sync.
 
 While it records on Windows, the recorder holds the timeline and the open segment with read and delete sharing only. Other processes can read them, and a second writer can't open them.
 
@@ -151,7 +151,8 @@ Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--s
 - A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed.
 - A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
-- On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, writes `stop`, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
+- On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, writes `stop`, waits until every segment and the timeline are on disk, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
+- It logs on stderr every sync and every segment file creation that takes over 0.5 s, and a heartbeat that comes over 1.5 s after the one before, so a recording that stalls can be told from a slow disk.
 - On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
 
 ### `recorder.json`
