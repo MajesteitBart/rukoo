@@ -1007,6 +1007,7 @@
     "one": "{count} voor \"{query}\" in {scope}",
     "other": "{count} voor \"{query}\" in {scope}"
   },
+  "mailbox.search.summaryWaiting": "\"{query}\" in {scope}",
   "mailbox.selection.allShortcut": "Alles selecteren (Ctrl+A)",
   "mailbox.selection.clear": "Selectie opheffen",
   "mailbox.selection.clearShortcut": "Selectie opheffen (Esc)",

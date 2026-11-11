@@ -3881,6 +3881,10 @@
     },
     "description": "mailbox > search. src/renderer/app.js (listTitle)"
   },
+  "mailbox.search.summaryWaiting": {
+    "message": "\"{query}\" in {scope}",
+    "description": "mailbox > search. Message list header subtitle while the cache has no matches and the server is still searched for older mail, so no result count yet. {query}: the search text; {scope}: the folder or the search scope. src/renderer/app.js (listTitle)"
+  },
   "mailbox.selection.allShortcut": {
     "message": "Select all (Ctrl+A)",
     "description": "mailbox > selection. src/renderer/app.js (renderListTools)"

@@ -818,11 +818,14 @@ test('Load older emails at the end of the list brings in older mail, and the unr
 test('a search finds older mail on the server, which opens, deletes and comes back with undo', async () => {
   await smallWindow();
   const row = win.locator('.list-older');
-  // While the server is searched an empty result says so.
+  const sub = win.locator('.list-title .sub');
+  // While the server is searched an empty result says so, and the header leaves out a count until it answers.
   await slowDown('searchServer', 800);
   await win.fill('#search', 'parcel');
   await expect(win.locator('.empty')).toContainText('Oudere mail op de server doorzoeken…');
+  await expect(sub).toHaveText('"parcel" in Postvak IN');
   await expect(win.locator('.item')).toHaveCount(1);
+  await expect(sub).toHaveText('1 voor "parcel" in Postvak IN');
   await expect(row).toHaveText('1 oudere e-mail gevonden op de server');
   await item('Your parcel is on its way').click();
   await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');

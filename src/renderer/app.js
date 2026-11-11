@@ -1117,9 +1117,18 @@ function senderLine(m) {
   return person(m.from) || t('mailbox.message.unknownSender');
 }
 
+// A search that found nothing in the cache while the server is still searched: the list waits for the server's answer.
+function waitingForServer() {
+  return Boolean(S.query.trim() && S.server && S.server.state === 'searching' && !rows().length);
+}
+
 function listTitle() {
   if (S.query.trim()) {
-    return { title: t('mailbox.search.results'), sub: t('mailbox.search.summary', { count: rows().length, query: S.query.trim(), scope: S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase() }) };
+    const query = S.query.trim();
+    const scope = S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase();
+    // Without a count until the server answers, which would otherwise say 0 above "Searching older mail".
+    const sub = waitingForServer() ? t('mailbox.search.summaryWaiting', { query, scope }) : t('mailbox.search.summary', { count: rows().length, query, scope });
+    return { title: t('mailbox.search.results'), sub };
   }
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? categoryRows().filter((m) => m.unread).length : 0;
@@ -1279,7 +1288,7 @@ function listHtml() {
     let msg = t('mailbox.empty.folder');
     let hint = '';
     // Nothing in the cache yet, while the server is searched: that answer is the one to wait for.
-    if (S.query.trim() && S.server && S.server.state === 'searching') {
+    if (waitingForServer()) {
       return `<div class="empty"><span class="spinner"></span><div class="h">${esc(t('mailbox.older.searching'))}</div></div>`;
     }
     if (S.query.trim()) {
