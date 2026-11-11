@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
-const { Outbox } = require('../src/main/outbox');
+const { Outbox, Handoff } = require('../src/main/outbox');
 const { Engine } = require('../src/main/engine');
 
 // Timers that only fire when the test says so.
@@ -160,6 +160,61 @@ test('a failing after-step does not break the outbox or reject flush', async () 
   box.queue({ payload: {}, restore: {}, ms: 1 });
   await box.flush();
   assert.equal(box.size, 0);
+});
+
+// ---------- refused emails held for the main window (Handoff) ----------
+
+function handoff() {
+  const clock = fakeClock();
+  const elsewhere = [];
+  const box = new Handoff({ ms: 15000, elsewhere: (items) => elsewhere.push(items.map((i) => i.id)), timers: clock.timers });
+  return { box, clock, elsewhere };
+}
+
+test('a refused email stays held until the main window takes it, then nothing else opens it', () => {
+  const { box, clock, elsewhere } = handoff();
+  box.hold({ id: 'a', restore: { html: 'a' }, error: 'Mailbox full' });
+  box.hold({ id: 'b', restore: { html: 'b' }, error: 'Mailbox full' });
+  assert.equal(box.size, 2);
+  assert.deepEqual(box.list().map((i) => i.id), ['a', 'b'], 'listed for a quit to write down');
+  // A page that is still loading takes nothing yet; once it does, it gets every one, oldest first.
+  clock.advance(14999);
+  assert.deepEqual(box.take(), [
+    { id: 'a', restore: { html: 'a' }, error: 'Mailbox full' },
+    { id: 'b', restore: { html: 'b' }, error: 'Mailbox full' }
+  ]);
+  assert.equal(box.size, 0);
+  assert.equal(clock.pending(), 0, 'their timers are gone');
+  assert.deepEqual(box.take(), [], 'a second take finds nothing');
+  box.letGo();
+  clock.advance(60000);
+  assert.deepEqual(elsewhere, []);
+});
+
+test('a refused email the main window does not take in time opens elsewhere, once', () => {
+  const { box, clock, elsewhere } = handoff();
+  box.hold({ id: 'a', restore: {}, error: 'x' });
+  clock.advance(5000);
+  box.hold({ id: 'b', restore: {}, error: 'x' });
+  clock.advance(10000);
+  assert.deepEqual(elsewhere, [['a']]);
+  assert.deepEqual(box.list().map((i) => i.id), ['b'], 'the newer one still waits for the window');
+  clock.advance(5000);
+  assert.deepEqual(elsewhere, [['a'], ['b']]);
+  assert.deepEqual(box.take(), []);
+});
+
+test('a main window that closes or crashes before it takes them lets every held email go elsewhere', () => {
+  const { box, clock, elsewhere } = handoff();
+  box.letGo();
+  assert.deepEqual(elsewhere, [], 'nothing held, nothing opens');
+  box.hold({ id: 'a', restore: {}, error: 'x' });
+  box.hold({ id: 'b', restore: {}, error: 'x' });
+  box.letGo();
+  assert.deepEqual(elsewhere, [['a', 'b']]);
+  assert.equal(box.size, 0);
+  clock.advance(60000);
+  assert.deepEqual(elsewhere, [['a', 'b']], 'their timers do not open them a second time');
 });
 
 // ---------- the setting and the checks Send makes before it waits ----------

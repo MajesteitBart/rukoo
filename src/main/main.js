@@ -20,7 +20,7 @@ const {
   session
 } = require('electron');
 const { Engine } = require('./engine');
-const { Outbox } = require('./outbox');
+const { Outbox, Handoff } = require('./outbox');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
@@ -746,19 +746,40 @@ function mailSent(payload, id = null) {
   else send('toast', t('composer.status.sent'));
 }
 
-// Emails a quit could neither send nor keep in Drafts: { restore, error }. They are written to unsent.json in the
-// profile, and the next start opens each in a compose window with its error (reopenUnsent). A quit that is called
-// off opens them right away (answered()).
+// Emails a quit could neither send nor keep in Drafts, and refused emails the main window hadn't taken when the quit
+// closed it: { restore, error }. They are written to unsent.json in the profile, and the next start opens each in a
+// compose window with its error (reopenUnsent). A quit that is called off opens them right away (answered()).
 const unsent = [];
 const unsentFile = () => path.join(app.getPath('userData'), 'data', 'unsent.json');
 // Whether this run wrote the file, so a later write with nothing left removes only its own.
 let unsentWritten = false;
 
-// Writes down what the quit leaves: the emails refused and not saved, and those still on their way, whose fate
-// nobody can know now. They aren't sent again by themselves: the user checks Sent first.
+// Refused emails that wait for the main window's reading pane: { id, restore, error }. 'send-failed' only says that
+// one is here; the window takes them (sendFailures) once it listens and has drawn its first state. So a main window
+// that is still loading when the server refuses an email, as after a quit called off in a compose window, gets it
+// all the same. A main window that closes or crashes first, or hasn't taken one within 15 seconds, leaves it to a
+// compose window, and during a quit to the next start.
+const refused = new Handoff({
+  ms: 15000,
+  elsewhere: (list) => {
+    for (const { restore, error } of list) {
+      if (quitting) unsent.push({ restore, error });
+      else openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
+    }
+  }
+});
+
+function holdRefused(item) {
+  refused.hold(item);
+  send('send-failed', { id: item.id });
+}
+
+// Writes down what the quit leaves: the emails refused and not saved or not yet opened, and those still on their
+// way, whose fate nobody can know now. They aren't sent again by themselves: the user checks Sent first.
 function keepUnsent() {
   const unsure = outbox ? outbox.left().map((e) => ({ restore: e.restore, error: t('composer.undoSend.quitUnsure') })) : [];
-  const list = [...unsent, ...unsure].filter((u) => u.restore);
+  const waiting = refused.list().map(({ restore, error }) => ({ restore, error }));
+  const list = [...unsent, ...waiting, ...unsure].filter((u) => u.restore);
   try {
     if (list.length) {
       fs.writeFileSync(unsentFile(), JSON.stringify(list));
@@ -813,8 +834,8 @@ async function waitedMailFailed(entry, err) {
   }
   if (entry.origin === 'main' && win && !win.isDestroyed()) {
     if (!win.isVisible() || win.isMinimized()) showWindow();
-    // The failed email's notice goes with it; see the renderer's waitedMailFailed.
-    send('send-failed', { id: entry.id, restore, error });
+    // Held until the window takes it; the failed email's notice goes with it (the renderer's takeSendFailures).
+    holdRefused({ id: entry.id, restore, error });
     return;
   }
   openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
@@ -1569,6 +1590,9 @@ const windowApi = {
     openComposeWindow({ ...(entry.restore.opts || {}), restore: entry.restore });
     return { window: true };
   },
+  // The refused emails held for the main window (holdRefused): [{ id, restore, error }]. Taking them is the window's
+  // word that it opens them, so main lets them go.
+  sendFailures: (sender) => (win && !win.isDestroyed() && sender === win.webContents ? refused.take() : []),
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
     return c ? c.opts : null;
@@ -1681,7 +1705,10 @@ function createWindow({ hidden = false } = {}) {
   win.on('closed', () => {
     win = null;
     if (agentGate) agentGate.close();
+    // Refused emails this window never took open elsewhere (holdRefused).
+    refused.letGo();
   });
+  win.webContents.on('render-process-gone', () => refused.letGo());
   // A reload starts a new panel, which says again when it listens. Only the page itself counts: an email's frame
   // loads too, and the panel that opened it keeps listening.
   win.webContents.on('did-start-navigation', (details) => {

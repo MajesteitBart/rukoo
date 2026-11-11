@@ -231,6 +231,8 @@ async function refreshOnce() {
     S.composer?.retheme(data);
   }
   renderShell();
+  // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
+  if (first) takeSendFailures();
   if (!data.accounts.length) {
     if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
     return;
@@ -2160,10 +2162,19 @@ function waitedMailSent({ id }) {
   toast(t('composer.status.sent'));
 }
 
-// The server refused an email that waited: its notice goes, and its editor opens again with the error.
-function waitedMailFailed({ id, restore, error }) {
-  if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
-  reopenComposer(restore, String(error || ''));
+// The emails the server refused after their wait, which main holds for this window until it takes them (refused in
+// main.js): when told ('send-failed'), and once the first state is drawn, so a window that was still loading when an
+// email failed opens it too. Each one's notice goes, and its editor opens again with the error: the first in the
+// reading pane, any others in compose windows, so none of them pushes another out.
+async function takeSendFailures() {
+  if (!S.data || !$('.reader')) return;
+  const list = await api('sendFailures').catch(() => []);
+  for (const [i, { id, restore, error }] of list.entries()) {
+    if (!restore || typeof restore !== 'object') continue;
+    if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
+    if (i === 0) await reopenComposer(restore, String(error || ''));
+    else await api('openCompose', { ...restoreOpts(restore), restore, sendError: String(error || '') }).catch((err) => toast(err.message, 5000));
+  }
 }
 
 async function undoSend(id) {
@@ -2885,7 +2896,7 @@ window.mail.on(async ({ type, payload }) => {
   // Undo send (main.js): an email waits after Send, or the server refused one that waited and its editor opens again.
   if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
   if (type === 'send-done' && payload) waitedMailSent(payload);
-  if (type === 'send-failed' && payload && payload.restore) waitedMailFailed(payload);
+  if (type === 'send-failed') takeSendFailures();
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
     toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);

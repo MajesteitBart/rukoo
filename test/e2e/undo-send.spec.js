@@ -367,6 +367,79 @@ test('an email that reached Drafts after the quit is called off opens again on t
   expect((await subjects('drafts')).filter((s) => s === 'Called off, saved')).toHaveLength(1);
 });
 
+// The main window had nothing to ask and closed during the quit, so calling the quit off in a compose window brings
+// a new one back from the tray. The Drafts save of the refused email fails while that window still loads, before its
+// page listens to main: the email waits in main until the page takes it.
+test('an email refused while a new main window still loads opens there once it is up', async () => {
+  const subject = 'Refused while the window loads';
+  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: true }));
+  await newMessage(win, { to: 'someone@example.com', subject, text: 'Waits for the new window.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  await app.evaluate((_e, subject) => {
+    const engine = global.__semEngine;
+    const saveDraft = engine.saveDraft.bind(engine);
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    // Only the quit's save of the refused email holds, until the test lets it fail.
+    engine.saveDraft = (payload) =>
+      payload.subject === subject && !global.__failSave
+        ? new Promise((_resolve, reject) => (global.__failSave = () => reject(new Error('No connection'))))
+        : saveDraft(payload);
+  }, subject);
+  // A compose window with unsaved text holds the quit.
+  const [popped] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  popped.on('dialog', () => {});
+  await popped.waitForSelector('.composer .editor');
+  await popped.fill('[data-field="subject"]', 'Half written');
+  await expect(popped.locator('.composer')).toHaveAttribute('data-dirty', 'true');
+  const mainWindow = () =>
+    app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html'));
+      return w ? { visible: w.isVisible() } : null;
+    });
+  await app.evaluate(({ app }) => {
+    app.quit();
+  });
+  await expect(popped.locator('.scrim')).toContainText('Save draft?');
+  await expect.poll(mainWindow).toBeNull();
+  await app.evaluate(() => {
+    global.__semOutbox.flush();
+  });
+  await expect.poll(() => app.evaluate(() => typeof global.__failSave)).toBe('function');
+  // The save fails right after Cancel makes the new main window, and the test notes how far that window had got.
+  await app.evaluate(({ app }) => {
+    app.once('browser-window-created', (_event, w) =>
+      setImmediate(() => {
+        global.__atFailure = { url: w.webContents.getURL(), loading: w.webContents.isLoading() };
+        global.__failSave();
+      })
+    );
+  });
+  const [fresh] = await Promise.all([app.waitForEvent('window'), popped.click('.scrim .buttons button:text-is("Cancel")')]);
+  win = fresh;
+  win.on('dialog', () => {});
+  await expect.poll(() => app.evaluate(() => global.__atFailure)).toMatchObject({ loading: true });
+  expect((await app.evaluate(() => global.__atFailure)).url).not.toMatch(/index\.html$/);
+
+  const dialog = win.locator('.dialog');
+  await expect(dialog.locator('h2')).toHaveText('Sending failed', { timeout: 15000 });
+  await expect(dialog).toContainText('Mailbox full');
+  await dialog.locator('.buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue(subject);
+  await expect(composer().locator('.editor')).toContainText('Waits for the new window.');
+  await expect(composer().locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+  // The main window came out of the tray for it, and the other editor still holds its text.
+  expect(await mainWindow()).toEqual({ visible: true });
+  await expect(popped.locator('[data-field="subject"]')).toHaveValue('Half written');
+  // No compose window opened for it instead.
+  expect(app.windows()).toHaveLength(2);
+  expect(await waiting()).toBe(0);
+  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+});
+
 test('Undo brings back every recipient and the whole subject, past the limits on what an agent hands in', async () => {
   const many = Array.from({ length: 101 }, (_, i) => `person${i}@example.com`);
   const subject = `A long subject ${'x'.repeat(986)}`;

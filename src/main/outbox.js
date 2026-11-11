@@ -79,4 +79,51 @@ class Outbox {
   }
 }
 
-module.exports = { Outbox };
+// Refused emails main keeps for the main window until its page takes them (holdRefused in main.js). Taking them is
+// the page's word that it opens them, so a page that is still loading, and can't hear an event yet, loses none. One
+// the page hasn't taken within ms goes to elsewhere([item]); letGo() sends every one still held there, for a window
+// that closed or crashed first. timers is the clock, which the tests replace.
+class Handoff {
+  constructor({ elsewhere, ms, timers = { setTimeout, clearTimeout } }) {
+    this.elsewhere = elsewhere;
+    this.ms = ms;
+    this.timers = timers;
+    // [{ item, timer }], oldest first.
+    this.held = [];
+  }
+
+  get size() {
+    return this.held.length;
+  }
+
+  // What is held, oldest first.
+  list() {
+    return this.held.map((h) => h.item);
+  }
+
+  hold(item) {
+    const held = { item, timer: null };
+    held.timer = this.timers.setTimeout(() => {
+      const i = this.held.indexOf(held);
+      if (i < 0) return;
+      this.held.splice(i, 1);
+      this.elsewhere([item]);
+    }, this.ms);
+    this.held.push(held);
+  }
+
+  // Everything held, which is no longer kept here.
+  take() {
+    return this.held.splice(0).map((h) => {
+      this.timers.clearTimeout(h.timer);
+      return h.item;
+    });
+  }
+
+  letGo() {
+    const items = this.take();
+    if (items.length) this.elsewhere(items);
+  }
+}
+
+module.exports = { Outbox, Handoff };
