@@ -66,6 +66,21 @@ async function unseenBelow(client, first) {
   }
 }
 
+// The flags of the messages with these uids in the open folder, as { uid, unread, starred, answered }; a uid the
+// server no longer has is left out. null when the server doesn't answer, so the caller keeps what it had.
+async function flagsOf(client, uids) {
+  try {
+    const out = [];
+    for await (const m of client.fetch(uids.join(','), { uid: true, flags: true }, { uid: true })) {
+      const flags = m.flags || new Set();
+      out.push({ uid: m.uid, unread: !flags.has('\\Seen'), starred: flags.has('\\Flagged'), answered: flags.has('\\Answered') });
+    }
+    return out;
+  } catch (_) {
+    return null;
+  }
+}
+
 // The uids in the open folder that match query, within criteria (a uid range, flags). Gmail searches the way its own
 // search box does (X-GM-RAW), the message text included; not with gmail false, for Spam and Trash, which that search
 // leaves out unless asked. Other servers, and Gmail when its search fails, compare the subject and the addresses.
@@ -416,14 +431,17 @@ class ImapAccount {
   // older can widen the window while the sync waits for the connection. signals: also what kind of mail each message
   // is (categories/signals.js); gmailTabs: also the Gmail tab each message is in. Both are for the inbox and its
   // categories. olderUnseen: also how many messages older than the window are unread, which the inbox's unread count
-  // adds to the window's own.
-  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false, olderUnseen = false } = {}) {
+  // adds to the window's own. keep: uids below the window the cache holds as well (the older mail a server search
+  // found), or a function that gives them when the command runs; kept then has the flags of those the server still
+  // has, as { uid, unread, starred, answered }. Not after a UIDVALIDITY change, when they are other messages.
+  syncFolder(path, { limit = 200, known: knownIn = new Map(), uidValidity = null, background = false, signals = false, gmailTabs = false, olderUnseen = false, keep = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path, { readOnly: true });
       try {
         const box = client.mailbox;
         // After a UIDVALIDITY change old UIDs point at different messages; reuse nothing.
-        const known = uidValidity && String(box.uidValidity) === String(uidValidity) ? knownIn : new Map();
+        const same = Boolean(uidValidity) && String(box.uidValidity) === String(uidValidity);
+        const known = same ? knownIn : new Map();
         const result = { uidValidity: String(box.uidValidity), exists: box.exists, messages: [] };
         if (!box.exists) return result;
         const size = typeof limit === 'function' ? limit() : limit;
@@ -448,6 +466,8 @@ class ImapAccount {
         }
         if (olderUnseen) result.olderUnseen = start === 1 ? 0 : await unseenBelow(client, first);
         result.messages = await describe(client, rows, { known, signals, tabs });
+        const older = same && keep ? (typeof keep === 'function' ? keep() : keep).filter((uid) => !first || uid < first) : [];
+        if (older.length) result.kept = await flagsOf(client, older);
         return result;
       } finally {
         lock.release();

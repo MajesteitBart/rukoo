@@ -279,7 +279,7 @@ test('a search finds older mail on the server in the folder, the account and all
       .map((m) => `${m.folder}: ${m.subject}${m.older ? ' (older)' : ''}`)
       .sort();
   assert.deepEqual(found({ view: 'inbox', query: 'parcel' }), []);
-  assert.deepEqual(await engine.searchServer({ scope: acc.id, view: 'inbox', query: ' Parcel ' }), { more: 0, errors: [] });
+  assert.deepEqual(await engine.searchServer({ scope: acc.id, view: 'inbox', query: ' Parcel ' }), { more: 0, errors: [], remaining: 0 });
   assert.deepEqual(found({ view: 'inbox', query: 'parcel' }), ['INBOX: Your parcel is on its way (older)']);
   // It shows for that search only, not in the list or under another search.
   assert.deepEqual(found({ view: 'inbox', query: 'bol' }), []);
@@ -394,6 +394,90 @@ test('a sync drops older mail found on the server once the window holds it, and 
   await engine.close();
 });
 
+test('a sync shows what another device did to older mail found on the server, and counts its unread mail once', async () => {
+  const { engine, acc } = await smallEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const listed = () => engine.listMessages({ scope: acc.id, view: 'inbox', query: 'thursday' });
+  const olderUnread = () => engine.counts(acc.id).olderUnread;
+  await engine.searchServer({ scope: acc.id, view: 'inbox', query: 'thursday' });
+  const hit = listed().find((m) => m.older);
+  assert.equal(hit.subject, 'Call on Thursday');
+  assert.equal(hit.unread, true);
+  assert.equal(olderUnread(), 2);
+
+  // Read and starred on another device: the sync shows both, and the server counts one older unread message.
+  demo.find('INBOX', hit.uid).flags.push('\\Seen', '\\Flagged');
+  demo.persist();
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  assert.deepEqual((({ unread, starred }) => ({ unread, starred }))(listed().find((m) => m.id === hit.id)), { unread: false, starred: true });
+  // Marking it read here changes no count: it was read already.
+  await engine.setFlags(hit.id, { unread: false });
+  assert.equal(olderUnread(), 1);
+
+  // A change on its way to the server stays while a sync reads the flags from before it.
+  const setFlags = demo.setFlags.bind(demo);
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  demo.setFlags = async (...args) => {
+    await gate;
+    return setFlags(...args);
+  };
+  const unstar = engine.setFlags(hit.id, { starred: false });
+  await engine.syncAccount(acc.id);
+  assert.equal(listed().find((m) => m.id === hit.id).starred, false);
+  release();
+  await unstar;
+  demo.setFlags = setFlags;
+
+  // Deleted on another device: it leaves the results and no longer opens.
+  const box = demo.box('INBOX');
+  box.messages = box.messages.filter((m) => m.uid !== hit.uid);
+  demo.persist();
+  await engine.syncAccount(acc.id);
+  assert.deepEqual(listed(), []);
+  assert.throws(() => engine.locate(hit.id), { message: t('errors.message.missing') });
+  await engine.close();
+});
+
+test('a search goes through every folder a batch at a time, and resume searches the next batch', async () => {
+  const dir = tempDir('sem-test-');
+  const engine = new Engine({ dataDir: dir, limits: { inbox: 6, default: 2, batch: 6, extra: 8 }, search: { folders: 1 } }).init();
+  const acc = await engine.addAccount({ type: 'demo' });
+  await engine.syncAccount(acc.id);
+  const demo = engine.session(engine.account(acc.id));
+  const search = demo.searchFolder.bind(demo);
+  const asked = [];
+  demo.searchFolder = async (p, q, opts) => {
+    asked.push(p);
+    return search(p, q, opts);
+  };
+  const opts = { scope: acc.id, view: 'everything', query: 'contract' };
+  const older = () => engine.listMessages(opts).filter((m) => m.older).map((m) => `${m.folder}: ${m.subject}`);
+
+  // Inbox, Sent and Drafts have older mail on the server, one folder per call here. The older contract mail is in Sent.
+  assert.deepEqual(await engine.searchServer(opts), { more: 0, errors: [], remaining: 2 });
+  assert.deepEqual(older(), []);
+  assert.deepEqual(await engine.searchServer({ ...opts, resume: true }), { more: 0, errors: [], remaining: 1 });
+  assert.deepEqual(older(), ['Sent: Question about my contract']);
+  assert.deepEqual(await engine.searchServer({ ...opts, resume: true }), { more: 0, errors: [], remaining: 0 });
+  assert.deepEqual(await engine.searchServer({ ...opts, resume: true }), { more: 0, errors: [], remaining: 0 }, 'nothing left');
+  assert.deepEqual(asked, ['INBOX', 'Sent', 'Drafts']);
+
+  // Without resume, or with it for another search, it starts again at the first folder.
+  asked.length = 0;
+  assert.equal((await engine.searchServer(opts)).remaining, 2);
+  assert.equal((await engine.searchServer({ ...opts, query: 'joris', resume: true })).remaining, 2);
+  assert.deepEqual(asked, ['INBOX', 'INBOX']);
+
+  // An account whose server fails isn't searched further.
+  demo.searchFolder = async () => {
+    throw new Error('getaddrinfo ENOTFOUND imap.example.com');
+  };
+  assert.deepEqual(await engine.searchServer({ ...opts, query: 'dinner' }), { more: 0, errors: [`demo@example.com: ${t('errors.connection.host')}`], remaining: 0 });
+  await engine.close();
+});
+
 test('a search asks the server nothing for one letter, saved emails or whole folders, and names an account that fails', async () => {
   const { engine, acc } = await smallEngine();
   const demo = engine.session(engine.account(acc.id));
@@ -419,7 +503,7 @@ test('a search asks the server nothing for one letter, saved emails or whole fol
     throw new Error('getaddrinfo ENOTFOUND imap.example.com');
   };
   const res = await engine.searchServer({ scope: 'all', view: 'everything', query: 'contract' });
-  assert.deepEqual(res, { more: 0, errors: [`demo@example.com: ${t('errors.connection.host')}`] });
+  assert.deepEqual(res, { more: 0, errors: [`demo@example.com: ${t('errors.connection.host')}`], remaining: 0 });
   assert.equal(engine.listMessages({ scope: 'all', view: 'everything', query: 'contract' }).length, 2);
   await engine.close();
 });

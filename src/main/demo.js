@@ -339,6 +339,11 @@ function seed(now = Date.now()) {
   return { boxes, nextUid: uid };
 }
 
+// A stored demo message's flags in the cache's form.
+function flagState(flags) {
+  return { unread: !flags.includes('\\Seen'), starred: flags.includes('\\Flagged'), answered: flags.includes('\\Answered') };
+}
+
 // A stored demo message in the cache's form, as ImapAccount's syncFolder gives it.
 function describe(m) {
   return {
@@ -352,9 +357,7 @@ function describe(m) {
     replyTo: [],
     date: m.date,
     preview: util.makePreview(m.text || (m.html ? util.htmlToPlain(m.html) : '')),
-    unread: !m.flags.includes('\\Seen'),
-    starred: m.flags.includes('\\Flagged'),
-    answered: m.flags.includes('\\Answered'),
+    ...flagState(m.flags),
     // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
     hasAttachments: (m.attachments || []).some((a) => !a.cid),
     size: (m.html || m.text || '').length,
@@ -415,17 +418,21 @@ class DemoAccount {
   }
 
   // limit: a number, or a function that gives it, as for ImapAccount.syncFolder. olderUnseen: also how many messages
-  // older than the window are unread, as ImapAccount.syncFolder reports it.
-  async syncFolder(p, { limit = 200, olderUnseen = false } = {}) {
+  // older than the window are unread, and keep: the flags of these older uids, both as ImapAccount.syncFolder reports
+  // them.
+  async syncFolder(p, { limit = 200, olderUnseen = false, uidValidity = null, keep = null } = {}) {
     const box = this.box(p);
     const size = typeof limit === 'function' ? limit() : limit;
     const list = box.messages.slice(-size);
     const older = box.messages.slice(0, Math.max(0, box.messages.length - size));
+    const uids = keep && uidValidity && String(uidValidity) === String(box.uidValidity) ? new Set(typeof keep === 'function' ? keep() : keep) : null;
+    const kept = uids ? older.filter((m) => uids.has(m.uid)) : [];
     return {
       uidValidity: box.uidValidity,
       exists: box.messages.length,
       ...(olderUnseen ? { olderUnseen: older.filter((m) => !m.flags.includes('\\Seen')).length } : {}),
-      messages: list.map(describe)
+      messages: list.map(describe),
+      ...(uids && uids.size ? { kept: kept.map((m) => ({ uid: m.uid, ...flagState(m.flags) })) } : {})
     };
   }
 

@@ -694,10 +694,17 @@ async function printHtml(html) {
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 // Text from the renderer for the account calls; anything else reads as empty, which the account refuses.
 const accountText = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
-// The list a call about older mail is for: scope, view, folder and search, as the renderer lists them.
+// The list a call about older mail is for: scope, view, folder and search, as the renderer lists them. resume: the
+// server search goes on with the next folders (engine.searchServer()).
 const olderOpts = (o) => {
   const v = o && typeof o === 'object' ? o : {};
-  return { scope: accountText(v.scope, 200) || 'all', view: accountText(v.view, 50) || 'inbox', folder: accountText(v.folder, 2000) || null, query: accountText(v.query, 500) };
+  return {
+    scope: accountText(v.scope, 200) || 'all',
+    view: accountText(v.view, 50) || 'inbox',
+    folder: accountText(v.folder, 2000) || null,
+    query: accountText(v.query, 500),
+    resume: v.resume === true
+  };
 };
 // The calendar calls' arguments, checked in calendar/ipc.js (which has its own tests).
 const {

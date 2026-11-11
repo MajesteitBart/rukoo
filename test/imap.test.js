@@ -432,6 +432,38 @@ test('a sync reads a window given as a function when its command runs', async ()
   assert.equal(asked[0].range, '2:*');
 });
 
+// #112: older mail a server search found stays current, read or deleted on another device.
+test('a sync asks the flags of the older uids it keeps, leaves out the ones gone, and asks nothing for other uids', async () => {
+  const { client, asked } = folder([1, 2, 3, 5, 6].map((uid) => ({ uid, subject: `m${uid}`, flags: uid === 2 ? ['\\Seen', '\\Flagged'] : [] })));
+  const s = session(client);
+  const known = new Map([5, 6].map((uid) => [uid, stored(uid, `m${uid}`)]));
+  // The window is 5 and 6; 6 is in it, and 4 is gone from the server.
+  const res = await s.syncFolder('INBOX', { limit: 2, known, uidValidity: '9', keep: () => [2, 3, 4, 6] });
+  assert.equal(asked.length, 2);
+  assert.deepEqual(asked[1], { range: '2,3,4', query: ['flags'], byUid: true });
+  assert.deepEqual(res.kept, [
+    { uid: 2, unread: false, starred: true, answered: false },
+    { uid: 3, unread: true, starred: false, answered: false }
+  ]);
+  assert.deepEqual(res.messages.map((m) => m.uid), [5, 6]);
+
+  // After a UIDVALIDITY change, or on a first sync, those uids are other messages: nothing is asked.
+  for (const uidValidity of ['8', null]) {
+    asked.length = 0;
+    const other = await s.syncFolder('INBOX', { limit: 2, known, uidValidity, keep: [2, 3] });
+    assert.equal('kept' in other, false);
+    assert.ok(!asked.some((a) => a.range === '2,3'));
+  }
+
+  // A server that doesn't answer leaves kept null, so the cache keeps what it had.
+  const fetch = client.fetch;
+  client.fetch = function (range, ...rest) {
+    if (range === '3') throw new Error('BAD');
+    return fetch.call(this, range, ...rest);
+  };
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, known, uidValidity: '9', keep: [3] })).kept, null);
+});
+
 // #112: the search of older mail than the cache holds.
 test('a server search looks below the window at the subject and addresses, and describes only the newest matches', async () => {
   const { client, asked } = folder([1, 2, 3, 4, 5, 6, 7, 8].map((uid) => ({ uid, subject: `m${uid}`, flags: uid === 5 ? ['\\Seen'] : [] })));

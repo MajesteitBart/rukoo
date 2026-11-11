@@ -842,6 +842,11 @@ test('a search finds older mail on the server, which opens, deletes and comes ba
 
 test('a search of all folders finds older sent mail, and a server that fails says so and can be tried again', async () => {
   await smallWindow();
+  // One folder per call to main: the older contract mail is in Sent, the second folder, so the list asks for the next.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.search = { ...engine.search, folders: 1 };
+  });
   const row = win.locator('.list-older');
   await win.fill('#search', 'contract');
   await expect(row).toHaveText('Geen oudere mail op de server gevonden');

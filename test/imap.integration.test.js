@@ -123,10 +123,17 @@ test('real IMAP account: a search and Load older reach mail older than the windo
     // In the folder, the account and all accounts the server finds both, by subject and by Cc.
     for (const opts of [{ view: 'inbox' }, { view: 'folder', folder: 'INBOX' }, { view: 'everything' }, { scope: 'all', view: 'everything' }]) {
       const where = { scope: acc.id, ...opts };
-      assert.deepEqual(await engine.searchServer({ ...where, query: tag }), { more: 0, errors: [] }, JSON.stringify(opts));
+      assert.deepEqual(await engine.searchServer({ ...where, query: tag }), { more: 0, errors: [], remaining: 0 }, JSON.stringify(opts));
       const found = engine.listMessages({ ...where, query: tag }).map((m) => [m.subject, m.older]);
       assert.deepEqual(found.sort(), [['Filler 2', true], [`Old invoice ${tag}`, true]], JSON.stringify(opts));
     }
+
+    // Read on another device: the next sync shows the older message read here too.
+    const filler = engine.listMessages({ ...inbox, query: tag }).find((m) => m.subject === 'Filler 2');
+    assert.equal(filler.unread, true);
+    await session.setFlags('INBOX', filler.uid, { unread: false });
+    await engine.syncAccount(acc.id);
+    assert.equal(engine.listMessages({ ...inbox, query: tag }).find((m) => m.id === filler.id).unread, false);
 
     // The older message opens and takes a flag on the server.
     const needle = engine.listMessages({ ...inbox, query: tag }).find((m) => m.subject.startsWith('Old invoice'));

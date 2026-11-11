@@ -38,6 +38,7 @@ import { openSetup } from './setup.js';
 import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
+import { planServerSearch as planSearch } from './server-search.js';
 import * as calendar from './calendar.js';
 import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
@@ -276,31 +277,40 @@ function olderKey() {
 }
 
 // Under a search's results Rukoo also searches the server for older mail than it keeps, once the typing stops, when
-// the folders searched have any (onServer, from olderState). A search with another text, scope or folder starts
-// again; a result for one that is no longer on screen is dropped.
+// the folders searched have any (onServer, from olderState). query is the request the list on screen came from, which
+// the search follows (server-search.js). A search with another text, scope or folder starts again; a result for one
+// that is no longer on screen is dropped.
 let serverTimer = null;
 function planServerSearch(query, onServer) {
-  const q = S.query.trim().toLowerCase();
-  const key = q.length >= 2 && onServer > 0 && query.view !== 'saved' ? JSON.stringify([query.scope, query.view, query.folder || null, q]) : null;
-  if ((S.server && S.server.key) === key) return;
+  const next = planSearch(S.server, query, onServer);
+  if (next === S.server) return;
   clearTimeout(serverTimer);
-  S.server = key ? { key, query: { ...query }, state: 'searching' } : null;
-  if (key) serverTimer = setTimeout(() => searchServer(key), 450);
+  S.server = next;
+  if (next) serverTimer = setTimeout(() => searchServer(next.key), 450);
 }
 
+// Main searches a few folders per account at a time (engine.searchServer()), so this asks for the next ones until none
+// are left, and the list shows what the folders searched so far found meanwhile. A search no longer on screen stops.
 async function searchServer(key) {
   const s = S.server;
   if (!s || s.key !== key) return;
-  let res = null;
-  let error = null;
-  try {
-    res = await api('searchServer', s.query);
-  } catch (err) {
-    error = err.message;
+  let more = 0;
+  const errors = [];
+  for (let resume = false; ; resume = true) {
+    let res;
+    try {
+      res = await api('searchServer', { ...s.query, resume });
+    } catch (err) {
+      res = { errors: [err.message] };
+    }
+    if (S.server !== s) return;
+    more += res.more || 0;
+    errors.push(...(res.errors || []));
+    if (!res.remaining) break;
+    await refresh().catch(() => {});
+    if (S.server !== s) return;
   }
-  if (S.server !== s) return;
-  const errors = error ? [error] : res.errors || [];
-  S.server = { ...s, state: errors.length ? 'failed' : 'done', more: res ? res.more : 0, error: errors.join('\n') };
+  S.server = { ...s, state: errors.length ? 'failed' : 'done', more, error: errors.join('\n') };
   refresh();
 }
 
