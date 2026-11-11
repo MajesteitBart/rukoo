@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { t } = require('../src/i18n');
 const { ImapAccount, friendlyError } = require('../src/main/imap');
-const { imapServer, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
+const { imapServer, nestedStructure, textStructure, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
 
 // client: the stand-in, or a function that makes one for each connection (it gets 'main' or 'reader').
 function session(client = { usable: true }) {
@@ -252,7 +252,9 @@ test('without any connection a read fails with the reason', async () => {
   assert.equal(s.oneConnection, false);
 });
 
-// A server folder for syncFolder: messages by sequence number, and every FETCH it was asked.
+// A server folder for syncFolder: messages by sequence number, and every FETCH it was asked. A message marked
+// goneBeforeDetails is gone by the time its details are asked; one marked nested is left out of any fetch that asks
+// for its structure, as imapflow leaves out a structure nested too deep to parse.
 function folder(messages) {
   const asked = [];
   const client = {
@@ -264,7 +266,7 @@ function folder(messages) {
       let list;
       if (opts.uid) {
         const uids = new Set(String(range).split(',').map(Number));
-        list = messages.filter((m) => uids.has(m.uid) && !m.goneBeforeDetails);
+        list = messages.filter((m) => uids.has(m.uid) && !m.goneBeforeDetails && !(m.nested && query.bodyStructure));
       } else {
         const start = Number(String(range).split(':')[0]);
         list = messages.slice(start - 1);
@@ -325,6 +327,36 @@ test('a sync fetches everything again for a cached message that lacks a field, a
   assert.equal(asked[1].range, '3,4');
   assert.deepEqual(res.messages.map((m) => [m.uid, m.subject]), [[3, 'old']]);
   assert.deepEqual(res.messages[0].replyTo, []);
+});
+
+test('a message whose structure could not be read lists by its envelope, and the next sync only asks its flags', async () => {
+  const messages = [
+    { uid: 3, subject: 'plain', flags: [] },
+    { uid: 4, subject: 'deeply nested', flags: ['\\Seen'], nested: true },
+    { uid: 5, subject: 'nested and moved away', flags: [], nested: true, goneBeforeDetails: true }
+  ];
+  const { client, asked } = folder(messages);
+  const s = session(client);
+  const res = await s.syncFolder('INBOX', { limit: 10, known: new Map(), uidValidity: '9' });
+  assert.deepEqual(asked[1], { range: '3,4,5', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true });
+  assert.deepEqual(asked[2], { range: '4,5', query: ['envelope', 'internalDate', 'size'], byUid: true });
+  assert.deepEqual(asked[3], { range: '3', query: ['bodyParts'], byUid: true }, 'a preview only for the one with a structure');
+  assert.equal(asked.length, 4);
+  assert.deepEqual(res.messages.map((m) => m.uid), [3, 4], 'one gone meanwhile is still left out');
+  const nested = res.messages[1];
+  assert.equal(nested.subject, 'deeply nested');
+  assert.equal(nested.size, 104);
+  assert.equal(nested.preview, '');
+  assert.equal(nested.hasAttachments, false);
+  assert.equal(nested.unread, false);
+
+  // Cached now, it is not asked for again. The one that moved is no longer in the folder.
+  messages.pop();
+  client.mailbox.exists = messages.length;
+  asked.length = 0;
+  const again = await s.syncFolder('INBOX', { limit: 10, known: new Map(res.messages.map((m) => [m.uid, m])), uidValidity: '9' });
+  assert.deepEqual(asked, [{ range: '1:*', query: ['flags'], byUid: false }]);
+  assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[3, 'plain'], [4, 'deeply nested']]);
 });
 
 test('after a UIDVALIDITY change a sync uses nothing of the cache', async () => {
@@ -415,6 +447,46 @@ test('an inbox sync counts the unread mail below the window by uid, and says nul
   client.search = async () => assert.fail('no search');
   assert.equal((await s.syncFolder('INBOX', { limit: 10, olderUnseen: true })).olderUnseen, 0);
   assert.equal('olderUnseen' in (await s.syncFolder('INBOX', { limit: 2 })), false);
+});
+
+test('over a real connection, a message nested too deep for imapflow lists by its envelope and stays cached', async () => {
+  const server = await imapServer({
+    mailbox: {
+      path: 'INBOX',
+      uidValidity: 9,
+      messages: [
+        { uid: 7, flags: ['\\Seen'], subject: 'Plain one', size: 120, bodyStructure: textStructure(11), parts: { 1: 'Hello there' } },
+        { uid: 8, flags: [], subject: 'Nested one', from: ['Nest', 'nest@example.com'], size: 900, bodyStructure: nestedStructure(30) }
+      ]
+    }
+  });
+  const s = new ImapAccount({ type: 'imap', email: 'me@example.com', imap: { host: '127.0.0.1', port: server.port, secure: false }, smtp: {} }, 'secret');
+  try {
+    const res = await s.syncFolder('INBOX', { limit: 10 });
+    const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+    assert.deepEqual([...byUid.keys()], [7, 8]);
+    assert.equal(byUid.get(7).preview, 'Hello there');
+    const nested = byUid.get(8);
+    assert.equal(nested.subject, 'Nested one');
+    assert.deepEqual(nested.from, { name: 'Nest', address: 'nest@example.com' });
+    assert.equal(nested.size, 900);
+    assert.equal(nested.preview, '');
+    assert.equal(nested.hasAttachments, false);
+    assert.equal(nested.unread, true);
+    const fetches = server.commands.filter((c) => /^UID FETCH/i.test(c));
+    assert.match(fetches[0], /^UID FETCH 7,8 .*BODYSTRUCTURE/i);
+    assert.match(fetches[1], /^UID FETCH 8 /i);
+    assert.doesNotMatch(fetches[1], /BODYSTRUCTURE/i);
+
+    // The next sync asks only the flags.
+    server.commands.length = 0;
+    const again = await s.syncFolder('INBOX', { limit: 10, known: byUid, uidValidity: res.uidValidity });
+    assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[7, 'Plain one'], [8, 'Nested one']]);
+    assert.deepEqual(server.commands.filter((c) => /FETCH/i.test(c)).map((c) => c.split(' ')[0]), ['FETCH']);
+  } finally {
+    await s.close();
+    await server.close();
+  }
 });
 
 // ---------- signing in ----------
