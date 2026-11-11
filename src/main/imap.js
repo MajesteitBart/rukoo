@@ -326,6 +326,16 @@ class ImapAccount {
           for await (const m of client.fetch(fresh.join(','), { uid: true, envelope: true, bodyStructure: true, internalDate: true, size: true }, { uid: true })) {
             details.set(m.uid, m);
           }
+          // imapflow skips a FETCH response it can't parse, and the command still succeeds. It parses 25 levels of
+          // parentheses, so a message with some 22 nested multiparts is left out, and would be asked for on every sync
+          // and never listed. Asked again without the structure, it lists by its envelope, without a preview or
+          // attachment mark, and is cached.
+          const missing = fresh.filter((uid) => !details.has(uid));
+          if (missing.length) {
+            for await (const m of client.fetch(missing.join(','), { uid: true, envelope: true, internalDate: true, size: true }, { uid: true })) {
+              details.set(m.uid, m);
+            }
+          }
         }
 
         // Fetch a few KB of the readable part for messages we have not seen before.
@@ -395,7 +405,7 @@ class ImapAccount {
           const m = details.get(row.uid);
           const prior = known.get(row.uid);
           if (!m) {
-            // Gone between the two fetches (moved or deleted meanwhile): the next sync no longer lists it.
+            // Gone between the fetches (moved or deleted meanwhile): the next sync no longer lists it.
             if (!cached(row.uid)) continue;
             result.messages.push({ uid: row.uid, ...Object.fromEntries(STORED.map((k) => [k, prior[k]])), ...state, ...extra(row.uid, prior) });
             continue;
