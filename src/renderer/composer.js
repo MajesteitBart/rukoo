@@ -1292,7 +1292,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       await settleAttachments();
       const res = await api('send', payload(undefined, { sending: true }), undoState());
       done = true;
-      gone = true;
+      // A held email's draft stays on the server until it goes; main tells the chat's draft cards then.
+      gone = !(res && res.queued);
       // Held for Undo send: the main window says so, with Undo, and says "Email sent" once it went.
       finish(res && res.queued ? null : inline ? t('composer.status.sent') : null);
     } catch (err) {

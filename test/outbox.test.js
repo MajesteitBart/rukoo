@@ -118,6 +118,25 @@ test('flush sends everything that waits at once, and waits for emails already on
   assert.deepEqual(log.slice(2), [['sent', 'First', 'main'], ['sent', 'Second', 'main']]);
 });
 
+test('left() lists what still waits or is on its way, for the quit to write down', async () => {
+  const { box, clock, release } = outbox({ hold: true });
+  const a = box.queue({ payload: { subject: 'A' }, restore: { html: 'a' }, origin: 'window', ms: 5000 });
+  const b = box.queue({ payload: { subject: 'B' }, restore: { html: 'b' }, ms: 30000 });
+  clock.advance(5000);
+  assert.deepEqual(
+    box.left().map(({ id, state, restore, origin }) => [id, state, restore.html, origin]),
+    [
+      [a.id, 'sending', 'a', 'window'],
+      [b.id, 'waiting', 'b', 'main']
+    ]
+  );
+  const flushing = box.flush();
+  await settle();
+  release();
+  await flushing;
+  assert.deepEqual(box.left(), []);
+});
+
 test('a refused send runs failed() with the error and the editor to reopen, and flush waits for it', async () => {
   const { box, clock, log } = outbox({ failWith: 'Mailbox full' });
   const restore = { html: '<div>keep me</div>' };

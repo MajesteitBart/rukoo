@@ -20,6 +20,7 @@ import {
   cleanPreview,
   toast,
   dropToast,
+  showingToast,
   runToastAction,
   showMenu,
   closeMenu,
@@ -2144,13 +2145,19 @@ function restoreOpts(restore) {
 // ---------- undo send ----------
 
 // After Send, while the email waits in main's outbox (Settings > General > Undo send). Undo, or Ctrl+Z, takes it back;
-// a newer notice takes this one's place, and the email then goes when its time is up. Main says "Email sent" after.
-// undoNotice: the email whose notice shows, and its action, so the notice goes when that email fails.
+// a newer notice takes this one's place, and the email then goes when its time is up. "Email sent" follows from
+// main ('send-done'). undoNotice: the email whose notice shows, and its action.
 let undoNotice = null;
 function offerUndoSend({ id, ms }) {
   const action = { get label() { return t('common.actions.undo'); }, run: () => undoSend(id) };
   undoNotice = { id, action };
   toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
+}
+
+// An email that waited went. A newer email's notice keeps its Undo instead of making way for "Email sent".
+function waitedMailSent({ id }) {
+  if (undoNotice && undoNotice.id !== id && showingToast(undoNotice.action)) return;
+  toast(t('composer.status.sent'));
 }
 
 // The server refused an email that waited: its notice goes, and its editor opens again with the error.
@@ -2877,6 +2884,7 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'toast') toast(payload);
   // Undo send (main.js): an email waits after Send, or the server refused one that waited and its editor opens again.
   if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
+  if (type === 'send-done' && payload) waitedMailSent(payload);
   if (type === 'send-failed' && payload && payload.restore) waitedMailFailed(payload);
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {

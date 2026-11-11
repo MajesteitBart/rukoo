@@ -5,8 +5,9 @@
 // the same way. Calendar answers and booking mail call engine.send themselves and go at once.
 //
 // The queue is kept in memory only. A quit sends what still waits before Rukoo exits (flush(), from will-quit in
-// main.js). A crash loses it, apart from a draft the editor had saved: that stays on the server until the email is
-// sent, because Engine.send deletes it only afterwards.
+// main.js); what the quit can't send or keep in Drafts, main writes down for the next start (unsent.json). A crash
+// loses the queue, apart from a draft the editor had saved: that stays on the server until the email is sent,
+// because Engine.send deletes it only afterwards.
 const crypto = require('crypto');
 
 class Outbox {
@@ -25,6 +26,11 @@ class Outbox {
   // Emails that still wait or are on their way.
   get size() {
     return this.entries.size;
+  }
+
+  // Those emails: { id, payload, restore, origin, state }.
+  left() {
+    return [...this.entries.values()].map(({ id, payload, restore, origin, state }) => ({ id, payload, restore, origin, state }));
   }
 
   // Holds an email for ms, then sends it. restore: what opens its editor again (composer.js undoState); origin:

@@ -2967,6 +2967,14 @@
     "message": "Too late to undo: the email is already on its way",
     "description": "Notice after Undo in the 'Sending email…' notice when the waiting time had just run out and the email was being sent or was sent. src/renderer/app.js (undoSend)"
   },
+  "composer.undoSend.quitUnsure": {
+    "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
+  },
+  "composer.undoSend.quitFailed": {
+    "message": "Rukoo couldn't send this email when it quit, or keep it in Drafts: {error}",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email the server refused while Rukoo quit, which couldn't be saved to Drafts either; error is the server's message. src/main/main.js (waitedMailFailed)"
+  },
   "errors.account.duplicate": {
     "message": "This account has already been added.",
     "description": "errors > account. src/main/engine.js"

@@ -168,7 +168,8 @@ function hideToast() {
 }
 
 // opts: a duration in ms, or { ms, action: { label, run } }. A toast with an action stays longer
-// and its action also runs on Ctrl+Z (see runToastAction).
+// and its action also runs on Ctrl+Z (see runToastAction). It stays while the pointer is on it, and goes 2.5 s after
+// the pointer leaves, or at ms after it showed when that is later.
 export function toast(message, opts = {}) {
   if (typeof opts === 'number') opts = { ms: opts };
   const el = document.getElementById('toast');
@@ -189,16 +190,22 @@ export function toast(message, opts = {}) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, ms);
+  const until = Date.now() + ms;
   el.onmouseenter = () => clearTimeout(toastTimer);
   el.onmouseleave = () => {
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(hideToast, 2500);
+    toastTimer = setTimeout(hideToast, Math.max(2500, until - Date.now()));
   };
+}
+
+// Whether the toast on screen is still the one with action.
+export function showingToast(action) {
+  return Boolean(action) && toastAction === action;
 }
 
 // Takes a toast away before its time, while it still shows action: a newer toast keeps its place.
 export function dropToast(action) {
-  if (!action || toastAction !== action) return;
+  if (!showingToast(action)) return;
   clearTimeout(toastTimer);
   hideToast();
 }

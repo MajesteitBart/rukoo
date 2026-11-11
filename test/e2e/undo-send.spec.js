@@ -223,6 +223,64 @@ test('quitting with an email that waits sends it before Rukoo exits', async () =
   await expect(item('Sent while quitting')).toBeVisible();
 });
 
+test('an email a quit can neither send nor keep in Drafts opens again at the next start', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+    engine.saveDraft = async () => {
+      throw new Error('No connection');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Not lost on quit', text: 'Still here after the restart.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+
+  await closeApp(app);
+  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(true);
+  await launch();
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(2);
+  const again = app.windows().find((w) => w !== win);
+  await again.waitForSelector('.composer .editor');
+  await expect(again.locator('.dialog')).toContainText("couldn't send this email when it quit");
+  await expect(again.locator('.dialog')).toContainText('Mailbox full');
+  await again.locator('.dialog .buttons button').click();
+  await expect(again.locator('[data-field="subject"]')).toHaveValue('Not lost on quit');
+  await expect(again.locator('.editor')).toContainText('Still here after the restart.');
+  await expect(again.locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+  expect(fs.existsSync(path.join(dataDir, 'data', 'unsent.json'))).toBe(false);
+});
+
+test('an older email that goes leaves the Undo of a newer one in place', async () => {
+  await newMessage(win, { to: 'demo@example.com', subject: 'First of two', text: 'One.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await newMessage(win, { to: 'demo@example.com', subject: 'Second of two', text: 'Two.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice().locator('button')).toHaveText('Undo');
+  expect(await waiting()).toBe(2);
+
+  // The first one's time is up; the second still waits.
+  await app.evaluate(async () => {
+    const box = global.__semOutbox;
+    const first = box.left().find((e) => e.payload.subject === 'First of two');
+    await box.go(box.entries.get(first.id));
+  });
+  // A call from the window returns after main's events before it, 'send-done' included, have reached the window.
+  await win.evaluate(() => window.mail.call('state'));
+  expect(await subjects('sent')).toContain('First of two');
+  await expect(notice()).toContainText('Sending email…');
+  await expect(notice().locator('button')).toHaveText('Undo');
+
+  await notice().locator('button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Second of two');
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).not.toContain('Second of two');
+});
+
 test('an email the server refuses after the wait opens again with its text and the error', async () => {
   await app.evaluate(() => {
     global.__semEngine.send = async () => {
