@@ -57,7 +57,7 @@ Spelling is checked as you write. Right-click in the message text, or press the 
 
 Drafts save to the server's Drafts folder while you write. Opening another message keeps what you wrote as a draft. Closing with unsaved changes asks whether to keep them.
 
-Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account, each with a preview. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
+Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account. Settings → Signatures, under your accounts, lists them together with a preview of each. Every account shows what goes under its mail: its own signature, none, or the general one. All addresses of an account share its signature, so its aliases are listed with it. The account's own page and its sender addresses page have the same Signature row. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
 
 The composer's calendar button inserts your [booking link](booking.md) or a list of your free times, and a line under your signature can carry the link.
 
@@ -106,7 +106,7 @@ How Rukoo becomes the app for email links depends on the system: see [Windows](p
 
 Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
 
-Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
+Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, spam addresses, VIPs and folder visibility. Settings → Signatures holds the signatures (none by default, plain text or formatted) and the booking link under them. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
 

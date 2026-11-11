@@ -155,6 +155,7 @@ test('Settings has the footer beside the signature, with a preview, its text and
   await pageOn();
   await win.click('[data-action="settings"]');
   const page = win.locator('.page.settings');
+  await page.locator('[data-a="signatures"]').click();
   const row = page.locator('[data-a="booking-footer"]');
   await expect(row.locator('.title')).toHaveText('Booking link under signature');
   await expect(row.locator('.switch')).not.toHaveClass(/\bon\b/);
@@ -177,6 +178,7 @@ test('Settings has the footer beside the signature, with a preview, its text and
   expect((await call('state')).settings.bookingFooterText).toBe('Pick a slot: {url}');
 
   // The account follows the general setting until it is set to off.
+  await page.locator('[data-a="back"]').click();
   await page.locator('.row:has-text("demo@example.com")').first().click();
   const acc = page.locator('[data-a^="booking-acc-footer:"]');
   await expect(acc.locator('.value')).toHaveText('Follows the general setting (On)');

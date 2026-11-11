@@ -4992,6 +4992,14 @@
     "message": "Send as",
     "description": "settings > aliases. src/renderer/settings.js (render)"
   },
+  "settings.aliases.signatureOne": {
+    "message": "Under mail from the account address",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list, for an account without aliases; the row shows the signature its mail gets. src/renderer/settings.js (render)"
+  },
+  "settings.aliases.signatureAll": {
+    "message": "Under mail from all {count} addresses",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list; the row shows the signature. Every address of an account sends the account's signature; count is the number of addresses listed above it, the account address included, and is at least 2. src/renderer/settings.js (render)"
+  },
   "settings.badge.new": {
     "message": "New emails",
     "description": "settings > badge. src/renderer/settings.js"
@@ -5264,6 +5272,10 @@
     "message": "Rukoo signs in with the username and password above. Leave this empty to show no calendar for this account.",
     "description": "Server settings form and the manual servers of the setup form: help text under the CalDAV address field. In both forms the username and password fields are above it. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
+  "settings.signature.accountTitle": {
+    "message": "Signature for {email}",
+    "description": "Title of the signature editor opened for one account, from its page, its Sender addresses page or the Signatures page; email is the account's address. src/renderer/settings.js (openSettings)"
+  },
   "settings.signature.generalValue": {
     "message": "General: {signature}",
     "description": "settings > signature. src/renderer/settings.js (render)"
@@ -5286,11 +5298,35 @@
   },
   "settings.signature.usesGeneral": {
     "message": "Uses the general signature",
-    "description": "settings > signature. Account settings: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
+    "description": "settings > signature. An account's Signature row (on its page and its Sender addresses page) and its row on the Signatures page: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
   },
   "settings.signature.useGeneral": {
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
+  },
+  "settings.signatures.title": {
+    "message": "Signatures",
+    "description": "Settings: the row in the Accounts card that opens the Signatures page, and that page's title. The page lists the general signature and each account's signature. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.rowHelp": {
+    "message": "General and per account",
+    "description": "Settings: help under the Signatures row in the Accounts card. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.general": {
+    "message": "General signature",
+    "description": "Settings > Signatures: the row with the general signature, and the title of the signature editor it opens. src/renderer/settings.js (render, openSettings)"
+  },
+  "settings.signatures.generalHelp": {
+    "message": "For accounts without a signature of their own",
+    "description": "Settings > Signatures: help under General signature, saying which accounts send it. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.own": {
+    "message": "Its own signature",
+    "description": "Settings > Signatures: value of an account's row when the account has a signature of its own, which is previewed below; the other values are Uses the general signature and None. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.aliases": {
+    "message": "Also under mail from {addresses}",
+    "description": "Settings > Signatures: help under an account that has aliases; its signature also goes under mail sent from them. addresses is a list of email addresses, joined in the interface language (\"a@example.com and b@example.com\"). src/renderer/settings.js (render)"
   },
   "calendar.free.title": {
     "message": "Availability",
