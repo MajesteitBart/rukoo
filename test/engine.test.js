@@ -440,6 +440,105 @@ test('a sync shows what another device did to older mail found on the server, an
   await engine.close();
 });
 
+test('reading or moving older unread mail found on the server while a sync runs counts it once, and a refusal puts it back', async () => {
+  const { engine, acc } = await smallEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const olderUnread = () => engine.counts(acc.id).olderUnread;
+  await engine.searchServer({ scope: acc.id, view: 'inbox', query: 'thursday' });
+  const hit = engine.listMessages({ scope: acc.id, view: 'inbox', query: 'thursday' }).find((m) => m.older);
+  const found = () => engine.olderHit(acc.id, 'INBOX', hit.uid);
+  assert.equal(found().unread, true);
+  assert.equal(olderUnread(), 2);
+
+  // The demo's command waits until the returned function is called. first: the server has the change before that
+  // wait, as when its answer is still on the way. fail: the error it answers with instead.
+  const hold = (name, { first = false, fail = null } = {}) => {
+    const real = demo[name].bind(demo);
+    let open;
+    const gate = new Promise((resolve) => (open = resolve));
+    demo[name] = async (...args) => {
+      const res = first ? await real(...args) : undefined;
+      await gate;
+      if (fail) throw new Error(fail);
+      return first ? res : real(...args);
+    };
+    return () => {
+      demo[name] = real;
+      open();
+    };
+  };
+
+  // Marked read, turned down: the sync read the server before the change, which counts until the server refuses it.
+  let release = hold('setFlags', { fail: 'offline' });
+  const refused = engine.setFlags(hit.id, { unread: false });
+  assert.equal(olderUnread(), 1);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  assert.equal(found().unread, false);
+  release();
+  await assert.rejects(refused, /offline/);
+  assert.equal(olderUnread(), 2);
+  assert.equal(found().unread, true);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 2);
+
+  // Marked read: the count the sync brought from before the change goes down too, and stays down.
+  release = hold('setFlags');
+  const read = engine.setFlags(hit.id, { unread: false });
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  release();
+  await read;
+  assert.equal(olderUnread(), 1);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+
+  // Marked unread, with a sync that already read the change on the server: not counted twice.
+  release = hold('setFlags', { first: true });
+  const unread = engine.setFlags(hit.id, { unread: true });
+  assert.equal(olderUnread(), 2);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 2);
+  release();
+  await unread;
+  assert.equal(olderUnread(), 2);
+
+  // Read and unread again before the server has either: the count the sync brought from before both stays.
+  release = hold('setFlags');
+  const both = [engine.setFlags(hit.id, { unread: false }), engine.setFlags(hit.id, { unread: true })];
+  assert.equal(olderUnread(), 2);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 2);
+  release();
+  await Promise.all(both);
+  assert.equal(olderUnread(), 2);
+  assert.equal(found().unread, true);
+
+  // Archived, turned down: it comes back into the results and the count.
+  release = hold('move', { fail: 'offline' });
+  const archived = engine.archive(hit.id);
+  assert.equal(olderUnread(), 1);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  release();
+  await assert.rejects(archived, /offline/);
+  assert.equal(olderUnread(), 2);
+  assert.equal(found().unread, true);
+
+  // Deleted: out of the count, also after a sync that read the server before the move.
+  release = hold('move');
+  const removed = engine.remove(hit.id);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  release();
+  assert.equal(await removed, 'trash');
+  assert.equal(olderUnread(), 1);
+  assert.equal(found(), null);
+  await engine.syncAccount(acc.id);
+  assert.equal(olderUnread(), 1);
+  await engine.close();
+});
+
 test('a search goes through every folder a batch at a time, and resume searches the next batch', async () => {
   const dir = tempDir('sem-test-');
   const engine = new Engine({ dataDir: dir, limits: { inbox: 6, default: 2, batch: 6, extra: 8 }, search: { folders: 1 } }).init();
