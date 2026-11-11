@@ -242,6 +242,157 @@ test('attachments are listed for messages that have them', async () => {
   await expect(win.locator('.atts-head')).toHaveCount(0);
 });
 
+// #56: a large message with attachments goes into the demo inbox, and its downloads wait until the test lets them go:
+// the background download always, the user's when holdUser is set. A banner over the inline-picture budget (a 40 x 30
+// PNG with padding after its end) comes with the whole message only.
+async function largeMessage({ holdUser = false } = {}) {
+  await app.evaluate(
+    async ({ app, nativeImage }, holdUser) => {
+      // The main process here only resolves Node's own modules; the app's come through its own path.
+      const { createRequire } = process.mainModule.require('module');
+      const MailComposer = createRequire(`${app.getAppPath()}/package.json`)('nodemailer/lib/mail-composer');
+      const engine = global.__semEngine;
+      const acc = engine.accounts[0];
+      const png = (bgra) => nativeImage.createFromBitmap(Buffer.alloc(40 * 30 * 4).map((_, i) => bgra[i % 4]), { width: 40, height: 30 }).toPNG();
+      const paragraphs = Array.from({ length: 30 }, (_, i) => `<p>Section ${i + 1}: revenue, costs and the outlook for the next quarter.</p>`).join('');
+      const raw = await new MailComposer({
+        from: { name: 'Sanne de Vries', address: 'sanne@example.com' },
+        to: 'demo@example.com',
+        subject: 'Quarterly report',
+        html: `<p id="intro">The quarterly report is attached.</p><img id="banner" src="cid:banner@example.com" width="40" height="30" alt="">${paragraphs}`,
+        attachments: [
+          { filename: 'banner.png', content: Buffer.concat([png([0xd0, 0x80, 0x30, 0xff]), Buffer.alloc(2200 * 1024)]), cid: 'banner@example.com' },
+          { filename: 'Quarterly-report.pdf', content: Buffer.alloc(3 * 1024 * 1024, 0x25), contentType: 'application/pdf' },
+          { filename: 'chart.png', content: png([0x40, 0xa0, 0x20, 0xff]) }
+        ]
+      })
+        .compile()
+        .build();
+      await engine.session(acc).append('INBOX', raw);
+      await engine.syncAll();
+      while (engine.prefetching.size) await new Promise((r) => setTimeout(r, 20));
+      const session = engine.session(acc);
+      const real = session.fetchSource.bind(session);
+      global.__fetches = [];
+      global.__held = { background: [], user: [] };
+      session.fetchSource = (p, u, opts = {}) => {
+        const kind = opts.background ? 'background' : 'user';
+        global.__fetches.push(kind);
+        if (kind === 'user' && !holdUser) return real(p, u, opts);
+        return new Promise((resolve, reject) =>
+          global.__held[kind].push({ go: () => real(p, u, opts).then(resolve, reject), fail: () => reject(new Error('Connection lost')) })
+        );
+      };
+    },
+    holdUser
+  );
+  // The save dialog answers with a file in the profile.
+  await app.evaluate(({ dialog }, dir) => {
+    const path = process.mainModule.require('path');
+    dialog.showSaveDialog = async (_win, opts) => ({ canceled: false, filePath: path.join(dir, path.basename(opts.defaultPath)) });
+  }, dataDir);
+}
+const release = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.go()), kind);
+const failDownload = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.fail()), kind);
+const fetches = () => app.evaluate(() => global.__fetches);
+const mailFrame = () => win.frameLocator('.mail-frame');
+
+test('a large message shows its text and attachment cards before the attachments are in', async () => {
+  await largeMessage();
+  await item('Quarterly report').click();
+  await expect(mailFrame().locator('#intro')).toHaveText('The quarterly report is attached.');
+  // The cards, with names and sizes, before anything but the text came in; no thumbnail yet, and the banner keeps
+  // its place.
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect(win.locator('.att').first().locator('.att-size')).toHaveText('3,0 MB');
+  await expect(win.locator('.atts-toggle')).toContainText('2 bijlagen');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await expect(mailFrame().locator('#banner')).toHaveAttribute('src', /^data:image\/svg\+xml,/);
+  // It keeps the box its width and height give it.
+  expect(await mailFrame().locator('#banner').evaluate((img) => [img.clientWidth, img.clientHeight])).toEqual([40, 30]);
+  expect(await fetches()).toEqual(['background']);
+
+  // Scrolled down, the whole message lands: the thumbnail and the banner appear, and the reader stays where it was.
+  const scroll = win.locator('.reader-scroll');
+  await scroll.evaluate((el) => (el.scrollTop = 200));
+  await release('background');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  expect(Math.abs((await scroll.evaluate((el) => el.scrollTop)) - 200)).toBeLessThan(4);
+  await expect(win.locator('.att').first().locator('.att-size')).toHaveText('3,0 MB');
+
+  await win.locator('[data-save-att]').first().click();
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  expect(await fetches()).toEqual(['background']);
+});
+
+test('saving an attachment of a partly shown message fetches the message in the user turn and shows a spinner meanwhile', async () => {
+  await largeMessage({ holdUser: true });
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  const save = win.locator('[data-save-att]').first();
+  await save.click();
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save.locator('.spinner')).toBeVisible();
+  expect(await fetches()).toEqual(['background', 'user']);
+  // The user's download brings the message: the attachment saves whole, and the reader completes without waiting for
+  // the background download, which is still held.
+  await release('user');
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  await expect(save).toHaveAttribute('aria-busy', 'false');
+  await expect(save.locator('svg')).toBeVisible();
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await release('background');
+});
+
+test('a partly shown message whose background download failed completes once an attachment is opened', async () => {
+  await largeMessage();
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect.poll(() => app.evaluate(() => global.__held.background.length)).toBe(1);
+  // Offline for a moment: the text and the cards stay, without thumbnails.
+  await failDownload('background');
+  await expect(mailFrame().locator('#intro')).toBeVisible();
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await win.locator('[data-save-att]').first().click();
+  await expect(win.locator('#toast')).toHaveText('Bijlage opgeslagen');
+  expect(fs.statSync(path.join(dataDir, 'Quarterly-report.pdf')).size).toBe(3 * 1024 * 1024);
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  // One download in the user's turn. The reader may have asked for the background download again meanwhile.
+  expect((await fetches()).filter((kind) => kind === 'user')).toHaveLength(1);
+});
+
+// A full disk: the main process can't write a message to the profile.
+const fullDisk = () =>
+  app.evaluate(() => {
+    const fs = process.mainModule.require('fs');
+    const { sep } = process.mainModule.require('path');
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, ...rest) => {
+      if (String(file).includes(`${sep}bodies${sep}`)) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      return write.call(fs, file, ...rest);
+    };
+  });
+
+test('a partly shown message that comes in but cannot be kept still completes', async () => {
+  await largeMessage();
+  await fullDisk();
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  await release('background');
+  // The whole message came in once but isn't on disk: the reader reads it whole again in the user's turn, and the
+  // thumbnail does the same, as for any message that can't be kept.
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await expect(mailFrame().locator('#intro')).toHaveText('The quarterly report is attached.');
+  expect(await fetches()).toEqual(['background', 'user', 'user']);
+});
+
 test('star toggles and shows up under Sterren', async () => {
   await item('Bencompare').hover();
   await item('Bencompare').locator('[data-star]').click();

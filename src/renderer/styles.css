@@ -2125,6 +2125,22 @@ body:has(.page) .titlebar-actions {
   height: 100%;
   object-fit: cover;
 }
+/* The spinner in place of a save icon while a large email's attachments come in (app.js wholeMessage), the size of
+   the icon so the button keeps its shape. */
+.att .icon-btn .spinner,
+.atts-head .link-btn .spinner {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border-color: color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+}
+@media (prefers-reduced-motion: reduce) {
+  .att .icon-btn .spinner,
+  .atts-head .link-btn .spinner {
+    animation-duration: 2s;
+  }
+}
 
 /* Related emails under the header (app.js relatedHtml): one line per email in a card, newest first. The card folds
    away under its header like the attachments do, and grows back from its top edge. */

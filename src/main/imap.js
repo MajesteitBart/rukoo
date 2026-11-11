@@ -442,6 +442,30 @@ class ImapAccount {
     return background ? this.run(fetch, { background }) : this.read(fetch);
   }
 
+  // A large message the user opens, without its attachments: its structure and header first, then the parts the
+  // reader shows and the MIME header of every part (mailutil.readableParts), rebuilt into a source mailparser reads
+  // like the whole message (mailutil.skeletonSource). Over the reader, like fetchSource. null when the message
+  // doesn't split.
+  fetchReadable(path, uid) {
+    return this.read(async (client) => {
+      const lock = await client.getMailboxLock(path, { readOnly: true });
+      try {
+        const head = await client.fetchOne(String(uid), { uid: true, bodyStructure: true, headers: true, size: true }, { uid: true });
+        if (!head || !head.bodyStructure || !head.headers) throw new Error(t('errors.message.serverMissing'));
+        const keys = util.readableParts(head.bodyStructure, head.size);
+        if (!keys) return null;
+        const msg = await client.fetchOne(String(uid), { uid: true, bodyParts: keys }, { uid: true });
+        // Every part asked for, or the whole message: a text part the server left out would read as an empty one.
+        if (!msg || !msg.bodyParts || !keys.every((key) => Buffer.isBuffer(msg.bodyParts.get(key.toLowerCase())))) {
+          throw new Error(t('errors.message.serverMissing'));
+        }
+        return util.skeletonSource(head.headers, head.bodyStructure, msg.bodyParts);
+      } finally {
+        lock.release();
+      }
+    });
+  }
+
   setFlags(path, uid, { unread, starred, answered }) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);

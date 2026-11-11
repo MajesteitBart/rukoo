@@ -252,6 +252,69 @@ test('without any connection a read fails with the reason', async () => {
   assert.equal(s.oneConnection, false);
 });
 
+// #56: a large message's text before its attachments.
+test('a large message comes over the reader as its structure and then its text parts, rebuilt for mailparser', async () => {
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const { simpleParser } = require('mailparser');
+  const { mimeClient } = require('./fixtures/mime-server');
+  const raw = await new MailComposer({
+    from: 'sanne@example.com',
+    to: 'me@example.com',
+    subject: 'Report',
+    text: 'The report is attached.',
+    html: '<p>The report is attached.</p>',
+    attachments: [{ filename: 'report.pdf', content: Buffer.alloc(3 * 1024 * 1024, 7), contentType: 'application/pdf' }]
+  })
+    .compile()
+    .build();
+  const log = [];
+  const modes = [];
+  const s = session((name) => {
+    const client = mimeClient(raw, { log });
+    const lock = client.getMailboxLock;
+    client.getMailboxLock = async (path, opts = {}) => {
+      modes.push(`${name}: ${path} ${opts.readOnly ? 'read-only' : 'read-write'}`);
+      return lock(path, opts);
+    };
+    return client;
+  });
+  let finishSync;
+  const sync = s.run(() => new Promise((resolve) => (finishSync = resolve)), { background: true });
+  await tick();
+  const skeleton = await s.fetchReadable('INBOX', 7);
+  // Next to a running sync, over the reader, which only reads.
+  assert.deepEqual(modes, ['reader: INBOX read-only']);
+  assert.deepEqual(log.map((q) => Object.keys(q).filter((k) => k !== 'uid').sort()), [['bodyStructure', 'headers', 'size'], ['bodyParts']]);
+  assert.ok(!log[1].bodyParts.includes('2'), 'the attachment stays on the server');
+  assert.ok(skeleton.length < 8 * 1024, `${skeleton.length} bytes`);
+  const parsed = await simpleParser(skeleton);
+  assert.equal(parsed.text, 'The report is attached.');
+  assert.deepEqual(parsed.attachments.map((a) => [a.filename, Number(a.headers.get('x-rukoo-omitted')) > 3000000]), [['report.pdf', true]]);
+  finishSync();
+  await sync;
+
+  // A message of one part has nothing to leave out: one fetch, and the whole message comes as before.
+  log.length = 0;
+  const single = session(() => mimeClient('Subject: hi\r\nContent-Type: text/plain\r\n\r\nbody', { log }));
+  assert.equal(await single.fetchReadable('INBOX', 7), null);
+  assert.equal(log.length, 1);
+  // A server that leaves out a part's header or its text fails the split; the engine reads the whole message then.
+  const leaving = (drop) =>
+    session(() => {
+      const client = mimeClient(raw);
+      const fetchOne = client.fetchOne;
+      client.fetchOne = async (seq, query) => {
+        const msg = await fetchOne(seq, query);
+        if (msg.bodyParts) for (const key of [...msg.bodyParts.keys()]) if (drop(key)) msg.bodyParts.delete(key);
+        return msg;
+      };
+      return client;
+    });
+  const missing = { message: t('errors.message.serverMissing') };
+  await assert.rejects(leaving((key) => key.endsWith('.mime')).fetchReadable('INBOX', 7), missing);
+  await assert.rejects(leaving((key) => key === '1.1').fetchReadable('INBOX', 7), missing, 'the text part');
+});
+
 // A server folder for syncFolder: messages by sequence number, and every FETCH it was asked.
 function folder(messages) {
   const asked = [];

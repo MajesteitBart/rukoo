@@ -2068,7 +2068,8 @@ function messageMenu(m) {
 }
 
 async function printMessage(id) {
-  const full = S.message && S.message.id === id && S.message.html != null ? S.message : await api('get', id);
+  // The reader's copy, unless it is still waiting for its inline pictures.
+  const full = S.message && S.message.id === id && S.message.html != null && !S.message.partial ? S.message : await api('get', id);
   const head = `<h2 style="font:600 20px Segoe UI,sans-serif;margin:0 0 8px">${esc(full.subject)}</h2>
     <div style="font:13px Segoe UI,sans-serif;color:#444;margin-bottom:16px">${esc(t('reader.headers.from'))}: ${esc(formatAddress(full.from))}<br>${esc(t('reader.headers.to'))}: ${esc(full.to.map(formatAddress).join(', '))}<br>${esc(t('reader.headers.date'))}: ${esc(longDate(full.date))}</div><hr>`;
   await api('print', `<!doctype html><meta charset="utf-8"><body style="margin:24px">${head}${full.html}</body>`);
@@ -2167,7 +2168,7 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   renderReader();
   agentViewChanged();
   try {
-    const full = await api('get', id);
+    const full = await api('get', id, { fast: true });
     if (S.selectedId !== id) return;
     // The related emails come with the message, so the reading pane draws once. They need its References.
     const related = await api('related', id, full.references || []).catch(() => []);
@@ -2184,6 +2185,68 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   // Again with the full message: the panel needs its Message-ID and whether it can unsubscribe.
   agentViewChanged();
   if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
+  if (S.message && S.message.id === id && S.message.partial) completeMessage(id);
+}
+
+// A large message shows its text before its attachments are in (engine.js readableSource). Once the whole message is
+// on disk it is read again: the attachments get their exact sizes and thumbnails, and inline pictures that didn't come
+// with the text appear. One that came in but couldn't be kept, on a full disk, is read whole once more in the user's
+// turn, as the reader reads any message it can't keep. kept is what downloaded said, when the caller already asked.
+// The email itself only redraws when it changed, and keeps its scroll position then.
+async function completeMessage(id, kept) {
+  const still = () => S.selectedId === id && S.message && S.message.id === id && S.message.partial;
+  // null when the download failed: the reader stays as it is until an attachment is opened (wholeMessage).
+  if (kept === undefined) kept = await api('downloaded', id).catch(() => null);
+  if (kept == null || !still()) return;
+  const full = await (kept ? api('get', id, { fast: true }) : api('get', id)).catch(() => null);
+  if (!full || full.partial || !still()) return;
+  const before = S.message;
+  // With the flags the reader shows, which a star or read change on its way may set ahead of main.
+  S.message = { ...full, unread: before.unread, starred: before.starred };
+  if (S.composer || S.checked.size > 1) return;
+  if (full.html !== before.html) {
+    const top = $('.reader .reader-scroll')?.scrollTop || 0;
+    renderReader();
+    const scroll = $('.reader .reader-scroll');
+    if (scroll) scroll.scrollTop = top;
+    return;
+  }
+  const atts = $('.reader .atts');
+  if (atts) atts.outerHTML = attachmentsHtml(S.message);
+  loadPreviews(S.message);
+}
+
+// Attachment buttons waiting for their message to come in, by message id and attachment index (or 'all' for Save
+// all). They show a spinner for their icon.
+const fetchingAtts = new Set();
+
+function attachmentSpinner(id, key, on) {
+  const k = `${id}|${key}`;
+  if (on) fetchingAtts.add(k);
+  else fetchingAtts.delete(k);
+  if (!S.message || S.message.id !== id) return;
+  const btn = key === 'all' ? $('.reader [data-reader="save-all"]') : $(`.reader [data-save-att="${key}"]`);
+  if (!btn) return;
+  btn.setAttribute('aria-busy', String(on));
+  const icon = document.createElement('template');
+  icon.innerHTML = on ? '<span class="spinner"></span>' : icons.download;
+  btn.querySelector('svg, .spinner')?.replaceWith(icon.content);
+}
+
+// An attachment of a message whose text came first is only there once the whole message is: that comes in the user's
+// turn now. The button shows a spinner meanwhile, after a moment, so a quick download doesn't flash. The reader then
+// completes too, also when the background download had failed.
+async function wholeMessage(m, key) {
+  if (!m.partial) return;
+  const timer = setTimeout(() => attachmentSpinner(m.id, key, true), 100);
+  let kept = false;
+  try {
+    kept = await api('downloaded', m.id, { now: true });
+  } finally {
+    clearTimeout(timer);
+    if (fetchingAtts.has(`${m.id}|${key}`)) attachmentSpinner(m.id, key, false);
+  }
+  if (S.message && S.message.id === m.id && S.message.partial) completeMessage(m.id, kept);
 }
 
 export function closeReader() {
@@ -2263,6 +2326,11 @@ function attachmentsHtml(m) {
   if (!list.length) return '';
   const total = list.reduce((n, a) => n + (a.size || 0), 0);
   const open = list.length === 1 || S.attachmentsOpen;
+  // The download icon, or a spinner while the button waits for its message (wholeMessage).
+  const busy = (key) => fetchingAtts.has(`${m.id}|${key}`);
+  const saveIcon = (key) => (busy(key) ? '<span class="spinner"></span>' : icons.download);
+  const save = (a) =>
+    `<button class="icon-btn sm" data-save-att="${a.index}" aria-busy="${busy(a.index)}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${saveIcon(a.index)}</button>`;
   const card = (a) => {
     const { ext, kind } = attachmentKind(a.filename);
     const thumb = previews.get(`${m.id}|${a.index}`);
@@ -2270,19 +2338,19 @@ function attachmentsHtml(m) {
       return `<div class="att image" data-preview="${a.index}">
         <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="thumb">${thumb ? `<img src="${thumb}" alt="">` : `<span class="ftype image">${esc(ext)}</span>`}</span>
         <span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
-        <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
+        ${save(a)}
       </div>`;
     }
     return `<div class="att">
       <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
-      <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
+      ${save(a)}
     </div>`;
   };
   const head =
     list.length > 1
       ? `<div class="atts-head">
           <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.attachments.count', { count: list.length }))}</span><span class="atts-size">${fileSize(total)}</span></button>
-          <button class="link-btn" data-reader="save-all">${icons.download}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
+          <button class="link-btn" data-reader="save-all" aria-busy="${busy('all')}">${saveIcon('all')}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
         </div>`
       : '';
   return `<section class="atts ${open ? '' : 'closed'}" data-i18n-aria-label="mailbox.filters.attachments" aria-label="${esc(t('mailbox.filters.attachments'))}">${head}${open ? `<div class="atts-list">${list.map(card).join('')}</div>` : ''}</section>`;
@@ -2452,7 +2520,8 @@ function renderReader() {
     const s = S.data?.settings || {};
     fillFrame(frame, m, { light: isLight(), darkEmails: s.darkEmails !== false, fitContent: s.fitContent !== false });
   }
-  if (!S.loading) loadPreviews(m);
+  // A partly shown message gets its thumbnails once the whole message is in (completeMessage).
+  if (!S.loading && !m.partial) loadPreviews(m);
   const slot = el.querySelector('.invite-slot');
   if (slot) mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent }).catch(() => {});
   wantLogos([m]);
@@ -2527,9 +2596,17 @@ function bindReader() {
     }
     const item = byId(m.id) || m;
     if (btn.dataset.person !== undefined) return personMenu(btn);
-    if (btn.dataset.openAtt) return api('openAttachment', m.id, Number(btn.dataset.openAtt)).catch((err) => toast(err.message));
+    if (btn.dataset.openAtt) {
+      const index = Number(btn.dataset.openAtt);
+      return wholeMessage(m, index)
+        .then(() => api('openAttachment', m.id, index))
+        .catch((err) => toast(err.message));
+    }
     if (btn.dataset.saveAtt) {
-      const p = await api('saveAttachment', m.id, Number(btn.dataset.saveAtt)).catch((err) => toast(err.message));
+      const index = Number(btn.dataset.saveAtt);
+      const p = await wholeMessage(m, index)
+        .then(() => api('saveAttachment', m.id, index))
+        .catch((err) => toast(err.message));
       if (p) toast(t('reader.attachments.savedOne'));
       return;
     }
@@ -2576,7 +2653,9 @@ function bindReader() {
         return;
       }
       case 'save-all': {
-        const n = await api('saveAllAttachments', m.id).catch((err) => toast(err.message, 5000));
+        const n = await wholeMessage(m, 'all')
+          .then(() => api('saveAllAttachments', m.id))
+          .catch((err) => toast(err.message, 5000));
         if (n) toast(t('reader.attachments.savedCount', { count: n }));
         return;
       }
