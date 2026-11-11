@@ -673,6 +673,7 @@
   "composer.agent.undo": "Ongedaan maken",
   "composer.agent.undoHelp": "Je eigen wijzigingen sinds dat moment verdwijnen ook.",
   "composer.agent.undoTitle": "Concept van {name} ongedaan maken?",
+  "composer.attachments.dropHint": "Loslaten om bij te voegen",
   "composer.attachments.image": "Afbeelding invoegen",
   "composer.attachments.pick": "Bestanden bijvoegen",
   "composer.body.label": "Berichttekst",

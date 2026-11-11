@@ -2671,6 +2671,10 @@
     "message": "Undo {name}'s draft?",
     "description": "Composer confirmation title when undoing an agent draft you already edited."
   },
+  "composer.attachments.dropHint": {
+    "message": "Drop to attach",
+    "description": "Shown across the composer while files are dragged over it; letting go attaches them. src/renderer/composer.js (mountComposer); src/renderer/styles.css (.composer.drop-files)"
+  },
   "composer.attachments.image": {
     "message": "Insert image",
     "description": "composer > attachments. src/renderer/composer.js (template); src/main/main.js"
