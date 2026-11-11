@@ -24,6 +24,42 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The objc2 family Tauri 2.12.5 and wry 0.57.1 build against, so the WKWebView handle is one type.
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "objc2-core-foundation",
+  "NSBitmapImageRep",
+  "NSImage",
+  "NSImageRep",
+  "NSView",
+  "NSWindow",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+  "CGSession",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSData",
+  "NSDictionary",
+  "NSError",
+  "NSString",
+] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "WKWebView",
+  "WKSnapshotConfiguration",
+] }
+
 [target.'cfg(windows)'.dependencies]
 # The same versions tauri 2.12.5, wry and tao use, so HWNDs and WebView2 interfaces are one type.
 webview2-com = "=0.39.1"
