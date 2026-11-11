@@ -7532,6 +7532,24 @@ button.cal-gchip-main:hover {
 .sig-preview p {
   margin: 0;
 }
+/* Settings > Accounts: the Signatures row leads with a pen, in the column the add row's plus uses. */
+.row .sig-ic {
+  color: var(--text-2);
+  width: 30px;
+  display: grid;
+  place-items: center;
+}
+.row .sig-ic svg {
+  width: 20px;
+  height: 20px;
+}
+/* Settings > Signatures: an account's avatar stays beside its address while a preview makes the row tall. */
+.row.sig-account {
+  align-items: flex-start;
+}
+.row.sig-account .avatar {
+  flex: none;
+}
 .sig-dialog .sig-help {
   font-size: 12.5px;
   margin: 0 0 12px;
