@@ -57,14 +57,17 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSAlert",
   "NSAppearance",
   "NSApplication",
+  "NSColor",
   "NSResponder",
   "NSRunningApplication",
+  "NSView",
   "NSWindow",
 ] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSArray",
   "NSDistributedNotificationCenter",
+  "NSGeometry",
   "NSLocale",
   "NSNotification",
   "NSOperation",
