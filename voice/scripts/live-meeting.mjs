@@ -162,7 +162,7 @@ const ORUKEET_DIR = path.join('models', ORUKEET_REL);
 const SPEAKER_NEEDS =
   "Speaker labels are unavailable on this Mac: Voice's Settings > Speaker labels reports reason \"platform\" through the status hook. " +
   'Speaker labels on macOS need the arm64 NeMo-Speech.cpp runtime (voice/nemo-runtime/build-macos.sh) pointed at with --nemo-dir or ' +
-  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and the macOS speaker labels from the voice-macos-s5a-speakers branch`;
+  `RUKOO_VOICE_NEMO_DIR, the Nemotron model and the AMI excerpt in ${SHARED_ASSETS}, and a Voice build with the macOS speaker worker`;
 
 class Refusal extends Error {}
 
@@ -514,8 +514,8 @@ function build() {
 // The AMI excerpt and the model, checked against their pins; the runtime too once voice/nemo-runtime/manifest.json
 // names a published archive (the script skips it before that).
 // On Windows the PowerShell script fetches the AMI excerpt, Nemotron and the published runtime. On macOS the same
-// folder comes from tmp/voice-assets/speaker-assets, or from voice/scripts/speaker-assets.mjs when that branch provides
-// it (the runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
+// folder comes from tmp/voice-assets/speaker-assets, or from voice/scripts/speaker-assets.mjs once that script exists
+// (the runtime is a local arm64 build, so --nemo-dir points at it instead of downloading one).
 function assets() {
   if (WIN) {
     const out = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(VOICE, 'scripts', 'speaker-assets.ps1'), '-Out', ASSETS, '-Ami', '-Model', '-Runtime'], {
@@ -1772,7 +1772,7 @@ async function pair(monitor) {
     }
   }
   if (SPEAKERS !== null) {
-    // Decided by what Voice reports, not by the platform: the macOS speaker branch makes this true and the run goes on.
+    // Decided by what Voice reports, not by the platform: a Voice build with the macOS speaker worker reports ready and the run goes on.
     const sp = first.settings.speakers || {};
     if (sp.ready !== true && sp.reason === 'platform') throw new Refusal(SPEAKER_NEEDS);
     if (SPEAKERS === true) {
