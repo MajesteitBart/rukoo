@@ -25,13 +25,33 @@ voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The same objc2 0.6 and framework versions tauri 2.12.5, tao and wry use, so their classes are one type.
-# `objc2-user-notifications` loses its default features so it doesn't bring in Core Location for nothing.
+# The objc2 family Tauri 2.12.5, tao and wry 0.57.1 build against, so their classes and the WKWebView handle are one
+# type. `objc2-user-notifications` loses its default features so it doesn't bring in Core Location for nothing.
+objc2 = "=0.6.5"
 block2 = "=0.6.2"
-objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "objc2-core-foundation",
+  "NSBitmapImageRep",
+  "NSImage",
+  "NSImageRep",
+  "NSView",
+  "NSWindow",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+  "CGSession",
+] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSBundle",
+  "NSData",
+  "NSDictionary",
   "NSError",
   "NSString",
 ] }
@@ -43,6 +63,12 @@ objc2-user-notifications = { version = "=0.3.2", default-features = false, featu
   "UNNotificationSound",
   "UNNotificationTrigger",
   "UNUserNotificationCenter",
+] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "WKWebView",
+  "WKSnapshotConfiguration",
 ] }
 
 [target.'cfg(windows)'.dependencies]
