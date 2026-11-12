@@ -118,7 +118,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 
 <!-- rust-crates:start: written by voice/scripts/notices.mjs --update (or package.ps1 -UpdateNotices); package.ps1 and package-macos.mjs stop when this list is out of date -->
 
-255 crates: 189 in both builds, 22 only in the Windows build and 44 only in the macOS build.
+232 crates: 187 in both builds, 24 only in the Windows build and 21 only in the macOS build.
 
 ### 0BSD OR Apache-2.0 OR MIT
 
@@ -126,7 +126,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 
 ### Apache-2.0
 
-- cpal 0.18.2
+- cpal 0.18.2 (Windows only)
 - sherpa-onnx 2.0.1
 - sherpa-onnx-sys 2.0.1
 - tao 0.37.2
@@ -138,10 +138,6 @@ The Rust crates built into the five programs, by license. The list covers the no
 ### Apache-2.0 AND MIT
 
 - dpi 0.1.2
-
-### Apache-2.0 OR BSD-2-Clause OR MIT
-
-- mach2 0.6.0 (macOS only)
 
 ### Apache-2.0 OR CC0-1.0 OR MIT-0
 
@@ -172,7 +168,6 @@ The Rust crates built into the five programs, by license. The list covers the no
 - core-foundation-sys 0.8.7 (macOS only)
 - core-graphics 0.25.0 (macOS only)
 - core-graphics-types 0.2.0 (macOS only)
-- coreaudio-rs 0.14.2 (macOS only)
 - cpufeatures 0.2.17
 - cpufeatures 0.3.1
 - crc32fast 1.5.3
@@ -182,7 +177,7 @@ The Rust crates built into the five programs, by license. The list covers the no
 - crypto-common 0.2.2
 - ctor 1.0.13
 - ctutils 0.4.7
-- dasp_sample 0.11.0
+- dasp_sample 0.11.0 (Windows only)
 - deranged 0.5.9
 - digest 0.10.7
 - digest 0.11.3
@@ -246,8 +241,6 @@ The Rust crates built into the five programs, by license. The list covers the no
 - regex-syntax 0.8.11
 - rustls-pki-types 1.15.1
 - scopeguard 1.2.0 (Windows only)
-- security-framework 3.7.0 (macOS only)
-- security-framework-sys 2.17.0 (macOS only)
 - semver 1.0.28
 - serde 1.0.229
 - serde-untagged 0.1.9
@@ -313,29 +306,10 @@ The Rust crates built into the five programs, by license. The list covers the no
 - miniz_oxide 0.8.9 (macOS only)
 - miniz_oxide 0.9.1
 - objc2-app-kit 0.3.2 (macOS only)
-- objc2-application-services 0.3.2 (macOS only)
-- objc2-audio-toolbox 0.3.2 (macOS only)
-- objc2-av-foundation 0.3.2 (macOS only)
-- objc2-core-audio 0.3.2 (macOS only)
-- objc2-core-audio-types 0.3.2 (macOS only)
 - objc2-core-foundation 0.3.2 (macOS only)
 - objc2-core-graphics 0.3.2 (macOS only)
-- objc2-core-image 0.3.2 (macOS only)
-- objc2-core-media 0.3.2 (macOS only)
-- objc2-core-ml 0.3.2 (macOS only)
-- objc2-core-text 0.3.2 (macOS only)
-- objc2-core-video 0.3.2 (macOS only)
 - objc2-exception-helper 0.1.1 (macOS only)
-- objc2-image-io 0.3.2 (macOS only)
-- objc2-io-kit 0.3.2 (macOS only)
-- objc2-metal 0.3.2 (macOS only)
 - objc2-quartz-core 0.3.2 (macOS only)
-- objc2-screen-capture-kit 0.3.2 (macOS only)
-- objc2-security 0.3.2 (macOS only)
-- objc2-service-management 0.3.2 (macOS only)
-- objc2-user-notifications 0.3.2 (macOS only)
-- objc2-video-toolbox 0.3.2 (macOS only)
-- objc2-vision 0.3.2 (macOS only)
 - objc2-web-kit 0.3.2 (macOS only)
 - raw-window-handle 0.6.2
 
