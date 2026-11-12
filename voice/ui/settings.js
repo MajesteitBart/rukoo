@@ -356,7 +356,7 @@ function speakersRow() {
   });
 }
 
-// A permission's state, calm: "Not asked yet" and "Unknown" are not errors (plan S1).
+// A permission's state, calm: "Not asked yet" and "Unknown" are not errors.
 function permissionStatus(value) {
   switch (value) {
     case 'granted':
