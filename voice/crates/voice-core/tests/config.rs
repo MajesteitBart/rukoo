@@ -84,7 +84,7 @@ fn defaults_follow_the_platform_and_a_development_copy() {
         default_hotkeys_on(false, false),
         ("right alt", "right ctrl")
     );
-    // A Mac starts on Right Option and Right Command (plan D5).
+    // A Mac starts on Right Option and Right Command: its keyboards have no Right Ctrl.
     assert_eq!(
         default_hotkeys_on(false, true),
         ("right alt", "right command")
