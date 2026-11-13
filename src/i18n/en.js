@@ -2801,15 +2801,47 @@
   },
   "composer.link.address": {
     "message": "Address",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Label of the address field in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.apply": {
+    "message": "Apply",
+    "description": "composer > link. Button in the link popover (Ctrl+K) that links the text. src/renderer/editor-links.js"
+  },
+  "composer.link.change": {
+    "message": "Change",
+    "description": "composer > link. Button in the bubble under a link in the text; opens the link popover for that link. src/renderer/editor-links.js"
+  },
+  "composer.link.edit": {
+    "message": "Edit link",
+    "description": "composer > link. Accessible name of the link popover when it changes an existing link. src/renderer/editor-links.js (insertLink)"
   },
   "composer.link.insert": {
     "message": "Insert",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Button in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.open": {
+    "message": "Go to link: {url}",
+    "description": "composer > link. Tooltip and accessible name of the address in the bubble under a link in the text; opens the link in the browser. url is the link's address. src/renderer/editor-links.js (showBubble)"
+  },
+  "composer.link.options": {
+    "message": "Link",
+    "description": "composer > link. Accessible name of the bubble under a link in the text, a toolbar with Go to link, Change and Remove. src/renderer/editor-links.js"
+  },
+  "composer.link.remove": {
+    "message": "Remove",
+    "description": "composer > link. Button in the bubble under a link in the text; removes the link and keeps its text. src/renderer/editor-links.js"
+  },
+  "composer.link.text": {
+    "message": "Text",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the text that shows as the link. src/renderer/editor-links.js"
   },
   "composer.link.title": {
     "message": "Insert link",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Accessible name of the link popover when it makes a new link. src/renderer/editor-links.js (insertLink)"
+  },
+  "composer.link.url": {
+    "message": "Link",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the address the link opens. src/renderer/editor-links.js"
   },
   "composer.mentions.addedCc": {
     "message": "{name} added to Cc",

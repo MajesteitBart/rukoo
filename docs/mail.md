@@ -59,6 +59,8 @@ Drafts save to the server's Drafts folder while you write. Opening another messa
 
 Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account, each with a preview. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
 
+A web address becomes a link when you paste it, or when you type it and go on with a space, Enter or Tab. An address starts with `https://`, `http://` or `www.`, and the full stop or bracket after it stays outside the link. `Ctrl+Z` right after takes the link off and keeps the text. Paste an address over selected words and it links those words. Text pasted with formatting keeps the links it came with and gets no others. `Ctrl+K` opens a small popover under the selection with the text to show and the address; with the caret in a link it changes that link. A link under the caret shows a bubble that opens it in your browser, changes it or removes it.
+
 The composer's calendar button inserts your [booking link](booking.md) or a list of your free times, and a line under your signature can carry the link.
 
 Type `@` and a name in the text to mention someone. The suggestions start with the people in the thread: the email's recipients, the people on the email you answer, and the rest of the conversation as far as Rukoo has synced it. People from the rest of your synced mail come after them. Arrow keys move through the list, and Enter or Tab picks. Picking someone puts "@Name" in the text, or the part of the address before the @ for someone without a name, and adds them to Cc if they aren't on the email yet. Someone already in To, Cc or Bcc only gets the mention. Deleting a mention leaves the recipients as they are. An email address you type, quoted mail and your signature never open the list. A comma or colon typed right after a mention replaces the space after it, so "@Bob:" comes out as written.
@@ -90,7 +92,7 @@ Rukoo's own keys in the main window:
 | `F5` | Sync |
 | `Esc` | Clear the selection or search |
 
-While writing: `Ctrl+Enter` sends, `Ctrl+S` saves the draft, `Ctrl+K` inserts a link and `Esc` closes.
+While writing: `Ctrl+Enter` sends, `Ctrl+S` saves the draft, `Ctrl+K` inserts or changes a link and `Esc` closes.
 
 Zoom runs from 80% to 200%. In every window, also with the focus inside an email, `Ctrl+Plus` (or `Ctrl+=`) zooms in, `Ctrl+Minus` zooms out and `Ctrl+0` goes back to 100%. Ctrl and the mouse wheel and the numpad keys work too. The main window and the compose windows share one level, and Rukoo remembers it. On a Mac, use Command instead of Ctrl; see [macOS](platforms.md#macos-experimental).
 
