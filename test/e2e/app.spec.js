@@ -368,8 +368,8 @@ test('the shared editor formats text and inserts links inline and in a compose w
     await editor.press('Control+a');
     await page.locator(`.float-bar [data-cmd="${command}"]`).click();
     await editor.press('Control+k');
-    await page.locator('.dialog input').fill(href);
-    await page.locator('.dialog .buttons .primary').click();
+    await page.locator('.link-pop [data-f="url"]').fill(href);
+    await page.locator('.link-pop [data-a="apply"]').click();
     await expect(editor.locator('a')).toHaveAttribute('href', href);
     expect(await editor.locator('*').evaluateAll((els, command) => els.some((el) => command === 'bold' ? Number(getComputedStyle(el).fontWeight) >= 600 : getComputedStyle(el).fontStyle === 'italic'), command)).toBe(true);
   };

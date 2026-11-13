@@ -531,8 +531,8 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await notes().press('Enter');
   await win.keyboard.type('Publish the checklist');
   await notes().press('Control+k');
-  await win.locator('.dialog input').fill('https://example.com/checklist');
-  await win.locator('.dialog .buttons .primary').click();
+  await win.locator('.link-pop [data-f="url"]').fill('https://example.com/checklist');
+  await win.locator('.link-pop [data-f="url"]').press('Enter');
   await notes().blur();
   await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
   const stored = await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
@@ -580,6 +580,58 @@ test('notes share composer formatting, save Markdown and survive a restart, with
   await expect(notes().locator('li')).toHaveCount(2);
   await expect(notes().locator('a')).toHaveAttribute('href', 'https://example.com/checklist');
   expect(await app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id)).toBe(stored);
+});
+
+test('notes link typed and pasted addresses as mail does, save them as Markdown links and keep them across a restart', async () => {
+  const id = voiceStarts({ title: 'Links in notes' });
+  await openMeetings();
+  const notes = () => view().locator('.mt-notes-input');
+  const links = () => notes().evaluate((el) => [...el.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]));
+  const stored = () => app.evaluate((_e, id) => global.__semVoice.get(id).notes.text, id);
+  await notes().click();
+  await win.keyboard.type('Agenda at www.example.com ');
+  await expect.poll(links).toEqual([['https://www.example.com', 'www.example.com']]);
+  // An address pasted over selected words links them.
+  await win.keyboard.type('and the plan');
+  await notes().evaluate((el) => {
+    const text = [...el.querySelectorAll('*'), el].flatMap((n) => [...n.childNodes]).find((n) => n.nodeType === Node.TEXT_NODE && n.data.includes('the plan'));
+    const range = document.createRange();
+    range.setStart(text, text.data.indexOf('the plan'));
+    range.setEnd(text, text.data.indexOf('the plan') + 8);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  await app.evaluate(({ clipboard, ClipboardItem }) => clipboard.write([new ClipboardItem({ 'text/plain': 'https://example.com/plan' })]));
+  await win.keyboard.press('ControlOrMeta+v');
+  await expect.poll(links).toEqual([
+    ['https://www.example.com', 'www.example.com'],
+    ['https://example.com/plan', 'the plan']
+  ]);
+  await win.keyboard.press('ControlOrMeta+z');
+  await expect.poll(links).toEqual([['https://www.example.com', 'www.example.com']]);
+  await notes().blur();
+  await expect(view().locator('.mt-notes-status')).toHaveText('Saved');
+  expect(await stored()).toBe('Agenda at [www.example.com](<https://www.example.com>) and the plan');
+
+  // The bubble under a link works here too: Remove keeps the text.
+  await notes().locator('a').click();
+  await expect(win.locator('.meeting .link-bubble')).toBeVisible();
+  await expect(win.locator('.meeting .link-bubble .link-go-url')).toHaveText('https://www.example.com');
+  await win.keyboard.press('ControlOrMeta+k');
+  await win.locator('.meeting .link-pop [data-f="text"]').fill('the agenda');
+  await win.locator('.meeting .link-pop [data-f="text"]').press('Enter');
+  await expect.poll(links).toEqual([['https://www.example.com', 'the agenda']]);
+  await notes().blur();
+  await expect.poll(stored).toBe('Agenda at [the agenda](<https://www.example.com>) and the plan');
+
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Links in notes');
+  await expect.poll(links).toEqual([['https://www.example.com', 'the agenda']]);
+  await notes().locator('a').click();
+  await win.locator('.meeting .link-bubble [data-a="remove"]').click();
+  await expect.poll(links).toEqual([]);
+  await expect(notes()).toHaveText('Agenda at the agenda and the plan');
 });
 
 test('notes Markdown round trips editor structures and sanitizes pasted controls and links', async () => {

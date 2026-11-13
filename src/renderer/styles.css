@@ -3762,6 +3762,127 @@ body.compose-window {
   box-shadow: var(--shadow);
   animation: pop 100ms ease;
 }
+/* Links in the text (editor-links.js), for mail and meeting notes: the bubble under a link at the caret and the
+   popover Ctrl+K opens. Both are popovers in the top layer, so no pane clips them; the script places them. */
+.link-bubble,
+.link-pop {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  max-width: calc(100vw - 16px);
+  overflow: visible;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transform-origin: top left;
+  animation: pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.link-bubble {
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+.link-bubble:popover-open {
+  display: flex;
+}
+.link-bubble button {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.link-bubble button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.link-bubble button:active {
+  background: var(--active);
+}
+/* The address gives way first in a narrow window; Change and Remove keep their words. */
+.link-bubble .link-go {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--link);
+}
+.link-bubble .link-go:hover {
+  color: var(--link);
+}
+.link-go svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.link-go-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.link-bubble .sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+.link-pop {
+  width: 360px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 14px;
+}
+.link-pop:popover-open {
+  display: grid;
+}
+.link-pop label {
+  display: contents;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.link-pop input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  outline: none;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text);
+  user-select: text;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.link-pop input::placeholder {
+  color: var(--text-3);
+}
+.link-pop input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.link-pop label:first-child input {
+  grid-column: 2 / 4;
+}
+.link-pop .btn {
+  border-radius: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .link-bubble,
+  .link-pop {
+    animation: none;
+  }
+}
 .color-input {
   position: absolute;
   opacity: 0;
