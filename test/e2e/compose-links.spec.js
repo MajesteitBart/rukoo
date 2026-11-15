@@ -540,9 +540,11 @@ for (const surface of SURFACES) {
     await expect(page.locator('#toast')).toHaveClass(/\bshow\b/);
     expect(await opened()).toEqual([]);
     expect(await editorFocused(page)).toBe(true);
-    // Spaces around an address are no reason to refuse it.
+    // Spaces around an address are no reason to refuse it, and the bubble shows the address without them.
     await editor(page).locator('a', { hasText: 'that' }).click();
     await expect(bubble(page)).toBeVisible();
+    await expect(bubble(page).locator('.link-go-url')).toHaveText('https://rukoo.io/docs');
+    await expect(bubble(page).locator('[data-a="go"]')).toHaveAttribute('aria-label', `${L.open}https://rukoo.io/docs`);
     await bubble(page).locator('[data-a="go"]').click();
     await expect.poll(opened).toEqual(['https://rukoo.io/docs']);
   });

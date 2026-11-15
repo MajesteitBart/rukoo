@@ -105,6 +105,17 @@ export function linkHref(input) {
   return email ? `mailto:${s}` : `https://${s}`;
 }
 
+// An address as a browser reads it: without the spaces and control characters around it, and without tabs and line
+// breaks inside it. A loop, because a pattern for the end would try again at every space of a long run inside.
+export function bareHref(href) {
+  const s = String(href || '').replace(/[\t\n\r]/g, '');
+  let start = 0;
+  let end = s.length;
+  while (start < end && s.charCodeAt(start) <= 0x20) start++;
+  while (end > start && s.charCodeAt(end - 1) <= 0x20) end--;
+  return s.slice(start, end);
+}
+
 // The part of an address that says where it goes: the scheme and the host, with the user name and port when it has
 // them, or the addresses of a mailto: link. Browsers read a backslash in a web address as a slash, so the host ends
 // there too.
@@ -132,9 +143,10 @@ function shortHost(host) {
 
 // A long address as the link bubble shows it, as [site, path]. The site always shows its whole host, so
 // accounts.google.com.attacker.example never reads as accounts.google.com; the path loses its middle and keeps its
-// end, the name of the page or the file.
+// end, the name of the page or the file. It shows the address a browser would open, so a space in front can't hide
+// the host from the scheme.
 export function shortUrlParts(url, max = 44) {
-  const s = String(url || '');
+  const s = bareHref(url);
   const m = SITE.exec(s);
   if (!m) return ['', middle(s, max, 0.62)];
   const scheme = m[1] ?? m[3] ?? m[5];

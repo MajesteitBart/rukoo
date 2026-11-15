@@ -146,6 +146,19 @@ test('a long address always shows its whole host, so a lookalike reads as the si
   // A mailto: link keeps its whole address; only what follows the ? gives way.
   const mail = shortenUrl('mailto:security-team@accounts.example.org?subject=Please%20check%20this%20long%20subject%20line');
   assert.ok(mail.startsWith('mailto:security-team@accounts.example.org?'), mail);
+  // The address a browser opens: spaces around it and tabs or line breaks in it don't hide the host.
+  const spaced = shortenUrl(' https://login.example.com.attacker.example/a/very/long/path/report-2026.pdf');
+  assert.ok(spaced.startsWith('https://login.example.com.attacker.example/'), spaced);
+  const tabbed = shortenUrl('ht\ttps://accounts.google.com.\nattacker.example/login/session/verify/report-2026.pdf');
+  assert.ok(tabbed.startsWith('https://accounts.google.com.attacker.example/'), tabbed);
+});
+
+test('an address is read as a browser reads it', async () => {
+  const { bareHref } = await load();
+  assert.equal(bareHref(' \t https://a.example/x \n'), 'https://a.example/x');
+  assert.equal(bareHref('\u0000https://a.\r\nexample/\u001f'), 'https://a.example/');
+  assert.equal(bareHref('https://a.example/a b'), 'https://a.example/a b');
+  assert.equal(bareHref(null), '');
 });
 
 // The timing guards: these used to take seconds to minutes and froze the editor while it pasted or typed.
@@ -172,6 +185,13 @@ test('the typed address is found in linear time after a long word', async () => 
   assert.equal(fast(() => typedUrl(`${long} `), 'a space after a long word'), null);
   const url = fast(() => typedUrl(`see https://a.example/${long}`), 'a long address');
   assert.deepEqual([url.start, url.end], [4, 4 + 'https://a.example/'.length + long.length]);
+});
+
+test('an address with a long run of spaces inside is read in linear time', async () => {
+  const { bareHref, shortenUrl } = await load();
+  const spaced = `https://a.example/${' '.repeat(100000)}x`;
+  assert.equal(fast(() => bareHref(spaced), 'bareHref'), spaced);
+  assert.ok(fast(() => shortenUrl(spaced), 'shortenUrl').startsWith('https://a.example/'));
 });
 
 test('the Link field checks for an email address in linear time', async () => {

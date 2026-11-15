@@ -6,13 +6,12 @@
 import { t } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast } from './ui.js';
-import { soleUrl, typedUrl, linkedHtml, linkHref, shortUrlParts } from './linkify.js';
+import { soleUrl, typedUrl, linkedHtml, linkHref, shortUrlParts, bareHref } from './linkify.js';
 
 // Text in here is never linked: it is a link already, or code.
 const NO_LINK = 'a, code, pre';
-// The addresses main opens (openUrl in main.js). A browser drops spaces and control characters around an address.
+// The addresses main opens (openUrl in main.js).
 const OPENS = /^(https?:|mailto:)/i;
-const bare = (href) => href.replace(/^[\u0000- ]+|[\u0000- ]+$/g, '');
 const GAP = 6;
 const EDGE = 8;
 
@@ -128,7 +127,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     if (bubble.matches(':popover-open')) bubble.hidePopover();
   };
   const showBubble = (link) => {
-    const href = link.getAttribute('href') || '';
+    const href = bareHref(link.getAttribute('href'));
     const go = bubble.querySelector('[data-a="go"]');
     const [site, path] = shortUrlParts(href);
     go.querySelector('.link-go-site bdi').textContent = site;
@@ -202,7 +201,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     if (!b || !link) return;
     if (!link.isConnected) return hideBubble();
     if (b.dataset.a === 'go') {
-      const href = bare(link.getAttribute('href') || '');
+      const href = bareHref(link.getAttribute('href'));
       // Main ignores any other address, such as a javascript: or file: link from pasted HTML; the click says so.
       if (OPENS.test(href)) api('openExternal', href).catch(() => {});
       else toast(t('composer.link.cantOpen'));
