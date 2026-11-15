@@ -715,7 +715,9 @@ const api = {
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
   threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
-  get: (id) => engine.getMessage(id),
+  // fast: the reader's, which shows a large message before its attachments are in; downloaded says when they are.
+  get: (id, opts) => engine.getMessage(id, { fast: Boolean(opts && opts.fast === true) }),
+  downloaded: (id, opts) => engine.downloaded(id, { now: Boolean(opts && opts.now === true) }),
   // A long thread's References can name many emails; the newest are at the end.
   related: (id, references) => engine.related(accountText(id, 2000), Array.isArray(references) ? references.slice(-200).map((r) => accountText(r, 1000)) : []),
   setFlags: (id, flags) => engine.setFlags(id, flags),

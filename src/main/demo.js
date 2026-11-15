@@ -42,6 +42,12 @@ ${blocks}
 </table></td></tr></table></body></html>`;
 }
 
+// The sizes of a stored message in bytes, decoded: its text, one attachment, and all of it, which stands in for the
+// size a server gives.
+const textBytes = (m) => Buffer.byteLength(m.text || '') + Buffer.byteLength(m.html || '') + Buffer.byteLength((m.icalEvent && m.icalEvent.content) || '');
+const attachmentBytes = (a) => (Buffer.isBuffer(a.content) ? a.content.length : Buffer.byteLength(String(a.content || ''), a.encoding === 'base64' ? 'base64' : 'utf8'));
+const messageBytes = (m) => textBytes(m) + (m.attachments || []).reduce((n, a) => n + attachmentBytes(a), 0);
+
 function seed(now = Date.now()) {
   const today = new Date(now);
   const at = (daysAgo, h, m) => {
@@ -411,14 +417,37 @@ class DemoAccount {
         answered: m.flags.includes('\\Answered'),
         // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
         hasAttachments: (m.attachments || []).some((a) => !a.cid),
-        size: (m.html || m.text || '').length,
+        size: messageBytes(m),
         signals: mailSignals(m.headers)
       }))
     };
   }
 
   async fetchSource(p, uid) {
+    return this.build(this.find(p, uid));
+  }
+
+  // A large message the way ImapAccount.fetchReadable gives it: attachments empty, with their size in an
+  // X-Rukoo-Omitted header, and the pictures the text shows by Content-ID while they fit. null when the text is half
+  // of the message or more, as with a server.
+  async fetchReadable(p, uid) {
     const m = this.find(p, uid);
+    let kept = textBytes(m);
+    let images = 0;
+    const attachments = (m.attachments || []).map((a) => {
+      const bytes = attachmentBytes(a);
+      if (a.cid && /^image\//i.test(a.contentType || '') && images + bytes <= util.INLINE_IMAGES) {
+        images += bytes;
+        kept += bytes;
+        return a;
+      }
+      return { ...a, content: '', headers: { ...(a.headers || {}), [util.OMITTED]: String(bytes) } };
+    });
+    if (kept * 2 >= messageBytes(m)) return null;
+    return this.build(m, attachments);
+  }
+
+  build(m, attachments = m.attachments || []) {
     const composer = new MailComposer({
       from: m.from,
       to: m.to,
@@ -433,7 +462,7 @@ class DemoAccount {
       html: m.html || undefined,
       headers: m.headers || undefined,
       icalEvent: m.icalEvent || undefined,
-      attachments: (m.attachments || []).map((a) => ({ ...a }))
+      attachments: attachments.map((a) => ({ ...a }))
     });
     // Like an IMAP server, return the stored message as it was saved, Bcc included.
     const node = composer.compile();
@@ -476,7 +505,9 @@ class DemoAccount {
   }
 
   async append(p, raw, flags = []) {
-    const parsed = await simpleParser(raw);
+    // The html as it came, pointing at its inline pictures by Content-ID, like a server keeps it: fetchSource puts the
+    // pictures back as parts of the message, and they come with its text or with the rest (fetchReadable).
+    const parsed = await simpleParser(raw, { keepCidLinks: true });
     const box = this.box(p);
     // An invitation's calendar part (text/calendar in the body, with its METHOD) is kept as one, the way Google and
     // Outlook send it; fetchSource builds it again with the copy as invite.ics, so that copy isn't kept twice.
