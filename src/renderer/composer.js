@@ -655,7 +655,14 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         t.value = '';
         renderRecipients(t.dataset.rinput);
       }
-      if (t.dataset && t.dataset.rinput) setTimeout(closeSuggest, 120);
+      // A moment later, so a click on a suggestion still picks it. Only the list that was open then: one that another
+      // recipient field opened in the meantime stays, or Enter there would add the typed address without its name.
+      if (t.dataset && t.dataset.rinput) {
+        const open = suggest;
+        setTimeout(() => {
+          if (suggest === open) closeSuggest();
+        }, 120);
+      }
     },
     true
   );

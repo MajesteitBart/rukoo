@@ -67,16 +67,33 @@ const press = (page, keyCode, modifiers = [MODIFIER]) =>
     [page, keyCode, modifiers]
   );
 
-// One notch of the mouse wheel with Ctrl held, at a point of the page. sendInputEvent adds a phase-end event
-// that counts as a second notch, so the tests check the direction rather than the number of steps.
+// One notch of the mouse wheel with Ctrl held, at a point of the page. sendInputEvent sends the wheel event and then
+// a synthetic one that ends its scroll phase, and Chromium zooms on both: one call is two steps, which arrive one at
+// a time. A read between them sees the first step while settings.json already holds the second (#156), so this waits
+// until the window has raised zoom-changed twice. Rukoo's own listener runs first, so by then the zoom is settled in
+// the window and in settings.json. The tests check the direction, which doesn't depend on the number of steps.
+const WHEEL_STEPS = 2;
 const wheel = async (page, locator, direction) => {
   const box = await locator.boundingBox();
   await app.evaluate(
-    ({ BrowserWindow }, [page, x, y, ticks]) => {
-      const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith(page));
-      w.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaY: ticks * 120, wheelTicksY: ticks, modifiers: ['control'], canScroll: true });
-    },
-    [page, Math.round(box.x + box.width / 2), Math.round(box.y + Math.min(box.height / 2, 40)), direction === 'in' ? 1 : -1]
+    ({ BrowserWindow }, [page, x, y, ticks, steps]) =>
+      new Promise((resolve, reject) => {
+        const contents = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith(page)).webContents;
+        let seen = 0;
+        const done = (err) => {
+          clearTimeout(timer);
+          contents.off('zoom-changed', step);
+          if (err) reject(err);
+          else resolve();
+        };
+        const step = () => {
+          if (++seen === steps) done();
+        };
+        const timer = setTimeout(() => done(new Error(`The wheel raised zoom-changed ${seen} times in 10 s, not ${steps}`)), 10000);
+        contents.on('zoom-changed', step);
+        contents.sendInputEvent({ type: 'mouseWheel', x, y, deltaY: ticks * 120, wheelTicksY: ticks, modifiers: ['control'], canScroll: true });
+      }),
+    [page, Math.round(box.x + box.width / 2), Math.round(box.y + Math.min(box.height / 2, 40)), direction === 'in' ? 1 : -1, WHEEL_STEPS]
   );
 };
 
@@ -156,20 +173,24 @@ test('Ctrl+mouse wheel zooms in steps over the list, the reading pane and the em
   await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Traffic fines');
   const steps = [80, 90, 100, 110, 125, 150, 175, 200];
 
+  // wheel() returns once all of a notch's steps are in, so each read is the settled zoom.
   await wheel('index.html', win.locator('.list-scroll'), 'in');
-  await expect.poll(mainZoom).toBeGreaterThan(100);
   const afterList = await mainZoom();
+  expect(afterList).toBeGreaterThan(100);
   expect(steps).toContain(afterList);
+  expect(savedZoom()).toBe(afterList);
 
   await wheel('index.html', win.locator('.mail-frame'), 'in');
-  await expect.poll(mainZoom).toBeGreaterThan(afterList);
   const afterFrame = await mainZoom();
+  expect(afterFrame).toBeGreaterThan(afterList);
   expect(steps).toContain(afterFrame);
   expect(savedZoom()).toBe(afterFrame);
 
   await wheel('index.html', win.locator('.reader-subject'), 'out');
-  await expect.poll(mainZoom).toBeLessThan(afterFrame);
-  expect(steps).toContain(await mainZoom());
+  const afterReader = await mainZoom();
+  expect(afterReader).toBeLessThan(afterFrame);
+  expect(steps).toContain(afterReader);
+  expect(savedZoom()).toBe(afterReader);
   // The wheel never leaves Chromium's own zoom, or a pinch zoom, on top of the step.
   expect(await win.evaluate(() => window.visualViewport.scale)).toBe(1);
 });
@@ -226,8 +247,10 @@ test('Settings shows the zoom, follows the keys while open and resets to 100%', 
   await expect(value).toHaveText('150%');
   if (MAC) await press('index.html', '-');
   else await wheel('index.html', win.locator('.settings h1'), 'out');
-  await expect(value).not.toHaveText('150%');
-  expect(await value.textContent()).toBe(`${await mainZoom()}%`);
+  await expect.poll(mainZoom).toBeLessThan(150);
+  // The row hears each step through the 'zoom' event, a moment after main has it, and one wheel notch can arrive as
+  // two steps. Compare the row with main's zoom in one read until they agree.
+  await expect.poll(async () => (await value.textContent()) === `${await mainZoom()}%`).toBe(true);
 
   await reset.click();
   await expect(value).toHaveText('100%');
