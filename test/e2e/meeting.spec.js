@@ -716,32 +716,42 @@ test('notes link addresses with backticks and backslashes keep them when the not
   const result = await win.evaluate(async () => {
     const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
     const editor = document.createElement('div');
-    const hrefs = ['https://a.example/`x`', 'https://a.example/a\\*b\\_c', 'https://a.example/`x', 'https://a.example/q?a=``1``&b=\\'];
-    const links = hrefs.map((href) => {
-      editor.innerHTML = '<div>See <a></a> and <code>npm start</code> after</div>';
+    // [address, code after it on the line]
+    const cases = [
+      ['https://a.example/`x`', 'npm start'],
+      ['https://a.example/a\\*b\\_c', 'npm start'],
+      ['https://a.example/q?a=``1``&b=2', 'npm start'],
+      ['https://a.example/`x', '']
+    ];
+    const links = cases.map(([href, code]) => {
+      editor.innerHTML = `<div>See <a></a> and ${code ? `<code>${code}</code>` : 'more'} after</div>`;
       const a = editor.querySelector('a');
       a.setAttribute('href', href);
       a.textContent = href;
       const markdown = notesToMarkdown(editor);
       editor.innerHTML = markdownToNotes(markdown);
-      return { href: editor.querySelector('a')?.getAttribute('href'), text: editor.textContent, code: editor.querySelector('code')?.textContent, again: notesToMarkdown(editor) === markdown };
+      return { href, read: editor.querySelector('a')?.getAttribute('href'), text: editor.textContent, want: `See ${href} and ${code || 'more'} after`, code: editor.querySelector('code')?.textContent || '', wantCode: code, again: notesToMarkdown(editor) === markdown };
     });
-    // Link syntax inside a code span stays code.
+    // Link syntax inside a code span stays code, also when it looks like an address that runs past the code.
     editor.innerHTML = markdownToNotes('`[x](<https://a.example/>)` and [y](<https://b.example/`z`>)');
     const code = [editor.querySelector('code')?.textContent, [...editor.querySelectorAll('a')].map((a) => a.getAttribute('href'))];
+    editor.innerHTML = '<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>';
+    const crossing = notesToMarkdown(editor);
+    editor.innerHTML = markdownToNotes(crossing);
+    const crossed = [editor.innerHTML, notesToMarkdown(editor) === crossing];
     // A NUL in the Markdown can't pose as one of the reader's own placeholders.
     editor.innerHTML = markdownToNotes('[t](<https://a.example/\u00000\u0000>)');
     const nul = [...editor.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]);
-    return { hrefs, links, code, nul };
+    return { links, code, crossed, nul };
   });
-  result.links.forEach((link, i) => {
-    const href = result.hrefs[i];
-    expect(link.href, href).toBe(href);
-    expect(link.text, href).toBe(`See ${href} and npm start after`);
-    expect(link.code, href).toBe('npm start');
-    expect(link.again, href).toBe(true);
-  });
+  for (const link of result.links) {
+    expect(link.read, link.href).toBe(link.href);
+    expect(link.text, link.href).toBe(link.want);
+    expect(link.code, link.href).toBe(link.wantCode);
+    expect(link.again, link.href).toBe(true);
+  }
   expect(result.code).toEqual(['[x](<https://a.example/>)', ['https://b.example/`z`']]);
+  expect(result.crossed).toEqual(['<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>', true]);
   expect(result.nul).toEqual([['https://a.example/0', 't']]);
 });
 

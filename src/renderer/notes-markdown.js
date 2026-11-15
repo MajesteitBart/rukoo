@@ -9,27 +9,26 @@ const sanitizeNotes = (html) => sanitizeAgentHtml(html, { maxInput: Infinity });
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const safeHref = (s) => /^(https?:|mailto:)/i.test(s);
 
-function inline(text, slots = []) {
-  const keep = (html) => `\u0000${slots.push(html) - 1}\u0000`;
-  // An address in angle brackets is read as written, before code spans and escapes could take a backtick or a
-  // backslash in it. Its slot holds it as text, for where no link takes it, such as inside a code span.
-  const hrefs = new Map();
-  let s = text.replace(/\]\(<([^>\n]+)>\)/g, (_, href) => {
-    const slot = keep(esc(href));
-    hrefs.set(slot, href);
-    return `](<${slot}>)`;
-  });
-  s = s.replace(/\\([\\`*_{}\[\]()#+.!<>~-])|(`+)([^\n]*?)\2(?!`)/g, (_, escaped, ticks, c) => {
-    if (escaped) return keep(esc(escaped));
+// slots: the HTML of each placeholder, sources: the Markdown it was read from.
+function inline(text, slots = [], sources = []) {
+  const keep = (html, source) => {
+    sources.push(source);
+    return `\u0000${slots.push(html) - 1}\u0000`;
+  };
+  let s = text.replace(/\\([\\`*_{}\[\]()#+.!<>~-])|(`+)([^\n]*?)\2(?!`)/g, (source, escaped, ticks, c) => {
+    if (escaped) return keep(esc(escaped), source);
     if (c.startsWith(' ') && c.endsWith(' ') && c.trim()) c = c.slice(1, -1);
-    return keep(`<code>${esc(c)}</code>`);
+    return keep(`<code>${esc(c)}</code>`, source);
   });
-  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (_, label, slot) => {
-    const href = hrefs.get(slot) ?? slot;
-    return safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots));
+  // The editor writes an address in angle brackets as it is (notesToMarkdown), so a backtick or a backslash in it is
+  // no code span or escape: it gets back the Markdown those took.
+  const written = (href) => href.replace(/\u0000(\d+)\u0000/g, (_, n) => sources[Number(n)]);
+  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (source, label, href) => {
+    href = written(href);
+    return safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots, sources)}</a>`, source) : keep(inline(label, slots, sources), source);
   });
-  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots)));
-  s = s.replace(/<u>(.*?)<\/u>/g, (_, c) => keep(`<u>${inline(c, slots)}</u>`));
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (source, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots, sources)}</a>`, source) : keep(inline(label, slots, sources), source));
+  s = s.replace(/<u>(.*?)<\/u>/g, (source, c) => keep(`<u>${inline(c, slots, sources)}</u>`, source));
   s = esc(s).replace(/\*\*(\S[\s\S]*?)\*\*/g, '<b>$1</b>').replace(/\*(\S[^*]*?)\*/g, '<i>$1</i>').replace(/~~(\S.*?)~~/g, '<s>$1</s>');
   // Recursive labels share the table that owns their escaped text and code placeholders.
   for (let i = 0; i <= slots.length && s.includes('\u0000'); i++) s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)]);
