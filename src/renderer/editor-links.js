@@ -240,8 +240,8 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
 
   // ----- the popover -----
 
-  // state: { range, link, text } while the popover is open: the selection it opened on, the link it changes and
-  // the text it started with.
+  // state: { range, link, text, shows } while the popover is open: the selection it opened on, the link it changes,
+  // the text its Text field started with and whether the link or the selection shows anything, text or an image.
   let state = null;
   const updateApply = () => {
     applyBtn.disabled = !urlInput.value.trim();
@@ -262,8 +262,10 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     const target = link || linkAt(range);
     hideBubble();
     const text = target ? target.textContent : range ? range.toString() : '';
-    state = { range, link: target, text };
     textInput.value = text;
+    const content = target || (range && !range.collapsed ? range.cloneContents() : null);
+    // The field drops line breaks, so the text to compare with later is the one it shows.
+    state = { range, link: target, text: textInput.value, shows: Boolean(content && (content.textContent.trim() || content.querySelector('img'))) };
     urlInput.value = target ? target.getAttribute('href') || '' : soleUrl(text) ? text.trim() : '';
     pop.setAttribute('aria-label', t(target ? 'composer.link.edit' : 'composer.link.title'));
     updateApply();
@@ -278,14 +280,15 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     if (!state || !url) return;
     const href = linkHref(url);
     const typed = textInput.value;
-    const { range, text } = state;
+    const { range, text, shows } = state;
     const link = state.link && state.link.isConnected ? state.link : null;
     closePop({ restore: false });
     // The text was drawn again while the popover was open (meeting notes that arrived): nothing to link any more.
     if (range && !editor.contains(range.commonAncestorContainer)) return editor.focus();
     restoreRange(range);
-    // An unchanged text keeps its formatting and only gets the address. With an empty Text field the address is the text.
-    const keep = typed === text && typed.trim() && (link || (range && !range.collapsed));
+    // An untouched Text field keeps what the link or the selection holds, its formatting and images too, and only
+    // changes the address. With nothing to show, such as an empty Text field at a caret, the address is the text.
+    const keep = typed === text && shows;
     if (link) {
       if (keep) selectContents(link);
       else {

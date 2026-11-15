@@ -155,6 +155,28 @@ const empty = async (page) => {
   });
   await page.click('.editor');
 };
+// Puts html in the editor as pasted or signature HTML would bring it, with the focus in the editor.
+const fill = (page, html) =>
+  editor(page).evaluate((e, html) => {
+    e.innerHTML = html;
+    e.focus();
+  }, html);
+// Selects a node in the editor: its contents, or with whole the node itself.
+const selectNode = (page, selector, whole = false) =>
+  editor(page).evaluate(
+    (root, [selector, whole]) => {
+      const range = document.createRange();
+      if (whole) range.selectNode(root.querySelector(selector));
+      else range.selectNodeContents(root.querySelector(selector));
+      root.focus();
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      return new Promise((done) => setTimeout(done, 30));
+    },
+    [selector, whole]
+  );
+// A 12 by 12 pixel image, as a signature's logo.
+const LOGO = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAE0lEQVR4nGPQyLtDEDGMKhqMigAiyNAhtCcBpAAAAABJRU5ErkJggg==';
 
 for (const surface of SURFACES) {
   const L = LABELS[surface.language];
@@ -467,6 +489,45 @@ for (const surface of SURFACES) {
     await expect(bubble(page)).toBeVisible();
     await page.mouse.wheel(0, 120);
     await expect(bubble(page)).toBeHidden();
+  });
+
+  test(`another address keeps a linked image and the link's formatting, ${surface.name}`, async () => {
+    const page = await surface.open();
+    // A signature's logo in a link, selected: Ctrl+K changes that link, and only its address changes.
+    await fill(page, `<div>Logo: <a href="https://old.example/"><img src="${LOGO}" width="12" height="12" alt="Logo"></a> end</div>`);
+    await selectNode(page, 'a img', true);
+    await page.keyboard.press('ControlOrMeta+k');
+    await expect(pop(page)).toHaveAttribute('aria-label', L.edit);
+    await expect(field(page, 'text')).toHaveValue('');
+    await expect(field(page, 'url')).toHaveValue('https://old.example/');
+    await field(page, 'url').fill('https://new.example/');
+    await page.keyboard.press('Enter');
+    await expect(pop(page)).toBeHidden();
+    await expect.poll(() => links(page)).toEqual([['https://new.example/', '']]);
+    await expect(editor(page).locator('a img')).toHaveCount(1);
+    expect(await editor(page).textContent()).not.toContain('new.example');
+
+    // An image that is no link yet, selected: it becomes the link.
+    await fill(page, `<div>Photo: <img src="${LOGO}" width="12" height="12" alt="Photo"> end</div>`);
+    await selectNode(page, 'img', true);
+    await page.keyboard.press('ControlOrMeta+k');
+    await expect(pop(page)).toHaveAttribute('aria-label', L.insert);
+    await field(page, 'url').fill('www.example.com');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => links(page)).toEqual([['https://www.example.com', '']]);
+    await expect(editor(page).locator('a img')).toHaveCount(1);
+
+    // A link from pasted HTML with line breaks in its source: the untouched Text field keeps its bold and color.
+    await fill(page, '<div><a href="https://old.example/">\n  <b>Company</b> <span style="color: rgb(200, 0, 0)">Name</span>\n</a> now</div>');
+    await select(page, 'Company', 3);
+    await page.keyboard.press('ControlOrMeta+k');
+    await expect(pop(page)).toHaveAttribute('aria-label', L.edit);
+    await field(page, 'url').fill('https://new.example/');
+    await page.keyboard.press('Enter');
+    await expect.poll(async () => [...new Set((await links(page)).map(([href]) => href))]).toEqual(['https://new.example/']);
+    expect((await links(page)).map(([, text]) => text).join('').replace(/\s+/g, ' ').trim()).toBe('Company Name');
+    await expect(editor(page).locator('a b')).toHaveText('Company');
+    expect(await editor(page).locator('a span').evaluate((el) => getComputedStyle(el).color)).toBe('rgb(200, 0, 0)');
   });
 }
 
