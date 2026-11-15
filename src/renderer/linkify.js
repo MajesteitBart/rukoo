@@ -8,19 +8,22 @@ const CANDIDATE = /(?<![\p{L}\p{N}@._/+=-])(?:https?:\/\/|www\.)[^\s<>"“”«�
 const TRAILING = '.,;:!?\'"’‘”';
 const CLOSERS = { ')': '(', ']': '[' };
 
-const count = (s, ch) => s.split(ch).length - 1;
-
 // The address without the punctuation after it: "(see www.example.com)." keeps www.example.com, while a closing
-// bracket that has its opening one in the address stays.
+// bracket that has its opening one in the address stays. The brackets are counted once, so a long run of them after
+// an address takes no longer than any other text.
 function trimUrl(text) {
-  let s = text;
-  for (;;) {
-    const last = s.slice(-1);
-    if (!last) return s;
-    if (TRAILING.includes(last)) s = s.slice(0, -1);
-    else if (CLOSERS[last] && count(s, last) > count(s, CLOSERS[last])) s = s.slice(0, -1);
-    else return s;
+  const n = { '(': 0, ')': 0, '[': 0, ']': 0 };
+  for (let i = 0; i < text.length; i++) if (text[i] in n) n[text[i]]++;
+  let end = text.length;
+  while (end > 0) {
+    const last = text[end - 1];
+    if (TRAILING.includes(last)) end--;
+    else if (CLOSERS[last] && n[last] > n[CLOSERS[last]]) {
+      n[last]--;
+      end--;
+    } else break;
   }
+  return text.slice(0, end);
 }
 
 const hasHost = (text) => (/^www\./i.test(text) ? /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text) : /^https?:\/\/[\p{L}\p{N}\[]/iu.test(text));

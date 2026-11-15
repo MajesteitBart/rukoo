@@ -125,3 +125,20 @@ test('a long address loses its middle', async () => {
   assert.ok(short.endsWith('report-2026.pdf'));
   assert.ok(short.includes('…'));
 });
+
+// The timing guards: these used to take seconds to minutes and froze the editor while it pasted or typed.
+const fast = (fn, label) => {
+  const start = process.hrtime.bigint();
+  const result = fn();
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(ms < 500, `${label} took ${Math.round(ms)} ms`);
+  return result;
+};
+
+test('a long run of closing brackets after an address is trimmed in linear time', async () => {
+  const { findUrls, linkedHtml } = await load();
+  const brackets = `https://a.example/${')'.repeat(100000)}`;
+  assert.deepEqual(fast(() => findUrls(brackets), 'findUrls').map((u) => u.text), ['https://a.example/']);
+  assert.ok(fast(() => linkedHtml(`see ${brackets}`), 'linkedHtml').startsWith('see <a href="https://a.example/">'));
+  assert.deepEqual(fast(() => findUrls(`(https://a.example/(x)${')]'.repeat(50000)}`), 'mixed brackets').map((u) => u.text), ['https://a.example/(x)']);
+});
