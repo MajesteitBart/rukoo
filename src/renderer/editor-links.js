@@ -6,7 +6,7 @@
 import { t } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc } from './ui.js';
-import { soleUrl, typedUrl, linkedHtml, linkHref, shortenUrl } from './linkify.js';
+import { soleUrl, typedUrl, linkedHtml, linkHref, shortUrlParts } from './linkify.js';
 
 // Text in here is never linked: it is a link already, or code.
 const NO_LINK = 'a, code, pre';
@@ -39,7 +39,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
   bubble.setAttribute('data-i18n-aria-label', 'composer.link.options');
   bubble.setAttribute('aria-label', t('composer.link.options'));
   bubble.innerHTML = `
-    <button class="link-go" type="button" data-a="go">${icons.popOut}<span class="link-go-url"></span></button>
+    <button class="link-go" type="button" data-a="go">${icons.popOut}<span class="link-go-url"><span class="link-go-site"><bdi></bdi></span><span class="link-go-path"></span></span></button>
     <span class="sep"></span>
     <button type="button" data-a="change" data-i18n="composer.link.change">${esc(t('composer.link.change'))}</button>
     <button type="button" data-a="remove" data-i18n="composer.link.remove">${esc(t('composer.link.remove'))}</button>`;
@@ -127,7 +127,9 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
   const showBubble = (link) => {
     const href = link.getAttribute('href') || '';
     const go = bubble.querySelector('[data-a="go"]');
-    go.querySelector('.link-go-url').textContent = shortenUrl(href);
+    const [site, path] = shortUrlParts(href);
+    go.querySelector('.link-go-site bdi').textContent = site;
+    go.querySelector('.link-go-path').textContent = path;
     go.title = t('composer.link.open', { url: href });
     go.setAttribute('aria-label', go.title);
     shown = link;

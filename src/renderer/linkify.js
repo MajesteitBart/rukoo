@@ -105,10 +105,44 @@ export function linkHref(input) {
   return email ? `mailto:${s}` : `https://${s}`;
 }
 
-// A long address with its middle left out, so both the site and the end of the path stay readable.
-export function shortenUrl(url, max = 44) {
-  const s = String(url || '');
-  if (s.length <= max) return s;
-  const head = Math.ceil((max - 1) * 0.62);
-  return `${s.slice(0, head)}…${s.slice(s.length - (max - 1 - head))}`;
+// The part of an address that says where it goes: the scheme and the host, with the user name and port when it has
+// them, or the addresses of a mailto: link. Browsers read a backslash in a web address as a slash, so the host ends
+// there too.
+const SITE = /^(?:(https?:[/\\]*)([^/\\?#]*)|([a-z][a-z\d+.-]*:\/\/)([^/?#]*)|(mailto:)([^?#]*))/i;
+// A longer host loses labels at its start. However long the site, the path keeps this many characters.
+const HOST_MAX = 64;
+const PATH_MIN = 16;
+
+// text in max characters with its middle left out. head: the share of them that goes to the start.
+function middle(text, max, head) {
+  if (text.length <= max) return text;
+  if (max < 2) return '…';
+  const h = Math.floor((max - 1) * head);
+  return `${text.slice(0, h)}…${text.slice(text.length - (max - 1 - h))}`;
 }
+
+// A host too long to show leaves out labels at its start, never the end that names the site.
+function shortHost(host) {
+  if (host.length <= HOST_MAX) return host;
+  const labels = host.split('.');
+  let kept = labels.splice(-2).join('.');
+  while (labels.length && kept.length + labels.at(-1).length + 2 <= HOST_MAX) kept = `${labels.pop()}.${kept}`;
+  return `…${kept}`;
+}
+
+// A long address as the link bubble shows it, as [site, path]. The site always shows its whole host, so
+// accounts.google.com.attacker.example never reads as accounts.google.com; the path loses its middle and keeps its
+// end, the name of the page or the file.
+export function shortUrlParts(url, max = 44) {
+  const s = String(url || '');
+  const m = SITE.exec(s);
+  if (!m) return ['', middle(s, max, 0.62)];
+  const scheme = m[1] ?? m[3] ?? m[5];
+  const host = m[2] ?? m[4] ?? m[6];
+  const rest = s.slice(m[0].length);
+  if (s.length <= max) return [scheme + host, rest];
+  const site = scheme + shortHost(host);
+  return [site, middle(rest, Math.max(max - site.length, PATH_MIN), 0.25)];
+}
+
+export const shortenUrl = (url, max) => shortUrlParts(url, max).join('');

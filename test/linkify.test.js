@@ -126,6 +126,28 @@ test('a long address loses its middle', async () => {
   assert.ok(short.includes('…'));
 });
 
+test('a long address always shows its whole host, so a lookalike reads as the site it goes to', async () => {
+  const { shortenUrl } = await load();
+  const lookalike = shortenUrl('https://accounts.google.com.attacker.example/login/session/verify/report-2026.pdf');
+  assert.ok(lookalike.startsWith('https://accounts.google.com.attacker.example/'), lookalike);
+  assert.ok(lookalike.endsWith('.pdf'), lookalike);
+  assert.ok(lookalike.includes('…'), lookalike);
+  assert.ok(shortenUrl('https://www.paypal.com.secure-login.evil.example/webapps/auth/login').startsWith('https://www.paypal.com.secure-login.evil.example/'));
+  // The part before an @ is a user name; the host after it shows too.
+  assert.ok(shortenUrl('https://accounts.google.com@evil.example/signin/v2/identifier/flow/next').startsWith('https://accounts.google.com@evil.example/'));
+  // Browsers read a backslash in a web address as a slash, so the host ends there.
+  const slash = shortenUrl('https://evil.example\\@accounts.google.com/signin/v2/identifier/flow/next/step');
+  assert.ok(slash.startsWith('https://evil.example\\'), slash);
+  assert.ok(!slash.slice('https://evil.example'.length).includes('accounts.google.com'), slash);
+  // A host too long to show loses labels at its start and keeps the end that names the site.
+  const deep = shortenUrl(`https://${'login.'.repeat(20)}accounts.google.com.attacker.example/x`);
+  assert.ok(deep.endsWith('.google.com.attacker.example/x'), deep);
+  assert.ok(deep.startsWith('https://…'), deep);
+  // A mailto: link keeps its whole address; only what follows the ? gives way.
+  const mail = shortenUrl('mailto:security-team@accounts.example.org?subject=Please%20check%20this%20long%20subject%20line');
+  assert.ok(mail.startsWith('mailto:security-team@accounts.example.org?'), mail);
+});
+
 // The timing guards: these used to take seconds to minutes and froze the editor while it pasted or typed.
 const fast = (fn, label) => {
   const start = process.hrtime.bigint();

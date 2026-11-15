@@ -3961,9 +3961,27 @@ body.compose-window {
   width: 14px;
   height: 14px;
 }
+/* In a narrow window the path gives way before the site, and the site loses its start: the end of the host, which
+   names where the link goes, stays in view. */
 .link-go-url {
+  display: flex;
+  min-width: 0;
+}
+.link-go-site,
+.link-go-path {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.link-go-site {
+  flex: 0 1 auto;
+  direction: rtl;
+}
+.link-go-site bdi {
+  direction: ltr;
+}
+.link-go-path {
+  flex: 0 1000 auto;
 }
 .link-bubble .sep {
   flex: none;
