@@ -281,19 +281,35 @@ test("Don't quit brings the main window back from the tray with the Undo notice"
 // same, until the window can show its notice.
 test("Don't quit after the last window closed keeps the email until the new main window offers Undo", async () => {
   const subject = 'Waits for the new window';
+  // 5 seconds, less than the new window's 7-second load: clocks that ran on during the load would send the email
+  // before the window could offer Undo.
+  await app.evaluate(() => (global.__semEngine.settings.undoSend = 5));
   await newMessage(win, { to: 'demo@example.com', subject, text: 'Still undoable.' });
   await composer().locator('[data-c="send"]').click();
   await composerGone();
   await expect(notice()).toContainText('Sending email…');
   await app.evaluate(({ app }) => {
     global.__semQuitAnswer = 1;
-    app.once('browser-window-created', (_event, w) => {
+    // Only the new main window's page loads late; any other window made meanwhile loads as usual.
+    const delay = (_event, w) => {
       const load = w.loadFile.bind(w);
-      w.loadFile = (...args) => new Promise((resolve, reject) => setTimeout(() => load(...args).then(resolve, reject), 7000));
-    });
+      w.loadFile = (file, ...rest) => {
+        if (!String(file).endsWith('index.html')) return load(file, ...rest);
+        app.removeListener('browser-window-created', delay);
+        return new Promise((resolve, reject) => setTimeout(() => load(file, ...rest).then(resolve, reject), 7000));
+      };
+    };
+    app.on('browser-window-created', delay);
   });
-  const [fresh] = await Promise.all([app.waitForEvent('window'), closeMain()]);
-  win = fresh;
+  // Playwright reports the new window once its page has loaded, so the check during the load comes first.
+  const fresh = app.waitForEvent('window', { timeout: 20000 });
+  await closeMain();
+  // Past the 5 seconds, with the page still loading: the email waits, its clock stopped.
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  const held = () =>
+    app.evaluate(() => [...global.__semOutbox.entries.values()].map((e) => ({ state: e.state, paused: e.left !== undefined })));
+  expect(await held()).toEqual([{ state: 'waiting', paused: true }]);
+  win = await fresh;
   await expect(notice()).toContainText('Sending email…', { timeout: 20000 });
   expect(await waiting()).toBe(1);
   expect(await subjects('sent')).not.toContain(subject);
