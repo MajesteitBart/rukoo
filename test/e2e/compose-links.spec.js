@@ -470,6 +470,30 @@ for (const surface of SURFACES) {
   });
 }
 
+async function composeInPane() {
+  await launch('en');
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+}
+
+test('pasted text keeps the spaces at its ends', async () => {
+  await composeInPane();
+  await write(win, 'word');
+  await paste(win, { text: ' see https://a.example ' });
+  await expect.poll(() => links(win)).toEqual([['https://a.example', 'https://a.example']]);
+  await win.keyboard.type('next');
+  expect(await lines(win)).toEqual(['word see https://a.example next']);
+  // Several lines: each keeps the space at its end.
+  await empty(win);
+  await paste(win, { text: 'a https://x.example \nb www.y.example ' });
+  await expect.poll(() => links(win)).toEqual([
+    ['https://x.example', 'https://x.example'],
+    ['https://www.y.example', 'www.y.example']
+  ]);
+  await win.keyboard.type('next');
+  expect(await lines(win)).toEqual(['a https://x.example', 'b www.y.example next']);
+});
+
 test('a draft keeps its links and their text when it is saved, closed and opened again', async () => {
   await launch('en');
   await win.click('[data-action="compose"]');

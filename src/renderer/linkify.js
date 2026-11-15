@@ -79,7 +79,8 @@ function lineHtml(line) {
     html += `${lineText(line.slice(at, url.start))}<a href="${esc(url.href)}">${esc(url.text)}</a>`;
     at = url.end;
   }
-  return html + lineText(line.slice(at));
+  // A space at either end would not show, and the text around the paste would run into it.
+  return (html + lineText(line.slice(at))).replace(/^ | $/g, '&nbsp;');
 }
 
 // Pasted plain text with its addresses as links, or null when it has none: one line as it is, several lines as the
@@ -89,8 +90,7 @@ export function linkedHtml(text, block = 'div') {
   if (!findUrls(s).length) return null;
   const lines = s.split('\n');
   if (lines.length === 1) return lineHtml(s);
-  // A space that starts a block would not show.
-  return lines.map((line) => `<${block}>${line ? lineHtml(line).replace(/^ /, '&nbsp;') : '<br>'}</${block}>`).join('');
+  return lines.map((line) => `<${block}>${line ? lineHtml(line) : '<br>'}</${block}>`).join('');
 }
 
 // What the Link field of the link popover means: an address with its scheme stays, an email address becomes a

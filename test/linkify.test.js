@@ -161,3 +161,14 @@ test('the Link field checks for an email address in linear time', async () => {
   assert.equal(linkHref('a@.b'), 'https://a@.b');
   assert.equal(linkHref('a@b@c.d'), 'https://a@b@c.d');
 });
+
+test('pasted text keeps a space at either end of its lines', async () => {
+  const { linkedHtml } = await load();
+  assert.equal(linkedHtml(' see https://a.example '), '&nbsp;see <a href="https://a.example">https://a.example</a>&nbsp;');
+  assert.equal(linkedHtml('see https://a.example  '), 'see <a href="https://a.example">https://a.example</a>&nbsp;&nbsp;');
+  assert.equal(linkedHtml('https://a.example then '), '<a href="https://a.example">https://a.example</a> then&nbsp;');
+  assert.equal(
+    linkedHtml('a https://x.example \nb www.y.example '),
+    '<div>a <a href="https://x.example">https://x.example</a>&nbsp;</div><div>b <a href="https://www.y.example">www.y.example</a>&nbsp;</div>'
+  );
+});
