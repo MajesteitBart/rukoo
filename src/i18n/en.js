@@ -2811,6 +2811,10 @@
     "message": "Apply",
     "description": "composer > link. Button in the link popover (Ctrl+K) that links the text. src/renderer/editor-links.js"
   },
+  "composer.link.cantOpen": {
+    "message": "Rukoo only opens web and email links.",
+    "description": "composer > link. Toast after Go to link in the bubble under a link whose address Rukoo doesn't open, one that isn't http:, https: or mailto:, such as a javascript: or file: link from pasted HTML. src/renderer/editor-links.js"
+  },
   "composer.link.change": {
     "message": "Change",
     "description": "composer > link. Button in the bubble under a link in the text; opens the link popover for that link. src/renderer/editor-links.js"

@@ -708,6 +708,7 @@
   "composer.format.underline": "Onderstrepen (Ctrl+U)",
   "composer.link.address": "Adres",
   "composer.link.apply": "Toepassen",
+  "composer.link.cantOpen": "Rukoo opent alleen web- en e-maillinks.",
   "composer.link.change": "Wijzigen",
   "composer.link.edit": "Link bewerken",
   "composer.link.insert": "Invoegen",

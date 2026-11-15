@@ -13,8 +13,8 @@ let win;
 let dataDir;
 
 const LABELS = {
-  en: { text: 'Text', link: 'Link', apply: 'Apply', change: 'Change', remove: 'Remove', open: 'Go to link: ', insert: 'Insert link', edit: 'Edit link' },
-  nl: { text: 'Tekst', link: 'Link', apply: 'Toepassen', change: 'Wijzigen', remove: 'Verwijderen', open: 'Link openen: ', insert: 'Link invoegen', edit: 'Link bewerken' }
+  en: { text: 'Text', link: 'Link', apply: 'Apply', change: 'Change', remove: 'Remove', open: 'Go to link: ', insert: 'Insert link', edit: 'Edit link', cantOpen: 'Rukoo only opens web and email links.' },
+  nl: { text: 'Tekst', link: 'Link', apply: 'Toepassen', change: 'Wijzigen', remove: 'Verwijderen', open: 'Link openen: ', insert: 'Link invoegen', edit: 'Link bewerken', cantOpen: 'Rukoo opent alleen web- en e-maillinks.' }
 };
 
 async function launch(language) {
@@ -528,6 +528,23 @@ for (const surface of SURFACES) {
     expect((await links(page)).map(([, text]) => text).join('').replace(/\s+/g, ' ').trim()).toBe('Company Name');
     await expect(editor(page).locator('a b')).toHaveText('Company');
     expect(await editor(page).locator('a span').evaluate((el) => getComputedStyle(el).color)).toBe('rgb(200, 0, 0)');
+  });
+
+  test(`Go to link says so when Rukoo doesn't open the address, ${surface.name}`, async () => {
+    const page = await surface.open();
+    await fill(page, '<div>Run <a href="javascript:alert(1)">this</a> or open <a href=" https://rukoo.io/docs ">that</a> now</div>');
+    await editor(page).locator('a', { hasText: 'this' }).click();
+    await expect(bubble(page)).toBeVisible();
+    await bubble(page).locator('[data-a="go"]').click();
+    await expect(page.locator('#toast')).toHaveText(L.cantOpen);
+    await expect(page.locator('#toast')).toHaveClass(/\bshow\b/);
+    expect(await opened()).toEqual([]);
+    expect(await editorFocused(page)).toBe(true);
+    // Spaces around an address are no reason to refuse it.
+    await editor(page).locator('a', { hasText: 'that' }).click();
+    await expect(bubble(page)).toBeVisible();
+    await bubble(page).locator('[data-a="go"]').click();
+    await expect.poll(opened).toEqual(['https://rukoo.io/docs']);
   });
 }
 

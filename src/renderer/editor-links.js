@@ -5,11 +5,14 @@
 // Every change goes through the editing commands, so Ctrl+Z takes it back in one step.
 import { t } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc } from './ui.js';
+import { api, esc, toast } from './ui.js';
 import { soleUrl, typedUrl, linkedHtml, linkHref, shortUrlParts } from './linkify.js';
 
 // Text in here is never linked: it is a link already, or code.
 const NO_LINK = 'a, code, pre';
+// The addresses main opens (openUrl in main.js). A browser drops spaces and control characters around an address.
+const OPENS = /^(https?:|mailto:)/i;
+const bare = (href) => href.replace(/^[\u0000- ]+|[\u0000- ]+$/g, '');
 const GAP = 6;
 const EDGE = 8;
 
@@ -199,7 +202,10 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     if (!b || !link) return;
     if (!link.isConnected) return hideBubble();
     if (b.dataset.a === 'go') {
-      api('openExternal', link.getAttribute('href')).catch(() => {});
+      const href = bare(link.getAttribute('href') || '');
+      // Main ignores any other address, such as a javascript: or file: link from pasted HTML; the click says so.
+      if (OPENS.test(href)) api('openExternal', href).catch(() => {});
+      else toast(t('composer.link.cantOpen'));
       editor.focus();
     } else if (b.dataset.a === 'change') {
       editor.focus();
