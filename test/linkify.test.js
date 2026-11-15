@@ -151,3 +151,13 @@ test('the typed address is found in linear time after a long word', async () => 
   const url = fast(() => typedUrl(`see https://a.example/${long}`), 'a long address');
   assert.deepEqual([url.start, url.end], [4, 4 + 'https://a.example/'.length + long.length]);
 });
+
+test('the Link field checks for an email address in linear time', async () => {
+  const { linkHref } = await load();
+  const input = `a@${'a.'.repeat(50000)}/`;
+  assert.equal(fast(() => linkHref(input), 'linkHref'), `https://${input}`);
+  assert.equal(linkHref('a@b..c'), 'mailto:a@b..c');
+  assert.equal(linkHref('a@b.'), 'https://a@b.');
+  assert.equal(linkHref('a@.b'), 'https://a@.b');
+  assert.equal(linkHref('a@b@c.d'), 'https://a@b@c.d');
+});

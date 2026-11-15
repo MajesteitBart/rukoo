@@ -99,7 +99,10 @@ export function linkHref(input) {
   const s = String(input || '').trim();
   if (!s) return '';
   if (/^(https?:|mailto:)/i.test(s)) return s;
-  return /^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(s) ? `mailto:${s}` : `https://${s}`;
+  // An email address: one @, no space or slash, and a dot with something on both sides after the @. Two simple
+  // tests, because one pattern for it backtracks over every dot and stalls on a long input.
+  const email = /^[^\s@/]+@[^\s@/]+$/.test(s) && /.\../.test(s.slice(s.indexOf('@') + 1));
+  return email ? `mailto:${s}` : `https://${s}`;
 }
 
 // A long address with its middle left out, so both the site and the end of the path stay readable.
