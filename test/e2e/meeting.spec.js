@@ -712,6 +712,39 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
 });
 
+test('notes link addresses with backticks and backslashes keep them when the notes are read back', async () => {
+  const result = await win.evaluate(async () => {
+    const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
+    const editor = document.createElement('div');
+    const hrefs = ['https://a.example/`x`', 'https://a.example/a\\*b\\_c', 'https://a.example/`x', 'https://a.example/q?a=``1``&b=\\'];
+    const links = hrefs.map((href) => {
+      editor.innerHTML = '<div>See <a></a> and <code>npm start</code> after</div>';
+      const a = editor.querySelector('a');
+      a.setAttribute('href', href);
+      a.textContent = href;
+      const markdown = notesToMarkdown(editor);
+      editor.innerHTML = markdownToNotes(markdown);
+      return { href: editor.querySelector('a')?.getAttribute('href'), text: editor.textContent, code: editor.querySelector('code')?.textContent, again: notesToMarkdown(editor) === markdown };
+    });
+    // Link syntax inside a code span stays code.
+    editor.innerHTML = markdownToNotes('`[x](<https://a.example/>)` and [y](<https://b.example/`z`>)');
+    const code = [editor.querySelector('code')?.textContent, [...editor.querySelectorAll('a')].map((a) => a.getAttribute('href'))];
+    // A NUL in the Markdown can't pose as one of the reader's own placeholders.
+    editor.innerHTML = markdownToNotes('[t](<https://a.example/\u00000\u0000>)');
+    const nul = [...editor.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.textContent]);
+    return { hrefs, links, code, nul };
+  });
+  result.links.forEach((link, i) => {
+    const href = result.hrefs[i];
+    expect(link.href, href).toBe(href);
+    expect(link.text, href).toBe(`See ${href} and npm start after`);
+    expect(link.code, href).toBe('npm start');
+    expect(link.again, href).toBe(true);
+  });
+  expect(result.code).toEqual(['[x](<https://a.example/>)', ['https://b.example/`z`']]);
+  expect(result.nul).toEqual([['https://a.example/0', 't']]);
+});
+
 test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {
   test.setTimeout(120000);
   const id = voiceStarts({ title: 'Notes at their limits' });

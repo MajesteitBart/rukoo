@@ -11,12 +11,23 @@ const safeHref = (s) => /^(https?:|mailto:)/i.test(s);
 
 function inline(text, slots = []) {
   const keep = (html) => `\u0000${slots.push(html) - 1}\u0000`;
-  let s = text.replace(/\\([\\`*_{}\[\]()#+.!<>~-])|(`+)([^\n]*?)\2(?!`)/g, (_, escaped, ticks, c) => {
+  // An address in angle brackets is read as written, before code spans and escapes could take a backtick or a
+  // backslash in it. Its slot holds it as text, for where no link takes it, such as inside a code span.
+  const hrefs = new Map();
+  let s = text.replace(/\]\(<([^>\n]+)>\)/g, (_, href) => {
+    const slot = keep(esc(href));
+    hrefs.set(slot, href);
+    return `](<${slot}>)`;
+  });
+  s = s.replace(/\\([\\`*_{}\[\]()#+.!<>~-])|(`+)([^\n]*?)\2(?!`)/g, (_, escaped, ticks, c) => {
     if (escaped) return keep(esc(escaped));
     if (c.startsWith(' ') && c.endsWith(' ') && c.trim()) c = c.slice(1, -1);
     return keep(`<code>${esc(c)}</code>`);
   });
-  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots)));
+  s = s.replace(/\[([^\]\n]+)\]\(<([^>]+)>\)/g, (_, label, slot) => {
+    const href = hrefs.get(slot) ?? slot;
+    return safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots));
+  });
   s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, label, href) => safeHref(href) ? keep(`<a href="${esc(href)}">${inline(label, slots)}</a>`) : keep(inline(label, slots)));
   s = s.replace(/<u>(.*?)<\/u>/g, (_, c) => keep(`<u>${inline(c, slots)}</u>`));
   s = esc(s).replace(/\*\*(\S[\s\S]*?)\*\*/g, '<b>$1</b>').replace(/\*(\S[^*]*?)\*/g, '<i>$1</i>').replace(/~~(\S.*?)~~/g, '<s>$1</s>');
@@ -27,7 +38,8 @@ function inline(text, slots = []) {
 
 export function markdownToNotes(text) {
   if (!text) return '';
-  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  // inline() marks its placeholders with NUL, so the Markdown can't bring one of its own.
+  const lines = String(text || '').replace(/\u0000/g, '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   const lists = [];
   const close = (indent = -1) => {
