@@ -4476,15 +4476,15 @@
   },
   "settings.agents.copyOpenClaw": {
     "message": "Copy OpenClaw setup",
-    "description": "Settings, Agents page, OpenClaw card: row that copies the command that adds Rukoo's MCP server to OpenClaw."
+    "description": "Settings, Agents page, OpenClaw card: row that copies the two steps that add Rukoo's MCP server to OpenClaw: a token line for the gateway's .env file and the openclaw mcp set command."
   },
   "settings.agents.copyOpenClawHelp": {
-    "message": "A command for this computer that lets OpenClaw use Rukoo's tools. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
+    "message": "Two steps for a gateway on this computer: a line with the token for OpenClaw's .env file, and the command that lets OpenClaw use Rukoo's tools. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. Step 1 is a line (RUKOO_MCP_TOKEN=...) that goes in OpenClaw's .env file and holds Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command, which names that variable."
   },
   "settings.agents.copiedOpenClaw": {
-    "message": "Copied. Run it in a terminal on this computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup command."
+    "message": "Copied two steps: a line for OpenClaw's .env file and a command to run on this computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on this computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command."
   },
   "settings.agents.gatewayUrl": {
     "message": "Gateway URL",
@@ -4531,12 +4531,12 @@
     "description": "Settings, Agents page: toast after the OpenClaw gateway token was stored."
   },
   "settings.agents.copyOpenClawRemoteHelp": {
-    "message": "A command for the gateway's computer, with Rukoo's Tailscale address. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. The copied command (openclaw mcp set) contains Rukoo's Tailscale address and its MCP token for OpenClaw."
+    "message": "Two steps for the gateway's computer: a line with the token for OpenClaw's .env file, and a command with Rukoo's Tailscale address. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. Step 1 is a line (RUKOO_MCP_TOKEN=...) for OpenClaw's .env file with Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command with Rukoo's Tailscale address."
   },
   "settings.agents.copiedOpenClawRemote": {
-    "message": "Copied with {url}. Run it on the gateway's computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
+    "message": "Copied two steps with {url}: a line for OpenClaw's .env file and a command, both for the gateway's computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
   },
   "settings.agents.openclawNoListener": {
     "message": "Rukoo isn't listening on a Tailscale address. Check that Tailscale runs on this computer.",

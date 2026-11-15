@@ -522,7 +522,8 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
     return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
   };
-  // Which command the copy row puts on the clipboard: for this computer, or for the gateway's computer.
+  // Which setup the copy row puts on the clipboard (a token line and a command): for this computer, or for the
+  // gateway's computer.
   const openclawCopyDesc = () => t(agentState.config.openclaw.remote ? 'settings.agents.copyOpenClawRemoteHelp' : 'settings.agents.copyOpenClawHelp');
   // Both cards show the Tailscale listener; a toggle on one can open or close it for the other.
   const showAddresses = () => {

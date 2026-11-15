@@ -1389,9 +1389,20 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw))).toMatchObject({ agent: 'research', hasKey: true });
   // The token stays in main: the config the window gets says only that there is one.
   expect(JSON.stringify(await win.evaluate(() => window.mail.call('agentConfig')))).not.toContain('gateway-token-123');
-  // What the copy row puts on the clipboard (not clicked here: the clipboard is the desktop's own).
-  const setup = await app.evaluate(() => global.__semAgents.cfg.openclawSetup({ port: global.__semAgents.mcp.ports().local }));
-  expect(setup).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer [A-Za-z0-9_-]+"\}\}'\n$/);
+  // The copy row puts two steps on the clipboard, recorded in main rather than put on the desktop's own clipboard:
+  // the token in a line for OpenClaw's .env file, and the command, which names the variable instead of the token.
+  await app.evaluate(() => {
+    global.__semAgents.deps.clipboard = { writeText: (text) => (global.__copiedSetup = text) };
+  });
+  await win.locator('.page.settings .row', { hasText: 'Copy OpenClaw setup' }).click();
+  await expect(win.locator('#toast')).toContainText("Copied two steps: a line for OpenClaw's .env file and a command to run on this computer.");
+  const setup = await app.evaluate(() => global.__copiedSetup);
+  const lines = setup.split('\n');
+  expect(lines[0]).toMatch(/^# Step 1, not a command: put this line in the OpenClaw \.env file, /);
+  expect(lines[1]).toMatch(/^RUKOO_MCP_TOKEN=[A-Za-z0-9_-]{43}$/);
+  expect(lines[2]).toBe('# Step 2: run this command where the gateway runs, then restart the gateway.');
+  expect(lines[3]).toMatch(/^openclaw mcp set rukoo '\{"url":"http:\/\/127\.0\.0\.1:\d+\/mcp","transport":"streamable-http","headers":\{"Authorization":"Bearer \$\{RUKOO_MCP_TOKEN\}"\}\}'$/);
+  expect(lines.slice(4)).toEqual(['']);
   // A gateway on another computer: an explicit opt-in that opens the Tailscale listener. This test machine gets an
   // address nobody has (TEST-NET), so nothing listens on a real tailnet; the card says so, and nothing is copied.
   await app.evaluate(() => global.__semAgents.updateConfig({ mcp: { remoteHost: '192.0.2.1' } }));
@@ -1399,7 +1410,7 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   const copyDesc = win.locator('.page.settings [data-a="agent-copy-openclaw"] .desc');
   await expect(remoteRow).toContainText('Let OpenClaw use Rukoo from another computer');
   await expect(remoteRow).toContainText('For a gateway elsewhere in your tailnet.');
-  await expect(copyDesc).toContainText('A command for this computer');
+  await expect(copyDesc).toContainText('Two steps for a gateway on this computer');
   await remoteRow.click();
   await expect(remoteRow.locator('.switch')).toHaveClass(/on/);
   await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw.remote))).toBe(true);
@@ -1409,7 +1420,7 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   await expect(win.locator('#toast')).toContainText("Rukoo isn't listening on a Tailscale address.");
   await remoteRow.click();
   await expect(remoteRow.locator('.switch')).not.toHaveClass(/on/);
-  await expect(copyDesc).toContainText('A command for this computer');
+  await expect(copyDesc).toContainText('Two steps for a gateway on this computer');
   await win.click('.page.settings [data-a="back"]');
   await win.click('.page.settings [data-a="back"]');
 
