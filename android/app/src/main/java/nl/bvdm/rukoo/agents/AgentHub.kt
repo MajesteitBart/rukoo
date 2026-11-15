@@ -53,6 +53,21 @@ data class ToolIdentity(
     val computer: String? = null,
 )
 
+/**
+ * Why a tool that puts something in a chat must not go by the hub's guess (desktop resolveCall's unclear, #281). The
+ * agent tells the user its card is ready, so a card in a chat the user isn't looking at goes unseen.
+ */
+sealed interface UnclearChat {
+    /** conversation_id names a chat of another agent: the caller's token is the wrong one. */
+    data class Foreign(val conversationId: String) : UnclearChat
+
+    /** No usable conversation_id, and more than one of the agent's chats is working. */
+    data object Ambiguous : UnclearChat
+}
+
+/** The chat a tool call is for ([AgentHub.conversationForTool]) and why a card must not go by it, if so. */
+data class ToolRoute(val conversation: Conversation?, val unclear: UnclearChat? = null)
+
 /** A shown approval card: its item id, and the user's choice id once made (`cancel` when it expired). */
 data class ApprovalTicket(val itemId: String, val choice: Deferred<String>)
 
@@ -146,6 +161,13 @@ interface AgentHub {
 
     /** Desktop resolveConversation (spec 2 §3.5): the chat a tool call belongs to, or null. */
     fun conversationForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): Conversation?
+
+    /** Desktop resolveCall: [conversationForTool], and why a tool that shows something must not go by its guess. */
+    fun routeForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): ToolRoute =
+        ToolRoute(conversationForTool(identity, conversationIdArg, meta))
+
+    /** Whether [agent] has a turn running in another chat and none in [conversationId]: the user talks to it elsewhere. */
+    fun workingElsewhere(agent: String, conversationId: String): Boolean = false
 
     /**
      * Desktop ensureConversation: [resolved], else the agent's recent external chat, else a new external one (emits

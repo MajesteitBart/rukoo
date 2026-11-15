@@ -576,7 +576,7 @@ async function callTool(hub, identity, name, args, meta = {}) {
   }
   // boundTo: the chat something the model doesn't pick ties the call to, whose own level it may use
   // (hub.permissionFor).
-  const { conversation, bound } = hub.resolveCall(identity, clean, meta || {});
+  const { conversation, bound, unclear } = hub.resolveCall(identity, clean, meta || {});
   const call = {
     agent: identity.agent,
     identity,
@@ -584,6 +584,10 @@ async function callTool(hub, identity, name, args, meta = {}) {
     meta: meta || {},
     conversation,
     boundTo: bound && conversation ? conversation.id : null,
+    // Why a tool that puts something in a chat must not go by the guess (chatFor), and what it says when its card
+    // lands outside the chat the agent works in now.
+    unclear: unclear || null,
+    elsewhere: null,
     // What a media link is bound to: the address the MCP request came from and the hash of its token (mcp.js). Both
     // null for a call from inside Rukoo.
     peer: identity.peer || null,
@@ -595,7 +599,9 @@ async function callTool(hub, identity, name, args, meta = {}) {
   if (running) running.reached = true;
   call.signal = running ? running.controller.signal : null;
   try {
-    return toResult(await tool.run(hub, clean, call));
+    const out = await tool.run(hub, clean, call);
+    if (call.elsewhere && out && typeof out === 'object' && !out[RAW]) out.elsewhere = call.elsewhere;
+    return toResult(out);
   } catch (err) {
     if (err instanceof ToolError) return errorResult(err.message);
     return errorResult(`Rukoo could not complete ${tool.name}: ${(err && err.message) || err}`);
@@ -1181,6 +1187,28 @@ function windowError(err, what) {
   return new ToolError(`Rukoo could not update the composer: ${(err && (err.detail || err.message)) || err}`);
 }
 
+// The texts of chatFor, word for word in Android's ChatRoute.
+const CHAT_UNCLEAR =
+  "Rukoo showed nothing: more than one of your chats is working right now, so Rukoo can't tell which one this is for. Call again with the conversation_id from the message you are answering.";
+const foreignChat = (id, name) =>
+  `Rukoo showed nothing: conversation ${id} belongs to another agent, and this call comes with the token Rukoo gave ${name}. If the user is talking to you in that chat, your Rukoo setup has the wrong token: tell the user to copy your setup from Rukoo's settings again.`;
+// A chat about an email has its subject as title, which the sender wrote.
+const shownElsewhere = (title) =>
+  `Rukoo showed this in another chat${title ? `, ${unsafeInline(title, 'chat title')}` : ''}, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.`;
+
+// The chat a tool that puts something on screen uses (hub.ensureConversation). The agent tells the user its card is
+// ready, so a card in a chat the user isn't looking at goes unseen (#281). A guess between several working chats, or
+// a chat of another agent, is therefore an error the agent can act on, and a card that lands outside the chat the
+// agent is answering in says so in the result (callTool).
+function chatFor(hub, call) {
+  const unclear = call.unclear;
+  if (unclear && unclear.reason === 'foreign') throw new ToolError(foreignChat(unclear.id, hub.agentName(call.agent)));
+  if (unclear) throw new ToolError(CHAT_UNCLEAR);
+  const c = hub.ensureConversation(call);
+  if (call.boundTo !== c.id && hub.workingElsewhere(call.agent, c.id)) call.elsewhere = shownElsewhere(c.title);
+  return c;
+}
+
 async function writeDraft(hub, args, call) {
   // Without a conversation yet (an external caller), the one ensureConversation finds or makes is about the
   // open email, so the open email is the right default there too.
@@ -1214,7 +1242,7 @@ async function writeDraft(hub, args, call) {
   if (html.length > DRAFT_HTML_MAX) {
     throw new ToolError(`The draft is too long for the composer: ${html.length} characters once formatted, the limit is ${DRAFT_HTML_MAX}. Write a shorter one.`);
   }
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   // html-to-text turns each <div><br></div> spacer into an extra blank line; fold those back.
   const bodyText = (format === 'text' ? String(args.body) : htmlToPlain(html).replace(/\n{3,}/g, '\n\n')).trim();
   const request = {
@@ -1302,7 +1330,7 @@ function showPlan(hub, args, call) {
   if (untitled && !call.conversation && !hub.externalFor(call.agent)) {
     throw new ToolError(`Task ${untitled.id || '(no id)'} is new and needs a title. Pass conversation_id to update a plan you showed earlier.`);
   }
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   const plans = c.items.filter((i) => i.type === 'plan');
   let item = args.plan_id ? plans.find((p) => p.planId === args.plan_id) : null;
   if (!item && !args.plan_id) {
@@ -1340,7 +1368,7 @@ function showPlan(hub, args, call) {
 }
 
 async function showSources(hub, args, call) {
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   const sources = [];
   for (const s of args.sources) {
     let messageId = null;
@@ -1366,7 +1394,7 @@ async function showSources(hub, args, call) {
 }
 
 function proposeAction(hub, args, call) {
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   // Full permission: no card. The chat still says what the agent goes ahead with.
   if (!needsApproval(hub.permissionFor(call), { kind: 'proposal' })) {
     const title = untag(args.title).replace(/\s+/g, ' ').trim();
@@ -1478,7 +1506,7 @@ async function mailAction(hub, args, call) {
     const none = accounts.filter((a) => !engine.archiveFolder(a.id));
     if (none.length) throw new ToolError(`${none.map((a) => a.email).join(', ')} has no archive folder. Use move instead.`);
   }
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   const spec = { action: args.action, ids, folder: args.action === 'move' ? args.folder : null, pins: ids.map((id) => pinOf(engine, id)) };
   const title = mailTitle(engine, spec);
   // A move that lands in Trash is a delete by another name, so a level that asks before deleting asks before it too.
@@ -2122,7 +2150,7 @@ async function createEvent(hub, args, call) {
   } catch (err) {
     throw new ToolError(`Rukoo can't add this event: ${englishError(err)}`);
   }
-  const c = hub.ensureConversation(call);
+  const c = chatFor(hub, call);
   const spec = {
     input,
     // Guests hear of it from their calendar; without guests nobody does.
@@ -2919,5 +2947,8 @@ module.exports = {
   resolveFolder,
   mailTitle,
   pickFrames,
+  CHAT_UNCLEAR,
+  foreignChat,
+  shownElsewhere,
   ToolError
 };

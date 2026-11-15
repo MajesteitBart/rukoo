@@ -773,8 +773,12 @@ test('display tools without a conversation open an external one and ask the rend
     data(await t.hub.callTool(clark, 'show_sources', { conversation_id: c.id, sources: [{ title: 'x' }] }));
     assert.equal(t.hub.list().length, before);
     const mine = t.hub.create({ agent: 'claude', message: null });
-    data(await t.hub.callTool(clark, 'show_sources', { conversation_id: mine.id, sources: [{ title: 'y' }] }));
+    const foreign = await t.hub.callTool(clark, 'show_sources', { conversation_id: mine.id, sources: [{ title: 'y' }] });
+    assert.equal(foreign.isError, true);
+    assert.match(foreign.content[0].text, /^Rukoo showed nothing: conversation \S+ belongs to another agent, and this call comes with the token Rukoo gave Hermes\./);
     assert.equal(mine.items.length, 0, 'Clark cannot write into a Claude conversation');
+    assert.equal(c.items.filter((i) => i.type === 'sources').length, 1, 'nor into its own chat in its place');
+    assert.equal(t.hub.list().length, before + 1, 'only the Claude chat is new');
   } finally {
     await t.done();
   }

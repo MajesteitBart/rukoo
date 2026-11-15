@@ -8,7 +8,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { list } = require('../src/main/agents/tools');
+const tools = require('../src/main/agents/tools');
+const { list } = tools;
 const mcp = require('../src/main/agents/mcp');
 const context = require('../src/main/agents/context');
 
@@ -69,6 +70,14 @@ test("the bridge's and the phone's MCP instructions are the desktop's, word for 
   assert.equal(literals(read(MCP_HANDLER), 'const val INSTRUCTIONS =', kotlin), mcp.INSTRUCTIONS);
   // McpHandlerTest pins the length, so the phone's room for skills is known.
   assert.match(read('android/app/src/test/java/nl/bvdm/rukoo/mcp/McpHandlerTest.kt'), new RegExp(`assertEquals\\(${mcp.INSTRUCTIONS.length}, McpHandler\\.INSTRUCTIONS\\.length\\)`));
+});
+
+test('the phone refuses a card without a clear chat, and says where one landed, in the desktop\'s words (#281)', () => {
+  const source = read('android/app/src/main/java/nl/bvdm/rukoo/mcp/tools/ChatRoute.kt');
+  assert.equal(literals(source, 'const val UNCLEAR =', kotlin), tools.CHAT_UNCLEAR);
+  // Kotlin's $id and $name, in the desktop's text.
+  assert.equal(literals(source, 'fun foreign(id: String, name: String) =', kotlin), tools.foreignChat('$id', '$name'));
+  assert.equal(literals(source, 'fun elsewhere(title: String?) =', kotlin).replace('${named(title)}', ''), tools.shownElsewhere(''));
 });
 
 test("the phone's turn instructions name the same tools and say the same about untrusted content", () => {

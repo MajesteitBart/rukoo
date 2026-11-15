@@ -881,6 +881,17 @@ class HubTest {
         runCurrent()
         // No usable id: the one running chat of that agent.
         assertEquals(a.id, k.hub.conversationForTool(clark, oc.id)?.id)
+        // A card doesn't go by that guess when the id names another agent's chat (#281).
+        assertEquals(ToolRoute(k.hub.get(a.id), UnclearChat.Foreign(oc.id)), k.hub.routeForTool(clark, oc.id))
+        assertEquals(null, k.hub.routeForTool(clark, null).unclear)
+        assertTrue(k.hub.workingElsewhere("clark", b.id))
+        assertFalse(k.hub.workingElsewhere("clark", a.id))
+        // With two of its chats working, a call that names neither has no chat, and says why.
+        k.hub.send(b.id, SendRequest("Go"))
+        runCurrent()
+        assertEquals(ToolRoute(null, UnclearChat.Ambiguous), k.hub.routeForTool(clark, null))
+        assertEquals(ToolRoute(null, UnclearChat.Ambiguous), k.hub.routeForTool(clark, "c_gone"))
+        assertEquals(b.id, k.hub.routeForTool(clark, b.id).conversation?.id)
         // A token for one chat speaks for that chat only.
         assertNull(k.hub.conversationForTool(ToolIdentity("clark", conversationId = "c_forged"), a.id))
         assertEquals(b.id, k.hub.conversationForTool(ToolIdentity("clark", conversationId = b.id), a.id)?.id)
