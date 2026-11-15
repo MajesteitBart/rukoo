@@ -29,7 +29,8 @@ import {
   onSystemThemeChange,
   isLight,
   segmented,
-  setSegmented
+  setSegmented,
+  afterDrag
 } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
@@ -777,7 +778,31 @@ function sidebarFoot() {
     </div>`;
 }
 
+// While an email is dragged, the sidebar isn't drawn again: that would take the folder row under the pointer off the
+// page, and the drop with it. A redraw asked for meanwhile happens when the drag is over.
+let mailDrag = false;
+let sidebarStale = false;
+
+function startMailDrag() {
+  mailDrag = true;
+  document.body.classList.add('dragging-mail');
+  afterDrag(endMailDrag);
+}
+
+function endMailDrag() {
+  if (!mailDrag) return;
+  mailDrag = false;
+  document.body.classList.remove('dragging-mail');
+  $$('.nav-item.drop-target').forEach((x) => x.classList.remove('drop-target'));
+  if (sidebarStale) renderSidebar();
+}
+
 function renderSidebar() {
+  if (mailDrag) {
+    sidebarStale = true;
+    return;
+  }
+  sidebarStale = false;
   renderModeSwitch();
   if (calendarMode()) {
     $('.sidebar-main').innerHTML = calendar.sidebarHtml() + sidebarFoot();
@@ -942,16 +967,19 @@ function bindSidebar() {
     }
   });
 
-  // Messages dragged from the list can be dropped on folders.
+  // Messages dragged from the list can be dropped on folders. Taken on dragenter as well as dragover, as in the chat
+  // panel (agent/panel.js): Chromium refuses a drop when the last update before it was a dragenter nobody took.
   const target = (e) => e.target.closest('[data-drop-role], [data-drop-path]');
-  el.addEventListener('dragover', (e) => {
+  const accept = (e) => {
     const t = target(e);
     if (!t || !e.dataTransfer.types.includes('application/x-rukoo-ids')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     $$('.nav-item.drop-target').forEach((x) => x !== t && x.classList.remove('drop-target'));
     t.classList.add('drop-target');
-  });
+  };
+  el.addEventListener('dragenter', accept);
+  el.addEventListener('dragover', accept);
   el.addEventListener('dragleave', (e) => {
     const t = target(e);
     if (t && !t.contains(e.relatedTarget)) t.classList.remove('drop-target');
@@ -1475,11 +1503,7 @@ function bindList() {
     document.body.appendChild(ghost);
     e.dataTransfer.setDragImage(ghost, -12, -8);
     setTimeout(() => ghost.remove(), 0);
-    document.body.classList.add('dragging-mail');
-  });
-  pane.addEventListener('dragend', () => {
-    document.body.classList.remove('dragging-mail');
-    $$('.nav-item.drop-target').forEach((x) => x.classList.remove('drop-target'));
+    startMailDrag();
   });
   scroll.addEventListener('pointerdown', () => scroll.classList.remove('kbd'));
   bindSwipe(pane);

@@ -3,7 +3,7 @@ import { t, localize, translate, getLanguage } from './i18n.js';
 // compose window (compose.js). Either way it saves drafts as you write.
 import { formatButtons, mountRichEditor } from './rich-editor.js';
 import { icons } from './icons.js';
-import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN } from './ui.js';
+import { api, esc, $, toast, dialog, confirmDialog, showMenu, menuOpen, person, formatAddress, quoteDate, fileSize, hhmm, isLight, KEEP_OPEN, afterDrag } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { editMenu } from './editmenu.js';
 import { sanitizeAgentHtml, textToEditorHtml } from './agent/richtext.js';
@@ -309,7 +309,7 @@ function recipientsHtml(list) {
   return list
     .map(
       (a, i) =>
-        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
+        `<span class="recipient ${EMAIL_RE.test(a.address) ? '' : 'invalid'}" draggable="true" data-chip="${i}" title="${esc(formatAddress(a))}">${esc(person(a))}<button data-remove="${i}" data-i18n-title="common.actions.delete" title="${esc(t('common.actions.delete'))}" tabindex="-1">${icons.close}</button></span>`
     )
     .join('');
 }
@@ -1018,20 +1018,113 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     }
   }
 
-  // Files dropped on the editor become attachments.
-  const dropTarget = inline ? page : document;
-  listen(dropTarget, 'dragover', (e) => {
-    if ([...e.dataTransfer.types].includes('Files')) {
-      e.preventDefault();
-      page.classList.add('drop-files');
-    }
+  // A recipient dragged from one of To, Cc and Bcc onto another moves there. The Cc and Bcc links beside To take
+  // a drop too, opening the field they name. Only this composer's own chips are accepted, never text or files, and
+  // only on those fields and links: let go over Send, the text or another control, the recipient stays where it was.
+  const CHIP_TYPE = 'application/x-rukoo-recipient';
+  const RECIPIENT_FIELDS = ['to', 'cc', 'bcc'];
+  // { from, address, token } while one of this composer's chips is dragged. The address rather than the chip's place
+  // in its list: an agent can write the recipients while the chip is on its way. The token is the drag's CHIP_TYPE
+  // data, and a drop moves a recipient only when it brings that token back: a drag whose end never arrived leaves
+  // `dragged` set, and a chip from another compose window has the same type. Drag data can only be read on drop.
+  let dragged = null;
+  // Where a chip let go here goes: { to, mark } with the field and the element that shows it, or null.
+  const dropField = (e) => {
+    if (!dragged || ![...(e.dataTransfer?.types || [])].includes(CHIP_TYPE)) return null;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target || !page.contains(target) || editor.contains(target)) return null;
+    const link = target.closest('[data-rfield="to"] .cc-links [data-c]');
+    if (link) return RECIPIENT_FIELDS.includes(link.dataset.c) ? { to: link.dataset.c, mark: link } : null;
+    const field = target.closest('.field[data-rfield]');
+    return field && RECIPIENT_FIELDS.includes(field.dataset.rfield) ? { to: field.dataset.rfield, mark: field } : null;
+  };
+  const clearDropMarks = () => page.querySelectorAll('.drop-recipient').forEach((el) => el.classList.remove('drop-recipient'));
+  const endChipDrag = () => {
+    dragged = null;
+    clearDropMarks();
+    page.querySelectorAll('.recipient.dragging').forEach((el) => el.classList.remove('dragging'));
+  };
+  page.addEventListener('dragstart', (e) => {
+    // Whatever the drag before this one left behind is over now.
+    if (dragged) endChipDrag();
+    const chip = e.target.closest?.('.recipient[data-chip]');
+    const from = chip && !editor.contains(chip) ? chip.closest('.field[data-rfield]')?.dataset.rfield : null;
+    const entry = RECIPIENT_FIELDS.includes(from) ? st[from][Number(chip.dataset.chip)] : null;
+    if (!entry) return;
+    const drag = { from, address: entry.address, token: crypto.randomUUID() };
+    dragged = drag;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(CHIP_TYPE, drag.token);
+    chip.classList.add('dragging');
+    closeSuggest();
+    afterDrag(() => dragged === drag && endChipDrag());
   });
+  // Taken on dragenter as well as dragover, as in the chat panel (agent/panel.js): Chromium refuses a drop when the
+  // last update before it was a dragenter nobody took.
+  const acceptChip = (e) => {
+    if (!dragged) return;
+    const target = dropField(e);
+    clearDropMarks();
+    if (!target) return;
+    e.preventDefault();
+    const own = target.to === dragged.from;
+    e.dataTransfer.dropEffect = own ? 'none' : 'move';
+    if (!own) target.mark.classList.add('drop-recipient');
+  };
+  page.addEventListener('dragenter', acceptChip);
+  page.addEventListener('dragover', acceptChip);
+  page.addEventListener('dragleave', (e) => {
+    if (dragged && (!e.relatedTarget || !page.contains(e.relatedTarget))) clearDropMarks();
+  });
+  page.addEventListener('drop', (e) => {
+    const target = dropField(e);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { from, address, token } = dragged;
+    const { to } = target;
+    // A chip from somewhere else: whatever drag `dragged` was left from is over, and no list changes.
+    const ours = e.dataTransfer.getData(CHIP_TYPE) === token;
+    endChipDrag();
+    if (!ours) return;
+    const index = st[from].findIndex((a) => sameAddress(a.address, address));
+    if (to === from || index < 0) return;
+    const [moved] = st[from].splice(index, 1);
+    if (!st[to].some((a) => sameAddress(a.address, moved.address))) st[to].push(moved);
+    if (to !== 'to') showField(to, true);
+    changed();
+    renderRecipients(from);
+    renderRecipients(to).focus();
+  });
+
+  // Files dropped on the editor become attachments. Taken on dragenter as well as dragover, for the same reason as a
+  // recipient above. While files are over the composer, the composer itself is the drop target rather than what is in
+  // it (styles.css), so a drop never goes to an element that was drawn again just before it.
+  const dropTarget = inline ? page : document;
+  page.dataset.dropHint = t('composer.attachments.dropHint');
+  // A drag that began in the composer, such as an image moved within the text, is left to the editor. Chromium gives a
+  // dragged image Files too, but it is no file to attach. Such a drag carries a mark of its own rather than setting a
+  // flag here: a drag whose source was drawn again ends without a dragend reaching the composer, and a flag left set
+  // would turn away the next files from Explorer.
+  const INNER_TYPE = 'application/x-rukoo-composer';
+  page.addEventListener('dragstart', (e) => e.dataTransfer?.setData(INNER_TYPE, '1'));
+  const filesDrag = (e) => {
+    const types = [...(e.dataTransfer?.types || [])];
+    return types.includes('Files') && !types.includes(INNER_TYPE);
+  };
+  const acceptFiles = (e) => {
+    if (!filesDrag(e)) return;
+    e.preventDefault();
+    page.classList.add('drop-files');
+  };
+  listen(dropTarget, 'dragenter', acceptFiles);
+  listen(dropTarget, 'dragover', acceptFiles);
   listen(dropTarget, 'dragleave', (e) => {
     if (!e.relatedTarget || !page.contains(e.relatedTarget)) page.classList.remove('drop-files');
   });
   listen(dropTarget, 'drop', (e) => {
     page.classList.remove('drop-files');
-    const files = [...(e.dataTransfer.files || [])];
+    const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
     for (const f of files) {
@@ -1573,6 +1666,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
         syncDefault(next.accounts);
       }
       localize(page);
+      page.dataset.dropHint = t('composer.attachments.dropHint');
       page.setAttribute('aria-label', COMPOSE_TITLES[st.mode] || t('composer.titles.new'));
       const heading = page.querySelector('.composer-title');
       if (heading) heading.textContent = COMPOSE_TITLES[st.mode] || t('composer.titles.new');

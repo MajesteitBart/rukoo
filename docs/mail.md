@@ -51,7 +51,7 @@ Right-click in an email for a menu that fits what's under the pointer. A link op
 
 ## Writing
 
-New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images.
+New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images. Drag a recipient onto To, Cc or Bcc to move it there, or onto the Cc or Bcc link beside To to open that field with the recipient in it.
 
 Spelling is checked as you write. Right-click in the message text, or press the context menu key or `Shift+F10`, for a menu with Cut, Copy, Paste, Paste as plain text and Select all. On a misspelled word it starts with the spell checker's suggestions, which replace the word, and Add to dictionary. The spell checker follows the computer's language, not the language of the email.
 
