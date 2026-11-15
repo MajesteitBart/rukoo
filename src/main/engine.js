@@ -281,8 +281,8 @@ class Engine extends EventEmitter {
     // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
     // sync results. See holdPending().
     this.pending = new Map();
-    // Those of them that changed an inbox's count of older unread mail; see carryRecounts().
-    this.recounts = new Set();
+    // What those changes did to an inbox's count of older unread mail, per email; see recountOf().
+    this.recounts = new Map();
     // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
     this.undoable = new Map();
     // Message bodies being downloaded, by cache file; see download().
@@ -927,23 +927,26 @@ class Engine extends EventEmitter {
         settle();
         const rest = (this.pending.get(key) || []).filter((h) => h !== hold);
         if (rest.length) this.pending.set(key, rest);
-        else this.pending.delete(key);
+        else {
+          // Nothing more on its way for this email: what its changes did to the count stays until a sync counts again.
+          this.pending.delete(key);
+          this.recounts.delete(key);
+        }
       },
     };
   }
 
   // Runs op once the earlier changes to this email have reached the server, so a move or delete never overtakes a
-  // flag write still on its way to the old folder and uid. recount: what the change did to the inbox's count of older
-  // unread mail, as removeFromCache() gives it; it stays in this.recounts until the command settles.
+  // flag write still on its way to the old folder and uid. recount: the email's record of the inbox's count of older
+  // unread mail, as removeFromCache() gives it; it stays in this.recounts until the email's changes have settled.
   async withPending(acc, folder, uid, patch, op, recount = null) {
     const hold = this.holdPending(acc.id, folder, uid, patch);
-    if (recount) this.recounts.add(recount);
+    if (recount) this.recounts.set(recount.key, recount);
     try {
       await hold.before;
       return await op();
     } finally {
       hold.release();
-      if (recount) this.recounts.delete(recount);
     }
   }
 
@@ -1042,7 +1045,7 @@ class Engine extends EventEmitter {
       keep: () => {
         const entry = this.foundIn(acc.id, folderPath);
         asked = entry ? [...entry.hits.keys()] : [];
-        const changing = [...this.recounts].filter((r) => r.accountId === acc.id && r.folder === folderPath).map((r) => r.uid);
+        const changing = [...this.recounts.values()].filter((r) => r.accountId === acc.id && r.folder === folderPath).map((r) => r.uid);
         return [...new Set([...asked, ...changing])];
       },
       known,
@@ -1831,13 +1834,12 @@ class Engine extends EventEmitter {
     for (const f of found) {
       f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
       // Older inbox mail the server search found is in the server's count of older unread mail (olderUnread()), which
-      // only the next sync redoes. The change stays in this.recounts until the server answers; see carryRecounts().
-      const n = f.older && patch.unread !== undefined && patch.unread !== Boolean(f.msg.unread) ? (patch.unread ? 1 : -1) : 0;
-      f.change = n ? { accountId: f.acc.id, folder: f.folder, uid: f.uid, unread: patch.unread, n, box: f.box } : null;
+      // only the next sync redoes, so the count follows the message here. See recountOf().
+      f.recount = f.older && patch.unread !== undefined ? this.recountOf(f.acc.id, f.folder, f.uid, f.msg) : null;
       Object.assign(f.msg, patch);
-      if (f.change) {
-        this.recountOlder(f.box, n);
-        this.recounts.add(f.change);
+      if (f.recount) {
+        this.recounts.set(f.recount.key, f.recount);
+        this.recount(f.recount);
       }
     }
     for (const id of accounts) this.changed(id);
@@ -1853,19 +1855,17 @@ class Engine extends EventEmitter {
       } catch (err) {
         failed.push(f.id);
         error = error || friendlyError(err);
-        // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again. The count
-        // goes back only with the flag: a later change that set it since counted from the flag as this one left it.
+        // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again.
         const back = f.hold.rollback();
         try {
           Object.assign(this.locate(f.id).msg, back);
         } catch (_) {
-          // The message left the cache in the meantime.
+          // The message left the cache in the meantime; a move still on its way puts this object back if it fails.
+          Object.assign(f.msg, back);
         }
-        const c = f.change;
-        if (c && 'unread' in back && this.caches.get(f.acc.id) && this.caches.get(f.acc.id).boxes[f.folder] === c.box) this.recountOlder(c.box, -c.n);
+        if (f.recount) this.recount(f.recount);
       } finally {
         f.hold.release();
-        if (f.change) this.recounts.delete(f.change);
       }
     }
     if (failed.length) for (const id of accounts) this.changed(id);
@@ -1877,29 +1877,48 @@ class Engine extends EventEmitter {
     if (n && box && Number.isInteger(box.olderUnseen)) box.olderUnseen = Math.max(0, box.olderUnseen + n);
   }
 
-  // After a sync replaced a folder's box: a change to older mail there that is still on its way to the server, and
-  // that changed the count of older unread mail (this.recounts: { accountId, folder, uid, unread, n, box }, unread as
-  // the message counts after the change, false for a move), goes over the new count too when the sync read the server
-  // before it, as the flags it brought for the message say (kept). box is then the new box, which a server that turns
-  // the change down takes it off again; null when the server's count already holds it, or the sync brought no flags
-  // for the message: it is gone, in the window now, or the folder's uids were given out again. The changes to one
-  // message reach the server in the order they were made, so once the server lacks one, it lacks those after it too.
+  // The record of what the changes to one older message the server search found did to the folder's count of older
+  // unread mail, while any of them is on its way to the server. One record serves all of the email's changes, flags
+  // and a move alike, and lasts until the last of them settles (holdPending()), so whichever of them fail or get
+  // through, in whatever order, the count ends matching the message. box: whose count, null once it no longer holds
+  // the message (carryRecounts()); basis: whether that count holds the message as unread; applied: what has gone onto
+  // it since. msg: the message (the search results keep the object); out: a move or delete took it out of the folder.
+  // A new record is held once this.recounts has it, which setFlagsMany() and withPending() do.
+  recountOf(accountId, folder, uid, msg) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const held = this.recounts.get(key);
+    if (held) return held;
+    const box = this.caches.get(accountId).boxes[folder];
+    return { key, accountId, folder, uid, msg, out: false, box, basis: Boolean(msg.unread), applied: 0 };
+  }
+
+  // Moves the count to the message as the cache has it now: counted while it is unread and in the folder.
+  recount(r) {
+    const want = (!r.out && r.msg.unread ? 1 : 0) - (r.basis ? 1 : 0);
+    this.recountOlder(r.box, want - r.applied);
+    r.applied = want;
+  }
+
+  // After a sync replaced a folder's box: its count holds each older message as the server had it, which the flags it
+  // brought for the messages with changes still on their way say (kept). Their records start again from there, on the
+  // new box. A message without flags is gone from the server, in the window now, or the folder's uids were given out
+  // again: it no longer changes the count, box null.
   carryRecounts(accountId, folderPath, kept) {
     const box = this.caches.get(accountId).boxes[folderPath];
     const rows = new Map((Array.isArray(kept) ? kept : []).map((k) => [k.uid, k]));
-    const lacking = new Set();
-    for (const r of this.recounts) {
+    for (const r of this.recounts.values()) {
       if (r.accountId !== accountId || r.folder !== folderPath) continue;
       const row = rows.get(r.uid);
-      if (row && (lacking.has(r.uid) || row.unread !== r.unread)) lacking.add(r.uid);
-      r.box = lacking.has(r.uid) ? box : null;
-      this.recountOlder(r.box, r.n);
+      r.box = row ? box : null;
+      r.basis = Boolean(row && row.unread);
+      r.applied = 0;
+      this.recount(r);
     }
   }
 
   // Takes a message out of the cache, as a move or delete does before the server answers, older mail the server
-  // search found included. Returns what puts it back when the server turns the command down, with recount, what the
-  // move did to the inbox's count of older unread mail, for withPending().
+  // search found included. Returns what puts it back when the server turns the command down, with recount, the
+  // message's record of the inbox's count of older unread mail (recountOf()), for withPending().
   removeFromCache(acc, folder, uid) {
     const cache = this.caches.get(acc.id);
     const box = cache.boxes[folder];
@@ -1908,11 +1927,11 @@ class Engine extends EventEmitter {
     const entry = this.foundIn(acc.id, folder);
     const hit = entry && entry.hits.get(uid);
     // Unread older inbox mail leaves the server's count with it.
-    const recount = hit && hit.msg.unread ? -1 : 0;
-    const change = recount ? { accountId: acc.id, folder, uid, unread: false, n: recount, box } : null;
+    const recount = hit ? this.recountOf(acc.id, folder, uid, hit.msg) : null;
     if (hit) {
       entry.hits.delete(uid);
-      this.recountOlder(box, recount);
+      recount.out = true;
+      this.recount(recount);
     }
     const putBack = () => {
       const now = (this.caches.get(acc.id) || { boxes: {} }).boxes[folder];
@@ -1920,10 +1939,11 @@ class Engine extends EventEmitter {
       if (msg && !now.messages.some((m) => m.uid === uid)) now.messages.push(msg);
       if (hit && this.foundIn(acc.id, folder) === entry) {
         entry.hits.set(uid, hit);
-        if (change && now === change.box) this.recountOlder(now, -recount);
+        recount.out = false;
+        this.recount(recount);
       }
     };
-    putBack.recount = change;
+    putBack.recount = recount;
     return putBack;
   }
 

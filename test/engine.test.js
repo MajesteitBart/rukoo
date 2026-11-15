@@ -571,6 +571,119 @@ test('reading or moving older unread mail found on the server while a sync runs 
   await engine.close();
 });
 
+// The demo answers the commands named in outcomes in the order they are sent, each with the next outcome listed for
+// that command: true goes through, a string is the error it fails with. gate: a promise every command waits for first.
+function answerInTurn(demo, outcomes, gate = null) {
+  for (const [name, list] of Object.entries(outcomes)) {
+    const real = demo[name].bind(demo);
+    demo[name] = async (...args) => {
+      await gate;
+      const outcome = list.shift();
+      if (outcome !== true) throw new Error(outcome);
+      return real(...args);
+    };
+  }
+}
+
+// A small engine whose search found Call on Thursday, unread inbox mail older than the window, with the inbox's count
+// of older unread mail set to 4.
+async function olderUnreadHit() {
+  const { engine, acc } = await smallEngine();
+  await engine.searchServer({ scope: acc.id, view: 'inbox', query: 'thursday' });
+  const hit = engine.listMessages({ scope: acc.id, view: 'inbox', query: 'thursday' }).find((m) => m.older);
+  assert.equal(hit.unread, true);
+  const demo = engine.session(engine.account(acc.id));
+  const box = () => engine.caches.get(acc.id).boxes.INBOX;
+  box().olderUnseen = 4;
+  return {
+    engine,
+    acc,
+    demo,
+    hit,
+    older: () => box().olderUnseen,
+    found: () => engine.olderHit(acc.id, 'INBOX', hit.uid),
+    unreadOnServer: () => !demo.find('INBOX', hit.uid).flags.includes('\\Seen')
+  };
+}
+
+test('older unread mail marked read and unread again before the server answers keeps a count that matches it, whichever write fails', async () => {
+  // The outcomes of the two writes, and the count and the message once both have settled.
+  const cases = [
+    { writes: [true, true], older: 4, unread: true },
+    { writes: ['offline', 'offline'], older: 4, unread: true },
+    { writes: [true, 'offline'], older: 3, unread: false },
+    { writes: ['offline', true], older: 4, unread: true }
+  ];
+  for (const c of cases) {
+    const label = c.writes.join(', ');
+    const { engine, demo, hit, older, found, unreadOnServer } = await olderUnreadHit();
+    answerInTurn(demo, { setFlags: [...c.writes] });
+    // Mark as read, and its Undo lined up behind it before the server has answered.
+    const both = [engine.setFlagsMany([hit.id], { unread: false }), engine.setFlagsMany([hit.id], { unread: true })];
+    assert.equal(older(), 4, label);
+    await Promise.all(both);
+    assert.equal(older(), c.older, label);
+    assert.equal(found().unread, c.unread, label);
+    assert.equal(unreadOnServer(), c.unread, label);
+    assert.equal(engine.recounts.size, 0, label);
+    await engine.close();
+  }
+});
+
+test('older unread mail marked read and unread again while a sync runs keeps the count the sync brought, whichever write fails', async () => {
+  // The sync reads the server before either write: 2 older unread messages, Call on Thursday among them.
+  const cases = [
+    { writes: ['offline', 'offline'], older: 2, unread: true },
+    { writes: [true, 'offline'], older: 1, unread: false },
+    { writes: ['offline', true], older: 2, unread: true }
+  ];
+  for (const c of cases) {
+    const label = c.writes.join(', ');
+    const { engine, acc, demo, hit, older, found, unreadOnServer } = await olderUnreadHit();
+    let open;
+    answerInTurn(demo, { setFlags: [...c.writes] }, new Promise((resolve) => (open = resolve)));
+    const both = [engine.setFlagsMany([hit.id], { unread: false }), engine.setFlagsMany([hit.id], { unread: true })];
+    await engine.syncAccount(acc.id);
+    assert.equal(older(), 2, label);
+    assert.equal(found().unread, true, label);
+    open();
+    await Promise.all(both);
+    assert.equal(older(), c.older, label);
+    assert.equal(found().unread, c.unread, label);
+    assert.equal(unreadOnServer(), c.unread, label);
+    assert.equal(engine.recounts.size, 0, label);
+    await engine.syncAccount(acc.id);
+    assert.equal(older(), c.older, `${label}, after the next sync`);
+    await engine.close();
+  }
+});
+
+test('older unread mail marked read and archived before the server answers keeps a count that matches it, whichever command fails', async () => {
+  // The outcomes of the flag write and the move behind it; found: whether the search results hold it afterwards.
+  const cases = [
+    { setFlags: 'offline', move: 'offline', older: 4, found: true, unread: true },
+    { setFlags: 'offline', move: true, older: 3, found: false },
+    { setFlags: true, move: 'offline', older: 3, found: true, unread: false },
+    { setFlags: true, move: true, older: 3, found: false }
+  ];
+  for (const c of cases) {
+    const label = `${c.setFlags}, ${c.move}`;
+    const { engine, demo, hit, older, found } = await olderUnreadHit();
+    answerInTurn(demo, { setFlags: [c.setFlags], move: [c.move] });
+    const read = engine.setFlagsMany([hit.id], { unread: false });
+    const archived = engine.archive(hit.id);
+    assert.equal(older(), 3, label);
+    await read;
+    if (c.move === true) await archived;
+    else await assert.rejects(archived, /offline/);
+    assert.equal(Boolean(found()), c.found, label);
+    if (c.found) assert.equal(found().unread, c.unread, label);
+    assert.equal(older(), c.older, label);
+    assert.equal(engine.recounts.size, 0, label);
+    await engine.close();
+  }
+});
+
 test('a search goes through every folder a batch at a time, and resume searches the next batch', async () => {
   const dir = tempDir('sem-test-');
   const engine = new Engine({ dataDir: dir, limits: { inbox: 6, default: 2, batch: 6, extra: 8 }, search: { folders: 1 } }).init();
