@@ -32,6 +32,12 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  // A test that stopped halfway may still answer Don't quit, which would keep the instance from closing.
+  await app
+    .evaluate(() => {
+      global.__semQuitAnswer = 0;
+    })
+    .catch(() => {});
   await closeApp(app);
   removeDir(dataDir);
 });
@@ -44,6 +50,14 @@ const waiting = () => app.evaluate(() => global.__semOutbox.size);
 const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
 // Refused emails main holds for the main window until their editors are open (main.js refused).
 const held = () => app.evaluate(() => global.__semRefused.size);
+// How often a quit asked about waiting email (main.js askQuitWithHeldMail).
+const quitQuestions = () => app.evaluate(() => global.__semQuitAsked || 0);
+// The main window as main sees it, or null while there is none.
+const mainWindow = () =>
+  app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html'));
+    return w ? { visible: w.isVisible() } : null;
+  });
 // The subjects in a view of the demo account, after a sync.
 const subjects = (view) =>
   app.evaluate(async (_e, view) => {
@@ -230,6 +244,56 @@ test("quitting with an email that waits asks first, and Don't quit keeps it wait
   await app.evaluate(() => {
     global.__semQuitAnswer = 0;
   });
+});
+
+// A quit comes while Send waits for the editor's Drafts save. The editor holds that quit, queues the email once the
+// save is done and lets the quit go on, which then asks about the email. Don't quit calls that earlier quit off too:
+// a refused email opens again with its error, as it does without a quit, instead of going quietly to Drafts.
+test("Don't quit also calls off a quit an editor held while its Send waited for the Drafts save", async () => {
+  const subject = 'Sent while a quit waited';
+  await app.evaluate((_e, subject) => {
+    const engine = global.__semEngine;
+    const saveDraft = engine.saveDraft.bind(engine);
+    global.__saves = [];
+    engine.saveDraft = (payload) =>
+      payload.subject === subject ? new Promise((resolve, reject) => global.__saves.push(() => saveDraft(payload).then(resolve, reject))) : saveDraft(payload);
+  }, subject);
+  const c = await newMessage(win, { to: 'someone@example.com', subject, text: 'Queued while the quit waits.' });
+  await win.keyboard.press('Control+s');
+  await expect.poll(() => app.evaluate(() => global.__saves.length)).toBeGreaterThan(0);
+  await c.locator('[data-c="send"]').click();
+  win.on('dialog', () => {});
+  await app.evaluate(({ app, BrowserWindow }) => {
+    global.__semQuitAnswer = 1;
+    global.__quits = 0;
+    app.on('before-quit', () => (global.__quits += 1));
+    const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html'));
+    main.webContents.once('will-prevent-unload', () => (global.__quitHeld = true));
+    app.quit();
+  });
+  await expect.poll(() => app.evaluate(() => global.__quitHeld === true)).toBe(true);
+  await app.evaluate(() => global.__saves.splice(0).forEach((go) => go()));
+  await composerGone();
+  // The editor let the quit go on, and that asked about the email.
+  await expect.poll(() => app.evaluate(() => global.__quits)).toBe(2);
+  await expect(notice()).toContainText('Sending email…');
+  expect(await waiting()).toBe(1);
+  expect(await mainWindow()).toEqual({ visible: true });
+
+  await app.evaluate(() => {
+    global.__semEngine.send = async () => {
+      throw new Error('Mailbox full');
+    };
+  });
+  await sendWaiting();
+  const dialog = win.locator('.dialog');
+  await expect(dialog.locator('h2')).toHaveText('Sending failed');
+  await expect(dialog).toContainText('Mailbox full');
+  await dialog.locator('.buttons button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue(subject);
+  await expect(composer().locator('.editor')).toContainText('Queued while the quit waits.');
+  expect(await held()).toBe(0);
+  expect(await quitQuestions()).toBe(1);
 });
 
 test('quitting with an email that waits sends it before Rukoo exits, also when a second quit comes meanwhile', async () => {
@@ -461,11 +525,6 @@ test('an email refused while a new main window still loads opens there once it i
   await popped.waitForSelector('.composer .editor');
   await popped.fill('[data-field="subject"]', 'Half written');
   await expect(popped.locator('.composer')).toHaveAttribute('data-dirty', 'true');
-  const mainWindow = () =>
-    app.evaluate(({ BrowserWindow }) => {
-      const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html'));
-      return w ? { visible: w.isVisible() } : null;
-    });
   await app.evaluate(({ app }) => {
     app.quit();
   });

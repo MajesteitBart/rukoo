@@ -124,6 +124,9 @@ let tray = null;
 let quitting = false;
 // The windows (by webContents id) that hold the quit while they ask.
 const quitAsks = new Set();
+// This quit already asked about the email that waits out its Undo notice, and the answer was Send and quit
+// (askQuitWithHeldMail).
+let quitAsked = false;
 // Emails that wait out their Undo notice after Send (outbox.js).
 let outbox = null;
 // ---- agents ----
@@ -532,12 +535,7 @@ function watchQuit(w) {
 function answered(id, closed) {
   if (!quitAsks.delete(id)) return;
   if (!closed) {
-    quitAsks.clear();
-    quitting = false;
-    restartForUpdate = false;
-    quitAsked = false;
-    // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays.
-    openUnsent(unsent.splice(0));
+    cancelQuit();
     // The main window closed before the quit was called off. Rukoo stays in the tray with a hidden main window, as
     // after any close: the agents' tools need it, and only a window hears that the Windows session ends.
     if (!win && (process.platform === 'darwin' || engine.settings.closeToTray)) createWindow({ hidden: true });
@@ -545,6 +543,18 @@ function answered(id, closed) {
   }
   // Without windows left, window-all-closed has quit already; a second quit would cut will-quit's wait short.
   if (!quitAsks.size) setImmediate(() => (process.platform === 'darwin' || windows().length) && app.quit());
+}
+
+// The quit is called off, by Cancel in a window that asked (answered()) or by Don't quit (askQuitWithHeldMail), and
+// Rukoo stays as it was before the quit: closing the main window hides it in the tray again, a refused email opens
+// again with its error, and the next quit asks afresh.
+function cancelQuit() {
+  quitAsks.clear();
+  quitting = false;
+  restartForUpdate = false;
+  quitAsked = false;
+  // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays.
+  openUnsent(unsent.splice(0));
 }
 
 // Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
@@ -1949,8 +1959,8 @@ app.on('window-all-closed', () => {
 // Quit in the tray menu, the last window closing, and the e2e teardown all come through here.
 // Quitting while email still waits out its Undo notice asks first: Send and quit (the default) or Don't quit, which
 // keeps the emails waiting. Asked once per quit; a quit from the Windows session ending never asks (endSession).
-// Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog.
-let quitAsked = false;
+// Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog, and count the
+// questions in global.__semQuitAsked.
 function askQuitWithHeldMail() {
   // Emails already on their way can't be undone: the quit waits for them without asking (will-quit).
   if (quitAsked || !outbox || !outbox.waiting()) return true;
@@ -1958,8 +1968,10 @@ function askQuitWithHeldMail() {
   // Their clocks stop while the question is open, so none goes unasked behind it.
   outbox.pause();
   let response;
-  if (process.env.SEM_HIDDEN) response = global.__semQuitAnswer || 0;
-  else {
+  if (process.env.SEM_HIDDEN) {
+    global.__semQuitAsked = (global.__semQuitAsked || 0) + 1;
+    response = global.__semQuitAnswer || 0;
+  } else {
     const parent = win && !win.isDestroyed() && win.isVisible() ? win : null;
     response = dialog.showMessageBoxSync(parent, {
       type: 'question',
@@ -1972,7 +1984,9 @@ function askQuitWithHeldMail() {
     });
   }
   if (response === 1) {
-    // Don't quit: each email gets what it had left, and at least a few seconds to undo, with its notice again.
+    // Don't quit calls off the whole quit, also an earlier one that a window held and then let go on (answered()).
+    cancelQuit();
+    // Each email gets what it had left, and at least a few seconds to undo, with its notice again.
     const back = outbox.resume(UNDO_AFTER_QUIT_MS);
     const notify = () => back.forEach((b) => send('send-queued', b));
     if (win && !win.isDestroyed()) notify();
@@ -1992,7 +2006,6 @@ const UNDO_AFTER_QUIT_MS = 5000;
 app.on('before-quit', (event) => {
   if (!askQuitWithHeldMail()) {
     event.preventDefault();
-    restartForUpdate = false;
     return;
   }
   quitting = true;
