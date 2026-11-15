@@ -555,6 +555,36 @@ test('pasted text keeps the spaces at its ends', async () => {
   expect(await lines(win)).toEqual(['a https://x.example', 'b www.y.example next']);
 });
 
+test('an address pasted over a selection that holds code stays text', async () => {
+  await composeInPane();
+  // Code is never linked, also inside a selection that starts and ends outside it: the address replaces the selection
+  // as text, as it does over a selection that starts in code.
+  const overCode = async (html, from, to) => {
+    await fill(win, html);
+    await editor(win).evaluate(
+      (root, [from, to]) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const texts = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node);
+        const start = texts.find((n) => n.data.includes(from));
+        const end = texts.find((n) => n.data.includes(to));
+        const range = document.createRange();
+        range.setStart(start, start.data.indexOf(from));
+        range.setEnd(end, end.data.indexOf(to) + to.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      },
+      [from, to]
+    );
+    await win.waitForTimeout(30);
+    await paste(win, { text: 'https://rukoo.io' });
+    await expect.poll(() => editor(win).textContent()).toContain('https://rukoo.io');
+    expect(await links(win)).toEqual([]);
+  };
+  await overCode('<div>Run <code>npm start</code> first</div>', 'Run', 'first');
+  await overCode('<div>Before</div><pre>npm test</pre><div>then ship</div>', 'Before', 'then');
+});
+
 test('a draft keeps its links and their text when it is saved, closed and opened again', async () => {
   await launch('en');
   await win.click('[data-action="compose"]');

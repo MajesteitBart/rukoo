@@ -343,6 +343,8 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
   // ----- addresses become links -----
 
   const blocked = (range) => Boolean(within(range.startContainer, NO_LINK) || within(range.endContainer, NO_LINK));
+  // What a selection holds in between, which createLink would wrap too.
+  const holds = (range, selector) => Boolean(range.cloneContents().querySelector(selector));
 
   listen(editor, 'paste', (e) => {
     const data = e.clipboardData;
@@ -354,7 +356,7 @@ export function mountEditorLinks(editor, { editorRange, restoreRange, onChange }
     const href = range.collapsed ? null : soleUrl(text);
     if (href) {
       const link = linkAt(range);
-      if (!link && (blocked(range) || range.cloneContents().querySelector('a.mention'))) return;
+      if (!link && (blocked(range) || holds(range, 'code, pre, a.mention'))) return;
       e.preventDefault();
       if (link) selectContents(link);
       document.execCommand('createLink', false, href);
