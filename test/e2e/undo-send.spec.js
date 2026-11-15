@@ -331,7 +331,11 @@ test("Don't quit also calls off a quit an editor held while its Send waited for 
     app.quit();
   });
   await expect.poll(() => app.evaluate(() => global.__quitHeld === true)).toBe(true);
-  await app.evaluate(() => global.__saves.splice(0).forEach((go) => go()));
+  // The held save goes on, and later saves go at once.
+  await app.evaluate(() => {
+    delete global.__semEngine.saveDraft;
+    global.__saves.splice(0).forEach((go) => go());
+  });
   await composerGone();
   // The editor let the quit go on, and that asked about the email.
   await expect.poll(() => app.evaluate(() => global.__quits)).toBe(2);
