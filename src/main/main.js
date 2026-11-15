@@ -788,7 +788,7 @@ const api = {
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.
   setZoom: (level) => setZoom(level),
-  sync: (accountId) => (accountId ? engine.syncAccount(accountId) : engine.syncAll()).then(() => true),
+  sync: (accountId) => engine.syncNow(accountId).then(() => true),
   openFolder: (accountId, folder) => engine.openFolder(accountId, folder),
   pickFiles: async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('composer.attachments.pick') });
