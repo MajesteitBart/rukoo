@@ -48,10 +48,17 @@ const zoom = () =>
 const mainZoom = async () => (await zoom())['index.html'][0];
 const savedZoom = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'data', 'settings.json'), 'utf8')).zoomLevel;
 
+// The zoom keys use Command on a Mac and Ctrl elsewhere (zoomKey in src/main/zoom.js).
+const MAC = process.platform === 'darwin';
+const MODIFIER = MAC ? 'meta' : 'control';
+// Chromium zooms with Ctrl and the mouse wheel everywhere but on a Mac, where it never raises zoom-changed for the
+// wheel (WebContentsImpl::HandleWheelEvent), so the wheel cases run on Windows and Linux only.
+const NO_WHEEL = 'the mouse wheel does not zoom on macOS';
+
 // Playwright's keyboard goes through DevTools and skips before-input-event. sendInputEvent takes the route of a
 // real key press: main's before-input-event first, then the focused element, the email's frame included.
 // keyCode uses Electron's accelerator names: '=', 'Plus' (Shift+=), 'numadd', '-', 'numsub', '0', 'num0'.
-const press = (page, keyCode, modifiers = ['control']) =>
+const press = (page, keyCode, modifiers = [MODIFIER]) =>
   app.evaluate(
     ({ BrowserWindow }, [page, keyCode, modifiers]) => {
       const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith(page));
@@ -144,6 +151,7 @@ test('the zoom stops at 80% and 200%', async () => {
 });
 
 test('Ctrl+mouse wheel zooms in steps over the list, the reading pane and the email', async () => {
+  test.skip(MAC, NO_WHEEL);
   await win.locator('.item').first().click();
   await expect(win.frameLocator('.mail-frame').locator('body')).toContainText('Traffic fines');
   const steps = [80, 90, 100, 110, 125, 150, 175, 200];
@@ -179,15 +187,20 @@ test('compose windows share the zoom with the main window, both ways', async () 
   await popped.locator('.compose .editor').click();
   await press('compose.html', 'Plus');
   await expect.poll(zoom).toEqual({ 'index.html': [125], 'compose.html': [125] });
-  await wheel('compose.html', popped.locator('.compose .editor'), 'out');
-  await expect.poll(mainZoom).toBeLessThan(125);
-  // Compare within one snapshot: the wheel's phase-end notch can land between two separate reads. The other window
-  // follows a moment later, so wait until a snapshot shows both at the same level.
-  const same = async () => {
-    const z = await zoom();
-    return JSON.stringify(z['compose.html']) === JSON.stringify(z['index.html']);
-  };
-  await expect.poll(same).toBe(true);
+  if (MAC) {
+    await press('compose.html', '-');
+    await expect.poll(zoom).toEqual({ 'index.html': [110], 'compose.html': [110] });
+  } else {
+    await wheel('compose.html', popped.locator('.compose .editor'), 'out');
+    await expect.poll(mainZoom).toBeLessThan(125);
+    // Compare within one snapshot: the wheel's phase-end notch can land between two separate reads. The other window
+    // follows a moment later, so wait until a snapshot shows both at the same level.
+    const same = async () => {
+      const z = await zoom();
+      return JSON.stringify(z['compose.html']) === JSON.stringify(z['index.html']);
+    };
+    await expect.poll(same).toBe(true);
+  }
   await press('compose.html', '0');
   await expect.poll(zoom).toEqual({ 'index.html': [100], 'compose.html': [100] });
   await expect(popped.locator('.compose .editor')).toHaveText('');
@@ -199,7 +212,10 @@ test('Settings shows the zoom, follows the keys while open and resets to 100%', 
   const reset = win.locator('.settings [data-a="zoom-reset"]');
   await expect(value).toHaveText('100%');
   await expect(reset).toBeDisabled();
-  await expect(win.locator('.settings [data-zoom]')).toContainText('Ctrl+Plus');
+  const help = win.locator('.settings [data-zoom] .desc');
+  await expect(help).toHaveText(
+    MAC ? 'Use ⌘+Plus and ⌘+Minus. ⌘+0 goes back to 100%.' : 'Use Ctrl+Plus and Ctrl+Minus, or Ctrl with the mouse wheel. Ctrl+0 goes back to 100%.'
+  );
 
   await press('index.html', '=');
   await expect(value).toHaveText('110%');
@@ -208,7 +224,8 @@ test('Settings shows the zoom, follows the keys while open and resets to 100%', 
   await expect(value).toHaveText('125%');
   await press('index.html', 'numadd');
   await expect(value).toHaveText('150%');
-  await wheel('index.html', win.locator('.settings h1'), 'out');
+  if (MAC) await press('index.html', '-');
+  else await wheel('index.html', win.locator('.settings h1'), 'out');
   await expect(value).not.toHaveText('150%');
   expect(await value.textContent()).toBe(`${await mainZoom()}%`);
 

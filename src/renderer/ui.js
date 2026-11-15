@@ -25,6 +25,20 @@ export const brandLogo = (cls) =>
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// Calls done() once the drag that has just started is over: dropped, called off, or ended from an element that was
+// drawn again while it was dragged. That element left the page, so its dragend reaches no listener here. The page gets
+// no mouse events during a drag, so the first mouse move with no button down marks the end of such a drag.
+export function afterDrag(done) {
+  const end = (e) => {
+    if (e.type === 'mousemove' && e.buttons) return;
+    document.removeEventListener('dragend', end, true);
+    document.removeEventListener('mousemove', end, true);
+    done();
+  };
+  document.addEventListener('dragend', end, true);
+  document.addEventListener('mousemove', end, true);
+}
+
 const dateFormat = (ts, options) => new Intl.DateTimeFormat(getLocale(), options).format(new Date(ts));
 
 const pad = (n) => String(n).padStart(2, '0');
