@@ -51,11 +51,16 @@ export function soleUrl(text) {
 // The address typed last in before, the text in front of the caret, once a space, Enter or Tab ends it:
 // { start, end, text, href } within before, or null. Punctuation between the address and the caret stays outside.
 export function typedUrl(before) {
-  const word = /\S+$/.exec(String(before || ''));
-  if (!word) return null;
-  const url = findUrls(word[0]).pop();
-  if (!url || trimUrl(word[0].slice(url.start)) !== url.text) return null;
-  return { ...url, start: word.index + url.start, end: word.index + url.end };
+  const s = String(before || '');
+  // The last word, found from the end: a pattern such as /\S+$/ would try every start inside a long word.
+  let start = s.length;
+  while (start > 0 && !/\s/.test(s[start - 1])) start--;
+  // Nothing typed since the last space.
+  if (start === s.length) return null;
+  const word = s.slice(start);
+  const url = findUrls(word).pop();
+  if (!url || trimUrl(word.slice(url.start)) !== url.text) return null;
+  return { ...url, start: start + url.start, end: start + url.end };
 }
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

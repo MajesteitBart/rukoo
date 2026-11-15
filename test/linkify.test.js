@@ -142,3 +142,12 @@ test('a long run of closing brackets after an address is trimmed in linear time'
   assert.ok(fast(() => linkedHtml(`see ${brackets}`), 'linkedHtml').startsWith('see <a href="https://a.example/">'));
   assert.deepEqual(fast(() => findUrls(`(https://a.example/(x)${')]'.repeat(50000)}`), 'mixed brackets').map((u) => u.text), ['https://a.example/(x)']);
 });
+
+test('the typed address is found in linear time after a long word', async () => {
+  const { typedUrl } = await load();
+  const long = 'x'.repeat(200000);
+  assert.equal(fast(() => typedUrl(`${long} word`), 'a word after a long one'), null);
+  assert.equal(fast(() => typedUrl(`${long} `), 'a space after a long word'), null);
+  const url = fast(() => typedUrl(`see https://a.example/${long}`), 'a long address');
+  assert.deepEqual([url.start, url.end], [4, 4 + 'https://a.example/'.length + long.length]);
+});
