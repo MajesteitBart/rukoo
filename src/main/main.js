@@ -722,7 +722,7 @@ const api = {
   archive: (id) => engine.archive(id),
   canUndo: (id) => engine.canUndo(id),
   undoMove: (id) => engine.undoMove(id),
-  markAllRead: (scope, view, folder, category) => engine.markAllRead(scope, view, folder, { category: accountText(category, 100) || null }),
+  setFlagsMany: (ids, flags) => engine.setFlagsMany((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), plainObject(flags)),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
