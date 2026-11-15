@@ -50,14 +50,18 @@ const waiting = () => app.evaluate(() => global.__semOutbox.size);
 const sendWaiting = () => app.evaluate(() => global.__semOutbox.flush());
 // Refused emails main holds for the main window until their editors are open (main.js refused).
 const held = () => app.evaluate(() => global.__semRefused.size);
-// How often a quit asked about waiting email (main.js askQuitWithHeldMail).
+// How often a quit asked about waiting email (main.js askQuitWithHeldMail), and how many emails' clocks stand still.
 const quitQuestions = () => app.evaluate(() => global.__semQuitAsked || 0);
+const paused = () => app.evaluate(() => [...global.__semOutbox.entries.values()].filter((e) => e.left !== undefined).length);
 // The main window as main sees it, or null while there is none.
 const mainWindow = () =>
   app.evaluate(({ BrowserWindow }) => {
     const w = BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html'));
     return w ? { visible: w.isVisible() } : null;
   });
+// What the main window's close button does: hide it in the tray with Close to the tray on, otherwise close it.
+const closeMain = () =>
+  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html')).close());
 // The subjects in a view of the demo account, after a sync.
 const subjects = (view) =>
   app.evaluate(async (_e, view) => {
@@ -244,6 +248,61 @@ test("quitting with an email that waits asks first, and Don't quit keeps it wait
   await app.evaluate(() => {
     global.__semQuitAnswer = 0;
   });
+});
+
+// The main window waited in the tray when Quit in the tray menu asked. Don't quit brings it back, so the Undo notice
+// is in view while the email waits.
+test("Don't quit brings the main window back from the tray with the Undo notice", async () => {
+  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: true }));
+  await newMessage(win, { to: 'demo@example.com', subject: 'Back from the tray', text: 'Still undoable.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  await closeMain();
+  await expect.poll(mainWindow).toEqual({ visible: false });
+  await app.evaluate(() => {
+    global.__semQuitAnswer = 1;
+    global.__semTray.menu.getMenuItemById('quit').click();
+  });
+  await expect.poll(mainWindow).toEqual({ visible: true });
+  // The email's clock runs again, with its notice in the window.
+  await expect.poll(paused).toBe(0);
+  await expect(notice()).toContainText('Sending email…');
+  expect(await waiting()).toBe(1);
+  expect(await quitQuestions()).toBe(1);
+  await notice().locator('button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Back from the tray');
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).not.toContain('Back from the tray');
+});
+
+// Without the tray, closing the last window quits, and Don't quit makes a new main window. Here that window starts
+// loading its page 7 seconds late, longer than the 5 seconds Undo gets after the question: the email waits all the
+// same, until the window can show its notice.
+test("Don't quit after the last window closed keeps the email until the new main window offers Undo", async () => {
+  const subject = 'Waits for the new window';
+  await newMessage(win, { to: 'demo@example.com', subject, text: 'Still undoable.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  await app.evaluate(({ app }) => {
+    global.__semQuitAnswer = 1;
+    app.once('browser-window-created', (_event, w) => {
+      const load = w.loadFile.bind(w);
+      w.loadFile = (...args) => new Promise((resolve, reject) => setTimeout(() => load(...args).then(resolve, reject), 7000));
+    });
+  });
+  const [fresh] = await Promise.all([app.waitForEvent('window'), closeMain()]);
+  win = fresh;
+  await expect(notice()).toContainText('Sending email…', { timeout: 20000 });
+  expect(await waiting()).toBe(1);
+  expect(await subjects('sent')).not.toContain(subject);
+  expect(await mainWindow()).toEqual({ visible: true });
+  expect(await quitQuestions()).toBe(1);
+  await notice().locator('button').click();
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue(subject);
+  expect(await waiting()).toBe(0);
+  expect(await subjects('sent')).not.toContain(subject);
 });
 
 // A quit comes while Send waits for the editor's Drafts save. The editor holds that quit, queues the email once the

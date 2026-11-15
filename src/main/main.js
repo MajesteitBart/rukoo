@@ -20,7 +20,7 @@ const {
   session
 } = require('electron');
 const { Engine } = require('./engine');
-const { Outbox, Handoff, savedToDrafts } = require('./outbox');
+const { Outbox, Handoff, savedToDrafts, askBeforeQuit } = require('./outbox');
 const { cleanSignatureHtml } = require('./signature');
 const { Calendars } = require('./calendar');
 const { GoogleAuth } = require('./google');
@@ -751,6 +751,8 @@ function undoSendDelay() {
   if (process.env.SEM_HIDDEN && process.env.SEM_UNDO_SEND !== '1') return 0;
   return (Number(engine.settings.undoSend) || 0) * 1000;
 }
+// After Don't quit, each email that waits gets what it had left, and at least this, to undo (undoNotices).
+const UNDO_AFTER_QUIT_MS = 5000;
 
 // An email went. Sending removed its draft, so an agent's draft cards that pointed at it keep none. id: the email in
 // the outbox, whose "Email sent" the main window holds back while a newer email's Undo notice shows.
@@ -1613,6 +1615,11 @@ const windowApi = {
     openComposeWindow({ ...(entry.restore.opts || {}), restore: entry.restore });
     return { window: true };
   },
+  // The emails Don't quit kept waiting (askQuitWithHeldMail), whose clocks stood still until the main window's page
+  // could show their notices with Undo: they run again from now, and the answer is [{ id, ms }] for those notices.
+  // The page asks when told ('send-paused') and once its first state is drawn. Empty for a compose window, and when
+  // nothing stands still.
+  undoNotices: (sender) => (fromMainWindow(sender) ? outbox.resume(UNDO_AFTER_QUIT_MS) : []),
   // The refused emails held for the main window (holdRefused) that it hasn't claimed yet: [{ id, restore, error }].
   // Main keeps them until the window says each one is open (refusedOpened), or asks main to open it (openRefused).
   sendFailures: (sender) => (fromMainWindow(sender) ? refused.waiting() : []),
@@ -1958,22 +1965,19 @@ app.on('window-all-closed', () => {
 
 // Quit in the tray menu, the last window closing, and the e2e teardown all come through here.
 // Quitting while email still waits out its Undo notice asks first: Send and quit (the default) or Don't quit, which
-// keeps the emails waiting. Asked once per quit; a quit from the Windows session ending never asks (endSession).
-// Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog, and count the
-// questions in global.__semQuitAsked.
+// keeps the emails waiting (outbox.js askBeforeQuit). Emails already on their way can't be undone: the quit waits for
+// them without asking (will-quit). Asked once per quit; a quit from the Windows session ending never asks
+// (endSession). Test runs answer through global.__semQuitAnswer (0 send, 1 stay) instead of a native dialog, and
+// count the questions in global.__semQuitAsked.
 function askQuitWithHeldMail() {
-  // Emails already on their way can't be undone: the quit waits for them without asking (will-quit).
-  if (quitAsked || !outbox || !outbox.waiting()) return true;
-  const count = outbox.waiting();
-  // Their clocks stop while the question is open, so none goes unasked behind it.
-  outbox.pause();
-  let response;
-  if (process.env.SEM_HIDDEN) {
-    global.__semQuitAsked = (global.__semQuitAsked || 0) + 1;
-    response = global.__semQuitAnswer || 0;
-  } else {
+  if (quitAsked || !outbox) return true;
+  const answer = askBeforeQuit(outbox, (count) => {
+    if (process.env.SEM_HIDDEN) {
+      global.__semQuitAsked = (global.__semQuitAsked || 0) + 1;
+      return global.__semQuitAnswer || 0;
+    }
     const parent = win && !win.isDestroyed() && win.isVisible() ? win : null;
-    response = dialog.showMessageBoxSync(parent, {
+    return dialog.showMessageBoxSync(parent, {
       type: 'question',
       title: 'Rukoo Mail',
       message: t('composer.undoSend.quitTitle', { count }),
@@ -1982,26 +1986,20 @@ function askQuitWithHeldMail() {
       defaultId: 0,
       cancelId: 1
     });
-  }
-  if (response === 1) {
+  });
+  if (answer === 'stay') {
     // Don't quit calls off the whole quit, also an earlier one that a window held and then let go on (answered()).
+    // The main window comes forward with the notices: out of the tray, or made anew after the last window closed.
+    // The emails' clocks stand still until its page can show those notices with Undo and asks for them
+    // (undoNotices); a window that still loads would otherwise let an email go without one.
     cancelQuit();
-    // Each email gets what it had left, and at least a few seconds to undo, with its notice again.
-    const back = outbox.resume(UNDO_AFTER_QUIT_MS);
-    const notify = () => back.forEach((b) => send('send-queued', b));
-    if (win && !win.isDestroyed()) notify();
-    else {
-      // The quit came from closing the last window: a new main window shows the notices once it has loaded.
-      createWindow();
-      win.webContents.once('did-finish-load', () => setTimeout(notify, 500));
-    }
+    showWindow();
+    send('send-paused');
     return false;
   }
-  outbox.resume(0);
-  quitAsked = true;
+  if (answer === 'send') quitAsked = true;
   return true;
 }
-const UNDO_AFTER_QUIT_MS = 5000;
 
 app.on('before-quit', (event) => {
   if (!askQuitWithHeldMail()) {

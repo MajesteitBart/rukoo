@@ -199,6 +199,8 @@ async function refreshOnce() {
   renderedLanguage = data.settings.language;
   localize();
   if (first) takeInviteFiles();
+  // In the user's language, now that it is set.
+  if (first) takeUndoNotices();
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
@@ -2158,6 +2160,14 @@ function offerUndoSend({ id, ms }) {
   toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
 }
 
+// The emails Don't quit kept waiting (askQuitWithHeldMail in main.js). Their clocks stand still until this page asks
+// for their notices, so none runs out before its Undo shows: asked when told ('send-paused'), and once the first
+// state is drawn, for a main window that was still loading or was made anew after the last window closed.
+async function takeUndoNotices() {
+  if (!S.data) return;
+  for (const notice of await api('undoNotices').catch(() => [])) offerUndoSend(notice);
+}
+
 // An email that waited went. A newer email's notice keeps its Undo instead of making way for "Email sent".
 function waitedMailSent({ id }) {
   if (undoNotice && undoNotice.id !== id && showingToast(undoNotice.action)) return;
@@ -2915,9 +2925,11 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
-  // Undo send (main.js): an email waits after Send, or the server refused one that waited and its editor opens again.
+  // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
+  // waited and its editor opens again.
   if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
   if (type === 'send-done' && payload) waitedMailSent(payload);
+  if (type === 'send-paused') takeUndoNotices();
   if (type === 'send-failed') takeSendFailures();
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {

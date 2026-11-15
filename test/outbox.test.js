@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
-const { Outbox, Handoff, savedToDrafts } = require('../src/main/outbox');
+const { Outbox, Handoff, savedToDrafts, askBeforeQuit } = require('../src/main/outbox');
 const { Engine } = require('../src/main/engine');
 
 // Timers that only fire when the test says so.
@@ -378,4 +378,69 @@ test('resume(0) gives an email back the time it had left, and emails on their wa
   assert.equal(box.size, 1);
   assert.equal(box.waiting(), 0);
   release();
+});
+
+// The quit question (main.js askQuitWithHeldMail). Don't quit used to start the clocks again at once, before the main
+// window was out of the tray or had loaded anew, so an email with little time left could go without its notice.
+test("Don't quit leaves the clocks stopped until the main window's page can offer Undo, however long that takes", async () => {
+  const { box, clock, log } = outbox();
+  const { id } = box.queue({ payload: { subject: 'Held' }, ms: 5000 });
+  clock.advance(4000);
+  const asked = [];
+  assert.equal(
+    askBeforeQuit(box, (count) => {
+      asked.push(count);
+      return 1;
+    }),
+    'stay'
+  );
+  assert.deepEqual(asked, [1]);
+  assert.equal(clock.pending(), 0);
+  // The new main window takes a minute to load: nothing goes meanwhile, and Undo still works.
+  clock.advance(60000);
+  await settle();
+  assert.deepEqual(log, []);
+  assert.equal(box.waiting(), 1);
+  // Its page asks for the notices: the email gets at least the minimum, and a second ask shows none twice.
+  assert.deepEqual(box.resume(5000), [{ id, ms: 5000 }]);
+  assert.deepEqual(box.resume(5000), []);
+  clock.advance(4999);
+  await settle();
+  assert.deepEqual(log, []);
+  clock.advance(1);
+  await settle();
+  assert.deepEqual(log, [['send', 'Held'], ['sent', 'Held', 'main']]);
+});
+
+test('Send and quit starts the clocks again with the time left, and a quit with nothing to undo asks nothing', async () => {
+  const { box, clock, log, release } = outbox({ hold: true });
+  const never = () => assert.fail('the quit asked');
+  assert.equal(askBeforeQuit(box, never), null);
+  box.queue({ payload: { subject: 'Going' }, ms: 5000 });
+  clock.advance(2000);
+  assert.equal(askBeforeQuit(box, () => 0), 'send');
+  assert.equal(clock.pending(), 1);
+  clock.advance(2999);
+  await settle();
+  assert.deepEqual(log, []);
+  clock.advance(1);
+  await settle();
+  assert.deepEqual(log, [['send', 'Going']]);
+  // On its way, Undo can't take it back any more, so a second quit doesn't ask about it.
+  assert.equal(askBeforeQuit(box, never), null);
+  release();
+  await settle();
+  assert.deepEqual(log, [['send', 'Going'], ['sent', 'Going', 'main']]);
+});
+
+test("a second quit while Don't quit still holds the clocks asks again, and Send and quit gives back the time left", async () => {
+  const { box, clock } = outbox();
+  const { id } = box.queue({ payload: { subject: 'Twice' }, ms: 5000 });
+  clock.advance(3000);
+  assert.equal(askBeforeQuit(box, () => 1), 'stay');
+  clock.advance(10000);
+  // Quit again before the new window asked for the notices.
+  assert.equal(askBeforeQuit(box, () => 0), 'send');
+  assert.equal(clock.pending(), 1);
+  assert.equal(box.entries.get(id).until, clock.now() + 2000);
 });

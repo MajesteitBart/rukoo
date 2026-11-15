@@ -107,6 +107,21 @@ class Outbox {
   }
 }
 
+// The question a quit asks while email still waits out its Undo notice (askQuitWithHeldMail in main.js). ask(count)
+// shows it and answers 0 for Send and quit, 1 for Don't quit. The clocks stop while it is open, so no email goes
+// unasked behind it. Send and quit starts them again, and the quit then sends what waits. Don't quit leaves them
+// stopped: the main window may first have to come out of the tray or load anew, and an email whose time ran out
+// meanwhile would go without a notice. Its page starts them once it can offer Undo (outbox.resume, from undoNotices
+// in main.js). Returns 'send', 'stay', or null when no email waits and nothing was asked.
+function askBeforeQuit(outbox, ask) {
+  const count = outbox.waiting();
+  if (!count) return null;
+  outbox.pause();
+  if (ask(count) === 1) return 'stay';
+  outbox.resume(0);
+  return 'send';
+}
+
 // Refused emails main keeps for the main window until its page has opened them (holdRefused in main.js). Each item
 // has an id. The page asks what waits (waiting()), claims one when its reading pane is free to take it (claim()),
 // and says so once the editor is open with it (ack()). Until that ack the email stays here, so a page that is still
@@ -209,4 +224,4 @@ function savedToDrafts(restore, id) {
   return { ...r, state: { ...(r.state && typeof r.state === 'object' ? r.state : {}), draftId: id || null, pendingRemap: true } };
 }
 
-module.exports = { Outbox, Handoff, savedToDrafts };
+module.exports = { Outbox, Handoff, savedToDrafts, askBeforeQuit };
