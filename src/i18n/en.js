@@ -2671,6 +2671,10 @@
     "message": "Undo {name}'s draft?",
     "description": "Composer confirmation title when undoing an agent draft you already edited."
   },
+  "composer.attachments.dropHint": {
+    "message": "Drop to attach",
+    "description": "Shown across the composer while files are dragged over it; letting go attaches them. src/renderer/composer.js (mountComposer); src/renderer/styles.css (.composer.drop-files)"
+  },
   "composer.attachments.image": {
     "message": "Insert image",
     "description": "composer > attachments. src/renderer/composer.js (template); src/main/main.js"
@@ -3433,7 +3437,7 @@
   },
   "mailbox.actions.readAll": {
     "message": "Mark all as read",
-    "description": "mailbox > actions. src/renderer/app.js (listAction)"
+    "description": "Message list: item in the list's More menu that marks every unread email the list shows read, with the folder or category, quick filter and search as they are. Shows its shortcut (Shift+Esc by default). src/renderer/app.js (listAction, markAllRead)"
   },
   "mailbox.actions.readCount": {
     "message": {
@@ -3445,6 +3449,10 @@
   "mailbox.actions.readShortcut": {
     "message": "Mark as read (Ctrl+Q)",
     "description": "mailbox > actions. src/renderer/app.js (renderListTools)"
+  },
+  "mailbox.actions.readSome": {
+    "message": "Marked {count} of {total} emails as read. {error}",
+    "description": "Message list: notice after Mark all as read when the mail server refused some of the emails, which stay unread. Its Undo button (and Ctrl+Z) marks the {count} emails that were marked unread again. {count}: emails marked read, {total}: unread emails the list showed, {error}: the server's first refusal, a full sentence. src/renderer/app.js (markAllRead)"
   },
   "mailbox.actions.star": {
     "message": "Star",
@@ -3705,7 +3713,7 @@
   },
   "mailbox.message.collapse": {
     "message": "Collapse",
-    "description": "mailbox > message. src/renderer/app.js (itemHtml)"
+    "description": "Message list: tooltip and accessible name of the button that folds an open stack of emails from one sender again. The tooltip adds the key that does it, (←). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.noRecipient": {
     "message": "(No recipient)",
@@ -3736,7 +3744,7 @@
       "one": "{count} more email from {sender}",
       "other": "{count} more emails from {sender}"
     },
-    "description": "mailbox > message. Message list: tooltip on the collapsed sender stack button."
+    "description": "Message list: tooltip and accessible name of the button on a folded stack of read emails from one sender, which shows a pile icon and +{count}. {count}: the emails folded under the first one; {sender}: the sender's name. The tooltip adds the key that opens the stack, (→). src/renderer/app.js (itemHtml)"
   },
   "mailbox.message.vip": {
     "message": "VIP",
@@ -4476,15 +4484,15 @@
   },
   "settings.agents.copyOpenClaw": {
     "message": "Copy OpenClaw setup",
-    "description": "Settings, Agents page, OpenClaw card: row that copies the command that adds Rukoo's MCP server to OpenClaw."
+    "description": "Settings, Agents page, OpenClaw card: row that copies the two steps that add Rukoo's MCP server to OpenClaw: a token line for the gateway's .env file and the openclaw mcp set command."
   },
   "settings.agents.copyOpenClawHelp": {
-    "message": "A command for this computer that lets OpenClaw use Rukoo's tools. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. The copied command (openclaw mcp set) contains Rukoo's MCP token for OpenClaw."
+    "message": "Two steps for a gateway on this computer: a line with the token for OpenClaw's .env file, and the command that lets OpenClaw use Rukoo's tools. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row for a gateway on this computer. Step 1 is a line (RUKOO_MCP_TOKEN=...) that goes in OpenClaw's .env file and holds Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command, which names that variable."
   },
   "settings.agents.copiedOpenClaw": {
-    "message": "Copied. Run it in a terminal on this computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup command."
+    "message": "Copied two steps: a line for OpenClaw's .env file and a command to run on this computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on this computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command."
   },
   "settings.agents.gatewayUrl": {
     "message": "Gateway URL",
@@ -4531,12 +4539,12 @@
     "description": "Settings, Agents page: toast after the OpenClaw gateway token was stored."
   },
   "settings.agents.copyOpenClawRemoteHelp": {
-    "message": "A command for the gateway's computer, with Rukoo's Tailscale address. It holds a token, so don't share it.",
-    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. The copied command (openclaw mcp set) contains Rukoo's Tailscale address and its MCP token for OpenClaw."
+    "message": "Two steps for the gateway's computer: a line with the token for OpenClaw's .env file, and a command with Rukoo's Tailscale address. Don't share the token.",
+    "description": "Settings, Agents page, OpenClaw card: description of the copy setup row while a gateway on another computer may use Rukoo. Step 1 is a line (RUKOO_MCP_TOKEN=...) for OpenClaw's .env file with Rukoo's MCP token for OpenClaw; step 2 is the openclaw mcp set command with Rukoo's Tailscale address."
   },
   "settings.agents.copiedOpenClawRemote": {
-    "message": "Copied with {url}. Run it on the gateway's computer, then restart the OpenClaw gateway.",
-    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
+    "message": "Copied two steps with {url}: a line for OpenClaw's .env file and a command, both for the gateway's computer. Restart the gateway afterwards.",
+    "description": "Settings, Agents page: toast after copying the OpenClaw setup for a gateway on another computer. The clipboard holds a token line for OpenClaw's .env file and the openclaw mcp set command. url is Rukoo's MCP address on Tailscale, such as http://100.64.0.5:47800/mcp."
   },
   "settings.agents.openclawNoListener": {
     "message": "Rukoo isn't listening on a Tailscale address. Check that Tailscale runs on this computer.",
@@ -4992,6 +5000,14 @@
     "message": "Send as",
     "description": "settings > aliases. src/renderer/settings.js (render)"
   },
+  "settings.aliases.signatureOne": {
+    "message": "Under mail from the account address",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list, for an account without aliases; the row shows the signature its mail gets. src/renderer/settings.js (render)"
+  },
+  "settings.aliases.signatureAll": {
+    "message": "Under mail from all {count} addresses",
+    "description": "Settings > account > Sender addresses: title of the row under the Signature heading, below the address list; the row shows the signature. Every address of an account sends the account's signature; count is the number of addresses listed above it, the account address included, and is at least 2. src/renderer/settings.js (render)"
+  },
   "settings.badge.new": {
     "message": "New emails",
     "description": "settings > badge. src/renderer/settings.js"
@@ -5077,7 +5093,7 @@
     "description": "Settings > General: switch that folds a run of emails from one sender into one row of the message list, with a +N count. Off by default. src/renderer/settings.js (render)"
   },
   "settings.general.stackSendersHelp": {
-    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row.",
+    "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row. Right arrow and Left arrow open and close a group.",
     "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
   },
   "settings.general.fit": {
@@ -5264,6 +5280,10 @@
     "message": "Rukoo signs in with the username and password above. Leave this empty to show no calendar for this account.",
     "description": "Server settings form and the manual servers of the setup form: help text under the CalDAV address field. In both forms the username and password fields are above it. src/renderer/settings.js (render); src/renderer/setup.js (showLogin)"
   },
+  "settings.signature.accountTitle": {
+    "message": "Signature for {email}",
+    "description": "Title of the signature editor opened for one account, from its page, its Sender addresses page or the Signatures page; email is the account's address. src/renderer/settings.js (openSettings)"
+  },
   "settings.signature.generalValue": {
     "message": "General: {signature}",
     "description": "settings > signature. src/renderer/settings.js (render)"
@@ -5286,11 +5306,35 @@
   },
   "settings.signature.usesGeneral": {
     "message": "Uses the general signature",
-    "description": "settings > signature. Account settings: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
+    "description": "settings > signature. An account's Signature row (on its page and its Sender addresses page) and its row on the Signatures page: the account has no signature of its own and uses the general one, which is previewed below. src/renderer/settings.js (render)"
   },
   "settings.signature.useGeneral": {
     "message": "Use general signature",
     "description": "settings > signature. src/renderer/settings.js (openSettings)"
+  },
+  "settings.signatures.title": {
+    "message": "Signatures",
+    "description": "Settings: the row in the Accounts card that opens the Signatures page, and that page's title. The page lists the general signature and each account's signature. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.rowHelp": {
+    "message": "General and per account",
+    "description": "Settings: help under the Signatures row in the Accounts card. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.general": {
+    "message": "General signature",
+    "description": "Settings > Signatures: the row with the general signature, and the title of the signature editor it opens. src/renderer/settings.js (render, openSettings)"
+  },
+  "settings.signatures.generalHelp": {
+    "message": "For accounts without a signature of their own",
+    "description": "Settings > Signatures: help under General signature, saying which accounts send it. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.own": {
+    "message": "Its own signature",
+    "description": "Settings > Signatures: value of an account's row when the account has a signature of its own, which is previewed below; the other values are Uses the general signature and None. src/renderer/settings.js (render)"
+  },
+  "settings.signatures.aliases": {
+    "message": "Also under mail from {addresses}",
+    "description": "Settings > Signatures: help under an account that has aliases; its signature also goes under mail sent from them. addresses is a list of email addresses, joined in the interface language (\"a@example.com and b@example.com\"). src/renderer/settings.js (render)"
   },
   "calendar.free.title": {
     "message": "Availability",
@@ -6811,6 +6855,10 @@
   "settings.general.macMinimizeHelp": {
     "message": "Hide the minimized window and show a menu bar icon. Reopen Rukoo from that icon or the Dock.",
     "description": "macOS Settings > General: optional menu bar icon and minimize behavior. src/renderer/settings.js."
+  },
+  "settings.general.macZoomHelp": {
+    "message": "Use ⌘+Plus and ⌘+Minus. ⌘+0 goes back to 100%.",
+    "description": "macOS Settings > General: explanation below Zoom, naming the keyboard shortcuts. Replaces settings.general.zoomHelp on a Mac, where the mouse wheel doesn't zoom. src/renderer/settings.js (zoomRow)"
   },
   "setup.title": {
     "message": "Set up email",
@@ -8453,7 +8501,7 @@
     "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
   },
   "settings.keyboard.fixed": {
-    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears.",
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group.",
     "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.compose": {
@@ -8491,6 +8539,10 @@
   "settings.keyboard.actions.toggleRead": {
     "message": "Mark as read or unread",
     "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.readAll": {
+    "message": "Mark all as read",
+    "description": "Settings > Keyboard shortcuts: name of the action that marks every unread email the list shows read, in the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.star": {
     "message": "Star",
