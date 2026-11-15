@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { t } = require('../src/i18n');
 const { ImapAccount, friendlyError } = require('../src/main/imap');
-const { imapServer, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
+const { imapServer, nestedStructure, textStructure, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
 
 // client: the stand-in, or a function that makes one for each connection (it gets 'main' or 'reader').
 function session(client = { usable: true }) {
@@ -252,7 +252,72 @@ test('without any connection a read fails with the reason', async () => {
   assert.equal(s.oneConnection, false);
 });
 
-// A server folder for syncFolder: messages by sequence number, and every FETCH it was asked.
+// #56: a large message's text before its attachments.
+test('a large message comes over the reader as its structure and then its text parts, rebuilt for mailparser', async () => {
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const { simpleParser } = require('mailparser');
+  const { mimeClient } = require('./fixtures/mime-server');
+  const raw = await new MailComposer({
+    from: 'sanne@example.com',
+    to: 'me@example.com',
+    subject: 'Report',
+    text: 'The report is attached.',
+    html: '<p>The report is attached.</p>',
+    attachments: [{ filename: 'report.pdf', content: Buffer.alloc(3 * 1024 * 1024, 7), contentType: 'application/pdf' }]
+  })
+    .compile()
+    .build();
+  const log = [];
+  const modes = [];
+  const s = session((name) => {
+    const client = mimeClient(raw, { log });
+    const lock = client.getMailboxLock;
+    client.getMailboxLock = async (path, opts = {}) => {
+      modes.push(`${name}: ${path} ${opts.readOnly ? 'read-only' : 'read-write'}`);
+      return lock(path, opts);
+    };
+    return client;
+  });
+  let finishSync;
+  const sync = s.run(() => new Promise((resolve) => (finishSync = resolve)), { background: true });
+  await tick();
+  const skeleton = await s.fetchReadable('INBOX', 7);
+  // Next to a running sync, over the reader, which only reads.
+  assert.deepEqual(modes, ['reader: INBOX read-only']);
+  assert.deepEqual(log.map((q) => Object.keys(q).filter((k) => k !== 'uid').sort()), [['bodyStructure', 'headers', 'size'], ['bodyParts']]);
+  assert.ok(!log[1].bodyParts.includes('2'), 'the attachment stays on the server');
+  assert.ok(skeleton.length < 8 * 1024, `${skeleton.length} bytes`);
+  const parsed = await simpleParser(skeleton);
+  assert.equal(parsed.text, 'The report is attached.');
+  assert.deepEqual(parsed.attachments.map((a) => [a.filename, Number(a.headers.get('x-rukoo-omitted')) > 3000000]), [['report.pdf', true]]);
+  finishSync();
+  await sync;
+
+  // A message of one part has nothing to leave out: one fetch, and the whole message comes as before.
+  log.length = 0;
+  const single = session(() => mimeClient('Subject: hi\r\nContent-Type: text/plain\r\n\r\nbody', { log }));
+  assert.equal(await single.fetchReadable('INBOX', 7), null);
+  assert.equal(log.length, 1);
+  // A server that leaves out a part's header or its text fails the split; the engine reads the whole message then.
+  const leaving = (drop) =>
+    session(() => {
+      const client = mimeClient(raw);
+      const fetchOne = client.fetchOne;
+      client.fetchOne = async (seq, query) => {
+        const msg = await fetchOne(seq, query);
+        if (msg.bodyParts) for (const key of [...msg.bodyParts.keys()]) if (drop(key)) msg.bodyParts.delete(key);
+        return msg;
+      };
+      return client;
+    });
+  const missing = { message: t('errors.message.serverMissing') };
+  await assert.rejects(leaving((key) => key.endsWith('.mime')).fetchReadable('INBOX', 7), missing);
+  await assert.rejects(leaving((key) => key === '1.1').fetchReadable('INBOX', 7), missing, 'the text part');
+});
+
+// A server folder for syncFolder: messages by sequence number, and every FETCH it was asked. A message marked
+// goneBeforeDetails is gone by the time its details are asked; one marked nested is left out of any fetch that asks
+// for its structure, as imapflow leaves out a structure nested too deep to parse.
 function folder(messages) {
   const asked = [];
   const client = {
@@ -264,7 +329,7 @@ function folder(messages) {
       let list;
       if (opts.uid) {
         const uids = new Set(String(range).split(',').map(Number));
-        list = messages.filter((m) => uids.has(m.uid) && !m.goneBeforeDetails);
+        list = messages.filter((m) => uids.has(m.uid) && !m.goneBeforeDetails && !(m.nested && query.bodyStructure));
       } else {
         const start = Number(String(range).split(':')[0]);
         list = messages.slice(start - 1);
@@ -325,6 +390,36 @@ test('a sync fetches everything again for a cached message that lacks a field, a
   assert.equal(asked[1].range, '3,4');
   assert.deepEqual(res.messages.map((m) => [m.uid, m.subject]), [[3, 'old']]);
   assert.deepEqual(res.messages[0].replyTo, []);
+});
+
+test('a message whose structure could not be read lists by its envelope, and the next sync only asks its flags', async () => {
+  const messages = [
+    { uid: 3, subject: 'plain', flags: [] },
+    { uid: 4, subject: 'deeply nested', flags: ['\\Seen'], nested: true },
+    { uid: 5, subject: 'nested and moved away', flags: [], nested: true, goneBeforeDetails: true }
+  ];
+  const { client, asked } = folder(messages);
+  const s = session(client);
+  const res = await s.syncFolder('INBOX', { limit: 10, known: new Map(), uidValidity: '9' });
+  assert.deepEqual(asked[1], { range: '3,4,5', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true });
+  assert.deepEqual(asked[2], { range: '4,5', query: ['envelope', 'internalDate', 'size'], byUid: true });
+  assert.deepEqual(asked[3], { range: '3', query: ['bodyParts'], byUid: true }, 'a preview only for the one with a structure');
+  assert.equal(asked.length, 4);
+  assert.deepEqual(res.messages.map((m) => m.uid), [3, 4], 'one gone meanwhile is still left out');
+  const nested = res.messages[1];
+  assert.equal(nested.subject, 'deeply nested');
+  assert.equal(nested.size, 104);
+  assert.equal(nested.preview, '');
+  assert.equal(nested.hasAttachments, false);
+  assert.equal(nested.unread, false);
+
+  // Cached now, it is not asked for again. The one that moved is no longer in the folder.
+  messages.pop();
+  client.mailbox.exists = messages.length;
+  asked.length = 0;
+  const again = await s.syncFolder('INBOX', { limit: 10, known: new Map(res.messages.map((m) => [m.uid, m])), uidValidity: '9' });
+  assert.deepEqual(asked, [{ range: '1:*', query: ['flags'], byUid: false }]);
+  assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[3, 'plain'], [4, 'deeply nested']]);
 });
 
 test('after a UIDVALIDITY change a sync uses nothing of the cache', async () => {
@@ -530,6 +625,64 @@ test("a server search uses Gmail's own search, falls back to the plain one, and 
   client.capabilities = new Map();
   client.search = async () => false;
   await assert.rejects(s.searchFolder('INBOX', 'march'), { message: t('errors.search.refused') });
+});
+
+// #112 with the deeply nested messages of a sync: an older match imapflow can't read the structure of is still found.
+test('a server search lists a deeply nested match by its envelope', async () => {
+  const { client, asked } = folder([
+    { uid: 2, subject: 'Invoice plain', flags: [] },
+    { uid: 3, subject: 'Invoice nested', flags: ['\\Seen'], nested: true }
+  ]);
+  client.search = async () => [2, 3];
+  const res = await session(client).searchFolder('INBOX', 'invoice', { below: 9 });
+  assert.deepEqual(asked[2], { range: '3', query: ['envelope', 'internalDate', 'size'], byUid: true });
+  assert.equal(res.total, 2);
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.deepEqual([...byUid.keys()].sort(), [2, 3]);
+  assert.equal(byUid.get(3).subject, 'Invoice nested');
+  assert.equal(byUid.get(3).preview, '');
+  assert.equal(byUid.get(3).hasAttachments, false);
+  assert.equal(byUid.get(3).unread, false);
+});
+
+test('over a real connection, a message nested too deep for imapflow lists by its envelope and stays cached', async () => {
+  const server = await imapServer({
+    mailbox: {
+      path: 'INBOX',
+      uidValidity: 9,
+      messages: [
+        { uid: 7, flags: ['\\Seen'], subject: 'Plain one', size: 120, bodyStructure: textStructure(11), parts: { 1: 'Hello there' } },
+        { uid: 8, flags: [], subject: 'Nested one', from: ['Nest', 'nest@example.com'], size: 900, bodyStructure: nestedStructure(30) }
+      ]
+    }
+  });
+  const s = new ImapAccount({ type: 'imap', email: 'me@example.com', imap: { host: '127.0.0.1', port: server.port, secure: false }, smtp: {} }, 'secret');
+  try {
+    const res = await s.syncFolder('INBOX', { limit: 10 });
+    const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+    assert.deepEqual([...byUid.keys()], [7, 8]);
+    assert.equal(byUid.get(7).preview, 'Hello there');
+    const nested = byUid.get(8);
+    assert.equal(nested.subject, 'Nested one');
+    assert.deepEqual(nested.from, { name: 'Nest', address: 'nest@example.com' });
+    assert.equal(nested.size, 900);
+    assert.equal(nested.preview, '');
+    assert.equal(nested.hasAttachments, false);
+    assert.equal(nested.unread, true);
+    const fetches = server.commands.filter((c) => /^UID FETCH/i.test(c));
+    assert.match(fetches[0], /^UID FETCH 7,8 .*BODYSTRUCTURE/i);
+    assert.match(fetches[1], /^UID FETCH 8 /i);
+    assert.doesNotMatch(fetches[1], /BODYSTRUCTURE/i);
+
+    // The next sync asks only the flags.
+    server.commands.length = 0;
+    const again = await s.syncFolder('INBOX', { limit: 10, known: byUid, uidValidity: res.uidValidity });
+    assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[7, 'Plain one'], [8, 'Nested one']]);
+    assert.deepEqual(server.commands.filter((c) => /FETCH/i.test(c)).map((c) => c.split(' ')[0]), ['FETCH']);
+  } finally {
+    await s.close();
+    await server.close();
+  }
 });
 
 // ---------- signing in ----------

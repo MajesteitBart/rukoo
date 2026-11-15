@@ -29,7 +29,8 @@ import {
   onSystemThemeChange,
   isLight,
   segmented,
-  setSegmented
+  setSegmented,
+  afterDrag
 } from './ui.js';
 import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
@@ -44,6 +45,7 @@ import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
+import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -519,6 +521,7 @@ function renderShell() {
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
           <div class="list-tools"></div>
+          <button class="new-pill" data-action="new-mail" hidden></button>
           <div class="list-scroll" tabindex="0" role="listbox" aria-multiselectable="true" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}"></div>
         </section>
         <div class="divider" role="separator" aria-orientation="vertical" data-i18n-aria-label="mailbox.layout.listWidth" aria-label="${esc(t('mailbox.layout.listWidth'))}" tabindex="0"></div>
@@ -881,7 +884,31 @@ function sidebarFoot() {
     </div>`;
 }
 
+// While an email is dragged, the sidebar isn't drawn again: that would take the folder row under the pointer off the
+// page, and the drop with it. A redraw asked for meanwhile happens when the drag is over.
+let mailDrag = false;
+let sidebarStale = false;
+
+function startMailDrag() {
+  mailDrag = true;
+  document.body.classList.add('dragging-mail');
+  afterDrag(endMailDrag);
+}
+
+function endMailDrag() {
+  if (!mailDrag) return;
+  mailDrag = false;
+  document.body.classList.remove('dragging-mail');
+  $$('.nav-item.drop-target').forEach((x) => x.classList.remove('drop-target'));
+  if (sidebarStale) renderSidebar();
+}
+
 function renderSidebar() {
+  if (mailDrag) {
+    sidebarStale = true;
+    return;
+  }
+  sidebarStale = false;
   renderModeSwitch();
   if (calendarMode()) {
     $('.sidebar-main').innerHTML = calendar.sidebarHtml() + sidebarFoot();
@@ -1046,16 +1073,19 @@ function bindSidebar() {
     }
   });
 
-  // Messages dragged from the list can be dropped on folders.
+  // Messages dragged from the list can be dropped on folders. Taken on dragenter as well as dragover, as in the chat
+  // panel (agent/panel.js): Chromium refuses a drop when the last update before it was a dragenter nobody took.
   const target = (e) => e.target.closest('[data-drop-role], [data-drop-path]');
-  el.addEventListener('dragover', (e) => {
+  const accept = (e) => {
     const t = target(e);
     if (!t || !e.dataTransfer.types.includes('application/x-rukoo-ids')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     $$('.nav-item.drop-target').forEach((x) => x !== t && x.classList.remove('drop-target'));
     t.classList.add('drop-target');
-  });
+  };
+  el.addEventListener('dragenter', accept);
+  el.addEventListener('dragover', accept);
   el.addEventListener('dragleave', (e) => {
     const t = target(e);
     if (t && !t.contains(e.relatedTarget)) t.classList.remove('drop-target');
@@ -1084,6 +1114,7 @@ function changeView() {
   S.filter = 'all';
   S.keptId = null;
   S.checked.clear();
+  newRows.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
   if (S.selectedId) closeReader();
@@ -1234,6 +1265,7 @@ function renderList() {
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
   renderShell();
+  updateNewPill();
   // The reader showed the selection; it follows what is left of it, as after a move or delete.
   if (pruned) {
     if (S.checked.size > 1 || $('.reader .multi')) renderReader();
@@ -1637,18 +1669,17 @@ function bindList() {
     document.body.appendChild(ghost);
     e.dataTransfer.setDragImage(ghost, -12, -8);
     setTimeout(() => ghost.remove(), 0);
-    document.body.classList.add('dragging-mail');
-  });
-  pane.addEventListener('dragend', () => {
-    document.body.classList.remove('dragging-mail');
-    $$('.nav-item.drop-target').forEach((x) => x.classList.remove('drop-target'));
+    startMailDrag();
   });
   scroll.addEventListener('pointerdown', () => scroll.classList.remove('kbd'));
+  scroll.addEventListener('scroll', () => newRows.size && updateNewPill(), { passive: true });
   bindSwipe(pane);
 }
 
 function listAction(action, btn) {
   switch (action) {
+    case 'new-mail':
+      return showNewRows();
     case 'sync':
       return syncNow();
     case 'search-clear':
@@ -2133,6 +2164,8 @@ async function moveToCategory(list) {
   toast(t('mailbox.categories.moved', { name }), {
     action: {
       label: t('mailbox.categories.always'),
+      // Ctrl+Z after a move means undo, which this isn't.
+      shortcut: false,
       run: async () => {
         try {
           await api('categoriesMove', ids, id, { sender: true });
@@ -2260,7 +2293,8 @@ function messageMenu(m) {
 }
 
 async function printMessage(id) {
-  const full = S.message && S.message.id === id && S.message.html != null ? S.message : await api('get', id);
+  // The reader's copy, unless it is still waiting for its inline pictures.
+  const full = S.message && S.message.id === id && S.message.html != null && !S.message.partial ? S.message : await api('get', id);
   const head = `<h2 style="font:600 20px Segoe UI,sans-serif;margin:0 0 8px">${esc(full.subject)}</h2>
     <div style="font:13px Segoe UI,sans-serif;color:#444;margin-bottom:16px">${esc(t('reader.headers.from'))}: ${esc(formatAddress(full.from))}<br>${esc(t('reader.headers.to'))}: ${esc(full.to.map(formatAddress).join(', '))}<br>${esc(t('reader.headers.date'))}: ${esc(longDate(full.date))}</div><hr>`;
   await api('print', `<!doctype html><meta charset="utf-8"><body style="margin:24px">${head}${full.html}</body>`);
@@ -2359,7 +2393,7 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   renderReader();
   agentViewChanged();
   try {
-    const full = await api('get', id);
+    const full = await api('get', id, { fast: true });
     if (S.selectedId !== id) return;
     // The related emails come with the message, so the reading pane draws once. They need its References.
     const related = await api('related', id, full.references || []).catch(() => []);
@@ -2376,6 +2410,68 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
   // Again with the full message: the panel needs its Message-ID and whether it can unsubscribe.
   agentViewChanged();
   if (m && m.unread && m.role !== 'drafts' && !auto) setUnread([m], false);
+  if (S.message && S.message.id === id && S.message.partial) completeMessage(id);
+}
+
+// A large message shows its text before its attachments are in (engine.js readableSource). Once the whole message is
+// on disk it is read again: the attachments get their exact sizes and thumbnails, and inline pictures that didn't come
+// with the text appear. One that came in but couldn't be kept, on a full disk, is read whole once more in the user's
+// turn, as the reader reads any message it can't keep. kept is what downloaded said, when the caller already asked.
+// The email itself only redraws when it changed, and keeps its scroll position then.
+async function completeMessage(id, kept) {
+  const still = () => S.selectedId === id && S.message && S.message.id === id && S.message.partial;
+  // null when the download failed: the reader stays as it is until an attachment is opened (wholeMessage).
+  if (kept === undefined) kept = await api('downloaded', id).catch(() => null);
+  if (kept == null || !still()) return;
+  const full = await (kept ? api('get', id, { fast: true }) : api('get', id)).catch(() => null);
+  if (!full || full.partial || !still()) return;
+  const before = S.message;
+  // With the flags the reader shows, which a star or read change on its way may set ahead of main.
+  S.message = { ...full, unread: before.unread, starred: before.starred };
+  if (S.composer || S.checked.size > 1) return;
+  if (full.html !== before.html) {
+    const top = $('.reader .reader-scroll')?.scrollTop || 0;
+    renderReader();
+    const scroll = $('.reader .reader-scroll');
+    if (scroll) scroll.scrollTop = top;
+    return;
+  }
+  const atts = $('.reader .atts');
+  if (atts) atts.outerHTML = attachmentsHtml(S.message);
+  loadPreviews(S.message);
+}
+
+// Attachment buttons waiting for their message to come in, by message id and attachment index (or 'all' for Save
+// all). They show a spinner for their icon.
+const fetchingAtts = new Set();
+
+function attachmentSpinner(id, key, on) {
+  const k = `${id}|${key}`;
+  if (on) fetchingAtts.add(k);
+  else fetchingAtts.delete(k);
+  if (!S.message || S.message.id !== id) return;
+  const btn = key === 'all' ? $('.reader [data-reader="save-all"]') : $(`.reader [data-save-att="${key}"]`);
+  if (!btn) return;
+  btn.setAttribute('aria-busy', String(on));
+  const icon = document.createElement('template');
+  icon.innerHTML = on ? '<span class="spinner"></span>' : icons.download;
+  btn.querySelector('svg, .spinner')?.replaceWith(icon.content);
+}
+
+// An attachment of a message whose text came first is only there once the whole message is: that comes in the user's
+// turn now. The button shows a spinner meanwhile, after a moment, so a quick download doesn't flash. The reader then
+// completes too, also when the background download had failed.
+async function wholeMessage(m, key) {
+  if (!m.partial) return;
+  const timer = setTimeout(() => attachmentSpinner(m.id, key, true), 100);
+  let kept = false;
+  try {
+    kept = await api('downloaded', m.id, { now: true });
+  } finally {
+    clearTimeout(timer);
+    if (fetchingAtts.has(`${m.id}|${key}`)) attachmentSpinner(m.id, key, false);
+  }
+  if (S.message && S.message.id === m.id && S.message.partial) completeMessage(m.id, kept);
 }
 
 export function closeReader() {
@@ -2455,6 +2551,11 @@ function attachmentsHtml(m) {
   if (!list.length) return '';
   const total = list.reduce((n, a) => n + (a.size || 0), 0);
   const open = list.length === 1 || S.attachmentsOpen;
+  // The download icon, or a spinner while the button waits for its message (wholeMessage).
+  const busy = (key) => fetchingAtts.has(`${m.id}|${key}`);
+  const saveIcon = (key) => (busy(key) ? '<span class="spinner"></span>' : icons.download);
+  const save = (a) =>
+    `<button class="icon-btn sm" data-save-att="${a.index}" aria-busy="${busy(a.index)}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${saveIcon(a.index)}</button>`;
   const card = (a) => {
     const { ext, kind } = attachmentKind(a.filename);
     const thumb = previews.get(`${m.id}|${a.index}`);
@@ -2462,19 +2563,19 @@ function attachmentsHtml(m) {
       return `<div class="att image" data-preview="${a.index}">
         <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="thumb">${thumb ? `<img src="${thumb}" alt="">` : `<span class="ftype image">${esc(ext)}</span>`}</span>
         <span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
-        <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
+        ${save(a)}
       </div>`;
     }
     return `<div class="att">
       <button class="att-open" data-open-att="${a.index}" title="${esc(t('reader.attachments.open', { filename: a.filename }))}"><span class="ftype ${kind}">${esc(ext)}</span><span class="att-text"><span class="att-name">${esc(a.filename)}</span><span class="att-size">${fileSize(a.size)}</span></span></button>
-      <button class="icon-btn sm" data-save-att="${a.index}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${icons.download}</button>
+      ${save(a)}
     </div>`;
   };
   const head =
     list.length > 1
       ? `<div class="atts-head">
           <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.attachments.count', { count: list.length }))}</span><span class="atts-size">${fileSize(total)}</span></button>
-          <button class="link-btn" data-reader="save-all">${icons.download}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
+          <button class="link-btn" data-reader="save-all" aria-busy="${busy('all')}">${saveIcon('all')}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
         </div>`
       : '';
   return `<section class="atts ${open ? '' : 'closed'}" data-i18n-aria-label="mailbox.filters.attachments" aria-label="${esc(t('mailbox.filters.attachments'))}">${head}${open ? `<div class="atts-list">${list.map(card).join('')}</div>` : ''}</section>`;
@@ -2644,7 +2745,8 @@ function renderReader() {
     const s = S.data?.settings || {};
     fillFrame(frame, m, { light: isLight(), darkEmails: s.darkEmails !== false, fitContent: s.fitContent !== false });
   }
-  if (!S.loading) loadPreviews(m);
+  // A partly shown message gets its thumbnails once the whole message is in (completeMessage).
+  if (!S.loading && !m.partial) loadPreviews(m);
   const slot = el.querySelector('.invite-slot');
   if (slot) mountInvite(slot, { id: m.id }, m.invite, { openEvent: openCalendarEvent }).catch(() => {});
   wantLogos([m]);
@@ -2719,9 +2821,17 @@ function bindReader() {
     }
     const item = byId(m.id) || m;
     if (btn.dataset.person !== undefined) return personMenu(btn);
-    if (btn.dataset.openAtt) return api('openAttachment', m.id, Number(btn.dataset.openAtt)).catch((err) => toast(err.message));
+    if (btn.dataset.openAtt) {
+      const index = Number(btn.dataset.openAtt);
+      return wholeMessage(m, index)
+        .then(() => api('openAttachment', m.id, index))
+        .catch((err) => toast(err.message));
+    }
     if (btn.dataset.saveAtt) {
-      const p = await api('saveAttachment', m.id, Number(btn.dataset.saveAtt)).catch((err) => toast(err.message));
+      const index = Number(btn.dataset.saveAtt);
+      const p = await wholeMessage(m, index)
+        .then(() => api('saveAttachment', m.id, index))
+        .catch((err) => toast(err.message));
       if (p) toast(t('reader.attachments.savedOne'));
       return;
     }
@@ -2768,7 +2878,9 @@ function bindReader() {
         return;
       }
       case 'save-all': {
-        const n = await api('saveAllAttachments', m.id).catch((err) => toast(err.message, 5000));
+        const n = await wholeMessage(m, 'all')
+          .then(() => api('saveAllAttachments', m.id))
+          .catch((err) => toast(err.message, 5000));
         if (n) toast(t('reader.attachments.savedCount', { count: n }));
         return;
       }
@@ -2992,6 +3104,125 @@ function drawBadge(count) {
   return api('setBadge', c.toDataURL(), count);
 }
 
+// ---------- new mail ----------
+
+// New mail main told this window about (main.js showMailNotices) whose rows are in the list on screen, until one of
+// them has been in view. While the list is scrolled away from all of them, a pill at the top counts them.
+const newRows = new Set();
+// The emails the new-mail toast counts, and when it showed, so mail from the next account in the same sync adds to it.
+let newToast = { mails: [], at: 0 };
+const NEW_TOAST_MS = 8000;
+let coo = null;
+
+// Mail mode, with no Settings page over the list, and the list not behind the reader in a narrow window.
+function listOnScreen() {
+  const scroll = $('.list-scroll');
+  return prefs.mode === 'mail' && !$('#overlays .page') && Boolean(scroll && scroll.getClientRects().length);
+}
+
+function updateNewPill() {
+  const pill = $('.new-pill');
+  if (!pill) return;
+  if (newRows.size) {
+    const shown = new Set(visibleRows().map((m) => m.id));
+    for (const id of newRows) if (!shown.has(id)) newRows.delete(id);
+  }
+  const scroll = $('.list-scroll');
+  const els = newRows.size && listOnScreen() ? $$('.list-scroll .item').filter((el) => newRows.has(el.dataset.id)) : [];
+  if (!els.length) {
+    pill.hidden = true;
+    return;
+  }
+  const box = scroll.getBoundingClientRect();
+  const rects = els.map((el) => el.getBoundingClientRect());
+  if (rects.some((r) => r.bottom > box.top && r.top < box.bottom)) {
+    newRows.clear();
+    pill.hidden = true;
+    return;
+  }
+  const up = rects[0].bottom <= box.top;
+  drawHtml(pill, `${up ? icons.up : icons.down}<span>${esc(t('mailbox.newMail.count', { count: els.length }))}</span>`);
+  pill.style.top = `${scroll.offsetTop + 8}px`;
+  pill.hidden = false;
+}
+
+// The pill's click: the first new row comes into view, below the day heading that sticks to the top.
+function showNewRows() {
+  const scroll = $('.list-scroll');
+  const el = $$('.list-scroll .item').find((x) => newRows.has(x.dataset.id));
+  if (!el) return updateNewPill();
+  const gap = ($('.list-scroll .group-head')?.offsetHeight || 0) + 4;
+  const top = scroll.scrollTop + el.getBoundingClientRect().top - scroll.getBoundingClientRect().top - gap;
+  scroll.focus({ preventScroll: true });
+  scroll.scrollTo({ top: Math.max(0, top), behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+}
+
+// A desktop notification's click, or the new-mail toast's Open: the email in Inbox.
+async function openNotified(id) {
+  setMode('mail');
+  S.scope = 'all';
+  S.view = 'inbox';
+  S.folder = null;
+  S.category = null;
+  S.query = '';
+  S.filter = 'all';
+  await refresh();
+  openMessage(id);
+}
+
+// The new-mail toast's Show: Inbox as from the sidebar, or the category tab that holds the emails when Inbox leaves
+// them out (newMailTab).
+function showNotified(tab) {
+  setMode('mail');
+  S.scope = 'all';
+  S.view = 'inbox';
+  S.folder = null;
+  S.category = categoryOf(tab) ? tab : null;
+  changeView();
+}
+
+// While the window is in front, a toast stands in for the desktop notification for mail the list on screen doesn't
+// show. It waits for an Undo that is up, and Ctrl+Z leaves it alone. Over Settings it only says so.
+// mails: [{ id, from, subject, category }].
+function newMailToast(mails) {
+  const now = Date.now();
+  const all = addToToast(now - newToast.at < NEW_TOAST_MS ? newToast.mails : [], mails);
+  newToast = { mails: all, at: now };
+  // Several emails go to Inbox, or to their category when Inbox doesn't show it.
+  const { message, open, tab } = newMailToastFor(all, S.categories, t);
+  if ($('#overlays .page')) return toast(message, { wait: true, ms: 4000 });
+  // Once its button was used, the next new mail gets a toast of its own.
+  const run = () => {
+    newToast = { mails: [], at: 0 };
+    return open ? openNotified(open) : showNotified(tab);
+  };
+  toast(message, { wait: true, action: { label: t(open ? 'mailbox.newMail.open' : 'mailbox.newMail.show'), shortcut: false, run } });
+}
+
+// Settings > General's sound for new mail: the coo from rukoo.io, quietly. Main says when (newMailSound()).
+function playCoo() {
+  coo ||= Object.assign(new Audio('assets/coo.mp3'), { volume: 0.5 });
+  coo.currentTime = 0;
+  coo.play().catch(() => {});
+}
+
+// p: { mails: [{ id, from, subject, category }], toast, sound }. Rows in the list on screen are the cue themselves, or
+// the pill points at them; for the rest of the batch a toast says so, when main says the window is in front with
+// notifications on. One sync can bring both.
+async function onNewMail(p) {
+  const mails = p && Array.isArray(p.mails) ? p.mails.filter((m) => m && m.id) : [];
+  if (!mails.length) return;
+  if (p.sound) playCoo();
+  if (!S.data || !S.data.accounts.length) return;
+  await refresh();
+  const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
+  if (here.length) {
+    for (const m of here) newRows.add(m.id);
+    updateNewPill();
+  }
+  if (elsewhere.length && p.toast) newMailToast(elsewhere);
+}
+
 // ---------- events from main ----------
 
 window.mail.on(async ({ type, payload }) => {
@@ -3036,17 +3267,8 @@ window.mail.on(async ({ type, payload }) => {
     if (S.message) renderReader();
     S.composer?.retheme(S.data);
   }
-  if (type === 'open-message') {
-    setMode('mail');
-    S.scope = 'all';
-    S.view = 'inbox';
-    S.folder = null;
-    S.category = null;
-    S.query = '';
-    S.filter = 'all';
-    await refresh();
-    openMessage(payload);
-  }
+  if (type === 'open-message') await openNotified(payload);
+  if (type === 'new-mail') await onNewMail(payload);
 });
 
 onSystemThemeChange(() => {
