@@ -29,7 +29,9 @@ The sidebar has Inbox, VIPs, Starred, Drafts, Sent, Archive, Spam, Trash, Saved 
 
 Search sits in the title bar and covers the current folder, the current account or all accounts. Quick filters above the list show Unread, Starred and Attachments.
 
-The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked "+2" for two more. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
+The list shows sender logos for companies and initials for people. Previews skip "view in your browser" lines and greetings. Every message has its own row. Settings → General → Group mail from one sender folds three or more read messages in a row from one sender, in one account and on the same day, into a single row marked with a pile and "+2" for two more. `→` opens the group at the selected row and `←` closes it again, also from an email inside it. Unread mail keeps a row of its own, so a group never hides new mail. The list has a standard and a compact density, and offers sorting, mark all as read and empty Trash.
+
+Mark all as read, in the More options menu above the list or with `Shift+Esc`, marks what the list shows: the folder, account or category, narrowed by a quick filter or a search, with the emails in groups. The notice that follows can undo it, and so can `Ctrl+Z`. When the mail server refuses some of the emails, they stay unread and the notice says how many were marked; its undo then covers those. With the Unread filter on, the list empties except for the email you have open.
 
 The newest message opens when you start the app or switch folders. It stays unread until you open it yourself.
 
@@ -51,13 +53,13 @@ Right-click in an email for a menu that fits what's under the pointer. A link op
 
 ## Writing
 
-New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images.
+New mail, replies and forwards open in the reading pane, with Send at the bottom right. A button moves the message into a window of its own, which remembers its size and position. Formatting appears above selected text, or as a row you switch on. Earlier mail in a reply waits behind a "···" pill and can be left out. The composer has recipient autocomplete, Cc and Bcc, attachments by picker or drag and drop, links and inline images. Drag a recipient onto To, Cc or Bcc to move it there, or onto the Cc or Bcc link beside To to open that field with the recipient in it.
 
 Spelling is checked as you write. Right-click in the message text, or press the context menu key or `Shift+F10`, for a menu with Cut, Copy, Paste, Paste as plain text and Select all. On a misspelled word it starts with the spell checker's suggestions, which replace the word, and Add to dictionary. The spell checker follows the computer's language, not the language of the email.
 
 Drafts save to the server's Drafts folder while you write. Opening another message keeps what you wrote as a draft. Closing with unsaved changes asks whether to keep them.
 
-Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account, each with a preview. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
+Signatures are plain text or formatted. Paste one from another mail app or a web page, write it in Settings with bold, links, colors and images, or edit its HTML. There is a general signature and one per account. Settings → Signatures, under your accounts, lists them together with a preview of each. Every account shows what goes under its mail: its own signature, none, or the general one. All addresses of an account share its signature, so its aliases are listed with it. The account's own page and its sender addresses page have the same Signature row. Rukoo cleans pasted HTML: scripts, forms, frames, event handlers and unsafe links are removed. Images in a signature, or inserted in a message, are sent as inline attachments, so mail apps that drop embedded image data still show them. Images from the web stay links to the web. The plain-text part of the mail carries the signature as text.
 
 A web address becomes a link when you paste it, or when you type it and go on with a space, Enter or Tab. An address starts with `https://`, `http://` or `www.`, and the full stop or bracket after it stays outside the link. `Ctrl+Z` right after takes the link off and keeps the text. Paste an address over selected words and it links those words. Text pasted with formatting keeps the links it came with and gets no others. `Ctrl+K` opens a small popover under the selection with the text to show and the address; with the caret in a link it changes that link. A link under the caret shows a bubble that opens it in your browser, changes it or removes it.
 
@@ -85,6 +87,8 @@ Rukoo's own keys in the main window:
 | `Shift+↑`, `Shift+↓` | Extend the selection |
 | `Ctrl+A` | Select all |
 | `Ctrl+Q`, `Ctrl+U` | Mark read, mark unread |
+| `Shift+Esc` | Mark all in the list read |
+| `→`, `←` | Open and close a group of mail from one sender |
 | `Ctrl+Shift+V` | Move |
 | `Delete` | Delete |
 | `Ctrl+Z` | Undo |
@@ -94,7 +98,7 @@ Rukoo's own keys in the main window:
 
 While writing: `Ctrl+Enter` sends, `Ctrl+S` saves the draft, `Ctrl+K` inserts or changes a link and `Esc` closes.
 
-Zoom runs from 80% to 200%. In every window, also with the focus inside an email, `Ctrl+Plus` (or `Ctrl+=`) zooms in, `Ctrl+Minus` zooms out and `Ctrl+0` goes back to 100%. Ctrl and the mouse wheel and the numpad keys work too. The main window and the compose windows share one level, and Rukoo remembers it. On a Mac, use Command instead of Ctrl; see [macOS](platforms.md#macos-experimental).
+Zoom runs from 80% to 200%. In every window, also with the focus inside an email, `Ctrl+Plus` (or `Ctrl+=`) zooms in, `Ctrl+Minus` zooms out and `Ctrl+0` goes back to 100%. Ctrl and the mouse wheel and the numpad keys work too. The main window and the compose windows share one level, and Rukoo remembers it. On a Mac, use Command instead of Ctrl for the keys; the mouse wheel doesn't zoom there. See [macOS](platforms.md#macos-experimental).
 
 ## Email links
 
@@ -106,9 +110,13 @@ How Rukoo becomes the app for email links depends on the system: see [Windows](p
 
 ## Notifications and settings
 
-Rukoo shows desktop notifications for new mail. Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
+Rukoo shows desktop notifications for new mail, but not while its window is in front. The window shows the mail then: new rows appear in the list, a pill at the top of the list counts them while it's scrolled away from them, and a toast at the bottom names mail the list on screen doesn't show, with Open or Show to go there. Show goes to Inbox, or to the category that holds most of the mail when that category's Show in Inbox is off; the toast names the category when all of the mail is in it. A category whose notifications you turned off stays quiet in the window too, and Settings → General → Notifications turns the toast off with the desktop notifications.
 
-Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, taskbar badge, sync interval, close and minimize to the tray, the app for email links, signature (none by default, plain text or formatted) and the booking link under it, spam addresses, VIPs and folder visibility. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
+Sound for new mail, in Settings → General, plays a short coo when mail comes in, once for mail that arrives together. It's off by default. While it's on, Rukoo's notifications for new mail are silent, so you hear one sound. It stays quiet while [Rukoo Voice](meetings.md) records a meeting, because the recording would pick it up. Send a test notification, also in Settings → General, shows a notification right away, even with the window in front, and says whether the system took it. Rukoo can't ask Windows or macOS whether notifications are allowed, so the test is how to find out.
+
+Windows also shows a count badge on the taskbar icon, and macOS on the Dock icon. By default it counts the mail that came in since you last had Rukoo's window in front; an email stops counting once it's read or leaves Inbox. On Windows, closing the window keeps Rukoo running in the tray; see [Windows](platforms.md#windows).
+
+Settings has language, theme, zoom, list density, grouping mail from one sender, swipe and quick actions, keyboard shortcuts, fit content to the window, sender logos, notifications, the sound for new mail, a test notification, taskbar badge, sync interval, close and minimize to the tray, the app for email links, spam addresses, VIPs and folder visibility. Settings → Signatures holds the signatures (none by default, plain text or formatted) and the booking link under them. Settings → Calendar and Settings → Booking page sit in a group of their own. Rukoo also remembers the list width, the sidebar state and where the windows were.
 
 ## What Rukoo keeps on your computer
 
@@ -116,7 +124,7 @@ Each folder keeps the newest 300 messages (inbox) or 100 (other folders) locally
 
 The list itself only holds those 300 messages, so the Unread filter counts them. The list's header shows both numbers, for example "7 unread, 434 more in older mail". Older mail from senders you marked as spam counts too, because Rukoo doesn't have its headers. Mark all as read only reaches the 300 messages Rukoo keeps.
 
-The list holds headers and a short preview, and a message's full content downloads when you open it. After each sync Rukoo also downloads the newest 30 inbox messages of up to 1 MB each, so they open without waiting for the server. Those downloads don't mark anything read, and Rukoo deletes a downloaded message once it drops out of the folders it keeps. A message that isn't downloaded yet comes over a second connection to the server, so opening it doesn't wait for a running sync. A sync only asks for the flags of messages Rukoo already has.
+The list holds headers and a short preview, and a message's full content downloads when you open it. After each sync Rukoo also downloads the newest 30 inbox messages of up to 1 MB each, so they open without waiting for the server. Those downloads don't mark anything read, and Rukoo deletes a downloaded message once it drops out of the folders it keeps. A message that isn't downloaded yet comes over a second connection to the server, so opening it doesn't wait for a running sync. One over 1 MB shows its text, inline pictures and the names and sizes of its attachments first, while the rest of it downloads in the background; the thumbnails appear when it's in. Opening or saving one of its attachments before then fetches the message right away. A sync only asks for the flags of messages Rukoo already has.
 
 Sender logos are the icons companies publish on their own websites. Rukoo fetches one per sender domain, caches it in `%APPDATA%\Rukoo Mail\logos` and tries a missing one again after a week. That request tells the company's web server that someone opened mail from it, much like loading images in the mail itself. Mail from free-mail providers such as Gmail or Ziggo never triggers a request. You can switch logos off in Settings.
 

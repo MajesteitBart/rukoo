@@ -19,8 +19,14 @@ const { normalizeZoom } = require('./zoom');
 const COLORS = ['#2fd6c0', '#4a7dff', '#ff8a3d', '#c56cf0', '#f5c542', '#ff5d73', '#5ec2ff'];
 const SYNC_ROLES = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
 const LIMITS = { inbox: 300, default: 100 };
-// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch().
+// After a sync, the newest inbox messages up to this size are downloaded ahead of time; see prefetch(). A larger one
+// shows its text before its attachments when it is opened; see readableSource().
 const PREFETCH = { count: 30, maxBytes: 1024 * 1024 };
+// An empty picture without a size of its own, in place of an inline picture that is still on its way. The reader
+// sizes pictures by their own proportions (mailframe.js), so a transparent pixel would turn a 560 x 120 banner into a
+// square. This one keeps the box the picture's width and height give it, and takes no room without them. Encoded
+// without quotes or spaces, so it fits any attribute or url() the empty address stood in.
+const BLANK_IMAGE = 'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%220%22%20height=%220%22/%3E';
 const VIEW_ROLES = { drafts: 'drafts', sent: 'sent', trash: 'trash', junk: 'junk', archive: 'archive' };
 // Earlier versions put this signature under every mail by default; it is now opt-in.
 const OLD_DEFAULT_SIGNATURE = 'Verzonden vanaf mijn pc';
@@ -42,6 +48,8 @@ const DEFAULT_SETTINGS = {
   fitContent: true,
   darkEmails: true,
   notifications: true,
+  // A short sound for new mail, played by the main window (main.js showMailNotices). Off by default.
+  newMailSound: false,
   badge: 'new',
   density: 'standard',
   sort: 'date-desc',
@@ -100,6 +108,7 @@ function normalizeSettings(s) {
   s.closeToTray = typeof s.closeToTray === 'boolean' ? s.closeToTray : DEFAULT_SETTINGS.closeToTray;
   s.minimizeToTray = s.minimizeToTray === true;
   s.stackSenders = s.stackSenders === true;
+  s.newMailSound = s.newMailSound === true;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
@@ -258,7 +267,8 @@ class Engine extends EventEmitter {
     this.syncs = new Map();
     this.saved = [];
     this.saveTimers = new Map();
-    // Local changes whose IMAP command has not finished yet; re-applied over sync results.
+    // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
+    // sync results. See holdPending().
     this.pending = new Map();
     // Recent moves, keyed by the id the message had before it moved, so they can be reversed.
     this.undoable = new Map();
@@ -842,24 +852,72 @@ class Engine extends EventEmitter {
   async syncAll() {
     const errors = [];
     await Promise.all(
-      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err)}`)))
+      this.accounts.map((a) => this.syncAccount(a.id).catch((err) => errors.push(`${a.email}: ${friendlyError(err, a)}`)))
     );
     if (errors.length) throw new Error(errors.join('\n'));
+  }
+
+  // The sync the user asked for, of one account or of all. A failure reads the way the sidebar shows it for the
+  // account (friendlyError), with the account so a refused password at Gmail or Yahoo points to its app password.
+  async syncNow(accountId = null) {
+    if (!accountId) return this.syncAll();
+    try {
+      await this.syncAccount(accountId);
+    } catch (err) {
+      throw new Error(friendlyError(err, this.accounts.find((a) => a.id === accountId)));
+    }
   }
 
   pendingKey(accountId, folder, uid) {
     return `${accountId}\n${folder}\n${uid}`;
   }
 
-  // Tracks an optimistic change until its IMAP command settles, so a sync that read
-  // server state just before the command cannot undo it in the cache.
+  // Holds an optimistic change to one email until its IMAP command settles, so a sync that read server state just
+  // before the command cannot undo it in the cache. Changes to the same email line up in the order they were made: a
+  // sync sees them merged with the latest on top, and each one lets go of its own only, so an earlier change that
+  // finishes never drops a later one (such as Undo of a Mark all as read that is still on its way).
+  // The changes to one email share a base: the fields as the server last took them, taken from current (the email
+  // before this change) the first time a change sets a field, and moved up by each change that reaches the server.
+  // before: settles when the earlier changes to this email have. confirm(): the server took this change.
+  // rollback(): what a failure puts back, the base of each field no later change has set since.
+  holdPending(accountId, folder, uid, patch, current = null) {
+    const key = this.pendingKey(accountId, folder, uid);
+    const earlier = this.pending.get(key) || [];
+    const base = earlier.length ? earlier[0].base : {};
+    if (current) for (const k of Object.keys(patch)) if (!(k in base)) base[k] = Boolean(current[k]);
+    let settle;
+    const hold = { patch, base, settled: new Promise((resolve) => (settle = resolve)) };
+    this.pending.set(key, [...earlier, hold]);
+    return {
+      before: Promise.all(earlier.map((h) => h.settled)),
+      confirm: () => {
+        for (const k of Object.keys(patch)) if (k in base) base[k] = patch[k];
+      },
+      rollback: () => {
+        const all = this.pending.get(key) || [];
+        const later = all.slice(all.indexOf(hold) + 1);
+        const back = {};
+        for (const k of Object.keys(patch)) if (k in base && !later.some((h) => k in h.patch)) back[k] = base[k];
+        return back;
+      },
+      release: () => {
+        settle();
+        const rest = (this.pending.get(key) || []).filter((h) => h !== hold);
+        if (rest.length) this.pending.set(key, rest);
+        else this.pending.delete(key);
+      },
+    };
+  }
+
+  // Runs op once the earlier changes to this email have reached the server, so a move or delete never overtakes a
+  // flag write still on its way to the old folder and uid.
   async withPending(acc, folder, uid, patch, op) {
-    const key = this.pendingKey(acc.id, folder, uid);
-    this.pending.set(key, { ...(this.pending.get(key) || {}), ...patch });
+    const hold = this.holdPending(acc.id, folder, uid, patch);
     try {
+      await hold.before;
       return await op();
     } finally {
-      this.pending.delete(key);
+      hold.release();
     }
   }
 
@@ -867,7 +925,8 @@ class Engine extends EventEmitter {
     if (!this.pending.size) return messages;
     const out = [];
     for (const m of messages) {
-      const p = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const holds = this.pending.get(this.pendingKey(accountId, folder, m.uid));
+      const p = holds && Object.assign({}, ...holds.map((h) => h.patch));
       if (!p) out.push(m);
       else if (!p.removed) out.push({ ...m, ...p });
     }
@@ -919,9 +978,9 @@ class Engine extends EventEmitter {
       }
       // The last sync stays the last one that got through every folder.
       if (!failed) cache.lastSync = Date.now();
-      cache.error = failed ? friendlyError(failed) : null;
+      cache.error = failed ? friendlyError(failed, acc) : null;
     } catch (err) {
-      cache.error = friendlyError(err);
+      cache.error = friendlyError(err, acc);
       this.changed(id);
       throw err;
     }
@@ -1222,12 +1281,15 @@ class Engine extends EventEmitter {
   }
 
   // One download per message at a time. A message the user opens while it waits as background work is fetched
-  // again in the user's turn, rather than behind the rest of the prefetch.
+  // again in the user's turn, rather than behind the rest of the prefetch. What waits for the background download
+  // then has the message as soon as the user's download brings it.
   download(acc, box, folder, uid, file, background) {
     const running = this.downloads.get(file);
     if (running && (background || !running.background)) return running.raw;
     const entry = { background };
-    entry.raw = this.session(acc)
+    entry.raw = new Promise((resolve, reject) => (entry.settle = { resolve, reject }));
+    if (running) entry.raw.then(running.settle.resolve, () => {});
+    this.session(acc)
       .fetchSource(folder, uid, { background })
       .then((raw) => {
         // Not kept for an account removed in the meantime, or a folder whose uids were reassigned: their bodies
@@ -1247,9 +1309,44 @@ class Engine extends EventEmitter {
       })
       .finally(() => {
         if (this.downloads.get(file) === entry) this.downloads.delete(file);
-      });
+      })
+      .then(entry.settle.resolve, entry.settle.reject);
     this.downloads.set(file, entry);
     return entry.raw;
+  }
+
+  // Resolves once the whole message is on disk, so the next getMessage reads it from there: at once when it is, or
+  // when its download lands. That download is background work, or the user's with now (an attachment they opened).
+  // false when it came in but couldn't be kept, on a full disk for example: getMessage without fast then reads it whole
+  // from the server again, and with fast still gives the text alone.
+  async downloaded(id, { now = false } = {}) {
+    if (String(id).startsWith('saved:')) return true;
+    const { acc, box, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    if (!fs.existsSync(file)) await (now ? this.rawSource(id) : this.download(acc, box, folder, uid, file, true));
+    return fs.existsSync(file);
+  }
+
+  // A large message the user opens before it is downloaded: its text, invitation and inline pictures, with the
+  // attachments left empty (ImapAccount.fetchReadable), so the reader shows it without waiting for them. The whole
+  // message follows as background work; downloaded() says when it is in. null to read the whole message now: one that
+  // is saved, small, on disk or on its way in the user's turn, or whose account or server can't split it.
+  async readableSource(id) {
+    if (String(id).startsWith('saved:')) return null;
+    const { acc, box, msg, folder, uid } = this.locate(id);
+    const file = this.bodyFile(acc, box, folder, uid);
+    const session = this.session(acc);
+    const running = this.downloads.get(file);
+    if ((msg.size || 0) <= PREFETCH.maxBytes || typeof session.fetchReadable !== 'function' || (running && !running.background) || fs.existsSync(file)) return null;
+    let source = null;
+    try {
+      source = await session.fetchReadable(folder, uid);
+    } catch (_) {
+      // A server that doesn't give the parts: the whole message, as before.
+    }
+    if (!source) return null;
+    this.download(acc, box, folder, uid, file, true).catch(() => {});
+    return source;
   }
 
   // Downloads the newest inbox messages ahead of time, so opening one reads it from disk. The fetches run as
@@ -1292,21 +1389,33 @@ class Engine extends EventEmitter {
     }
   }
 
-  async getMessage(id) {
-    const raw = await this.rawSource(id);
-    const parsed = await simpleParser(raw);
+  // fast: for the reader, which can show a large message before its attachments are in (readableSource). The result
+  // then has partial set, attachment sizes from the server, and nothing in place of the inline pictures that didn't
+  // come with the text. Everything else gets the whole message.
+  async getMessage(id, { fast = false } = {}) {
+    const skeleton = fast ? await this.readableSource(id) : null;
+    const parsed = await simpleParser(skeleton || (await this.rawSource(id)));
+    // The size of an attachment the skeleton left empty.
+    const omitted = (a) => {
+      const v = skeleton && a.headers && typeof a.headers.get === 'function' ? a.headers.get(util.OMITTED.toLowerCase()) : null;
+      return v != null && /^\d+$/.test(String(v)) ? Number(v) : null;
+    };
     const base = String(id).startsWith('saved:')
       ? { ...this.saved.find((s) => s.id === id) }
       : (() => {
           const { acc, folder, msg } = this.locate(id);
           return this.publicMessage(acc, folder, msg);
         })();
-    const html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    let html = parsed.html ? util.sanitizeHtml(parsed.html) : util.textToHtml(parsed.text || '');
+    // An inline picture the skeleton left empty is an empty data: address, which shows as a broken image. A blank one
+    // keeps its place until the whole message is in.
+    if (skeleton) html = html.replace(/data:image\/[\w.+-]+;base64,(?=["')\s>]|$)/gi, BLANK_IMAGE);
     // An invitation's calendar part in the body (calendar: true) shows as its card in the reader, not as an attachment;
     // agents still see it as one, as before. An .ics attachment stays a plain attachment.
     const part = invite.calendarPart(parsed.attachments);
     const body = new Set(part ? part.hidden : []);
     return {
+      ...(skeleton ? { partial: true } : {}),
       ...base,
       from: util.addressFromParsed(parsed.from)[0] || base.from,
       to: util.addressFromParsed(parsed.to),
@@ -1328,7 +1437,7 @@ class Engine extends EventEmitter {
           index,
           filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }),
           contentType: a.contentType,
-          size: a.size,
+          size: omitted(a) ?? a.size,
           related: Boolean(a.related || (a.contentDisposition === 'inline' && a.cid)),
           ...(body.has(index) ? { calendar: true } : {})
         }))
@@ -1368,34 +1477,60 @@ class Engine extends EventEmitter {
     return { filename: a.filename || t('native.attachments.defaultNumbered', { number: index + 1 }), content: a.content, contentType: a.contentType, charset };
   }
 
+  // One email's flags. An email no longer in the cache, or a server that refuses, throws.
   async setFlags(id, flags) {
-    const { acc, msg, folder, uid } = this.locate(id);
-    const patch = {};
-    for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
-    Object.assign(msg, patch);
-    this.changed(acc.id);
-    try {
-      await this.withPending(acc, folder, uid, patch, () => this.session(acc).setFlags(folder, uid, patch));
-    } catch (err) {
-      // Revert on whatever object the cache holds now; a sync may have replaced it.
-      try {
-        const now = this.locate(id).msg;
-        for (const k of Object.keys(patch)) now[k] = !patch[k];
-      } catch (_) {
-        // The message left the cache in the meantime.
-      }
-      this.changed(acc.id);
-      throw new Error(friendlyError(err));
-    }
+    this.locate(id);
+    const { error } = await this.setFlagsMany([id], flags);
+    if (error) throw new Error(error);
   }
 
-  // The inbox marks what it lists: without the inbox categories it doesn't show, or one category's mail only.
-  async markAllRead(scope, view, folder, { category = null } = {}) {
-    const hidden = view === 'inbox' && this.hiddenCategories ? this.hiddenCategories() : new Set();
-    const listed = (m) => (view === 'inbox' && category ? m.category === category : !hidden.has(m.category));
-    const list = this.listMessages({ scope, view, folder }).filter((m) => m.unread && !String(m.id).startsWith('saved:') && listed(m));
-    for (const m of list) await this.setFlags(m.id, { unread: false }).catch(() => {});
-    return list.length;
+  // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
+  // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
+  // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
+  // Emails no longer in the cache are skipped. A failure puts the flag back to what the server last took, unless a
+  // later change has set it since, so a refused Undo of a refused Mark all as read leaves the email as it was.
+  // Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
+  async setFlagsMany(ids, flags) {
+    const patch = {};
+    for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
+    const found = [];
+    for (const id of new Set(ids)) {
+      try {
+        found.push({ id, ...this.locate(id) });
+      } catch (_) {
+        // Moved or deleted since the list showed it.
+      }
+    }
+    const accounts = new Set(found.map((f) => f.acc.id));
+    for (const f of found) {
+      f.hold = this.holdPending(f.acc.id, f.folder, f.uid, patch, f.msg);
+      Object.assign(f.msg, patch);
+    }
+    for (const id of accounts) this.changed(id);
+    const done = [];
+    const failed = [];
+    let error = null;
+    for (const f of found) {
+      try {
+        await f.hold.before;
+        await this.session(f.acc).setFlags(f.folder, f.uid, patch);
+        f.hold.confirm();
+        done.push(f.id);
+      } catch (err) {
+        failed.push(f.id);
+        error = error || friendlyError(err);
+        // Revert on whatever object the cache holds now; a sync may have replaced it.
+        try {
+          Object.assign(this.locate(f.id).msg, f.hold.rollback());
+        } catch (_) {
+          // The message left the cache in the meantime.
+        }
+      } finally {
+        f.hold.release();
+      }
+    }
+    if (failed.length) for (const id of accounts) this.changed(id);
+    return { done, failed, error };
   }
 
   removeFromCache(acc, folder, uid) {

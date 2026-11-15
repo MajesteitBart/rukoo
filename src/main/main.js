@@ -34,7 +34,7 @@ const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
-const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu } = require('./desktop');
+const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice } = require('./desktop');
 const { Invitations } = require('./calendar/invitations');
 const invite = require('./calendar/invite');
 // ---- agents ----
@@ -287,7 +287,8 @@ function destroyTray() {
 }
 
 // The badge counts first. The notifications get the whole batch: they skip the categories muted on this computer, and
-// mail Jev is about to sort waits for its category (categories/notices.js).
+// mail Jev is about to sort waits for its category (categories/notices.js). The main window's cue and sound for new
+// mail go the same way, so a muted category stays quiet in the window too.
 function notify(messages) {
   for (const m of messages) newSinceFocus.add(m.id);
   refreshBadge();
@@ -295,26 +296,62 @@ function notify(messages) {
     heldNotices(messages.length);
     return;
   }
-  if (!engine.settings.notifications || !Notification.isSupported()) return;
-  if (win && win.isFocused()) return;
   mailNotices.add(messages);
 }
 
+// The new-mail sound (Settings > General), once for mail that comes in together, such as from several accounts in one
+// sync. Never while Rukoo Voice records a meeting: the meeting's call track records what the computer plays.
+const SOUND_GAP = 2000;
+let soundAt = 0;
+function newMailSound() {
+  if (!engine.settings.newMailSound || !win || win.isDestroyed() || (voice && voice.recording())) return false;
+  if (Date.now() - soundAt < SOUND_GAP) return false;
+  soundAt = Date.now();
+  return true;
+}
+
+// A new email's inbox category now: Jev may have sorted it since it came in with one. null while categories are off.
+function categoryNow(m) {
+  try {
+    const { acc, msg } = engine.locate(m.id);
+    return engine.categoryOf ? engine.categoryOf(acc, msg) : null;
+  } catch (_) {
+    return m.category || null;
+  }
+}
+
 // Now, or once Jev sorted the mail, so the window may have come forward meanwhile, and the screen recording may have
-// started.
-function showMailNotices(list) {
+// started. messages: the emails these notices are for. The main window hears of them too (app.js onNewMail): its list
+// shows them, or a toast does while the window is in front, where the desktop notification stays away.
+function showMailNotices(list, messages = []) {
   if (screenRecording()) {
     heldNotices(list.length);
     return;
   }
-  if (!engine.settings.notifications || (win && win.isFocused())) return;
+  const focused = Boolean(win && !win.isDestroyed() && win.isFocused());
+  if (messages.length) {
+    send('new-mail', {
+      // Each email, so the window can say who one of them is from and where several of them are (newMailTab).
+      mails: messages.map((m) => ({
+        id: m.id,
+        from: String((m.from && (m.from.name || m.from.address)) || '').slice(0, 200),
+        subject: String(m.subject || '').slice(0, 200),
+        category: categoryNow(m)
+      })),
+      toast: Boolean(engine.settings.notifications) && focused,
+      sound: newMailSound()
+    });
+  }
+  if (!engine.settings.notifications || focused || !Notification.isSupported()) return;
+  // With the new-mail sound on, Rukoo's sound plays instead of the system's.
+  const silent = engine.settings.newMailSound === true && Boolean(win && !win.isDestroyed());
   for (const { id, title, body } of list) {
     if (!id) {
-      new Notification({ title, body }).show();
+      new Notification({ title, body, silent }).show();
       continue;
     }
     // nativeImage can read from inside app.asar; a plain path cannot.
-    const n = new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent: false });
+    const n = new Notification({ title, body, icon: nativeImage.createFromPath(ICON), silent });
     n.on('click', () => {
       showWindow();
       send('open-message', id);
@@ -715,14 +752,16 @@ const api = {
   counts: (scope) => engine.counts(scope),
   contacts: () => engine.contacts(),
   threadContacts: (accountId, ids) => engine.threadContacts(accountText(accountId, 200), Array.isArray(ids) ? ids.slice(0, 200).map((id) => accountText(id, 1000)) : []),
-  get: (id) => engine.getMessage(id),
+  // fast: the reader's, which shows a large message before its attachments are in; downloaded says when they are.
+  get: (id, opts) => engine.getMessage(id, { fast: Boolean(opts && opts.fast === true) }),
+  downloaded: (id, opts) => engine.downloaded(id, { now: Boolean(opts && opts.now === true) }),
   // A long thread's References can name many emails; the newest are at the end.
   related: (id, references) => engine.related(accountText(id, 2000), Array.isArray(references) ? references.slice(-200).map((r) => accountText(r, 1000)) : []),
   setFlags: (id, flags) => engine.setFlags(id, flags),
   archive: (id) => engine.archive(id),
   canUndo: (id) => engine.canUndo(id),
   undoMove: (id) => engine.undoMove(id),
-  markAllRead: (scope, view, folder, category) => engine.markAllRead(scope, view, folder, { category: accountText(category, 100) || null }),
+  setFlagsMany: (ids, flags) => engine.setFlagsMany((Array.isArray(ids) ? ids : []).slice(0, 100000).map((id) => accountText(id, 4000)), plainObject(flags)),
   move: (id, dest) => engine.move(id, dest),
   remove: (id, opts) => (String(id).startsWith('saved:') ? engine.deleteSaved(id) : engine.remove(id, opts)),
   emptyFolder: (accountId, folder) => engine.emptyFolder(accountId, folder),
@@ -747,6 +786,15 @@ const api = {
     return true;
   },
   toastMain: (message) => send('toast', String(message || '').slice(0, 200)),
+  // Settings > General: whether this system offers Rukoo notifications, and a test notification that shows also while
+  // Rukoo is in front, with what came of it (desktop.js testNotice).
+  notificationState: () => ({ supported: Notification.isSupported() }),
+  testNotification: () =>
+    testNotice(
+      Notification,
+      { title: t('native.notifications.testTitle'), body: t('native.notifications.testBody'), icon: nativeImage.createFromPath(ICON), silent: false },
+      { keep: liveNotices, onClick: showWindow }
+    ),
   // A save replaces the stored draft; an agent's draft cards follow it, also from a compose window.
   saveDraft: async (payload) => {
     const id = await engine.saveDraft(payload);
@@ -788,7 +836,7 @@ const api = {
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.
   setZoom: (level) => setZoom(level),
-  sync: (accountId) => (accountId ? engine.syncAccount(accountId) : engine.syncAll()).then(() => true),
+  sync: (accountId) => engine.syncNow(accountId).then(() => true),
   openFolder: (accountId, folder) => engine.openFolder(accountId, folder),
   pickFiles: async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('composer.attachments.pick') });

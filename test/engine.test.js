@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { Engine, decodeId } = require('../src/main/engine');
+const { t } = require('../src/i18n');
 
 async function freshEngine() {
   const dir = tempDir('sem-test-');
@@ -365,6 +366,42 @@ test('a folder that fails to sync leaves the others current, and the account sho
   await engine.close();
 });
 
+test('a sync the user asked for fails with the text the account shows, for one account and for all', async () => {
+  const { engine, acc } = await freshEngine();
+  const s = engine.session(acc);
+  const syncFolder = s.syncFolder.bind(s);
+  s.syncFolder = async (folder, options) => {
+    if (folder === 'Sent') throw Object.assign(new Error('Command failed'), { responseText: 'Sent is temporarily unavailable' });
+    return syncFolder(folder, options);
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'Sent is temporarily unavailable' });
+  assert.equal(engine.state().accounts[0].error, 'Sent is temporarily unavailable');
+  await assert.rejects(engine.syncNow(), { message: `${acc.email}: Sent is temporarily unavailable` });
+  // An error friendlyError translates comes out translated.
+  s.syncFolder = async () => {
+    throw new Error('connect ETIMEDOUT 192.0.2.1:993');
+  };
+  await assert.rejects(engine.syncNow(acc.id), { message: 'The connection to the server timed out.' });
+  s.syncFolder = syncFolder;
+  assert.equal(await engine.syncNow(acc.id), undefined);
+  await engine.close();
+});
+
+test('a refused password at Gmail points to the app password in the sync toast and the sidebar', async () => {
+  const { engine, acc } = await freshEngine();
+  const s = engine.session(acc);
+  // The demo session stands in; the account looks like a Gmail account that signs in with a password.
+  Object.assign(engine.account(acc.id), { type: 'imap', provider: 'google', auth: 'password' });
+  s.listFolders = async () => {
+    throw Object.assign(new Error('Command failed'), { authenticationFailed: true, responseText: 'Invalid credentials (Failure)' });
+  };
+  const expected = t('errors.connection.googleAppPassword');
+  await assert.rejects(engine.syncNow(acc.id), { message: expected });
+  assert.equal(engine.state().accounts[0].error, expected);
+  await assert.rejects(engine.syncNow(), { message: `${acc.email}: ${expected}` });
+  await engine.close();
+});
+
 test('a sync that fails because the engine closed opens no new session for the next folder', async () => {
   const { engine, acc } = await freshEngine();
   let resume;
@@ -433,6 +470,219 @@ test('a message the user opens during its background download is fetched again i
   await engine.close();
 });
 
+// #56: a large message the user opens shows its text before its attachments are in.
+const MB = 1024 * 1024;
+async function largeMessage(engine, acc, subject = 'Quarterly report') {
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const raw = await new MailComposer({
+    from: 'Sanne <sanne@example.com>',
+    to: 'demo@example.com',
+    subject,
+    text: 'The report is attached.',
+    html: '<p>The report is attached.</p>',
+    attachments: [
+      { filename: 'report.pdf', content: Buffer.alloc(3 * MB, 7), contentType: 'application/pdf' },
+      { filename: 'chart.png', content: Buffer.alloc(300 * 1024, 2), contentType: 'image/png' }
+    ]
+  })
+    .compile()
+    .build();
+  await engine.session(engine.account(acc.id)).append('INBOX', raw);
+  await engine.syncAccount(acc.id);
+  await prefetched(engine, acc);
+  return engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === subject);
+}
+
+// Holds the session's background downloads until the test lets them go; the user's go through at once.
+function holdBackground(engine, acc) {
+  const session = engine.session(acc);
+  const real = session.fetchSource.bind(session);
+  const calls = [];
+  const held = [];
+  session.fetchSource = (p, u, opts = {}) => {
+    calls.push(opts.background ? 'background' : 'user');
+    if (!opts.background) return real(p, u, opts);
+    return new Promise((resolve, reject) => held.push(() => real(p, u, opts).then(resolve, reject)));
+  };
+  return { calls, held };
+}
+
+const listed = (m) => m.attachments.map((a) => [a.index, a.filename, a.contentType]);
+
+test('a large message opens with its text and attachment cards, and the whole message follows in the background', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await largeMessage(engine, acc);
+  const { box, folder, uid } = engine.locate(m.id);
+  const file = engine.bodyFile(acc, box, folder, uid);
+  assert.ok(!fs.existsSync(file), 'too large for the download ahead of time');
+  const { calls, held } = holdBackground(engine, acc);
+
+  const partial = await engine.getMessage(m.id, { fast: true });
+  assert.equal(partial.partial, true);
+  assert.match(partial.html, /The report is attached/);
+  assert.equal(partial.messageId, m.messageId);
+  assert.deepEqual(calls, ['background'], 'only the background download, nothing in the user turn');
+  assert.ok(!fs.existsSync(file));
+
+  // Opened again while the download waits: the text again, and still one download.
+  assert.equal((await engine.getMessage(m.id, { fast: true })).partial, true);
+  assert.equal(engine.downloads.size, 1);
+
+  const done = engine.downloaded(m.id);
+  held.forEach((go) => go());
+  assert.equal(await done, true);
+  assert.ok(fs.existsSync(file));
+  const whole = await engine.getMessage(m.id, { fast: true });
+  assert.equal(whole.partial, undefined, 'read from disk now');
+  assert.equal(whole.html, partial.html);
+  assert.deepEqual(listed(partial), listed(whole), 'the same attachments with the same index');
+  partial.attachments.forEach((a, i) => assert.ok(Math.abs(a.size - whole.attachments[i].size) < whole.attachments[i].size * 0.03, `${a.size} for ${whole.attachments[i].size}`));
+  assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+  assert.equal((await engine.attachment(m.id, whole.attachments[0].index)).content.length, 3 * MB);
+  assert.deepEqual(calls, ['background']);
+  await engine.close();
+});
+
+test('saving an attachment of a partly shown message gets it whole, and the reader need not wait for the background download', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await largeMessage(engine, acc);
+  const { calls, held } = holdBackground(engine, acc);
+  const partial = await engine.getMessage(m.id, { fast: true });
+  const pdf = partial.attachments.find((a) => a.filename === 'report.pdf');
+  const done = engine.downloaded(m.id);
+  // In the user's turn: the attachment is the whole one, and what waited for the background download has it now.
+  const a = await engine.attachment(m.id, pdf.index);
+  assert.equal(a.filename, 'report.pdf');
+  assert.equal(a.content.length, 3 * MB);
+  assert.equal(await done, true);
+  assert.deepEqual(calls, ['background', 'user']);
+  // Reply, forward, unsubscribe and the agent's tools read the message without fast: whole, from disk now.
+  const full = await engine.getMessage(m.id);
+  assert.equal(full.partial, undefined);
+  assert.deepEqual(listed(full), listed(partial));
+  held.forEach((go) => go());
+  await until(() => engine.downloads.size === 0);
+  await engine.close();
+});
+
+// A large message with a banner over the inline-picture budget, a small logo and a report.
+async function bannerMessage(engine, acc) {
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const raw = await new MailComposer({
+    from: 'sanne@example.com',
+    to: 'demo@example.com',
+    subject: 'Banner',
+    html: '<p>Our new banner:</p><img id="banner" src="cid:banner@example.com"><img id="logo" src="cid:logo@example.com">',
+    attachments: [
+      { filename: 'banner.png', content: Buffer.concat([png, Buffer.alloc(2200 * 1024)]), cid: 'banner@example.com' },
+      { filename: 'logo.png', content: png, cid: 'logo@example.com' },
+      { filename: 'report.pdf', content: Buffer.alloc(3 * MB, 7), contentType: 'application/pdf' }
+    ]
+  })
+    .compile()
+    .build();
+  await engine.session(engine.account(acc.id)).append('INBOX', raw);
+  await engine.syncAccount(acc.id);
+  await prefetched(engine, acc);
+  return engine.listMessages({ scope: acc.id, view: 'inbox' }).find((x) => x.subject === 'Banner');
+}
+
+test('an inline picture over the budget waits for the whole message, with a blank in its place', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await bannerMessage(engine, acc);
+  const partial = await engine.getMessage(m.id, { fast: true });
+  assert.equal(partial.partial, true);
+  assert.match(partial.html, /id="banner" src="data:image\/svg\+xml,/);
+  assert.match(partial.html, /id="logo" src="data:image\/png;base64,iVBOR/, 'a small picture comes with the text');
+  assert.deepEqual(partial.attachments.map((a) => a.filename), ['report.pdf']);
+  assert.equal(await engine.downloaded(m.id), true);
+  const whole = await engine.getMessage(m.id, { fast: true });
+  assert.match(whole.html, /id="banner" src="data:image\/png;base64,iVBOR/);
+  await engine.close();
+});
+
+// The reader reads a partly shown message again once downloaded() says it is in (app.js completeMessage). A message
+// that came in but couldn't be kept is only whole without fast.
+test('a large message that comes in but cannot be kept on disk is still read whole without fast', async () => {
+  const { engine, acc } = await freshEngine();
+  const m = await bannerMessage(engine, acc);
+  const { box, folder, uid } = engine.locate(m.id);
+  const file = engine.bodyFile(acc, box, folder, uid);
+  const { calls, held } = holdBackground(engine, acc);
+  // A full disk: no body can be written.
+  const write = fs.writeFileSync;
+  fs.writeFileSync = (f, ...rest) => {
+    if (String(f).startsWith(path.dirname(file))) throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    return write.call(fs, f, ...rest);
+  };
+  try {
+    const partial = await engine.getMessage(m.id, { fast: true });
+    assert.equal(partial.partial, true);
+    const done = engine.downloaded(m.id);
+    await Promise.all(held.splice(0).map((go) => go()));
+    assert.equal(await done, false, 'it came in, but is not on disk');
+    assert.ok(!fs.existsSync(file));
+    // With fast, the text alone again.
+    const again = await engine.getMessage(m.id, { fast: true });
+    assert.equal(again.partial, true);
+    assert.match(again.html, /id="banner" src="data:image\/svg\+xml,/);
+    // Without: whole, from the server once more, with the banner and the report's exact size.
+    const whole = await engine.getMessage(m.id);
+    assert.equal(whole.partial, undefined);
+    assert.match(whole.html, /id="banner" src="data:image\/png;base64,iVBOR/);
+    assert.deepEqual(listed(whole), listed(partial));
+    assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+    assert.deepEqual(calls, ['background', 'background', 'user']);
+    await Promise.all(held.splice(0).map((go) => go()));
+    await until(() => engine.downloads.size === 0);
+    await new Promise((r) => setImmediate(r));
+  } finally {
+    fs.writeFileSync = write;
+  }
+  assert.ok(!fs.existsSync(file));
+  await engine.close();
+});
+
+test('the whole message comes at once when it is small, saved, on disk, or the split fails', async () => {
+  const { engine, acc } = await freshEngine();
+  await prefetched(engine, acc);
+  const session = engine.session(acc);
+  const asked = [];
+  const readable = session.fetchReadable.bind(session);
+  session.fetchReadable = (...args) => {
+    asked.push(args[1]);
+    return readable(...args);
+  };
+  // Small: downloaded ahead of time, or quick enough to fetch whole.
+  const small = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.hasAttachments);
+  assert.equal((await engine.getMessage(small.id, { fast: true })).partial, undefined);
+  const saved = await engine.saveToDevice(small.id);
+  assert.equal((await engine.getMessage(saved, { fast: true })).partial, undefined);
+  assert.equal(await engine.downloaded(saved), true);
+  assert.deepEqual(asked, []);
+
+  // Large, but without fast: what every caller other than the reader gets.
+  const large = await largeMessage(engine, acc);
+  assert.equal((await engine.getMessage(large.id)).partial, undefined);
+  assert.deepEqual(asked, []);
+  // On disk now, so fast reads it from there.
+  assert.equal((await engine.getMessage(large.id, { fast: true })).partial, undefined);
+
+  // A server that doesn't answer the parts, or an account that can't split: the whole message, as before.
+  const other = await largeMessage(engine, acc, 'Another report');
+  session.fetchReadable = async () => {
+    throw new Error('BAD Unknown section');
+  };
+  const whole = await engine.getMessage(other.id, { fast: true });
+  assert.equal(whole.partial, undefined);
+  assert.equal(whole.attachments.find((a) => a.filename === 'report.pdf').size, 3 * MB);
+  const third = await largeMessage(engine, acc, 'A third report');
+  session.fetchReadable = undefined;
+  assert.equal((await engine.getMessage(third.id, { fast: true })).partial, undefined);
+  await engine.close();
+});
+
 test('bodies of messages that left the synced folders are removed', async () => {
   const { engine, acc, dir } = await freshEngine();
   await prefetched(engine, acc);
@@ -462,6 +712,181 @@ test('flags, delete to trash and permanent delete', async () => {
   assert.equal(await engine.remove(moved.id), 'deleted');
   await engine.syncAccount(acc.id);
   assert.ok(!engine.listMessages({ scope: acc.id, view: 'trash' }).some((m) => m.subject === first.subject));
+  await engine.close();
+});
+
+test('flags for many emails change the cache at once, hold through a sync, and a failure is put back', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = () => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread);
+  const list = unread();
+  assert.ok(list.length >= 3, 'the demo inbox has unread mail');
+  const ids = list.map((m) => m.id);
+  const session = engine.session(acc);
+  const setFlags = session.setFlags.bind(session);
+  // The server is slow with the first email, so the rest wait behind it.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const first = decodeId(ids[0]).uid;
+  session.setFlags = async (p, uid, patch) => {
+    if (uid === first) await held;
+    return setFlags(p, uid, patch);
+  };
+  let updates = 0;
+  engine.on('updated', () => updates++);
+  const marking = engine.setFlagsMany([...ids, 'saved:gone'], { unread: false });
+  assert.equal(unread().length, 0, 'the cache changed for all of them before the server answered');
+  assert.equal(updates, 1, 'the list redraws once');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread().length, 0, 'a sync in between keeps the change');
+  release();
+  assert.deepEqual(await marking, { done: ids, failed: [], error: null }, 'the saved email that is not in the cache is skipped');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread().length, 0, 'the server has them read');
+
+  // Undo marks the same emails unread again; one the server refuses goes back to read and is named with the error.
+  const refused = decodeId(ids[1]).uid;
+  session.setFlags = async (p, uid, patch) => {
+    if (uid === refused) throw new Error('NO STORE failed');
+    return setFlags(p, uid, patch);
+  };
+  const undo = await engine.setFlagsMany(ids, { unread: true });
+  assert.deepEqual(undo.done, ids.filter((id) => id !== ids[1]));
+  assert.deepEqual(undo.failed, [ids[1]]);
+  assert.match(undo.error, /STORE failed/);
+  assert.deepEqual(
+    unread().map((m) => m.id).sort(),
+    ids.filter((id) => id !== ids[1]).sort()
+  );
+  await engine.close();
+});
+
+// The demo server's flag writes wait at gates the test opens, or fail there. A gate stops the first write it matches.
+function gatedWrites(engine, acc) {
+  const session = engine.session(acc);
+  const write = session.setFlags.bind(session);
+  const gates = [];
+  session.setFlags = async (p, uid, patch) => {
+    const at = gates.findIndex((g) => g.match(uid, patch));
+    const gate = at < 0 ? null : gates.splice(at, 1)[0];
+    if (gate) await gate.opened;
+    if (gate && gate.fail) throw new Error('NO STORE failed');
+    return write(p, uid, patch);
+  };
+  return (match, { fail = false } = {}) => {
+    let open;
+    gates.push({ match, fail, opened: new Promise((resolve) => (open = resolve)) });
+    return open;
+  };
+}
+
+test('a batch of flags that finishes after Undo started leaves Undo in the cache, through a sync, and on the server', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // Mark all read is slow with the first email, and Undo marks both unread again before it is done.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
+  const openUndo = gate((uid, patch) => patch.unread === true);
+  const marking = engine.setFlagsMany([a, b], { unread: false });
+  const undoing = engine.setFlagsMany([a, b], { unread: true });
+  assert.ok(unread(a) && unread(b), 'Undo shows at once');
+  openRead();
+  await marking;
+  // The server has both read and Undo hasn't reached it yet: a sync now must keep what Undo shows.
+  await engine.syncAccount(acc.id);
+  assert.ok(unread(a) && unread(b), 'a sync while Undo is on its way keeps it');
+  openUndo();
+  await undoing;
+  await engine.syncAccount(acc.id);
+  assert.ok(unread(a) && unread(b), 'the server ends with Undo');
+  await engine.close();
+});
+
+test('a later flag change to an email waits for an earlier write to it, and its failure leaves the later change', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b, c] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // Mark all read is slow with the first email; meanwhile the second is marked unread again on its own.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
+  const marking = engine.setFlagsMany([a, b], { unread: false });
+  const single = engine.setFlags(b, { unread: true });
+  openRead();
+  await Promise.all([marking, single]);
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(a), false);
+  assert.equal(unread(b), true, 'the server keeps the later change');
+
+  // The server refuses the first write, while a second one marking the same email read is waiting: the cache keeps
+  // the second, which then reaches the server.
+  const openRefusal = gate((uid) => uid === decodeId(c).uid, { fail: true });
+  const refused = engine.setFlagsMany([c], { unread: false });
+  const again = engine.setFlags(c, { unread: false });
+  openRefusal();
+  await refused.catch(() => {});
+  assert.equal(unread(c), false, 'the failure does not put back what the later change set');
+  await again;
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(c), false);
+  await engine.close();
+});
+
+test('when Mark all as read and its Undo both fail, the email keeps what the server holds', async () => {
+  const { engine, acc } = await freshEngine();
+  const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
+  const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const gate = gatedWrites(engine, acc);
+  // The server refuses both writes to a; Undo starts while the first is still on its way.
+  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false, { fail: true });
+  const openUndo = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === true, { fail: true });
+  const marking = engine.setFlagsMany([a], { unread: false });
+  const undoing = engine.setFlagsMany([a], { unread: true });
+  openRead();
+  assert.deepEqual((await marking).failed, [a]);
+  assert.equal(unread(a), true, 'the first failure leaves what Undo shows');
+  openUndo();
+  assert.deepEqual((await undoing).failed, [a]);
+  assert.equal(unread(a), true, 'neither write reached the server, so the email is still unread');
+
+  // When the first write does reach the server and only Undo fails, the email shows the server's read state.
+  const openUndoB = gate((uid, patch) => uid === decodeId(b).uid && patch.unread === true, { fail: true });
+  const markingB = engine.setFlagsMany([b], { unread: false });
+  const undoingB = engine.setFlags(b, { unread: true });
+  await markingB;
+  openUndoB();
+  await assert.rejects(undoingB, /STORE failed/);
+  assert.equal(unread(b), false, 'the server took the first write');
+  await engine.syncAccount(acc.id);
+  assert.equal(unread(a), true);
+  assert.equal(unread(b), false);
+  await engine.close();
+});
+
+test('read, star and archive of one email reach the server in the order they were made', async () => {
+  const { engine, acc } = await freshEngine();
+  const target = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.unread && !m.starred);
+  const gate = gatedWrites(engine, acc);
+  const session = engine.session(acc);
+  const move = session.move.bind(session);
+  let moves = 0;
+  session.move = (...args) => {
+    moves++;
+    return move(...args);
+  };
+  // Marking it read is slow; the email is starred and archived before the server has answered.
+  const openRead = gate((uid, patch) => uid === target.uid && patch.unread === false);
+  const reading = engine.setFlags(target.id, { unread: false });
+  const starring = engine.setFlags(target.id, { starred: true });
+  const archiving = engine.archive(target.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(moves, 0, 'the move waits for the flag changes made before it');
+  openRead();
+  await Promise.all([reading, starring, archiving]);
+  await engine.syncAccount(acc.id);
+  const archived = engine.listMessages({ scope: acc.id, view: 'archive' }).find((m) => m.messageId === target.messageId);
+  assert.ok(archived, 'the email is in the archive');
+  assert.equal(archived.unread, false);
+  assert.equal(archived.starred, true, 'the star reached the email before it moved');
   await engine.close();
 });
 
@@ -495,6 +920,23 @@ test('new-mail event fires only for mail after the first sync', async () => {
   await engine.syncAccount(acc.id);
   assert.ok(events.some((m) => m.subject === 'New!'));
   await engine.close();
+});
+
+test('the sound for new mail is off until turned on, and stays a switch in an edited settings file', async () => {
+  const dir = tempDir('sem-test-');
+  try {
+    const engine = new Engine({ dataDir: dir }).init();
+    assert.equal(engine.settings.newMailSound, false);
+    engine.updateSettings({ newMailSound: true });
+    const again = new Engine({ dataDir: dir }).init();
+    assert.equal(again.settings.newMailSound, true);
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ newMailSound: 'yes' }));
+    const edited = new Engine({ dataDir: dir }).init();
+    assert.equal(edited.settings.newMailSound, false);
+    await Promise.all([engine.close(), again.close(), edited.close()]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('vip, spam, search, saved and persistence across restarts', async () => {

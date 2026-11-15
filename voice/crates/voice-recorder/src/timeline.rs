@@ -163,7 +163,12 @@ impl TimelineWriter {
     }
 
     pub fn sync(&self) -> io::Result<()> {
-        self.file.sync_data()
+        crate::disk::sync(&self.file)
+    }
+
+    /// The open file, for a writer that syncs it itself.
+    pub fn file(&self) -> &File {
+        &self.file
     }
 }
 
