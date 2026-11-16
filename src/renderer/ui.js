@@ -195,6 +195,8 @@ function hideToast({ next = true } = {}) {
 // and its action also runs on Ctrl+Z (see runToastAction), unless shortcut is false. wait: while a toast with an
 // action is up, such as Undo, this one waits until the toasts before it have gone, instead of taking their place. It
 // does replace a toast that waited itself.
+// It stays while the pointer is on it, and goes 2.5 s after the pointer leaves, or at ms after it showed when that is
+// later.
 export function toast(message, opts = {}) {
   if (typeof opts === 'number') opts = { ms: opts };
   const el = document.getElementById('toast');
@@ -220,11 +222,24 @@ export function toast(message, opts = {}) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, ms);
+  const until = Date.now() + ms;
   el.onmouseenter = () => clearTimeout(toastTimer);
   el.onmouseleave = () => {
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(hideToast, 2500);
+    toastTimer = setTimeout(hideToast, Math.max(2500, until - Date.now()));
   };
+}
+
+// Whether the toast on screen is still the one with action.
+export function showingToast(action) {
+  return Boolean(action) && toastAction === action;
+}
+
+// Takes a toast away before its time, while it still shows action: a newer toast keeps its place.
+export function dropToast(action) {
+  if (!showingToast(action)) return;
+  clearTimeout(toastTimer);
+  hideToast();
 }
 
 // Ctrl+Z, or click: true for the toast's button. A toast that waits comes after what the action says, such as
