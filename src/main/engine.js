@@ -290,6 +290,8 @@ class Engine extends EventEmitter {
     this.caches = new Map();
     this.sessions = new Map();
     this.syncs = new Map();
+    // When each account's last sync started, by id; see syncStale().
+    this.syncStarts = new Map();
     this.saved = [];
     this.saveTimers = new Map();
     // Local changes whose IMAP command has not finished yet, per email in the order they were made; re-applied over
@@ -979,6 +981,7 @@ class Engine extends EventEmitter {
   syncAccount(id, extraFolders = []) {
     if (this.syncs.has(id)) return this.syncs.get(id);
     const started = Date.now();
+    this.syncStarts.set(id, started);
     const report = { folders: 0, failed: 0, fresh: 0 };
     const job = this.runSync(id, extraFolders, report)
       .then(
@@ -998,6 +1001,20 @@ class Engine extends EventEmitter {
     this.syncs.set(id, job);
     this.emit('updated');
     return job;
+  }
+
+  // Syncs, in the background, each account whose last sync started at least age ms ago or not at all since Rukoo
+  // started, and that isn't syncing now; for the main window coming forward (main.js syncOnReturn()). The ids it
+  // started. A sync goes through the inbox first, so that is where new mail shows first.
+  syncStale(age) {
+    const now = Date.now();
+    const started = [];
+    for (const a of this.accounts) {
+      if (this.syncs.has(a.id) || now - (this.syncStarts.get(a.id) || 0) < age) continue;
+      this.syncAccount(a.id).catch(() => {});
+      started.push(a.id);
+    }
+    return started;
   }
 
   // One line per account per sync for the log in the profile (diaglog.js): when it started, how long it took, how many

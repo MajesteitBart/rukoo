@@ -246,6 +246,15 @@ function scheduleSync() {
   }
 }
 
+// The main window coming forward (shown, restored or focused) syncs each account whose last sync started over a
+// minute ago, in the background. With only the timer, the inbox could be a whole interval behind right when the user
+// looks. Not with manual sync (interval 0).
+const RETURN_SYNC_AFTER = 60000;
+function syncOnReturn() {
+  if (!engine || !(Number(engine.settings.syncInterval) > 0)) return;
+  engine.syncStale(RETURN_SYNC_AFTER);
+}
+
 function badgeCount() {
   if (engine.settings.badge === 'none') return 0;
   if (engine.settings.badge === 'unread') return engine.unreadCount();
@@ -1794,7 +1803,10 @@ function createWindow({ hidden = false } = {}) {
   win.on('focus', () => {
     newSinceFocus.clear();
     refreshBadge();
+    syncOnReturn();
   });
+  win.on('show', syncOnReturn);
+  win.on('restore', syncOnReturn);
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
   // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
   win.on('close', (event) => {
