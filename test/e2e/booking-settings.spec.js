@@ -534,24 +534,50 @@ test('the page and the overview keep their place while the booking state comes i
   expect(await top()).toBe(bottom);
 
   // The overview, with the page off: a state it doesn't show doesn't redraw it or move it.
-  await call('bookingDisable');
-  await page().locator('[data-a="back"]').click();
-  await expect(page().locator('[data-a="booking-open"] .desc')).toHaveText('Let people and their AI assistants book time with you');
-  await scroller.evaluate((el) => (el.scrollTop = el.scrollHeight));
-  const overview = await top();
-  expect(overview).toBeGreaterThan(100);
+  // The overview does redraw for main's 'updated' (a sync, a cache change, a setting): 80ms later, and then only once
+  // its round trips to main are back, which under load can take well over 300ms. One that lands during the check
+  // would replace the row although the booking state drew nothing (#258). So the check runs once the window has had
+  // no 'updated' for a second, and runs again when one came in during it. The window starts listening before the page
+  // goes off, and counts that moment as an 'updated': one just before it may still be on its way.
   await win.evaluate(() => {
-    window.__bookingRow = document.querySelector('.page.settings [data-a="booking-open"]');
+    window.__updatedAt = [performance.now()];
+    window.mail.on(({ type }) => type === 'updated' && window.__updatedAt.push(performance.now()));
     window.__bookingEvents = 0;
     window.mail.on(({ type }) => type === 'booking' && window.__bookingEvents++);
   });
-  const off = await booking();
-  off.busy = !off.busy;
-  await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'booking', payload: s }), off);
-  await expect.poll(() => win.evaluate(() => window.__bookingEvents)).toBe(1);
-  await win.waitForTimeout(300);
-  expect(await win.evaluate(() => window.__bookingRow === document.querySelector('.page.settings [data-a="booking-open"]'))).toBe(true);
-  expect(await top()).toBe(overview);
+  await call('bookingDisable');
+  await page().locator('[data-a="back"]').click();
+  await expect(page().locator('[data-a="booking-open"] .desc')).toHaveText('Let people and their AI assistants book time with you');
+  await expect.poll(async () => (await call('state')).accounts.every((a) => !a.syncing)).toBe(true);
+  const quiet = () => win.evaluate(() => performance.now() - window.__updatedAt.at(-1));
+  let checked = null;
+  await expect(async () => {
+    await expect.poll(quiet, { timeout: 10000 }).toBeGreaterThan(1000);
+    // Each attempt scrolls again: a redraw in between may have moved the page.
+    await scroller.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    const overview = await top();
+    expect(overview).toBeGreaterThan(100);
+    const since = await win.evaluate(() => {
+      window.__bookingRow = document.querySelector('.page.settings [data-a="booking-open"]');
+      window.__bookingEvents = 0;
+      return performance.now();
+    });
+    const off = await booking();
+    off.busy = !off.busy;
+    await app.evaluate(({ BrowserWindow }, s) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'booking', payload: s }), off);
+    await expect.poll(() => win.evaluate(() => window.__bookingEvents)).toBe(1);
+    await win.waitForTimeout(300);
+    // Any 'updated' since the quiet wait counts, also one between that wait and the capture.
+    const result = await win.evaluate((t) => ({
+      same: window.__bookingRow === document.querySelector('.page.settings [data-a="booking-open"]'),
+      updated: window.__updatedAt.some((at) => at >= t - 1000)
+    }), since);
+    if (result.updated) throw new Error("an 'updated' redraw overlapped the check; trying again");
+    checked = { same: result.same, scrollTop: await top(), overview };
+  }).toPass({ timeout: 30000 });
+  // Outside the retries: a redraw by the booking state itself fails at once.
+  expect(checked.same, 'the booking state redrew the overview').toBe(true);
+  expect(checked.scrollTop).toBe(checked.overview);
 });
 
 test('in Dutch, a date inside a sentence keeps its lowercase weekday, a publish a moment ago is "zojuist", and a type row says what it changes', async () => {
