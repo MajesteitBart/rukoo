@@ -693,7 +693,7 @@ function composeOptions(input = {}) {
   };
 }
 
-// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window has loaded.
+// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window's editor is up.
 function openComposeWindow(input, { heldId = null } = {}) {
   const opts = composeOptions(input);
   // A draft that opens again after Undo send had its window closed; it can't be open in another one.
@@ -929,7 +929,7 @@ function reopenUnsent() {
 // Send finds it. No file while the outbox is empty, as after a quit that sent everything.
 const heldFile = () => path.join(app.getPath('userData'), 'data', 'held.json');
 // What held.json had at the start, from a run that ended while emails waited, until the compose window that reopenHeld()
-// opens for each has loaded it (heldOpened). Written with this run's own emails meanwhile, so a second crash before
+// opens for each has its editor up (heldOpened). Written with this run's own emails meanwhile, so a second crash before
 // that loses none. Once its editor is up, an email is an ordinary unsaved editor, which autosaves.
 let heldBefore = [];
 
@@ -967,7 +967,7 @@ function reopenHeld(done = new Set()) {
   }
 }
 
-// The compose window reopenHeld() opened for this email has loaded it (composeInit), so held.json lets it go.
+// The compose window reopenHeld() opened for this email has its editor up (composeMounted), so held.json lets it go.
 function heldOpened(id) {
   const before = heldBefore.length;
   heldBefore = heldBefore.filter((e) => e.id !== id);
@@ -1809,8 +1809,16 @@ const windowApi = {
   openRefused: (sender, id) => fromMainWindow(sender) && refused.release(String(id || '')),
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
-    if (c && c.heldId) heldOpened(c.heldId);
     return c ? c.opts : null;
+  },
+  // The window's editor is up with its email. One reopened from held.json (reopenHeld) is no longer kept there.
+  composeMounted: (sender) => {
+    const c = composeWindows.get(sender.id);
+    if (c && c.heldId) {
+      heldOpened(c.heldId);
+      c.heldId = null;
+    }
+    return true;
   },
   // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice.
   composeDraft: (sender, draftId) => {

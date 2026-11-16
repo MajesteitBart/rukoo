@@ -1486,7 +1486,10 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
 
   async function ask() {
     await dropping;
+    // Meanwhile the editor may have closed, or started to save and close or to send (leave(), Send): it answers as
+    // close() does then, without a question behind that.
     if (closed) return true;
+    if (closing || sending) return false;
     flushInputs();
     if (!st.dirty) {
       finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
@@ -1544,9 +1547,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   async function popOut() {
-    if (sending || closing || closed) return;
+    if (sending || closing || closed || asking) return;
     await dropping;
-    if (sending || closing || closed) return;
+    if (sending || closing || closed || asking || answer) return;
     flushInputs();
     if (st.dirty || st.draftId) {
       if (st.dirty && !(await saveAndFinish(null))) return;
