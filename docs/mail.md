@@ -138,6 +138,8 @@ Passwords and Google refresh tokens use Electron's `safeStorage`: Windows DPAPI 
 
 Account data and the message cache live in `%APPDATA%\Rukoo Mail\data` on Windows. [macOS](platforms.md#macos-experimental) and [Linux](platforms.md#linux) use their own profile folders. Earlier builds, named "E-mail", used `%APPDATA%\E-mail`; Rukoo moves that folder on first launch.
 
+When new mail doesn't show or syncing seems slow, `data\logs\rukoo.log` in the same folder says what happened. It has one line per account per sync, with when it started, how long it took, how many folders it went through, how many new emails it found and, when it failed, a short error code such as `auth` or `timeout`. It also has the errors in Rukoo's windows that nothing caught, and the times the list couldn't redraw. Accounts appear by the first eight characters of their internal id. The log never holds subjects, addresses, previews or passwords. Past 1 MB it moves to `rukoo.1.log`, replacing the older one, so the two files stay under 2 MB. Send it along when you report a sync problem.
+
 ## Screenshots
 
 These use the English interface and the demo account. The same screens in dark mode are in [screenshots/dark](screenshots/dark).
