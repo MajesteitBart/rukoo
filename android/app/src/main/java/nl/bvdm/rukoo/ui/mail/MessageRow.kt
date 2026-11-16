@@ -437,7 +437,10 @@ private fun Pill(text: String, background: Color = Rk.colors.chip, color: Color 
     }
 }
 
-/** The "+N" after a stack head's sender, or the up chevron that folds an open stack (styles.css:1412-1467). */
+/**
+ * The pile icon and "+N" after a stack head's sender, or the up chevron that folds an open stack (styles.css .stack-btn),
+ * so a folded stack doesn't read as one email with a count.
+ */
 @Composable
 private fun StackButton(stack: StackInfo, sender: String, onClick: (() -> Unit)?) {
     val c = Rk.colors
@@ -450,13 +453,17 @@ private fun StackButton(stack: StackInfo, sender: String, onClick: (() -> Unit)?
             .background(if (stack.unread && !stack.open) c.accentSoft else c.chip, shape)
             .rkClickable(shape, onClick = { onClick?.invoke() })
             .semantics { contentDescription = label }
-            .padding(horizontal = 6.dp),
+            .padding(start = if (stack.open) 6.dp else 5.dp, end = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (stack.open) {
             RkIcon(RukooIcons.Up, null, size = 13.dp, tint = c.text2)
         } else {
-            Text("+${stack.count - 1}", style = Rk.type.text11.weight(650).tabular, color = if (stack.unread) c.accent else c.text2, maxLines = 1)
+            val tint = if (stack.unread) c.accent else c.text2
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                RkIcon(RukooIcons.Stack, null, size = 13.dp, tint = tint)
+                Text("+${stack.count - 1}", style = Rk.type.text11.weight(650).tabular, color = tint, maxLines = 1)
+            }
         }
     }
 }
