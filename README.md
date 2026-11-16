@@ -95,11 +95,10 @@ More screens are in [docs/screenshots](docs/screenshots), in light and dark mode
 - Rukoo keeps the newest 300 inbox messages and 100 per other folder on your computer. Older mail stays on the server: "Load older emails" at the end of a folder brings it in, 100 at a time, and a search also looks for it on the server. See [What Rukoo keeps on your computer](docs/mail.md#what-rukoo-keeps-on-your-computer).
 - Bookings reach your calendar only while Rukoo runs on the computer that handles your booking page. Until then the server holds them.
 - Rukoo for Android has no calendar or push mail yet.
-- A message with a large attachment downloads in full before its text shows ([#56](https://github.com/MajesteitBart/rukoo/issues/56)).
 
 ## Development
 
-Rukoo needs Node.js 22 or newer.
+Rukoo needs Node.js 22 or newer, with npm 10 or npm 11.6.3 or newer. npm 11.5.0 to 11.6.2 rewrite `package-lock.json`; see [Developing Rukoo](docs/development.md#run-from-source).
 
 ```bash
 npm install
