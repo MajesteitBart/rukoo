@@ -965,6 +965,9 @@ test('pdfText stays within its caps on PDFs built to hang it or run it out of me
     assert.equal(r[name].partial, true, name);
     assert.ok(r[name].cpuMs < 3000, `${name} took ${r[name].cpuMs} ms CPU (${r[name].ms} ms elapsed)`);
   }
+  // Looking for the file's ID copies the string once, however many trailers name it.
+  assert.deepEqual([r.trailerIds.text, r.trailerIds.partial, r.trailerIds.encrypted], ['text', false, false]);
+  assert.ok(r.trailerIds.cpuMs < 3000, `trailerIds took ${r.trailerIds.cpuMs} ms CPU (${r.trailerIds.ms} ms elapsed)`);
 });
 
 test('every limit of the reader that drops content says partial, and the text before it stays; short of the limits nothing is partial', async () => {
@@ -1133,6 +1136,14 @@ test('pdfText: a trailer in a string of an object without endobj is no trailer, 
     assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj<</Title${title}>>\n` })), read, `after: ${title}`);
   }
   assert.deepEqual(pdfText(plainPage(text, { after: '11 0 obj[(trailer<</Encrypt<</Filter/Standard>>>>)]\n' })), read);
+  // The review's case: an object header in the title as well, which cut the title there. It runs on to its end, and
+  // that reading is kept when the next object or a trailer follows, as when endobj does.
+  for (const title of ['(12 0 obj trailer<</Encrypt<</Filter/Standard>>>>)', '(endobj trailer<</Encrypt<</Filter/Standard>>>>)']) {
+    assert.deepEqual(pdfText(plainPage(text, { before: `11 0 obj<</Title${title}>>\n` })), read, `before: ${title}`);
+    assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj<</Title${title}>>\n` })), read, `after: ${title}`);
+    const last = plainPage(text).toString('latin1').replace('endobj\ntrailer<</Root', `endobj\n11 0 obj<</Title${title}>>\ntrailer<</Root`);
+    assert.deepEqual(pdfText(Buffer.from(last, 'latin1')), read, `last: ${title}`);
+  }
   // A damaged last object, with no ">>" and no endobj, right before the file's own trailer: the bare keyword ends
   // it, so it can't take the trailer in and the encrypted file stays encrypted. Also with a cross-reference table
   // between them, whose "xref" ends it.

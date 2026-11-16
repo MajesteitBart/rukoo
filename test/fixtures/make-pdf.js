@@ -190,7 +190,9 @@ function hostilePdfs() {
     bigTJ: onePage(`BT /F1 12 Tf [${'(a)'.repeat(3000000)}] TJ ET`),
     escapes: onePage(`BT /F1 12 Tf (${'\\101'.repeat(4000000)}) Tj ET`),
     formAgain: onePage('/X Do '.repeat(3000000), { resources: '/XObject<</X 10 0 R>>', objects: streamObject(10, '/Type/XObject/Subtype/Form', `%${'x'.repeat(1000000)}\n`) }),
-    zeros: onePage('BT ET', { contents: 10, objects: streamObject(10, '/Filter[/FlateDecode/ASCII85Decode]', zlib.deflateSync(Buffer.from(`${'z'.repeat(16000000)}~>`)).toString('latin1')) })
+    zeros: onePage('BT ET', { contents: 10, objects: streamObject(10, '/Filter[/FlateDecode/ASCII85Decode]', zlib.deflateSync(Buffer.from(`${'z'.repeat(16000000)}~>`)).toString('latin1')) }),
+    // The review of #245: thirty thousand trailers whose ID is one string of a megabyte, which each copied.
+    trailerIds: plainPage(line('text'), { after: `11 0 obj[(${'x'.repeat(1024 * 1024)})]endobj\n${'trailer<</ID 11 0 R>>\n'.repeat(30000)}` })
   };
 }
 

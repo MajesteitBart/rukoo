@@ -498,8 +498,9 @@ class Doc {
   // objects after it, and one that never closes is read once, not again from every header inside it.
   // A string or comment can hold "endobj" or "12 0 obj" itself, such as a title. One that such words cut runs on to
   // its own end, and the object then ends at the first endobj or header after that (past). That reading is kept
-  // only when the value closes before that end and endobj or stream follows it; else the object is read as if
-  // nothing ran on, so a string that a broken writer never closed still can't take in the objects after it.
+  // only when the value closes before that end and what follows is where a value ends: endobj, stream, the next
+  // object or a trailer keyword. Else the object is read as if nothing ran on, so a string that a broken writer
+  // never closed still can't take in the objects after it, nor the rest of the file.
   // known: stream lengths read in a first scan, by the number of their object. Without it, returns the streams
   // whose length is an object that was not there yet.
   scan(known = null) {
@@ -575,7 +576,7 @@ class Doc {
       let valueEnd = lex.pos;
       lex.skip();
       if (lex.grown) {
-        if (!lex.ended && (s.startsWith('endobj', lex.pos) || s.startsWith('stream', lex.pos))) valueEnd = lex.pos;
+        if (!lex.ended && /^(?:endobj|stream|trailer|xref|startxref|\d+\s+\d+\s+obj\b)/.test(s.slice(lex.pos, lex.pos + 40))) valueEnd = lex.pos;
         else {
           this.partial = partial || spent;
           lex = new Lexer(s, at, Math.min(endobj, next), this);
@@ -869,9 +870,10 @@ class Doc {
       dict = dictOf(t.get('Encrypt')) || dict;
       const ids = this.resolve(t.get('ID'));
       const first = Array.isArray(ids) ? this.resolve(ids[0]) : null;
-      if (first instanceof Str) id = Buffer.from(first.bytes, 'latin1');
+      if (first instanceof Str) id = first;
     }
-    return dict && { dict, id: id || Buffer.alloc(0) };
+    // Copied once: thousands of trailers can name one long string.
+    return dict && { dict, id: id ? Buffer.from(id.bytes, 'latin1') : Buffer.alloc(0) };
   }
 
   // How the file is encrypted, worked out once per scan: null when it isn't, { locked: true } when it needs a
