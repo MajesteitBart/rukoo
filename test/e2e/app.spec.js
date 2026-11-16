@@ -929,6 +929,48 @@ test('the account menu shows each display name with the address underneath, or t
   await expect(win.locator('.menu b')).toHaveCount(0);
 });
 
+// #259: the row the arrow keys are on shows against the menu, in both themes, the current row too. The dark --hover
+// was darker than the menu itself, and the current row kept its fill under the focus. The current row has the same
+// grey as the arrow keys' row, so that one also keeps the focus ring, inside the row.
+test('a menu shows the row under the arrow keys or the pointer, the current one too, in both themes', async () => {
+  await addAccount();
+  const color = (token) => win.evaluate((t) => {
+    const probe = document.createElement('div');
+    probe.style.background = `var(${t})`;
+    document.body.appendChild(probe);
+    const c = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return c;
+  }, token);
+  const look = (el) => {
+    const c = getComputedStyle(el);
+    return [el.textContent, c.backgroundColor, c.outlineStyle === 'none' ? 'none' : `${c.outlineStyle} ${c.outlineWidth} ${c.outlineColor} ${c.outlineOffset}`];
+  };
+  const focused = () => win.evaluate(`(${look})(document.activeElement)`);
+  const entry = (address) => win.locator('.menu button', { hasText: address });
+  for (const theme of ['dark', 'light']) {
+    await win.evaluate((t) => window.mail.call('updateSettings', { theme: t }), theme);
+    await expect.poll(() => win.evaluate(() => document.documentElement.classList.contains('light'))).toBe(theme === 'light');
+    const [sel, strong, active, raised, focus] = [await color('--sel'), await color('--sel-strong'), await color('--active'), await color('--raised'), await color('--focus')];
+    expect(new Set([sel, strong, raised]).size, theme).toBe(3);
+    const ring = `solid 2px ${focus} -2px`;
+    await openAccountMenu();
+    // The demo account is the current one, and the menu starts with the focus on it.
+    await expect(entry('demo@example.com')).toHaveClass(/current/);
+    await win.keyboard.press('ArrowDown');
+    await expect.poll(focused, `${theme}: a row under the arrow keys`).toEqual([expect.stringContaining('werk@example.com'), sel, ring]);
+    await expect.poll(() => entry('demo@example.com').evaluate(look), `${theme}: the current row`).toEqual([expect.any(String), active, 'none']);
+    await win.keyboard.press('ArrowUp');
+    await expect.poll(focused, `${theme}: the current row under the arrow keys`).toEqual([expect.stringContaining('demo@example.com'), strong, ring]);
+    // The pointer gives a row the same grey, without the ring.
+    const add = win.locator('.menu button', { hasText: 'Account toevoegen' });
+    await add.hover();
+    await expect.poll(() => add.evaluate(look), `${theme}: a row under the pointer`).toEqual([expect.any(String), sel, 'none']);
+    await win.keyboard.press('Escape');
+    await expect(win.locator('.menu')).toHaveCount(0);
+  }
+});
+
 test('a tall account menu stays inside a short window at 200 percent and scrolls to its last item', async () => {
   // Four named accounts take two lines each. At 1000 by 580 and 200 percent the page is 290px high.
   await addAccount();

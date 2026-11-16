@@ -2503,10 +2503,15 @@ body.dragging-mail .nav-item * {
   text-align: left;
   font-size: 13px;
 }
+/* The row under the pointer or the arrow keys: the selected-row grey, as in the suggestion lists. The dark --hover is
+   darker than --raised, so it doesn't show on a menu. The current row has that grey too, so the arrow keys' row also
+   keeps the focus ring, inside the row as in other lists. */
 .menu button:hover,
 .menu button:focus-visible {
-  background: var(--hover);
-  outline: none;
+  background: var(--sel);
+}
+.menu button:focus-visible {
+  outline-offset: -2px;
 }
 .menu button:disabled {
   opacity: 0.45;
@@ -2577,6 +2582,11 @@ body.dragging-mail .nav-item * {
 .menu button.current {
   background: var(--active);
   font-weight: 600;
+}
+/* The current row already has the selected-row grey: under the pointer or the arrow keys it goes one step further. */
+.menu button.current:hover,
+.menu button.current:focus-visible {
+  background: var(--sel-strong);
 }
 .menu-sep {
   height: 1px;
