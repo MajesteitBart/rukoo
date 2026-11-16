@@ -15,6 +15,7 @@ import {
   setCalSettings,
   clockMinutes,
   startOfDay,
+  setViewDate,
   addDays,
   monthStart,
   addMonths,
@@ -143,9 +144,26 @@ export function isOpen() {
   return C.open;
 }
 
+// Rukoo stays open for days. A calendar on today moves on when the day changes, also into the next week or month, so
+// on Monday morning it shows this week rather than the one it was on when the window opened. A calendar the user
+// moved to another day stays there: every move goes through setViewDate, which reads today again. True when the day
+// changed.
+function followToday() {
+  const today = startOfDay(Date.now());
+  if (today === C.today) return false;
+  if (C.date === C.today) {
+    C.date = today;
+    C.mini = null;
+    C.miniFocus = null;
+  }
+  C.today = today;
+  return true;
+}
+
 export function show() {
   C.open = true;
   C.scroll = true;
+  followToday();
   bind();
   if (!C.data) render();
   load();
@@ -256,7 +274,7 @@ export async function openEvent(id, start) {
     C.scroll = true;
   }
   if (Number.isFinite(start)) {
-    C.date = startOfDay(start);
+    setViewDate(start);
     C.mini = null;
     if (prefs.view === 'upcoming') {
       const r = range('upcoming');
@@ -291,7 +309,7 @@ export function openDay(start) {
 export async function openRequest(bookingId) {
   const req = pendingRequests().find((r) => r.id === bookingId);
   if (req) {
-    C.date = startOfDay(req.start);
+    setViewDate(req.start);
     C.mini = null;
     if (prefs.view === 'upcoming') {
       prefs.view = 'day';
@@ -732,7 +750,7 @@ function sideMiniKey(ev) {
 function pickDay(day) {
   closePop();
   C.search = null;
-  C.date = startOfDay(day);
+  setViewDate(day);
   C.mini = null;
   C.miniFocus = C.date;
   C.scroll = true;
@@ -1904,15 +1922,14 @@ function step(dir) {
   const view = shownView();
   if (view === 'upcoming') return;
   closePop();
-  if (view === 'month') C.date = addMonths(C.date, dir);
-  else C.date = addDays(C.date, dir * (view === 'day' ? 1 : 7));
+  setViewDate(view === 'month' ? addMonths(C.date, dir) : addDays(C.date, dir * (view === 'day' ? 1 : 7)));
   C.mini = null;
   load();
 }
 
 function goToday() {
   closePop();
-  C.date = startOfDay(Date.now());
+  setViewDate(Date.now());
   C.mini = null;
   C.miniFocus = null;
   C.scroll = true;
@@ -1986,7 +2003,7 @@ function bind() {
     }
     if (d.calServer) return ctx.openSettings('server', { id: d.calServer });
     if (d.calDay || d.calMore) {
-      C.date = Number(d.calDay || d.calMore);
+      setViewDate(Number(d.calDay || d.calMore));
       return setView('day');
     }
     if (d.searchEv) return openEvent(d.searchEv, Number(d.start));
@@ -2097,12 +2114,11 @@ export function onKey(ev) {
   return true;
 }
 
-// The line for now moves along, and Upcoming's "in 25 min" and "Now" stay true; a new day redraws.
+// The line for now moves along, and Upcoming's "in 25 min" and "Now" stay true; a new day redraws, on the new day
+// when the calendar was on today.
 setInterval(() => {
   if (!C.open) return;
-  const today = startOfDay(Date.now());
-  if (today !== C.today) {
-    C.today = today;
+  if (followToday()) {
     reload(0);
     return;
   }

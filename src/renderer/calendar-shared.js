@@ -122,6 +122,13 @@ export function addDays(ts, n) {
   return d.getTime();
 }
 
+// Puts the view on a day the user or another part of the app chose. Today is read again with it: a new day that
+// calendar.js's followToday hasn't noticed yet would otherwise take a pick of yesterday along to today.
+export function setViewDate(day) {
+  C.date = startOfDay(day);
+  C.today = startOfDay(Date.now());
+}
+
 // The week starts where Settings → Calendar says, else where the language's region starts it.
 export function firstWeekday() {
   const chosen = calSettings().weekStart;

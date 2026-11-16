@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { clearOfMidnight } = require('./midnight');
 
 let app;
 let win;
@@ -19,6 +20,7 @@ async function launch() {
 }
 
 test.beforeEach(async () => {
+  await clearOfMidnight();
   dataDir = tempDir('sem-e2e-calviews-');
   await launch();
   await win.waitForSelector('.provider-grid');
