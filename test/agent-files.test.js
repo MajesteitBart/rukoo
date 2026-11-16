@@ -1188,6 +1188,22 @@ test('pdfText reads a stream Length packed in an object stream, and says partial
     assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', after: packed })), read('one\ntwo'), `after, deflate ${deflate}`);
     assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', before: packed })), read('one\ntwo'), `before, deflate ${deflate}`);
   }
+  // The review's case: an object stream that inflates to 34 MiB holds the page tree, the page and the Length. It is
+  // inflated once for the Length and kept for the text; inflated again, the two passed INFLATE_MAX and the page was
+  // lost. The same when that Length goes past an endstream and the file is scanned again: the second scan's object
+  // stream counts from nothing.
+  const big = (data) => {
+    const packed = {
+      2: '<</Type/Pages/Kids[3 0 R]/Count 1>>',
+      3: '<</Type/Page/Parent 2 0 R/Resources<</Font<</F1 5 0 R>>>>/Contents 10 0 R>>',
+      20: data.length,
+      30: `(${'x'.repeat(34 * 1024 * 1024)})`
+    };
+    const head = '%PDF-1.5\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>endobj\n';
+    return Buffer.from(`${head}10 0 obj<</Length 20 0 R>>stream\n${data}\nendstream\nendobj\n${objectStream(21, packed, true)}trailer<</Root 1 0 R>>\n`, 'latin1');
+  };
+  assert.deepEqual(pdfText(big('BT /F1 12 Tf 72 700 Td (hello) Tj ET')), read('hello'));
+  assert.deepEqual(pdfText(big(content)), read('one\ntwo'));
   // A packed length that holds a reference again is not taken, as a plain one isn't.
   assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', after: objectStream(21, { 20: '22 0 R', 22: content.length }) })), read('one', true));
   // A length that leads nowhere, or one that is wrong: the data ends at its first endstream, and as endobj doesn't

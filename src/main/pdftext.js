@@ -472,24 +472,40 @@ class Doc {
     // or else one packed in an object stream. If that goes past an endstream, the file is scanned again with the
     // lengths, so nothing in its data passes for an object. A length that can't be read leaves the stream at its
     // first endstream, and the text partial when the data went on after it.
+    // Plain lengths go first, so the object streams that packed lengths need are unpacked with the ends the plain
+    // ones give, and what they unpack is kept for the text: unpacking them again would inflate them again, against
+    // the same INFLATE_MAX. A second scan drops the first scan's objects and what was decoded for them, so its
+    // inflating starts from nothing: at most twice the cap, once.
     const later = this.scan();
     const known = new Map();
     let again = false;
-    for (const { ref, entry, stop } of later) {
-      let length = this.length(ref);
-      if (length === undefined) length = this.packedLength(ref);
+    let stale = false;
+    const take = ({ ref, entry, stop }, length) => {
       if (!this.fits(entry.start, length)) {
         if (this.cut(stop)) this.partial = true;
-        continue;
+        return;
       }
       known.set(ref, length);
       if (stop < entry.start + length) again = true;
-      else entry.end = entry.start + length;
+      else {
+        // An object stream unpacked before its own end was known, which only a packed Length of its own can do (the
+        // specification forbids it), is read again.
+        if (this.packed && nameOf(entry.value.get('Type')) === 'ObjStm' && entry.end !== entry.start + length) stale = true;
+        entry.end = entry.start + length;
+      }
+    };
+    const packed = [];
+    for (const l of later) {
+      const length = this.length(l.ref);
+      if (length === undefined) packed.push(l);
+      else take(l, length);
     }
+    for (const l of packed) take(l, this.packedLength(l.ref));
     if (again) {
       this.partial = false;
+      this.inflated = 0;
       this.scan(known);
-    } else this.packed = null;
+    } else if (stale) this.packed = null;
   }
 
   // Every "n g obj" in the file. A later definition replaces an earlier one, as in an incremental update. Stream
