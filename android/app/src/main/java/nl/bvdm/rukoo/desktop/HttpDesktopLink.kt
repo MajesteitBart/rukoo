@@ -36,6 +36,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okio.BufferedSource
 
 /**
  * The phone's client for desktop Rukoo's `/phone/v1` routes (spec 3 §7, as phonehost.js implements them,
@@ -277,8 +278,7 @@ class HttpDesktopLink(
                     val source = response.body?.source() ?: throw DesktopException(DesktopErrors.PROTOCOL, "empty stream")
                     var first = true
                     while (true) {
-                        val line = source.readUtf8Line() ?: break
-                        if (line.length > MAX_LINE) throw DesktopException(DesktopErrors.PROTOCOL, "a stream line is too long")
+                        val line = nextLine(source) ?: break
                         if (first) {
                             first = false
                             seen(pairingId)
@@ -295,6 +295,19 @@ class HttpDesktopLink(
             }
         }
         awaitClose { call.cancel() }
+    }
+
+    /**
+     * The stream's next line without its line end, or null once it ended. A line of more than [MAX_LINE] bytes fails as
+     * soon as that much came without a line end, before it is read into memory (#252); readUtf8Line reads a line of
+     * any length first.
+     */
+    private fun nextLine(source: BufferedSource): String? {
+        val at = source.indexOf('\n'.code.toByte(), 0, MAX_LINE + 1)
+        if (at >= 0) return source.readUtf8(at).also { source.skip(1) }.removeSuffix("\r")
+        if (source.buffer.size > MAX_LINE) throw DesktopException(DesktopErrors.PROTOCOL, "a stream line is too long")
+        // The stream ended: what came after the last line end is a last line.
+        return if (source.buffer.size == 0L) null else source.readUtf8()
     }
 
     private suspend fun seen(pairingId: String, change: (PairedComputer) -> PairedComputer = { it }) {
@@ -337,7 +350,7 @@ class HttpDesktopLink(
         // Accounts with their signatures, which can carry pictures.
         private const val EXPORT_MAX_BYTES = 32L * 1024 * 1024
         private const val ERROR_MAX_BYTES = 64L * 1024
-        private const val MAX_LINE = 1_000_000
+        private const val MAX_LINE = 1_000_000L
         private val PAIRING_ID = Regex("^ph_[a-z0-9]{10}$")
 
         // phonehost.js ID: the turn, approval and start-over ids it hands out.

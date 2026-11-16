@@ -22,10 +22,18 @@ import okio.ByteString.Companion.encodeUtf8
 /** One complete frame: its event name (`message` when it had none), its data lines joined by \n, its id. */
 internal data class SseFrame(val event: String, val data: String, val id: String? = null)
 
-internal class SseParser(private val onEvent: (SseFrame) -> Unit) {
+/**
+ * A line or frame of more than [limit] bytes: the stream ends there, rather than the parser holding a line that never
+ * ends, or a frame that never closes, in memory (#252).
+ */
+internal class SseTooLong(limit: Long) : IOException("an event is longer than $limit bytes")
+
+/** Throws [SseTooLong] from [push] once a line or a frame's data passes [maxBytes]. */
+internal class SseParser(private val maxBytes: Long = MAX_EVENT_BYTES, private val onEvent: (SseFrame) -> Unit) {
     private val buffer = Buffer()
     private var event = ""
     private val data = mutableListOf<String>()
+    private var dataBytes = 0L
     private var id: String? = null
 
     var lastEventId: String? = null
@@ -35,7 +43,10 @@ internal class SseParser(private val onEvent: (SseFrame) -> Unit) {
         buffer.write(bytes, 0, count)
         while (true) {
             val at = buffer.indexOfElement(LINE_ENDS)
-            if (at < 0) return
+            if (at < 0) {
+                if (buffer.size > maxBytes) throw SseTooLong(maxBytes)
+                return
+            }
             val ch = buffer[at]
             // A trailing \r may be the first half of \r\n: wait for the next chunk before deciding.
             if (ch == CR && at == buffer.size - 1) return
@@ -60,6 +71,7 @@ internal class SseParser(private val onEvent: (SseFrame) -> Unit) {
     private fun reset() {
         event = ""
         data.clear()
+        dataBytes = 0
         id = null
     }
 
@@ -72,7 +84,11 @@ internal class SseParser(private val onEvent: (SseFrame) -> Unit) {
         if (value.startsWith(' ')) value = value.substring(1)
         when (field) {
             "event" -> event = value
-            "data" -> data.add(value)
+            "data" -> {
+                dataBytes += value.length + 1
+                if (dataBytes > maxBytes) throw SseTooLong(maxBytes)
+                data.add(value)
+            }
             "id" -> if (!value.contains('\u0000')) id = value
         }
     }
@@ -83,10 +99,13 @@ internal class SseParser(private val onEvent: (SseFrame) -> Unit) {
         reset()
     }
 
-    private companion object {
-        const val CR = '\r'.code.toByte()
-        const val LF = '\n'.code.toByte()
-        val LINE_ENDS = "\r\n".encodeUtf8()
+    companion object {
+        /** The most a line or a frame's data may take: an agent's whole answer in one event fits many times over. */
+        const val MAX_EVENT_BYTES = 4L * 1024 * 1024
+
+        private const val CR = '\r'.code.toByte()
+        private const val LF = '\n'.code.toByte()
+        private val LINE_ENDS = "\r\n".encodeUtf8()
     }
 }
 

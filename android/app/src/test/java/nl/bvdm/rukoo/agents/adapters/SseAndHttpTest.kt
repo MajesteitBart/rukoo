@@ -52,6 +52,34 @@ class SseAndHttpTest {
     }
 
     @Test
+    fun aLineOrFrameOverTheLimitEndsTheStream() {
+        val out = mutableListOf<SseFrame>()
+        // A line that never ends: refused once more than the limit waits for its end, not when it ends.
+        val endless = SseParser(maxBytes = 64) { out.add(it) }
+        endless.push("data: ok\n\n")
+        endless.push("data: " + "x".repeat(50))
+        try {
+            endless.push("x".repeat(20))
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // The stream ends here.
+        }
+        // A frame whose data lines never close it.
+        val open = SseParser(maxBytes = 64) { out.add(it) }
+        open.push("data: " + "y".repeat(30) + "\n")
+        try {
+            open.push("data: " + "y".repeat(40) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
+        assertEquals(listOf("ok"), out.map { it.data })
+        // At the limit is fine.
+        assertEquals("z".repeat(50), frames("data: " + "z".repeat(50) + "\n\n").single().data)
+        assertEquals(4L * 1024 * 1024, SseParser.MAX_EVENT_BYTES)
+    }
+
+    @Test
     fun serverBaseKeepsAPrefixAndNormalizesTheAddress() {
         val base = ServerBase.parse("100.91.52.84:8642/p/clark/", texts)
         assertEquals("100.91.52.84:8642", base.host)

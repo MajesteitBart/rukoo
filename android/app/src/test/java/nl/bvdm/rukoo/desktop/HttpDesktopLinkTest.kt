@@ -378,6 +378,23 @@ class HttpDesktopLinkTest {
     }
 
     @Test
+    fun aStreamLineThatNeverEndsFailsAtTheLimit() = runBlocking {
+        val c = paired()
+        // 1,000,000 bytes is the most a line may take; 4 MB without a line end comes after the first line.
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/x-ndjson")
+                .setBody("""{"seq":1,"type":"started","turnId":"t_1"}""" + "\n" + "x".repeat(4_000_000)),
+        )
+        val got = mutableListOf<nl.bvdm.rukoo.agents.model.HostLine>()
+        val e = failure { link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList(got) }
+        assertEquals(DesktopErrors.PROTOCOL, e.code)
+        assertEquals(listOf(1L), got.map { it.seq })
+        // A last line without a line end still counts, as readUtf8Line read it.
+        server.enqueue(MockResponse().setBody("""{"seq":1,"type":"started","turnId":"t_1"}""" + "\r\n" + """{"seq":2,"type":"done","status":"done"}"""))
+        assertEquals(listOf(1L, 2L), link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList().map { it.seq })
+    }
+
+    @Test
     fun aDroppedStreamEndsWithoutDone() = runBlocking {
         val c = paired()
         server.enqueue(

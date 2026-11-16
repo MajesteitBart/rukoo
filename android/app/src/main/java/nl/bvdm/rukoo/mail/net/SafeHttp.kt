@@ -6,6 +6,10 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import nl.bvdm.rukoo.core.net.FRAMING_ALLOWANCE
+import nl.bvdm.rukoo.core.net.MeteredSocketFactory
+import nl.bvdm.rukoo.core.net.compressed
+import nl.bvdm.rukoo.core.net.ownConnection
 import okhttp3.Dns
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -92,7 +96,9 @@ class PublicDns(private val delegate: Dns = Dns.SYSTEM) : Dns {
 /**
  * Requests the app makes on its own behalf to URLs that come from mail (one-click unsubscribe). Ported
  * from desktop's net.js: https only, public addresses only, a few checked redirects at most, one
- * deadline for the whole request and a size limit on the answer.
+ * deadline for the whole request and a size limit on the answer. The limit counts every byte read off the
+ * connection, headers and framing such as chunk extensions too, which OkHttp reads in any length: each request has a
+ * connection of its own and asks for the answer uncompressed (the account client's way, #252).
  */
 class SafeHttp(
     base: OkHttpClient,
@@ -125,9 +131,12 @@ class SafeHttp(
             if (remaining <= 0) return@withContext null
             val request = Request.Builder().url(target).apply {
                 headers.forEach { (k, v) -> header(k, v) }
+                // As it was sent, so the limit is on what was downloaded: OkHttp would ask for gzip and unpack it first.
+                header("Accept-Encoding", "identity")
                 method(method, body?.toRequestBody(contentType?.toMediaTypeOrNull()))
             }.build()
-            val call = client.newBuilder().callTimeout(remaining, TimeUnit.MILLISECONDS).build().newCall(request)
+            val sockets = MeteredSocketFactory(maxBytes + FRAMING_ALLOWANCE)
+            val call = ownConnection(client, sockets).newBuilder().callTimeout(remaining, TimeUnit.MILLISECONDS).build().newCall(request)
             try {
                 call.execute().use { res ->
                     val location = res.header("Location")
@@ -137,6 +146,7 @@ class SafeHttp(
                         left--
                         return@use
                     }
+                    if (res.compressed()) return@withContext null
                     val declared = res.header("Content-Length")?.toLongOrNull()
                     if (declared != null && declared > maxBytes) return@withContext null
                     val source = res.body?.source() ?: return@withContext Result(res.code, res.headers, ByteArray(0))
