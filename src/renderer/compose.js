@@ -55,8 +55,6 @@ async function init() {
     inline: false,
     onTitle: setTitle
   });
-  // The editor holds the email now. One reopened after Rukoo closed unexpectedly is kept in the profile until here.
-  api('composeMounted').catch(() => {});
   const retheme = async () => {
     const next = await api('state');
     setLanguage(next.settings.language);

@@ -261,6 +261,69 @@ test('Send right after a drop waits until the dropped file is read, and the emai
   await expect.poll(() => sentAttachments('Sent right after the drop')).toEqual([['late.txt', 'Read slowly']]);
 });
 
+// A compose window with nothing to keep closes at once, but not while a dropped file is still being read: closing it
+// or quitting waits for the file, and then asks about it. The read holds until the test lets it go.
+const holdReads = (page) =>
+  page.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    window.__reads = [];
+    File.prototype.arrayBuffer = function () {
+      return new Promise((resolve) => window.__reads.push(resolve)).then(() => read.call(this));
+    };
+  });
+const releaseReads = (page) => page.evaluate(() => window.__reads.splice(0).forEach((go) => go()));
+const composeOpen = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.webContents.getURL().endsWith('compose.html')));
+// The draft whose attachments include filename, or null.
+const draftWith = (filename) =>
+  app.evaluate(async (_e, filename) => {
+    const engine = global.__semEngine;
+    const id = engine.accounts[0].id;
+    await engine.syncAccount(id);
+    for (const m of engine.listMessages({ scope: id, view: 'drafts' })) {
+      const full = await engine.getMessage(m.id);
+      if ((full.attachments || []).some((a) => a.filename === filename)) return m.id;
+    }
+    return null;
+  }, filename);
+
+test('closing a clean compose window or quitting while a dropped file is read waits for it, then asks to save it', async () => {
+  const [compose] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  compose.on('dialog', () => {});
+  await compose.waitForSelector('.compose .editor');
+  await expect(compose.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  await holdReads(compose);
+  await dropFiles(compose, [{ name: 'held.txt', text: 'Read late' }]);
+  await expect.poll(() => compose.evaluate(() => window.__reads.length)).toBe(1);
+
+  // The window's close button: it stays while the file is read, then asks.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('compose.html')).close());
+  await compose.waitForTimeout(500);
+  expect(await composeOpen()).toBe(true);
+  await expect(compose.locator('.scrim')).toHaveCount(0);
+  await releaseReads(compose);
+  await expect(compose.locator('.scrim')).toContainText('Save draft?');
+  await expect(compose.locator('.att-chip .n')).toHaveText(['held.txt']);
+  await Promise.all([compose.waitForEvent('close'), compose.click('.scrim .buttons button:text-is("Save")')]);
+  await expect.poll(() => draftWith('held.txt')).not.toBeNull();
+
+  // A quit does the same; Cancel then keeps Rukoo running with the file attached.
+  const [again] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  again.on('dialog', () => {});
+  await again.waitForSelector('.compose .editor');
+  await holdReads(again);
+  await dropFiles(again, [{ name: 'quit.txt', text: 'Read during the quit' }]);
+  await expect.poll(() => again.evaluate(() => window.__reads.length)).toBe(1);
+  await app.evaluate(({ app }) => app.quit());
+  await again.waitForTimeout(500);
+  expect(await composeOpen()).toBe(true);
+  await releaseReads(again);
+  await expect(again.locator('.scrim')).toContainText('Save draft?');
+  await again.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(again.locator('.scrim')).toHaveCount(0);
+  await expect(again.locator('.att-chip .n')).toHaveText(['quit.txt']);
+  expect(await composeOpen()).toBe(true);
+});
+
 test('a dropped file that is too large or cannot be read says so, attaches nothing and leaves the draft unchanged', async () => {
   await win.click('[data-action="compose"]');
   await win.waitForSelector('.composer .editor');

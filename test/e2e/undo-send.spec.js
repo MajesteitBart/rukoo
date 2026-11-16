@@ -553,6 +553,12 @@ test('emails that wait when Rukoo is killed open again at the next start, unsent
   await exited;
   expect(fs.existsSync(file)).toBe(true);
   await launch();
+  // Drafts can't be saved until the test says so, so no autosave (8 s) settles an email before the test looks.
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = (payload) => (global.__allowSaves ? save(payload) : Promise.reject(new Error('No connection')));
+  });
   await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
   const editors = app.windows().filter((w) => w !== win);
   for (const w of editors) await w.waitForSelector('.composer .editor');
@@ -569,19 +575,110 @@ test('emails that wait when Rukoo is killed open again at the next start, unsent
   await expect(going.locator('.dialog')).toContainText('Check Sent before you send it again.');
   await going.locator('.dialog .buttons button').click();
   await expect(going.locator('.editor')).toContainText('Maybe sent.');
-  // Opened, and sent by nobody: the file goes once both windows have loaded, and nothing waits or reached Sent.
-  await expect.poll(() => fs.existsSync(file)).toBe(false);
+  // Opened, and sent by nobody: nothing waits or reached Sent. While their editors are only open, nothing else holds
+  // them, so the profile keeps both.
   expect(await waiting()).toBe(0);
   const sent = await subjects('sent');
   expect(sent).not.toContain('Kept through a crash');
   expect(sent).not.toContain('On its way');
+  expect(kept()).toEqual([
+    ['sending', 'On its way'],
+    ['waiting', 'Kept through a crash']
+  ]);
+  const ids = () => JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.id);
+  const [goingId, waitedId] = ids();
 
-  // Undo after a new Send writes the file again, and Undo takes it away.
+  // Sent again, it waits in the outbox under a new id, and its old record went in the same step. Undo takes it back.
   await Promise.all([waited.waitForEvent('close'), waited.click('[data-c="send"]')]);
   await expect(notice()).toContainText('Sending email…');
-  expect(kept()).toEqual([['waiting', 'Kept through a crash']]);
+  expect(kept()).toEqual([
+    ['sending', 'On its way'],
+    ['waiting', 'Kept through a crash']
+  ]);
+  expect(ids()[0]).toBe(goingId);
+  expect(ids()[1]).not.toBe(waitedId);
   await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
-  expect(fs.existsSync(file)).toBe(false);
+  expect(kept()).toEqual([['sending', 'On its way']]);
+  // Saved to Drafts, the other one is safe there, and the file goes.
+  await app.evaluate(() => (global.__allowSaves = true));
+  await going.locator('.editor').click();
+  await going.keyboard.press('Control+s');
+  await expect.poll(() => fs.existsSync(file)).toBe(false);
+  expect(await subjects('drafts')).toContain('On its way');
+});
+
+// Mira on #306: an email reopened after a crash is in its editor's memory only until it is saved, sent or answered for.
+// Another crash before that brings it back once more; after a save or a Send it doesn't come back.
+test('an email reopened after a crash comes back after another crash, until its editor saves or sends it', async () => {
+  test.setTimeout(120000);
+  const file = path.join(dataDir, 'data', 'held.json');
+  const kept = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.restore.state.subject) : []);
+  const crash = async () => {
+    const exited = app.waitForEvent('close');
+    kill(app.process());
+    await exited;
+  };
+  const editorsAfterStart = async (count) => {
+    await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(count + 1);
+    const editors = app.windows().filter((w) => w !== win);
+    for (const w of editors) await w.waitForSelector('.composer .editor');
+    const bySubject = {};
+    for (const w of editors) bySubject[await w.locator('[data-field="subject"]').inputValue()] = w;
+    return bySubject;
+  };
+  await newMessage(win, { to: 'someone@example.com', subject: 'Saved after two crashes', text: 'To Drafts in the end.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await newMessage(win, { to: 'someone@example.com', subject: 'Sent after two crashes', text: 'Out in the end.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  expect(kept()).toEqual(['Saved after two crashes', 'Sent after two crashes']);
+  await crash();
+
+  // Reopened, and nothing saves: the editors hold the emails in memory only, and Rukoo dies again.
+  await launch();
+  await app.evaluate(() => {
+    global.__semEngine.saveDraft = () => new Promise(() => {});
+  });
+  const first = await editorsAfterStart(2);
+  await expect(first['Saved after two crashes'].locator('.editor')).toContainText('To Drafts in the end.');
+  expect(kept()).toEqual(['Saved after two crashes', 'Sent after two crashes']);
+  await crash();
+
+  // Both come back, once each. The one that is sent in the end can't be saved, so its autosave (8 s) can't settle it
+  // first.
+  await launch();
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    const save = engine.saveDraft.bind(engine);
+    engine.saveDraft = (payload) => (payload.subject === 'Sent after two crashes' ? Promise.reject(new Error('No connection')) : save(payload));
+  });
+  const second = await editorsAfterStart(2);
+  expect(kept()).toEqual(['Saved after two crashes', 'Sent after two crashes']);
+  const saved = second['Saved after two crashes'];
+  await expect(saved.locator('.dialog')).toContainText('Rukoo closed before this email was sent.');
+  await saved.locator('.dialog .buttons button').click();
+  await expect(saved.locator('.editor')).toContainText('To Drafts in the end.');
+  await saved.locator('.editor').click();
+  await saved.keyboard.press('Control+s');
+  await expect.poll(kept).toEqual(['Sent after two crashes']);
+  const out = second['Sent after two crashes'];
+  await out.locator('.dialog .buttons button').click();
+  await expect(out.locator('.editor')).toContainText('Out in the end.');
+  await Promise.all([out.waitForEvent('close'), out.click('[data-c="send"]')]);
+  await expect(notice()).toContainText('Sending email…');
+  await sendWaiting();
+  await expect(notice()).toContainText('Email sent');
+  expect(kept()).toEqual([]);
+  expect(await subjects('drafts')).toContain('Saved after two crashes');
+  expect(await subjects('sent')).toContain('Sent after two crashes');
+
+  // A third crash brings neither back.
+  await crash();
+  await launch();
+  await expect(win.locator('.item').first()).toBeVisible({ timeout: 15000 });
+  await win.waitForTimeout(2000);
+  expect(app.windows()).toHaveLength(1);
 });
 
 // Windows ends the session while one email hangs on its way and another is refused and can't go to Drafts either. The
@@ -613,6 +710,10 @@ test('an email refused while the session ends is written down at once, though an
   kill(app.process());
   await exited;
   await launch();
+  // No autosave settles the hanging one before the test looks.
+  await app.evaluate(() => {
+    global.__semEngine.saveDraft = () => Promise.reject(new Error('No connection'));
+  });
   await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
   const editors = app.windows().filter((w) => w !== win);
   for (const w of editors) await w.waitForSelector('.composer .editor');
@@ -625,7 +726,9 @@ test('an email refused while the session ends is written down at once, though an
   await expect(refusedOne.locator('.dialog')).toContainText('Mailbox full');
   const hanging = await bySubject('Hanging at the end');
   await expect(hanging.locator('.dialog')).toContainText('Check Sent before you send it again.');
-  await expect.poll(() => fs.existsSync(unsentFile) || fs.existsSync(heldFile)).toBe(false);
+  // unsent.json is read once; held.json keeps the hanging one while its editor only holds it in memory.
+  expect(fs.existsSync(unsentFile)).toBe(false);
+  expect(subjectsIn(heldFile)).toEqual(['Hanging at the end']);
 });
 
 // The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is

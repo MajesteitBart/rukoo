@@ -1190,7 +1190,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
-    dropping = Promise.all([dropping, dropFiles(files).catch(() => {})]).then(() => {});
+    pendingDrops += 1;
+    const read = dropFiles(files)
+      .catch(() => {})
+      .finally(() => (pendingDrops -= 1));
+    dropping = Promise.all([dropping, read]).then(() => {});
   });
 
   // A dropped file on disk is attached from its path. One without a path, such as an attachment dragged from Outlook,
@@ -1198,9 +1202,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // (composeAddFile, #240), up to the size main takes. They are attached together, in the order dropped, once all are
   // read; one that can't be read says so, and the draft only counts as changed when something was attached.
   const DROP_FILE_MAX = 50 * 1024 * 1024;
-  // Drops whose files are still being read. Send, a save, popping out, moving on and closing wait for them first, so
-  // a file let go just before goes along.
+  // Drops whose files are still being read, and how many. Send, a save, popping out, moving on and closing wait for
+  // them first, so a file let go just before goes along. Closing the window or quitting waits too (isBusy and the
+  // compose window's beforeunload), also for an editor with nothing else to keep, and then asks about the file.
   let dropping = Promise.resolve();
+  let pendingDrops = 0;
   async function dropFiles(files) {
     const added = [];
     const unreadable = [];
@@ -1363,7 +1369,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       return;
     }
     if (message) api('toastMain', message).catch(() => {});
-    api('composeClose');
+    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for an email it
+    // reopened after a crash (main.js heldSettled).
+    api('composeClose', true);
   }
 
   // This editor as it is now, for Undo send: main keeps it while the email waits, and restoredState() opens the
@@ -1736,7 +1744,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     // The window's close button: keep the window open while there are unsaved changes and ask instead.
     listen(window, 'beforeunload', (e) => {
       if (closed) return;
-      if (!st.dirty && !sending && !closing) {
+      if (!st.dirty && !sending && !closing && !pendingDrops) {
         if (st.draftId && st.mode !== 'draft') api('toastMain', t('composer.status.kept')).catch(() => {});
         return;
       }
@@ -1785,7 +1793,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       return st.draftId;
     },
     isDirty: () => st.dirty,
-    isBusy: () => sending || closing || asking,
+    isBusy: () => sending || closing || asking || pendingDrops > 0,
     key,
     // The stored draft this composer leaves behind, or null once it was sent or deleted.
     get savedDraftId() {

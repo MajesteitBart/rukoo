@@ -598,18 +598,17 @@ function cancelQuit() {
   forgetUnsent();
 }
 
-// Saves what waits to be written and stops the background services: the Rukoo account, categories, mail
+// Stops the background services, each writing what it still had to: the Rukoo account, categories, mail
 // notifications, reminders and booking. Only once the quit can no longer be called off (will-quit, or the end of the
-// Windows session): before-quit comes while an editor can still ask about its changes and a Cancel there, or Don't
-// quit, keeps Rukoo running, with these services. Runs once.
+// Windows session): before-quit comes while an editor can still ask about its changes, and a Cancel there, or Don't
+// quit, keeps Rukoo running, with these services. The mail and calendar caches are saved where the quit starts
+// (before-quit, endSession), which a quit held by a question goes through again once it is answered. Runs once.
 let servicesClosed = false;
 function closeServices() {
   if (servicesClosed) return;
   servicesClosed = true;
   if (process.env.SEM_HIDDEN) global.__semServicesClosed = true;
   clearInterval(syncTimer);
-  if (engine) engine.flush();
-  if (calendars) calendars.flush();
   if (account) account.close();
   if (categories) categories.close();
   if (mailNotices) mailNotices.close();
@@ -642,6 +641,8 @@ function endSession() {
       })
       .catch(() => {});
   }
+  engine.flush();
+  if (calendars) calendars.flush();
   closeServices();
   if (updates) updates.stop();
   // Writes what Rukoo keeps of the meetings. Voice keeps recording.
@@ -693,7 +694,8 @@ function composeOptions(input = {}) {
   };
 }
 
-// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window's editor is up.
+// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window has put it
+// somewhere else (heldSettled).
 function openComposeWindow(input, { heldId = null } = {}) {
   const opts = composeOptions(input);
   // A draft that opens again after Undo send had its window closed; it can't be open in another one.
@@ -929,8 +931,9 @@ function reopenUnsent() {
 // Send finds it. No file while the outbox is empty, as after a quit that sent everything.
 const heldFile = () => path.join(app.getPath('userData'), 'data', 'held.json');
 // What held.json had at the start, from a run that ended while emails waited, until the compose window that reopenHeld()
-// opens for each has its editor up (heldOpened). Written with this run's own emails meanwhile, so a second crash before
-// that loses none. Once its editor is up, an email is an ordinary unsaved editor, which autosaves.
+// opens for each has put it somewhere else (heldSettled): a saved draft, the outbox or Sent, or an answer that closes
+// the editor. Written with this run's own emails meanwhile, so another crash before that brings them back once more.
+// An editor that is merely open holds its email in that window's memory only.
 let heldBefore = [];
 
 function writeHeld(list) {
@@ -967,11 +970,15 @@ function reopenHeld(done = new Set()) {
   }
 }
 
-// The compose window reopenHeld() opened for this email has its editor up (composeMounted), so held.json lets it go.
-function heldOpened(id) {
-  const before = heldBefore.length;
+// The compose window sender, when reopenHeld() opened it, has saved its email as a draft, sent or queued it, or closed
+// with an answer, so held.json lets that email go.
+function heldSettled(sender) {
+  const c = sender && composeWindows.get(sender.id);
+  if (!c || !c.heldId) return;
+  const id = c.heldId;
+  c.heldId = null;
   heldBefore = heldBefore.filter((e) => e.id !== id);
-  if (heldBefore.length !== before) writeHeld(outbox ? outbox.journal() : []);
+  writeHeld(outbox ? outbox.journal() : []);
 }
 
 // The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
@@ -1775,10 +1782,13 @@ const windowApi = {
       // Refused now, while the editor is still open to show why.
       engine.checkSend(payload);
       const { id } = outbox.queue({ payload, restore, origin: sender === win.webContents ? 'main' : 'window', ms });
+      // In the same step, so held.json never lists an email reopened after a crash twice: as itself and as queued.
+      heldSettled(sender);
       send('send-queued', { id, ms });
       return { queued: id, ms };
     }
     await engine.send(payload);
+    heldSettled(sender);
     mailSent(payload);
     return true;
   },
@@ -1812,23 +1822,20 @@ const windowApi = {
     return c ? c.opts : null;
   },
   // The window's editor is up with its email. One reopened from held.json (reopenHeld) is no longer kept there.
-  composeMounted: (sender) => {
-    const c = composeWindows.get(sender.id);
-    if (c && c.heldId) {
-      heldOpened(c.heldId);
-      c.heldId = null;
-    }
-    return true;
-  },
-  // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice.
+  // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice. A saved draft
+  // also keeps an email reopened from held.json, which the profile then no longer needs to.
   composeDraft: (sender, draftId) => {
     const c = composeWindows.get(sender.id);
     if (c) c.draftId = draftId ? String(draftId) : null;
+    if (draftId) heldSettled(sender);
   },
   // What the question about unsaved changes after a close or quit came to: true once the editor has closed.
   unloadAnswer: (sender, closed) => answered(sender.id, closed === true),
-  // Closes without asking again; the compose window has already handled unsaved changes.
-  composeClose: (sender) => {
+  // Closes without asking again; the compose window has already handled unsaved changes. answered: its editor closes
+  // after Send, a save, Delete or Don't save, so an email it reopened from held.json is done with. Not for a window
+  // that never showed an editor (no account, or an email that couldn't be read).
+  composeClose: (sender, answered) => {
+    if (answered === true) heldSettled(sender);
     const w = BrowserWindow.fromWebContents(sender);
     if (w && w !== win) w.destroy();
   }
