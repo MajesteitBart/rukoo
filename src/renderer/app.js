@@ -1287,18 +1287,25 @@ function renderListTools() {
   }).join('')}</div>`);
 }
 
-// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the first of
+// them started; past LEAVE_STUCK_MS the list stops waiting for them, so a timer that never ran can't hold it.
 const leaving = new Set();
 const LEAVE_MS = 320;
+const LEAVE_STUCK_MS = 3 * LEAVE_MS;
+let leavingSince = 0;
 
 function renderList() {
-  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
-  if (swipeState.el) {
-    swipeState.renderPending = true;
+  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends, or once it is clear that
+  // its end isn't coming (swipeHeld).
+  if (swipeHeld()) {
+    holdRender();
     return;
   }
   // Likewise for a row that is folding away.
-  if (leaving.size) return;
+  if (leaving.size) {
+    if (Date.now() - leavingSince < LEAVE_STUCK_MS) return;
+    leaving.clear();
+  }
   renderShell();
   renderListHead();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
@@ -1586,6 +1593,7 @@ function letGo(id) {
   const head = wrap.previousElementSibling;
   const next = wrap.nextElementSibling;
   if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  if (!leaving.size) leavingSince = Date.now();
   leaving.add(id);
   for (const el of els) {
     const { paddingTop, paddingBottom } = getComputedStyle(el);
@@ -1831,20 +1839,86 @@ async function emptyCurrent() {
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
 
-const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null };
+// The touch or pen swipe on a row: the row, where it started, how far it went, and when its pointer last went down or
+// moved (at). A list update waits for the swipe to end (renderPending, since heldSince), so the row under the finger
+// stays where it is. The end doesn't always come: a pointerup the window never got, a row that left the page. So the
+// swipe also lets go when another pointer goes down, the window loses focus, the row loses its pointer capture or
+// leaves the page, when its pointer moves with no button down or did nothing for SWIPE_STALE_MS, and when a list update
+// has waited SWIPE_HOLD_MAX_MS for it however much the pointer moves; the list then draws what it held back.
+const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null, pointer: null, at: 0, renderPending: false, heldSince: 0, timer: null };
 const SWIPE_TRIGGER = 110;
+const SWIPE_STALE_MS = 3000;
+const SWIPE_HOLD_MAX_MS = 10000;
+// A list update held back this long goes in the log, with how the swipe ended (diag.js).
+const SWIPE_LOG_MS = 3000;
+
+// Whether a swipe holds the list now. One whose end isn't coming lets go here, and the caller draws.
+function swipeHeld() {
+  const st = swipeState;
+  if (!st.el) return false;
+  const now = Date.now();
+  const how = !st.el.isConnected ? 'detached' : now - st.at >= SWIPE_STALE_MS ? 'stale' : st.renderPending && now - st.heldSince >= SWIPE_HOLD_MAX_MS ? 'held' : null;
+  if (!how) return true;
+  dropSwipe(how, false);
+  return false;
+}
+
+// A list update waits for the swipe, and looks again when the swipe would go stale or the wait would be too long.
+function holdRender() {
+  const st = swipeState;
+  if (!st.renderPending) {
+    st.renderPending = true;
+    st.heldSince = Date.now();
+  }
+  clearTimeout(st.timer);
+  const due = Math.min(st.at + SWIPE_STALE_MS, st.heldSince + SWIPE_HOLD_MAX_MS);
+  st.timer = setTimeout(() => st.renderPending && renderList(), Math.max(0, due - Date.now()) + 20);
+}
+
+// The swipe is over. What it held back draws now, unless the caller draws it. how: 'end' for its pointerup or
+// pointercancel; anything else is a swipe that was let go (dropSwipe), which the log hears of.
+function endSwipe(how, draw = true) {
+  const st = swipeState;
+  st.el = null;
+  clearTimeout(st.timer);
+  if (!st.renderPending) return;
+  st.renderPending = false;
+  const held = Date.now() - st.heldSince;
+  if (how !== 'end' || held >= SWIPE_LOG_MS) report('list', { reason: `swipe-${how}`, ms: held });
+  if (draw) renderList();
+}
+
+// Lets go of a swipe whose end didn't come: its row goes back in place.
+function dropSwipe(how, draw = true) {
+  const el = swipeState.el;
+  if (!el) return;
+  el.style.transition = '';
+  el.style.transform = '';
+  el.parentElement?.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
+  swipeState.moved = false;
+  endSwipe(how, draw);
+}
 
 function bindSwipe(pane) {
+  // Before the row's own pointerdown below: a pointer going down means the last swipe's pointer isn't anymore.
+  window.addEventListener('pointerdown', () => dropSwipe('pointer'), true);
+  window.addEventListener('blur', () => dropSwipe('blur'));
+  pane.addEventListener('lostpointercapture', (e) => {
+    if (swipeState.el && e.pointerId === swipeState.pointer) dropSwipe('capture');
+  });
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;
     if (S.data.settings.swipeLeft === 'none' && S.data.settings.swipeRight === 'none') return;
     const item = e.target.closest('.item');
     if (!item || e.target.closest('button')) return;
-    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId });
+    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId, at: Date.now() });
   });
   pane.addEventListener('pointermove', (e) => {
     const st = swipeState;
     if (!st.el || e.pointerId !== st.pointer) return;
+    // No button down: the pointer came up where the window didn't hear it, such as a pen that went back to hovering.
+    if (e.buttons === 0) return dropSwipe('released');
+    st.at = Date.now();
     const dx = e.clientX - st.startX;
     const dy = e.clientY - st.startY;
     if (!st.moved) {
@@ -1871,13 +1945,7 @@ function bindSwipe(pane) {
     if (!st.el || e.pointerId !== st.pointer) return;
     const { el, dx, id, moved } = st;
     st.el = null;
-    const flush = () => {
-      if (st.renderPending) {
-        st.renderPending = false;
-        renderList();
-      }
-    };
-    if (!moved) return flush();
+    if (!moved) return endSwipe('end');
     el.style.transition = 'transform 200ms cubic-bezier(0.2,0.8,0.2,1)';
     const m = byId(id);
     // The action behind the row on the side it went to, if it went far enough (Settings > Swipe and quick actions).
@@ -1891,7 +1959,7 @@ function bindSwipe(pane) {
       el.parentElement.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
       if (action) rowAction(action, m);
     }
-    flush();
+    endSwipe('end');
     // Swallow the click that follows a drag.
     setTimeout(() => (st.moved = false), 0);
   };
