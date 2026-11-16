@@ -48,6 +48,19 @@ test('addresses, tokens, paths in the home folder and line breaks stay out', () 
   assert.ok(scrub('x'.repeat(5000)).length <= 2001, 'capped');
 });
 
+// The scrub runs in the main process on what a window sends. Long text without spaces, such as a data URL or a
+// one-line stack, took about 0.8 s an entry when the patterns tried again from every character.
+test('long text without spaces scrubs in one pass', () => {
+  const log = new DiagLog(tempDir('rukoo-diag-'));
+  for (const unit of ['a', 'a.b', '/x', 'a@b', 'x@y.']) {
+    const s = unit.repeat(Math.ceil(20000 / unit.length)).slice(0, 20000);
+    const started = process.hrtime.bigint();
+    log.fromWindow('main', { kind: 'error', message: s, stack: s, reason: s });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 150, `${JSON.stringify(unit)} took ${Math.round(ms)} ms`);
+  }
+});
+
 test("a window's lines: known kinds and fields only, capped, and at most 30 a minute", () => {
   const dir = tempDir('rukoo-diag-');
   let now = Date.UTC(2026, 10, 16, 9, 30);

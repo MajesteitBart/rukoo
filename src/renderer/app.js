@@ -1287,7 +1287,7 @@ function renderListTools() {
   }).join('')}</div>`);
 }
 
-// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the first of
+// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the newest of
 // them started; past LEAVE_STUCK_MS the list stops waiting for them, so a timer that never ran can't hold it.
 const leaving = new Set();
 const LEAVE_MS = 320;
@@ -1593,7 +1593,8 @@ function letGo(id) {
   const head = wrap.previousElementSibling;
   const next = wrap.nextElementSibling;
   if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
-  if (!leaving.size) leavingSince = Date.now();
+  // From the newest row's start: rows opened one after another each get their whole fold.
+  leavingSince = Date.now();
   leaving.add(id);
   for (const el of els) {
     const { paddingTop, paddingBottom } = getComputedStyle(el);
@@ -1903,8 +1904,10 @@ function bindSwipe(pane) {
   // Before the row's own pointerdown below: a pointer going down means the last swipe's pointer isn't anymore.
   window.addEventListener('pointerdown', () => dropSwipe('pointer'), true);
   window.addEventListener('blur', () => dropSwipe('blur'));
+  // Only the row's own capture, which it takes once the swipe moves: a touch starts with the capture on the element
+  // under the finger (the sender, the subject), and moving it to the row fires lostpointercapture there.
   pane.addEventListener('lostpointercapture', (e) => {
-    if (swipeState.el && e.pointerId === swipeState.pointer) dropSwipe('capture');
+    if (swipeState.el && e.pointerId === swipeState.pointer && e.target === swipeState.el) dropSwipe('capture');
   });
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;

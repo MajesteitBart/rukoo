@@ -25,12 +25,22 @@ const HOME = (() => {
   }
 })();
 
+// The path and address patterns look inside one word at a time, and an address's parts have their longest lengths,
+// so a window's long text without spaces (a data URL, a one-line stack) takes one pass instead of one per character.
+const PATH_WORD = /[^\s()'"]+/g;
+const SRC = /[\\/]src[\\/]/;
+const ADDRESS_WORD = /[^\s<>()"',;:]+/g;
+const ADDRESS = /[^\s<>()"',;:@]{1,64}@[^\s<>()"',;:@]{1,253}\.[a-z]{2,24}/gi;
+
 function scrub(text, max = LINE_MAX) {
   let s = String(text ?? '');
   // A stack names files by their place on disk: from src/ on is enough to find the line.
-  s = s.replace(/[^\s()'"]*?[\\/](src[\\/])/g, '$1');
+  s = s.replace(PATH_WORD, (word) => {
+    const at = word.search(SRC);
+    return at < 0 ? word : word.slice(at + 1);
+  });
   if (HOME) s = s.split(HOME).join('~');
-  s = s.replace(/[^\s<>()"',;:@]+@[^\s<>()"',;:@]+\.[a-z]{2,}/gi, '<address>');
+  s = s.replace(ADDRESS_WORD, (word) => (word.includes('@') ? word.replace(ADDRESS, '<address>') : word));
   s = s.replace(/[A-Za-z0-9+/_=-]{32,}/g, '<redacted>');
   s = s.replace(/\s*[\r\n]+\s*/g, ' | ');
   return s.length > max ? `${s.slice(0, max)}…` : s;
