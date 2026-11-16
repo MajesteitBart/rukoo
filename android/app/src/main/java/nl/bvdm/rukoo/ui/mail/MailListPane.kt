@@ -1,6 +1,9 @@
 package nl.bvdm.rukoo.ui.mail
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -36,10 +39,12 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,6 +53,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
@@ -323,6 +329,11 @@ private fun MessageList(
     val unknown = stringResource(R.string.mailbox_message_unknown_sender)
     val folderNames = folders.mapValues { (_, list) -> list.associate { it.path to folderName(it) } }
     val reduced = Rk.motion.reduced
+    // The heading pinned at the top stays put while the rows move, so it neither lags behind a scroll nor slides when a
+    // row under it leaves; the other headings move with their rows. Only the headings read it.
+    val heads by rememberUpdatedState(ListModel.headIndexes(rows, drafts.size))
+    val pinned by remember(state) { derivedStateOf { ListModel.pinnedHead(heads, state.firstVisibleItemIndex) } }
+    val rowsStart = if (drafts.isNotEmpty()) drafts.size + 1 else 0
     LazyColumn(
         state = state,
         modifier = Modifier.fillMaxSize(),
@@ -330,7 +341,7 @@ private fun MessageList(
         contentPadding = PaddingValues(top = 2.dp, bottom = 88.dp),
     ) {
         if (drafts.isNotEmpty()) {
-            stickyHeader(key = "head:local") { GroupHead(stringResource(R.string.mail_drafts_local)) }
+            stickyHeader(key = "head:local") { GroupHead(stringResource(R.string.mail_drafts_local), rowMotion(reduced, pinned = pinned == 0)) }
             items(drafts, key = { "draft:${it.id}" }) { d ->
                 val names = d.to.map { ListModel.person(it) }.filter { it.isNotEmpty() }
                 LocalDraftRow(
@@ -342,9 +353,9 @@ private fun MessageList(
                 )
             }
         }
-        for (row in rows) {
+        rows.forEachIndexed { i, row ->
             when (row) {
-                is ListRow.Head -> stickyHeader(key = row.key) { GroupHead(row.label) }
+                is ListRow.Head -> stickyHeader(key = row.key) { GroupHead(row.label, rowMotion(reduced, pinned = pinned == rowsStart + i)) }
                 is ListRow.Mail -> item(key = row.key) {
                     val m = row.message
                     MessageRow(
@@ -392,15 +403,19 @@ private fun MessageList(
 }
 
 /**
- * How a row comes, moves and goes. One that leaves, such as the email the Unread filter kept once another opens, fades
- * out where it is while the rows below close the gap (app.js letGo):
- *     0ms  the row fades out
+ * How a row or day heading comes, moves and goes. One that leaves, such as the email the Unread filter kept once another
+ * opens, fades out where it is while the rows and headings below close the gap together (app.js letGo):
+ *     0ms  the row fades out; a heading whose day it emptied fades with it
  *   110ms  it is gone; the rows below go on moving up into its place
- * With the system's animations removed, rows don't animate.
+ * The heading [pinned] at the top doesn't move: it sticks while the list scrolls under it. With the system's animations
+ * removed, nothing animates.
  */
-private fun LazyItemScope.rowMotion(reduced: Boolean): Modifier =
+private fun LazyItemScope.rowMotion(reduced: Boolean, pinned: Boolean = false): Modifier =
     if (reduced) Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
-    else Modifier.animateItem(fadeOutSpec = tween(LEAVE_FADE_MS, easing = RukooEasing.Out))
+    else Modifier.animateItem(fadeOutSpec = tween(LEAVE_FADE_MS, easing = RukooEasing.Out), placementSpec = if (pinned) null else ROW_PLACEMENT)
+
+// animateItem's own placement, which rows have always used: headings move the same way.
+private val ROW_PLACEMENT = spring(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntOffset.VisibilityThreshold)
 
 // How long a leaving row takes to fade (app.js letGo's first step).
 private const val LEAVE_FADE_MS = 110
@@ -437,13 +452,13 @@ private fun rowSwipe(ui: MailUi, action: SwipeAction, m: MessageSummary): RowSwi
 
 /** A sticky day head (styles.css:1222-1231): 11.5/600 `text3` on `panel`. */
 @Composable
-private fun GroupHead(label: String) {
+private fun GroupHead(label: String, modifier: Modifier = Modifier) {
     Text(
         label,
         style = Rk.type.text11_5.semibold,
         color = Rk.colors.text3,
         maxLines = 1,
-        modifier = Modifier.fillMaxWidth().background(Rk.colors.panel).padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
+        modifier = modifier.fillMaxWidth().background(Rk.colors.panel).padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
     )
 }
 
@@ -482,6 +497,9 @@ private fun ListHeader(
     RkTopBar(
         title = category?.name ?: viewTitle(view, folders),
         subtitle = sub,
+        // About 26 characters fit beside the three buttons in the inner screen's list pane: the counts and the account
+        // take two lines there, and the bar grows a little when the font is large.
+        subtitleMaxLines = 2,
         titleStyle = Rk.type.pageTitle,
         height = 64.dp,
         hairline = false,

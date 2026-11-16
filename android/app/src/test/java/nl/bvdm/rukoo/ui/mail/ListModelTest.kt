@@ -149,4 +149,28 @@ class ListModelTest {
         assertTrue(ListModel.pillWidths(listOf(30, 80, 40), 100).sum() <= 100)
         assertEquals(listOf(0, 0), ListModel.pillWidths(listOf(30, 80), 0))
     }
+
+    @Test
+    fun thePinnedHeadingIsTheOneOfTheFirstVisibleRowsDay() {
+        val rows = listOf(
+            ListRow.Head("Today"),
+            ListRow.Mail(msg("1", "a@x.nl", 3)),
+            ListRow.Mail(msg("2", "b@x.nl", 3)),
+            ListRow.Head("Yesterday"),
+            ListRow.Mail(msg("3", "c@x.nl", 2)),
+        )
+        assertEquals(listOf(0, 3), ListModel.headIndexes(rows, drafts = 0))
+        // Two local drafts come first under a heading of their own: 0 is theirs, then the drafts at 1 and 2.
+        val heads = ListModel.headIndexes(rows, drafts = 2)
+        assertEquals(listOf(0, 3, 6), heads)
+        assertEquals(0, ListModel.pinnedHead(heads, 0))
+        assertEquals(0, ListModel.pinnedHead(heads, 2))
+        // Scrolled to Today's heading or one of its rows: Today sticks, Yesterday moves with its rows.
+        assertEquals(3, ListModel.pinnedHead(heads, 3))
+        assertEquals(3, ListModel.pinnedHead(heads, 5))
+        assertEquals(6, ListModel.pinnedHead(heads, 7))
+        // A list that doesn't start with a heading has none pinned above its first rows.
+        assertNull(ListModel.pinnedHead(listOf(2), 1))
+        assertNull(ListModel.pinnedHead(emptyList(), 4))
+    }
 }

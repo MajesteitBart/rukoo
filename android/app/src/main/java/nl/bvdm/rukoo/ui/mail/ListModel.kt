@@ -159,6 +159,24 @@ object ListModel {
     /** The messages on screen, in order: what Previous and Next walk through, and where Archive goes on to. */
     fun visibleIds(rows: List<ListRow>): List<String> = rows.mapNotNull { (it as? ListRow.Mail)?.message?.id }
 
+    /**
+     * The list's index of each heading, with the local drafts' heading first when there are [drafts]: the list puts that
+     * heading and its rows before [rows].
+     */
+    fun headIndexes(rows: List<ListRow>, drafts: Int): List<Int> {
+        val out = mutableListOf<Int>()
+        if (drafts > 0) out += 0
+        val start = if (drafts > 0) drafts + 1 else 0
+        rows.forEachIndexed { i, row -> if (row is ListRow.Head) out += start + i }
+        return out
+    }
+
+    /**
+     * The heading pinned at the top of the list: the one of the group the first visible row is in, as LazyColumn's
+     * sticky headers choose it. Null when no heading comes at or before [firstVisible].
+     */
+    fun pinnedHead(heads: List<Int>, firstVisible: Int): Int? = heads.lastOrNull { it <= firstVisible }
+
     /** The message to open after [gone] left the list: the next one down, else the one above (app.js detach). */
     fun nextAfter(visible: List<String>, open: String?, gone: Collection<String>): String? {
         if (open == null || open !in gone) return null
