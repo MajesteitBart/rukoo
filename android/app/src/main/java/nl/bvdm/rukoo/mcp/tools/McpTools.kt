@@ -87,10 +87,17 @@ class ToolDeps(
 
 /**
  * One tool call: who, the CLI's `_meta`, and the chat it belongs to (set once a tool makes one). [unclear] says why a
- * tool that puts something in a chat must not go by the guess, and [elsewhere] is what its result says when the card
- * lands outside the chat the agent is answering in (desktop chatFor).
+ * tool that puts something in a chat must not go by the guess, [bound] that the call is tied to its chat
+ * ([nl.bvdm.rukoo.agents.ToolRoute.bound]), and [elsewhere] is what its result says when the card lands outside the
+ * chat the agent is answering in (desktop chatFor).
  */
-class ToolCall(val identity: ToolIdentity, val meta: JsonObject, var conversation: Conversation?, val unclear: UnclearChat? = null) {
+class ToolCall(
+    val identity: ToolIdentity,
+    val meta: JsonObject,
+    var conversation: Conversation?,
+    val unclear: UnclearChat? = null,
+    val bound: Boolean = false,
+) {
     val agent: String get() = identity.agent
     var elsewhere: String? = null
 }
@@ -108,9 +115,9 @@ internal suspend fun ensureConversation(d: ToolDeps, lookup: MailLookup, call: T
     }
     val c = call.conversation?.let { d.hub.get(it.id) ?: it }
         ?: d.hub.ensureConversation(call.identity, null, lookup.live(d.screen.current.openMessageId)).also { call.conversation = it }
-    // A per-chat token or a paired computer ties the call to its chat; only a guess can land elsewhere.
-    val bound = call.identity.conversationId != null || call.identity.computer != null
-    if (!bound && d.hub.workingElsewhere(call.agent, c.id)) call.elsewhere = ChatRoute.elsewhere(c.title)
+    // A call tied to its chat (a paired computer, a per-chat token, the caller's thread) is where it belongs; only a
+    // chat the model named or a guess can be another one than the agent is answering in.
+    if (!(call.bound && call.conversation?.id == c.id) && d.hub.workingElsewhere(call.agent, c.id)) call.elsewhere = ChatRoute.elsewhere(c.title)
     return c
 }
 
@@ -172,7 +179,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         val conversation = route.conversation
         // A tool call during a turn shows the agent got that turn's input.
         if (conversation != null) d.hub.toolCalled(conversation.id)
-        val call = ToolCall(identity, meta, conversation, route.unclear)
+        val call = ToolCall(identity, meta, conversation, route.unclear, route.bound)
         return try {
             toResult(withElsewhere(run(tool.name, clean, call), call.elsewhere))
         } catch (e: ToolError) {

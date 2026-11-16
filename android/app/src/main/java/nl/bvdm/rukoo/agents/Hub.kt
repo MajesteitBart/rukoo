@@ -2051,14 +2051,15 @@ class Hub(
             val c = convs[id] ?: return@locked ToolRoute(null)
             val (pairing, program) = AgentIds.parseComputer(c.agent) ?: return@locked ToolRoute(null)
             if (pairing != identity.computer || (identity.agent != c.agent && identity.agent != program.wire)) return@locked ToolRoute(null)
-            return@locked ToolRoute(c)
+            return@locked ToolRoute(c, bound = true)
         }
         // A per-chat token speaks for its own chat only: a stale or forged conversation_id must not move its calls.
-        if (identity.conversationId != null) return@locked ToolRoute(own(identity.conversationId))
+        if (identity.conversationId != null) return@locked own(identity.conversationId).let { ToolRoute(it, bound = it != null) }
         own(conversationIdArg)?.let { return@locked ToolRoute(it) }
+        // The thread comes from the caller's runtime, not from the model: the call is from that chat.
         val codex = (meta?.get("x-codex-turn-metadata") as? JsonObject)?.let { metaString(it, "thread_id") }
         val threadId = metaString(meta, "threadId") ?: codex
-        threadId?.let { threads[it] }?.let(::own)?.let { return@locked ToolRoute(it) }
+        threadId?.let { threads[it] }?.let(::own)?.let { return@locked ToolRoute(it, bound = true) }
         // The one running turn is only a guess. A chat of another agent says the token is the wrong one, and with more
         // than one turn running a card could land in a chat the user isn't looking at (desktop resolveCall).
         val running = turns.keys.mapNotNull { convs[it] }.filter { it.agent == identity.agent }

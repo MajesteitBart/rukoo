@@ -14,11 +14,15 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.HubKit
+import nl.bvdm.rukoo.agents.PairedComputer
+import nl.bvdm.rukoo.agents.ScriptedAdapter
 import nl.bvdm.rukoo.agents.SendRequest
 import nl.bvdm.rukoo.agents.ToolIdentity
 import nl.bvdm.rukoo.agents.TurnResult
@@ -27,6 +31,7 @@ import nl.bvdm.rukoo.agents.adapters.FakeTools
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ApprovalKind
 import nl.bvdm.rukoo.agents.model.ApprovalStatus
+import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.MessageRef
 import nl.bvdm.rukoo.agents.model.Origin
@@ -301,6 +306,37 @@ class HubToolsSeamTest {
         advanceUntilIdle()
         // With no turn running, there is no chat the user is in to compare with.
         assertNull(s.call("propose_action", """{"conversation_id":"${earlier.id}","title":"Add a task"}""").data()["elsewhere"])
+    }
+
+    // A call whose thread the hub mapped to a chat (Hub.routeForTool) comes from that chat: its card lands there and
+    // says nothing of another chat, also while another chat of that agent is working (desktop: resolveCall's bound).
+    @Test
+    fun aCallFromAMappedThreadIsTiedToItsChat() = runTest {
+        val pairing = "ph_abcdefghij"
+        val codexId = AgentIds.computer(pairing, ComputerProgram.CODEX)
+        val adapter = ScriptedAdapter(codexId)
+        val kit = HubKit(this, settings = AgentSettings(computers = listOf(PairedComputer(pairing, "office-pc", "100.64.0.2", mcpToken = "tok"))))
+        kit.adapters[codexId] = adapter
+        val s = seam(kit)
+        val mapped = kit.hub.create(codexId, null)
+        adapter.script = { it.setProvider(mapOf("threadId" to "th-mapped")); TurnResult.DONE }
+        kit.hub.send(mapped.id, SendRequest("Plan the week"))
+        advanceUntilIdle()
+        val gate = CompletableDeferred<Unit>()
+        adapter.script = { gate.await(); TurnResult.DONE }
+        val other = kit.hub.create(codexId, null)
+        kit.hub.send(other.id, SendRequest("Go"))
+        runCurrent()
+        val caller = ToolIdentity(codexId)
+        val meta = buildJsonObject { put("threadId", "th-mapped") }
+        val route = kit.hub.routeForTool(caller, null, meta)
+        assertEquals(listOf<Any?>(mapped.id, null, true), listOf(route.conversation?.id, route.unclear, route.bound))
+        val r = s.tools.callTool(caller, "propose_action", Json.parseToJsonElement("""{"title":"Add a task"}""").jsonObject, meta).data()
+        assertEquals(mapped.id, r["conversation_id"]!!.jsonPrimitive.content)
+        assertNull(r["elsewhere"])
+        assertEquals(1, s.items(mapped.id).count { it is Item.Approval })
+        gate.complete(Unit)
+        advanceUntilIdle()
     }
 
     // After boot the socket can be up before conversations.json is read: hello still knows the stored chat.

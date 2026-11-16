@@ -760,6 +760,29 @@ test('a card in another chat of the agent than the one it works in tells the age
   }
 });
 
+// Android's HubToolsSeamTest has the same case for the phone's thread map.
+test("a call from a chat's own thread is tied to that chat: no note about another chat while another one works", async () => {
+  const held = holder();
+  const t = await demo({}, { codex: held.adapter });
+  try {
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    const codex = { agent: 'codex', conversationId: null, remote: false };
+    const mapped = t.hub.create({ agent: 'codex', message: null });
+    t.hub.mapThread('th-mapped', mapped.id);
+    const busy = t.hub.create({ agent: 'codex', message: null });
+    await working(t, held, busy);
+    // Codex says which thread calls: the card is in that thread's chat, where it belongs.
+    const fromThread = data(await t.hub.callTool(codex, 'create_event', { title: 'SRS', start }, { threadId: 'th-mapped' }));
+    assert.deepEqual([fromThread.status, fromThread.conversation_id, fromThread.elsewhere], ['waiting_for_user', mapped.id, undefined]);
+    // The same chat named by conversation_id alone is the model's pick, so the note comes.
+    const named = data(await t.hub.callTool(codex, 'create_event', { conversation_id: mapped.id, title: 'SRS', start }));
+    assert.equal(named.elsewhere, 'Rukoo showed this in another chat, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.');
+  } finally {
+    held.release();
+    await t.done();
+  }
+});
+
 test('create_event on a CalDAV calendar whose server sends invitations adds the guests, and the server invites them', async () => {
   const server = await caldavServer({ scheduling: true });
   const dataDir = tempDir('sem-cal-tools-caldav-');

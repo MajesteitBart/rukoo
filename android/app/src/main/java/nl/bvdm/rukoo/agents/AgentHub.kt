@@ -65,8 +65,13 @@ sealed interface UnclearChat {
     data object Ambiguous : UnclearChat
 }
 
-/** The chat a tool call is for ([AgentHub.conversationForTool]) and why a card must not go by it, if so. */
-data class ToolRoute(val conversation: Conversation?, val unclear: UnclearChat? = null)
+/**
+ * The chat a tool call is for ([AgentHub.conversationForTool]) and why a card must not go by it, if so. [bound]: the
+ * call is tied to [conversation] by something the model doesn't pick (a paired computer, a token for one chat, the
+ * caller's own thread), so a card there is never in "another chat". Desktop's resolveCall bound, without its part in
+ * permission levels, which the phone doesn't have.
+ */
+data class ToolRoute(val conversation: Conversation?, val unclear: UnclearChat? = null, val bound: Boolean = false)
 
 /** A shown approval card: its item id, and the user's choice id once made (`cancel` when it expired). */
 data class ApprovalTicket(val itemId: String, val choice: Deferred<String>)
@@ -163,8 +168,10 @@ interface AgentHub {
     fun conversationForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): Conversation?
 
     /** Desktop resolveCall: [conversationForTool], and why a tool that shows something must not go by its guess. */
-    fun routeForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): ToolRoute =
-        ToolRoute(conversationForTool(identity, conversationIdArg, meta))
+    fun routeForTool(identity: ToolIdentity, conversationIdArg: String?, meta: JsonObject? = null): ToolRoute {
+        val c = conversationForTool(identity, conversationIdArg, meta)
+        return ToolRoute(c, bound = c != null && (identity.conversationId != null || identity.computer != null))
+    }
 
     /** Whether [agent] has a turn running in another chat and none in [conversationId]: the user talks to it elsewhere. */
     fun workingElsewhere(agent: String, conversationId: String): Boolean = false
