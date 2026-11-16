@@ -244,6 +244,23 @@ test('a file without a path on disk dropped on the composer is attached and goes
   ]);
 });
 
+test('Send right after a drop waits until the dropped file is read, and the email carries it', async () => {
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  await address(win, 'Sent right after the drop');
+  // A slow read, as of a large file from Outlook: Send comes while it is still on its way.
+  await win.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      return new Promise((resolve) => setTimeout(resolve, 800)).then(() => read.call(this));
+    };
+  });
+  await dropFiles(win, [{ name: 'late.txt', text: 'Read slowly' }]);
+  await win.click('.composer [data-c="send"]');
+  await expect(win.locator('.composer')).toHaveCount(0, { timeout: 10000 });
+  await expect.poll(() => sentAttachments('Sent right after the drop')).toEqual([['late.txt', 'Read slowly']]);
+});
+
 test('a dropped file that is too large or cannot be read says so, attaches nothing and leaves the draft unchanged', async () => {
   await win.click('[data-action="compose"]');
   await win.waitForSelector('.composer .editor');

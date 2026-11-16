@@ -475,8 +475,13 @@ test('an email that fails while a quit waits for an answer opens again when the 
   });
   await expect(win.locator('.scrim')).toContainText('Save draft?');
   await sendWaiting();
+  // Written down at once, for a quit that goes through; the next start would open it.
+  const file = path.join(dataDir, 'data', 'unsent.json');
+  expect(fs.existsSync(file)).toBe(true);
 
   const [again] = await Promise.all([app.waitForEvent('window'), win.click('.scrim .buttons button:text-is("Cancel")')]);
+  // Open again now, so the next start doesn't open it a second time.
+  expect(fs.existsSync(file)).toBe(false);
   await again.waitForSelector('.composer .editor');
   await expect(again.locator('.dialog')).toContainText("couldn't send this email while it was quitting");
   await expect(again.locator('.dialog')).toContainText('Mailbox full');
@@ -564,19 +569,63 @@ test('emails that wait when Rukoo is killed open again at the next start, unsent
   await expect(going.locator('.dialog')).toContainText('Check Sent before you send it again.');
   await going.locator('.dialog .buttons button').click();
   await expect(going.locator('.editor')).toContainText('Maybe sent.');
-  // Opened, and sent by nobody: the file is gone, and nothing waits or reached Sent.
-  expect(fs.existsSync(file)).toBe(false);
+  // Opened, and sent by nobody: the file goes once both windows have loaded, and nothing waits or reached Sent.
+  await expect.poll(() => fs.existsSync(file)).toBe(false);
   expect(await waiting()).toBe(0);
   const sent = await subjects('sent');
   expect(sent).not.toContain('Kept through a crash');
   expect(sent).not.toContain('On its way');
 
-  // Undo after a new Send writes the file again, and takes it away.
+  // Undo after a new Send writes the file again, and Undo takes it away.
   await Promise.all([waited.waitForEvent('close'), waited.click('[data-c="send"]')]);
   await expect(notice()).toContainText('Sending email…');
   expect(kept()).toEqual([['waiting', 'Kept through a crash']]);
   await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
   expect(fs.existsSync(file)).toBe(false);
+});
+
+// Windows ends the session while one email hangs on its way and another is refused and can't go to Drafts either. The
+// session end waits for the hanging one, so the refused one is written down at once: Windows may end Rukoo first.
+test('an email refused while the session ends is written down at once, though another is still on its way', async () => {
+  await app.evaluate(() => {
+    const engine = global.__semEngine;
+    engine.send = (payload) => (payload.subject === 'Refused at the end' ? Promise.reject(new Error('Mailbox full')) : new Promise(() => {}));
+    engine.saveDraft = async () => {
+      throw new Error('No connection');
+    };
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Hanging at the end', text: 'Never answered.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await newMessage(win, { to: 'someone@example.com', subject: 'Refused at the end', text: 'Refused, every word.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  expect(await waiting()).toBe(2);
+
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('session-end'));
+  const unsentFile = path.join(dataDir, 'data', 'unsent.json');
+  const heldFile = path.join(dataDir, 'data', 'held.json');
+  const subjectsIn = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => e.restore.state.subject) : []);
+  await expect.poll(() => subjectsIn(unsentFile)).toEqual(['Refused at the end']);
+  await expect.poll(() => subjectsIn(heldFile)).toEqual(['Hanging at the end']);
+
+  const exited = app.waitForEvent('close');
+  kill(app.process());
+  await exited;
+  await launch();
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
+  const editors = app.windows().filter((w) => w !== win);
+  for (const w of editors) await w.waitForSelector('.composer .editor');
+  const bySubject = async (subject) => {
+    for (const w of editors) if ((await w.locator('[data-field="subject"]').inputValue()) === subject) return w;
+    return null;
+  };
+  const refusedOne = await bySubject('Refused at the end');
+  await expect(refusedOne.locator('.dialog')).toContainText("couldn't send this email while it was quitting");
+  await expect(refusedOne.locator('.dialog')).toContainText('Mailbox full');
+  const hanging = await bySubject('Hanging at the end');
+  await expect(hanging.locator('.dialog')).toContainText('Check Sent before you send it again.');
+  await expect.poll(() => fs.existsSync(unsentFile) || fs.existsSync(heldFile)).toBe(false);
 });
 
 // The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is

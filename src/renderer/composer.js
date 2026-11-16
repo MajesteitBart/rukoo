@@ -1190,7 +1190,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
-    dropFiles(files);
+    dropping = Promise.all([dropping, dropFiles(files).catch(() => {})]).then(() => {});
   });
 
   // A dropped file on disk is attached from its path. One without a path, such as an attachment dragged from Outlook,
@@ -1198,6 +1198,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // (composeAddFile, #240), up to the size main takes. They are attached together, in the order dropped, once all are
   // read; one that can't be read says so, and the draft only counts as changed when something was attached.
   const DROP_FILE_MAX = 50 * 1024 * 1024;
+  // Drops whose files are still being read. Send, a save, popping out, moving on and closing wait for them first, so
+  // a file let go just before goes along.
+  let dropping = Promise.resolve();
   async function dropFiles(files) {
     const added = [];
     const unreadable = [];
@@ -1310,6 +1313,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   function saveDraft({ auto }) {
     clearTimeout(autosaveTimer);
     saving = saving.then(async () => {
+      await dropping;
       if (sending || closed) return false;
       if (auto && !st.dirty) return true;
       flushInputs();
@@ -1427,6 +1431,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       showSaveState('');
       // Nothing typed from here on would make it into the mail, so lock the editor until it is sent.
       page.inert = true;
+      await dropping;
       await saving;
       await settleAttachments();
       const res = await api('send', payload(undefined, { sending: true }), undoState());
@@ -1480,6 +1485,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   async function ask() {
+    await dropping;
+    if (closed) return true;
     flushInputs();
     if (!st.dirty) {
       finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
@@ -1525,6 +1532,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // Moving on to another message: keep what was written as a draft without asking.
   async function leave() {
     if (closed) return true;
+    await dropping;
+    if (closed) return true;
     if (sending || closing || asking) return false;
     flushInputs();
     if (!st.dirty) {
@@ -1535,6 +1544,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   async function popOut() {
+    if (sending || closing || closed) return;
+    await dropping;
     if (sending || closing || closed) return;
     flushInputs();
     if (st.dirty || st.draftId) {

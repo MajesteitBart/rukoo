@@ -592,8 +592,10 @@ function cancelQuit() {
   quitAsked = false;
   // before-quit stopped the sync; the background services kept running, since only will-quit closes them.
   if (engine) scheduleSync();
-  // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays.
+  // Held emails that failed while the quit waited, and couldn't go to Drafts, open now that Rukoo stays, and the list
+  // the quit wrote for the next start goes.
   openUnsent(unsent.splice(0));
+  forgetUnsent();
 }
 
 // Saves what waits to be written and stops the background services: the Rukoo account, categories, mail
@@ -691,7 +693,8 @@ function composeOptions(input = {}) {
   };
 }
 
-function openComposeWindow(input) {
+// heldId: the email from held.json this window opens again (reopenHeld), which main keeps until the window has loaded.
+function openComposeWindow(input, { heldId = null } = {}) {
   const opts = composeOptions(input);
   // A draft that opens again after Undo send had its window closed; it can't be open in another one.
   const restoredDraft = opts.restore && opts.restore.state && typeof opts.restore.state.draftId === 'string' ? opts.restore.state.draftId : null;
@@ -725,7 +728,7 @@ function openComposeWindow(input) {
   // Before it first shows, so a meeting that records never captures it (protectWindows).
   if (captureHidden) w.setContentProtection(true);
   const id = w.webContents.id;
-  composeWindows.set(id, { win: w, opts, draftId: opts.restore ? restoredDraft : opts.mode === 'draft' ? opts.id : null });
+  composeWindows.set(id, { win: w, opts, draftId: opts.restore ? restoredDraft : opts.mode === 'draft' ? opts.id : null, heldId });
   w.on('closed', () => composeWindows.delete(id));
   harden(w);
   forwardEditMenu(w);
@@ -852,6 +855,7 @@ const refused = new Handoff({
       if (quitting) unsent.push({ id, restore, error });
       else openComposeWindow({ ...(restore.opts || {}), restore, sendError: error });
     }
+    if (quitting) keepUnsent();
   }
 });
 
@@ -885,6 +889,18 @@ function keepUnsent() {
   }
 }
 
+// A quit that wrote unsent.json was called off, and what it listed is open again: the file goes, so the next start
+// doesn't open those emails a second time.
+function forgetUnsent() {
+  if (!unsentWritten) return;
+  try {
+    fs.rmSync(unsentFile(), { force: true });
+    unsentWritten = false;
+  } catch (_) {
+    // Left for the next start, which opens what it lists.
+  }
+}
+
 // Opens each in a compose window with its error. Returns the outbox ids of those it opened.
 function openUnsent(list) {
   const ids = new Set();
@@ -912,8 +928,9 @@ function reopenUnsent() {
 // first and then moved over it, so a crash halfway leaves the last whole list; synchronous, so a kill straight after
 // Send finds it. No file while the outbox is empty, as after a quit that sent everything.
 const heldFile = () => path.join(app.getPath('userData'), 'data', 'held.json');
-// What held.json had at the start, from a run that ended while emails waited, until reopenHeld() opens them. Written
-// with this run's own emails meanwhile, so a second crash before that loses them neither.
+// What held.json had at the start, from a run that ended while emails waited, until the compose window that reopenHeld()
+// opens for each has loaded it (heldOpened). Written with this run's own emails meanwhile, so a second crash before
+// that loses none. Once its editor is up, an email is an ordinary unsaved editor, which autosaves.
 let heldBefore = [];
 
 function writeHeld(list) {
@@ -942,14 +959,19 @@ function readHeld() {
 // notice gets a note that Rukoo closed first; one that was on its way may have gone, so its note says to check Sent.
 // done: the ids unsent.json opened already, when the email had left the outbox just before that run ended.
 function reopenHeld(done = new Set()) {
-  const list = heldBefore;
-  heldBefore = [];
+  heldBefore = heldBefore.filter((e) => !done.has(e.id));
   writeHeld(outbox ? outbox.journal() : []);
-  for (const e of list) {
-    if (done.has(e.id)) continue;
+  for (const e of heldBefore) {
     const error = t(e.state === 'sending' ? 'composer.undoSend.quitUnsure' : 'composer.undoSend.crashWaiting');
-    openComposeWindow({ ...(e.restore.opts || {}), restore: e.restore, sendError: error });
+    openComposeWindow({ ...(e.restore.opts || {}), restore: e.restore, sendError: error }, { heldId: e.id });
   }
+}
+
+// The compose window reopenHeld() opened for this email has loaded it (composeInit), so held.json lets it go.
+function heldOpened(id) {
+  const before = heldBefore.length;
+  heldBefore = heldBefore.filter((e) => e.id !== id);
+  if (heldBefore.length !== before) writeHeld(outbox ? outbox.journal() : []);
 }
 
 // The server refused an email that waited. Its editor closed after Send, so it opens again with the email and the
@@ -967,7 +989,13 @@ async function waitedMailFailed(entry, err) {
       // Kept below for the next start, or opened now when the quit was called off meanwhile.
     }
     if (quitting) {
-      if (!saved) unsent.push({ id: entry.id, restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) });
+      // Written down at once, before the outbox lets it go from held.json: the quit may still wait up to 30 seconds
+      // for other emails, and Windows may end Rukoo meanwhile. Both files then list it, and the next start opens it
+      // once (reopenHeld).
+      if (!saved) {
+        unsent.push({ id: entry.id, restore: entry.restore, error: t('composer.undoSend.quitFailed', { error }) });
+        keepUnsent();
+      }
       return;
     }
     // The quit was called off while the email went to Drafts, and answered() has already opened what the quit kept.
@@ -1781,6 +1809,7 @@ const windowApi = {
   openRefused: (sender, id) => fromMainWindow(sender) && refused.release(String(id || '')),
   composeInit: (sender) => {
     const c = composeWindows.get(sender.id);
+    if (c && c.heldId) heldOpened(c.heldId);
     return c ? c.opts : null;
   },
   // Lets a compose window claim its draft once autosave created one, so the draft cannot open twice.
