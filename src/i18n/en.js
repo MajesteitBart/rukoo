@@ -4784,6 +4784,30 @@
     "message": "No Tailscale address found on this computer",
     "description": "Settings, Agents page: shown under the remote toggle when Tailscale is not running."
   },
+  "settings.agents.notListening": {
+    "message": "Rukoo isn't listening on {address}",
+    "description": "Settings, Agents page: shown under the remote toggles of OpenClaw, custom agents and the Phone group when this computer has a Tailscale address but Rukoo's listener there is not open; a note under it says why. address is the Tailscale address or host name. src/renderer/settings.js (listenerLine)"
+  },
+  "settings.agents.note.mcpFailed": {
+    "message": "Rukoo's MCP server didn't start: {error}",
+    "description": "Settings, Agents page: note under the remote rows (Hermes, OpenClaw, custom agents, Phone) when Rukoo's MCP server could not start. error is the system's message, in English. src/main/agents/hub.js (noteText); src/renderer/settings.js (remoteNote)"
+  },
+  "settings.agents.note.localPortInUse": {
+    "message": "Port {want} is in use; Rukoo uses {used} for local agents.",
+    "description": "Settings, Agents page: note under the remote rows when the MCP port the user chose was taken on this computer. want is the chosen port number, used the port Rukoo got instead. src/main/agents/hub.js (startMcp)"
+  },
+  "settings.agents.note.listenFailed": {
+    "message": "Could not listen on {host}:{port}: {error}",
+    "description": "Settings, Agents page: note under the remote rows when Rukoo could not open its Tailscale listener. host is the address, port the port number, error the system's error code, such as EADDRNOTAVAIL. src/main/agents/hub.js (openRemote)"
+  },
+  "settings.agents.note.listenFailedHost": {
+    "message": "Could not listen on {host}: {error}",
+    "description": "Settings, Agents page: note under the remote rows when the chosen port was taken on the Tailscale address and no other port worked either. host is the address, error the system's error code. src/main/agents/hub.js (openRemote)"
+  },
+  "settings.agents.note.remotePortInUse": {
+    "message": "Port {want} is in use on {host}; Rukoo uses {used}.",
+    "description": "Settings, Agents page: note under the remote rows when the chosen port was taken on the Tailscale address. want is the chosen port number, host the address, used the port Rukoo listens on instead. src/main/agents/hub.js (openRemote)"
+  },
   "settings.agents.optional": {
     "message": "Empty for the default",
     "description": "Settings, Agents page: placeholder of an optional field, such as the Hermes and Codex default model."

@@ -169,6 +169,24 @@ test('an OpenAI-compatible agent: its own toggles, and the setup most MCP client
   expect(id).toMatch(/^cx_/);
 });
 
+// When Rukoo can't open its Tailscale listener, the remote row says why, in the interface's language (#253). The test
+// machine gets an address nobody has (TEST-NET), so nothing listens on a real tailnet.
+test("a custom agent's remote row says in Dutch why Rukoo isn't listening", async () => {
+  await launch({ language: 'nl' });
+  const { id } = await win.evaluate(() => window.mail.call('agentAddCustom', 'openai'));
+  await app.evaluate(() => global.__semAgents.updateConfig({ mcp: { remoteHost: '192.0.2.1' } }));
+  await openAgents();
+  const remote = settings().locator(`[data-a="agent-custom-remote:${id}"]`);
+  await remote.click();
+  await expect(remote.locator('.switch')).toHaveClass(/on/);
+  const address = remote.locator(`[data-custom-address="${id}"]`);
+  // The address is there; Rukoo couldn't listen on it, and the note says why.
+  await expect(address).toContainText('Rukoo luistert niet op 192.0.2.1');
+  await expect(address).not.toContainText('Geen Tailscale-adres');
+  await expect(address.locator('.agent-note')).toContainText('Rukoo kan niet luisteren op 192.0.2.1:');
+  await expect(address).not.toContainText('Could not listen');
+});
+
 for (const [theme, language] of [
   ['light', 'en'],
   ['dark', 'en'],
