@@ -48,6 +48,7 @@ import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
 import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
+import { report, reportError, handled } from './diag.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -157,27 +158,66 @@ let renderedLanguage = null;
 let refreshTimer = null;
 let pending = null;
 let again = false;
+// Passes that failed in a row, and the try that follows one. A failed pass is tried again after RETRY_MS[failures - 1],
+// and then every 10 seconds: a failure that passes, such as main being busy, heals by itself, and one that comes back
+// every time costs a list from main every 10 seconds. The log gets the first failure, one that says something else,
+// and every REPORT_EVERY-th after that.
+let failures = 0;
+let lastFailure = '';
+let retryTimer = null;
+const RETRY_MS = [1000, 2000, 5000, 10000];
+const REPORT_EVERY = 30;
 
 export function scheduleRefresh(ms = 60) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, ms);
+  // The pass reports its own failure (refreshFailed); the timer has no one to hand it to.
+  refreshTimer = setTimeout(() => refresh().catch(() => {}), ms);
 }
 
-// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass.
+// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass. That pass also
+// runs when the one before it failed, since it was asked for with newer data in mind. The promise rejects with the
+// last pass's error, which is in the log already.
 export function refresh() {
   if (pending) {
     again = true;
     return pending;
   }
+  clearTimeout(retryTimer);
   pending = (async () => {
+    let error = null;
     do {
       again = false;
-      await refreshOnce();
+      try {
+        await refreshOnce();
+        error = null;
+      } catch (err) {
+        error = err;
+        refreshFailed(err);
+      }
     } while (again);
+    if (error) throw error;
+    if (failures) {
+      report('refresh', { reason: 'recovered', failures });
+      failures = 0;
+      lastFailure = '';
+    }
   })().finally(() => {
     pending = null;
   });
   return pending;
+}
+
+// A pass that failed left the list as it was: it goes in the log, and is tried again in a moment.
+function refreshFailed(err) {
+  failures++;
+  const message = String((err && err.message) || err);
+  if (failures === 1 || message !== lastFailure || failures % REPORT_EVERY === 0) {
+    console.error('Refreshing the window failed:', err);
+    reportError('refresh', err, { failures });
+  } else handled(err);
+  lastFailure = message;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => refresh().catch(() => {}), RETRY_MS[Math.min(failures, RETRY_MS.length) - 1]);
 }
 
 function searchingAll() {
@@ -3313,7 +3353,8 @@ async function onNewMail(p) {
   if (!mails.length) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
-  await refresh();
+  // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
+  await refresh().catch(() => {});
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
