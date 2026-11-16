@@ -94,4 +94,18 @@ class ImapReferencesTest {
         assertEquals("the same as reading the whole line", MessageIds.referenceIds(value), byUid.getValue(7).references)
         assertEquals(listOf("<a@example.com>"), byUid.getValue(8).references)
     }
+
+    @Test
+    fun `a References line without angle brackets longer than one fetch keeps its newest ids too`() = runBlocking {
+        // Ids without angle brackets, as some mailers write them, comma-separated over about 25 KB.
+        val ids = (1..700).map { "reference-$it@lists.example.com" }
+        val value = ids.chunked(5).joinToString(",\r\n ") { it.joinToString(", ") }
+        val server = FakeImap(listOf(Msg(7, "long thread", "References: $value")), "IMAP4rev1").also { servers += it }
+        val res = session(server).syncFolder("INBOX", 10, emptyMap(), "9")
+
+        assertEquals(2, server.commands.count { it.contains("HEADER.FIELDS (REFERENCES)") })
+        val kept = res.messages.single().references
+        assertEquals(ids.takeLast(50), kept)
+        assertEquals("the same as reading the whole line, as desktop does", MessageIds.referenceIds(value), kept)
+    }
 }

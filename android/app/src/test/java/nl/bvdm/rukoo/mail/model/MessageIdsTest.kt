@@ -75,11 +75,24 @@ class MessageIdsTest {
 
     @Test
     fun aReferenceLineReadInPartsGivesWhatTheWholeLineGives() {
-        val line = "References: " + (1..120).joinToString("\r\n ") { "<r$it@x>" } + " <${"y".repeat(1500)}@x> <last@x>"
-        for (size in listOf(7, 64, 1000)) {
-            val tail = MessageIds.ReferenceTail()
-            line.chunked(size).forEach(tail::add)
-            assertEquals("parts of $size", MessageIds.referenceIds(line.substringAfter(": ")), tail.ids())
+        val long = "y".repeat(1500)
+        val values = listOf(
+            (1..120).joinToString("\r\n ") { "<r$it@x>" } + " <$long@x> <last@x>",
+            // Without angle brackets: split on spaces and commas, a token longer than a header line left out.
+            (1..120).joinToString(",\r\n ") { "r$it@x" } + " $long@x last@x",
+            // Mixed: the bracketed ids win, as on desktop.
+            "a@x, <b@x> c@x <d@x>",
+            "<${"z".repeat(1200)}@x> loose@x",
+            "",
+        )
+        for (value in values) {
+            for (size in listOf(1, 7, 64, 1000)) {
+                val tail = MessageIds.ReferenceTail()
+                value.chunked(size).forEach(tail::add)
+                assertEquals("parts of $size of ${value.take(30)}", MessageIds.referenceIds(value), tail.ids())
+            }
         }
+        assertEquals(listOf("<b@x>", "<d@x>"), MessageIds.referenceIds("a@x, <b@x> c@x <d@x>"))
+        assertEquals("an overlong bracketed id still means the line uses brackets", emptyList<String>(), MessageIds.referenceIds("<${"z".repeat(1200)}@x> loose@x"))
     }
 }

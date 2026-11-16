@@ -253,6 +253,11 @@ test('References keep the newest 50 ids of the header, and an id from a list cou
   assert.equal(long.length, 50);
   assert.equal(long[0], '<r11@x>');
   assert.deepEqual(util.referenceIds(`<a@x> <${'y'.repeat(1000)}@x> <cut@exa`), ['<a@x>'], 'a cut-off id and one longer than a header line are left out');
+  // The bracketed ids win when the line has any, even one too long to keep.
+  assert.deepEqual(util.referenceIds('a@x, <b@x> c@x <d@x>'), ['<b@x>', '<d@x>']);
+  assert.deepEqual(util.referenceIds(`<${'z'.repeat(1200)}@x> loose@x`), []);
+  const words = util.referenceIds(Array.from({ length: 700 }, (_, i) => `r${i + 1}@x`).join(',\r\n '));
+  assert.deepEqual([words.length, words[0], words[49]], [50, 'r651@x', 'r700@x'], 'a long line without brackets keeps its newest words');
   // mailparser and the demo give a list, or one string for a single id.
   assert.deepEqual(util.referenceIds(['<a@x>', '<b@x>']), ['<a@x>', '<b@x>']);
   assert.deepEqual(util.referenceIds('<a@x>'), ['<a@x>']);

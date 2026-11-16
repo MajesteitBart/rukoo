@@ -461,8 +461,9 @@ class ImapSession(
      */
     private fun longReferences(p: IMAPProtocol, uid: Long, first: ByteArray): List<String> {
         val tail = MessageIds.ReferenceTail()
-        // Message-IDs are ASCII; one character per byte keeps a part cut inside a character harmless.
-        tail.add(String(first, Charsets.ISO_8859_1))
+        // Message-IDs are ASCII; one character per byte keeps a part cut inside a character harmless. The value starts
+        // after the field name, which a value without angle brackets would otherwise count as an id.
+        tail.add(String(first, Charsets.ISO_8859_1).substringAfter(':'))
         var offset = REFERENCE_BYTES.toLong()
         for (part in 1 until REFERENCE_PARTS) {
             val bytes = p.exec("UID FETCH $uid (UID ${referencesPart(offset)})").filterIsInstance<FetchResponse>()
