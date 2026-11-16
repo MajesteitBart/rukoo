@@ -505,6 +505,33 @@ class AppViewModelTest {
     }
 
     @Test
+    fun aNewUnsentChatOpenedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        // Every unsent chat has no conversation id, so the id alone can't tell them apart.
+        suspend fun duringLookup(open: (AppViewModel) -> Unit): AppViewModel {
+            val (_, vm) = setup(twoPane = true)
+            vm.openChat(null, "a")
+            vm.openMessage("b")
+            val lookup = CompletableDeferred<ChatFollow>()
+            val follow = async { vm.followOpened("b") { lookup.await() } }
+            open(vm)
+            lookup.complete(ChatFollow.To("c_2"))
+            assertFalse(follow.await())
+            assertNull(vm.state.value.chatConversationId)
+            return vm
+        }
+        // New chat (ChatController.newChat) about b, the email the reader shows.
+        assertEquals("b", duringLookup { it.openChat(null, null) }.state.value.chatEmailId)
+        // The agent button on b.
+        assertEquals("b", duringLookup { it.openChat(emailId = "b") }.state.value.chatEmailId)
+        // An agent switch on an unsent chat that left the email out.
+        assertNull(duringLookup { it.openChat(null, null, withoutEmail = true) }.state.value.chatEmailId)
+        // A new chat about another email opens that email in the reader too.
+        val other = duringLookup { it.openChat(null, "z") }.state.value
+        assertEquals("z", other.chatEmailId)
+        assertEquals("z", other.openMessageId)
+    }
+
+    @Test
     fun aChatOpenedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
         val (_, vm) = setup(twoPane = true)
         vm.openChat("c_1", "a")

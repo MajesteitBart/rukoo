@@ -293,6 +293,7 @@ class AppViewModel(
             conversationId != null -> services.agents.get(conversationId)?.message?.id
             else -> _state.value.openMessageId
         }
+        chatChanges++
         set { it.openChat(conversationId, email) }
     }
 
@@ -305,15 +306,16 @@ class AppViewModel(
     /**
      * Two panes: the open chat follows [openId], the email the reader beside it just opened, to the chat [lookup] finds
      * for it, or to a new chat about it. The lookup waits for the email and the hub, and the user may act meanwhile: a
-     * chat started or opened beside the reader in that time stays on screen (desktop #185), and so does everything
-     * when the email can't be read ([ChatFollow.Missing]), another one opened or the chat closed. A chat whose first
-     * message is still being sent counts as started ([chatStarting]). Returns whether the chat followed.
+     * chat started, opened or closed beside the reader in that time stays as the user left it (desktop #185), and so does
+     * everything when the email can't be read ([ChatFollow.Missing]) or another one opened. Unsent chats all have no
+     * conversation id, so a new chat opened meanwhile, also about the same email, is told apart by [chatChanges]; a
+     * chat whose first message is still being sent counts too ([chatStarting]). Returns whether the chat followed.
      */
     suspend fun followOpened(openId: String, lookup: suspend () -> ChatFollow): Boolean {
         val before = _state.value.chatConversationId
-        val began = chatsStarted
+        val began = chatChanges
         val found = lookup() as? ChatFollow.To ?: return false
-        if (chatsStarted != began) return false
+        if (chatChanges != began) return false
         var followed = false
         set { now ->
             if (!now.chatOpen || now.openMessageId != openId || now.chatConversationId != before) {
@@ -386,18 +388,22 @@ class AppViewModel(
     /** The chat input took the emails [chatEmails] offered. */
     fun takeChatEmails(): List<String> = _chatEmails.value.also { _chatEmails.value = emptyList() }
 
-    // The new chats whose first message went out, created or still being created; see followOpened.
-    private var chatsStarted = 0
+    // How often the chat on screen changed by the user's hand: a chat opened (also a new, unsent one, which has no
+    // conversation id to tell it by), closed, or started with its first message. See followOpened.
+    private var chatChanges = 0
 
     /** The first message of a new chat is on its way: its conversation is being created. */
     fun chatStarting() {
-        chatsStarted++
+        chatChanges++
     }
 
     /** The first message created the conversation of a new chat. */
     fun chatCreated(conversationId: String) = set { it.chatCreated(conversationId) }
 
-    fun closeChat() = set { it.closeChat() }
+    fun closeChat() {
+        chatChanges++
+        set { it.closeChat() }
+    }
 
     fun showList() = set { it.showList(twoPane) }
 
