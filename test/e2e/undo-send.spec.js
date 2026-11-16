@@ -280,7 +280,10 @@ test("Don't quit brings the main window back from the tray with the Undo notice"
 // loading its page 7 seconds late, longer than the 5 seconds Undo gets after the question: the email waits all the
 // same, until the window can show its notice.
 test("Don't quit after the last window closed keeps the email until the new main window offers Undo", async () => {
+  test.skip(process.platform === 'darwin', 'closing the last window does not quit on macOS');
   const subject = 'Waits for the new window';
+  // Close to the tray is on by default on Windows; this case is about closing the last window without it.
+  await win.evaluate(() => window.mail.call('updateSettings', { closeToTray: false }));
   // 5 seconds, less than the new window's 7-second load: clocks that ran on during the load would send the email
   // before the window could offer Undo.
   await app.evaluate(() => (global.__semEngine.settings.undoSend = 5));
