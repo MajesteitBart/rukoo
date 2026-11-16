@@ -59,4 +59,17 @@ class MessageIdsTest {
         assertEquals(MessageIds.headerKey("<a@b>"), MessageIds.headerKey("a@b"))
         assertEquals("", MessageIds.headerKey(null))
     }
+
+    // Desktop's mailutil.referenceIds gives the same for these.
+    @Test
+    fun referencesKeepTheNewestFiftyIdsOfTheHeader() {
+        assertEquals(listOf("<a@x>", "<b@x>"), MessageIds.referenceIds(" <a@x>  <b@x>"))
+        assertEquals("without angle brackets: split on spaces", listOf("a@x", "b@x"), MessageIds.referenceIds("a@x, b@x"))
+        assertEquals(emptyList<String>(), MessageIds.referenceIds(null))
+        val long = MessageIds.referenceIds((1..60).joinToString(" ") { "<r$it@x>" })
+        assertEquals(50, long.size)
+        assertEquals("<r11@x>", long.first())
+        // A partial fetch cut the last one off; an id longer than a header line is no Message-ID.
+        assertEquals(listOf("<a@x>"), MessageIds.referenceIds("<a@x> <${"y".repeat(1000)}@x> <cut@exa"))
+    }
 }

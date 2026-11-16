@@ -27,6 +27,7 @@ import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.CachedMessage
 import nl.bvdm.rukoo.mail.model.FolderRoles
+import nl.bvdm.rukoo.mail.model.MessageIds
 import nl.bvdm.rukoo.mail.model.ServerConfig
 import okhttp3.internal.tls.OkHostnameVerifier
 import org.eclipse.angus.mail.iap.Argument
@@ -390,6 +391,9 @@ class ImapSession(
                     val previews = previews(p, details)
                     // A few header lines, for new messages and for ones cached before Rukoo kept them.
                     val kinds = if (signals) signalsOf(p, rows.map { it.second }.filter { it in details || cache[it]?.signals == null }) else emptyMap()
+                    // The References line, in every folder, by which related mail finds a later reply: for new messages,
+                    // and once for ones cached before Rukoo kept it, in one small fetch instead of the whole window again.
+                    val refs = referencesOf(p, rows.map { it.second }.filter { it in details || cache[it]?.references == null })
                     // Gmail doesn't show its tabs as folders, but its own search finds them (X-GM-RAW). Asked again on every
                     // sync, since a message can move to another tab. What none of them holds is in Primary.
                     val tabs = if (gmailTabs && rows.isNotEmpty() && p.hasCapability("X-GM-EXT-1")) gmailTabsOf(p, rows.minOf { it.second }) else null
@@ -398,6 +402,7 @@ class ImapSession(
                     fun CachedMessage.extra(prior: CachedMessage?): CachedMessage = copy(
                         signals = kinds[uid] ?: prior?.signals,
                         gmailTab = if (tabs != null) tabs[uid] ?: "primary" else prior?.gmailTab,
+                        references = refs[uid] ?: prior?.references,
                     )
                     val messages = rows.mapNotNull { (_, uid, flags) ->
                         val unread = !flags.contains(Flags.Flag.SEEN)
@@ -427,6 +432,22 @@ class ImapSession(
             val uid = fr.getItem(UID::class.java)?.uid ?: continue
             val bytes = fr.getItem(BODY::class.java)?.byteArray?.newBytes ?: ByteArray(0)
             out[uid] = MailSignals.parse(String(bytes, Charsets.UTF_8))
+        }
+        return out
+    }
+
+    /**
+     * The References of [uids] (MessageIds.referenceIds); empty for a message without them, so it isn't asked again.
+     * The first [REFERENCE_BYTES] only, like the signal headers: anyone can send huge headers. The rare line longer than
+     * that keeps the ids before the cut.
+     */
+    private fun referencesOf(p: IMAPProtocol, uids: List<Long>): Map<Long, List<String>> {
+        if (uids.isEmpty()) return emptyMap()
+        val out = HashMap<Long, List<String>>()
+        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID BODY.PEEK[HEADER.FIELDS (REFERENCES)]<0.$REFERENCE_BYTES>)").filterIsInstance<FetchResponse>()) {
+            val uid = fr.getItem(UID::class.java)?.uid ?: continue
+            val bytes = fr.getItem(BODY::class.java)?.byteArray?.newBytes ?: ByteArray(0)
+            out[uid] = MessageIds.referenceIds(MailSignals.headerMap(String(bytes, Charsets.UTF_8))["references"])
         }
         return out
     }
@@ -636,6 +657,9 @@ class ImapSession(
     companion object {
         const val PREVIEW_BYTES = 4096
         const val SIGNAL_BYTES = 8192
+
+        /** How much of a References line a sync reads: some 200 ids, four times what the cache keeps of them. */
+        const val REFERENCE_BYTES = 16384
 
         /** The code of the error a reply nested too deeply to parse becomes. */
         private const val TOO_DEEP = "too-deep"

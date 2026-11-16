@@ -1879,11 +1879,14 @@ class Engine extends EventEmitter {
   }
 
   // Flags for several emails at once, such as everything the list shows. The cache changes for all of them and the
-  // list redraws once; then the server hears of them one by one, while a sync landing in between keeps the change.
-  // A write waits for an earlier change to the same email still on its way, so the server ends with the latest.
-  // Emails no longer in the cache are skipped. A failure puts the flag back to what the server last took, unless a
-  // later change has set it since, so a refused Undo of a refused Mark all as read leaves the email as it was.
-  // Resolves with the ids the server took (done), the ids it refused (failed) and the first refusal (error).
+  // list redraws once; then the server hears of them in one command per folder (ImapAccount.setFlagsMany), while a
+  // sync landing in between keeps the change. A folder's command waits for the earlier changes to its emails that are
+  // still on their way, so the server ends with the latest; the folders don't wait for each other. Emails no longer in
+  // the cache are skipped. When the server turns a folder's command down, each of its emails gets the flag back as the
+  // server last took it, unless a later change has set it since, so a refused Undo of a refused Mark all as read
+  // leaves the email as it was.
+  // Resolves with the ids the server took (done), the ids it refused (failed), both in the order given, and the first
+  // refusal (error).
   async setFlagsMany(ids, flags) {
     const patch = {};
     for (const k of ['unread', 'starred', 'answered']) if (flags[k] !== undefined) patch[k] = Boolean(flags[k]);
@@ -1908,18 +1911,30 @@ class Engine extends EventEmitter {
       }
     }
     for (const id of accounts) this.changed(id);
-    const done = [];
-    const failed = [];
-    let error = null;
+    const groups = new Map();
     for (const f of found) {
-      try {
-        await f.hold.before;
-        await this.session(f.acc).setFlags(f.folder, f.uid, patch);
-        f.hold.confirm();
-        done.push(f.id);
-      } catch (err) {
-        failed.push(f.id);
-        error = error || friendlyError(err);
+      const key = `${f.acc.id}\u0000${f.folder}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+    await Promise.all([...groups.values()].map((group) => this.flagGroup(group, patch)));
+    const failed = found.filter((f) => f.error);
+    if (failed.length) for (const id of accounts) this.changed(id);
+    return { done: found.filter((f) => !f.error).map((f) => f.id), failed: failed.map((f) => f.id), error: failed.length ? failed[0].error : null };
+  }
+
+  // One folder's part of setFlagsMany(): the emails in group share an account and folder, and each has its hold and
+  // its record of the inbox's count of older unread mail. Sets error on each email when the server turns it down.
+  async flagGroup(group, patch) {
+    const { acc, folder } = group[0];
+    try {
+      await Promise.all(group.map((f) => f.hold.before));
+      await this.session(acc).setFlagsMany(folder, group.map((f) => f.uid), patch);
+      for (const f of group) f.hold.confirm();
+    } catch (err) {
+      const error = friendlyError(err, acc);
+      for (const f of group) {
+        f.error = error;
         // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again.
         const back = f.hold.rollback();
         try {
@@ -1929,12 +1944,10 @@ class Engine extends EventEmitter {
           Object.assign(f.msg, back);
         }
         if (f.recount) this.recount(f.recount);
-      } finally {
-        f.hold.release();
       }
+    } finally {
+      for (const f of group) f.hold.release();
     }
-    if (failed.length) for (const id of accounts) this.changed(id);
-    return { done, failed, error };
   }
 
   // Changes an inbox's count of older unread mail by n, when the server gave one.
@@ -2300,10 +2313,10 @@ class Engine extends EventEmitter {
   }
 
   // Synced mail related to m: linked by Message-ID, In-Reply-To or References, or with the same subject minus Re:
-  // and Fwd: and someone in common other than the user. m is a full message or one built from the cache; its
-  // References count, which the cache doesn't keep. Newest first, at most limit. skipRoles: folder roles to leave
-  // out; skipSpam: leave out mail from addresses marked as spam, before the limit. Gmail's All Mail repeats the other
-  // folders, so its copy counts only when no other folder has the email.
+  // and Fwd: and someone in common other than the user. m is a full message or one built from the cache. References
+  // count on both sides, so a later reply that names m only there is found too. Newest first, at most limit.
+  // skipRoles: folder roles to leave out; skipSpam: leave out mail from addresses marked as spam, before the limit.
+  // Gmail's All Mail repeats the other folders, so its copy counts only when no other folder has the email.
   // The agents' get_screen (agents/tools.js threadOf) and the reader's related emails (related()) use this.
   relatedMessages(m, { limit = 10, skipRoles = [], skipSpam = false } = {}) {
     const ids = util.threadIds(m);
@@ -2340,12 +2353,14 @@ class Engine extends EventEmitter {
     return hits.slice(0, limit).map(({ acc, folder, r }) => this.publicMessage(acc, folder, r));
   }
 
-  // The related emails under an email in the reader. references: the email's References, from getMessage. Trash and
-  // spam stay out, like they do from the inbox; so does mail from addresses marked as spam.
+  // The related emails under an email in the reader. references: the email's References, from getMessage; without
+  // them, the ones the cache kept. Trash and spam stay out, like they do from the inbox; so does mail from addresses
+  // marked as spam.
   related(id, references = []) {
     if (String(id).startsWith('saved:')) return [];
     const { msg } = this.locate(id);
-    const m = { id, messageId: msg.messageId, inReplyTo: msg.inReplyTo, references, subject: msg.subject, from: msg.from, to: msg.to, cc: msg.cc };
+    const named = Array.isArray(references) && references.length ? references : msg.references || [];
+    const m = { id, messageId: msg.messageId, inReplyTo: msg.inReplyTo, references: named, subject: msg.subject, from: msg.from, to: msg.to, cc: msg.cc };
     return this.relatedMessages(m, { limit: RELATED_LIMIT, skipRoles: ['trash', 'junk'], skipSpam: true });
   }
 

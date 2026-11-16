@@ -50,6 +50,7 @@ object MailViews {
         vip = isVip(prefs, m.from),
         signals = m.signals,
         gmailTab = m.gmailTab,
+        references = m.references.orEmpty(),
     )
 
     /** A view's test on (folder, message), and whether it is the archive view (for All Mail dedup). */

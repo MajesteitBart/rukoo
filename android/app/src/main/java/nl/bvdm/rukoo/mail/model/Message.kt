@@ -15,8 +15,9 @@ data class Address(val name: String = "", val address: String = "") {
 
 /**
  * One message header in the cache, desktop's cached message (spec 4 §1.6). The first eleven fields
- * never change on the server (desktop's STORED); the flags do. References are not cached; they come
- * with the full message.
+ * never change on the server (desktop's STORED); the flags do. [references] never change either, but
+ * a sync fetches them on their own (ImapSession), so a cache from before they were kept doesn't fetch
+ * its whole window again.
  */
 @Serializable
 data class CachedMessage(
@@ -41,6 +42,11 @@ data class CachedMessage(
     val signals: MailSignals? = null,
     /** The Gmail tab an inbox message is in (`primary`, `promotions`, `social`, `updates`, `forums`), for Gmail accounts. */
     val gmailTab: String? = null,
+    /**
+     * The Message-IDs of the References header, the newest [MessageIds.REFERENCES_KEPT]; empty when it has none. Null
+     * until a sync fetched them: a message cached before Rukoo kept them.
+     */
+    val references: List<String>? = null,
 )
 
 /**
@@ -73,6 +79,8 @@ data class MessageSummary(
     /** What inbox categories sort by: the message's signals and its Gmail tab (CachedMessage). */
     val signals: MailSignals? = null,
     val gmailTab: String? = null,
+    /** The References the cache kept (CachedMessage), by which related mail finds a later reply. */
+    val references: List<String> = emptyList(),
 )
 
 /**

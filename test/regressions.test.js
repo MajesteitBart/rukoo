@@ -33,9 +33,9 @@ test('delete without a Prullenbak asks first and only expunges with force', asyn
 test('a sync that runs during a flag change does not undo it', async () => {
   const { engine, acc } = await freshEngine();
   const session = engine.session(engine.account(acc.id));
-  const realSetFlags = session.setFlags.bind(session);
+  const realSetFlags = session.setFlagsMany.bind(session);
   let release;
-  session.setFlags = (...args) => new Promise((r) => (release = r)).then(() => realSetFlags(...args));
+  session.setFlagsMany = (...args) => new Promise((r) => (release = r)).then(() => realSetFlags(...args));
   const target = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.unread);
   const flagging = engine.setFlags(target.id, { unread: false });
   await engine.syncAccount(acc.id); // reads server state where the message is still unread

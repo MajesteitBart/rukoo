@@ -244,6 +244,21 @@ test('an email does not split when it is one part or mostly text, and not withou
   assert.throws(() => util.skeletonSource(view.header, view.structure, view.sections), /header for part 1/);
 });
 
+// #230. Android's MessageIds.referenceIds gives the same for these (MessageIdsTest).
+test('References keep the newest 50 ids of the header, and an id from a list counts the same', () => {
+  assert.deepEqual(util.referenceIds(' <a@x>  <b@x>'), ['<a@x>', '<b@x>']);
+  assert.deepEqual(util.referenceIds('a@x, b@x'), ['a@x', 'b@x'], 'without angle brackets: split on spaces');
+  assert.deepEqual(util.referenceIds(null), []);
+  const long = util.referenceIds(Array.from({ length: 60 }, (_, i) => `<r${i + 1}@x>`).join(' '));
+  assert.equal(long.length, 50);
+  assert.equal(long[0], '<r11@x>');
+  assert.deepEqual(util.referenceIds(`<a@x> <${'y'.repeat(1000)}@x> <cut@exa`), ['<a@x>'], 'a cut-off id and one longer than a header line are left out');
+  // mailparser and the demo give a list, or one string for a single id.
+  assert.deepEqual(util.referenceIds(['<a@x>', '<b@x>']), ['<a@x>', '<b@x>']);
+  assert.deepEqual(util.referenceIds('<a@x>'), ['<a@x>']);
+  assert.ok(util.linked(util.threadIds({ messageId: '<A@x>' }), { messageId: '<c@x>', references: ['<z@x>', '<a@x>'] }));
+});
+
 test('decodedSize undoes base64 and leaves other encodings alone', () => {
   const content = Buffer.alloc(100000, 5);
   const encoded = content.toString('base64').replace(/.{76}/g, '$&\r\n');

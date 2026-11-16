@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonPrimitive
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.mail.compose.toOutgoing
@@ -20,6 +21,7 @@ import nl.bvdm.rukoo.mail.model.OutgoingMessage
 import nl.bvdm.rukoo.mail.model.ReplyKind
 import nl.bvdm.rukoo.mail.model.UnsubscribeResult
 import nl.bvdm.rukoo.mail.model.ViewKind
+import nl.bvdm.rukoo.mcp.tools.MailLookup
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -169,5 +171,30 @@ class DemoTest {
 
         engine.send(OutgoingMessage(acc.id, Address("", "demo@example.com"), to = listOf(Address("", "someone@example.com")), subject = "Away", text = "x"))
         assertEquals(1, newMail.size)
+    }
+
+    // #230: the cache keeps References, so get_screen's thread lists a later reply that names an email only there.
+    @Test
+    fun `a later reply that names the call only in its References is in the call's thread`() = runBlocking {
+        val engine = engine()
+        val acc = engine.addDemoAccount()
+        engine.refresh(acc.id)
+        val call = engine.listMessages(MailView(ViewKind.INBOX)).first { it.subject == "Call on Thursday" }
+        val lookup = MailLookup(engine)
+        suspend fun subjects(id: String) = lookup.threadOf(engine.fullMessage(id)).map { it["subject"]!!.jsonPrimitive.content }
+        assertEquals(listOf("<unsafe_content>Re: Call on Thursday</unsafe_content>"), subjects(call.id))
+        // An answer to a forward of the call that never reached this account: another subject, nobody else in common,
+        // and In-Reply-To naming the forward.
+        engine.send(
+            OutgoingMessage(
+                acc.id, Address("", "demo@example.com"), to = listOf(Address("", "demo@example.com")), subject = "Minutes", text = "The minutes.",
+                inReplyTo = "<forward@example.com>", references = listOf(call.messageId!!, "<forward@example.com>"),
+            ),
+        )
+        engine.refresh(acc.id)
+        val minutes = engine.listMessages(MailView(ViewKind.INBOX)).first { it.subject == "Minutes" }
+        assertEquals(listOf(call.messageId, "<forward@example.com>"), minutes.references)
+        assertEquals(listOf("<unsafe_content>Minutes</unsafe_content>", "<unsafe_content>Re: Call on Thursday</unsafe_content>"), subjects(call.id))
+        assertTrue(subjects(minutes.id).contains("<unsafe_content>Call on Thursday</unsafe_content>"))
     }
 }

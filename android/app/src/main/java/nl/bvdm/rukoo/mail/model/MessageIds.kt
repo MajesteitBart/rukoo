@@ -46,4 +46,22 @@ object MessageIds {
 
     /** A Message-ID header as a comparable key: no angle brackets, lower case (engine.js:123-125). */
     fun headerKey(messageId: String?): String = (messageId ?: "").trim().replace("<", "").replace(">", "").lowercase()
+
+    /** How many References a cached message keeps, the newest (desktop mailutil.js REFERENCES_KEPT, the hub's cap). */
+    const val REFERENCES_KEPT = 50
+
+    private val BRACKETED = Regex("<[^<>]*>")
+    private val SEPARATORS = Regex("[\\s,]+")
+
+    /**
+     * The Message-IDs a References header names, in their <id@domain> form: the last [REFERENCES_KEPT], which a long
+     * thread's header has at the end (desktop mailutil.js referenceIds). A header without angle brackets is split on
+     * spaces. Ids longer than a header line can be are left out, and so is an id a partial fetch cut off before its `>`.
+     */
+    fun referenceIds(value: String?): List<String> {
+        val text = value.orEmpty()
+        val bracketed = BRACKETED.findAll(text).map { it.value }.toList()
+        val ids = bracketed.ifEmpty { text.split(SEPARATORS) }
+        return ids.map { it.trim() }.filter { it.isNotEmpty() && it.length <= 998 }.takeLast(REFERENCES_KEPT)
+    }
 }

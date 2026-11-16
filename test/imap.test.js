@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { t } = require('../src/i18n');
-const { ImapAccount, friendlyError } = require('../src/main/imap');
+const { ImapAccount, friendlyError, uidSets } = require('../src/main/imap');
 const { imapServer, nestedStructure, textStructure, GMAIL_APP_PASSWORD_REQUIRED } = require('./fixtures/imap-server');
 
 // client: the stand-in, or a function that makes one for each connection (it gets 'main' or 'reader').
@@ -320,15 +320,31 @@ test('a large message comes over the reader as its structure and then its text p
 // for its structure, as imapflow leaves out a structure nested too deep to parse.
 function folder(messages) {
   const asked = [];
+  // The uids a set such as 3:5,9 names.
+  const inSet = (range) => {
+    const out = new Set();
+    for (const part of String(range).split(',')) {
+      const [a, b = a] = part.split(':').map(Number);
+      for (let n = a; n <= b; n++) out.add(n);
+    }
+    return out;
+  };
+  // The header lines with these names, as a server answers BODY.PEEK[HEADER.FIELDS (...)], folded lines included.
+  const fields = (text, names) =>
+    String(text || '')
+      .split(/\r\n(?![ \t])/)
+      .filter((line) => names.includes(line.slice(0, line.indexOf(':')).trim().toLowerCase()))
+      .map((line) => `${line}\r\n`)
+      .join('');
   const client = {
     usable: true,
     mailbox: { exists: messages.length, uidValidity: 9 },
     getMailboxLock: async () => ({ release() {} }),
     async *fetch(range, query, opts = {}) {
-      asked.push({ range, query: Object.keys(query).filter((k) => k !== 'uid'), byUid: Boolean(opts.uid) });
+      asked.push({ range, query: Object.keys(query).filter((k) => k !== 'uid'), byUid: Boolean(opts.uid), ...(query.headers ? { headers: query.headers } : {}) });
       let list;
       if (opts.uid) {
-        const uids = new Set(String(range).split(',').map(Number));
+        const uids = inSet(range);
         list = messages.filter((m) => uids.has(m.uid) && !m.goneBeforeDetails && !(m.nested && query.bodyStructure));
       } else {
         const start = Number(String(range).split(':')[0]);
@@ -343,7 +359,7 @@ function folder(messages) {
         if (query.internalDate) row.internalDate = 'internalDate' in m ? m.internalDate : new Date(2026, 9, m.uid);
         if (query.size) row.size = 100 + m.uid;
         if (query.bodyParts) row.bodyParts = new Map([['1', Buffer.from(`preview of ${m.uid}`)]]);
-        if (query.headers) row.headers = Buffer.from(m.headers || '');
+        if (query.headers) row.headers = Buffer.from(fields(m.headers, query.headers));
         yield row;
       }
     }
@@ -351,7 +367,15 @@ function folder(messages) {
   return { client, asked };
 }
 
-const stored = (uid, subject) => ({ uid, messageId: `<${uid}@x>`, inReplyTo: null, subject, from: { name: '', address: 'a@x' }, to: [], cc: [], replyTo: [], date: 1, preview: `kept ${uid}`, hasAttachments: false, size: 1, unread: true, starred: false, answered: false });
+// A message as the cache holds it, with its References (none) as Rukoo keeps them now.
+const stored = (uid, subject) => ({ uid, messageId: `<${uid}@x>`, inReplyTo: null, subject, from: { name: '', address: 'a@x' }, to: [], cc: [], replyTo: [], date: 1, preview: `kept ${uid}`, hasAttachments: false, size: 1, unread: true, starred: false, answered: false, references: [] });
+// The same, cached before Rukoo kept References.
+const storedBefore = (uid, subject) => {
+  const m = stored(uid, subject);
+  delete m.references;
+  return m;
+};
+const REFERENCES = { query: ['headers'], byUid: true, headers: ['references'] };
 
 test('a sync fetches only the flags of messages the cache has, and the rest only for new ones', async () => {
   const { client, asked } = folder([
@@ -367,7 +391,7 @@ test('a sync fetches only the flags of messages the cache has, and the rest only
   const res = await s.syncFolder('INBOX', { limit: 10, known, uidValidity: '9', background: true });
   assert.deepEqual(asked[0], { range: '1:*', query: ['flags'], byUid: false });
   assert.deepEqual(asked[1], { range: '5', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true });
-  assert.equal(asked.length, 3, 'and a preview for the new one');
+  assert.deepEqual(asked.slice(2), [{ range: '5', query: ['bodyParts'], byUid: true }, { range: '5', ...REFERENCES }], 'and a preview and the References for the new one');
   const byUid = new Map(res.messages.map((m) => [m.uid, m]));
   assert.deepEqual([...byUid.keys()], [3, 4, 5]);
   assert.equal(byUid.get(3).subject, 'cached subject');
@@ -405,7 +429,8 @@ test('a message whose structure could not be read lists by its envelope, and the
   assert.deepEqual(asked[1], { range: '3,4,5', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true });
   assert.deepEqual(asked[2], { range: '4,5', query: ['envelope', 'internalDate', 'size'], byUid: true });
   assert.deepEqual(asked[3], { range: '3', query: ['bodyParts'], byUid: true }, 'a preview only for the one with a structure');
-  assert.equal(asked.length, 4);
+  assert.deepEqual(asked[4], { range: '3:5', ...REFERENCES });
+  assert.equal(asked.length, 5);
   assert.deepEqual(res.messages.map((m) => m.uid), [3, 4], 'one gone meanwhile is still left out');
   const nested = res.messages[1];
   assert.equal(nested.subject, 'deeply nested');
@@ -476,7 +501,7 @@ test('an inbox sync collects the mail-kind headers once and asks Gmail for its t
     [4, { ...stored(4, 'cached 4'), signals: { bulk: true }, gmailTab: 'social' }]
   ]);
   const res = await s.syncFolder('INBOX', { limit: 10, known, uidValidity: '9', signals: true, gmailTabs: true });
-  const headers = asked.find((a) => a.query.includes('headers'));
+  const headers = asked.find((a) => a.headers && a.headers.includes('list-id'));
   assert.equal(headers.range, '3,5', 'not for the message whose kind is known');
   assert.deepEqual(searched.map((q) => q.gmraw), ['category:promotions', 'category:social', 'category:updates', 'category:forums']);
   assert.equal(searched[0].uid, '3:*');
@@ -494,14 +519,105 @@ test('an inbox sync collects the mail-kind headers once and asks Gmail for its t
   assert.equal(again.messages.find((m) => m.uid === 3).gmailTab, 'promotions');
 });
 
-test('a sync of another folder asks for neither', async () => {
-  const { client, asked } = folder([{ uid: 3, subject: 'sent', flags: [] }]);
+test('a sync of another folder asks for neither mail kinds nor tabs, only the References line', async () => {
+  const { client, asked } = folder([{ uid: 3, subject: 'sent', flags: [], headers: 'List-Id: <l@x>\r\nReferences: <a@x>\r\n' }]);
   client.search = async () => assert.fail('no search');
   const s = session(client);
   const res = await s.syncFolder('Sent', { limit: 10, known: new Map(), uidValidity: '9' });
-  assert.ok(!asked.some((a) => a.query.includes('headers')));
+  assert.deepEqual(asked.filter((a) => a.query.includes('headers')), [{ range: '3', ...REFERENCES }]);
   assert.equal('signals' in res.messages[0], false);
+  assert.deepEqual(res.messages[0].references, ['<a@x>']);
   assert.equal('olderUnseen' in res, false);
+});
+
+// #230: related emails find a later reply that names the open one only in its References.
+test('a sync fetches the References line once for messages cached before Rukoo kept it, without their envelopes', async () => {
+  const long = Array.from({ length: 60 }, (_, i) => `<r${i + 1}@x>`).join(' ');
+  const { client, asked } = folder([
+    // Folded over two lines, as long headers are, next to other header lines.
+    { uid: 3, subject: 'old reply', flags: [], headers: 'Subject: old reply\r\nReferences: <a@x>\r\n <b@x>\r\nList-Id: <l@x>\r\n' },
+    { uid: 4, subject: 'old, no References', flags: ['\\Seen'] },
+    { uid: 5, subject: 'new, long thread', flags: [], headers: `References: ${long}\r\n` }
+  ]);
+  const s = session(client);
+  const known = new Map([
+    [3, storedBefore(3, 'old reply')],
+    [4, storedBefore(4, 'old, no References')]
+  ]);
+  const res = await s.syncFolder('INBOX', { limit: 10, known, uidValidity: '9' });
+  const envelopes = asked.filter((a) => a.query.includes('envelope'));
+  assert.deepEqual(envelopes.map((a) => a.range), ['5'], 'the cached window is not fetched again');
+  assert.deepEqual(asked.filter((a) => a.query.includes('headers')), [{ range: '3:5', ...REFERENCES }], 'one header fetch for the window');
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.deepEqual(byUid.get(3).references, ['<a@x>', '<b@x>']);
+  assert.equal(byUid.get(3).subject, 'old reply', 'the rest comes from the cache');
+  assert.deepEqual(byUid.get(4).references, [], 'none, so not asked again');
+  assert.equal(byUid.get(5).references.length, 50, 'the newest 50 of a long thread');
+  assert.deepEqual([byUid.get(5).references[0], byUid.get(5).references[49]], ['<r11@x>', '<r60@x>']);
+
+  // The next sync asks for nothing but the flags.
+  asked.length = 0;
+  const again = await s.syncFolder('INBOX', { limit: 10, known: byUid, uidValidity: '9' });
+  assert.deepEqual(asked, [{ range: '1:*', query: ['flags'], byUid: false }]);
+  assert.deepEqual(again.messages.find((m) => m.uid === 3).references, ['<a@x>', '<b@x>']);
+
+  // A server search keeps what the cache has and asks for no References.
+  asked.length = 0;
+  client.search = async () => [3, 4];
+  const found = await s.searchFolder('INBOX', 'old', { known: byUid, uidValidity: '9' });
+  assert.ok(!asked.some((a) => a.query.includes('headers')));
+  assert.deepEqual(found.messages.find((m) => m.uid === 3).references, ['<a@x>', '<b@x>']);
+});
+
+test('uid sets put runs of uids in one range and split before a command line gets too long', () => {
+  assert.deepEqual(uidSets([9, 1, 2, 3, 5, 3]), ['1:3,5,9']);
+  assert.deepEqual(uidSets([]), []);
+  const many = Array.from({ length: 3000 }, (_, i) => 1000000 + 2 * i);
+  const sets = uidSets(many);
+  assert.ok(sets.length > 1);
+  assert.ok(sets.every((set) => set.length <= 4000));
+  assert.deepEqual(sets.join(',').split(',').map(Number), many);
+});
+
+// #242: marking 300 emails read was 300 round trips, each with its own mailbox lock.
+test('flags for many messages of a folder go in one STORE per flag under one lock, and a refused STORE throws', async () => {
+  const log = [];
+  let answer;
+  const client = {
+    usable: true,
+    getMailboxLock: async (path) => {
+      log.push(`lock ${path}`);
+      return { release: () => log.push('release') };
+    },
+    messageFlagsAdd: async (set, flags, opts) => {
+      log.push(`+${flags.join(' ')} ${set} ${opts.uid ? 'uid' : 'seq'}`);
+      return answer;
+    },
+    messageFlagsRemove: async (set, flags, opts) => {
+      log.push(`-${flags.join(' ')} ${set} ${opts.uid ? 'uid' : 'seq'}`);
+      return answer;
+    }
+  };
+  const s = session(client);
+  answer = true;
+  await s.setFlagsMany('INBOX', [3, 1, 2, 7], { unread: false, starred: true });
+  assert.deepEqual(log, ['lock INBOX', '+\\Seen 1:3,7 uid', '+\\Flagged 1:3,7 uid', 'release']);
+
+  log.length = 0;
+  await s.setFlags('INBOX', 8, { unread: true, starred: false, answered: true });
+  assert.deepEqual(log, ['lock INBOX', '-\\Seen 8 uid', '-\\Flagged 8 uid', '+\\Answered 8 uid', 'release']);
+
+  // More uids than one command line holds: a few STOREs, still one lock.
+  log.length = 0;
+  await s.setFlagsMany('INBOX', Array.from({ length: 3000 }, (_, i) => 1000000 + 2 * i), { unread: false });
+  assert.equal(log.filter((l) => l.startsWith('lock')).length, 1);
+  assert.ok(log.filter((l) => l.startsWith('+')).length > 1);
+
+  // imapflow answers false for a STORE the server turned down.
+  log.length = 0;
+  answer = false;
+  await assert.rejects(s.setFlagsMany('INBOX', [1, 2], { unread: false }), { message: t('errors.flags.refused') });
+  assert.deepEqual(log, ['lock INBOX', '+\\Seen 1:2 uid', 'release']);
 });
 
 test('an inbox sync counts the unread mail below the window by uid, and says null when the server does not tell', async () => {

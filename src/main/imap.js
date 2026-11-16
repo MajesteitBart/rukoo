@@ -6,13 +6,39 @@ const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const util = require('./mailutil');
-const { SIGNAL_HEADERS, mailSignals } = require('./categories/signals');
+const { SIGNAL_HEADERS, headerMap, mailSignals } = require('./categories/signals');
 const { appPasswordProvider } = require('./providers');
 
 const PREVIEW_BYTES = 4096;
 // What a cached message needs from the server besides its flags. These never change for a uid, so a sync fetches
-// them only for messages the cache doesn't have yet; see syncFolder().
+// them only for messages the cache doesn't have yet; see syncFolder(). References never change either, but a cache
+// from before Rukoo kept them fetches them on their own (describe()), so this list leaves them out.
 const STORED = ['messageId', 'inReplyTo', 'subject', 'from', 'to', 'cc', 'replyTo', 'date', 'preview', 'hasAttachments', 'size'];
+
+// The longest uid set a command gets, in characters: well under the 8000 octets a server must take for a whole
+// command line (RFC 7162, section 4).
+const SET_CHARS = 4000;
+
+// uids as IMAP sequence sets such as "4:6,9", runs of consecutive uids as one range, split so that each set stays
+// within SET_CHARS. A range names only uids of the list, all of which the folder holds or held.
+function uidSets(uids) {
+  const sorted = [...new Set(uids)].sort((a, b) => a - b);
+  const sets = [];
+  let set = '';
+  for (let i = 0; i < sorted.length; ) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    const part = i === j ? String(sorted[i]) : `${sorted[i]}:${sorted[j]}`;
+    if (set && set.length + 1 + part.length > SET_CHARS) {
+      sets.push(set);
+      set = '';
+    }
+    set = set ? `${set},${part}` : part;
+    i = j + 1;
+  }
+  if (set) sets.push(set);
+  return sets;
+}
 
 // A connection and the commands waiting for it: what the user waits for goes first, then background work. idle
 // settles when its queue has run dry.
@@ -117,9 +143,10 @@ async function searchUids(client, criteria, query, { gmail = true } = {}) {
 // The cache's form of the messages in rows (uid and flags each, as a FETCH gave them), in the order of rows. What known
 // holds for a uid is reused; envelope, structure and a preview come from the server only for the rest: on a large
 // Gmail folder that is the slow part, and repeating it every sync kept the connection busy for minutes. signals: also
-// what kind of mail each one is (categories/signals.js). tabs: the Gmail tab of each uid, or null when not asked. A
-// message gone between the fetches (moved or deleted meanwhile) is left out.
-async function describe(client, rows, { known = new Map(), signals = false, tabs = null } = {}) {
+// what kind of mail each one is (categories/signals.js). references: also the References of each one, which the
+// envelope leaves out. tabs: the Gmail tab of each uid, or null when not asked. A message gone between the fetches
+// (moved or deleted meanwhile) is left out.
+async function describe(client, rows, { known = new Map(), signals = false, references = false, tabs = null } = {}) {
   // A cached date that isn't a number is one an unreadable Date header left before Rukoo fell back to INTERNALDATE
   // (null on disk): such a message is described again, which gives it the date the server received it.
   const cached = (uid) => {
@@ -181,10 +208,25 @@ async function describe(client, rows, { known = new Map(), signals = false, tabs
       }
     }
   }
+  // The References line, by which the reader's related emails find a later reply that names this one
+  // (engine.relatedMessages): for new messages, and once for ones cached before Rukoo kept it. That upgrade costs one
+  // small header fetch per folder, where a field added to STORED would fetch the whole window again. An empty list
+  // means the message has none, so it isn't asked for again.
+  const refs = new Map();
+  if (references) {
+    const need = rows.filter((r) => details.has(r.uid) || !Array.isArray((known.get(r.uid) || {}).references)).map((r) => r.uid);
+    for (const set of uidSets(need)) {
+      for await (const m of client.fetch(set, { uid: true, headers: ['references'] }, { uid: true })) {
+        refs.set(m.uid, util.referenceIds(headerMap(m.headers).references));
+      }
+    }
+  }
   const extra = (uid, prior) => {
     const out = {};
     const kind = kinds.get(uid) || (prior && prior.signals);
     if (kind) out.signals = kind;
+    const named = refs.get(uid) || (prior && prior.references);
+    if (Array.isArray(named)) out.references = named;
     if (tabs) out.gmailTab = tabs.get(uid) || 'primary';
     else if (prior && prior.gmailTab) out.gmailTab = prior.gmailTab;
     return out;
@@ -493,7 +535,7 @@ class ImapAccount {
           }
         }
         if (olderUnseen) result.olderUnseen = start === 1 ? 0 : await unseenBelow(client, first);
-        result.messages = await describe(client, rows, { known, signals, tabs });
+        result.messages = await describe(client, rows, { known, signals, references: true, tabs });
         const older = same && keep ? (typeof keep === 'function' ? keep() : keep).filter((uid) => !first || uid < first) : [];
         if (older.length) result.kept = await flagsOf(client, older);
         return result;
@@ -571,16 +613,29 @@ class ImapAccount {
     });
   }
 
-  setFlags(path, uid, { unread, starred, answered }) {
+  setFlags(path, uid, patch) {
+    return this.setFlagsMany(path, [uid], patch);
+  }
+
+  // The flags of many messages in the folder at path: one mailbox lock and one STORE per flag for all of them, a few
+  // more when their uids don't fit one command line (uidSets()). imapflow answers false for a STORE the server turned
+  // down, or one it could not send; that throws here, so the engine puts the flags back. Like any UID STORE, a uid the
+  // folder no longer has is skipped without an error.
+  setFlagsMany(path, uids, { unread, starred, answered }) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
       try {
         const opts = { uid: true };
-        if (unread === true) await client.messageFlagsRemove(String(uid), ['\\Seen'], opts);
-        if (unread === false) await client.messageFlagsAdd(String(uid), ['\\Seen'], opts);
-        if (starred === true) await client.messageFlagsAdd(String(uid), ['\\Flagged'], opts);
-        if (starred === false) await client.messageFlagsRemove(String(uid), ['\\Flagged'], opts);
-        if (answered === true) await client.messageFlagsAdd(String(uid), ['\\Answered'], opts);
+        const store = async (op, set, flag) => {
+          if ((await client[op](set, [flag], opts)) === false) throw new Error(t('errors.flags.refused'));
+        };
+        for (const set of uidSets(uids)) {
+          if (unread === true) await store('messageFlagsRemove', set, '\\Seen');
+          if (unread === false) await store('messageFlagsAdd', set, '\\Seen');
+          if (starred === true) await store('messageFlagsAdd', set, '\\Flagged');
+          if (starred === false) await store('messageFlagsRemove', set, '\\Flagged');
+          if (answered === true) await store('messageFlagsAdd', set, '\\Answered');
+        }
       } finally {
         lock.release();
       }
@@ -672,4 +727,4 @@ class ImapAccount {
   }
 }
 
-module.exports = { ImapAccount, friendlyError, errorCode };
+module.exports = { ImapAccount, friendlyError, errorCode, uidSets };

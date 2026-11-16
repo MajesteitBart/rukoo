@@ -91,7 +91,7 @@ test('related emails are the conversation and same-subject mail with the same pe
   assert.deepEqual(ids(engine.related(answer.id)), [call.id]);
   assert.equal(engine.related(call.id)[0].folder, 'Sent');
 
-  // References, which only the full message has, count as well.
+  // The References the reader passes, from the full message, count as well.
   const parcel = inbox.find((m) => m.subject === 'Your parcel is on its way');
   assert.deepEqual(engine.related(parcel.id), []);
   assert.deepEqual(ids(engine.related(parcel.id, [call.messageId])), [answer.id, call.id], 'newest first');
@@ -129,6 +129,36 @@ test('related emails are the conversation and same-subject mail with the same pe
   box.INBOX.messages.push({ ...box.Sent.messages.find((m) => m.subject === 'Re: Call on Thursday'), uid: 9005 });
   assert.ok(!engine.related(answer.id).some((m) => m.uid === 9005));
   assert.deepEqual(engine.related('saved:nothing'), []);
+  await engine.close();
+});
+
+// #230: the cache keeps each email's References, so the older email of a thread finds a later reply by them.
+test('related emails list a later reply that names the open email only in its References', async () => {
+  const { engine, acc } = await freshEngine();
+  const call = engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+  // A colleague answers a forward of the call that never reached this account: another subject, nobody in common,
+  // and In-Reply-To naming the forward.
+  const raw = [
+    'From: Lotte Visser <lotte@example.com>',
+    'To: demo@example.com',
+    'Subject: Minutes',
+    `Date: ${new Date(call.date + 86400000).toUTCString()}`,
+    'Message-ID: <minutes@example.com>',
+    'In-Reply-To: <forward@example.com>',
+    `References: ${call.messageId}`,
+    ' <forward@example.com>',
+    '',
+    'The minutes of our call.'
+  ].join('\r\n');
+  await engine.session(acc).append('Archive', raw);
+  await engine.syncAccount(acc.id);
+  const minutes = engine.listMessages({ scope: acc.id, view: 'archive' }).find((m) => m.subject === 'Minutes');
+  assert.deepEqual(engine.locate(minutes.id).msg.references, [call.messageId, '<forward@example.com>'], 'the cache keeps them');
+  const subjects = (list) => list.map((m) => m.subject);
+  assert.deepEqual(subjects(engine.related(call.id, (await engine.getMessage(call.id)).references)), ['Minutes', 'Re: Call on Thursday']);
+  // Both ways, and for agents too (get_screen's thread uses the same rule).
+  assert.ok(subjects(engine.related(minutes.id)).includes('Call on Thursday'));
+  assert.ok(subjects(engine.relatedMessages({ ...call, references: [] })).includes('Minutes'));
   await engine.close();
 });
 
@@ -353,14 +383,14 @@ test('older mail found on the server opens, changes flags, moves and comes back 
   assert.equal(unread(), start);
 
   // A server that turns the change down leaves both as they were.
-  const setFlags = demo.setFlags.bind(demo);
-  demo.setFlags = async () => {
+  const setFlags = demo.setFlagsMany.bind(demo);
+  demo.setFlagsMany = async () => {
     throw new Error('offline');
   };
   await assert.rejects(engine.setFlags(hit.id, { unread: false }), /offline/);
   assert.equal(unread(), start);
   assert.equal(listed().find((m) => m.id === hit.id).unread, true);
-  demo.setFlags = setFlags;
+  demo.setFlagsMany = setFlags;
   const move = demo.move.bind(demo);
   demo.move = async () => {
     throw new Error('offline');
@@ -406,7 +436,7 @@ test('marking older unread mail found on the server through setFlagsMany counts 
   assert.equal(engine.recounts.size, 0);
 
   // A server that turns the change down leaves the count and the flag as they were.
-  demo.setFlags = async () => {
+  demo.setFlagsMany = async () => {
     throw new Error('offline');
   };
   const { failed, error } = await engine.setFlagsMany([hit.id], { unread: false });
@@ -466,10 +496,10 @@ test('a sync shows what another device did to older mail found on the server, an
   assert.equal(olderUnread(), 1);
 
   // A change on its way to the server stays while a sync reads the flags from before it.
-  const setFlags = demo.setFlags.bind(demo);
+  const setFlags = demo.setFlagsMany.bind(demo);
   let release;
   const gate = new Promise((resolve) => (release = resolve));
-  demo.setFlags = async (...args) => {
+  demo.setFlagsMany = async (...args) => {
     await gate;
     return setFlags(...args);
   };
@@ -478,7 +508,7 @@ test('a sync shows what another device did to older mail found on the server, an
   assert.equal(listed().find((m) => m.id === hit.id).starred, false);
   release();
   await unstar;
-  demo.setFlags = setFlags;
+  demo.setFlagsMany = setFlags;
 
   // Deleted on another device: it leaves the results and no longer opens.
   const box = demo.box('INBOX');
@@ -519,7 +549,7 @@ test('reading or moving older unread mail found on the server while a sync runs 
   };
 
   // Marked read, turned down: the sync read the server before the change, which counts until the server refuses it.
-  let release = hold('setFlags', { fail: 'offline' });
+  let release = hold('setFlagsMany', { fail: 'offline' });
   const refused = engine.setFlags(hit.id, { unread: false });
   assert.equal(olderUnread(), 1);
   await engine.syncAccount(acc.id);
@@ -533,7 +563,7 @@ test('reading or moving older unread mail found on the server while a sync runs 
   assert.equal(olderUnread(), 2);
 
   // Marked read: the count the sync brought from before the change goes down too, and stays down.
-  release = hold('setFlags');
+  release = hold('setFlagsMany');
   const read = engine.setFlags(hit.id, { unread: false });
   await engine.syncAccount(acc.id);
   assert.equal(olderUnread(), 1);
@@ -544,7 +574,7 @@ test('reading or moving older unread mail found on the server while a sync runs 
   assert.equal(olderUnread(), 1);
 
   // Marked unread, with a sync that already read the change on the server: not counted twice.
-  release = hold('setFlags', { first: true });
+  release = hold('setFlagsMany', { first: true });
   const unread = engine.setFlags(hit.id, { unread: true });
   assert.equal(olderUnread(), 2);
   await engine.syncAccount(acc.id);
@@ -554,7 +584,7 @@ test('reading or moving older unread mail found on the server while a sync runs 
   assert.equal(olderUnread(), 2);
 
   // Read and unread again before the server has either: the count the sync brought from before both stays.
-  release = hold('setFlags');
+  release = hold('setFlagsMany');
   const both = [engine.setFlags(hit.id, { unread: false }), engine.setFlags(hit.id, { unread: true })];
   assert.equal(olderUnread(), 2);
   await engine.syncAccount(acc.id);
@@ -635,7 +665,7 @@ test('older unread mail marked read and unread again before the server answers k
   for (const c of cases) {
     const label = c.writes.join(', ');
     const { engine, demo, hit, older, found, unreadOnServer } = await olderUnreadHit();
-    answerInTurn(demo, { setFlags: [...c.writes] });
+    answerInTurn(demo, { setFlagsMany: [...c.writes] });
     // Mark as read, and its Undo lined up behind it before the server has answered.
     const both = [engine.setFlagsMany([hit.id], { unread: false }), engine.setFlagsMany([hit.id], { unread: true })];
     assert.equal(older(), 4, label);
@@ -659,7 +689,7 @@ test('older unread mail marked read and unread again while a sync runs keeps the
     const label = c.writes.join(', ');
     const { engine, acc, demo, hit, older, found, unreadOnServer } = await olderUnreadHit();
     let open;
-    answerInTurn(demo, { setFlags: [...c.writes] }, new Promise((resolve) => (open = resolve)));
+    answerInTurn(demo, { setFlagsMany: [...c.writes] }, new Promise((resolve) => (open = resolve)));
     const both = [engine.setFlagsMany([hit.id], { unread: false }), engine.setFlagsMany([hit.id], { unread: true })];
     await engine.syncAccount(acc.id);
     assert.equal(older(), 2, label);
@@ -687,7 +717,7 @@ test('older unread mail marked read and archived before the server answers keeps
   for (const c of cases) {
     const label = `${c.setFlags}, ${c.move}`;
     const { engine, demo, hit, older, found } = await olderUnreadHit();
-    answerInTurn(demo, { setFlags: [c.setFlags], move: [c.move] });
+    answerInTurn(demo, { setFlagsMany: [c.setFlags], move: [c.move] });
     const read = engine.setFlagsMany([hit.id], { unread: false });
     const archived = engine.archive(hit.id);
     assert.equal(older(), 3, label);
@@ -1390,21 +1420,22 @@ test('flags, delete to trash and permanent delete', async () => {
   await engine.close();
 });
 
-test('flags for many emails change the cache at once, hold through a sync, and a failure is put back', async () => {
+test('flags for many emails change the cache at once, hold through a sync, and a refused folder is put back', async () => {
   const { engine, acc } = await freshEngine();
   const unread = () => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread);
   const list = unread();
   assert.ok(list.length >= 3, 'the demo inbox has unread mail');
   const ids = list.map((m) => m.id);
   const session = engine.session(acc);
-  const setFlags = session.setFlags.bind(session);
-  // The server is slow with the first email, so the rest wait behind it.
+  const write = session.setFlagsMany.bind(session);
+  // The server is slow to answer.
   let release;
   const held = new Promise((resolve) => (release = resolve));
-  const first = decodeId(ids[0]).uid;
-  session.setFlags = async (p, uid, patch) => {
-    if (uid === first) await held;
-    return setFlags(p, uid, patch);
+  const writes = [];
+  session.setFlagsMany = async (p, uids, patch) => {
+    writes.push([p, uids]);
+    await held;
+    return write(p, uids, patch);
   };
   let updates = 0;
   engine.on('updated', () => updates++);
@@ -1415,37 +1446,109 @@ test('flags for many emails change the cache at once, hold through a sync, and a
   assert.equal(unread().length, 0, 'a sync in between keeps the change');
   release();
   assert.deepEqual(await marking, { done: ids, failed: [], error: null }, 'the saved email that is not in the cache is skipped');
+  assert.deepEqual(writes, [['INBOX', ids.map((id) => decodeId(id).uid)]], 'one write for the folder');
   await engine.syncAccount(acc.id);
   assert.equal(unread().length, 0, 'the server has them read');
 
-  // Undo marks the same emails unread again; one the server refuses goes back to read and is named with the error.
-  const refused = decodeId(ids[1]).uid;
-  session.setFlags = async (p, uid, patch) => {
-    if (uid === refused) throw new Error('NO STORE failed');
-    return setFlags(p, uid, patch);
+  // Undo marks the same emails unread again; the server refuses the folder's write, so all of them go back to read
+  // and are named with the error.
+  session.setFlagsMany = async () => {
+    throw new Error('NO STORE failed');
   };
   const undo = await engine.setFlagsMany(ids, { unread: true });
-  assert.deepEqual(undo.done, ids.filter((id) => id !== ids[1]));
-  assert.deepEqual(undo.failed, [ids[1]]);
+  assert.deepEqual(undo.done, []);
+  assert.deepEqual(undo.failed, ids);
   assert.match(undo.error, /STORE failed/);
-  assert.deepEqual(
-    unread().map((m) => m.id).sort(),
-    ids.filter((id) => id !== ids[1]).sort()
-  );
+  assert.equal(unread().length, 0);
   await engine.close();
 });
 
-// The demo server's flag writes wait at gates the test opens, or fail there. A gate stops the first write it matches.
+// #242: one STORE per email made Mark all as read in a large inbox take a round trip per email.
+test('marking 300 inbox emails and 2 sent ones read sends one write per folder', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(acc);
+  const inbox = demo.box('INBOX');
+  const template = inbox.messages[inbox.messages.length - 1];
+  while (inbox.messages.length < 300) {
+    inbox.messages.push({ ...template, uid: demo.state.nextUid++, messageId: `<bulk-${inbox.messages.length}@example.com>`, flags: [] });
+  }
+  demo.persist();
+  await engine.syncAccount(acc.id);
+  const inboxIds = engine.listMessages({ scope: acc.id, view: 'folder', folder: 'INBOX' }).map((m) => m.id);
+  assert.equal(inboxIds.length, 300);
+  const sentIds = engine.listMessages({ scope: acc.id, view: 'sent' }).slice(0, 2).map((m) => m.id);
+  const write = demo.setFlagsMany.bind(demo);
+  const writes = [];
+  demo.setFlagsMany = (p, uids, patch) => {
+    writes.push([p, uids.length]);
+    return write(p, uids, patch);
+  };
+  const res = await engine.setFlagsMany([...inboxIds, ...sentIds], { unread: false });
+  assert.deepEqual(res, { done: [...inboxIds, ...sentIds], failed: [], error: null });
+  assert.deepEqual(writes.sort(), [['INBOX', 300], ['Sent', 2]]);
+  assert.ok(demo.box('INBOX').messages.every((m) => m.flags.includes('\\Seen')), 'the server has all of them read');
+  await engine.syncAccount(acc.id);
+  assert.equal(engine.counts(acc.id).views.inbox, 0);
+  await engine.close();
+});
+
+test('an earlier change still on its way holds back only the folder of its email, and the server ends with the latest', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(acc);
+  const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
+  const a = inbox.find((m) => m.unread);
+  const b = inbox.find((m) => !m.unread && !m.starred);
+  const sent = engine.listMessages({ scope: acc.id, view: 'sent' })[0];
+  const starredOnServer = (folder, uid) => demo.find(folder, uid).flags.includes('\\Flagged');
+  const gate = gatedWrites(engine, acc);
+  // Unstarring a is slow; then a, b and a sent email are starred.
+  const openFirst = gate((uids, patch) => uids.includes(a.uid) && patch.starred === false);
+  const unstarring = engine.setFlags(a.id, { starred: false });
+  const starring = engine.setFlagsMany([a.id, b.id, sent.id], { starred: true });
+  // The sent email's write goes ahead; the inbox's waits for the write to a before it.
+  await until(() => starredOnServer('Sent', sent.uid));
+  assert.equal(starredOnServer('INBOX', b.uid), false, 'the inbox write waits');
+  openFirst();
+  await unstarring;
+  assert.deepEqual(await starring, { done: [a.id, b.id, sent.id], failed: [], error: null });
+  assert.equal(starredOnServer('INBOX', a.uid), true, 'the later change to a reached the server last');
+  assert.equal(starredOnServer('INBOX', b.uid), true);
+  await engine.syncAccount(acc.id);
+  assert.ok([a, b].every((m) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((x) => x.id === m.id).starred));
+  await engine.close();
+});
+
+test("a refused folder's write puts back all of its emails and leaves another folder's write in place", async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(acc);
+  const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => !m.starred);
+  const sent = engine.listMessages({ scope: acc.id, view: 'sent' })[0];
+  const gate = gatedWrites(engine, acc);
+  gate((uids, patch, p) => p === 'INBOX', { fail: true })();
+  const res = await engine.setFlagsMany([a.id, sent.id, b.id], { starred: true });
+  assert.deepEqual(res.done, [sent.id]);
+  assert.deepEqual(res.failed, [a.id, b.id]);
+  assert.match(res.error, /STORE failed/);
+  const starred = (id) => engine.listMessages({ scope: acc.id, view: 'everything' }).find((m) => m.id === id).starred;
+  assert.deepEqual([a.id, b.id, sent.id].map(starred), [false, false, true]);
+  assert.equal(demo.find('Sent', sent.uid).flags.includes('\\Flagged'), true);
+  await engine.syncAccount(acc.id);
+  assert.deepEqual([a.id, b.id, sent.id].map(starred), [false, false, true]);
+  await engine.close();
+});
+
+// The demo server's flag writes wait at gates the test opens, or fail there. A gate stops the first write it matches;
+// match gets the write's uids, its flags and its folder.
 function gatedWrites(engine, acc) {
   const session = engine.session(acc);
-  const write = session.setFlags.bind(session);
+  const write = session.setFlagsMany.bind(session);
   const gates = [];
-  session.setFlags = async (p, uid, patch) => {
-    const at = gates.findIndex((g) => g.match(uid, patch));
+  session.setFlagsMany = async (p, uids, patch) => {
+    const at = gates.findIndex((g) => g.match(uids, patch, p));
     const gate = at < 0 ? null : gates.splice(at, 1)[0];
     if (gate) await gate.opened;
     if (gate && gate.fail) throw new Error('NO STORE failed');
-    return write(p, uid, patch);
+    return write(p, uids, patch);
   };
   return (match, { fail = false } = {}) => {
     let open;
@@ -1459,9 +1562,9 @@ test('a batch of flags that finishes after Undo started leaves Undo in the cache
   const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
   const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
   const gate = gatedWrites(engine, acc);
-  // Mark all read is slow with the first email, and Undo marks both unread again before it is done.
-  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
-  const openUndo = gate((uid, patch) => patch.unread === true);
+  // Mark all read is slow, and Undo marks both unread again before it is done.
+  const openRead = gate((uids, patch) => uids.includes(decodeId(a).uid) && patch.unread === false);
+  const openUndo = gate((uids, patch) => patch.unread === true);
   const marking = engine.setFlagsMany([a, b], { unread: false });
   const undoing = engine.setFlagsMany([a, b], { unread: true });
   assert.ok(unread(a) && unread(b), 'Undo shows at once');
@@ -1482,8 +1585,8 @@ test('a later flag change to an email waits for an earlier write to it, and its 
   const unread = (id) => engine.listMessages({ scope: acc.id, view: 'inbox' }).find((m) => m.id === id).unread;
   const [a, b, c] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
   const gate = gatedWrites(engine, acc);
-  // Mark all read is slow with the first email; meanwhile the second is marked unread again on its own.
-  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false);
+  // Mark all read is slow; meanwhile the second email is marked unread again on its own.
+  const openRead = gate((uids, patch) => uids.includes(decodeId(a).uid) && patch.unread === false);
   const marking = engine.setFlagsMany([a, b], { unread: false });
   const single = engine.setFlags(b, { unread: true });
   openRead();
@@ -1494,7 +1597,7 @@ test('a later flag change to an email waits for an earlier write to it, and its 
 
   // The server refuses the first write, while a second one marking the same email read is waiting: the cache keeps
   // the second, which then reaches the server.
-  const openRefusal = gate((uid) => uid === decodeId(c).uid, { fail: true });
+  const openRefusal = gate((uids) => uids.includes(decodeId(c).uid), { fail: true });
   const refused = engine.setFlagsMany([c], { unread: false });
   const again = engine.setFlags(c, { unread: false });
   openRefusal();
@@ -1512,8 +1615,8 @@ test('when Mark all as read and its Undo both fail, the email keeps what the ser
   const [a, b] = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
   const gate = gatedWrites(engine, acc);
   // The server refuses both writes to a; Undo starts while the first is still on its way.
-  const openRead = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === false, { fail: true });
-  const openUndo = gate((uid, patch) => uid === decodeId(a).uid && patch.unread === true, { fail: true });
+  const openRead = gate((uids, patch) => uids.includes(decodeId(a).uid) && patch.unread === false, { fail: true });
+  const openUndo = gate((uids, patch) => uids.includes(decodeId(a).uid) && patch.unread === true, { fail: true });
   const marking = engine.setFlagsMany([a], { unread: false });
   const undoing = engine.setFlagsMany([a], { unread: true });
   openRead();
@@ -1524,7 +1627,7 @@ test('when Mark all as read and its Undo both fail, the email keeps what the ser
   assert.equal(unread(a), true, 'neither write reached the server, so the email is still unread');
 
   // When the first write does reach the server and only Undo fails, the email shows the server's read state.
-  const openUndoB = gate((uid, patch) => uid === decodeId(b).uid && patch.unread === true, { fail: true });
+  const openUndoB = gate((uids, patch) => uids.includes(decodeId(b).uid) && patch.unread === true, { fail: true });
   const markingB = engine.setFlagsMany([b], { unread: false });
   const undoingB = engine.setFlags(b, { unread: true });
   await markingB;
@@ -1549,7 +1652,7 @@ test('read, star and archive of one email reach the server in the order they wer
     return move(...args);
   };
   // Marking it read is slow; the email is starred and archived before the server has answered.
-  const openRead = gate((uid, patch) => uid === target.uid && patch.unread === false);
+  const openRead = gate((uids, patch) => uids.includes(target.uid) && patch.unread === false);
   const reading = engine.setFlags(target.id, { unread: false });
   const starring = engine.setFlags(target.id, { starred: true });
   const archiving = engine.archive(target.id);
