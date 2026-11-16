@@ -5,7 +5,7 @@ const http = require('http');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
-const { titlebar, edges } = require('./titlebar');
+const { titlebar, clearance, edges } = require('./titlebar');
 
 let app;
 let win;
@@ -62,18 +62,17 @@ const calls = (method) => app.evaluate((_, m) => (global.__calls || {})[m] || 0,
 
 // ---------- window ----------
 
-// With the window buttons on the right, as on Windows and by default on Linux, the title bar keeps the layout it has
-// always had: the icon 22px from the left edge and 150px kept free for the buttons. linux.spec.js covers both Linux
-// layouts in both windows.
-test('the title bar keeps its fixed room for window buttons on the right', async () => {
+// With the window buttons on the right, as on Windows and by default on Linux, the icon sits 22px from the left edge
+// and the actions end 12px before the buttons, wherever the window controls overlay says they start. linux.spec.js
+// covers both Linux layouts in both windows, zoom.spec.js the zoom levels.
+test('the title bar keeps its actions clear of window buttons on the right', async () => {
   test.skip(process.platform === 'darwin', 'macOS has traffic lights, without a window controls overlay');
   // The buttons take part of the bar once the overlay knows its geometry.
   await expect.poll(() => titlebar(win).then((g) => g.width - (g.area.right - g.area.left))).toBeGreaterThan(40);
   const g = await titlebar(win);
   test.skip(g.area.left > 0, 'this Linux desktop puts the window buttons on the left');
-  expect(await edges(win)).toEqual({ controls: null, icon: 22, actions: 150 });
-  // The buttons fit in those 150px.
-  expect(g.actions.right).toBeLessThan(g.area.right);
+  expect(await edges(win)).toMatchObject({ controls: null, icon: 22 });
+  expect(await clearance(win)).toEqual({ icon: 22, actions: 12 });
 });
 
 // ---------- reading ----------

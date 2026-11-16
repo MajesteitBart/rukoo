@@ -5,6 +5,15 @@ const path = require('path');
 const { fileURLToPath } = require('url');
 const mailto = require('./mailto');
 
+// The native window buttons on Windows and Linux (titleBarOverlay), in screen pixels. The title bar is 40 CSS px, so
+// it grows and shrinks with the zoom, and the buttons follow it. A compose window's bar has a 1px border at the
+// bottom, which the overlay would paint over: there the buttons stop above it.
+const TITLE_BAR = 40;
+function titleBar(dark, zoom = 100, { compose = false } = {}) {
+  const height = compose ? Math.floor(((TITLE_BAR - 1) * zoom) / 100) : Math.round((TITLE_BAR * zoom) / 100);
+  return dark ? { color: '#141519', symbolColor: '#e6e8ee', height } : { color: '#f4f5f7', symbolColor: '#1a1c22', height };
+}
+
 function windowChrome(platform, bar) {
   return platform === 'darwin'
     ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 13 } }
@@ -145,4 +154,4 @@ function testNotice(Notification, options, { keep = new Set(), onClick = () => {
   });
 }
 
-module.exports = { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice };
+module.exports = { titleBar, windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice };

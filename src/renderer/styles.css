@@ -453,8 +453,13 @@ kbd {
   display: flex;
   align-items: center;
   z-index: 100;
-  /* Room for native window buttons on Windows and Linux. */
-  padding-right: 150px;
+  /* Room for the native window buttons on Windows and Linux: the actions end 12px before them. The window controls
+   * overlay's titlebar-area rectangle is the part of the bar the buttons leave free, in CSS pixels at the current
+   * zoom. The buttons keep their width in screen pixels while the bar zooms (main.js only scales their height), so
+   * at 80 percent they take more CSS pixels than at 100. Before the overlay reports, 150px, as Rukoo always had. */
+  padding-right: calc(
+    100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)) + 12px
+  );
 }
 .titlebar-brand {
   width: var(--sidebar-w);
@@ -465,11 +470,10 @@ kbd {
   overflow: hidden;
   pointer-events: none;
 }
-/* Window buttons on the left, or on both sides, on Linux: bootstrap.js sets data-controls="left". The bar then follows
- * the window controls overlay's titlebar-area rectangle, the part of the bar the buttons leave free, in CSS pixels at
- * the current zoom. The brand starts after the buttons, and the actions end 12px before any buttons on the right or
- * the window's edge. The brand's padding is wider than the icon rail: the brand grows to fit it, which keeps the
- * search clear of the buttons and leaves no room for the icon, as on macOS. */
+/* Window buttons on the left, or on both sides, on Linux: bootstrap.js sets data-controls="left". The brand starts
+ * after the buttons, and the actions end 12px before any buttons on the right or the window's edge (the padding
+ * above). The brand's padding is wider than the icon rail: the brand grows to fit it, which keeps the search clear of
+ * the buttons and leaves no room for the icon, as on macOS. */
 :root[data-controls="left"] .titlebar {
   padding-right: calc(
     100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - env(titlebar-area-x, 0px))) + 12px

@@ -104,18 +104,20 @@ test('Linux keeps the title bar clear of window buttons on the left, in both win
   });
 });
 
-// GTK's own default, "menu:minimize,maximize,close", puts them on the right. Both windows keep the layout they have
-// always had there: the icon 22px from the left edge (16px in the compose window) and 150px kept free on the right.
-test('Linux keeps the fixed title bar layout for window buttons on the right, in both windows', async () => {
+// GTK's own default, "menu:minimize,maximize,close", puts them on the right. The icon stays 22px from the left edge
+// (16px in the compose window) and the actions end 12px before the buttons, at every zoom: the buttons keep their
+// width in screen pixels while the bar zooms.
+test('Linux keeps the title bar clear of window buttons on the right, in both windows and at every zoom', async () => {
   test.skip(process.platform !== 'linux');
   await withButtonLayout('menu:minimize,maximize,close', async (win, editor) => {
     for (const page of [win, editor]) {
       await expect.poll(() => titlebar(page).then((g) => [g.area.left, g.width - g.area.right > 40])).toEqual([0, true]);
     }
-    expect(await edges(win)).toEqual({ controls: null, icon: 22, actions: 150 });
-    expect(await edges(editor)).toEqual({ controls: null, icon: 16, actions: null });
-    // The buttons fit in those 150px.
-    const main = await titlebar(win);
-    expect(main.actions.right).toBeLessThan(main.area.right);
+    for (const zoom of [100, 80, 150]) {
+      await win.evaluate((level) => window.mail.call('setZoom', level), zoom);
+      await expect.poll(() => clearance(win), `main window at ${zoom}%`).toEqual({ icon: 22, actions: 12 });
+      expect(await edges(win)).toMatchObject({ controls: null, icon: 22 });
+      expect(await edges(editor)).toEqual({ controls: null, icon: 16, actions: null });
+    }
   });
 });

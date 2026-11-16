@@ -2,13 +2,29 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const { windowChrome, MailtoQueue, MacMailClient, macMenu, testNotice } = require('../src/main/desktop');
+const { titleBar, windowChrome, MailtoQueue, MacMailClient, macMenu, testNotice } = require('../src/main/desktop');
 const { t } = require('../src/i18n');
 
 test('Mac windows reserve native traffic lights and do not request unsupported title overlays', () => {
   const bar = { color: '#000000', height: 40 };
   assert.deepEqual(windowChrome('darwin', bar), { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 13 } });
   for (const platform of ['win32', 'linux']) assert.equal(windowChrome(platform, bar).titleBarOverlay, bar);
+});
+
+// The title bar is 40 CSS px, so in screen pixels it is 40 times the zoom. The window buttons follow it, and stop above
+// the compose window's 1px bottom border (#248).
+test('the native window buttons are as tall as the title bar at every zoom, and stop above the compose window border', () => {
+  const heights = (opts) => [80, 90, 100, 110, 125, 150, 175, 200].map((zoom) => titleBar(true, zoom, opts).height);
+  assert.deepEqual(heights(), [32, 36, 40, 44, 50, 60, 70, 80]);
+  assert.deepEqual(heights({ compose: true }), [31, 35, 39, 42, 48, 58, 68, 78]);
+  for (const [zoom, compose] of [[80, true], [100, true], [150, true], [200, true], [125, true], [110, true]]) {
+    const bar = titleBar(true, zoom, { compose });
+    // The border is the bar's last CSS pixel: from 39 to 40 CSS px, times the zoom in screen pixels.
+    assert.ok(bar.height <= (39 * zoom) / 100, `${zoom}%: the buttons end at or above the border`);
+    assert.ok(bar.height > (38 * zoom) / 100, `${zoom}%: and less than a CSS pixel above it`);
+  }
+  assert.deepEqual(titleBar(true), { color: '#141519', symbolColor: '#e6e8ee', height: 40 });
+  assert.deepEqual(titleBar(false), { color: '#f4f5f7', symbolColor: '#1a1c22', height: 40 });
 });
 
 test('email URLs arriving before ready are queued once and later URLs open immediately', () => {
