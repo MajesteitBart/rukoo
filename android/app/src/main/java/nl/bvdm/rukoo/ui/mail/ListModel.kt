@@ -172,10 +172,15 @@ object ListModel {
     }
 
     /**
-     * The heading pinned at the top of the list: the one of the group the first visible row is in, as LazyColumn's
-     * sticky headers choose it. Null when no heading comes at or before [firstVisible].
+     * The heading stuck at the top of the list over rows scrolled under it: the one of the group the first visible row
+     * is in, as LazyColumn's sticky headers choose it, once the list scrolled past its own place ([firstVisible] is a
+     * row after it, or [offset] is into it). Null when no heading is stuck, also when the first visible item is a
+     * heading at its own place.
      */
-    fun pinnedHead(heads: List<Int>, firstVisible: Int): Int? = heads.lastOrNull { it <= firstVisible }
+    fun stuckHead(heads: List<Int>, firstVisible: Int, offset: Int): Int? {
+        val pinned = heads.lastOrNull { it <= firstVisible } ?: return null
+        return pinned.takeIf { it < firstVisible || offset > 0 }
+    }
 
     /** The message to open after [gone] left the list: the next one down, else the one above (app.js detach). */
     fun nextAfter(visible: List<String>, open: String?, gone: Collection<String>): String? {

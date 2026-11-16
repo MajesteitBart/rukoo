@@ -151,7 +151,7 @@ class ListModelTest {
     }
 
     @Test
-    fun thePinnedHeadingIsTheOneOfTheFirstVisibleRowsDay() {
+    fun theStuckHeadingIsTheOneOfTheFirstVisibleRowsDayOnceScrolledPastIt() {
         val rows = listOf(
             ListRow.Head("Today"),
             ListRow.Mail(msg("1", "a@x.nl", 3)),
@@ -163,14 +163,18 @@ class ListModelTest {
         // Two local drafts come first under a heading of their own: 0 is theirs, then the drafts at 1 and 2.
         val heads = ListModel.headIndexes(rows, drafts = 2)
         assertEquals(listOf(0, 3, 6), heads)
-        assertEquals(0, ListModel.pinnedHead(heads, 0))
-        assertEquals(0, ListModel.pinnedHead(heads, 2))
-        // Scrolled to Today's heading or one of its rows: Today sticks, Yesterday moves with its rows.
-        assertEquals(3, ListModel.pinnedHead(heads, 3))
-        assertEquals(3, ListModel.pinnedHead(heads, 5))
-        assertEquals(6, ListModel.pinnedHead(heads, 7))
-        // A list that doesn't start with a heading has none pinned above its first rows.
-        assertNull(ListModel.pinnedHead(listOf(2), 1))
-        assertNull(ListModel.pinnedHead(emptyList(), 4))
+        // At the top, the drafts' heading is at its own place: not stuck, so it moves and fades like a row.
+        assertNull(ListModel.stuckHead(heads, 0, 0))
+        // Scrolled a little into it, or down to one of the drafts: it sticks over them.
+        assertEquals(0, ListModel.stuckHead(heads, 0, 12))
+        assertEquals(0, ListModel.stuckHead(heads, 2, 0))
+        // Today's heading first on screen at its own place isn't stuck; scrolled into it or to its rows, it is.
+        assertNull(ListModel.stuckHead(heads, 3, 0))
+        assertEquals(3, ListModel.stuckHead(heads, 3, 1))
+        assertEquals(3, ListModel.stuckHead(heads, 5, 40))
+        assertEquals(6, ListModel.stuckHead(heads, 7, 0))
+        // A list that doesn't start with a heading has none stuck above its first rows.
+        assertNull(ListModel.stuckHead(listOf(2), 1, 30))
+        assertNull(ListModel.stuckHead(emptyList(), 4, 0))
     }
 }

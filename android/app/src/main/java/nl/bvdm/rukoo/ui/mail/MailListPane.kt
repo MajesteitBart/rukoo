@@ -1,9 +1,6 @@
 package nl.bvdm.rukoo.ui.mail
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.VisibilityThreshold
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -53,7 +50,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
@@ -329,10 +325,11 @@ private fun MessageList(
     val unknown = stringResource(R.string.mailbox_message_unknown_sender)
     val folderNames = folders.mapValues { (_, list) -> list.associate { it.path to folderName(it) } }
     val reduced = Rk.motion.reduced
-    // The heading pinned at the top stays put while the rows move, so it neither lags behind a scroll nor slides when a
-    // row under it leaves; the other headings move with their rows. Only the headings read it.
+    // The heading stuck at the top over rows scrolled under it doesn't animate, so it neither lags behind a scroll nor
+    // slides when a row under it leaves, and a glide it started before it stuck ends at once; the other headings move
+    // with their rows. Only the headings read it.
     val heads by rememberUpdatedState(ListModel.headIndexes(rows, drafts.size))
-    val pinned by remember(state) { derivedStateOf { ListModel.pinnedHead(heads, state.firstVisibleItemIndex) } }
+    val stuck by remember(state) { derivedStateOf { ListModel.stuckHead(heads, state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset) } }
     val rowsStart = if (drafts.isNotEmpty()) drafts.size + 1 else 0
     LazyColumn(
         state = state,
@@ -341,7 +338,7 @@ private fun MessageList(
         contentPadding = PaddingValues(top = 2.dp, bottom = 88.dp),
     ) {
         if (drafts.isNotEmpty()) {
-            stickyHeader(key = "head:local") { GroupHead(stringResource(R.string.mail_drafts_local), rowMotion(reduced, pinned = pinned == 0)) }
+            stickyHeader(key = "head:local") { GroupHead(stringResource(R.string.mail_drafts_local), headMotion(reduced, stuck = stuck == 0)) }
             items(drafts, key = { "draft:${it.id}" }) { d ->
                 val names = d.to.map { ListModel.person(it) }.filter { it.isNotEmpty() }
                 LocalDraftRow(
@@ -355,7 +352,7 @@ private fun MessageList(
         }
         rows.forEachIndexed { i, row ->
             when (row) {
-                is ListRow.Head -> stickyHeader(key = row.key) { GroupHead(row.label, rowMotion(reduced, pinned = pinned == rowsStart + i)) }
+                is ListRow.Head -> stickyHeader(key = row.key) { GroupHead(row.label, headMotion(reduced, stuck = stuck == rowsStart + i)) }
                 is ListRow.Mail -> item(key = row.key) {
                     val m = row.message
                     MessageRow(
@@ -407,15 +404,18 @@ private fun MessageList(
  * opens, fades out where it is while the rows and headings below close the gap together (app.js letGo):
  *     0ms  the row fades out; a heading whose day it emptied fades with it
  *   110ms  it is gone; the rows below go on moving up into its place
- * The heading [pinned] at the top doesn't move: it sticks while the list scrolls under it. With the system's animations
- * removed, nothing animates.
+ * With the system's animations removed, nothing animates.
  */
-private fun LazyItemScope.rowMotion(reduced: Boolean, pinned: Boolean = false): Modifier =
+private fun LazyItemScope.rowMotion(reduced: Boolean): Modifier =
     if (reduced) Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
-    else Modifier.animateItem(fadeOutSpec = tween(LEAVE_FADE_MS, easing = RukooEasing.Out), placementSpec = if (pinned) null else ROW_PLACEMENT)
+    else Modifier.animateItem(fadeOutSpec = tween(LEAVE_FADE_MS, easing = RukooEasing.Out))
 
-// animateItem's own placement, which rows have always used: headings move the same way.
-private val ROW_PLACEMENT = spring(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = IntOffset.VisibilityThreshold)
+/**
+ * A day heading moves as the rows do, except while it is [stuck] at the top over rows scrolled under it: then it has no
+ * item animation at all, which also ends a glide it began before it stuck (a placement spec set to null would let that
+ * one run on).
+ */
+private fun LazyItemScope.headMotion(reduced: Boolean, stuck: Boolean): Modifier = if (stuck) Modifier else rowMotion(reduced)
 
 // How long a leaving row takes to fade (app.js letGo's first step).
 private const val LEAVE_FADE_MS = 110
