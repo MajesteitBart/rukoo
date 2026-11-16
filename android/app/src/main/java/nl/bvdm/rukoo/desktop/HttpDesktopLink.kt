@@ -298,17 +298,24 @@ class HttpDesktopLink(
     }
 
     /**
-     * The stream's next line without its line end, or null once it ended. A line of more than [MAX_LINE] bytes fails as
-     * soon as that much came without a line end, before it is read into memory (#252); readUtf8Line reads a line of
-     * any length first.
+     * The stream's next line without its line end (\n or \r\n), or null once it ended. A line of more than [MAX_LINE]
+     * bytes fails as soon as that much came without a line end, before it is read into memory (#252); readUtf8Line
+     * reads a line of any length first.
      */
     private fun nextLine(source: BufferedSource): String? {
-        val at = source.indexOf('\n'.code.toByte(), 0, MAX_LINE + 1)
-        if (at >= 0) return source.readUtf8(at).also { source.skip(1) }.removeSuffix("\r")
-        if (source.buffer.size > MAX_LINE) throw DesktopException(DesktopErrors.PROTOCOL, "a stream line is too long")
+        // The line and its \r\n: the line end doesn't count toward the line.
+        val at = source.indexOf('\n'.code.toByte(), 0, MAX_LINE + 2)
+        if (at >= 0) {
+            val length = if (at > 0 && source.buffer[at - 1] == '\r'.code.toByte()) at - 1 else at
+            if (length > MAX_LINE) throw tooLong()
+            return source.readUtf8(length).also { source.skip(at + 1 - length) }
+        }
+        if (source.buffer.size > MAX_LINE) throw tooLong()
         // The stream ended: what came after the last line end is a last line.
         return if (source.buffer.size == 0L) null else source.readUtf8()
     }
+
+    private fun tooLong() = DesktopException(DesktopErrors.PROTOCOL, "a stream line is too long")
 
     private suspend fun seen(pairingId: String, change: (PairedComputer) -> PairedComputer = { it }) {
         val now = clock.now()

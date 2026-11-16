@@ -18,6 +18,7 @@ import okhttp3.Response
 import okio.Buffer
 import okio.BufferedSource
 import okio.ByteString.Companion.encodeUtf8
+import okio.utf8Size
 
 /** One complete frame: its event name (`message` when it had none), its data lines joined by \n, its id. */
 internal data class SseFrame(val event: String, val data: String, val id: String? = null)
@@ -47,6 +48,8 @@ internal class SseParser(private val maxBytes: Long = MAX_EVENT_BYTES, private v
                 if (buffer.size > maxBytes) throw SseTooLong(maxBytes)
                 return
             }
+            // A line that ended within this chunk is held to the limit too, before it is decoded.
+            if (at > maxBytes) throw SseTooLong(maxBytes)
             val ch = buffer[at]
             // A trailing \r may be the first half of \r\n: wait for the next chunk before deciding.
             if (ch == CR && at == buffer.size - 1) return
@@ -85,7 +88,8 @@ internal class SseParser(private val maxBytes: Long = MAX_EVENT_BYTES, private v
         when (field) {
             "event" -> event = value
             "data" -> {
-                dataBytes += value.length + 1
+                // The frame's data as UTF-8, with the \n that joins its lines.
+                dataBytes += value.utf8Size() + if (data.isEmpty()) 0 else 1
                 if (dataBytes > maxBytes) throw SseTooLong(maxBytes)
                 data.add(value)
             }

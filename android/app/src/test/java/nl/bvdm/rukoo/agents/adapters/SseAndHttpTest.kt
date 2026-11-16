@@ -74,8 +74,29 @@ class SseAndHttpTest {
             // As above.
         }
         assertEquals(listOf("ok"), out.map { it.data })
+        // A long line that ends in the same chunk it came in, of any field.
+        try {
+            SseParser(maxBytes = 64) { out.add(it) }.push("event: " + "e".repeat(100) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
+        // The data counts in UTF-8 bytes: 22 euro signs take 66 of them, plus the \n between two lines.
+        val euros = SseParser(maxBytes = 64) { out.add(it) }
+        euros.push("data: " + "€".repeat(10) + "\n")
+        try {
+            euros.push("data: " + "€".repeat(12) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
         // At the limit is fine.
-        assertEquals("z".repeat(50), frames("data: " + "z".repeat(50) + "\n\n").single().data)
+        val fits = mutableListOf<SseFrame>()
+        SseParser(maxBytes = 64) { fits.add(it) }.apply {
+            push("data: " + "z".repeat(58) + "\n\n")
+            push("data: " + "€".repeat(10) + "\ndata: " + "€".repeat(11) + "\n\n")
+        }
+        assertEquals(listOf(58, 21), fits.map { it.data.count { c -> c != '\n' } })
         assertEquals(4L * 1024 * 1024, SseParser.MAX_EVENT_BYTES)
     }
 
