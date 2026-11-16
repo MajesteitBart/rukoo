@@ -7,6 +7,7 @@ import nl.bvdm.rukoo.mail.model.AccountType
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.AuthKind
 import nl.bvdm.rukoo.mail.model.CachedMessage
+import nl.bvdm.rukoo.mail.model.MessageIds
 import nl.bvdm.rukoo.mail.model.ServerConfig
 import nl.bvdm.rukoo.mail.session.FakeImap.Msg
 import org.junit.After
@@ -70,5 +71,27 @@ class ImapReferencesTest {
         val again = s.syncFolder("Archive", 10, byUid, "9")
         assertEquals(emptyList<String>(), server.commands.filter { it.startsWith("UID FETCH") })
         assertEquals(listOf("<a@example.com>", "<b@example.com>"), again.messages.first { it.uid == 3L }.references)
+    }
+
+    @Test
+    fun `a References line longer than one fetch is read on, and keeps the newest 50 ids as desktop does`() = runBlocking {
+        // 600 ids over about 22 KB, folded five to a line, as a long mailing-list thread has them.
+        val ids = (1..600).map { "<reference-$it@lists.example.com>" }
+        val value = ids.chunked(5).joinToString("\r\n ") { it.joinToString(" ") }
+        val server = FakeImap(listOf(Msg(7, "long thread", "References: $value"), Msg(8, "short", "References: <a@example.com>")), "IMAP4rev1").also { servers += it }
+        val res = session(server).syncFolder("INBOX", 10, emptyMap(), "9")
+
+        val parts = server.commands.filter { it.contains("HEADER.FIELDS (REFERENCES)") }
+        assertEquals(
+            listOf(
+                "UID FETCH 7:8 (UID BODY.PEEK[HEADER.FIELDS (REFERENCES)]<0.16384>)",
+                "UID FETCH 7 (UID BODY.PEEK[HEADER.FIELDS (REFERENCES)]<16384.16384>)",
+            ),
+            parts,
+        )
+        val byUid = res.messages.associateBy { it.uid }
+        assertEquals(ids.takeLast(50), byUid.getValue(7).references)
+        assertEquals("the same as reading the whole line", MessageIds.referenceIds(value), byUid.getValue(7).references)
+        assertEquals(listOf("<a@example.com>"), byUid.getValue(8).references)
     }
 }

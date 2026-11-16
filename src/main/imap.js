@@ -20,25 +20,29 @@ const STORED = ['messageId', 'inReplyTo', 'subject', 'from', 'to', 'cc', 'replyT
 const SET_CHARS = 4000;
 
 // uids as IMAP sequence sets such as "4:6,9", runs of consecutive uids as one range, split so that each set stays
-// within SET_CHARS. A range names only uids of the list, all of which the folder holds or held.
-function uidSets(uids) {
+// within SET_CHARS: [{ set, uids }], uids being the ones the set names. A range names only uids of the list, all of
+// which the folder holds or held.
+function uidChunks(uids) {
   const sorted = [...new Set(uids)].sort((a, b) => a - b);
-  const sets = [];
-  let set = '';
+  const chunks = [];
+  let chunk = { set: '', uids: [] };
   for (let i = 0; i < sorted.length; ) {
     let j = i;
     while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
     const part = i === j ? String(sorted[i]) : `${sorted[i]}:${sorted[j]}`;
-    if (set && set.length + 1 + part.length > SET_CHARS) {
-      sets.push(set);
-      set = '';
+    if (chunk.set && chunk.set.length + 1 + part.length > SET_CHARS) {
+      chunks.push(chunk);
+      chunk = { set: '', uids: [] };
     }
-    set = set ? `${set},${part}` : part;
+    chunk.set = chunk.set ? `${chunk.set},${part}` : part;
+    chunk.uids.push(...sorted.slice(i, j + 1));
     i = j + 1;
   }
-  if (set) sets.push(set);
-  return sets;
+  if (chunk.set) chunks.push(chunk);
+  return chunks;
 }
+
+const uidSets = (uids) => uidChunks(uids).map((c) => c.set);
 
 // A connection and the commands waiting for it: what the user waits for goes first, then background work. idle
 // settles when its queue has run dry.
@@ -618,24 +622,29 @@ class ImapAccount {
   }
 
   // The flags of many messages in the folder at path: one mailbox lock and one STORE per flag for all of them, a few
-  // more when their uids don't fit one command line (uidSets()). imapflow answers false for a STORE the server turned
-  // down, or one it could not send; that throws here, so the engine puts the flags back. Like any UID STORE, a uid the
-  // folder no longer has is skipped without an error.
+  // more when their uids don't fit one command line (uidChunks()). imapflow answers false for a STORE the server turned
+  // down, or one it could not send; that throws here, so the engine puts the flags back. The error's stored lists the
+  // uids whose sets the server took before that, which keep the change. Like any UID STORE, a uid the folder no longer
+  // has is skipped without an error.
   setFlagsMany(path, uids, { unread, starred, answered }) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
+      const stored = [];
       try {
         const opts = { uid: true };
         const store = async (op, set, flag) => {
           if ((await client[op](set, [flag], opts)) === false) throw new Error(t('errors.flags.refused'));
         };
-        for (const set of uidSets(uids)) {
+        for (const { set, uids: named } of uidChunks(uids)) {
           if (unread === true) await store('messageFlagsRemove', set, '\\Seen');
           if (unread === false) await store('messageFlagsAdd', set, '\\Seen');
           if (starred === true) await store('messageFlagsAdd', set, '\\Flagged');
           if (starred === false) await store('messageFlagsRemove', set, '\\Flagged');
           if (answered === true) await store('messageFlagsAdd', set, '\\Answered');
+          stored.push(...named);
         }
+      } catch (err) {
+        throw Object.assign(err instanceof Error ? err : new Error(String(err)), { stored });
       } finally {
         lock.release();
       }

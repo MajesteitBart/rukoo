@@ -64,4 +64,30 @@ object MessageIds {
         val ids = bracketed.ifEmpty { text.split(SEPARATORS) }
         return ids.map { it.trim() }.filter { it.isNotEmpty() && it.length <= 998 }.takeLast(REFERENCES_KEPT)
     }
+
+    /**
+     * The newest [REFERENCES_KEPT] ids of a References line read in parts (ImapSession), the way [referenceIds] reads a
+     * whole line in angle brackets. Only the ids and the unfinished end of the last part are kept, so a huge header never
+     * sits in memory whole.
+     */
+    class ReferenceTail {
+        private val ids = ArrayDeque<String>()
+        private var rest = ""
+
+        fun add(text: String) {
+            val all = rest + text
+            var end = 0
+            for (m in BRACKETED.findAll(all)) {
+                if (m.value.length <= 998) {
+                    ids.addLast(m.value)
+                    if (ids.size > REFERENCES_KEPT) ids.removeFirst()
+                }
+                end = m.range.last + 1
+            }
+            // An id is at most 998 characters, so an unfinished one never needs more of what came before it.
+            rest = all.substring(end).takeLast(1000)
+        }
+
+        fun ids(): List<String> = ids.toList()
+    }
 }

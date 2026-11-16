@@ -438,19 +438,43 @@ class ImapSession(
 
     /**
      * The References of [uids] (MessageIds.referenceIds); empty for a message without them, so it isn't asked again.
-     * The first [REFERENCE_BYTES] only, like the signal headers: anyone can send huge headers. The rare line longer than
-     * that keeps the ids before the cut.
+     * The first [REFERENCE_BYTES] of each in one fetch, like the signal headers: anyone can send huge headers, and a batch
+     * holds up to 300 messages. A longer line is read on one part at a time (longReferences()).
      */
     private fun referencesOf(p: IMAPProtocol, uids: List<Long>): Map<Long, List<String>> {
         if (uids.isEmpty()) return emptyMap()
         val out = HashMap<Long, List<String>>()
-        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID BODY.PEEK[HEADER.FIELDS (REFERENCES)]<0.$REFERENCE_BYTES>)").filterIsInstance<FetchResponse>()) {
+        val longer = HashMap<Long, ByteArray>()
+        for (fr in p.exec("UID FETCH ${uidSet(uids)} (UID ${referencesPart(0)})").filterIsInstance<FetchResponse>()) {
             val uid = fr.getItem(UID::class.java)?.uid ?: continue
             val bytes = fr.getItem(BODY::class.java)?.byteArray?.newBytes ?: ByteArray(0)
-            out[uid] = MessageIds.referenceIds(MailSignals.headerMap(String(bytes, Charsets.UTF_8))["references"])
+            if (bytes.size >= REFERENCE_BYTES) longer[uid] = bytes
+            else out[uid] = MessageIds.referenceIds(MailSignals.headerMap(String(bytes, Charsets.UTF_8))["references"])
         }
+        for ((uid, first) in longer) out[uid] = longReferences(p, uid, first)
         return out
     }
+
+    /**
+     * The newest ids of a References line longer than [REFERENCE_BYTES], as desktop keeps them from the whole line: the
+     * rest is read in parts of that size, up to [REFERENCE_PARTS] in all, and only the newest ids stay in memory.
+     */
+    private fun longReferences(p: IMAPProtocol, uid: Long, first: ByteArray): List<String> {
+        val tail = MessageIds.ReferenceTail()
+        // Message-IDs are ASCII; one character per byte keeps a part cut inside a character harmless.
+        tail.add(String(first, Charsets.ISO_8859_1))
+        var offset = REFERENCE_BYTES.toLong()
+        for (part in 1 until REFERENCE_PARTS) {
+            val bytes = p.exec("UID FETCH $uid (UID ${referencesPart(offset)})").filterIsInstance<FetchResponse>()
+                .firstNotNullOfOrNull { fr -> fr.getItem(BODY::class.java)?.byteArray?.newBytes } ?: break
+            tail.add(String(bytes, Charsets.ISO_8859_1))
+            if (bytes.size < REFERENCE_BYTES) break
+            offset += REFERENCE_BYTES
+        }
+        return tail.ids()
+    }
+
+    private fun referencesPart(offset: Long) = "BODY.PEEK[HEADER.FIELDS (REFERENCES)]<$offset.$REFERENCE_BYTES>"
 
     /** The Gmail tab of each message from uid [first] on, or null when Gmail's search failed: then the cached tabs stay. */
     private fun gmailTabsOf(p: IMAPProtocol, first: Long): Map<Long, String>? = try {
@@ -658,8 +682,11 @@ class ImapSession(
         const val PREVIEW_BYTES = 4096
         const val SIGNAL_BYTES = 8192
 
-        /** How much of a References line a sync reads: some 200 ids, four times what the cache keeps of them. */
+        /** How much of a References line one fetch reads: some 200 ids, four times what the cache keeps of them. */
         const val REFERENCE_BYTES = 16384
+
+        /** The most parts of [REFERENCE_BYTES] a References line is read in: 1 MiB, which no real thread comes near. */
+        const val REFERENCE_PARTS = 64
 
         /** The code of the error a reply nested too deeply to parse becomes. */
         private const val TOO_DEEP = "too-deep"

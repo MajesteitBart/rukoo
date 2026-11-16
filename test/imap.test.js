@@ -616,8 +616,18 @@ test('flags for many messages of a folder go in one STORE per flag under one loc
   // imapflow answers false for a STORE the server turned down.
   log.length = 0;
   answer = false;
-  await assert.rejects(s.setFlagsMany('INBOX', [1, 2], { unread: false }), { message: t('errors.flags.refused') });
+  await assert.rejects(s.setFlagsMany('INBOX', [1, 2], { unread: false }), { message: t('errors.flags.refused'), stored: [] });
   assert.deepEqual(log, ['lock INBOX', '+\\Seen 1:2 uid', 'release']);
+
+  // Refused halfway, on the second command line: the error names the uids the first one stored.
+  const sparse = Array.from({ length: 3000 }, (_, i) => 1000000 + 2 * i);
+  let calls = 0;
+  client.messageFlagsAdd = async () => ++calls === 1;
+  const err = await s.setFlagsMany('INBOX', sparse, { unread: false }).catch((e) => e);
+  assert.equal(err.message, t('errors.flags.refused'));
+  const first = uidSets(sparse)[0].split(',').map(Number);
+  assert.deepEqual(err.stored, first);
+  assert.ok(first.length > 0 && first.length < sparse.length);
 });
 
 test('an inbox sync counts the unread mail below the window by uid, and says null when the server does not tell', async () => {

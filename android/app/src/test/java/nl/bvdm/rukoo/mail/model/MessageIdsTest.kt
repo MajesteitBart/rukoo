@@ -72,4 +72,14 @@ class MessageIdsTest {
         // A partial fetch cut the last one off; an id longer than a header line is no Message-ID.
         assertEquals(listOf("<a@x>"), MessageIds.referenceIds("<a@x> <${"y".repeat(1000)}@x> <cut@exa"))
     }
+
+    @Test
+    fun aReferenceLineReadInPartsGivesWhatTheWholeLineGives() {
+        val line = "References: " + (1..120).joinToString("\r\n ") { "<r$it@x>" } + " <${"y".repeat(1500)}@x> <last@x>"
+        for (size in listOf(7, 64, 1000)) {
+            val tail = MessageIds.ReferenceTail()
+            line.chunked(size).forEach(tail::add)
+            assertEquals("parts of $size", MessageIds.referenceIds(line.substringAfter(": ")), tail.ids())
+        }
+    }
 }

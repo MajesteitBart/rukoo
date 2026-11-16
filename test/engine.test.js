@@ -1537,6 +1537,29 @@ test("a refused folder's write puts back all of its emails and leaves another fo
   await engine.close();
 });
 
+test('a folder whose write fails halfway keeps the change for the emails the server took, and puts back the rest', async () => {
+  const { engine, acc } = await freshEngine();
+  const unreadIds = () => engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.unread).map((m) => m.id);
+  const ids = unreadIds();
+  assert.ok(ids.length >= 4);
+  const taken = ids.slice(0, 2).map((id) => decodeId(id).uid);
+  const demo = engine.session(acc);
+  // The server takes the first command line, with two of the emails, and refuses the next, as ImapAccount reports it.
+  demo.setFlagsMany = async (p, uids, patch) => {
+    const err = Object.assign(new Error('NO STORE failed'), { stored: taken });
+    for (const m of demo.box(p).messages) if (taken.includes(m.uid)) m.flags.push('\\Seen');
+    throw err;
+  };
+  const res = await engine.setFlagsMany(ids, { unread: false });
+  assert.deepEqual(res.done, ids.slice(0, 2));
+  assert.deepEqual(res.failed, ids.slice(2));
+  assert.match(res.error, /STORE failed/);
+  assert.deepEqual(unreadIds(), ids.slice(2), 'the two the server took stay read, the rest are unread again');
+  await engine.syncAccount(acc.id);
+  assert.deepEqual(unreadIds(), ids.slice(2));
+  await engine.close();
+});
+
 // The demo server's flag writes wait at gates the test opens, or fail there. A gate stops the first write it matches;
 // match gets the write's uids, its flags and its folder.
 function gatedWrites(engine, acc) {

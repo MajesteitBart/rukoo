@@ -1924,7 +1924,9 @@ class Engine extends EventEmitter {
   }
 
   // One folder's part of setFlagsMany(): the emails in group share an account and folder, and each has its hold and
-  // its record of the inbox's count of older unread mail. Sets error on each email when the server turns it down.
+  // its record of the inbox's count of older unread mail. Sets error on each email the server turns down. A folder
+  // whose uids took more than one command can fail halfway: the uids the server took (the error's stored) keep the
+  // change.
   async flagGroup(group, patch) {
     const { acc, folder } = group[0];
     try {
@@ -1933,7 +1935,12 @@ class Engine extends EventEmitter {
       for (const f of group) f.hold.confirm();
     } catch (err) {
       const error = friendlyError(err, acc);
+      const stored = new Set(Array.isArray(err && err.stored) ? err.stored : []);
       for (const f of group) {
+        if (stored.has(f.uid)) {
+          f.hold.confirm();
+          continue;
+        }
         f.error = error;
         // Revert on whatever object the cache holds now; a sync may have replaced it, and counted again.
         const back = f.hold.rollback();
