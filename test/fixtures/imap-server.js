@@ -40,12 +40,14 @@ function fetchItems(m, items) {
     const upper = item.toUpperCase();
     if (upper === 'UID') out.push(`UID ${m.uid}`);
     else if (upper === 'FLAGS') out.push(`FLAGS (${(m.flags || []).join(' ')})`);
-    else if (upper === 'INTERNALDATE') out.push(`INTERNALDATE "07-Nov-2026 10:00:00 +0000"`);
+    else if (upper === 'INTERNALDATE') out.push(`INTERNALDATE ${quote(m.internalDate || '07-Nov-2026 10:00:00 +0000')}`);
     else if (upper === 'RFC822.SIZE') out.push(`RFC822.SIZE ${m.size || 100}`);
     else if (upper === 'BODYSTRUCTURE') out.push(`BODYSTRUCTURE ${m.bodyStructure}`);
     else if (upper === 'ENVELOPE') {
       const from = address(m.from || ['Sender', 'sender@example.com']);
-      out.push(`ENVELOPE ("Sat, 07 Nov 2026 10:00:00 +0000" ${quote(m.subject || '')} ${from} ${from} ${from} ${address(['Me', 'me@example.com'])} NIL NIL NIL ${quote(`<${m.uid}@example.com>`)})`);
+      // m.date: the Date header as the server sends it, which may be text no parser reads; null for none (NIL).
+      const date = m.date === null ? 'NIL' : quote(m.date || 'Sat, 07 Nov 2026 10:00:00 +0000');
+      out.push(`ENVELOPE (${date} ${quote(m.subject || '')} ${from} ${from} ${from} ${address(['Me', 'me@example.com'])} NIL NIL NIL ${quote(`<${m.uid}@example.com>`)})`);
     } else {
       // BODY.PEEK[part]<0.max>: the start of a part, as a literal.
       const body = /^BODY\.PEEK\[([^\]]*)\](?:<(\d+)\.(\d+)>)?$/.exec(upper);
@@ -58,9 +60,10 @@ function fetchItems(m, items) {
 }
 
 // login: the status and text after the tag in the answer to LOGIN.
-// mailbox: { path, uidValidity, messages: [{ uid, flags, subject, from: [name, email], size, bodyStructure, parts }] },
-// the one folder there is. bodyStructure is the IMAP text of the message's BODYSTRUCTURE; parts maps a part number to
-// its text. Every command but LOGIN goes in commands, without its tag.
+// mailbox: { path, uidValidity, messages: [{ uid, flags, subject, from: [name, email], date, internalDate, size,
+// bodyStructure, parts }] }, the one folder there is. date is the envelope's Date header and internalDate the
+// INTERNALDATE, both as text. bodyStructure is the IMAP text of the message's BODYSTRUCTURE; parts maps a part number
+// to its text. Every command but LOGIN goes in commands, without its tag.
 function imapServer({ login = 'OK LOGIN completed', mailbox = null } = {}) {
   const sockets = new Set();
   const logins = [];

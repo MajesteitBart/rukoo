@@ -105,9 +105,11 @@ async function searchUids(client, criteria, query, { gmail = true } = {}) {
 // what kind of mail each one is (categories/signals.js). tabs: the Gmail tab of each uid, or null when not asked. A
 // message gone between the fetches (moved or deleted meanwhile) is left out.
 async function describe(client, rows, { known = new Map(), signals = false, tabs = null } = {}) {
+  // A cached date that isn't a number is one an unreadable Date header left before Rukoo fell back to INTERNALDATE
+  // (null on disk): such a message is described again, which gives it the date the server received it.
   const cached = (uid) => {
     const prior = known.get(uid);
-    return Boolean(prior) && STORED.every((k) => k in prior);
+    return Boolean(prior) && STORED.every((k) => k in prior) && Number.isFinite(prior.date);
   };
   const fresh = rows.filter((m) => !cached(m.uid)).map((m) => m.uid);
   const details = new Map();
@@ -195,7 +197,8 @@ async function describe(client, rows, { known = new Map(), signals = false, tabs
       to: util.addressFromEnvelope(env.to),
       cc: util.addressFromEnvelope(env.cc),
       replyTo: util.addressFromEnvelope(env.replyTo),
-      date: new Date(env.date || m.internalDate || Date.now()).getTime(),
+      // A Date header imapflow couldn't parse comes as its text: the date the server received the email then.
+      date: util.validTime(env.date, m.internalDate) ?? Date.now(),
       preview: previews.has(m.uid) ? previews.get(m.uid) : prior ? prior.preview || '' : '',
       ...state,
       hasAttachments: util.hasAttachments(m.bodyStructure),
