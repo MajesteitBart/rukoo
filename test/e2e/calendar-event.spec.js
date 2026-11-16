@@ -699,6 +699,49 @@ test('guests on a Google calendar: suggestions, optional and removed guests, Goo
   expect(post.body.conferenceData.createRequest).toBeTruthy();
 });
 
+// #260: typed while the dialog still pops in (scale 0.97 to 1 over 140 ms), the guest field measures narrower and off
+// to the side, and the suggestions stayed where it was then. Here the pop-in holds at 40 ms while the test types.
+test('guest suggestions typed while the dialog pops in line up with the guest field once it is in', async () => {
+  await openCalendar();
+  const monday = await column(0).evaluate((el) => Number(el.dataset.calCol));
+  const iso = async (day, h) => new Date(await timeOn(await shiftDays(monday, day), h)).toISOString();
+  await addGoogle([{ id: 'gboard', summary: 'Board meeting', start: { dateTime: await iso(1, 9) }, end: { dateTime: await iso(1, 10) }, organizer: { email: 'me@example.com', self: true } }]);
+  await scrollGrid(8);
+  await expect(event('Board meeting')).toBeVisible({ timeout: 10000 });
+  await event('Board meeting').click();
+  await win.evaluate(() => {
+    document.addEventListener('animationstart', (e) => {
+      if (window.__pop || !(e.target instanceof Element) || !e.target.matches('.dialog')) return;
+      window.__pop = e.target.getAnimations();
+      for (const a of window.__pop) {
+        a.pause();
+        a.currentTime = 40;
+      }
+    });
+  });
+  await card().locator('[data-pop="edit"]').click();
+  await expect.poll(() => win.evaluate(() => Boolean(window.__pop && window.__pop.length))).toBe(true);
+  await form().locator('[data-guest-input]').fill('sanne');
+  const suggest = win.locator('.cal-gsuggest');
+  await expect(suggest.locator('button').first()).toContainText('sanne@example.com');
+  const edges = () =>
+    win.evaluate(() => {
+      const box = document.querySelector('.cal-form .cal-gbox').getBoundingClientRect();
+      const list = document.querySelector('.cal-gsuggest').getBoundingClientRect();
+      return { left: list.left - box.left, width: list.width - box.width, top: list.top - box.bottom };
+    });
+  // Still popping in: the list is where the field is now, at its smaller size.
+  expect((await edges()).left).toBeCloseTo(0, 0);
+  await win.evaluate(() => Promise.all(window.__pop.map((a) => (a.play(), a.finished))));
+  await expect.poll(async () => Math.abs((await edges()).left)).toBeLessThan(0.5);
+  const after = await edges();
+  expect(Math.abs(after.width)).toBeLessThan(0.5);
+  expect(after.top).toBeCloseTo(4, 0);
+  // A window resize moves it along with the field.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1300, 950));
+  await expect.poll(async () => Math.abs((await edges()).left)).toBeLessThan(0.5);
+});
+
 test('a booking request opens its card from the grid: Accept, and Decline with a message', async () => {
   await openCalendar();
   await fakeBooking();

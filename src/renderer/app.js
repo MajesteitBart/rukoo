@@ -261,6 +261,7 @@ async function refreshOnce() {
   reconcileReader();
   if (S.checked.size > 1) renderReader();
   else renderReaderNav();
+  retryAfterSync();
   autoOpen();
   // "What's new" opens once for everyone, on the first start of a version that has one.
   if (!S.whatsNewAsked) {
@@ -2329,12 +2330,18 @@ async function compose(opts) {
   const holds = () => !still || still();
   let message = restore ? restore.original || null : null;
   if (full.id && !restore) {
+    // A reply or forward reads the whole message. One the reader shows partly comes in now, in the user's turn, while
+    // the button for it in the reader shows that it waits (#244); the keyboard and the menus get the same.
+    const open = S.message && S.message.id === full.id && S.message.partial ? S.message : null;
+    const get = () => api('get', full.id);
     try {
-      message = await api('get', full.id);
+      message = await (open ? whileBusy(open, full.mode === 'draft' ? 'edit' : full.mode, get) : get());
     } catch (err) {
       if (turn === composeTurn) toast(err.message, 5000);
       return;
     }
+    // It is on disk now, so the reader behind the editor completes too, and shows it whole once the editor closes.
+    if (open) completeMessage(open.id);
     if (turn !== composeTurn) return;
   }
   if (!holds()) return;
@@ -2519,11 +2526,13 @@ export async function openMessage(id, { auto = false, known = null } = {}) {
 // The email itself only redraws when it changed, and keeps its scroll position then.
 async function completeMessage(id, kept) {
   const still = () => S.selectedId === id && S.message && S.message.id === id && S.message.partial;
-  // null when the download failed: the reader stays as it is until an attachment is opened (wholeMessage).
+  // null when the download failed: the reader keeps what it shows and says so (downloadFailed).
   if (kept === undefined) kept = await api('downloaded', id).catch(() => null);
-  if (kept == null || !still()) return;
+  if (!still()) return;
+  if (kept == null) return downloadFailed(id);
   const full = await (kept ? api('get', id, { fast: true }) : api('get', id)).catch(() => null);
-  if (!full || full.partial || !still()) return;
+  if (!still()) return;
+  if (!full || full.partial) return downloadFailed(id);
   const before = S.message;
   // With the flags the reader shows, which a star or read change on its way may set ahead of main.
   S.message = { ...full, unread: before.unread, starred: before.starred };
@@ -2537,40 +2546,106 @@ async function completeMessage(id, kept) {
   }
   const atts = $('.reader .atts');
   if (atts) atts.outerHTML = attachmentsHtml(S.message);
+  // A note about an earlier failure goes.
+  showDownloadNote();
   loadPreviews(S.message);
 }
 
-// Attachment buttons waiting for their message to come in, by message id and attachment index (or 'all' for Save
-// all). They show a spinner for their icon.
-const fetchingAtts = new Set();
+// Buttons in the reader that wait for a partly shown message to come in whole, by message id and key: an attachment's
+// index, 'all' for Save all, or the reader action it runs (reply, replyAll, forward, edit, unsubscribe,
+// retry-download). Each shows a spinner for its icon, also when the reader draws again meanwhile. A count, since Reply
+// clicked twice waits twice.
+const busyButtons = new Map();
+const BUSY_ICONS = { reply: 'reply', replyAll: 'replyAll', forward: 'forward', edit: 'edit', unsubscribe: 'unsubscribe', 'retry-download': 'sync' };
+const busy = (id, key) => busyButtons.has(`${id}|${key}`);
+// The button's icon: the spinner while it waits.
+const busyIcon = (id, key) => (busy(id, key) ? '<span class="spinner"></span>' : icons[BUSY_ICONS[key] || 'download']);
 
-function attachmentSpinner(id, key, on) {
+function busyButton(id, key, on) {
   const k = `${id}|${key}`;
-  if (on) fetchingAtts.add(k);
-  else fetchingAtts.delete(k);
+  const n = (busyButtons.get(k) || 0) + (on ? 1 : -1);
+  if (n > 0) busyButtons.set(k, n);
+  else busyButtons.delete(k);
   if (!S.message || S.message.id !== id) return;
-  const btn = key === 'all' ? $('.reader [data-reader="save-all"]') : $(`.reader [data-save-att="${key}"]`);
+  const btn = key === 'all' ? $('.reader [data-reader="save-all"]') : typeof key === 'number' ? $(`.reader [data-save-att="${key}"]`) : $(`.reader [data-reader="${key}"]`);
   if (!btn) return;
-  btn.setAttribute('aria-busy', String(on));
+  btn.setAttribute('aria-busy', String(busy(id, key)));
   const icon = document.createElement('template');
-  icon.innerHTML = on ? '<span class="spinner"></span>' : icons.download;
+  icon.innerHTML = busyIcon(id, key);
   btn.querySelector('svg, .spinner')?.replaceWith(icon.content);
 }
 
-// An attachment of a message whose text came first is only there once the whole message is: that comes in the user's
-// turn now. The button shows a spinner meanwhile, after a moment, so a quick download doesn't flash. The reader then
-// completes too, also when the background download had failed.
-async function wholeMessage(m, key) {
-  if (!m.partial) return;
-  const timer = setTimeout(() => attachmentSpinner(m.id, key, true), 100);
-  let kept = false;
+// Runs work, for which message m's button key waits: after a moment, so a quick answer doesn't flash, the button shows
+// a spinner until the work is done.
+async function whileBusy(m, key, work) {
+  let shown = false;
+  const timer = setTimeout(() => {
+    shown = true;
+    busyButton(m.id, key, true);
+  }, 100);
   try {
-    kept = await api('downloaded', m.id, { now: true });
+    return await work();
   } finally {
     clearTimeout(timer);
-    if (fetchingAtts.has(`${m.id}|${key}`)) attachmentSpinner(m.id, key, false);
+    if (shown) busyButton(m.id, key, false);
+  }
+}
+
+// An attachment of a message whose text came first is only there once the whole message is: that comes in the user's
+// turn now, while the button shows it waits. The reader then completes too, also when the background download had
+// failed; when this download fails as well, the reader says so (downloadFailed).
+async function wholeMessage(m, key) {
+  if (!m.partial) return;
+  let kept;
+  try {
+    kept = await whileBusy(m, key, () => api('downloaded', m.id, { now: true }));
+  } catch (err) {
+    downloadFailed(m.id);
+    throw err;
   }
   if (S.message && S.message.id === m.id && S.message.partial) completeMessage(m.id, kept);
+}
+
+// The whole message didn't come in, offline for example (#244). A quiet note under the attachment cards says so, with
+// Retry, which downloads it in the user's turn (wholeMessage). The first sync of its account that goes through after
+// that tries once more by itself (retryAfterSync). downloadFailed: when it failed, as that sync's time is compared.
+function downloadFailed(id) {
+  if (!S.message || S.message.id !== id || !S.message.partial) return;
+  S.message.downloadFailed = Date.now();
+  showDownloadNote();
+}
+
+function downloadNoteHtml(m) {
+  if (!m.partial || !m.downloadFailed) return '';
+  return `<div class="download-note" role="status"><span data-i18n="reader.attachments.downloadFailed">${esc(t('reader.attachments.downloadFailed'))}</span><button class="link-btn" data-reader="retry-download" aria-busy="${busy(m.id, 'retry-download')}">${busyIcon(m.id, 'retry-download')}<span data-i18n="common.actions.retry">${esc(t('common.actions.retry'))}</span></button></div>`;
+}
+
+// Draws the note, takes it away or redraws it, without drawing the email again: after the attachment cards, or where
+// they would be.
+function showDownloadNote() {
+  const m = S.message;
+  const reader = $('.reader');
+  if (!m || !reader || S.composer || S.checked.size > 1) return;
+  const html = downloadNoteHtml(m);
+  const el = reader.querySelector('.download-note');
+  if (el) {
+    if (html) el.outerHTML = html;
+    else el.remove();
+    return;
+  }
+  if (!html) return;
+  (reader.querySelector('.atts') || reader.querySelector('.invite-slot') || reader.querySelector('.msg-head'))?.insertAdjacentHTML('afterend', html);
+}
+
+// With each new state: a message whose download failed tries once more after a sync of its account went through, which
+// says the server answers again. A failure then waits for the next such sync.
+function retryAfterSync() {
+  const m = S.message;
+  if (!m || !m.partial || !m.downloadFailed || m.retrying || !S.data) return;
+  const acc = S.data.accounts.find((a) => a.id === m.accountId);
+  if (!acc || acc.error || acc.syncing || !(acc.lastSync > m.downloadFailed)) return;
+  m.retrying = true;
+  completeMessage(m.id).finally(() => (m.retrying = false));
 }
 
 export function closeReader() {
@@ -2651,10 +2726,8 @@ function attachmentsHtml(m) {
   const total = list.reduce((n, a) => n + (a.size || 0), 0);
   const open = list.length === 1 || S.attachmentsOpen;
   // The download icon, or a spinner while the button waits for its message (wholeMessage).
-  const busy = (key) => fetchingAtts.has(`${m.id}|${key}`);
-  const saveIcon = (key) => (busy(key) ? '<span class="spinner"></span>' : icons.download);
   const save = (a) =>
-    `<button class="icon-btn sm" data-save-att="${a.index}" aria-busy="${busy(a.index)}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${saveIcon(a.index)}</button>`;
+    `<button class="icon-btn sm" data-save-att="${a.index}" aria-busy="${busy(m.id, a.index)}" data-i18n-title="common.actions.save" title="${esc(t('common.actions.save'))}">${busyIcon(m.id, a.index)}</button>`;
   const card = (a) => {
     const { ext, kind } = attachmentKind(a.filename);
     const thumb = previews.get(`${m.id}|${a.index}`);
@@ -2674,7 +2747,7 @@ function attachmentsHtml(m) {
     list.length > 1
       ? `<div class="atts-head">
           <button class="atts-toggle" data-reader="toggle-atts" aria-expanded="${open}">${icons.chevronDown}<span>${esc(t('reader.attachments.count', { count: list.length }))}</span><span class="atts-size">${fileSize(total)}</span></button>
-          <button class="link-btn" data-reader="save-all" aria-busy="${busy('all')}">${saveIcon('all')}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
+          <button class="link-btn" data-reader="save-all" aria-busy="${busy(m.id, 'all')}">${busyIcon(m.id, 'all')}<span data-i18n="reader.attachments.saveAll">${esc(t('reader.attachments.saveAll'))}</span></button>
         </div>`
       : '';
   return `<section class="atts ${open ? '' : 'closed'}" data-i18n-aria-label="mailbox.filters.attachments" aria-label="${esc(t('mailbox.filters.attachments'))}">${head}${open ? `<div class="atts-list">${list.map(card).join('')}</div>` : ''}</section>`;
@@ -2749,16 +2822,18 @@ function readerBar(m) {
     <button class="icon-btn" data-reader="next" data-i18n-title="reader.navigation.next" title="${esc(t('reader.navigation.next'))}">${icons.down}</button>
     <button class="icon-btn wide-only" data-reader="expand" title="${S.expanded ? t('reader.navigation.showList') : t('reader.navigation.expand')}">${S.expanded ? icons.collapse : icons.expand}</button>`;
   const back = `<button class="icon-btn narrow-only" data-reader="back" data-i18n-title="reader.navigation.back" title="${esc(t('reader.navigation.back'))}">${icons.back}</button>`;
+  // Reply, Reply all, Forward and Edit wait for a partly shown message to come in whole (compose), with a spinner.
+  const waits = (key) => `aria-busy="${busy(m.id, key)}"`;
   if (draft) {
     return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
-      <button class="tbtn primary" data-reader="edit" data-i18n-title="reader.actions.editDraftShortcut" title="${esc(t('reader.actions.editDraftShortcut'))}">${icons.edit}<span data-i18n="reader.actions.edit">${esc(t('reader.actions.edit'))}</span></button>
+      <button class="tbtn primary" data-reader="edit" ${waits('edit')} data-i18n-title="reader.actions.editDraftShortcut" title="${esc(t('reader.actions.editDraftShortcut'))}">${busyIcon(m.id, 'edit')}<span data-i18n="reader.actions.edit">${esc(t('reader.actions.edit'))}</span></button>
       <button class="icon-btn" data-reader="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
       ${nav}</div>`;
   }
   return `<div class="reader-bar" role="toolbar" data-i18n-aria-label="reader.actions.label" aria-label="${esc(t('reader.actions.label'))}">${back}
-    <button class="tbtn" data-reader="reply" title="${esc(tip(t('composer.titles.reply'), 'reply'))}">${icons.reply}<span data-i18n="composer.titles.reply">${esc(t('composer.titles.reply'))}</span></button>
-    <button class="icon-btn" data-reader="replyAll" title="${esc(tip(t('composer.titles.replyAll'), 'replyAll'))}">${icons.replyAll}</button>
-    <button class="icon-btn" data-reader="forward" title="${esc(tip(t('composer.titles.forward'), 'forward'))}">${icons.forward}</button>
+    <button class="tbtn" data-reader="reply" ${waits('reply')} title="${esc(tip(t('composer.titles.reply'), 'reply'))}">${busyIcon(m.id, 'reply')}<span data-i18n="composer.titles.reply">${esc(t('composer.titles.reply'))}</span></button>
+    <button class="icon-btn" data-reader="replyAll" ${waits('replyAll')} title="${esc(tip(t('composer.titles.replyAll'), 'replyAll'))}">${busyIcon(m.id, 'replyAll')}</button>
+    <button class="icon-btn" data-reader="forward" ${waits('forward')} title="${esc(tip(t('composer.titles.forward'), 'forward'))}">${busyIcon(m.id, 'forward')}</button>
     <span class="bar-sep"></span>
     ${canArchive ? `<button class="icon-btn" data-reader="archive" title="${esc(tip(t('common.actions.archive'), 'archive'))}">${icons.archive}</button>` : ''}
     <button class="icon-btn" data-reader="delete" title="${esc(tip(t('common.actions.delete'), 'delete'))}">${icons.trash}</button>
@@ -2805,7 +2880,7 @@ function renderReader() {
       ? '<div class="loading-bar"></div>'
       : `<iframe class="mail-frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" data-i18n-title="reader.content.label" title="${esc(t('reader.content.label'))}"></iframe>`;
   const unsubscribe =
-    m.unsubscribe && !draft ? `<button class="chip-btn" data-reader="unsubscribe" data-i18n-title="reader.unsubscribe.tooltip" title="${esc(t('reader.unsubscribe.tooltip'))}">${icons.unsubscribe}<span data-i18n="reader.unsubscribe.action">${esc(t('reader.unsubscribe.action'))}</span></button>` : '';
+    m.unsubscribe && !draft ? `<button class="chip-btn" data-reader="unsubscribe" aria-busy="${busy(m.id, 'unsubscribe')}" data-i18n-title="reader.unsubscribe.tooltip" title="${esc(t('reader.unsubscribe.tooltip'))}">${busyIcon(m.id, 'unsubscribe')}<span data-i18n="reader.unsubscribe.action">${esc(t('reader.unsubscribe.action'))}</span></button>` : '';
   el.innerHTML = `${readerBar(m)}
     <div class="reader-scroll" tabindex="-1">
       <article class="message">
@@ -2831,7 +2906,7 @@ function renderReader() {
           ${detailsHtml(m)}
         </header>
         ${m.invite ? '<div class="invite-slot"></div>' : ''}
-        ${attachmentsHtml(m)}
+        ${attachmentsHtml(m)}${downloadNoteHtml(m)}
         <div class="related-slot">${relatedHtml(m)}</div>
         ${body}
       </article>
@@ -2862,7 +2937,9 @@ async function unsubscribe(m) {
   );
   if (!ok) return;
   try {
-    const res = await api('unsubscribe', m.id);
+    // Main reads the whole message for its unsubscribe header, which for a partly shown one comes in first.
+    const go = () => api('unsubscribe', m.id);
+    const res = await (m.partial ? whileBusy(m, 'unsubscribe', go) : go());
     if (res.done) toast(t('reader.unsubscribe.done', { sender: sender }));
     else if (res.opened) toast(t('reader.unsubscribe.opened'));
     else if (res.message) {
@@ -2955,6 +3032,8 @@ function bindReader() {
         return renderReader();
       case 'unsubscribe':
         return unsubscribe(m);
+      case 'retry-download':
+        return wholeMessage(m, 'retry-download').catch((err) => toast(err.message, 5000));
       case 'toggle-atts':
         S.attachmentsOpen = !S.attachmentsOpen;
         return renderReader();

@@ -2569,7 +2569,7 @@
   },
   "common.actions.retry": {
     "message": "Retry",
-    "description": "common > actions. Tries a failed fetch again. src/renderer/calendar.js (noticesHtml)"
+    "description": "common > actions. Tries a failed fetch again. src/renderer/calendar.js (noticesHtml); src/renderer/app.js (downloadNoteHtml, beside reader.attachments.downloadFailed)"
   },
   "common.actions.save": {
     "message": "Save",
@@ -2674,6 +2674,18 @@
   "composer.attachments.dropHint": {
     "message": "Drop to attach",
     "description": "Shown across the composer while files are dragged over it; letting go attaches them. src/renderer/composer.js (mountComposer); src/renderer/styles.css (.composer.drop-files)"
+  },
+  "composer.attachments.tooLarge": {
+    "message": "{name} is larger than 50 MB. Save it to a folder first, then attach it from there.",
+    "description": "Notice in the composer after you drop a file over 50 MB that isn't saved on disk, such as an attachment dragged from Outlook or a file inside a zip; it isn't attached. name is the file name. src/renderer/composer.js (dropFiles)"
+  },
+  "composer.attachments.unreadable": {
+    "message": "{name} couldn't be read, so it isn't attached.",
+    "description": "Notice in the composer after you drop a file that isn't saved on disk, such as an attachment dragged from Outlook or a file inside a zip, and Rukoo couldn't read it. name is the file name. Several such files get composer.attachments.unreadableCount. src/renderer/composer.js (dropFiles)"
+  },
+  "composer.attachments.unreadableCount": {
+    "message": { "one": "{count} file couldn't be read, so it isn't attached.", "other": "{count} files couldn't be read, so they aren't attached." },
+    "description": "Notice in the composer after you drop several files that aren't saved on disk and Rukoo couldn't read them. count is the number of files, always more than one. src/renderer/composer.js (dropFiles)"
   },
   "composer.attachments.image": {
     "message": "Insert image",
@@ -3010,6 +3022,10 @@
   "composer.undoSend.quitUnsure": {
     "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
     "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
+  },
+  "composer.undoSend.crashWaiting": {
+    "message": "Rukoo closed before this email was sent. Send it again when it's ready.",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was waiting out its Undo send notice when Rukoo last closed without quitting, as after a crash. It was not sent. src/main/main.js (reopenHeld)"
   },
   "composer.undoSend.quitFailed": {
     "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",
@@ -4272,6 +4288,10 @@
       "other": "{count} attachments"
     },
     "description": "Reading pane attachment section toggle in src/renderer/app.js (attachmentsHtml). count is the number of attached files; includes plural forms."
+  },
+  "reader.attachments.downloadFailed": {
+    "message": "The rest of this email didn't download.",
+    "description": "Quiet note under a large email's attachment cards when its text showed first and the whole email then failed to download, for example offline: attachment thumbnails and large pictures are missing. Retry (common.actions.retry) beside it downloads it again. src/renderer/app.js (downloadNoteHtml)"
   },
   "reader.attachments.open": {
     "message": "Open: {filename}",

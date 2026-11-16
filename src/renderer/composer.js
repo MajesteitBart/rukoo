@@ -1190,13 +1190,40 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
+    dropFiles(files);
+  });
+
+  // A dropped file on disk is attached from its path. One without a path, such as an attachment dragged from Outlook,
+  // a file inside a zip or a picture dragged out of an email, goes to main as bytes, which keeps it in a temp file
+  // (composeAddFile, #240), up to the size main takes. They are attached together, in the order dropped, once all are
+  // read; one that can't be read says so, and the draft only counts as changed when something was attached.
+  const DROP_FILE_MAX = 50 * 1024 * 1024;
+  async function dropFiles(files) {
+    const added = [];
+    const unreadable = [];
+    let tooLarge = null;
     for (const f of files) {
       const p = window.mail.pathForFile(f);
-      if (p) st.attachments.push(keyed({ path: p, filename: f.name, size: f.size }));
+      if (p) added.push({ path: p, filename: f.name, size: f.size });
+      else if (f.size > DROP_FILE_MAX) tooLarge = tooLarge || f.name;
+      else {
+        try {
+          added.push(await api('composeAddFile', { name: f.name, data: new Uint8Array(await f.arrayBuffer()) }));
+        } catch (_) {
+          unreadable.push(f.name);
+        }
+      }
     }
-    changed();
-    renderAttachments();
-  });
+    if (closed) return;
+    if (added.length) {
+      st.attachments.push(...added.map(keyed));
+      changed();
+      renderAttachments();
+    }
+    if (tooLarge) toast(t('composer.attachments.tooLarge', { name: tooLarge }), 5000);
+    else if (unreadable.length === 1) toast(t('composer.attachments.unreadable', { name: unreadable[0] }), 5000);
+    else if (unreadable.length) toast(t('composer.attachments.unreadableCount', { count: unreadable.length }), 5000);
+  }
 
   // ----- saving, sending, closing -----
 

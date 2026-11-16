@@ -674,6 +674,9 @@
   "composer.agent.undoHelp": "Je eigen wijzigingen sinds dat moment verdwijnen ook.",
   "composer.agent.undoTitle": "Concept van {name} ongedaan maken?",
   "composer.attachments.dropHint": "Loslaten om bij te voegen",
+  "composer.attachments.tooLarge": "{name} is groter dan 50 MB. Sla het eerst op in een map en voeg het daarvandaan bij.",
+  "composer.attachments.unreadable": "{name} kon niet worden gelezen en is niet bijgevoegd.",
+  "composer.attachments.unreadableCount": { "one": "{count} bestand kon niet worden gelezen en is niet bijgevoegd.", "other": "{count} bestanden konden niet worden gelezen en zijn niet bijgevoegd." },
   "composer.attachments.image": "Afbeelding invoegen",
   "composer.attachments.pick": "Bestanden bijvoegen",
   "composer.body.label": "Berichttekst",
@@ -758,6 +761,7 @@
   "composer.undoSend.undone": "Verzenden ongedaan gemaakt",
   "composer.undoSend.late": "Te laat om ongedaan te maken: de e-mail is al onderweg",
   "composer.undoSend.quitUnsure": "Rukoo werd afgesloten voordat bekend was of deze e-mail is verzonden. Kijk in Verzonden voordat je hem opnieuw verstuurt.",
+  "composer.undoSend.crashWaiting": "Rukoo werd afgesloten voordat deze e-mail was verzonden. Verstuur hem opnieuw als hij klaar is.",
   "composer.undoSend.quitFailed": "Rukoo kon deze e-mail tijdens het afsluiten niet versturen en ook niet in Concepten bewaren: {error}",
   "composer.undoSend.quitTitle": { "one": "{count} e-mail wacht nog op verzending", "other": "{count} e-mails wachten nog op verzending" },
   "composer.undoSend.quitHelp": "Verstuur ze nu en sluit af, of blijf in Rukoo zodat je het verzenden nog ongedaan kunt maken.",
@@ -1123,6 +1127,7 @@
     "one": "{count} bijlage",
     "other": "{count} bijlagen"
   },
+  "reader.attachments.downloadFailed": "De rest van deze e-mail is niet gedownload.",
   "reader.attachments.open": "Openen: {filename}",
   "reader.attachments.saveAll": "Alles opslaan",
   "reader.attachments.savedCount": {

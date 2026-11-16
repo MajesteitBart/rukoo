@@ -313,10 +313,11 @@ test('attachments are listed for messages that have them', async () => {
 
 // #56: a large message with attachments goes into the demo inbox, and its downloads wait until the test lets them go:
 // the background download always, the user's when holdUser is set. A banner over the inline-picture budget (a 40 x 30
-// PNG with padding after its end) comes with the whole message only.
-async function largeMessage({ holdUser = false } = {}) {
+// PNG with padding after its end) comes with the whole message only. unsubscribe: it is a newsletter with a
+// List-Unsubscribe header.
+async function largeMessage({ holdUser = false, unsubscribe = false } = {}) {
   await app.evaluate(
-    async ({ app, nativeImage }, holdUser) => {
+    async ({ app, nativeImage }, [holdUser, unsubscribe]) => {
       // The main process here only resolves Node's own modules; the app's come through its own path.
       const { createRequire } = process.mainModule.require('module');
       const MailComposer = createRequire(`${app.getAppPath()}/package.json`)('nodemailer/lib/mail-composer');
@@ -337,11 +338,24 @@ async function largeMessage({ holdUser = false } = {}) {
       })
         .compile()
         .build();
-      await engine.session(acc).append('INBOX', raw);
+      const uid = await engine.session(acc).append('INBOX', raw);
+      // The demo account keeps no headers of its own from an appended email, so the newsletter's goes on afterwards.
+      if (unsubscribe) {
+        engine.session(acc).find('INBOX', uid).headers = { 'List-Unsubscribe': '<https://example.com/unsubscribe>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' };
+        engine.session(acc).persist();
+      }
       await engine.syncAll();
       while (engine.prefetching.size) await new Promise((r) => setTimeout(r, 20));
       const session = engine.session(acc);
       const real = session.fetchSource.bind(session);
+      // How often the reader asked whether the whole message is in (completeMessage), so a test fails the background
+      // download only once the reader waits for it; failed before that, the reader would start another.
+      const downloaded = engine.downloaded.bind(engine);
+      global.__asked = 0;
+      engine.downloaded = (...args) => {
+        global.__asked += 1;
+        return downloaded(...args);
+      };
       global.__fetches = [];
       global.__held = { background: [], user: [] };
       session.fetchSource = (p, u, opts = {}) => {
@@ -353,7 +367,7 @@ async function largeMessage({ holdUser = false } = {}) {
         );
       };
     },
-    holdUser
+    [holdUser, unsubscribe]
   );
   // The save dialog answers with a file in the profile.
   await app.evaluate(({ dialog }, dir) => {
@@ -364,6 +378,7 @@ async function largeMessage({ holdUser = false } = {}) {
 const release = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.go()), kind);
 const failDownload = (kind) => app.evaluate((_, kind) => global.__held[kind].splice(0).forEach((h) => h.fail()), kind);
 const fetches = () => app.evaluate(() => global.__fetches);
+const readerWaits = () => expect.poll(() => app.evaluate(() => global.__asked)).toBeGreaterThan(0);
 const mailFrame = () => win.frameLocator('.mail-frame');
 
 test('a large message shows its text and attachment cards before the attachments are in', async () => {
@@ -433,6 +448,131 @@ test('a partly shown message whose background download failed completes once an 
   await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
   // One download in the user's turn. The reader may have asked for the background download again meanwhile.
   expect((await fetches()).filter((kind) => kind === 'user')).toHaveLength(1);
+});
+
+// #244: Reply, Reply all, Forward and Unsubscribe read the whole message, which for a partly shown one comes in the
+// user's turn. The button says that it waits.
+test('Reply on a partly shown message shows a spinner while the whole message comes in, then opens the editor', async () => {
+  await largeMessage({ holdUser: true });
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  const reply = win.locator('.reader-bar [data-reader="reply"]');
+  await expect(reply).toHaveAttribute('aria-busy', 'false');
+  await reply.click();
+  await expect(reply).toHaveAttribute('aria-busy', 'true');
+  await expect(reply.locator('.spinner')).toBeVisible();
+  // The other buttons don't wait.
+  await expect(win.locator('.reader-bar [aria-busy="true"]')).toHaveCount(1);
+  expect(await fetches()).toEqual(['background', 'user']);
+  await release('user');
+  await win.waitForSelector('.composer .editor');
+  await expect(win.locator('.composer [data-field="subject"]')).toHaveValue('Re: Quarterly report');
+  await expect(win.locator('[aria-busy="true"]')).toHaveCount(0);
+  // Closed again, the reader's Reply has its icon back.
+  await win.click('.composer [data-c="close"]');
+  await expect(win.locator('.composer')).toHaveCount(0);
+  await expect(reply).toHaveAttribute('aria-busy', 'false');
+  await expect(reply.locator('svg')).toBeVisible();
+  await release('background');
+});
+
+test('Unsubscribe from a partly shown newsletter shows a spinner while the whole message comes in', async () => {
+  await largeMessage({ holdUser: true, unsubscribe: true });
+  await item('Quarterly report').click();
+  const chip = win.locator('[data-reader="unsubscribe"]');
+  await expect(chip).toBeVisible();
+  await chip.click();
+  await win.click('.scrim .buttons button:text-is("Uitschrijven")');
+  await expect(chip).toHaveAttribute('aria-busy', 'true');
+  await expect(chip.locator('.spinner')).toBeVisible();
+  await release('user');
+  await expect(win.locator('#toast')).toContainText('Uitgeschreven bij Sanne de Vries');
+  await expect(chip).toHaveAttribute('aria-busy', 'false');
+  await expect(chip.locator('svg')).toBeVisible();
+  await release('background');
+});
+
+// The note under the cards when the background download fails, in Dutch here. Retry downloads in the user's turn.
+const downloadNote = () => win.locator('.reader .download-note');
+test('a partly shown message whose download failed says so, and Retry brings it in', async () => {
+  await largeMessage({ holdUser: true });
+  await item('Quarterly report').click();
+  await expect(win.locator('.att-name')).toHaveText(['Quarterly-report.pdf', 'chart.png']);
+  await expect.poll(() => app.evaluate(() => global.__held.background.length)).toBe(1);
+  await readerWaits();
+  await expect(downloadNote()).toHaveCount(0);
+  await failDownload('background');
+  await expect(downloadNote()).toHaveText('De rest van deze e-mail is niet gedownload.Opnieuw proberen');
+  await expect(downloadNote()).toHaveAttribute('role', 'status');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(0);
+  // Under the cards.
+  expect(await win.evaluate(() => document.querySelector('.reader .atts').nextElementSibling.classList.contains('download-note'))).toBe(true);
+
+  const retry = downloadNote().locator('[data-reader="retry-download"]');
+  await retry.click();
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry.locator('.spinner')).toBeVisible();
+  // Failing again, it says so again, and the error shows.
+  await failDownload('user');
+  await expect(win.locator('#toast')).toContainText('Connection lost');
+  await expect(downloadNote().locator('[data-reader="retry-download"]')).toHaveAttribute('aria-busy', 'false');
+
+  await downloadNote().locator('[data-reader="retry-download"]').click();
+  await release('user');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect.poll(() => mailFrame().locator('#banner').evaluate((img) => img.naturalWidth)).toBe(40);
+  await expect(downloadNote()).toHaveCount(0);
+  expect((await fetches()).filter((kind) => kind === 'user')).toHaveLength(2);
+});
+
+test('a partly shown message whose download failed tries again by itself after the next sync goes through', async () => {
+  await largeMessage();
+  await item('Quarterly report').click();
+  await expect.poll(() => app.evaluate(() => global.__held.background.length)).toBe(1);
+  await readerWaits();
+  await failDownload('background');
+  await expect(downloadNote()).toBeVisible();
+  // Changes that are no sync, such as the email being marked read, don't try again.
+  await app.evaluate(() => global.__semEngine.emit('updated'));
+  await win.waitForTimeout(300);
+  expect(await fetches()).toEqual(['background']);
+
+  await app.evaluate(() => global.__semEngine.syncAll());
+  await expect.poll(() => app.evaluate(() => global.__held.background.length)).toBe(1);
+  expect(await fetches()).toEqual(['background', 'background']);
+  await release('background');
+  await expect(win.locator('.att.image .thumb img')).toHaveCount(1);
+  await expect(downloadNote()).toHaveCount(0);
+});
+
+// #260: an editor's bar runs along the bottom of the reading pane and of a compose window, where a notice covered its
+// buttons. The notice now shows above the bar. Where they are once the notice has slid in: [toast bottom, bar top].
+const toastAndBar = (page) =>
+  page.evaluate(() => [document.querySelector('#toast').getBoundingClientRect().bottom, document.querySelector('.composer-bar').getBoundingClientRect().top]);
+test("a notice shows above the editor's bar, inline and in a compose window, and in its usual place without an editor", async () => {
+  await item('Sanne de Vries').click();
+  await win.click('.reader-bar [data-reader="unread"]');
+  await expect(win.locator('#toast.show')).toBeVisible();
+  // Without an editor: 24 px above the window's bottom edge.
+  await expect.poll(() => win.evaluate(() => Math.round(innerHeight - document.querySelector('#toast').getBoundingClientRect().bottom))).toBe(24);
+
+  await composer(() => win.click('[data-action="compose"]'));
+  await win.locator('.composer [data-field="subject"]').fill('Above the bar');
+  await win.keyboard.press('Control+s');
+  await expect(win.locator('#toast')).toHaveText('Opgeslagen in Concepten');
+  await expect.poll(async () => { const [toast, bar] = await toastAndBar(win); return Math.round(bar - toast); }).toBe(12);
+  // Not over the attach button either way.
+  const attach = await win.locator('.composer [data-c="attach"]').boundingBox();
+  const toast = await win.locator('#toast').boundingBox();
+  expect(toast.y + toast.height).toBeLessThanOrEqual(attach.y);
+
+  const [compose] = await Promise.all([app.waitForEvent('window'), win.click('.composer [data-c="popout"]')]);
+  await compose.waitForSelector('.compose .editor');
+  await compose.locator('.editor').click();
+  await compose.keyboard.type('In a window of its own.');
+  await compose.keyboard.press('Control+s');
+  await expect(compose.locator('#toast')).toHaveText('Opgeslagen in Concepten');
+  await expect.poll(async () => { const [toast, bar] = await toastAndBar(compose); return Math.round(bar - toast); }).toBe(12);
 });
 
 // A full disk: the main process can't write a message to the profile.

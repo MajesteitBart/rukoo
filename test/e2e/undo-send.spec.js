@@ -6,7 +6,7 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
-const { closeApp } = require('./close');
+const { closeApp, kill } = require('./close');
 
 let app;
 let win;
@@ -62,6 +62,15 @@ const mainWindow = () =>
 // What the main window's close button does: hide it in the tray with Close to the tray on, otherwise close it.
 const closeMain = () =>
   app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.webContents.getURL().endsWith('index.html')).close());
+// The background services a quit stops only once it can't be called off any more (main.js closeServices): the reminder
+// runner's clock, and the mail notifications listening to the categories.
+const services = () =>
+  app.evaluate(() => ({
+    closed: Boolean(global.__semServicesClosed),
+    reminders: global.__semReminders.timer !== null,
+    notices: global.__semCategories.listeners('sorted').includes(global.__semMailNotices.answered)
+  }));
+const RUNNING = { closed: false, reminders: true, notices: true };
 // The subjects in a view of the demo account, after a sync.
 const subjects = (view) =>
   app.evaluate(async (_e, view) => {
@@ -376,6 +385,8 @@ test("Don't quit also calls off a quit an editor held while its Send waited for 
   await expect(composer().locator('.editor')).toContainText('Queued while the quit waits.');
   expect(await held()).toBe(0);
   expect(await quitQuestions()).toBe(1);
+  // The first before-quit ran in full, before the editor held it; Don't quit leaves Rukoo running with its services.
+  expect(await services()).toEqual(RUNNING);
 });
 
 test('quitting with an email that waits sends it before Rukoo exits, also when a second quit comes meanwhile', async () => {
@@ -473,6 +484,99 @@ test('an email that fails while a quit waits for an answer opens again when the 
   await expect(again.locator('[data-field="subject"]')).toHaveValue('Failed during a quit');
   await expect(again.locator('.editor')).toContainText('Back after Cancel.');
   await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
+});
+
+// before-quit runs in full before an editor asks about its changes. Cancel there keeps Rukoo running, so it must keep
+// its account service, categories, mail notifications, reminders and booking too; only will-quit stops them.
+test('a quit called off in an editor leaves the background services running, and the next quit stops them', async () => {
+  expect(await services()).toEqual(RUNNING);
+  await newMessage(win, { to: 'other@example.com', subject: 'Half written', text: 'Unsaved.' });
+  win.on('dialog', () => {});
+  await app.evaluate(({ app }) => {
+    global.__quits = 0;
+    app.on('before-quit', () => (global.__quits += 1));
+    app.quit();
+  });
+  await expect(win.locator('.scrim')).toContainText('Save draft?');
+  expect(await app.evaluate(() => global.__quits)).toBe(1);
+  await win.click('.scrim .buttons button:text-is("Cancel")');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  await expect(composer().locator('[data-field="subject"]')).toHaveValue('Half written');
+  expect(await services()).toEqual(RUNNING);
+
+  // A quit that goes through stops them once every window has closed. Rukoo then exits, so the test listens in main.
+  await app.evaluate(({ app }) => {
+    app.on('will-quit', () => {
+      const fs = process.mainModule.require('fs');
+      const path = process.mainModule.require('path');
+      const out = { closed: Boolean(global.__semServicesClosed), reminders: global.__semReminders.timer !== null };
+      fs.writeFileSync(path.join(app.getPath('userData'), 'services-at-exit.json'), JSON.stringify(out));
+    });
+  });
+  await closeApp(app);
+  expect(JSON.parse(fs.readFileSync(path.join(dataDir, 'services-at-exit.json'), 'utf8'))).toEqual({ closed: true, reminders: false });
+});
+
+// #256: Rukoo ends without a quit while emails wait out their notice: a crash, a killed process. held.json follows
+// the outbox, and the next start opens each email in a compose window, unsent, with a note that says what happened.
+test('emails that wait when Rukoo is killed open again at the next start, unsent, with a note', async () => {
+  const file = path.join(dataDir, 'data', 'held.json');
+  const kept = () => JSON.parse(fs.readFileSync(file, 'utf8')).map((e) => [e.state, e.restore.state.subject]);
+  // The first is on its way when Rukoo dies, so nobody knows whether it went; the second still waits.
+  await app.evaluate(() => {
+    global.__semEngine.send = () => new Promise(() => {});
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'On its way', text: 'Maybe sent.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  await expect(notice()).toContainText('Sending email…');
+  expect(kept()).toEqual([['waiting', 'On its way']]);
+  // On its way now; its send never ends, so the call doesn't wait for it.
+  await app.evaluate(() => {
+    global.__semOutbox.go([...global.__semOutbox.entries.values()][0]);
+  });
+  await newMessage(win, { to: 'someone@example.com', subject: 'Kept through a crash', text: 'Still here after the crash.' });
+  await composer().locator('[data-c="send"]').click();
+  await composerGone();
+  expect(kept()).toEqual([
+    ['sending', 'On its way'],
+    ['waiting', 'Kept through a crash']
+  ]);
+
+  const exited = app.waitForEvent('close');
+  kill(app.process());
+  await exited;
+  expect(fs.existsSync(file)).toBe(true);
+  await launch();
+  await expect.poll(() => app.windows().length, { timeout: 15000 }).toBe(3);
+  const editors = app.windows().filter((w) => w !== win);
+  for (const w of editors) await w.waitForSelector('.composer .editor');
+  const bySubject = async (subject) => {
+    for (const w of editors) if ((await w.locator('[data-field="subject"]').inputValue()) === subject) return w;
+    return null;
+  };
+  const waited = await bySubject('Kept through a crash');
+  await expect(waited.locator('.dialog')).toContainText("Rukoo closed before this email was sent. Send it again when it's ready.");
+  await waited.locator('.dialog .buttons button').click();
+  await expect(waited.locator('.editor')).toContainText('Still here after the crash.');
+  await expect(waited.locator('[data-rfield="to"] .recipient')).toHaveText(['someone@example.com']);
+  const going = await bySubject('On its way');
+  await expect(going.locator('.dialog')).toContainText('Check Sent before you send it again.');
+  await going.locator('.dialog .buttons button').click();
+  await expect(going.locator('.editor')).toContainText('Maybe sent.');
+  // Opened, and sent by nobody: the file is gone, and nothing waits or reached Sent.
+  expect(fs.existsSync(file)).toBe(false);
+  expect(await waiting()).toBe(0);
+  const sent = await subjects('sent');
+  expect(sent).not.toContain('Kept through a crash');
+  expect(sent).not.toContain('On its way');
+
+  // Undo after a new Send writes the file again, and takes it away.
+  await Promise.all([waited.waitForEvent('close'), waited.click('[data-c="send"]')]);
+  await expect(notice()).toContainText('Sending email…');
+  expect(kept()).toEqual([['waiting', 'Kept through a crash']]);
+  await Promise.all([app.waitForEvent('window'), notice().locator('button').click()]);
+  expect(fs.existsSync(file)).toBe(false);
 });
 
 // The server refuses an email while a quit waits for another editor's answer, so it goes to Drafts, and the quit is
