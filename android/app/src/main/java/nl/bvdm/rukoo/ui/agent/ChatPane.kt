@@ -89,6 +89,7 @@ import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
+import nl.bvdm.rukoo.ui.root.ChatFollow
 import nl.bvdm.rukoo.ui.root.Pane
 import nl.bvdm.rukoo.ui.root.TwoPaneMinWidth
 import nl.bvdm.rukoo.ui.settings.SettingsRoutes
@@ -260,11 +261,13 @@ fun ChatPane(app: AppViewModel, conversationId: String?, emailId: String?, modif
         val current = controller.snapshot.conversation
         val own = current?.message?.id ?: emailId
         if (openId == own || current?.continued?.any { it.id == openId } == true) return@LaunchedEffect
-        val ref = loadRef(services.mail, openId, full = false) ?: return@LaunchedEffect
-        val found = quietly { hub.findFor(ref) }
-        local.value = local.value.copy(lookedUpFor = openId, detachedFor = null, model = null, effort = null)
-        // Switches the chat beside the reader without pushing it or making it the pane touched last.
-        app.followEmail(found?.id, openId)
+        // Switches the chat beside the reader without pushing it or making it the pane touched last. A chat the user
+        // starts or opens while the email and its chat are looked up stays.
+        val followed = app.followOpened(openId) {
+            val ref = loadRef(services.mail, openId, full = false) ?: return@followOpened ChatFollow.Missing
+            ChatFollow.To(quietly { hub.findFor(ref) }?.id)
+        }
+        if (followed) local.value = local.value.copy(lookedUpFor = openId, detachedFor = null, model = null, effort = null)
     }
 
     // From the window itself, as RukooRoot decides the layout: the view model hears about a fold a frame later.

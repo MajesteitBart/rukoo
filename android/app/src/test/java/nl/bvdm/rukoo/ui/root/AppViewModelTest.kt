@@ -9,6 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -468,6 +469,87 @@ class AppViewModelTest {
         vm.openChat(withoutEmail = true)
         assertNull(vm.state.value.chatEmailId)
         assertNull(vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aChatStartedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openMessage("a")
+        vm.openChat(null, "a")
+        vm.openMessage("b")
+        // The reader moved on to b; the lookup for b's chat is still out when the first message creates the new chat.
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        vm.chatCreated("c_1")
+        lookup.complete(ChatFollow.To(null))
+        assertFalse(follow.await())
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+    }
+
+    @Test
+    fun aChatStillBeingCreatedWhenTheLookupAnswersStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat(null, "a")
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        // The first message is out; the hub hasn't made its conversation yet when the lookup answers.
+        vm.chatStarting()
+        lookup.complete(ChatFollow.To("c_2"))
+        assertFalse(follow.await())
+        assertNull(vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+        vm.chatCreated("c_1")
+        assertEquals("c_1", vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aChatOpenedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        vm.openChat("c_9", "z")
+        lookup.complete(ChatFollow.To("c_2"))
+        assertFalse(follow.await())
+        assertEquals("c_9", vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun theChatFollowsTheOpenedEmailWhenNothingChangedMeanwhile() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.interacted(Pane.READER)
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        lookup.complete(ChatFollow.To("c_2"))
+        assertTrue(follow.await())
+        assertEquals("c_2", vm.state.value.chatConversationId)
+        assertEquals("b", vm.state.value.chatEmailId)
+        assertEquals(Pane.READER, vm.state.value.lastInteracted)
+        // No chat about c: a new chat about it.
+        vm.openMessage("c")
+        assertTrue(vm.followOpened("c") { ChatFollow.To(null) })
+        assertNull(vm.state.value.chatConversationId)
+        assertEquals("c", vm.state.value.chatEmailId)
+    }
+
+    @Test
+    fun theChatStaysWhenTheOpenedEmailIsGoneOrAnotherOpened() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.openMessage("b")
+        assertFalse(vm.followOpened("b") { ChatFollow.Missing })
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertFalse(vm.followOpened("b") { vm.openMessage("c"); ChatFollow.To("c_2") })
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+        vm.closeChat()
+        assertFalse(vm.followOpened("c") { ChatFollow.To("c_3") })
+        assertFalse(vm.state.value.chatOpen)
     }
 
     @Test
