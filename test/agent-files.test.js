@@ -1014,6 +1014,31 @@ test('pdfText never throws: encrypted, damaged, not a PDF, or a zip bomb', () =>
   assert.ok(Date.now() - started < 5000);
 });
 
+test('pdfText reads a PDF encrypted with an empty user password, as viewers open it without asking; one that needs a password stays encrypted', () => {
+  const { encryptedPdfs } = require('./fixtures/make-pdf');
+  const pdfs = encryptedPdfs();
+  const read = { text: 'Encrypted invoice\nTotal: café € 12', pages: 1, truncated: false, partial: false, encrypted: false };
+  const locked = { text: '', pages: 0, truncated: false, partial: false, encrypted: true };
+  // RC4 of 40 and 128 bits, AES-128, and AES-256 of revisions 5 and 6, as pypdf's writer makes them, and the page
+  // tree and font in an object stream: that stream is decrypted, the objects in it are not one by one.
+  for (const name of ['rc4_40', 'rc4_128', 'aes_128', 'aes_256_r5', 'aes_256', 'rc4_40_objstm', 'rc4_128_objstm', 'aes_128_objstm', 'aes_256_objstm']) assert.deepEqual(pdfText(pdfs[name]), read, name);
+  // EncryptMetadata false changes the key; streams that StmF or their own Crypt filter leave as written stay so.
+  for (const name of ['no_metadata', 'identity_streams', 'crypt_filter']) assert.deepEqual(pdfText(pdfs[name]), read, name);
+  // A user password, and a U that doesn't match the empty one, for each way of checking it.
+  assert.deepEqual(pdfText(pdfs.password), locked);
+  const wrongU = (pdf) => {
+    const s = pdf.toString('latin1');
+    const at = s.indexOf('/U <') + 4;
+    assert.ok(at > 4);
+    return Buffer.from(`${s.slice(0, at)}${s[at] === '0' ? '1' : '0'}${s.slice(at + 1)}`, 'latin1');
+  };
+  for (const name of ['rc4_40', 'rc4_128', 'aes_128', 'aes_256_r5', 'aes_256']) assert.deepEqual(pdfText(wrongU(pdfs[name])), locked, name);
+  // A security handler this reader doesn't have.
+  assert.deepEqual(pdfText(Buffer.from(pdfs.aes_128.toString('latin1').replace('/Filter /Standard', '/Filter /Adobe.PubSec'), 'latin1')), locked);
+  // A decryption bomb: "start", then a stream that inflates past what the reader inflates in all.
+  assert.deepEqual(pdfText(pdfs.bomb), { ...read, text: 'start', partial: true });
+});
+
 test('pdfText: a Filter of null is no filter, and a dictionary entry of null is no entry', () => {
   const { plainPage } = require('./fixtures/make-pdf');
   const content = 'BT /F1 12 Tf 72 700 Td (no filter) Tj ET';
@@ -1096,6 +1121,31 @@ test('pdfText: "endobj" or an object header in a string or comment is part of it
   assert.deepEqual(pdfText(plainPage(text, { before: '11 0 obj<</Title(open endobj\n', after: '12 0 obj<</Title(x)) /A 1 endobj\n' })), read);
 });
 
+test('pdfText: a trailer in a string of an object without endobj is no trailer, and a damaged object still leaves the real trailer', () => {
+  const { plainPage } = require('./fixtures/make-pdf');
+  const text = 'BT /F1 12 Tf 72 700 Td (text) Tj ET';
+  const read = { text: 'text', pages: 1, truncated: false, partial: false, encrypted: false };
+  const locked = { text: '', pages: 0, truncated: false, partial: false, encrypted: true };
+  // The issue's case: a title holds a trailer, and its object has no endobj. Before the page's content and after it,
+  // and with "xref" in the string too: a keyword in a string ends nothing.
+  for (const title of ['(trailer<</Encrypt<</Filter/Standard>>>>)', '(xref trailer<</Encrypt<</Filter/Standard>>>>)']) {
+    assert.deepEqual(pdfText(plainPage(text, { before: `11 0 obj<</Title${title}>>\n` })), read, `before: ${title}`);
+    assert.deepEqual(pdfText(plainPage(text, { after: `11 0 obj<</Title${title}>>\n` })), read, `after: ${title}`);
+  }
+  assert.deepEqual(pdfText(plainPage(text, { after: '11 0 obj[(trailer<</Encrypt<</Filter/Standard>>>>)]\n' })), read);
+  // A damaged last object, with no ">>" and no endobj, right before the file's own trailer: the bare keyword ends
+  // it, so it can't take the trailer in and the encrypted file stays encrypted. Also with a cross-reference table
+  // between them, whose "xref" ends it.
+  const handler = '9 0 obj<</Filter/Standard/V 1/R 2/P -4>>endobj\n';
+  const damaged = (pdf, between, encrypt) => Buffer.from(pdf.toString('latin1').replace('endobj\ntrailer<</Root', `endobj\n12 0 obj<</A 1\n${between}trailer<<${encrypt}/Root`), 'latin1');
+  const table = 'xref\n0 1\n0000000000 65535 f \n';
+  for (const between of ['', table]) {
+    assert.deepEqual(pdfText(damaged(plainPage(text, { after: handler }), between, '/Encrypt 9 0 R')), locked, JSON.stringify(between));
+    // And the trailer of a file that isn't encrypted still gives the Root.
+    assert.deepEqual(pdfText(damaged(plainPage(text), between, '')), read, JSON.stringify(between));
+  }
+});
+
 test('pdfText reads a stream Length kept in an object of its own, so "endstream" in the data does not end it', () => {
   const { plainPage } = require('./fixtures/make-pdf');
   const read = (text) => ({ text, pages: 1, truncated: false, partial: false, encrypted: false });
@@ -1114,6 +1164,29 @@ test('pdfText reads a stream Length kept in an object of its own, so "endstream"
   const plain = 'BT /F1 12 Tf 72 700 Td (plain) Tj ET';
   assert.deepEqual(pdfText(plainPage(plain, { length: '11 0 R', after: `11 0 obj 12 0 R endobj\n12 0 obj ${plain.length} endobj\n` })), read('plain'));
   assert.deepEqual(pdfText(plainPage(plain, { length: '11 0 R', after: `11 0 obj ${plain.length - 3} endobj\n` })), read('plain'));
+});
+
+test('pdfText reads a stream Length packed in an object stream, and says partial when a length it cannot read cut the data', () => {
+  const { plainPage, objectStream } = require('./fixtures/make-pdf');
+  const read = (text, partial = false) => ({ text, pages: 1, truncated: false, partial, encrypted: false });
+  // The issue's case: "endstream" in a comment of the content, and its Length in an object stream. The rest of the
+  // page was lost, and the text not marked partial.
+  const content = 'BT /F1 12 Tf 72 700 Td (one) Tj ET\n% endstream\nBT /F1 12 Tf 72 680 Td (two) Tj ET';
+  for (const deflate of [false, true]) {
+    const packed = objectStream(21, { 20: content.length }, deflate);
+    assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', after: packed })), read('one\ntwo'), `after, deflate ${deflate}`);
+    assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', before: packed })), read('one\ntwo'), `before, deflate ${deflate}`);
+  }
+  // A packed length that holds a reference again is not taken, as a plain one isn't.
+  assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', after: objectStream(21, { 20: '22 0 R', 22: content.length }) })), read('one', true));
+  // A length that leads nowhere, or one that is wrong: the data ends at its first endstream, and as endobj doesn't
+  // follow that, the rest went unread. Data without the word reads in full and isn't partial.
+  assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R' })), read('one', true));
+  assert.deepEqual(pdfText(plainPage(content, { length: '20 0 R', after: '20 0 obj 5 endobj\n' })), read('one', true));
+  assert.deepEqual(pdfText(plainPage(content, { length: 5 })), read('one', true));
+  const plain = 'BT /F1 12 Tf 72 700 Td (plain) Tj ET';
+  assert.deepEqual(pdfText(plainPage(plain, { length: '20 0 R' })), read('plain'));
+  assert.deepEqual(pdfText(plainPage(plain, { length: 5 })), read('plain'));
 });
 
 test('pdfText skips an inline image where its data ends, by its size or its filter; where it has to guess, the text is partial', () => {
@@ -1164,11 +1237,40 @@ test('pdfText skips an inline image where its data ends, by its size or its filt
   assert.deepEqual(pdfText(page(`BI /W 20 /H 1 /BPC 8 /CS /G /F /DCT ID ${data(1100)}`)), { ...read(true), text: 'before' });
 });
 
-test('finding where inline images end stays within the caps: data full of EIs, white space after thousands of images, broken zlib, no ">"', async () => {
+test('pdfText finds where an inline JPEG or RunLength image ends, so bytes in it that look like content are skipped', () => {
+  const { onePage, JPEGS } = require('./fixtures/make-pdf');
+  const page = (image) => onePage(`BT /F1 12 Tf 72 720 Td (before) Tj ET q ${image}\nEI Q\nBT /F1 12 Tf 72 700 Td (after) Tj ET`);
+  const read = (partial = false) => ({ text: 'before\nafter', pages: 1, truncated: false, partial, encrypted: false });
+  const jpeg = (data, filter = '/F /DCT') => page(`BI /W 16 /H 16 /BPC 8 /CS /G ${filter} ID ${data}`);
+  // Real JPEGs, a baseline one with restart markers and a stuffed FF and a progressive one, whose comment holds
+  // " EI Q BT ... (lost) Tj ET EI ": the guess took that EI for the end, read "lost" and said partial.
+  for (const [name, data] of Object.entries(JPEGS)) {
+    assert.deepEqual(pdfText(jpeg(data)), read(), name);
+    assert.deepEqual(pdfText(jpeg(data, '/Filter [/DCTDecode]')), read(), `${name}, full name`);
+  }
+  // The same bytes in the entropy-coded data, which runs to the next marker.
+  const s = JPEGS.baseline;
+  const sos = s.indexOf('\xff\xda');
+  const at = sos + 2 + ((s.charCodeAt(sos + 2) << 8) | s.charCodeAt(sos + 3));
+  assert.deepEqual(pdfText(jpeg(`${s.slice(0, at)} EI Q BT /F1 12 Tf 72 690 Td (lost) Tj ET EI ${s.slice(at)}`)), read());
+  // A JPEG that breaks the rules leaves the end a guess, and the text partial: the comment's length cut short, so a
+  // marker is due where the comment goes on; no end-of-image marker; no start-of-image marker.
+  assert.equal(s.indexOf('\xff\xfe\x00\x2f'), 20);
+  for (const broken of [s.replace('\xff\xfe\x00\x2f', '\xff\xfe\x00\x20'), s.slice(0, -2), s.slice(2)]) assert.equal(pdfText(jpeg(broken)).partial, true);
+  // RunLength: a literal run of 20 bytes that holds " EI Q (", four of one byte, and the end byte 128.
+  const literal = ' EI Q (xxxxxxxxxxxxx';
+  const runs = `${String.fromCharCode(literal.length - 1)}${literal}\xfd\x00\x80`;
+  assert.deepEqual(pdfText(page(`BI /W 24 /H 1 /BPC 8 /CS /G /F /RL ID ${runs}`)), read());
+  assert.deepEqual(pdfText(page(`BI /W 24 /H 1 /BPC 8 /CS /G /Filter /RunLengthDecode ID ${runs}`)), read());
+  // Without the end byte the walk finds no end: a guess, partial.
+  assert.equal(pdfText(page(`BI /W 24 /H 1 /BPC 8 /CS /G /F /RL ID ${runs.slice(0, -1)}`)).partial, true);
+});
+
+test('finding where inline images end stays within the caps: data full of EIs, white space after thousands of images, broken zlib, no ">", JPEG and RunLength data that never ends', async () => {
   const { onePage } = require('./fixtures/make-pdf');
   const dir = tmp('sem-pdf-image-');
   const files = {};
-  for (const name of ['eis', 'spaces', 'badZlib', 'hex', 'unclear']) files[name] = path.join(dir, `${name}.pdf`);
+  for (const name of ['eis', 'spaces', 'badZlib', 'hex', 'unclear', 'jpegs', 'openJpeg', 'openRunLength']) files[name] = path.join(dir, `${name}.pdf`);
   const page = (images, end = '') => onePage(`BT /F1 12 Tf 72 720 Td (start) Tj ET ${images}${end}`);
   // Three million EIs, each followed by a string that runs past the look ahead.
   fs.writeFileSync(files.eis, page(`BI /F /DCT ID ${' EI ('.repeat(3000000)}`));
@@ -1185,12 +1287,21 @@ test('finding where inline images end stays within the caps: data full of EIs, w
   // it looks ahead, then 40 MB of it. Each image searched the rest of the page, uncounted: 8 GB in all, after which
   // the text at the end was read. Counted, the searches use up what a page may read, and it is not.
   fs.writeFileSync(files.unclear, page(`BI /W 1 /H 1 /F /DCT ID x EI${' '.repeat(1100)}`.repeat(210), `${' '.repeat(40 * 1024 * 1024)}BT /F1 12 Tf 72 700 Td (after) Tj ET`));
+  // A hundred thousand of the smallest JPEGs, start and end of image, each walked to its end and read in full. And
+  // a thousand images whose walk goes on past the images that follow, to the end of the page: JPEGs with a comment
+  // of 64 KB, which lands in a megabyte of fill bytes, and RunLength data without its end byte. Each walk counts what
+  // it walked, so they use up what a page may read, and the text at the end is not read.
+  const after = 'BT /F1 12 Tf 72 700 Td (after) Tj ET';
+  fs.writeFileSync(files.jpegs, page('BI /W 1 /H 1 /F /DCT ID \xff\xd8\xff\xd9 EI '.repeat(100000), after));
+  fs.writeFileSync(files.openJpeg, page('BI /W 1 /H 1 /F /DCT ID \xff\xd8\xff\xfe\xff\xff EI '.repeat(1000), `${'\xff'.repeat(1024 * 1024)} ${after}`));
+  fs.writeFileSync(files.openRunLength, page('BI /W 1 /H 1 /F /RL ID \x01ab EI '.repeat(1000), `${' '.repeat(1024 * 1024)}${after}`));
   const r = await pdfTextInChildren(files);
   for (const name of Object.keys(files)) assert.equal(r[name].error, undefined, `${name}: ${r[name].error}`);
   for (const name of Object.keys(files)) assert.ok(r[name].cpuMs < 3000, `${name} took ${r[name].cpuMs} ms CPU (${r[name].ms} ms elapsed)`);
-  for (const name of ['eis', 'badZlib', 'hex', 'unclear']) assert.deepEqual([r[name].text, r[name].partial], ['start', true], name);
+  for (const name of ['eis', 'badZlib', 'hex', 'unclear', 'openJpeg', 'openRunLength']) assert.deepEqual([r[name].text, r[name].partial], ['start', true], name);
   // No size is followed by its EI, so each end is a guess: the text is read, and partial.
   assert.deepEqual([r.spaces.text, r.spaces.partial], ['start\nafter', true]);
+  assert.deepEqual([r.jpegs.text, r.jpegs.partial], ['start\nafter', false]);
 });
 
 // ---------- reading a PDF in a process of its own ----------

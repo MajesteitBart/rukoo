@@ -4,11 +4,13 @@
 // machine gets the file without a reader for it. A small reader for what most PDFs use. It finds objects by
 // scanning, so a broken xref table doesn't matter, and reads object streams, FlateDecode, ASCIIHex and ASCII85. It
 // turns glyphs into text with a font's ToUnicode map or its encoding, and walks each page's text operators in
-// order, forms included. It reads no images, so a scanned PDF has no text, and it can't decrypt. Rukoo runs it in
-// a process of its own (pdfread.js), with a time limit and a memory cap. Everything here is capped as well, so a
+// order, forms included. It reads no images, so a scanned PDF has no text. An encrypted PDF it reads when it opens
+// without a password, as most viewers open one; one that needs a password stays encrypted. Rukoo runs it in a
+// process of its own (pdfread.js), with a time limit and a memory cap. Everything here is capped as well, so a
 // hostile file comes back quickly and says what is missing: work and memory grow with the file, never faster, and
 // a cap that is hit ends the text early and marks it partial. It never throws.
 
+const crypto = require('crypto');
 const zlib = require('zlib');
 const iconv = require('iconv-lite');
 
@@ -78,6 +80,17 @@ class Lexer {
     this.past = null;
     this.grown = false;
     this.ended = false;
+    // Set by Doc.scan() too: a bare trailer, xref or startxref, which no object's value can hold, ends the value
+    // before it, as cut (see value). A damaged object then can't take in the file's trailer.
+    this.stops = false;
+  }
+
+  // Whether tok is a keyword that ends an object's value, which then goes back to before it.
+  stop(tok) {
+    if (!this.stops || (tok !== 'trailer' && tok !== 'xref' && tok !== 'startxref')) return false;
+    this.pos -= tok.length;
+    this.ended = true;
+    return true;
   }
 
   skip() {
@@ -196,6 +209,7 @@ class Lexer {
     const s = this.s;
     let stop = this.pos + 1;
     while (stop < this.end && s.charCodeAt(stop) !== 62) stop++;
+    if (stop >= this.end) this.ended = true;
     const digits = s.slice(this.pos + 1, stop).replace(/[^0-9a-fA-F]/g, '');
     this.pos = Math.min(stop + 1, this.end);
     return new Str(Buffer.from(digits.length % 2 ? `${digits}0` : digits, 'hex').toString('latin1'));
@@ -225,7 +239,8 @@ function lineEnd(s, i, end) {
 
 // One value: a number, a reference ("12 0 R"), an array, a dictionary (a Map), null, or the token itself. Past
 // NEST_MAX an item is null, and past ITEMS_MAX it is left out; either marks lex.flags partial. A dictionary entry
-// whose value is null is no entry, as the PDF specification says: /Filter null is no filter.
+// whose value is null is no entry, as the PDF specification says: /Filter null is no filter. With lex.stops, an
+// array or dictionary ends where a trailer keyword stands in it, with what it has so far.
 function value(lex, tok, depth = 0) {
   if (tok === 'null') return null;
   if (typeof tok === 'number') {
@@ -242,6 +257,7 @@ function value(lex, tok, depth = 0) {
   if (tok === '[') {
     const list = [];
     for (let t = lex.token(); t !== null && t !== ']'; t = lex.token()) {
+      if (lex.stop(t)) break;
       const room = list.length < ITEMS_MAX;
       if (room) list.push(depth < NEST_MAX ? value(lex, t, depth + 1) : null);
       else if (depth < NEST_MAX) value(lex, t, depth + 1);
@@ -252,9 +268,10 @@ function value(lex, tok, depth = 0) {
   if (tok === '<<') {
     const dict = new Map();
     for (let t = lex.token(); t !== null && t !== '>>'; t = lex.token()) {
+      if (lex.stop(t)) break;
       if (!(t instanceof Name)) continue;
       const v = lex.token();
-      if (v === '>>' || v === null) break;
+      if (v === '>>' || v === null || lex.stop(v)) break;
       const item = depth < NEST_MAX ? value(lex, v, depth + 1) : null;
       const room = dict.size < ITEMS_MAX || dict.has(t.name);
       if (item === null) dict.delete(t.name);
@@ -310,6 +327,128 @@ function ascii85(data, max) {
   return out.subarray(0, n);
 }
 
+// ---------- encryption ----------
+
+// The standard security handler's padding, which makes up a password to 32 bytes: all of it for the empty one.
+const PASSWORD_PAD = Buffer.from('28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe6453697a', 'hex');
+
+const md5 = (...parts) => crypto.createHash('md5').update(Buffer.concat(parts)).digest();
+const sha = (bits, data) => crypto.createHash(`sha${bits}`).update(data).digest();
+
+function rc4(key, data) {
+  const s = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) s[i] = i;
+  for (let i = 0, j = 0; i < 256; i++) {
+    j = (j + s[i] + key[i % key.length]) & 255;
+    [s[i], s[j]] = [s[j], s[i]];
+  }
+  const out = Buffer.allocUnsafe(data.length);
+  for (let k = 0, i = 0, j = 0; k < data.length; k++) {
+    i = (i + 1) & 255;
+    j = (j + s[i]) & 255;
+    const t = s[i];
+    s[i] = s[j];
+    s[j] = t;
+    out[k] = data[k] ^ s[(s[i] + s[j]) & 255];
+  }
+  return out;
+}
+
+// AES in CBC mode over whole blocks, without padding: the caller deals with that. The key goes in as a KeyObject:
+// with a Buffer, setting up the cipher took five times as long, which a file of many small streams adds up.
+function aes(bits, key, iv, data, decrypt) {
+  const c = (decrypt ? crypto.createDecipheriv : crypto.createCipheriv)(`aes-${bits}-cbc`, crypto.createSecretKey(key), iv);
+  c.setAutoPadding(false);
+  return Buffer.concat([c.update(data), c.final()]);
+}
+
+// Algorithm 2.B of PDF 2.0, the hash of revision 6, for the empty password with no U data (the user's side): at
+// least 64 rounds of AES-128 and SHA-256, 384 or 512, and at most 288, as the last byte of a round decides.
+function hash2B(salt) {
+  let k = sha(256, salt);
+  let e = null;
+  for (let i = 0; i < 64 || e[e.length - 1] > i - 32; i++) {
+    e = aes(128, k.subarray(0, 16), k.subarray(16, 32), Buffer.concat(Array(64).fill(k)), false);
+    let sum = 0;
+    for (let b = 0; b < 16; b++) sum += e[b];
+    k = sha([256, 384, 512][sum % 3], e);
+  }
+  return k.subarray(0, 32);
+}
+
+// The key of one object's strings and streams, from the file key and the object's number and generation
+// (Algorithm 1). AES-256 uses the file key itself.
+function objectKey(key, e, aes128) {
+  const id = Buffer.from([e.num & 255, (e.num >> 8) & 255, (e.num >> 16) & 255, e.gen & 255, (e.gen >> 8) & 255]);
+  return md5(key, id, aes128 ? Buffer.from('sAlT', 'latin1') : Buffer.alloc(0)).subarray(0, Math.min(key.length + 5, 16));
+}
+
+// Opens a file the standard security handler encrypts, with the empty user password, as a viewer does without
+// asking for one: the file key from Algorithm 2 for revisions 2 to 4, checked against U with Algorithm 4 or 5, and
+// for revisions 5 and 6 from UE, after U checks out with SHA-256 or Algorithm 2.B. null when that password doesn't
+// open it, or the dictionary is one this reader doesn't know. The permissions in P aren't enforced: the user has
+// the file, and the agent reads it for them, as any viewer would show it. Else { key, stmf, metadata, method }:
+// stmf names the crypt filter of streams, metadata says whether metadata is encrypted, and method(name) says how a
+// crypt filter decrypts (Doc.cipher).
+function openStandard(doc, dict, id) {
+  const get = (key) => doc.resolve(dict.get(key));
+  const bytes = (key) => {
+    const v = get(key);
+    return v instanceof Str ? Buffer.from(v.bytes, 'latin1') : null;
+  };
+  const v = get('V');
+  const r = get('R');
+  const o = bytes('O');
+  const u = bytes('U');
+  if (nameOf(get('Filter')) !== 'Standard' || ![1, 2, 4, 5].includes(v) || !o || !u) return null;
+  const metadata = get('EncryptMetadata') !== 'false';
+  const filters = v >= 4 ? get('CF') : null;
+  const method = (name) => {
+    if (name === 'Identity') return null;
+    if (v < 4) return 'rc4';
+    const cf = filters instanceof Map ? doc.resolve(filters.get(name)) : null;
+    const cfm = cf instanceof Map ? nameOf(doc.resolve(cf.get('CFM'))) : 'None';
+    return { None: null, V2: 'rc4', AESV2: 'aes128', AESV3: 'aes256' }[cfm];
+  };
+  const stmf = v >= 4 ? nameOf(get('StmF')) || 'Identity' : 'StdCF';
+  let key = null;
+  if (r === 5 || r === 6) {
+    const ue = bytes('UE');
+    if (u.length < 48 || !ue || ue.length < 32) return null;
+    const hash = (salt) => (r === 6 ? hash2B(salt) : sha(256, salt));
+    if (!hash(u.subarray(32, 40)).equals(u.subarray(0, 32))) return null;
+    key = aes(256, hash(u.subarray(40, 48)), Buffer.alloc(16), ue.subarray(0, 32), true);
+  } else if (r >= 2 && r <= 4) {
+    const p = get('P');
+    if (!Number.isInteger(p) || o.length < 32 || u.length < (r === 2 ? 32 : 16)) return null;
+    // The key length in bits: Length, or else the stream crypt filter's (in bytes when it is under 40, as some
+    // writers give it), 128 by default from V 4 on and 40 before.
+    let bits = get('Length');
+    if (!Number.isInteger(bits) && v >= 4) {
+      const cf = filters instanceof Map ? doc.resolve(filters.get(stmf)) : null;
+      bits = cf instanceof Map ? doc.resolve(cf.get('Length')) : undefined;
+      if (!Number.isInteger(bits)) bits = 128;
+    }
+    if (!Number.isInteger(bits)) bits = 40;
+    if (bits < 40) bits *= 8;
+    const n = r === 2 ? 5 : bits / 8;
+    if (!Number.isInteger(n) || n < 5 || n > 16) return null;
+    const flags = Buffer.alloc(4);
+    flags.writeInt32LE(p | 0);
+    const all = r >= 4 && !metadata ? Buffer.from([255, 255, 255, 255]) : Buffer.alloc(0);
+    key = md5(PASSWORD_PAD, o.subarray(0, 32), flags, id, all).subarray(0, n);
+    if (r >= 3) for (let i = 0; i < 50; i++) key = md5(key).subarray(0, n);
+    if (r === 2) {
+      if (!rc4(key, PASSWORD_PAD).equals(u.subarray(0, 32))) return null;
+    } else {
+      let check = rc4(key, md5(PASSWORD_PAD, id));
+      for (let i = 1; i <= 19; i++) check = rc4(key.map((b) => b ^ i), check);
+      if (!check.equals(u.subarray(0, 16))) return null;
+    }
+  } else return null;
+  return { key, stmf, metadata, method };
+}
+
 class Doc {
   constructor(buffer) {
     this.s = buffer.toString('latin1');
@@ -318,6 +457,8 @@ class Doc {
     this.packed = null;
     this.trailerDicts = null;
     this.inflated = 0;
+    // Stream entry → its data decrypted (stream).
+    this.decrypted = new WeakMap();
     // Objects found so far, against OBJECTS_MAX.
     this.count = 0;
     // Set when a limit left part of the document unread, so its text is incomplete.
@@ -327,14 +468,20 @@ class Doc {
     // Codes the ToUnicode maps and CID widths may still set (CMAP_MAX); parseCMap() takes the Doc for it.
     this.room = CMAP_MAX;
     // A stream whose Length is an object later in the file ends at its first endstream in the first scan, and
-    // its data can hold that word. Once the lengths are read, such a stream gets its own length. If that goes past
-    // an endstream, the file is scanned again with the lengths, so nothing in its data passes for an object.
+    // its data can hold that word. Once the lengths are read, such a stream gets its own length: a plain object's,
+    // or else one packed in an object stream. If that goes past an endstream, the file is scanned again with the
+    // lengths, so nothing in its data passes for an object. A length that can't be read leaves the stream at its
+    // first endstream, and the text partial when the data went on after it.
     const later = this.scan();
     const known = new Map();
     let again = false;
     for (const { ref, entry, stop } of later) {
-      const length = this.length(ref);
-      if (!this.fits(entry.start, length)) continue;
+      let length = this.length(ref);
+      if (length === undefined) length = this.packedLength(ref);
+      if (!this.fits(entry.start, length)) {
+        if (this.cut(stop)) this.partial = true;
+        continue;
+      }
       known.set(ref, length);
       if (stop < entry.start + length) again = true;
       else entry.end = entry.start + length;
@@ -342,7 +489,7 @@ class Doc {
     if (again) {
       this.partial = false;
       this.scan(known);
-    }
+    } else this.packed = null;
   }
 
   // Every "n g obj" in the file. A later definition replaces an earlier one, as in an incremental update. Stream
@@ -359,11 +506,15 @@ class Doc {
     const s = this.s;
     this.objects = new Map();
     this.count = 0;
+    // What was read from the objects of an earlier scan.
+    this.packed = null;
+    this.trailerDicts = null;
+    this.crypt = undefined;
     // Where object values and stream data are, as start and end pairs in file order: a trailer is never inside one.
     this.spans = [];
     const later = known ? null : [];
     // Not inside a run of digits: retried at each of its digits, a long run took quadratic time.
-    const re = /(?<!\d)(\d+)\s+\d+\s+obj\b/g;
+    const re = /(?<!\d)(\d+)\s+(\d+)\s+obj\b/g;
     const ahead = new RegExp(re.source, 'g');
     const bound = new RegExp(`${re.source}|endobj`, 'g');
     let endobj = -1;
@@ -414,9 +565,13 @@ class Doc {
         next = n ? n.index : s.length;
       }
       const partial = this.partial;
+      // The number and generation make the key of an encrypted object's stream (see decrypt).
+      const num = Number(m[1]);
+      const gen = Number(m[2]);
       let lex = new Lexer(s, at, Math.min(endobj, next), this);
       lex.past = past;
-      let entry = { value: value(lex, lex.token()), start: -1, end: -1 };
+      lex.stops = true;
+      let entry = { value: value(lex, lex.token()), start: -1, end: -1, num, gen };
       let valueEnd = lex.pos;
       lex.skip();
       if (lex.grown) {
@@ -424,7 +579,8 @@ class Doc {
         else {
           this.partial = partial || spent;
           lex = new Lexer(s, at, Math.min(endobj, next), this);
-          entry = { value: value(lex, lex.token()), start: -1, end: -1 };
+          lex.stops = true;
+          entry = { value: value(lex, lex.token()), start: -1, end: -1, num, gen };
           valueEnd = lex.pos;
           lex.skip();
         }
@@ -444,14 +600,20 @@ class Doc {
           if (s[end - 1] === '\n') end--;
           if (s[end - 1] === '\r') end--;
           if (ref >= 0 && later) later.push({ ref, entry, stop: stop < 0 ? s.length : stop });
+          else if (this.cut(stop)) this.partial = true;
         }
         entry.start = start;
         entry.end = end;
         re.lastIndex = Math.max(re.lastIndex, end);
         this.spans.push(at, end);
       } else if (s.startsWith('endobj', lex.pos)) this.spans.push(at, lex.pos);
-      this.objects.set(Number(m[1]), entry);
+      // No endobj, as in a damaged file: a value that closed before the next object still holds its strings, and
+      // a trailer in one is no trailer. One that a trailer keyword or the next object cut records nothing, so the
+      // file's own trailer after it still counts.
+      else if (!lex.ended && (entry.value instanceof Map || Array.isArray(entry.value) || entry.value instanceof Str)) this.spans.push(at, valueEnd);
+      this.objects.set(num, entry);
     }
+    this.plain = this.count;
     return later;
   }
 
@@ -461,9 +623,24 @@ class Doc {
     return e && e.start < 0 && Number.isInteger(e.value) ? e.value : undefined;
   }
 
+  // The same for a Length packed in an object stream, for a number no plain object has. unpack() reads the object
+  // streams with the stream ends known so far; an object stream whose own Length is packed ends at its first
+  // endstream, which the specification forbids anyway.
+  packedLength(num) {
+    if (this.objects.has(num)) return undefined;
+    const e = this.entry(new Ref(num));
+    return e && Number.isInteger(e.value) ? e.value : undefined;
+  }
+
   // A length is taken when endstream follows the data it measures.
   fits(start, length) {
     return Number.isInteger(length) && length >= 0 && /^\s*endstream/.test(this.s.slice(start + length, start + length + 40));
+  }
+
+  // Whether the data of a stream that was taken to end at its first endstream, at stop, went on past it: endobj
+  // doesn't follow that endstream, so the data held the word and the rest of it is not read.
+  cut(stop) {
+    return stop >= 0 && !/^\s*(endobj|$)/.test(this.s.slice(stop + 9, stop + 49));
   }
 
   entry(ref) {
@@ -512,11 +689,15 @@ class Doc {
   // until then an object costs a map entry and two numbers: its stream (packedIn) and its start (packedAt).
   // First and the offsets are the file's word; an object stream whose objects would start outside it, or that
   // lists fewer than it claims, leaves the document partial.
+  // The streams of an encrypted file are decrypted first (security), and the count starts again from the plain
+  // objects: the constructor can unpack once with the stream ends of its first scan, and the text again later.
   unpack() {
+    this.security();
     this.packed = new Map();
     this.streams = [];
     this.packedIn = [];
     this.packedAt = [];
+    this.count = this.plain;
     for (const e of this.objects.values()) {
       if (!(e.value instanceof Map) || nameOf(e.value.get('Type')) !== 'ObjStm') continue;
       if (this.count >= OBJECTS_MAX) {
@@ -568,16 +749,33 @@ class Doc {
     }
   }
 
-  // A stream's data with its filters undone, as a latin1 string; null for filters this reader does not do
-  // (images, LZW, encryption), and the document is partial then. Without filters it is a slice of the file, so
-  // nothing is copied.
+  // A stream's data decrypted and with its filters undone, as a latin1 string; null for filters this reader does
+  // not do (images, LZW), and the document is partial then. Without either it is a slice of the file, so nothing
+  // is copied.
   stream(e) {
     if (!e || e.start < 0) return null;
     const dict = e.value instanceof Map ? e.value : new Map();
     // A null in the list, or a reference to a null object, is no filter either.
     const filters = [].concat(this.resolve(dict.get('Filter')) || []).map((f) => this.resolve(f)).filter((f) => f !== null).map(nameOf);
-    if (!filters.length) return this.s.slice(e.start, e.end);
-    let data = Buffer.from(this.s.slice(e.start, e.end), 'latin1');
+    const cipher = this.cipher(e, dict, filters);
+    if (cipher === undefined) {
+      this.partial = true;
+      return null;
+    }
+    if (filters[0] === 'Crypt') filters.shift();
+    if (!filters.length && !cipher) return this.s.slice(e.start, e.end);
+    let data = cipher ? this.decrypted.get(e) : null;
+    if (!data) {
+      data = Buffer.from(this.s.slice(e.start, e.end), 'latin1');
+      // Decrypted once, however often a page lists the stream: setting up a cipher costs more than a small stream.
+      // Decrypted data is no larger than the stream, so all of it together is no larger than the file, and it counts
+      // as filter output before it is made.
+      if (cipher) {
+        this.spend({ length: data.length });
+        data = this.decrypt(cipher, e, data);
+        this.decrypted.set(e, data);
+      }
+    }
     for (const f of filters) {
       if (f === 'FlateDecode' || f === 'Fl') data = this.inflate(data);
       else if (f === 'ASCIIHexDecode' || f === 'AHx') data = this.spend(asciiHex(data));
@@ -650,22 +848,89 @@ class Doc {
     return this.trailerDicts;
   }
 
-  // Encrypted when an Encrypt leads to an encryption dictionary: a dictionary, not a stream's, whose Filter names
-  // its security handler. One that leads nowhere encrypts nothing, such as a trailer that a broken object let the
-  // scan find.
-  encrypted() {
-    const handler = (v) => {
+  // The file's encryption dictionary, from the last trailer or cross-reference stream whose Encrypt leads to one: a
+  // dictionary, not a stream's, whose Filter names its security handler, with the first string of the file's ID.
+  // null when there is none. One that leads nowhere encrypts nothing, such as a trailer that a broken object let
+  // the scan find.
+  handler() {
+    const dictOf = (v) => {
       let dict = v;
       if (v instanceof Ref) {
         const e = this.entry(v);
-        if (!e || e.start >= 0) return false;
+        if (!e || e.start >= 0) return null;
         dict = e.value;
       }
-      return dict instanceof Map && this.resolve(dict.get('Filter')) instanceof Name;
+      return dict instanceof Map && this.resolve(dict.get('Filter')) instanceof Name ? dict : null;
     };
-    for (const t of this.trailers()) if (handler(t.get('Encrypt'))) return true;
-    for (const e of this.objects.values()) if (e.value instanceof Map && nameOf(e.value.get('Type')) === 'XRef' && handler(e.value.get('Encrypt'))) return true;
-    return false;
+    const xrefs = [...this.objects.values()].filter((e) => e.value instanceof Map && nameOf(e.value.get('Type')) === 'XRef').sort((a, b) => a.start - b.start);
+    let dict = null;
+    let id = null;
+    for (const t of [...this.trailers(), ...xrefs.map((e) => e.value)]) {
+      dict = dictOf(t.get('Encrypt')) || dict;
+      const ids = this.resolve(t.get('ID'));
+      const first = Array.isArray(ids) ? this.resolve(ids[0]) : null;
+      if (first instanceof Str) id = Buffer.from(first.bytes, 'latin1');
+    }
+    return dict && { dict, id: id || Buffer.alloc(0) };
+  }
+
+  // How the file is encrypted, worked out once per scan: null when it isn't, { locked: true } when it needs a
+  // password or a security handler this reader doesn't have, else what decrypts its streams (see openStandard).
+  // While it is worked out, streams are read as written; object streams read then are read again.
+  security() {
+    if (this.crypt !== undefined) return this.crypt;
+    this.crypt = null;
+    const found = this.handler();
+    let crypt = null;
+    if (found) {
+      try {
+        crypt = openStandard(this, found.dict, found.id);
+      } catch (_) {
+        crypt = null;
+      }
+      if (!crypt) crypt = { locked: true };
+    }
+    this.crypt = crypt;
+    if (crypt && !crypt.locked) this.packed = null;
+    return crypt;
+  }
+
+  // How one stream is decrypted: 'rc4', 'aes128', 'aes256', or null when it isn't. undefined for a crypt filter
+  // this reader doesn't know. Not encrypted: a stream of a file that isn't, a cross-reference stream, metadata
+  // when EncryptMetadata is false, and one whose own Crypt filter, or the file's StmF, is Identity.
+  cipher(e, dict, filters) {
+    const crypt = this.security();
+    let name = crypt && !crypt.locked ? crypt.stmf : null;
+    if (filters[0] === 'Crypt') {
+      const parms = this.resolve([].concat(this.resolve(dict.get('DecodeParms')) ?? [])[0]);
+      const own = parms instanceof Map ? nameOf(this.resolve(parms.get('Name'))) : '';
+      name = crypt && !crypt.locked ? own || 'Identity' : null;
+    }
+    if (!name || e.num === undefined) return null;
+    const type = nameOf(this.resolve(dict.get('Type')));
+    if (type === 'XRef' || (type === 'Metadata' && !crypt.metadata)) return null;
+    return crypt.method(name);
+  }
+
+  // A stream's data decrypted with the key of its object. Data that doesn't decrypt is not read.
+  decrypt(cipher, e, data) {
+    const crypt = this.crypt;
+    try {
+      if (cipher === 'rc4') return rc4(objectKey(crypt.key, e, false), data);
+      // AES: the first 16 bytes are the IV, and the data is padded to whole blocks.
+      const blocks = Math.max(0, Math.floor((data.length - 16) / 16) * 16);
+      if (data.length && blocks !== data.length - 16) this.partial = true;
+      if (!blocks) return Buffer.alloc(0);
+      const key = cipher === 'aes256' ? crypt.key : objectKey(crypt.key, e, true);
+      const out = aes(cipher === 'aes256' ? 256 : 128, key, data.subarray(0, 16), data.subarray(16, 16 + blocks), true);
+      const pad = out[out.length - 1];
+      if (pad < 1 || pad > 16) return out;
+      for (let i = out.length - pad; i < out.length; i++) if (out[i] !== pad) return out;
+      return out.subarray(0, out.length - pad);
+    } catch (_) {
+      this.partial = true;
+      return Buffer.alloc(0);
+    }
   }
 
   catalog() {
@@ -1200,8 +1465,9 @@ class Page {
   }
 
   // Where an inline image's data ends, or -1 when the data can't tell. Without filters, by its size; else by its
-  // first filter, the one its bytes are written in: zlib data ends where zlib stops, ASCIIHex at ">", ASCII85 at
-  // "~>". Whatever is read to find it counts as content read.
+  // first filter, the one its bytes are written in: zlib data ends where zlib stops, JPEG data after its
+  // end-of-image marker, RunLength data after its end byte, ASCIIHex at ">", ASCII85 at "~>". Whatever is read to
+  // find it counts as content read. LZW, CCITT and JBIG2 data can't tell.
   dataEnd(s, start, image, resources) {
     const filters = [].concat((image.has('F') ? image.get('F') : image.get('Filter')) ?? []).filter((f) => f !== null);
     if (!filters.length) {
@@ -1210,6 +1476,8 @@ class Page {
     }
     const first = nameOf(filters[0]);
     if (first === 'Fl' || first === 'FlateDecode') return this.flateEnd(s, start);
+    if (first === 'DCT' || first === 'DCTDecode') return this.jpegEnd(s, start);
+    if (first === 'RL' || first === 'RunLengthDecode') return this.runLengthEnd(s, start);
     const mark = first === 'AHx' || first === 'ASCIIHexDecode' ? '>' : first === 'A85' || first === 'ASCII85Decode' ? '~>' : '';
     if (!mark) return -1;
     const at = s.indexOf(mark, start);
@@ -1243,6 +1511,70 @@ class Page {
       }
       if (take >= s.length - start) return -1;
     }
+  }
+
+  // Where JPEG data that starts at start ends: right after its end-of-image marker (FFD9), found by walking its
+  // segments as a decoder does. It starts with FFD8. Each marker but the standalone ones (restarts and TEM) is
+  // followed by the length of its segment, and a start-of-scan segment by entropy-coded data, in which FF00 is a
+  // stuffed FF and FFD0 to FFD7 are restarts, up to the next marker. A progressive JPEG has several scans. Bytes
+  // inside a segment or the entropy-coded data, "EI" included, are skipped by length. -1 for data that breaks these
+  // rules or doesn't end: no FFD8, a byte where a marker should be, a segment past the end. Every byte walked counts
+  // as content read, also when the walk finds no end, so images whose data never ends can't each walk the page.
+  jpegEnd(s, start) {
+    const n = s.length;
+    let i = start;
+    let end = -1;
+    if (s.charCodeAt(i) === 0xff && s.charCodeAt(i + 1) === 0xd8) {
+      i += 2;
+      while (i < n) {
+        if (s.charCodeAt(i) !== 0xff) break;
+        // Fill bytes: any number of FF before a marker.
+        while (i < n && s.charCodeAt(i) === 0xff) i++;
+        if (i >= n) break;
+        const marker = s.charCodeAt(i++);
+        if (marker === 0xd9) {
+          end = i;
+          break;
+        }
+        if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) continue;
+        if (marker === 0x00 || marker === 0xd8 || i + 2 > n) break;
+        const length = (s.charCodeAt(i) << 8) | s.charCodeAt(i + 1);
+        if (length < 2 || i + length > n) break;
+        i += length;
+        if (marker !== 0xda) continue;
+        // Entropy-coded data, up to the FF of a marker that is no stuffing and no restart.
+        for (;;) {
+          i = s.indexOf('\xff', i);
+          if (i < 0) {
+            i = n;
+            break;
+          }
+          const next = s.charCodeAt(i + 1);
+          if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) i += 2;
+          else break;
+        }
+      }
+    }
+    this.spend(Math.min(end >= 0 ? end : i, n) - start);
+    return end;
+  }
+
+  // Where RunLength data that starts at start ends: right after its end byte, 128. A length byte up to 127 is
+  // followed by that many bytes plus one, one from 129 on by the one byte it repeats. -1 for data without the end
+  // byte. The bytes walked count as content read, as in jpegEnd.
+  runLengthEnd(s, start) {
+    let i = start;
+    let end = -1;
+    while (i < s.length) {
+      const b = s.charCodeAt(i);
+      if (b === 128) {
+        end = i + 1;
+        break;
+      }
+      i += b < 128 ? b + 2 : 2;
+    }
+    this.spend(Math.min(end >= 0 ? end : i, s.length) - start);
+    return end;
   }
 
   // Where the content goes on after the EI that must follow an image's data, past any white space, or -1. The white
@@ -1440,7 +1772,8 @@ function pdfText(buffer, { maxChars = 200000 } = {}) {
   try {
     if (!Buffer.isBuffer(buffer) || buffer.indexOf('%PDF-') < 0 || buffer.indexOf('%PDF-') > 1024) return empty;
     const doc = new Doc(buffer);
-    if (doc.encrypted()) return { ...empty, encrypted: true };
+    const crypt = doc.security();
+    if (crypt && crypt.locked) return { ...empty, encrypted: true };
     const pages = doc.pages();
     const budget = { ops: 0, glyphs: 0, bytes: 0 };
     const parts = [];
