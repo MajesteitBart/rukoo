@@ -32,19 +32,19 @@ The recorder lives in `voice/crates/voice-recorder`, the segment writer and read
 Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonical 44-byte WAV header, the format of Ownkey's meeting chunks and of the speech models. The recorder captures each device in its own format and converts it.
 
 - A segment holds contiguous audio that starts at the meeting time in its `segment` line. It ends at that time plus its samples divided by 16, in whole milliseconds.
-- Each track numbers its segments from `000001`. Numbering continues across sessions and a number is never used twice. A resumed recorder continues after the highest number in the timeline or in the folder, whichever is higher, and it never overwrites a file.
+- Each track numbers its segments from `000001`. Numbering continues across sessions and a number is never used twice. A resumed recorder first removes the files the timeline doesn't name that hold no audio, then continues after the highest number in the timeline or in the folder, whichever is higher. It never overwrites a file.
 - A new segment starts after every 30 s of audio, and after a device change or loss, a pause, a resume, a suspend, the start of a session, and when the recorder fell so far behind that it dropped audio.
 - After 30 s, the next segment starts exactly where the previous one ended. When the device's clock has drifted more than 100 ms from the meeting clock, it starts at the clock's time instead, so two neighbouring segments of a track can overlap or leave a gap of about 0.1 s. After any other break, a segment never starts before the end of the track's previous one.
 
 ### Writing, in crash-safe order
 
-1. The recorder creates the file, refusing an existing one, with a header that counts 0 samples: RIFF size 36, data size 0.
+1. The recorder creates the file, refusing an existing one, with a header that counts 0 samples: RIFF size 36, data size 0. It creates each track's next file ahead of time, on a thread of the track's own: the first one while the devices open, and every next one as soon as the segment before it starts. Starting a segment, after 30 s or after any break, takes that file, so a slow create, such as a virus scan of every new file, never holds up the audio or the heartbeats. When the file isn't there yet, the recorder waits for it; when that thread couldn't create it, the recorder tries once more itself.
 2. It writes the `segment` line.
 3. Every 100 to 200 ms it appends the new samples, then rewrites the RIFF size (offset 4) and the data size (offset 40) in a single write. The samples come first, so the header never counts samples that aren't on disk.
 4. It syncs the file to disk every 5 s, and when the segment closes. The syncs run on a thread of their own, in the order the recorder asks for them, so a slow disk never holds up the audio, the heartbeats or a time in the timeline. A periodic sync is skipped while the one before it hasn't finished.
 5. It closes the segment: it hands the file to that thread, which syncs and closes it. Only then does the recorder write the `segment_end` line, so no sync of the timeline puts a `segment_end` on disk before the audio it describes. A slow disk delays the line, never its `t`. A sync that fails is logged, and the line follows anyway.
 
-A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. It can also leave segments without a `segment_end` line: the open one, and ones that had closed but weren't on disk yet. `finalize` and `--resume` end each of them from its file. A power cut can lose up to the last 5 s, plus however long the disk takes to sync.
+A hard kill can leave three things: for each track the file created ahead, which the timeline doesn't name and which holds at most its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. It can also leave segments without a `segment_end` line: the open one, and ones that had closed but weren't on disk yet. `finalize` and `--resume` end each of them from its file, and remove the files the timeline doesn't name that hold no audio. A clean stop removes the file created ahead itself. A power cut can lose up to the last 5 s, plus however long the disk takes to sync.
 
 While it records on Windows, the recorder holds the timeline and the open segment with read and delete sharing only. Other processes can read them, and a second writer can't open them.
 
@@ -133,7 +133,11 @@ rukoo-voice-recorder devices
 
 The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default) and `,open-ms=<ms>` (every open takes this long on the recorder's thread, as a Bluetooth headset switching profile can). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
 
-Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, and `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes.
+Four options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes, and `--test-create-delay-ms <ms>` makes every segment file create wait that long first, as under a virus scanner that checks each new file, so a test can check that no heartbeat waits for one.
+
+On Windows the recorder raises its process to above normal priority when `record` starts, so programs that keep the CPU busy, such as a build, don't keep its thread waiting. It needs little CPU, and its disk priority stays normal.
+
+The recorder logs to stderr whatever holds up its thread, with the meeting time: a segment create, an append or a timeline write over 100 ms, a tick that starts more than 300 ms late, which without a slow call next to it means the thread didn't get the CPU, and a heartbeat more than 1.2 s after the one before. The syncer logs every sync over 0.5 s. The app keeps this log as `logs/recorder-<meeting id>.log`.
 
 | Exit code | Meaning |
 |---|---|
@@ -165,7 +169,7 @@ The recorder writes it to a temporary name and syncs it before the session start
 
 ### `finalize`
 
-`finalize` finishes a meeting whose recorder died: it repairs every segment header from the file length, writes `segment_end` for segments that have none, `dictation` `end` when a dictation is open, and `stop` at `lastSeen` with the given reason, `interrupted` by default, when the timeline has no `stop`. It removes a stale `recorder.json`. Running it again changes nothing. It refuses a live meeting with exit code 4, and prints:
+`finalize` finishes a meeting whose recorder died: it repairs every segment header from the file length, writes `segment_end` for segments that have none, `dictation` `end` when a dictation is open, and `stop` at `lastSeen` with the given reason, `interrupted` by default, when the timeline has no `stop`. It removes a stale `recorder.json` and the segment files the timeline doesn't name that hold no audio. Running it again changes nothing. It refuses a live meeting with exit code 4, and prints:
 
 ```json
 { "ok": true, "ended": 2, "stopped": true, "t": 1528, "problems": [] }
