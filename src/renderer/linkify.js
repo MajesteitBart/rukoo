@@ -2,10 +2,12 @@
 // No DOM in here, so node can test it (test/linkify.test.js).
 
 // An address starts with https://, http:// or www., not in the middle of a word or of another address, and runs to
-// the next space, angle bracket or double quote.
-const CANDIDATE = /(?<![\p{L}\p{N}@._/+=-])(?:https?:\/\/|www\.)[^\s<>"“”«»]+/giu;
-// Punctuation that ends a sentence rather than an address.
-const TRAILING = '.,;:!?\'"’‘”';
+// the next space, angle bracket or double quote. After a colon it would be part of another address, such as
+// blob:https://… or data:www.…
+const CANDIDATE = /(?<![\p{L}\p{N}@._/+=:-])(?:https?:\/\/|www\.)[^\s<>"“”«»]+/giu;
+// Punctuation that ends a sentence rather than an address, in Latin and in Chinese or Japanese text, and the
+// asterisks and tildes of **bold** and ~~struck~~ Markdown around one.
+const TRAILING = '.,;:!?\'"’‘”*~。、，．；：！？';
 const CLOSERS = { ')': '(', ']': '[' };
 
 // The address without the punctuation after it: "(see www.example.com)." keeps www.example.com, while a closing
@@ -26,7 +28,8 @@ function trimUrl(text) {
   return text.slice(0, end);
 }
 
-const hasHost = (text) => (/^www\./i.test(text) ? /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text) : /^https?:\/\/[\p{L}\p{N}\[]/iu.test(text));
+// A site: a name, or an IPv6 address in brackets such as [::1].
+const hasHost = (text) => (/^www\./i.test(text) ? /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text) : /^https?:\/\/(?:[\p{L}\p{N}]|\[[\da-f.]*:[\da-f:.]*\])/iu.test(text));
 
 // The address a link to text gets: www.example.com opens over https.
 const hrefFor = (text) => (/^www\./i.test(text) ? `https://${text}` : text);

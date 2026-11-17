@@ -703,6 +703,7 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
       '<div><a href="https://example.com">First<br>Second</a></div>',
       '<div><b><u>First<br><br>Second</u></b></div>',
       '<div><code>First\nSecond</code></div>',
+      '<div>a <code>  </code> b</div>',
       '<h2>First<br>Second</h2>',
       '<ul><li>First<br><br>Second</li><li>Third</li></ul>',
       '<ol><li>First<br><br>Second</li><li>Third</li></ol>',
@@ -740,7 +741,11 @@ test('notes link addresses with backticks and backslashes keep them when the not
       ['https://a.example/`x`', 'npm start'],
       ['https://a.example/a\\*b\\_c', 'npm start'],
       ['https://a.example/q?a=``1``&b=2', 'npm start'],
-      ['https://a.example/`x', '']
+      ['https://a.example/`x', ''],
+      // A lone backtick with code after it on the line, and a backslash at the end of the address.
+      ['https://a.example/`x', 'npm start'],
+      ['https://a.example/x\\', 'npm start'],
+      ['https://a.example/x\\', '']
     ];
     const links = cases.map(([href, code]) => {
       editor.innerHTML = `<div>See <a></a> and ${code ? `<code>${code}</code>` : 'more'} after</div>`;
