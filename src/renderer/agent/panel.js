@@ -948,6 +948,15 @@ export function mountAgentPanel(ctx) {
   // The meeting on screen in meeting mode: {id, title, eventId}, or null.
   const currentMeeting = () => (ctx.currentMeeting ? ctx.currentMeeting() : null);
 
+  function lookupMatchesView(look) {
+    if (look !== lookups) return false;
+    const key = ctx.meetingMode?.() ? `meeting:${currentMeeting()?.id || ''}` : emailKey(currentEmail());
+    if (key === P.emailKey) return true;
+    // The panel can skip sync while closed. Retry this lookup if it reopens on the same email or meeting.
+    P.emailKey = undefined;
+    return false;
+  }
+
   function sync() {
     const before = P.emailKey;
     const run = ctx.meetingMode && ctx.meetingMode() ? syncMeeting() : syncEmail();
@@ -977,7 +986,7 @@ export function mountAgentPanel(ctx) {
       return refreshComposer();
     }
     const mine = ++turn;
-    const current = () => look === lookups && emailKey(currentEmail()) === key;
+    const current = () => lookupMatchesView(look);
     const began = started;
     let found = null;
     let related = null;
@@ -1035,7 +1044,7 @@ export function mountAgentPanel(ctx) {
     }
     P.keepMeeting = null;
     const mine = ++turn;
-    const current = () => look === lookups && ctx.meetingMode?.() && currentMeeting()?.id === m.id;
+    const current = () => lookupMatchesView(look);
     const began = started;
     let found = null;
     try {

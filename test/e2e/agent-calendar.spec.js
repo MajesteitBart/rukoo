@@ -160,8 +160,9 @@ test('a chat started in the calendar leaves out the email left open in Mail', as
   await expect(heading()).toHaveText('What should Hermes do with this email?');
 });
 
-for (const method of ['findFor', 'forPanel']) {
-  test(`switching to Calendar leaves a pending email chat lookup behind: ${method}`, async () => {
+for (const method of ['findFor', 'forPanel']) for (const close of [false, true]) {
+  const scenario = close ? 'reopening after a closed Calendar visit retries the Mail chat lookup' : 'switching to Calendar leaves a pending email chat lookup behind';
+  test(`${scenario}: ${method}`, async () => {
     const subject = 'Your parcel is on its way';
     const messageId = await win.locator('.item', { hasText: subject }).first().getAttribute('data-id');
     await app.evaluate((_e, { method, messageId, subject }) => {
@@ -186,8 +187,11 @@ for (const method of ['findFor', 'forPanel']) {
     await openChat(subject);
     await expect.poll(() => app.evaluate(() => global.__semCalendarLookup.releases.length)).toBeGreaterThan(0);
 
+    if (close) {
+      await pane().locator('[data-ap="close"]').click();
+      await expect(pane()).toBeHidden();
+    }
     await win.click('[data-mode="calendar"]');
-    const heading = pane().locator('.bui-rec__title');
     await expect(win.locator('.calendar')).toBeVisible();
     await app.evaluate(() => global.__semCalendarLookup.release());
     await win.evaluate(async () => {
@@ -195,10 +199,13 @@ for (const method of ['findFor', 'forPanel']) {
       await window.mail.call('agentList');
       await window.mail.call('agentList');
     });
-    await expect(heading).toHaveText('Ask Hermes about your calendar');
-    await expect(pane().locator('.bui-pb .bui-entity')).toHaveCount(0);
+    if (!close) {
+      await expect(pane().locator('.bui-rec__title')).toHaveText('Ask Hermes about your calendar');
+      await expect(pane().locator('.bui-pb .bui-entity')).toHaveCount(0);
+    }
 
     await win.click('[data-mode="mail"]');
+    if (close) await win.keyboard.press('Control+j');
     await expect(pane().locator('.ap-title')).toHaveText(subject);
   });
 }
