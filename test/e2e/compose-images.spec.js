@@ -223,6 +223,130 @@ for (const surface of SURFACES) {
   });
 }
 
+const bubble = (page) => page.locator('.link-bubble');
+// Screenshots for the issue: in RUKOO_CAPTURE_DIR when it is set, and with the test's other output otherwise.
+async function capture(page, name) {
+  const dir = process.env.RUKOO_CAPTURE_DIR;
+  if (dir) fs.mkdirSync(dir, { recursive: true });
+  // Playwright's page capture crops to CSS pixels at 200% zoom. Capture the complete Electron window.
+  const window = await app.browserWindow(page);
+  const image = await window.evaluate(async (win) => (await win.capturePage()).toPNG().toString('base64'));
+  await window.dispose();
+  const file = dir ? path.join(dir, `${name}.png`) : test.info().outputPath(`${name}.png`);
+  fs.writeFileSync(file, Buffer.from(image, 'base64'));
+}
+// A bar or bubble against the window, and against its anchor, the index-th match of anchor: how many rows its
+// buttons take, whether its separator shows, and what is wrong with where it is. It belongs 8 pixels inside the
+// window, with every button inside it, where placePopover() in editor-links.js puts a box of the size it shows: under
+// the anchor, or above it where the window has no room below. A box measured at another size than it shows sits
+// elsewhere. visible: the anchor is the part of it the panes and the window leave in view, as for an image.
+const placed = (page, selector, anchor, index, visible) =>
+  page.evaluate(
+    ([selector, anchor, index, visible]) => {
+      const el = document.querySelector(selector);
+      const target = document.querySelectorAll(anchor)[index];
+      let { left, top, bottom } = target.getClientRects()[0];
+      if (visible) {
+        for (let p = target.parentElement; p; p = p.parentElement) {
+          if (!/auto|scroll|hidden|clip/.test(getComputedStyle(p).overflowY)) continue;
+          const c = p.getBoundingClientRect();
+          [left, top, bottom] = [Math.max(left, c.left), Math.max(top, c.top), Math.min(bottom, c.bottom)];
+        }
+        [top, bottom] = [Math.max(top, 0), Math.min(bottom, innerHeight)];
+      }
+      const b = el.getBoundingClientRect();
+      const below = bottom + 6;
+      const y = below + b.height <= innerHeight - 8 || top - 6 - b.height < 8 ? below : top - 6 - b.height;
+      const want = { left: Math.max(8, Math.min(left, innerWidth - b.width - 8)), top: Math.max(8, Math.min(y, innerHeight - b.height - 8)) };
+      const buttons = [...el.querySelectorAll('button')].map((x) => x.getBoundingClientRect());
+      const problems = [
+        b.left < 7.5 && `left ${b.left}`,
+        b.right > innerWidth - 7.5 && `right ${b.right} in ${innerWidth}`,
+        Math.abs(b.left - want.left) > 1 && `left ${b.left} for ${want.left}`,
+        Math.abs(b.top - want.top) > 1 && `top ${b.top} for ${want.top}`,
+        !buttons.every((x) => x.left >= b.left - 0.5 && x.right <= b.right + 0.5 && x.bottom <= b.bottom + 0.5) && 'a button outside'
+      ].filter(Boolean);
+      return { rows: new Set(buttons.map((x) => Math.round(x.top))).size, separator: getComputedStyle(el.querySelector('.sep')).display !== 'none', problems };
+    },
+    [selector, anchor, index, visible]
+  );
+
+// #319: a compose window 680 pixels wide at 200 percent is 340 CSS pixels, less than the Dutch image bar needs on one
+// row. Its buttons wrap inside the window, and the link bubble, which shares its styles and its placing, fits too.
+test('in a compose window 680 pixels wide at 200 percent the image bar and the link bubble stay inside it, in Dutch', async () => {
+  await launch('nl');
+  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  const [page] = await Promise.all([app.waitForEvent('window'), win.click('[data-c="popout"]')]);
+  await page.waitForSelector('.compose .editor');
+  await insertImage(page);
+  // The picture in a list starts further right. A bar that wraps is as wide as the room right of where it is, so
+  // there it has to be measured at the window's edge to get the size it has once it moves.
+  await image(page).evaluate((img) => {
+    const list = document.createElement('ul');
+    img.replaceWith(list);
+    list.appendChild(document.createElement('li')).append(img);
+  });
+  // Two links after it, with a few words in front: a short address and one longer than the window.
+  await editor(page).evaluate((el) => {
+    el.insertAdjacentHTML(
+      'beforeend',
+      '<div>Een kort adres: <a href="https://a.io/">kort</a></div><div>Een lang adres: <a href="https://www.example.com/a/very/long/path/that/goes/on/to/the/report-2026.pdf">rapport</a></div>'
+    );
+  });
+  const compose = await app.browserWindow(page);
+  await compose.evaluate((w) => {
+    // Size the content to 680 pixels, including on Windows where the content extends into the frame.
+    w.setSize(680, 720);
+    const frameWidth = w.getSize()[0] - w.getContentSize()[0];
+    if (frameWidth) w.setSize(680 + frameWidth, 720);
+  });
+  const zoom = async (factor) => {
+    await compose.evaluate((w, f) => w.webContents.setZoomFactor(f), factor);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(680 / factor);
+  };
+  await zoom(2);
+
+  // The image bar wraps inside the window, without the separator that would end its first row.
+  const imageBar = () => placed(page, '.img-bubble', '.editor img', 0, true);
+  await image(page).click();
+  await expect(bar(page)).toBeVisible();
+  expect(await bar(page).locator('button').allTextContents()).toEqual([LABELS.nl.small, LABELS.nl.fit, LABELS.nl.original, LABELS.nl.remove]);
+  await expect.poll(imageBar).toEqual({ rows: 2, separator: false, problems: [] });
+  await capture(page, 'image-bar-680-200-nl-dark');
+  // With room for one row it takes one again, with its separator, under the picture. Back at 200 percent it wraps
+  // again from there: measured where it was, it would come out narrower and run to the window's edge.
+  await zoom(1);
+  await expect.poll(imageBar).toEqual({ rows: 1, separator: true, problems: [] });
+  await zoom(2);
+  await expect.poll(imageBar).toEqual({ rows: 2, separator: false, problems: [] });
+
+  // The link bubble has the bar's styles and placing, on one row: the address gives way.
+  const links = page.locator('.editor a');
+  const site = page.locator('.link-bubble .link-go-site bdi');
+  await links.nth(0).click();
+  await expect(bubble(page)).toBeVisible();
+  await expect(site).toHaveText('https://a.io');
+  await expect.poll(() => placed(page, '.link-bubble', '.editor a', 0, false)).toEqual({ rows: 1, separator: true, problems: [] });
+  await links.nth(1).click();
+  await expect(site).toHaveText('https://www.example.com');
+  await expect.poll(() => placed(page, '.link-bubble', '.editor a', 1, false)).toEqual({ rows: 1, separator: true, problems: [] });
+  await capture(page, 'link-bubble-680-200-nl-dark');
+
+  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'light' }));
+  await expect(page.locator('html')).toHaveClass(/light/);
+  await links.nth(1).click();
+  await expect(bubble(page)).toBeVisible();
+  await expect.poll(() => placed(page, '.link-bubble', '.editor a', 1, false)).toEqual({ rows: 1, separator: true, problems: [] });
+  await capture(page, 'link-bubble-680-200-nl-light');
+  await image(page).click();
+  await expect(bar(page)).toBeVisible();
+  await expect.poll(imageBar).toEqual({ rows: 2, separator: false, problems: [] });
+  await capture(page, 'image-bar-680-200-nl-light');
+  await compose.dispose();
+});
+
 test('a draft keeps the size of its image when it is saved, closed and opened again, and the reader shows it at that size', async () => {
   await launch('en');
   await win.click('[data-action="compose"]');
