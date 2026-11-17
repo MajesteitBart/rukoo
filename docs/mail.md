@@ -35,7 +35,7 @@ Mark all as read, in the More options menu above the list or with `Shift+Esc`, m
 
 The newest message opens when you start the app or switch folders. It stays unread until you open it yourself.
 
-Ctrl+click and Shift+click select several messages for one action. Right-click opens a menu with shortcuts, and you can drag messages onto a folder. Deleting, archiving and moving can be undone from the notice that follows, or with `Ctrl+Z`.
+Ctrl+click and Shift+click select several messages for one action, and so can the keyboard; see [Selecting with the keyboard](#selecting-with-the-keyboard). Right-click opens a menu with shortcuts, and you can drag messages onto a folder. Deleting, archiving and moving can be undone from the notice that follows, or with `Ctrl+Z`.
 
 ## Reading
 
@@ -87,6 +87,9 @@ Rukoo's own keys in the main window:
 | `Ctrl+E` or `/` | Search |
 | `↑`, `↓` | Previous and next message |
 | `Shift+↑`, `Shift+↓` | Extend the selection |
+| `Ctrl+Space` or `X` | Select or deselect the email at the focus ring |
+| `Ctrl+↑`, `Ctrl+↓` | Move the focus ring without opening an email |
+| `Enter` | Open the email at the focus ring |
 | `Ctrl+A` | Select all |
 | `Ctrl+Q`, `Ctrl+U` | Mark read, mark unread |
 | `Shift+Esc` | Mark all in the list read |
@@ -101,6 +104,14 @@ Rukoo's own keys in the main window:
 While writing: `Ctrl+Enter` sends, `Ctrl+S` saves the draft, `Ctrl+K` inserts or changes a link and `Esc` closes.
 
 Zoom runs from 80% to 200%. In every window, also with the focus inside an email, `Ctrl+Plus` (or `Ctrl+=`) zooms in, `Ctrl+Minus` zooms out and `Ctrl+0` goes back to 100%. Ctrl and the mouse wheel and the numpad keys work too. The main window and the compose windows share one level, and Rukoo remembers it. On a Mac, use Command instead of Ctrl for the keys; the mouse wheel doesn't zoom there. See [macOS](platforms.md#macos-experimental).
+
+### Selecting with the keyboard
+
+A blue outline, the focus ring, shows where the keyboard is in the list. To select emails that aren't next to each other, such as the first, fourth and seventh, move the ring with `Ctrl+↓` and `Ctrl+↑` and press `Ctrl+Space` on each email you want. Pressing it again on a selected email takes it out. The key selects only the email in the ring, also when another email is open. Once you've selected an email this way, the keys for the previous and next email, `↑` and `↓` among them, move the ring too, and the selection stays until `Esc` clears it. Archive, Delete, Move, Move to category, mark read or unread and Star then act on every selected email, and the notice after archiving, deleting or moving undoes all of them. `Enter` opens the email in the ring and lets go of the selection.
+
+Gmail's scheme selects with `X`, Outlook's and Thunderbird's with `Ctrl+Space`, and Apple Mail's has no key for it. In a group of mail from one sender, open the group with `→` and select inside it; the group stays open while you do. The unified inbox of all accounts works the same. In a narrow window the list stays on screen while you select, instead of making way for the count of selected emails.
+
+On a Mac, `⌘Space` opens Spotlight and `⌃↑` and `⌃↓` belong to Mission Control. Rukoo's own scheme selects with `X` or `⌃Space` there, Outlook's and Thunderbird's with `⌃Space`, and the ring moves with `⌘↑` and `⌘↓`. When macOS uses `⌃Space` to switch input sources, use `X`, or turn that shortcut off in System Settings → Keyboard → Keyboard Shortcuts → Input Sources.
 
 ## Email links
 

@@ -4,6 +4,12 @@
 // A binding is "Ctrl+Shift+R", "E", "Shift+I", "#" or "Delete". Ctrl stands for Command on a Mac, as everywhere in
 // Rukoo; Control is the Control key itself. A binding can differ by platform: { mac: '…', other: '…' }. The first
 // binding of an action is the one menus and tooltips show.
+//
+// Selecting emails one at a time: toggleSelect adds or removes the email at the focus ring, and focusNext and
+// focusPrevious move the ring without opening anything. Gmail uses X, Outlook and Thunderbird Ctrl+Space. On a Mac,
+// Command+Space is Spotlight and Control+arrows are Mission Control, so there the schemes take Control+Space and
+// Command+arrows. macOS can take Control+Space for switching input sources too, so Rukoo's own scheme also binds X
+// and shows it first on a Mac.
 
 export const SCHEMES = ['rukoo', 'gmail', 'outlook', 'apple', 'thunderbird'];
 
@@ -24,6 +30,9 @@ export const ACTIONS = [
   'category',
   'next',
   'previous',
+  'toggleSelect',
+  'focusNext',
+  'focusPrevious',
   'search',
   'sync',
   'print',
@@ -47,6 +56,9 @@ const KEYMAPS = {
     category: ['C'],
     next: ['J', 'ArrowDown'],
     previous: ['K', 'ArrowUp'],
+    toggleSelect: [{ mac: 'X', other: 'Ctrl+Space' }, { mac: 'Control+Space', other: 'X' }],
+    focusNext: ['Ctrl+ArrowDown'],
+    focusPrevious: ['Ctrl+ArrowUp'],
     search: ['Ctrl+E', '/'],
     sync: ['F5'],
     print: ['Ctrl+P'],
@@ -67,6 +79,9 @@ const KEYMAPS = {
     category: ['L'],
     next: ['J', 'ArrowDown'],
     previous: ['K', 'ArrowUp'],
+    toggleSelect: ['X'],
+    focusNext: ['Ctrl+ArrowDown'],
+    focusPrevious: ['Ctrl+ArrowUp'],
     search: ['/'],
     sync: ['Shift+N', 'F5'],
     print: ['Ctrl+P'],
@@ -87,6 +102,9 @@ const KEYMAPS = {
     category: ['Ctrl+Shift+C'],
     next: ['ArrowDown', 'Ctrl+.'],
     previous: ['ArrowUp', 'Ctrl+,'],
+    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }],
+    focusNext: ['Ctrl+ArrowDown'],
+    focusPrevious: ['Ctrl+ArrowUp'],
     search: ['Ctrl+E', 'F3'],
     sync: ['F9', 'F5'],
     print: ['Ctrl+P'],
@@ -125,6 +143,9 @@ const KEYMAPS = {
     category: ['Ctrl+Shift+C'],
     next: ['F', 'ArrowDown'],
     previous: ['B', 'ArrowUp'],
+    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }],
+    focusNext: ['Ctrl+ArrowDown'],
+    focusPrevious: ['Ctrl+ArrowUp'],
     search: ['Ctrl+K'],
     sync: ['F5', 'Ctrl+T'],
     print: ['Ctrl+P'],
@@ -148,7 +169,7 @@ export function bindings(action, scheme = current) {
   return ((KEYMAPS[scheme] || KEYMAPS.rukoo)[action] || []).map((b) => (typeof b === 'string' ? b : mac() ? b.mac : b.other)).filter(Boolean);
 }
 
-const NAMES = { ArrowDown: '↓', ArrowUp: '↑', Delete: 'Delete', Backspace: 'Backspace', Insert: 'Insert', Escape: 'Esc' };
+const NAMES = { ArrowDown: '↓', ArrowUp: '↑', Delete: 'Delete', Backspace: 'Backspace', Insert: 'Insert', Escape: 'Esc', Space: 'Space' };
 const MAC_PARTS = { Ctrl: '⌘', Control: '⌃', Alt: '⌥', Shift: '⇧', Backspace: '⌫', Delete: '⌦' };
 
 // A binding as people read it: Ctrl+Shift+R, or ⌘⇧R on a Mac.
@@ -188,6 +209,8 @@ function matches(e, binding) {
   const symbol = key.length === 1 && !/[a-z0-9]/i.test(key);
   if (symbol) return e.key === key;
   if (parts.includes('Shift') !== e.shiftKey) return false;
+  // The space bar's key is a space, which a binding can't hold.
+  if (key === 'Space') return e.key === ' ';
   return key.length === 1 ? e.key.toLowerCase() === key.toLowerCase() : e.key === key;
 }
 

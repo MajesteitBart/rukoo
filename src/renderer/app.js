@@ -105,8 +105,12 @@ export const S = {
   keptId: null,
   checked: new Set(),
   anchorId: null,
-  // The keyboard position while Shift+arrows grow a selection. selectedId stays the message on screen.
+  // The keyboard position, shown as a focus ring: where Shift+arrows grow a selection from, the email the select key
+  // adds or removes, and where Ctrl+arrows move to without opening anything. selectedId stays the message on screen.
   cursorId: null,
+  // The selection was made with the select key (keymap.js toggleSelect). Until it is cleared, the step keys move the
+  // focus ring and keep it, as in Gmail.
+  picking: false,
   message: null,
   loading: false,
   expanded: false,
@@ -593,7 +597,9 @@ function renderShell() {
   const collapsed = sidebarCollapsed();
   shell.classList.toggle('collapsed', collapsed);
   shell.classList.toggle('expanded', S.expanded);
-  shell.classList.toggle('has-message', Boolean(S.selectedId) || S.checked.size > 1 || Boolean(S.composer));
+  // In a narrow window the reading pane takes the list's place. A selection made with the select key keeps the list,
+  // so the focus ring stays in view while it grows.
+  shell.classList.toggle('has-message', Boolean(S.selectedId) || (S.checked.size > 1 && !S.picking) || Boolean(S.composer));
   shell.classList.toggle('compact', S.data?.settings.density === 'compact');
   shell.classList.toggle('selecting', S.checked.size > 0);
   shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
@@ -1160,6 +1166,7 @@ function changeView() {
   S.filter = 'all';
   S.keptId = null;
   S.checked.clear();
+  S.picking = false;
   newRows.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
@@ -1487,7 +1494,7 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
   return `<div class="item-wrap ${stacked ? 'stacked' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}">${swipe}
     <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
       <span class="unread-dot" aria-hidden="true"></span>
-      <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" tabindex="-1">${icons.check}</button></div>
+      <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" title="${esc(tip(t('mailbox.message.select'), 'toggleSelect'))}" tabindex="-1">${icons.check}</button></div>
       <div class="body">
         <div class="line1">
           <span class="sender">${draft ? `<span class="draft-tag" data-i18n="composer.titles.draft">${esc(t('composer.titles.draft'))}</span>` : ''}${esc(senderLine(m))}</span>
@@ -1647,7 +1654,35 @@ function checkRange(toId) {
   selectionChanged();
 }
 
+// The select key: adds or removes the email at the focus ring, and only that one, also when another email is open.
+// An email in a group keeps the group open, also once it leaves the selection, so the ring doesn't fold away with it.
+function toggleAtCursor() {
+  const at = cursor();
+  if (!at || !visibleRows().some((m) => m.id === at)) return false;
+  const layout = stackLayout();
+  const head = layout.headOf.get(at);
+  if (head) S.openStacks.add(layout.heads.get(head).id);
+  if (S.checked.has(at)) S.checked.delete(at);
+  else S.checked.add(at);
+  S.anchorId = at;
+  S.cursorId = at;
+  S.picking = true;
+  selectionChanged();
+  revealRow(at);
+  return true;
+}
+
+// The focus ring shows while the keyboard works the list, until the pointer comes back. take: the list takes the
+// focus from wherever it is, so the ring can show.
+function keyboardInList(take = false) {
+  const list = $('.list-scroll');
+  if (!list) return;
+  list.classList.add('kbd');
+  if (document.activeElement === document.body || (take && !list.contains(document.activeElement))) list.focus({ preventScroll: true });
+}
+
 function clearChecks() {
+  S.picking = false;
   if (!S.checked.size) return false;
   S.checked.clear();
   S.cursorId = S.selectedId;
@@ -1688,10 +1723,7 @@ function bindList() {
     if (btn && btn.hasAttribute('data-check')) return toggleCheck(id);
     if (e.ctrlKey || e.metaKey) return toggleCheck(id);
     if (e.shiftKey) return checkRange(id);
-    if (S.checked.size) {
-      S.checked.clear();
-      selectionChanged();
-    }
+    clearChecks();
     S.anchorId = id;
     openMessage(id);
   });
@@ -3113,15 +3145,23 @@ function bindReader() {
   });
 }
 
-function step(dir, extend = false) {
+// extend: Shift grows or shrinks the selection. keep: only the focus ring moves; nothing opens and the selection stays.
+function step(dir, { extend = false, keep = false } = {}) {
   const list = visibleRows();
   if (!list.length) return;
   const from = cursor();
   const i = list.findIndex((x) => x.id === from);
   const target = list[i < 0 ? 0 : Math.max(0, Math.min(list.length - 1, i + dir))];
   if (!target) return;
+  if (keep) {
+    S.cursorId = target.id;
+    syncRowClasses();
+    revealRow(target.id);
+    return;
+  }
   if (extend) {
     // Grow or shrink the selection from its anchor; the message on screen does not change.
+    S.picking = false;
     if (!S.checked.size && S.selectedId) S.checked.add(S.selectedId);
     const anchor = list.some((x) => x.id === S.anchorId) ? S.anchorId : from || target.id;
     S.anchorId = anchor;
@@ -3133,10 +3173,7 @@ function step(dir, extend = false) {
     revealRow(target.id);
     return;
   }
-  if (S.checked.size) {
-    S.checked.clear();
-    selectionChanged();
-  }
+  clearChecks();
   if (target.id === S.selectedId) {
     S.cursorId = target.id;
     return syncRowClasses();
@@ -3227,6 +3264,17 @@ document.addEventListener('keydown', (e) => {
     if (S.query) return clearSearch();
     return;
   }
+  // Enter opens the email at the focus ring, as a click on it would, when the ring shows on another email than the
+  // open one. Without the ring (.kbd, gone with the pointer) Enter does what it always did.
+  if (e.key === 'Enter' && !ctrl && !e.altKey && !e.shiftKey && e.target.matches?.('.list-scroll.kbd')) {
+    const at = cursor();
+    if (at && at !== S.selectedId && visibleRows().some((x) => x.id === at)) {
+      e.preventDefault();
+      clearChecks();
+      S.anchorId = at;
+      return openMessage(at);
+    }
+  }
   if (e.key === 'Enter' && m && m.role === 'drafts' && !e.target.closest?.('button')) {
     e.preventDefault();
     return compose({ mode: 'draft', id: m.id });
@@ -3259,14 +3307,23 @@ function shortcutAction(action, list, m, e) {
       return m ? printMessage(m.id) : false;
     case 'selectAll':
       S.checked = new Set(rows().map((x) => x.id));
+      S.picking = false;
       return selectionChanged();
     case 'next':
     case 'previous':
       // Arrow keys in the open email scroll it.
       if (e.target.closest?.('.reader-scroll, .divider')) return false;
-      $('.list-scroll')?.classList.add('kbd');
-      if (document.activeElement === document.body) $('.list-scroll')?.focus();
-      return step(action === 'next' ? 1 : -1, e.shiftKey);
+      keyboardInList();
+      // After the select key, they move the focus ring and keep the selection.
+      return step(action === 'next' ? 1 : -1, { extend: e.shiftKey, keep: !e.shiftKey && S.picking && S.checked.size > 0 });
+    case 'focusNext':
+    case 'focusPrevious':
+      if (e.target.closest?.('.reader-scroll, .divider')) return false;
+      keyboardInList(true);
+      return step(action === 'focusNext' ? 1 : -1, { keep: true });
+    case 'toggleSelect':
+      keyboardInList(true);
+      return toggleAtCursor();
   }
   if (!list.length) return false;
   switch (action) {
@@ -3539,6 +3596,7 @@ async function openSorted(id, category) {
   S.query = '';
   S.filter = 'all';
   S.checked.clear();
+  S.picking = false;
   await refresh();
   if (S.list.some((m) => m.id === id)) openMessage(id);
 }

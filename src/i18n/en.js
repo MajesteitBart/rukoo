@@ -8741,8 +8741,8 @@
     "description": "Settings > Keyboard shortcuts: group title above the shortcuts of the chosen scheme. {scheme}: e.g. Gmail. src/renderer/settings.js."
   },
   "settings.keyboard.fixed": {
-    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group.",
-    "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. src/renderer/settings.js."
+    "message": "In every scheme, Ctrl+J opens the chat, Ctrl+Z undoes and Esc closes or clears. With mail from one sender grouped, Right arrow and Left arrow open and close a group. Once you've selected an email with the key for it, the keys for the next and previous email move the blue outline without opening anything, and the selection stays until you press Esc. Enter opens the email in the outline.",
+    "description": "Settings > Keyboard shortcuts: note under the list of shortcuts. The blue outline is the keyboard's focus ring on a row of the message list; the key for selecting is the Select or deselect email shortcut. src/renderer/settings.js."
   },
   "settings.keyboard.actions.compose": {
     "message": "New message",
@@ -8803,6 +8803,18 @@
   "settings.keyboard.actions.previous": {
     "message": "Previous email",
     "description": "Settings > Keyboard shortcuts: name of an action in the list of shortcuts, and in a scheme's example line. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.toggleSelect": {
+    "message": "Select or deselect email",
+    "description": "Settings > Keyboard shortcuts: name of the action that adds the email at the keyboard's focus ring to the selection, or takes it out again, in the list of shortcuts. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.focusNext": {
+    "message": "Next email without opening it",
+    "description": "Settings > Keyboard shortcuts: name of the action that moves the keyboard's focus ring to the next email in the list without opening it or changing the selection, in the list of shortcuts. src/renderer/settings.js."
+  },
+  "settings.keyboard.actions.focusPrevious": {
+    "message": "Previous email without opening it",
+    "description": "Settings > Keyboard shortcuts: name of the action that moves the keyboard's focus ring to the previous email in the list without opening it or changing the selection, in the list of shortcuts. src/renderer/settings.js."
   },
   "settings.keyboard.actions.search": {
     "message": "Search",
