@@ -694,8 +694,8 @@ test('the shared editor formats text and inserts links inline and in a compose w
     await editor.press('Control+a');
     await page.locator(`.float-bar [data-cmd="${command}"]`).click();
     await editor.press('Control+k');
-    await page.locator('.dialog input').fill(href);
-    await page.locator('.dialog .buttons .primary').click();
+    await page.locator('.link-pop [data-f="url"]').fill(href);
+    await page.locator('.link-pop [data-a="apply"]').click();
     await expect(editor.locator('a')).toHaveAttribute('href', href);
     expect(await editor.locator('*').evaluateAll((els, command) => els.some((el) => command === 'bold' ? Number(getComputedStyle(el).fontWeight) >= 600 : getComputedStyle(el).fontStyle === 'italic'), command)).toBe(true);
   };
@@ -1446,6 +1446,25 @@ test('swipe on a touch screen toggles read and deletes', async () => {
   await swipe(300, 60);
   await expect(win.locator('.item', { hasText: 'Your password has changed' })).toHaveCount(0);
   await expect(win.locator('#toast')).toContainText('Prullenbak');
+});
+
+// Real touch input through the DevTools protocol, which the dispatched pointer events above can't stand in for: the
+// touch starts with the pointer captured by the element under the finger, and the swipe moves that capture to the
+// row. A swipe must survive that move (lostpointercapture on the subject) and still reach its action.
+test('a real touch swipe that starts on the subject toggles read', async () => {
+  const row = () => item('Your password has changed');
+  await expect(row()).toHaveClass(/unread/);
+  let box = null;
+  await expect.poll(async () => (box = await row().locator('.subject').boundingBox())).not.toBeNull();
+  const x = box.x + 8;
+  const y = box.y + box.height / 2;
+  const cdp = await win.context().newCDPSession(win);
+  const touch = (type, at) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: at, y, id: 1 }] });
+  await touch('touchStart', x);
+  for (let dx = 15; dx <= 180; dx += 15) await touch('touchMove', x + dx);
+  await touch('touchEnd', x + 180);
+  await cdp.detach();
+  await expect(row()).not.toHaveClass(/unread/);
 });
 
 test('keyboard: arrows navigate, Ctrl+N composes, Escape closes', async () => {

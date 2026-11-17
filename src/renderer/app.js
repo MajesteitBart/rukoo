@@ -19,6 +19,8 @@ import {
   initials,
   cleanPreview,
   toast,
+  dropToast,
+  showingToast,
   runToastAction,
   showMenu,
   closeMenu,
@@ -46,6 +48,7 @@ import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
 import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
+import { report, reportError, handled } from './diag.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -155,27 +158,66 @@ let renderedLanguage = null;
 let refreshTimer = null;
 let pending = null;
 let again = false;
+// Passes that failed in a row, and the try that follows one. A failed pass is tried again after RETRY_MS[failures - 1],
+// and then every 10 seconds: a failure that passes, such as main being busy, heals by itself, and one that comes back
+// every time costs a list from main every 10 seconds. The log gets the first failure, one that says something else,
+// and every REPORT_EVERY-th after that.
+let failures = 0;
+let lastFailure = '';
+let retryTimer = null;
+const RETRY_MS = [1000, 2000, 5000, 10000];
+const REPORT_EVERY = 30;
 
 export function scheduleRefresh(ms = 60) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, ms);
+  // The pass reports its own failure (refreshFailed); the timer has no one to hand it to.
+  refreshTimer = setTimeout(() => refresh().catch(() => {}), ms);
 }
 
-// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass.
+// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass. That pass also
+// runs when the one before it failed, since it was asked for with newer data in mind. The promise rejects with the
+// last pass's error, which is in the log already.
 export function refresh() {
   if (pending) {
     again = true;
     return pending;
   }
+  clearTimeout(retryTimer);
   pending = (async () => {
+    let error = null;
     do {
       again = false;
-      await refreshOnce();
+      try {
+        await refreshOnce();
+        error = null;
+      } catch (err) {
+        error = err;
+        refreshFailed(err);
+      }
     } while (again);
+    if (error) throw error;
+    if (failures) {
+      report('refresh', { reason: 'recovered', failures });
+      failures = 0;
+      lastFailure = '';
+    }
   })().finally(() => {
     pending = null;
   });
   return pending;
+}
+
+// A pass that failed left the list as it was: it goes in the log, and is tried again in a moment.
+function refreshFailed(err) {
+  failures++;
+  const message = String((err && err.message) || err);
+  if (failures === 1 || message !== lastFailure || failures % REPORT_EVERY === 0) {
+    console.error('Refreshing the window failed:', err);
+    reportError('refresh', err, { failures });
+  } else handled(err);
+  lastFailure = message;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => refresh().catch(() => {}), RETRY_MS[Math.min(failures, RETRY_MS.length) - 1]);
 }
 
 function searchingAll() {
@@ -206,6 +248,8 @@ async function refreshOnce() {
   renderedLanguage = data.settings.language;
   localize();
   if (first) takeInviteFiles();
+  // In the user's language, now that it is set.
+  if (first) takeUndoNotices();
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
@@ -245,6 +289,8 @@ async function refreshOnce() {
     S.composer?.retheme(data);
   }
   renderShell();
+  // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
+  if (first) takeSendFailures();
   if (!data.accounts.length) {
     if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
     return;
@@ -1241,18 +1287,25 @@ function renderListTools() {
   }).join('')}</div>`);
 }
 
-// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the newest of
+// them started; past LEAVE_STUCK_MS the list stops waiting for them, so a timer that never ran can't hold it.
 const leaving = new Set();
 const LEAVE_MS = 320;
+const LEAVE_STUCK_MS = 3 * LEAVE_MS;
+let leavingSince = 0;
 
 function renderList() {
-  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
-  if (swipeState.el) {
-    swipeState.renderPending = true;
+  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends, or once it is clear that
+  // its end isn't coming (swipeHeld).
+  if (swipeHeld()) {
+    holdRender();
     return;
   }
   // Likewise for a row that is folding away.
-  if (leaving.size) return;
+  if (leaving.size) {
+    if (Date.now() - leavingSince < LEAVE_STUCK_MS) return;
+    leaving.clear();
+  }
   renderShell();
   renderListHead();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
@@ -1540,6 +1593,8 @@ function letGo(id) {
   const head = wrap.previousElementSibling;
   const next = wrap.nextElementSibling;
   if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  // From the newest row's start: rows opened one after another each get their whole fold.
+  leavingSince = Date.now();
   leaving.add(id);
   for (const el of els) {
     const { paddingTop, paddingBottom } = getComputedStyle(el);
@@ -1785,20 +1840,88 @@ async function emptyCurrent() {
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
 
-const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null };
+// The touch or pen swipe on a row: the row, where it started, how far it went, and when its pointer last went down or
+// moved (at). A list update waits for the swipe to end (renderPending, since heldSince), so the row under the finger
+// stays where it is. The end doesn't always come: a pointerup the window never got, a row that left the page. So the
+// swipe also lets go when another pointer goes down, the window loses focus, the row loses its pointer capture or
+// leaves the page, when its pointer moves with no button down or did nothing for SWIPE_STALE_MS, and when a list update
+// has waited SWIPE_HOLD_MAX_MS for it however much the pointer moves; the list then draws what it held back.
+const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null, pointer: null, at: 0, renderPending: false, heldSince: 0, timer: null };
 const SWIPE_TRIGGER = 110;
+const SWIPE_STALE_MS = 3000;
+const SWIPE_HOLD_MAX_MS = 10000;
+// A list update held back this long goes in the log, with how the swipe ended (diag.js).
+const SWIPE_LOG_MS = 3000;
+
+// Whether a swipe holds the list now. One whose end isn't coming lets go here, and the caller draws.
+function swipeHeld() {
+  const st = swipeState;
+  if (!st.el) return false;
+  const now = Date.now();
+  const how = !st.el.isConnected ? 'detached' : now - st.at >= SWIPE_STALE_MS ? 'stale' : st.renderPending && now - st.heldSince >= SWIPE_HOLD_MAX_MS ? 'held' : null;
+  if (!how) return true;
+  dropSwipe(how, false);
+  return false;
+}
+
+// A list update waits for the swipe, and looks again when the swipe would go stale or the wait would be too long.
+function holdRender() {
+  const st = swipeState;
+  if (!st.renderPending) {
+    st.renderPending = true;
+    st.heldSince = Date.now();
+  }
+  clearTimeout(st.timer);
+  const due = Math.min(st.at + SWIPE_STALE_MS, st.heldSince + SWIPE_HOLD_MAX_MS);
+  st.timer = setTimeout(() => st.renderPending && renderList(), Math.max(0, due - Date.now()) + 20);
+}
+
+// The swipe is over. What it held back draws now, unless the caller draws it. how: 'end' for its pointerup or
+// pointercancel; anything else is a swipe that was let go (dropSwipe), which the log hears of.
+function endSwipe(how, draw = true) {
+  const st = swipeState;
+  st.el = null;
+  clearTimeout(st.timer);
+  if (!st.renderPending) return;
+  st.renderPending = false;
+  const held = Date.now() - st.heldSince;
+  if (how !== 'end' || held >= SWIPE_LOG_MS) report('list', { reason: `swipe-${how}`, ms: held });
+  if (draw) renderList();
+}
+
+// Lets go of a swipe whose end didn't come: its row goes back in place.
+function dropSwipe(how, draw = true) {
+  const el = swipeState.el;
+  if (!el) return;
+  el.style.transition = '';
+  el.style.transform = '';
+  el.parentElement?.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
+  swipeState.moved = false;
+  endSwipe(how, draw);
+}
 
 function bindSwipe(pane) {
+  // Before the row's own pointerdown below: a pointer going down means the last swipe's pointer isn't anymore.
+  window.addEventListener('pointerdown', () => dropSwipe('pointer'), true);
+  window.addEventListener('blur', () => dropSwipe('blur'));
+  // Only the row's own capture, which it takes once the swipe moves: a touch starts with the capture on the element
+  // under the finger (the sender, the subject), and moving it to the row fires lostpointercapture there.
+  pane.addEventListener('lostpointercapture', (e) => {
+    if (swipeState.el && e.pointerId === swipeState.pointer && e.target === swipeState.el) dropSwipe('capture');
+  });
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;
     if (S.data.settings.swipeLeft === 'none' && S.data.settings.swipeRight === 'none') return;
     const item = e.target.closest('.item');
     if (!item || e.target.closest('button')) return;
-    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId });
+    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId, at: Date.now() });
   });
   pane.addEventListener('pointermove', (e) => {
     const st = swipeState;
     if (!st.el || e.pointerId !== st.pointer) return;
+    // No button down: the pointer came up where the window didn't hear it, such as a pen that went back to hovering.
+    if (e.buttons === 0) return dropSwipe('released');
+    st.at = Date.now();
     const dx = e.clientX - st.startX;
     const dy = e.clientY - st.startY;
     if (!st.moved) {
@@ -1825,13 +1948,7 @@ function bindSwipe(pane) {
     if (!st.el || e.pointerId !== st.pointer) return;
     const { el, dx, id, moved } = st;
     st.el = null;
-    const flush = () => {
-      if (st.renderPending) {
-        st.renderPending = false;
-        renderList();
-      }
-    };
-    if (!moved) return flush();
+    if (!moved) return endSwipe('end');
     el.style.transition = 'transform 200ms cubic-bezier(0.2,0.8,0.2,1)';
     const m = byId(id);
     // The action behind the row on the side it went to, if it went far enough (Settings > Swipe and quick actions).
@@ -1845,7 +1962,7 @@ function bindSwipe(pane) {
       el.parentElement.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
       if (action) rowAction(action, m);
     }
-    flush();
+    endSwipe('end');
     // Swallow the click that follows a drag.
     setTimeout(() => (st.moved = false), 0);
   };
@@ -2304,7 +2421,8 @@ async function printMessage(id) {
 // Each request to write (or to open a message) takes a number; a request that a newer one overtook
 // while it waited stops, so a slow reply can never replace the message you started after it.
 // still: the caller's check after each wait that its reason to write holds (the agent panel: whether its chat is
-// still on screen); without it the request stops.
+// still on screen); without it the request stops. claim: asked once the reading pane is free, right before the editor
+// takes its place; false stops the request (a refused email that opened elsewhere meanwhile, reopenRefused).
 let composeTurn = 0;
 
 async function compose(opts) {
@@ -2315,11 +2433,13 @@ async function compose(opts) {
   if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  const { still, ...rest } = opts;
-  const full = { accountId, ...rest };
+  const { still, claim, ...rest } = opts;
+  // An editor that opens again after Undo send brings its own mode, account and the email it answers.
+  const restore = rest.restore || null;
+  const full = restore ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null } : { accountId, ...rest };
   const holds = () => !still || still();
-  let message = null;
-  if (full.id) {
+  let message = restore ? restore.original || null : null;
+  if (full.id && !restore) {
     try {
       message = await api('get', full.id);
     } catch (err) {
@@ -2332,6 +2452,7 @@ async function compose(opts) {
   // Whatever is being written now is kept as a draft before the new message takes its place.
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn || S.composer || !holds()) return;
+  if (claim && (!(await claim()) || turn !== composeTurn || S.composer || !holds())) return;
   const host = $('.reader');
   host.innerHTML = '';
   S.expanded = false;
@@ -2356,6 +2477,95 @@ async function compose(opts) {
   renderShell();
   agentViewChanged();
   return S.composer;
+}
+
+// The mode, email and account an editor that opens again had (composer.js undoState).
+function restoreOpts(restore) {
+  const o = restore.opts && typeof restore.opts === 'object' ? restore.opts : {};
+  return { mode: typeof o.mode === 'string' ? o.mode : 'new', id: typeof o.id === 'string' ? o.id : null, ...(typeof o.accountId === 'string' ? { accountId: o.accountId } : {}) };
+}
+
+// ---------- undo send ----------
+
+// After Send, while the email waits in main's outbox (Settings > General > Undo send). Undo, or Ctrl+Z, takes it back;
+// a newer notice takes this one's place, and the email then goes when its time is up. "Email sent" follows from
+// main ('send-done'). undoNotice: the email whose notice shows, and its action.
+let undoNotice = null;
+function offerUndoSend({ id, ms }) {
+  const action = { get label() { return t('common.actions.undo'); }, run: () => undoSend(id) };
+  undoNotice = { id, action };
+  toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
+}
+
+// The emails Don't quit kept waiting (askQuitWithHeldMail in main.js). Their clocks stand still until this page asks
+// for their notices, so none runs out before its Undo shows: asked when told ('send-paused'), and once the first
+// state is drawn, for a main window that was still loading or was made anew after the last window closed.
+async function takeUndoNotices() {
+  if (!S.data) return;
+  for (const notice of await api('undoNotices').catch(() => [])) offerUndoSend(notice);
+}
+
+// An email that waited went. A newer email's notice keeps its Undo instead of making way for "Email sent".
+function waitedMailSent({ id }) {
+  if (undoNotice && undoNotice.id !== id && showingToast(undoNotice.action)) return;
+  toast(t('composer.status.sent'));
+}
+
+// The emails the server refused after their wait, which main holds for this window until their editors are open
+// (refused in main.js): asked for when told ('send-failed'), and once the first state is drawn, so a window that was
+// still loading when an email failed opens it too. Each one's notice goes, and its editor opens again with the error:
+// the first in the reading pane, any others in compose windows (main opens those), so none of them pushes another
+// out. Main lets each go only once it is open, so the ones this page dies before opening still open elsewhere. One
+// round at a time: a second 'send-failed' asks after the first round, and finds only what is new.
+let takingFailures = Promise.resolve();
+function takeSendFailures() {
+  takingFailures = takingFailures.then(takeSendFailuresNow, takeSendFailuresNow);
+  return takingFailures;
+}
+
+async function takeSendFailuresNow() {
+  if (!S.data || !$('.reader')) return;
+  const list = await api('sendFailures').catch(() => []);
+  for (const [i, { id, restore, error }] of list.entries()) {
+    if (!restore || typeof restore !== 'object') continue;
+    if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
+    if (i === 0) await reopenRefused(id, restore, String(error || ''));
+    else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+  }
+}
+
+// A refused email back in the reading pane. It is claimed only once the pane is free, after the editor there saved
+// its text, so main still has it if this page dies during that save, and the pane leaves it alone when main opened
+// it elsewhere meanwhile. Main lets it go once the editor is open; when the pane can't take it, main opens it in a
+// compose window.
+async function reopenRefused(id, restore, sendError) {
+  setMode('mail');
+  const claim = () => api('claimRefused', id).catch(() => false);
+  const editor = await compose({ restore, sendError, claim }).catch(() => null);
+  if (editor) await api('refusedOpened', id).catch(() => {});
+  else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+}
+
+async function undoSend(id) {
+  let res;
+  try {
+    res = await api('undoSend', id);
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  if (!res || res.late) return toast(t('composer.undoSend.late'));
+  // An email written in a compose window opens in a new one; main did that.
+  if (res.restore) await reopenComposer(res.restore);
+  toast(t('composer.undoSend.undone'));
+}
+
+// The editor of an email that waited, back in the reading pane. When the pane can't take it (its own editor is busy
+// asking or saving), it opens in a compose window, so the email is never lost. sendError: why the server refused it.
+async function reopenComposer(restore, sendError = null) {
+  setMode('mail');
+  const editor = await compose({ restore, sendError }).catch(() => null);
+  if (editor) return;
+  await api('openCompose', { ...restoreOpts(restore), restore, sendError }).catch((err) => toast(err.message, 5000));
 }
 
 // ---------- reader ----------
@@ -3214,7 +3424,8 @@ async function onNewMail(p) {
   if (!mails.length) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
-  await refresh();
+  // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
+  await refresh().catch(() => {});
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
@@ -3258,6 +3469,12 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
+  // waited and its editor opens again.
+  if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
+  if (type === 'send-done' && payload) waitedMailSent(payload);
+  if (type === 'send-paused') takeUndoNotices();
+  if (type === 'send-failed') takeSendFailures();
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
     toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);
