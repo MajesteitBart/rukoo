@@ -47,7 +47,7 @@ const readOnly = (folder, on) =>
 // The subjects in a view as the engine has them.
 const inView = (view) => win.evaluate(async (view) => (await window.mail.call('list', { scope: 'all', view })).map((m) => m.subject), view);
 
-test('a delete or archive the server refuses puts the email back at once and says why', async () => {
+test('a delete or archive the server refuses puts the email back at once and says why', async ({}, testInfo) => {
   const bencompare = row('Sign in to Bencompare');
   await readOnly('Trash', true);
   await bencompare.click();
@@ -55,6 +55,7 @@ test('a delete or archive the server refuses puts the email back at once and say
   await expect(notice()).toContainText(REFUSED);
   await expect(notice().locator('button')).toHaveCount(0);
   await expect(bencompare).toBeVisible();
+  await win.screenshot({ path: testInfo.outputPath('refused-delete.png'), animations: 'disabled' });
 
   await readOnly('Archive', true);
   await bencompare.click();
@@ -73,7 +74,7 @@ test('a delete or archive the server refuses puts the email back at once and say
   await expect.poll(() => inView('trash')).toContain('Sign in to Bencompare');
 });
 
-test('when the server refuses one of several emails, the notice says why and its Undo brings back the rest', async () => {
+test('when the server refuses one of several emails, the notice says why and its Undo brings back the rest', async ({}, testInfo) => {
   // Two starred emails in two folders: the reply in the inbox and the invitation it answers in Sent.
   await win.evaluate(async () => {
     const list = await window.mail.call('list', { scope: 'all', view: 'everything' });
@@ -91,6 +92,7 @@ test('when the server refuses one of several emails, the notice says why and its
   await expect(notice().locator('button')).toHaveText('Undo');
   await expect(invitation).toBeVisible();
   await expect(reply).toHaveCount(0);
+  await win.screenshot({ path: testInfo.outputPath('partial-bulk-delete.png'), animations: 'disabled' });
 
   await notice().locator('button').click();
   await expect(notice()).toContainText('Restored');

@@ -2467,6 +2467,7 @@ export async function removeMessages(list) {
   const moved = [];
   const confirm = [];
   let deleted = 0;
+  let total = list.length;
   // The first refusal. A refused email is back in the engine's list, and the notice at the end says why.
   let error = null;
   for (const m of list) {
@@ -2488,18 +2489,21 @@ export async function removeMessages(list) {
       t('common.actions.delete'),
       true
     );
-    if (!ok) return refresh();
-    for (const m of confirm) {
-      try {
-        await api('remove', m.id, { force: true });
-        deleted++;
-      } catch (err) {
-        error = error || err.message;
+    if (ok) {
+      for (const m of confirm) {
+        try {
+          await api('remove', m.id, { force: true });
+          deleted++;
+        } catch (err) {
+          error = error || err.message;
+        }
       }
+    } else {
+      total -= confirm.length;
+      await refresh();
     }
   }
   if (error) refresh();
-  const total = list.length;
   if (moved.length) {
     const done = moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length });
     offerUndo(moved, error ? t('mailbox.delete.movedSome', { count: moved.length, total, error }) : done, reopen);

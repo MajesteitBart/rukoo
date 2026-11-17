@@ -3159,6 +3159,14 @@
     "message": "The mail server didn't delete the email.",
     "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, and as the {error} of mailbox.delete.deletedSome. src/main/imap.js (deleteForever); src/main/demo.js (refuse)"
   },
+  "errors.delete.stillMarked": {
+    "message": "The mail server didn't finish deleting the email. It is still marked for deletion.",
+    "description": "Notice after an IMAP delete failed and Rukoo could not clear the deletion flag. src/main/imap.js (deleteForever)"
+  },
+  "errors.delete.unknown": {
+    "message": "Rukoo couldn't confirm whether the mail server deleted the email.",
+    "description": "Notice after the mail server did not confirm a permanent delete and Rukoo could not confirm the email's state. src/main/imap.js (deleteForever)"
+  },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
     "description": "errors > flags. The IMAP server turned down marking emails read, unread, starred or answered, or the command didn't reach it. The emails go back to how they were. Shown in a notice, and after Mark all as read as the {error} of mailbox.actions.readSome. src/main/imap.js (setFlagsMany)"
@@ -3516,8 +3524,8 @@
     "description": "errors > message. src/main/imap.js"
   },
   "errors.move.copied": {
-    "message": "The mail server copied the email but didn't remove the original, so it's in both folders now.",
-    "description": "errors > move. A server without the IMAP MOVE command copied the email and then turned down deleting it from the folder it came from, and Rukoo couldn't remove the copy again. Shown in a notice after Move, Archive, Delete or Undo; both folders sync. src/main/imap.js (dropCopy)"
+    "message": "The mail server copied the email but didn't confirm removing the original. Check both folders before trying again.",
+    "description": "A server without the IMAP MOVE command copied the email but did not confirm removing the original. Notice after Move, Archive, Delete or Undo. src/main/imap.js (move)"
   },
   "errors.move.refused": {
     "message": "The mail server didn't move the email.",

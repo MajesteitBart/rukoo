@@ -262,7 +262,7 @@ test('a move that left a copy behind keeps the original, offers no Undo, and syn
   const { engine, acc } = await freshEngine();
   const demo = engine.session(engine.account(acc.id));
   const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
-  // A server without MOVE copied it and then didn't delete it from Inbox, and the copy couldn't be removed again.
+  // A server without MOVE copied it and then didn't confirm removing it from Inbox.
   demo.move = async (p, uid, destination) => {
     const m = demo.find(p, uid);
     demo.box(destination).messages.push({ ...m, uid: demo.state.nextUid++ });
@@ -314,6 +314,19 @@ test('an Undo that left a copy in the old folder is not offered again', async ()
     throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
   };
   await assert.rejects(engine.undoMove(target.id), { message: t('errors.move.copied') });
+  assert.ok(!engine.canUndo(target.id));
+  await engine.close();
+});
+
+test('an Undo whose result is unknown is not offered again before the folders are reconciled', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  await engine.archive(target.id);
+  demo.move = async () => {
+    throw Object.assign(new Error(t('errors.connection.closed')), { unknown: true });
+  };
+  await assert.rejects(engine.undoMove(target.id), { message: t('errors.connection.closed') });
   assert.ok(!engine.canUndo(target.id));
   await engine.close();
 });

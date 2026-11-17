@@ -2120,8 +2120,7 @@ class Engine extends EventEmitter {
 
   // Moves a message back to where it was before move(), remove() or archive().
   // Returns the id it gets in its old folder. When the server turns the move back down, the email stays in the
-  // folder it was moved to, its row there comes back, and Undo can be tried again while its time lasts. Not after a
-  // move back that left a copy in the old folder: a second try would file another.
+  // folder it was moved to, its row there comes back, and a confirmed refusal can be retried while the notice lasts.
   async undoMove(id) {
     const rec = this.undoable.get(id);
     this.undoable.delete(id);
@@ -2147,7 +2146,7 @@ class Engine extends EventEmitter {
         throw new Error(t('errors.undo.rebuilt'));
       }
       putBack();
-      if (!(err && err.copied) && !this.undoable.has(id)) this.undoable.set(id, rec);
+      if (!(err && (err.copied || err.unknown)) && !this.undoable.has(id)) this.undoable.set(id, rec);
       this.changed(acc.id);
       this.recheck(acc, err, [rec.destination, rec.folder]);
       throw new Error(friendlyError(err));
@@ -2475,6 +2474,7 @@ class Engine extends EventEmitter {
     } catch (err) {
       putBack();
       this.changed(acc.id);
+      this.recheck(acc, err, [folder]);
       throw err;
     }
   }

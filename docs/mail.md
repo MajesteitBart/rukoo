@@ -35,7 +35,9 @@ Mark all as read, in the More options menu above the list or with `Shift+Esc`, m
 
 The newest message opens when you start the app or switch folders. It stays unread until you open it yourself.
 
-Ctrl+click and Shift+click select several messages for one action, and so can the keyboard; see [Selecting with the keyboard](#selecting-with-the-keyboard). Right-click opens a menu with shortcuts, and you can drag messages onto a folder. Deleting, archiving and moving can be undone from the notice that follows, or with `Ctrl+Z`. When the mail server refuses one of these, the email comes back in the list at once and the notice says why; for several emails it says how many went, and its undo covers those. A refused undo leaves the email where it was moved and offers undo again. A server without the IMAP MOVE command gets a copy and a delete instead. If it then won't delete the original, Rukoo removes the copy again, so trying again doesn't file a second one.
+Ctrl+click and Shift+click select several messages for one action, and so can the keyboard; see [Selecting with the keyboard](#selecting-with-the-keyboard). Right-click opens a menu with shortcuts, and you can drag messages onto a folder. Deleting, archiving and moving can be undone from the notice that follows, or with `Ctrl+Z`.
+
+When the mail server refuses one of these, the email comes back in the list at once and the notice says why. For several emails it says how many went, and its Undo covers those. A refused Undo leaves the email where it was moved and lets you try again. A server without the IMAP MOVE command copies the email first. If it can't confirm removing the original, Rukoo keeps the copy and asks you to check both folders before trying again.
 
 ## Reading
 
