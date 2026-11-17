@@ -44,6 +44,25 @@ async function launch(size = [1500, 950]) {
 const linkEvents = () => app.evaluate(() => (global.__semLinkEvents = true));
 
 const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [w, h]);
+
+// A window size and zoom the page has taken in before the test goes on. A Linux window manager applies them after
+// setSize() and setZoomFactor() have returned, and Rukoo closes an open menu on every resize event (ui.js). A late one
+// closed the Screen menu while it still said Loading, so it never listed the displays (#313). Waits until the page
+// has the size the window has, then for the next frames, which dispatch the resize event.
+async function resizeTo(width, height, zoom = 1) {
+  await setSize(width, height);
+  await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+  const taken = async () => {
+    const [w, h, z] = await app.evaluate(({ BrowserWindow }) => {
+      const x = BrowserWindow.getAllWindows()[0];
+      return [...x.getContentSize(), x.webContents.getZoomFactor()];
+    });
+    return win.evaluate(([w, h]) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1, [w / z, h / z]);
+  };
+  await expect.poll(taken).toBe(true);
+  await win.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
 const connected = () => app.evaluate(() => global.__semVoice.connected);
 const isProtected = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.isContentProtected()));
 
@@ -395,8 +414,7 @@ for (const [language, theme, zoom] of [['en', 'dark', 0.8], ['en', 'light', 1], 
     await openMeetings();
     await setLanguage(language);
     await setTheme(theme);
-    await setSize(1060, 860);
-    await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
+    await resizeTo(1060, 860, zoom);
     const openScreen = () => view().locator('[data-mt="screen"]').click();
     const monitorRow = (m) => menu().locator('button', { hasText: m.name });
     const lastChange = () => voice.commands.filter((c) => c.command === 'screen.set').at(-1)?.args;
