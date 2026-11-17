@@ -7427,8 +7427,7 @@ button.cal-gchip-main:hover {
   gap: 6px;
   min-height: 32px;
   padding: 0 6px;
-  margin: 0 -6px;
-  width: calc(100% + 12px);
+  width: 100%;
   border-radius: 6px;
   text-align: left;
   color: var(--text);

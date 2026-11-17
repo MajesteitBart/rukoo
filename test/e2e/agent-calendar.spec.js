@@ -125,6 +125,7 @@ test('the calendar card speaks Dutch, and Cancel adds nothing', async () => {
 test('a chat started in the calendar leaves out the email left open in Mail', async ({}, testInfo) => {
   const chip = () => pane().locator('.bui-pb .bui-entity');
   const heading = () => pane().locator('.bui-rec__title');
+  await setTheme('dark');
   await openChat('Your parcel is on its way');
   await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
   await expect(heading()).toHaveText('What should Hermes do with this email?');
@@ -135,11 +136,12 @@ test('a chat started in the calendar leaves out the email left open in Mail', as
   await expect(chip()).toHaveCount(0);
   await say('Schedule a call with Sanne');
   await expect(transcript().locator('.bui-approval')).toBeVisible();
+  await expect(transcript()).toContainText('Rukoo asks you before it adds the call.');
   // Named after its first message, as a chat without an email is.
   await expect(pane().locator('.ap-title')).toHaveText('Schedule a call with Sanne');
   await expect(chip()).toHaveCount(0);
   expect(await app.evaluate(() => global.__semAgents.list().map((c) => ({ title: c.title, message: c.message })))).toEqual([{ title: 'Schedule a call with Sanne', message: null }]);
-  await pane().screenshot({ path: testInfo.outputPath('calendar-chat-en-dark.png'), animations: 'disabled' });
+  await win.screenshot({ path: testInfo.outputPath('calendar-chat-en-dark.png'), animations: 'disabled' });
 
   // New chat starts without the email too.
   await win.click('.agentpane [data-ap="new"]');
@@ -148,7 +150,7 @@ test('a chat started in the calendar leaves out the email left open in Mail', as
   await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl', theme: 'light' }));
   await expect(heading()).toHaveText('Vraag Hermes iets over je agenda');
   await expect(win.locator('html')).toHaveClass(/light/);
-  await pane().screenshot({ path: testInfo.outputPath('calendar-new-chat-nl-light.png'), animations: 'disabled' });
+  await win.screenshot({ path: testInfo.outputPath('calendar-new-chat-nl-light.png'), animations: 'disabled' });
 
   // Back in Mail the panel follows the open email again.
   await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));

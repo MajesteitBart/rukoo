@@ -65,8 +65,8 @@ async function expectWhole(rows, label) {
 async function shot(name, testInfo) {
   for (const theme of ['dark', 'light']) {
     await setTheme(theme);
-    await expectWhole(name.endsWith('zoom') ? 2 : 1, `${name}, ${theme}`);
     await win.locator('.dialog').screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: 'disabled' });
+    await expectWhole(name.endsWith('zoom') ? 2 : 1, `${name}, ${theme}`);
   }
   await setTheme('dark');
 }
@@ -90,9 +90,11 @@ test('the event dialog shows a 12-hour time whole, with its date, wide, narrow a
   await shot('wide', testInfo);
   // The narrowest main window: the dialog is still 600px wide, so the two still share a row.
   await resize(760, 800);
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThanOrEqual(760);
   await shot('narrow', testInfo);
   // Zoomed to 200% the window is 380px wide for the page: Ends goes under Starts, and every field stays whole.
   await zoomTo(2);
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThanOrEqual(380);
   await shot('narrow-zoom', testInfo);
   await zoomTo(1);
 });
