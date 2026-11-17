@@ -2050,6 +2050,7 @@ class Engine extends EventEmitter {
     } catch (err) {
       putBack();
       this.changed(acc.id);
+      this.recheck(acc, err, [folder, destination]);
       throw new Error(friendlyError(err));
     }
     // Servers without UIDPLUS do not report the new uid; such a move cannot be undone.
@@ -2060,6 +2061,15 @@ class Engine extends EventEmitter {
     if (this.caches.get(acc.id).boxes[destination]) {
       this.syncFolderAndNotify(acc, destination).catch(() => {});
     }
+  }
+
+  // After a move or delete the server didn't carry out as asked: a lost connection that hides whether it did
+  // (err.unknown, from ImapAccount), or a copy left in the destination (err.copied). Syncs the folders involved that
+  // the cache holds, so the list shows where the email is. A plain refusal changed nothing to sync.
+  recheck(acc, err, folders) {
+    const cache = this.caches.get(acc.id);
+    if (!cache || !err || !(err.unknown || err.copied)) return;
+    for (const p of new Set(folders)) if (cache.boxes[p]) this.syncFolderAndNotify(acc, p).catch(() => {});
   }
 
   rememberMove(id, record) {
@@ -2109,23 +2119,37 @@ class Engine extends EventEmitter {
   }
 
   // Moves a message back to where it was before move(), remove() or archive().
-  // Returns the id it gets in its old folder.
+  // Returns the id it gets in its old folder. When the server turns the move back down, the email stays in the
+  // folder it was moved to, its row there comes back, and Undo can be tried again while its time lasts. Not after a
+  // move back that left a copy in the old folder: a second try would file another.
   async undoMove(id) {
     const rec = this.undoable.get(id);
     this.undoable.delete(id);
     if (!rec || Date.now() - rec.at > UNDO_MS) throw new Error(t('errors.undo.expired'));
     const acc = this.account(rec.accountId);
-    this.removeFromCache(acc, rec.destination, rec.uid);
+    const putBack = this.removeFromCache(acc, rec.destination, rec.uid);
     this.changed(acc.id);
     let uid;
     try {
-      const back = await this.withPending(acc, rec.destination, rec.uid, { removed: true }, () =>
-        this.session(acc).move(rec.destination, rec.uid, rec.folder, { expectUidValidity: rec.uidValidity })
+      const back = await this.withPending(
+        acc,
+        rec.destination,
+        rec.uid,
+        { removed: true },
+        () => this.session(acc).move(rec.destination, rec.uid, rec.folder, { expectUidValidity: rec.uidValidity }),
+        putBack.recount
       );
       uid = back && back.uid;
     } catch (err) {
-      if (this.caches.get(acc.id).boxes[rec.destination]) this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
-      if (err && err.code === 'UIDVALIDITY') throw new Error(t('errors.undo.rebuilt'));
+      // The folder's uids were given out again, so rec.uid may be another email now: only a sync knows the rows.
+      if (err && err.code === 'UIDVALIDITY') {
+        if (this.caches.get(acc.id).boxes[rec.destination]) this.syncFolderAndNotify(acc, rec.destination).catch(() => {});
+        throw new Error(t('errors.undo.rebuilt'));
+      }
+      putBack();
+      if (!(err && err.copied) && !this.undoable.has(id)) this.undoable.set(id, rec);
+      this.changed(acc.id);
+      this.recheck(acc, err, [rec.destination, rec.folder]);
       throw new Error(friendlyError(err));
     }
     // Put it back right away; with the new uid in the cache, the follow-up sync does not report it as new mail.
@@ -2180,6 +2204,7 @@ class Engine extends EventEmitter {
     } catch (err) {
       putBack();
       this.changed(acc.id);
+      this.recheck(acc, err, [folder]);
       throw new Error(friendlyError(err));
     }
     return 'deleted';
@@ -2440,11 +2465,18 @@ class Engine extends EventEmitter {
     return hit ? hit.uid : null;
   }
 
+  // A draft the server refuses to delete stays in Drafts, so its row comes back.
   async discardDraft(id) {
     const { acc, folder, uid } = this.locate(id);
-    this.removeFromCache(acc, folder, uid);
+    const putBack = this.removeFromCache(acc, folder, uid);
     this.changed(acc.id);
-    await this.session(acc).deleteForever(folder, uid);
+    try {
+      await this.session(acc).deleteForever(folder, uid);
+    } catch (err) {
+      putBack();
+      this.changed(acc.id);
+      throw err;
+    }
   }
 
   async close() {

@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir } = require('./tmp');
 const { Engine } = require('../src/main/engine');
+const { t } = require('../src/i18n');
 
 async function freshEngine() {
   const dir = tempDir('sem-test-');
@@ -16,6 +17,16 @@ async function freshEngine() {
 }
 
 const inbox = (engine, acc) => engine.listMessages({ scope: acc.id, view: 'inbox' });
+const view = (engine, acc, name) => engine.listMessages({ scope: acc.id, view: name });
+
+// Waits until check() holds; fails instead of hanging.
+async function until(check, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
 
 test('a delete can be undone and the message keeps its flags', async () => {
   const { engine, acc } = await freshEngine();
@@ -174,5 +185,135 @@ test('archived Gmail mail that also has a label stays in the archive, and shows 
   await engine.syncAccount(acc.id);
   assert.ok(engine.listMessages({ scope: acc.id, view: 'archive' }).some((m) => m.subject === target.subject));
   assert.equal(engine.listMessages({ scope: acc.id, view: 'everything' }).filter((m) => m.subject === target.subject).length, 1);
+  await engine.close();
+});
+
+// #308: imapflow answers false for a MOVE or EXPUNGE the server turns down, which used to pass as success: the email
+// left the list until the next sync brought it back. ImapAccount throws now; the demo refuses for a folder marked
+// readOnly, as a server does a shared folder you may only read.
+test('a refused move puts the email back at once and says why, and trying again later goes through', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  demo.box('Archive').readOnly = true;
+  await assert.rejects(engine.archive(target.id), { message: t('errors.move.refused') });
+  const back = inbox(engine, acc).find((m) => m.id === target.id);
+  assert.ok(back, 'the same row, with the same id');
+  assert.equal(back.unread, target.unread);
+  assert.ok(!engine.canUndo(target.id));
+  assert.ok(demo.box('INBOX').messages.some((m) => m.uid === target.uid));
+  // Deleting moves to Trash, which the server can refuse the same way.
+  demo.box('Trash').readOnly = true;
+  await assert.rejects(engine.remove(target.id), { message: t('errors.move.refused') });
+  assert.ok(inbox(engine, acc).some((m) => m.id === target.id));
+
+  demo.box('Archive').readOnly = false;
+  await engine.archive(target.id);
+  assert.ok(!inbox(engine, acc).some((m) => m.subject === target.subject));
+  await engine.syncAccount(acc.id);
+  assert.equal(view(engine, acc, 'archive').filter((m) => m.subject === target.subject).length, 1);
+  assert.ok(engine.canUndo(target.id));
+  await engine.close();
+});
+
+test('a refused Undo leaves the email where it was moved, with its row there, and Undo can be tried again', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  await engine.archive(target.id);
+  await until(() => view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+  const archived = view(engine, acc, 'archive').find((m) => m.subject === target.subject);
+
+  demo.box('Archive').readOnly = true;
+  await assert.rejects(engine.undoMove(target.id), { message: t('errors.move.refused') });
+  assert.ok(view(engine, acc, 'archive').some((m) => m.id === archived.id), 'the archive row is back');
+  assert.ok(!inbox(engine, acc).some((m) => m.subject === target.subject));
+  assert.ok(engine.canUndo(target.id), 'Undo is kept for another try');
+
+  demo.box('Archive').readOnly = false;
+  const restored = await engine.undoMove(target.id);
+  assert.ok(inbox(engine, acc).some((m) => m.id === restored && m.subject === target.subject));
+  await engine.syncAccount(acc.id);
+  assert.ok(!view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+  assert.equal(inbox(engine, acc).filter((m) => m.subject === target.subject).length, 1);
+  assert.ok(!engine.canUndo(target.id));
+  await engine.close();
+});
+
+test('a refused delete for good keeps the email in Trash, and a refused draft discard keeps the draft', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const trashed = view(engine, acc, 'trash')[0];
+  demo.box('Trash').readOnly = true;
+  await assert.rejects(engine.remove(trashed.id), { message: t('errors.delete.refused') });
+  assert.ok(view(engine, acc, 'trash').some((m) => m.id === trashed.id));
+  demo.box('Trash').readOnly = false;
+  assert.equal(await engine.remove(trashed.id), 'deleted');
+  assert.ok(!view(engine, acc, 'trash').some((m) => m.id === trashed.id));
+
+  const draft = view(engine, acc, 'drafts')[0];
+  demo.box('Drafts').readOnly = true;
+  await assert.rejects(engine.discardDraft(draft.id), { message: t('errors.delete.refused') });
+  assert.ok(view(engine, acc, 'drafts').some((m) => m.id === draft.id));
+  await engine.close();
+});
+
+test('a move that left a copy behind keeps the original, offers no Undo, and syncs the copy into view', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  // A server without MOVE copied it and then didn't delete it from Inbox, and the copy couldn't be removed again.
+  demo.move = async (p, uid, destination) => {
+    const m = demo.find(p, uid);
+    demo.box(destination).messages.push({ ...m, uid: demo.state.nextUid++ });
+    demo.persist();
+    throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
+  };
+  await assert.rejects(engine.archive(target.id), { message: t('errors.move.copied') });
+  assert.ok(inbox(engine, acc).some((m) => m.id === target.id));
+  assert.ok(!engine.canUndo(target.id));
+  await until(() => view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+  assert.ok(inbox(engine, acc).some((m) => m.id === target.id));
+  await engine.close();
+});
+
+test('a move whose connection went before the answer puts the email back, then a sync shows where it is', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  const move = demo.move.bind(demo);
+  // The server moved it; the answer never came.
+  demo.move = async (...args) => {
+    await move(...args);
+    throw Object.assign(new Error(t('errors.connection.closed')), { unknown: true });
+  };
+  // The syncs that follow wait until the test has looked.
+  const syncFolder = demo.syncFolder.bind(demo);
+  let go;
+  const gate = new Promise((r) => (go = r));
+  const asked = [];
+  demo.syncFolder = async (p, ...rest) => {
+    asked.push(p);
+    await gate;
+    return syncFolder(p, ...rest);
+  };
+  await assert.rejects(engine.archive(target.id), { message: t('errors.connection.closed') });
+  assert.ok(inbox(engine, acc).some((m) => m.id === target.id), 'back at once, as nothing is known');
+  assert.deepEqual(asked.sort(), ['Archive', 'INBOX']);
+  go();
+  await until(() => !inbox(engine, acc).some((m) => m.subject === target.subject) && view(engine, acc, 'archive').some((m) => m.subject === target.subject));
+  await engine.close();
+});
+
+test('an Undo that left a copy in the old folder is not offered again', async () => {
+  const { engine, acc } = await freshEngine();
+  const demo = engine.session(engine.account(acc.id));
+  const target = inbox(engine, acc).find((m) => m.subject === 'Sign in to Bencompare');
+  await engine.archive(target.id);
+  demo.move = async () => {
+    throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
+  };
+  await assert.rejects(engine.undoMove(target.id), { message: t('errors.move.copied') });
+  assert.ok(!engine.canUndo(target.id));
   await engine.close();
 });

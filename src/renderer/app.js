@@ -2421,25 +2421,32 @@ function detach(list) {
   return wasOpen;
 }
 
-async function offerUndo(ids, message, reopen) {
+// ms: how long the notice shows when none of ids can be undone.
+async function offerUndo(ids, message, reopen, ms) {
   const can = await Promise.all(ids.map((id) => api('canUndo', id).catch(() => false)));
   const undoable = ids.filter((_, i) => can[i]);
-  if (!undoable.length) return toast(message);
+  if (!undoable.length) return toast(message, ms);
   toast(message, { action: { get label() { return t('common.actions.undo'); }, run: () => undoMoves(undoable, reopen) } });
 }
 
+// When the server turns some of them down, the notice says why and offers Undo again for those: they stay where
+// they were moved, and the engine keeps their Undo while its time lasts.
 async function undoMoves(ids, reopen) {
   const restored = [];
+  const failed = [];
+  let error = null;
   for (const id of ids) {
     try {
       restored.push(await api('undoMove', id));
     } catch (err) {
-      toast(err.message, 5000);
+      failed.push(id);
+      error = error || err.message;
     }
   }
   await refresh();
   const back = restored.filter(Boolean);
   if (reopen && back.length === 1) openMessage(back[0]);
+  if (error) return offerUndo(failed, restored.length ? t('mailbox.undo.restoredSome', { count: restored.length, total: ids.length, error }) : error, reopen, 5000);
   if (back.length) toast(back.length === 1 ? t('mailbox.undo.restored') : t('mailbox.undo.restoredCount', { count: back.length }));
 }
 
@@ -2460,6 +2467,8 @@ export async function removeMessages(list) {
   const moved = [];
   const confirm = [];
   let deleted = 0;
+  // The first refusal. A refused email is back in the engine's list, and the notice at the end says why.
+  let error = null;
   for (const m of list) {
     try {
       const where = await api('remove', m.id);
@@ -2467,8 +2476,7 @@ export async function removeMessages(list) {
       else if (where === 'confirm') confirm.push(m);
       else deleted++;
     } catch (err) {
-      toast(err.message, 5000);
-      refresh();
+      error = error || err.message;
     }
   }
   if (confirm.length) {
@@ -2486,12 +2494,20 @@ export async function removeMessages(list) {
         await api('remove', m.id, { force: true });
         deleted++;
       } catch (err) {
-        toast(err.message, 5000);
+        error = error || err.message;
       }
     }
   }
-  if (moved.length) offerUndo(moved, moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length }), reopen);
-  else if (deleted) toast(deleted === 1 ? t('mailbox.delete.deletedOne') : t('mailbox.delete.deletedCount', { count: deleted }));
+  if (error) refresh();
+  const total = list.length;
+  if (moved.length) {
+    const done = moved.length === 1 ? t('mailbox.delete.movedOne') : t('mailbox.delete.movedCount', { count: moved.length });
+    offerUndo(moved, error ? t('mailbox.delete.movedSome', { count: moved.length, total, error }) : done, reopen);
+  } else if (deleted && error) {
+    toast(t('mailbox.delete.deletedSome', { count: deleted, total, error }), 5000);
+  } else if (deleted) {
+    toast(deleted === 1 ? t('mailbox.delete.deletedOne') : t('mailbox.delete.deletedCount', { count: deleted }));
+  } else if (error) toast(error, 5000);
 }
 
 function destination(m, target) {
@@ -2510,16 +2526,20 @@ async function moveMessages(list, target, label) {
   if (!plan.length) return toast(target.role === 'archive' ? t('mailbox.move.noArchive') : t('mailbox.move.alreadyThere'));
   const reopen = detach(plan.map((p) => p.m));
   const moved = [];
+  // The first refusal, as in removeMessages().
+  let error = null;
   for (const { m, path } of plan) {
     try {
       await api('move', m.id, path);
       moved.push(m.id);
     } catch (err) {
-      toast(err.message, 5000);
-      refresh();
+      error = error || err.message;
     }
   }
-  if (moved.length) offerUndo(moved, moved.length === 1 ? t('mailbox.move.one', { folder: label }) : t('mailbox.move.count', { count: moved.length, folder: label }), reopen);
+  if (error) refresh();
+  if (!moved.length) return error && toast(error, 5000);
+  const done = moved.length === 1 ? t('mailbox.move.one', { folder: label }) : t('mailbox.move.count', { count: moved.length, folder: label });
+  offerUndo(moved, error ? t('mailbox.move.some', { count: moved.length, total: plan.length, folder: label, error }) : done, reopen);
 }
 
 function archiveMessages(list) {

@@ -794,6 +794,7 @@
   "errors.connection.refused": "Verbinding geweigerd. Controleer de server en poort.",
   "errors.connection.timeout": "Er is een time-out opgetreden bij het verbinden met de server.",
   "errors.connection.yahooAppPassword": "Yahoo heeft dit wachtwoord niet geaccepteerd. Yahoo Mail werkt hier alleen met een app-wachtwoord, niet met je gewone Yahoo-wachtwoord. Maak er een aan en probeer het opnieuw.",
+  "errors.delete.refused": "De mailserver heeft de e-mail niet verwijderd.",
   "errors.flags.refused": "De mailserver heeft de wijziging niet opgeslagen.",
   "errors.folder.duplicate": "Er is al een map met die naam.",
   "errors.folder.invalidName": "Een mapnaam mag geen / \\ % of * bevatten.",
@@ -883,6 +884,8 @@
   "errors.message.missing": "Bericht niet gevonden.",
   "errors.message.savedMissing": "Opgeslagen e-mail niet gevonden.",
   "errors.message.serverMissing": "Bericht niet gevonden op de server.",
+  "errors.move.copied": "De mailserver heeft de e-mail gekopieerd maar het origineel niet verwijderd, dus de e-mail staat nu in beide mappen.",
+  "errors.move.refused": "De mailserver heeft de e-mail niet verplaatst.",
   "errors.network.privateHost": "{hostname} is geen openbaar adres",
   "errors.search.refused": "De mailserver heeft de zoekopdracht niet uitgevoerd.",
   "errors.send.identity": "Je kunt niet verzenden als {address} vanaf dit account.",
@@ -919,12 +922,14 @@
     "one": "{count} e-mail verwijderd",
     "other": "{count} e-mails verwijderd"
   },
+  "mailbox.delete.deletedSome": "{count} van {total} e-mails verwijderd. {error}",
   "mailbox.delete.deletedOne": "Verwijderd",
   "mailbox.delete.movedCount": {
     "one": "{count} e-mail verplaatst naar Prullenbak",
     "other": "{count} e-mails verplaatst naar Prullenbak"
   },
   "mailbox.delete.movedOne": "Verplaatst naar Prullenbak",
+  "mailbox.delete.movedSome": "{count} van {total} e-mails verplaatst naar Prullenbak. {error}",
   "mailbox.delete.noTrash": "Dit account heeft geen Prullenbak. De e-mail wordt definitief van de server verwijderd.",
   "mailbox.delete.noTrashCount": {
     "one": "Dit account heeft geen Prullenbak. {count} e-mail wordt definitief van de server verwijderd.",
@@ -1022,6 +1027,7 @@
   },
   "mailbox.move.noArchive": "Er is geen archiefmap",
   "mailbox.move.one": "Verplaatst naar {folder}",
+  "mailbox.move.some": "{count} van {total} e-mails verplaatst naar {folder}. {error}",
   "mailbox.move.title": "Verplaatsen naar",
   "mailbox.older.available": "nog {count} op de server",
   "mailbox.older.failed": "Rukoo kon oudere mail op de server niet doorzoeken. {error}",
@@ -1095,6 +1101,7 @@
     "one": "{count} e-mail teruggezet",
     "other": "{count} e-mails teruggezet"
   },
+  "mailbox.undo.restoredSome": "{count} van {total} e-mails teruggezet. {error}",
   "mailbox.vip.add": "Toevoegen aan VIP's",
   "mailbox.vip.added": "Toegevoegd aan VIP's",
   "mailbox.vip.addedSender": "{sender} toegevoegd aan VIP's",

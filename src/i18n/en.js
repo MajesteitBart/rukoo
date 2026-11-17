@@ -3155,6 +3155,10 @@
     "message": "Yahoo didn't accept this password. Yahoo Mail only works here with an app password, not your normal Yahoo password. Create one and try again.",
     "description": "errors > connection. Shown in the setup form and under Server settings when Yahoo turns down the password of an account. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
   },
+  "errors.delete.refused": {
+    "message": "The mail server didn't delete the email.",
+    "description": "errors > delete. The IMAP server turned down deleting an email for good (in Trash, or on an account without one), or discarding a draft. The email stays and its row comes back. Shown in a notice, and as the {error} of mailbox.delete.deletedSome. src/main/imap.js (deleteForever); src/main/demo.js (refuse)"
+  },
   "errors.flags.refused": {
     "message": "The mail server didn't save the change.",
     "description": "errors > flags. The IMAP server turned down marking emails read, unread, starred or answered, or the command didn't reach it. The emails go back to how they were. Shown in a notice, and after Mark all as read as the {error} of mailbox.actions.readSome. src/main/imap.js (setFlagsMany)"
@@ -3511,6 +3515,14 @@
     "message": "Message not found on the server.",
     "description": "errors > message. src/main/imap.js"
   },
+  "errors.move.copied": {
+    "message": "The mail server copied the email but didn't remove the original, so it's in both folders now.",
+    "description": "errors > move. A server without the IMAP MOVE command copied the email and then turned down deleting it from the folder it came from, and Rukoo couldn't remove the copy again. Shown in a notice after Move, Archive, Delete or Undo; both folders sync. src/main/imap.js (dropCopy)"
+  },
+  "errors.move.refused": {
+    "message": "The mail server didn't move the email.",
+    "description": "errors > move. The IMAP server turned down moving an email to another folder: Move, Archive, Delete to Trash, Mark as spam, or Undo of one of those. The email stays where it was and its row comes back; after a refused Undo the notice offers Undo again. Shown in a notice, and as the {error} of mailbox.move.some, mailbox.delete.movedSome and mailbox.undo.restoredSome. src/main/imap.js (move); src/main/demo.js (refuse)"
+  },
   "errors.network.privateHost": {
     "message": "{hostname} is not a public address",
     "description": "errors > network. src/main/net.js (publicLookup)"
@@ -3628,6 +3640,10 @@
     },
     "description": "mailbox > delete. src/renderer/app.js (emptyCurrent); src/renderer/app.js (removeMessages)"
   },
+  "mailbox.delete.deletedSome": {
+    "message": "Deleted {count} of {total} emails. {error}",
+    "description": "Message list: notice after deleting selected emails for good when the mail server refused some of them, which stay in the list. {count}: emails deleted, {total}: emails selected, {error}: the server's first refusal, a full sentence. src/renderer/app.js (removeMessages)"
+  },
   "mailbox.delete.deletedOne": {
     "message": "Deleted",
     "description": "mailbox > delete. src/renderer/app.js (removeMessages)"
@@ -3642,6 +3658,10 @@
   "mailbox.delete.movedOne": {
     "message": "Moved to Trash",
     "description": "mailbox > delete. src/renderer/app.js (removeMessages)"
+  },
+  "mailbox.delete.movedSome": {
+    "message": "Moved {count} of {total} emails to Trash. {error}",
+    "description": "Message list: notice after deleting selected emails when the mail server refused to move some of them to Trash, which stay in the list. Its Undo button (and Ctrl+Z) moves the {count} emails back. {count}: emails moved, {total}: emails selected, {error}: the server's first refusal, a full sentence. src/renderer/app.js (removeMessages)"
   },
   "mailbox.delete.noTrash": {
     "message": "This account has no Trash folder. The email will be permanently deleted from the server.",
@@ -3950,6 +3970,10 @@
     "message": "Moved to {folder}",
     "description": "mailbox > move. src/renderer/app.js (moveMessages)"
   },
+  "mailbox.move.some": {
+    "message": "Moved {count} of {total} emails to {folder}. {error}",
+    "description": "Message list: notice after moving or archiving selected emails when the mail server refused some of them, which stay in the list. Its Undo button (and Ctrl+Z) moves the {count} emails back. {count}: emails moved, {total}: emails selected, {folder}: the folder's name, {error}: the server's first refusal, a full sentence. src/renderer/app.js (moveMessages)"
+  },
   "mailbox.move.title": {
     "message": "Move to",
     "description": "mailbox > move. src/renderer/app.js (pickFolder)"
@@ -4187,6 +4211,10 @@
       "other": "{count} emails restored"
     },
     "description": "mailbox > undo. src/renderer/app.js (undoMoves)"
+  },
+  "mailbox.undo.restoredSome": {
+    "message": "Restored {count} of {total} emails. {error}",
+    "description": "Message list: notice after Undo of a move or delete when the mail server refused to move some of the emails back. They stay where they were moved, and the notice's Undo button (and Ctrl+Z) tries those again. {count}: emails restored, {total}: emails Undo was for, {error}: the server's first refusal, a full sentence. src/renderer/app.js (undoMoves)"
   },
   "mailbox.vip.add": {
     "message": "Add to VIPs",

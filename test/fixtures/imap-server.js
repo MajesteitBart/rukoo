@@ -207,7 +207,11 @@ function tokens(s) {
 // enough of IMAP for a sync, opening an email, flags, moves, a search of unread mail and IDLE. put() files an email
 // in a folder, also while the app runs, and the next sync finds it. An email: { subject, from: [name, address], date
 // (ms, also its INTERNALDATE), dateHeader (the Date header as sent, which may be text no parser reads), flags, text }.
-function imapMailbox({ email }) {
+// capabilities: what it offers besides IMAP4rev1. refuse(fn) turns down with NO each command for which fn(command,
+// selected folder's path) holds, until refuse(null).
+function imapMailbox({ email, capabilities = ['MOVE', 'UIDPLUS'] }) {
+  const caps = ['IMAP4rev1', ...capabilities].join(' ');
+  let refusing = null;
   const folders = new Map();
   for (const [p, use] of [['INBOX', null], ['Archive', '\\Archive'], ['Trash', '\\Trash'], ['Sent', '\\Sent'], ['Drafts', '\\Drafts']]) {
     folders.set(p, { path: p, specialUse: use, uidValidity: 7, nextUid: 1, messages: [] });
@@ -262,7 +266,7 @@ function imapMailbox({ email }) {
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
     socket.setEncoding('utf8');
-    socket.write('* OK [CAPABILITY IMAP4rev1 MOVE UIDPLUS] Test mailbox ready\r\n');
+    socket.write(`* OK [CAPABILITY ${caps}] Test mailbox ready\r\n`);
     let buffer = '';
     let selected = null;
     let idleTag = null;
@@ -293,9 +297,10 @@ function imapMailbox({ email }) {
       }
       const C = cmd.toUpperCase();
       if (C !== 'LOGIN') commands.push(all);
+      if (refusing && refusing(all, selected && selected.path)) return w(`${tag} NO Not allowed\r\n`);
       switch (C) {
         case 'CAPABILITY':
-          return w(`* CAPABILITY IMAP4rev1 MOVE UIDPLUS\r\n${tag} OK CAPABILITY completed\r\n`);
+          return w(`* CAPABILITY ${caps}\r\n${tag} OK CAPABILITY completed\r\n`);
         case 'LOGOUT':
           return socket.end(`* BYE Logging out\r\n${tag} OK LOGOUT completed\r\n`);
         case 'LIST':
@@ -425,6 +430,9 @@ function imapMailbox({ email }) {
         folders,
         commands,
         put,
+        refuse: (fn) => {
+          refusing = fn;
+        },
         close: () =>
           new Promise((done) => {
             for (const s of sockets) s.destroy();

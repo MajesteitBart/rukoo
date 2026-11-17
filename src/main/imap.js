@@ -44,6 +44,50 @@ function uidChunks(uids) {
 
 const uidSets = (uids) => uidChunks(uids).map((c) => c.set);
 
+// The error for a command imapflow answered false: the server turned it down (refused, with the message under key),
+// or the connection went while it ran, when nobody knows whether the server carried it out (unknown).
+function notDone(client, key) {
+  if (client && client.usable === false) return Object.assign(new Error(t('errors.connection.closed')), { unknown: true });
+  return Object.assign(new Error(t(key)), { refused: true });
+}
+
+// Whether the email at uid in the open folder is free of \Deleted after a delete that failed: imapflow's
+// messageDelete sets the flag and then expunges, and says false for either step. Takes the flag off, or finds it
+// never got there.
+async function undeleted(client, uid) {
+  if (client.usable === false) return false;
+  try {
+    if (await client.messageFlagsRemove(String(uid), ['\\Deleted'], { uid: true })) return true;
+    const msg = await client.fetchOne(String(uid), { uid: true, flags: true }, { uid: true });
+    return Boolean(msg && msg.flags && !msg.flags.has('\\Deleted'));
+  } catch (_) {
+    return false;
+  }
+}
+
+// A move by COPY whose delete from the source failed left the email in both folders. This removes the copy from
+// destination again, so the move is refused as a whole and trying it again files no second copy. That needs the
+// copy's uid, which UIDPLUS reports and whose UID EXPUNGE leaves the folder's other mail alone, and a source without
+// \Deleted (cleared), which a later EXPUNGE would otherwise act on. Returns the error the move throws: refused once
+// the copy is gone, copied while the email is in both folders.
+async function dropCopy(client, destination, copy) {
+  if (copy.cleared && copy.uid && client.usable !== false && client.capabilities.has('UIDPLUS')) {
+    try {
+      const lock = await client.getMailboxLock(destination);
+      try {
+        const same = String(client.mailbox.uidValidity) === String(copy.uidValidity);
+        if (same && (await client.messageDelete(String(copy.uid), { uid: true }))) return notDone(client, 'errors.move.refused');
+      } finally {
+        lock.release();
+      }
+    } catch (_) {
+      // The copy stays.
+    }
+  }
+  if (client.usable === false) return notDone(client, 'errors.move.refused');
+  return Object.assign(new Error(t('errors.move.copied')), { copied: true });
+}
+
 // A connection and the commands waiting for it: what the user waits for goes first, then background work. idle
 // settles when its queue has run dry.
 const line = () => ({ client: null, busy: false, idle: Promise.resolve(), queue: { now: [], later: [] } });
@@ -654,29 +698,49 @@ class ImapAccount {
   // Returns the message's uid in the destination and that mailbox's UIDVALIDITY, as far as the
   // server reports them (UIDPLUS). With expectUidValidity, refuses to touch a mailbox whose uids
   // were reassigned since: the uid would point at another message.
+  // imapflow answers false for a MOVE the server turned down; that throws here (notDone()), so the engine puts the
+  // email back. A server without MOVE gets a COPY and then a delete from path. imapflow's messageMove does the same,
+  // but says false both when the COPY failed and when the delete failed after the copy was made, so here the two
+  // steps run apart and a failed delete removes the copy again (dropCopy()).
   move(path, uid, destination, { expectUidValidity = null } = {}) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
+      const opts = { uid: true };
+      let res;
+      let copy = null;
       try {
         if (expectUidValidity && String(client.mailbox.uidValidity) !== String(expectUidValidity)) {
           throw Object.assign(new Error(t('errors.folder.rebuilt')), { code: 'UIDVALIDITY' });
         }
-        const res = await client.messageMove(String(uid), destination, { uid: true });
-        return {
-          uid: res && res.uidMap ? res.uidMap.get(uid) || null : null,
-          uidValidity: res && res.uidValidity ? String(res.uidValidity) : null
-        };
+        if (client.capabilities && !client.capabilities.has('MOVE')) {
+          res = await client.messageCopy(String(uid), destination, opts);
+          if (!res) throw notDone(client, 'errors.move.refused');
+          if (!(await client.messageDelete(String(uid), opts))) {
+            copy = { uid: res.uidMap ? res.uidMap.get(uid) || null : null, uidValidity: res.uidValidity, cleared: await undeleted(client, uid) };
+          }
+        } else {
+          res = await client.messageMove(String(uid), destination, opts);
+          if (!res) throw notDone(client, 'errors.move.refused');
+        }
       } finally {
         lock.release();
       }
+      if (copy) throw await dropCopy(client, destination, copy);
+      return {
+        uid: res.uidMap ? res.uidMap.get(uid) || null : null,
+        uidValidity: res.uidValidity ? String(res.uidValidity) : null
+      };
     });
   }
 
+  // imapflow answers false for a delete the server turned down, at the \Deleted flag or at the EXPUNGE; that throws
+  // here (notDone()), so the engine puts the email back. A refused EXPUNGE leaves the flag on, as any IMAP client's
+  // delete does until the folder is expunged.
   deleteForever(path, uid) {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
       try {
-        await client.messageDelete(String(uid), { uid: true });
+        if (!(await client.messageDelete(String(uid), { uid: true }))) throw notDone(client, 'errors.delete.refused');
       } finally {
         lock.release();
       }
