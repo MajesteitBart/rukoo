@@ -1,14 +1,11 @@
 // The event dialog's date and time fields under a 12-hour clock (#311): the real app on the demo account, started with
 // --lang=en-US, which gives Chromium's time field the "12:30 PM" format on every platform. The fields used to have a
-// fixed 96px time field that cut that off to "12:30 P". Screenshots for review go to
-// tmp/e2e-shots/calendar-time-format in the checkout, which Git ignores.
+// fixed 96px time field that cut that off to "12:30 P".
 const { test, expect, _electron: electron } = require('@playwright/test');
-const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
 
-const SHOTS = path.join(__dirname, '..', '..', 'tmp', 'e2e-shots', 'calendar-time-format');
 let app;
 let win;
 let dataDir;
@@ -65,17 +62,16 @@ async function expectWhole(rows, label) {
   expect(await win.locator('.dialog .dialog-body').evaluate((b) => b.scrollWidth - b.clientWidth), `${label}: no sideways scroll`).toBeLessThanOrEqual(0);
 }
 
-async function shot(name) {
-  fs.mkdirSync(SHOTS, { recursive: true });
+async function shot(name, testInfo) {
   for (const theme of ['dark', 'light']) {
     await setTheme(theme);
     await expectWhole(name.endsWith('zoom') ? 2 : 1, `${name}, ${theme}`);
-    await win.locator('.dialog').screenshot({ path: path.join(SHOTS, `${name}-${theme}.png`), animations: 'disabled' });
+    await win.locator('.dialog').screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: 'disabled' });
   }
   await setTheme('dark');
 }
 
-test('the event dialog shows a 12-hour time whole, with its date, wide, narrow and zoomed, in both themes', async () => {
+test('the event dialog shows a 12-hour time whole, with its date, wide, narrow and zoomed, in both themes', async ({}, testInfo) => {
   await win.click('[data-mode="calendar"]');
   await expect(win.locator('.calendar [data-ev]', { hasText: 'Roadmap review' }).first()).toBeVisible({ timeout: 10000 });
   if (await remindersNotice().count()) {
@@ -91,12 +87,12 @@ test('the event dialog shows a 12-hour time whole, with its date, wide, narrow a
   const time = (await fields()).find((f) => f.name === 'startTime');
   expect(time.needs, 'the time field has the 12-hour format').toBeGreaterThan(100);
 
-  await shot('wide');
+  await shot('wide', testInfo);
   // The narrowest main window: the dialog is still 600px wide, so the two still share a row.
   await resize(760, 800);
-  await shot('narrow');
+  await shot('narrow', testInfo);
   // Zoomed to 200% the window is 380px wide for the page: Ends goes under Starts, and every field stays whole.
   await zoomTo(2);
-  await shot('narrow-zoom');
+  await shot('narrow-zoom', testInfo);
   await zoomTo(1);
 });

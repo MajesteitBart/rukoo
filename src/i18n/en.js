@@ -389,6 +389,10 @@
     "message": "Looks things up and writes the draft. Sending stays with you.",
     "description": "Chat panel empty state line under the heading while an email is open."
   },
+  "agent.empty.bodyCalendar": {
+    "message": "Find an open time or ask about an upcoming event.",
+    "description": "Chat panel empty state in Calendar (renderEmpty in agent/panel.js)."
+  },
   "agent.empty.bodyLeftOut": {
     "message": "Add the email to work on it, or start with what needs you today.",
     "description": "Chat panel empty state line after you left the open email out of the new chat; Add this email is the chip above the input (renderEmpty in agent/panel.js)."
@@ -408,6 +412,10 @@
   "agent.empty.title": {
     "message": "What should {name} do with this email?",
     "description": "Chat panel empty state heading while an email is open; name is the agent."
+  },
+  "agent.empty.titleCalendar": {
+    "message": "Ask {name} about your calendar",
+    "description": "Chat panel empty state heading in Calendar. {name} is the agent's display name."
   },
   "agent.empty.titleNoEmail": {
     "message": "Ask {name} about your mail",

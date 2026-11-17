@@ -1800,6 +1800,7 @@ export function mountAgentPanel(ctx) {
     const name = agentName(id);
     const m = contextEmail();
     const meeting = contextMeeting();
+    const calendar = ctx.calendarMode?.();
     // An email is on screen, but the user left it out: the add chip brings it back.
     const leftOut = !m && P.detached && Boolean(currentEmail());
     const state = stateOf(id);
@@ -1808,18 +1809,21 @@ export function mountAgentPanel(ctx) {
     const blocked = P.unavailable || BLOCKED.has(state);
     // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
     const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
-    const title = blocked ? t('agent.empty.setupTitle', { name }) : meeting ? t('agent.empty.titleMeeting', { name }) : m ? t('agent.empty.title', { name }) : t('agent.empty.titleNoEmail', { name });
+    const titleKey = blocked ? 'setupTitle' : meeting ? 'titleMeeting' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
+    const title = t(`agent.empty.${titleKey}`, { name });
     const body = blocked
       ? t('agent.empty.setupBody', { name })
       : meeting
         ? meetingsOff
           ? t('agent.empty.bodyMeetingOff')
           : t('agent.empty.bodyMeeting')
-        : m
-          ? t('agent.empty.body', { name })
-          : leftOut
-            ? t('agent.empty.bodyLeftOut')
-            : t('agent.empty.bodyNoEmail', { name });
+        : calendar
+          ? t('agent.empty.bodyCalendar')
+          : m
+            ? t('agent.empty.body', { name })
+            : leftOut
+              ? t('agent.empty.bodyLeftOut')
+              : t('agent.empty.bodyNoEmail', { name });
     const card = B.recommendationCard({ eyebrow: name, title, body, actions: [], icon: B.icon('sparkle', 11) }, () => {});
     box.append(elOf(card));
     if (!blocked && meeting) {
