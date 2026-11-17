@@ -19,6 +19,8 @@ import {
   initials,
   cleanPreview,
   toast,
+  dropToast,
+  showingToast,
   runToastAction,
   showMenu,
   closeMenu,
@@ -39,12 +41,14 @@ import { openSetup } from './setup.js';
 import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
+import { planServerSearch as planSearch } from './server-search.js';
 import * as calendar from './calendar.js';
 import * as meeting from './meeting.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
 import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
+import { report, reportError, handled } from './diag.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -120,7 +124,13 @@ export const S = {
   composer: null,
   // Inbox categories from main (categories/), and the tab on screen: a category id, or null for all of the inbox.
   categories: null,
-  category: null
+  category: null,
+  // Mail older than the cache keeps. olderMore: how many older emails Load older can bring into the list on screen;
+  // loadingOlder: the list it is loading for (olderKey()). server: the server search under a search's results,
+  // { key, query, state: 'searching', 'done' or 'failed', more, error }; null while nothing is searched.
+  olderMore: 0,
+  loadingOlder: null,
+  server: null
 };
 
 // Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar' or 'meeting'.
@@ -148,27 +158,66 @@ let renderedLanguage = null;
 let refreshTimer = null;
 let pending = null;
 let again = false;
+// Passes that failed in a row, and the try that follows one. A failed pass is tried again after RETRY_MS[failures - 1],
+// and then every 10 seconds: a failure that passes, such as main being busy, heals by itself, and one that comes back
+// every time costs a list from main every 10 seconds. The log gets the first failure, one that says something else,
+// and every REPORT_EVERY-th after that.
+let failures = 0;
+let lastFailure = '';
+let retryTimer = null;
+const RETRY_MS = [1000, 2000, 5000, 10000];
+const REPORT_EVERY = 30;
 
 export function scheduleRefresh(ms = 60) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, ms);
+  // The pass reports its own failure (refreshFailed); the timer has no one to hand it to.
+  refreshTimer = setTimeout(() => refresh().catch(() => {}), ms);
 }
 
-// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass.
+// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass. That pass also
+// runs when the one before it failed, since it was asked for with newer data in mind. The promise rejects with the
+// last pass's error, which is in the log already.
 export function refresh() {
   if (pending) {
     again = true;
     return pending;
   }
+  clearTimeout(retryTimer);
   pending = (async () => {
+    let error = null;
     do {
       again = false;
-      await refreshOnce();
+      try {
+        await refreshOnce();
+        error = null;
+      } catch (err) {
+        error = err;
+        refreshFailed(err);
+      }
     } while (again);
+    if (error) throw error;
+    if (failures) {
+      report('refresh', { reason: 'recovered', failures });
+      failures = 0;
+      lastFailure = '';
+    }
   })().finally(() => {
     pending = null;
   });
   return pending;
+}
+
+// A pass that failed left the list as it was: it goes in the log, and is tried again in a moment.
+function refreshFailed(err) {
+  failures++;
+  const message = String((err && err.message) || err);
+  if (failures === 1 || message !== lastFailure || failures % REPORT_EVERY === 0) {
+    console.error('Refreshing the window failed:', err);
+    reportError('refresh', err, { failures });
+  } else handled(err);
+  lastFailure = message;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => refresh().catch(() => {}), RETRY_MS[Math.min(failures, RETRY_MS.length) - 1]);
 }
 
 function searchingAll() {
@@ -199,6 +248,8 @@ async function refreshOnce() {
   renderedLanguage = data.settings.language;
   localize();
   if (first) takeInviteFiles();
+  // In the user's language, now that it is set.
+  if (first) takeUndoNotices();
   if (languageChanged) {
     if (S.message) renderReader();
     S.composer?.retheme(data);
@@ -213,10 +264,17 @@ async function refreshOnce() {
   const query = searchingAll()
     ? { scope: S.searchScope === 'all' ? 'all' : S.scope, view: 'everything', query: S.query }
     : { scope: S.scope, view: S.view, folder: S.folder, query: S.query };
-  const [list, counts, categories] = await Promise.all([api('list', query), api('counts', S.scope), api('categoriesState').catch(() => S.categories)]);
+  const [list, counts, categories, older] = await Promise.all([
+    api('list', query),
+    api('counts', S.scope),
+    api('categoriesState').catch(() => S.categories),
+    api('olderState', query).catch(() => ({ more: 0, server: 0 }))
+  ]);
   S.list = list;
   S.counts = counts;
   S.categories = categories;
+  S.olderMore = older.more;
+  planServerSearch(query, older.server);
   setCategories(categories);
   setKeymap(data.settings.keymap);
   if (S.updates === undefined) S.updates = await api('updatesState').catch(() => null);
@@ -231,6 +289,8 @@ async function refreshOnce() {
     S.composer?.retheme(data);
   }
   renderShell();
+  // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
+  if (first) takeSendFailures();
   if (!data.accounts.length) {
     if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
     return;
@@ -255,6 +315,96 @@ async function refreshOnce() {
     else calendar.show();
   }
   if (meetingMode() && !meeting.isOpen()) meeting.show();
+}
+
+// ---------- older mail ----------
+
+// The list on screen, as Load older takes it.
+function olderKey() {
+  return JSON.stringify([S.scope, S.view, S.folder || null]);
+}
+
+// Under a search's results Rukoo also searches the server for older mail than it keeps, once the typing stops, when
+// the folders searched have any (onServer, from olderState). query is the request the list on screen came from, which
+// the search follows (server-search.js). A search with another text, scope or folder starts again; a result for one
+// that is no longer on screen is dropped.
+let serverTimer = null;
+function planServerSearch(query, onServer) {
+  const next = planSearch(S.server, query, onServer);
+  if (next === S.server) return;
+  clearTimeout(serverTimer);
+  S.server = next;
+  if (next) serverTimer = setTimeout(() => searchServer(next.key), 450);
+}
+
+// Main searches a few folders per account at a time (engine.searchServer()), so this asks for the next ones until none
+// are left, and the list shows what the folders searched so far found meanwhile. A search no longer on screen stops.
+async function searchServer(key) {
+  const s = S.server;
+  if (!s || s.key !== key) return;
+  let more = 0;
+  const errors = [];
+  for (let resume = false; ; resume = true) {
+    let res;
+    try {
+      res = await api('searchServer', { ...s.query, resume });
+    } catch (err) {
+      res = { errors: [err.message] };
+    }
+    if (S.server !== s) return;
+    more += res.more || 0;
+    errors.push(...(res.errors || []));
+    if (!res.remaining) break;
+    await refresh().catch(() => {});
+    if (S.server !== s) return;
+  }
+  S.server = { ...s, state: errors.length ? 'failed' : 'done', more, error: errors.join('\n') };
+  refresh();
+}
+
+function retryServerSearch() {
+  if (!S.server) return;
+  S.server = { ...S.server, state: 'searching' };
+  renderList();
+  searchServer(S.server.key);
+}
+
+async function loadOlder() {
+  if (S.loadingOlder) return;
+  const key = olderKey();
+  const focused = document.activeElement && document.activeElement.closest('.list-older');
+  S.loadingOlder = key;
+  renderList();
+  try {
+    await api('loadOlder', { scope: S.scope, view: S.view, folder: S.folder });
+  } catch (err) {
+    toast(t('mailbox.older.loadFailed', { error: err.message }), 6000);
+  }
+  S.loadingOlder = null;
+  await refresh();
+  // The button is drawn again; the keyboard stays on it, or on the list once everything is in.
+  if (focused && olderKey() === key) ($('.list-older .btn') || $('.list-scroll'))?.focus();
+}
+
+// The row at the end of the list. Without a search: Load older, while the server has more of the folders listed.
+// Under a search: how the search of older mail on the server went.
+function olderHtml() {
+  if (S.query.trim()) {
+    const s = S.server;
+    if (!s) return '';
+    if (s.state === 'searching') return `<div class="list-older"><span class="spinner"></span><span class="t">${esc(t('mailbox.older.searching'))}</span></div>`;
+    if (s.state === 'failed') {
+      return `<div class="list-older failed"><span class="t">${esc(t('mailbox.older.failed', { error: s.error }))}</span><button class="btn secondary sm" data-action="older-retry" data-i18n="common.actions.retry">${esc(t('common.actions.retry'))}</button></div>`;
+    }
+    const n = rows().filter((m) => m.older).length;
+    const more = s.more ? `<span class="h">${esc(t('mailbox.older.more', { count: s.more }))}</span>` : '';
+    return `<div class="list-older"><span class="t">${esc(n ? t('mailbox.older.found', { count: n }) : t('mailbox.older.none'))}</span>${more}</div>`;
+  }
+  if (!S.olderMore || S.view === 'saved') return '';
+  // While it loads, the spinner takes the icon's place, so the button keeps its width; its name says it is loading.
+  const loading = S.loadingOlder === olderKey();
+  const busy = loading ? ` disabled aria-busy="true" aria-label="${esc(t('mailbox.older.loading'))}"` : '';
+  return `<div class="list-older"><button class="btn secondary sm" data-action="older-load"${busy}><span class="ic">${loading ? '<span class="spinner"></span>' : icons.down}</span>${esc(t('mailbox.older.load'))}</button><span class="h">${esc(t('mailbox.older.available', { count: S.olderMore }))}</span></div>`;
 }
 
 // Show the newest message instead of an empty reading pane. It stays unread until you open it yourself.
@@ -1044,9 +1194,18 @@ function senderLine(m) {
   return person(m.from) || t('mailbox.message.unknownSender');
 }
 
+// A search that found nothing in the cache while the server is still searched: the list waits for the server's answer.
+function waitingForServer() {
+  return Boolean(S.query.trim() && S.server && S.server.state === 'searching' && !rows().length);
+}
+
 function listTitle() {
   if (S.query.trim()) {
-    return { title: t('mailbox.search.results'), sub: t('mailbox.search.summary', { count: rows().length, query: S.query.trim(), scope: S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase() }) };
+    const query = S.query.trim();
+    const scope = S.searchScope === 'view' ? viewLabel() : searchScopeLabel().toLowerCase();
+    // Without a count until the server answers, which would otherwise say 0 above "Searching older mail".
+    const sub = waitingForServer() ? t('mailbox.search.summaryWaiting', { query, scope }) : t('mailbox.search.summary', { count: rows().length, query, scope });
+    return { title: t('mailbox.search.results'), sub };
   }
   const acc = account(S.scope);
   const unread = S.view === 'inbox' || S.view === 'folder' || S.view === 'vip' || S.view === 'junk' || S.view === 'archive' ? categoryRows().filter((m) => m.unread).length : 0;
@@ -1128,18 +1287,25 @@ function renderListTools() {
   }).join('')}</div>`);
 }
 
-// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the newest of
+// them started; past LEAVE_STUCK_MS the list stops waiting for them, so a timer that never ran can't hold it.
 const leaving = new Set();
 const LEAVE_MS = 320;
+const LEAVE_STUCK_MS = 3 * LEAVE_MS;
+let leavingSince = 0;
 
 function renderList() {
-  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
-  if (swipeState.el) {
-    swipeState.renderPending = true;
+  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends, or once it is clear that
+  // its end isn't coming (swipeHeld).
+  if (swipeHeld()) {
+    holdRender();
     return;
   }
   // Likewise for a row that is folding away.
-  if (leaving.size) return;
+  if (leaving.size) {
+    if (Date.now() - leavingSince < LEAVE_STUCK_MS) return;
+    leaving.clear();
+  }
   renderShell();
   renderListHead();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
@@ -1247,6 +1413,10 @@ function listHtml() {
     const failed = scoped.find((a) => a.error);
     let msg = t('mailbox.empty.folder');
     let hint = '';
+    // Nothing in the cache yet, while the server is searched: that answer is the one to wait for.
+    if (waitingForServer()) {
+      return `<div class="empty"><span class="spinner"></span><div class="h">${esc(t('mailbox.older.searching'))}</div></div>`;
+    }
     if (S.query.trim()) {
       msg = t('mailbox.empty.search');
       hint = S.searchScope === 'view' ? t('mailbox.empty.searchAll') : t('mailbox.empty.searchOther');
@@ -1259,7 +1429,9 @@ function listHtml() {
     const error = failed && !syncing ? `<p class="error">${esc(failed.email)}: ${esc(failed.error)}</p>` : '';
     const searchAll =
       S.query.trim() && S.searchScope === 'view' ? `<button class="btn secondary sm" data-action="search-everywhere" data-i18n="mailbox.empty.searchAllAction">${esc(t('mailbox.empty.searchAllAction'))}</button>` : '';
-    return `<div class="empty">${icons.mailOpen}<div class="t">${msg}</div>${hint && !hint.startsWith('<') ? `<div class="h">${hint}</div>` : hint}${searchAll}${error}</div>`;
+    // A failed server search says so; a filter that finds nothing can still load older mail.
+    const older = !S.query.trim() || (S.server && S.server.state === 'failed') ? olderHtml() : '';
+    return `<div class="empty">${icons.mailOpen}<div class="t">${msg}</div>${hint && !hint.startsWith('<') ? `<div class="h">${hint}</div>` : hint}${searchAll}${error}</div>${older}`;
   }
   const byDate = S.data.settings.sort === 'date-desc' || S.data.settings.sort === 'date-asc';
   const opts = {
@@ -1279,7 +1451,7 @@ function listHtml() {
     out += itemHtml(m, { ...opts, stack: layout.heads.get(m.id), stacked: layout.members.has(m.id) });
   }
   wantLogos(list);
-  return out;
+  return out + olderHtml();
 }
 
 function itemHtml(m, { multi, showFolder, stack, stacked }) {
@@ -1421,6 +1593,8 @@ function letGo(id) {
   const head = wrap.previousElementSibling;
   const next = wrap.nextElementSibling;
   if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  // From the newest row's start: rows opened one after another each get their whole fold.
+  leavingSince = Date.now();
   leaving.add(id);
   for (const el of els) {
     const { paddingTop, paddingBottom } = getComputedStyle(el);
@@ -1568,6 +1742,10 @@ function listAction(action, btn) {
     case 'search-everywhere':
       S.searchScope = S.data.accounts.length > 1 && S.scope !== 'all' ? 'account' : 'all';
       return refresh();
+    case 'older-load':
+      return loadOlder();
+    case 'older-retry':
+      return retryServerSearch();
     case 'check-all': {
       const list = rows();
       const all = list.every((m) => S.checked.has(m.id));
@@ -1662,20 +1840,88 @@ async function emptyCurrent() {
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
 
-const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null };
+// The touch or pen swipe on a row: the row, where it started, how far it went, and when its pointer last went down or
+// moved (at). A list update waits for the swipe to end (renderPending, since heldSince), so the row under the finger
+// stays where it is. The end doesn't always come: a pointerup the window never got, a row that left the page. So the
+// swipe also lets go when another pointer goes down, the window loses focus, the row loses its pointer capture or
+// leaves the page, when its pointer moves with no button down or did nothing for SWIPE_STALE_MS, and when a list update
+// has waited SWIPE_HOLD_MAX_MS for it however much the pointer moves; the list then draws what it held back.
+const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null, pointer: null, at: 0, renderPending: false, heldSince: 0, timer: null };
 const SWIPE_TRIGGER = 110;
+const SWIPE_STALE_MS = 3000;
+const SWIPE_HOLD_MAX_MS = 10000;
+// A list update held back this long goes in the log, with how the swipe ended (diag.js).
+const SWIPE_LOG_MS = 3000;
+
+// Whether a swipe holds the list now. One whose end isn't coming lets go here, and the caller draws.
+function swipeHeld() {
+  const st = swipeState;
+  if (!st.el) return false;
+  const now = Date.now();
+  const how = !st.el.isConnected ? 'detached' : now - st.at >= SWIPE_STALE_MS ? 'stale' : st.renderPending && now - st.heldSince >= SWIPE_HOLD_MAX_MS ? 'held' : null;
+  if (!how) return true;
+  dropSwipe(how, false);
+  return false;
+}
+
+// A list update waits for the swipe, and looks again when the swipe would go stale or the wait would be too long.
+function holdRender() {
+  const st = swipeState;
+  if (!st.renderPending) {
+    st.renderPending = true;
+    st.heldSince = Date.now();
+  }
+  clearTimeout(st.timer);
+  const due = Math.min(st.at + SWIPE_STALE_MS, st.heldSince + SWIPE_HOLD_MAX_MS);
+  st.timer = setTimeout(() => st.renderPending && renderList(), Math.max(0, due - Date.now()) + 20);
+}
+
+// The swipe is over. What it held back draws now, unless the caller draws it. how: 'end' for its pointerup or
+// pointercancel; anything else is a swipe that was let go (dropSwipe), which the log hears of.
+function endSwipe(how, draw = true) {
+  const st = swipeState;
+  st.el = null;
+  clearTimeout(st.timer);
+  if (!st.renderPending) return;
+  st.renderPending = false;
+  const held = Date.now() - st.heldSince;
+  if (how !== 'end' || held >= SWIPE_LOG_MS) report('list', { reason: `swipe-${how}`, ms: held });
+  if (draw) renderList();
+}
+
+// Lets go of a swipe whose end didn't come: its row goes back in place.
+function dropSwipe(how, draw = true) {
+  const el = swipeState.el;
+  if (!el) return;
+  el.style.transition = '';
+  el.style.transform = '';
+  el.parentElement?.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
+  swipeState.moved = false;
+  endSwipe(how, draw);
+}
 
 function bindSwipe(pane) {
+  // Before the row's own pointerdown below: a pointer going down means the last swipe's pointer isn't anymore.
+  window.addEventListener('pointerdown', () => dropSwipe('pointer'), true);
+  window.addEventListener('blur', () => dropSwipe('blur'));
+  // Only the row's own capture, which it takes once the swipe moves: a touch starts with the capture on the element
+  // under the finger (the sender, the subject), and moving it to the row fires lostpointercapture there.
+  pane.addEventListener('lostpointercapture', (e) => {
+    if (swipeState.el && e.pointerId === swipeState.pointer && e.target === swipeState.el) dropSwipe('capture');
+  });
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;
     if (S.data.settings.swipeLeft === 'none' && S.data.settings.swipeRight === 'none') return;
     const item = e.target.closest('.item');
     if (!item || e.target.closest('button')) return;
-    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId });
+    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId, at: Date.now() });
   });
   pane.addEventListener('pointermove', (e) => {
     const st = swipeState;
     if (!st.el || e.pointerId !== st.pointer) return;
+    // No button down: the pointer came up where the window didn't hear it, such as a pen that went back to hovering.
+    if (e.buttons === 0) return dropSwipe('released');
+    st.at = Date.now();
     const dx = e.clientX - st.startX;
     const dy = e.clientY - st.startY;
     if (!st.moved) {
@@ -1702,13 +1948,7 @@ function bindSwipe(pane) {
     if (!st.el || e.pointerId !== st.pointer) return;
     const { el, dx, id, moved } = st;
     st.el = null;
-    const flush = () => {
-      if (st.renderPending) {
-        st.renderPending = false;
-        renderList();
-      }
-    };
-    if (!moved) return flush();
+    if (!moved) return endSwipe('end');
     el.style.transition = 'transform 200ms cubic-bezier(0.2,0.8,0.2,1)';
     const m = byId(id);
     // The action behind the row on the side it went to, if it went far enough (Settings > Swipe and quick actions).
@@ -1722,7 +1962,7 @@ function bindSwipe(pane) {
       el.parentElement.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
       if (action) rowAction(action, m);
     }
-    flush();
+    endSwipe('end');
     // Swallow the click that follows a drag.
     setTimeout(() => (st.moved = false), 0);
   };
@@ -2181,7 +2421,8 @@ async function printMessage(id) {
 // Each request to write (or to open a message) takes a number; a request that a newer one overtook
 // while it waited stops, so a slow reply can never replace the message you started after it.
 // still: the caller's check after each wait that its reason to write holds (the agent panel: whether its chat is
-// still on screen); without it the request stops.
+// still on screen); without it the request stops. claim: asked once the reading pane is free, right before the editor
+// takes its place; false stops the request (a refused email that opened elsewhere meanwhile, reopenRefused).
 let composeTurn = 0;
 
 async function compose(opts) {
@@ -2192,11 +2433,13 @@ async function compose(opts) {
   if (opts.mode === 'draft' && (await api('draftWindow', opts.id).catch(() => false))) return;
   if (turn !== composeTurn) return;
   const accountId = S.scope !== 'all' ? S.scope : null;
-  const { still, ...rest } = opts;
-  const full = { accountId, ...rest };
+  const { still, claim, ...rest } = opts;
+  // An editor that opens again after Undo send brings its own mode, account and the email it answers.
+  const restore = rest.restore || null;
+  const full = restore ? { accountId, ...restoreOpts(restore), restore, sendError: rest.sendError || null } : { accountId, ...rest };
   const holds = () => !still || still();
-  let message = null;
-  if (full.id) {
+  let message = restore ? restore.original || null : null;
+  if (full.id && !restore) {
     try {
       message = await api('get', full.id);
     } catch (err) {
@@ -2209,6 +2452,7 @@ async function compose(opts) {
   // Whatever is being written now is kept as a draft before the new message takes its place.
   if (S.composer && !(await S.composer.leave())) return;
   if (turn !== composeTurn || S.composer || !holds()) return;
+  if (claim && (!(await claim()) || turn !== composeTurn || S.composer || !holds())) return;
   const host = $('.reader');
   host.innerHTML = '';
   S.expanded = false;
@@ -2233,6 +2477,95 @@ async function compose(opts) {
   renderShell();
   agentViewChanged();
   return S.composer;
+}
+
+// The mode, email and account an editor that opens again had (composer.js undoState).
+function restoreOpts(restore) {
+  const o = restore.opts && typeof restore.opts === 'object' ? restore.opts : {};
+  return { mode: typeof o.mode === 'string' ? o.mode : 'new', id: typeof o.id === 'string' ? o.id : null, ...(typeof o.accountId === 'string' ? { accountId: o.accountId } : {}) };
+}
+
+// ---------- undo send ----------
+
+// After Send, while the email waits in main's outbox (Settings > General > Undo send). Undo, or Ctrl+Z, takes it back;
+// a newer notice takes this one's place, and the email then goes when its time is up. "Email sent" follows from
+// main ('send-done'). undoNotice: the email whose notice shows, and its action.
+let undoNotice = null;
+function offerUndoSend({ id, ms }) {
+  const action = { get label() { return t('common.actions.undo'); }, run: () => undoSend(id) };
+  undoNotice = { id, action };
+  toast(t('composer.undoSend.queued'), { ms: Number(ms) || undefined, action });
+}
+
+// The emails Don't quit kept waiting (askQuitWithHeldMail in main.js). Their clocks stand still until this page asks
+// for their notices, so none runs out before its Undo shows: asked when told ('send-paused'), and once the first
+// state is drawn, for a main window that was still loading or was made anew after the last window closed.
+async function takeUndoNotices() {
+  if (!S.data) return;
+  for (const notice of await api('undoNotices').catch(() => [])) offerUndoSend(notice);
+}
+
+// An email that waited went. A newer email's notice keeps its Undo instead of making way for "Email sent".
+function waitedMailSent({ id }) {
+  if (undoNotice && undoNotice.id !== id && showingToast(undoNotice.action)) return;
+  toast(t('composer.status.sent'));
+}
+
+// The emails the server refused after their wait, which main holds for this window until their editors are open
+// (refused in main.js): asked for when told ('send-failed'), and once the first state is drawn, so a window that was
+// still loading when an email failed opens it too. Each one's notice goes, and its editor opens again with the error:
+// the first in the reading pane, any others in compose windows (main opens those), so none of them pushes another
+// out. Main lets each go only once it is open, so the ones this page dies before opening still open elsewhere. One
+// round at a time: a second 'send-failed' asks after the first round, and finds only what is new.
+let takingFailures = Promise.resolve();
+function takeSendFailures() {
+  takingFailures = takingFailures.then(takeSendFailuresNow, takeSendFailuresNow);
+  return takingFailures;
+}
+
+async function takeSendFailuresNow() {
+  if (!S.data || !$('.reader')) return;
+  const list = await api('sendFailures').catch(() => []);
+  for (const [i, { id, restore, error }] of list.entries()) {
+    if (!restore || typeof restore !== 'object') continue;
+    if (undoNotice && undoNotice.id === id) dropToast(undoNotice.action);
+    if (i === 0) await reopenRefused(id, restore, String(error || ''));
+    else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+  }
+}
+
+// A refused email back in the reading pane. It is claimed only once the pane is free, after the editor there saved
+// its text, so main still has it if this page dies during that save, and the pane leaves it alone when main opened
+// it elsewhere meanwhile. Main lets it go once the editor is open; when the pane can't take it, main opens it in a
+// compose window.
+async function reopenRefused(id, restore, sendError) {
+  setMode('mail');
+  const claim = () => api('claimRefused', id).catch(() => false);
+  const editor = await compose({ restore, sendError, claim }).catch(() => null);
+  if (editor) await api('refusedOpened', id).catch(() => {});
+  else await api('openRefused', id).catch((err) => toast(err.message, 5000));
+}
+
+async function undoSend(id) {
+  let res;
+  try {
+    res = await api('undoSend', id);
+  } catch (err) {
+    return toast(err.message, 5000);
+  }
+  if (!res || res.late) return toast(t('composer.undoSend.late'));
+  // An email written in a compose window opens in a new one; main did that.
+  if (res.restore) await reopenComposer(res.restore);
+  toast(t('composer.undoSend.undone'));
+}
+
+// The editor of an email that waited, back in the reading pane. When the pane can't take it (its own editor is busy
+// asking or saving), it opens in a compose window, so the email is never lost. sendError: why the server refused it.
+async function reopenComposer(restore, sendError = null) {
+  setMode('mail');
+  const editor = await compose({ restore, sendError }).catch(() => null);
+  if (editor) return;
+  await api('openCompose', { ...restoreOpts(restore), restore, sendError }).catch((err) => toast(err.message, 5000));
 }
 
 // ---------- reader ----------
@@ -3091,7 +3424,8 @@ async function onNewMail(p) {
   if (!mails.length) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
-  await refresh();
+  // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
+  await refresh().catch(() => {});
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
@@ -3135,6 +3469,12 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
+  // waited and its editor opens again.
+  if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);
+  if (type === 'send-done' && payload) waitedMailSent(payload);
+  if (type === 'send-paused') takeUndoNotices();
+  if (type === 'send-failed') takeSendFailures();
   // A paired phone fetched the accounts and settings: said wherever the user is, since it sends secrets.
   if (type === 'agent' && payload && payload.kind === 'phone' && payload.event === 'exported') {
     toast(t('settings.phone.exported', { name: (payload.pairing && payload.pairing.name) || '' }), 6000);

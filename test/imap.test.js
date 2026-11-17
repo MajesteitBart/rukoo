@@ -337,9 +337,10 @@ function folder(messages) {
       for (const m of list) {
         const row = { uid: m.uid };
         if (query.flags) row.flags = new Set(m.flags);
-        if (query.envelope) row.envelope = { subject: m.subject, messageId: `<${m.uid}@x>`, from: [{ name: '', address: 'a@x' }], to: [], cc: [], replyTo: [], date: new Date(2026, 9, m.uid) };
+        // m.date: the envelope's date as imapflow gives it, which is the header's text when it couldn't parse it.
+        if (query.envelope) row.envelope = { subject: m.subject, messageId: `<${m.uid}@x>`, from: [{ name: '', address: 'a@x' }], to: [], cc: [], replyTo: [], date: 'date' in m ? m.date : new Date(2026, 9, m.uid) };
         if (query.bodyStructure) row.bodyStructure = { type: 'text/plain', part: '1', size: 10, encoding: '7bit' };
-        if (query.internalDate) row.internalDate = new Date(2026, 9, m.uid);
+        if (query.internalDate) row.internalDate = 'internalDate' in m ? m.internalDate : new Date(2026, 9, m.uid);
         if (query.size) row.size = 100 + m.uid;
         if (query.bodyParts) row.bodyParts = new Map([['1', Buffer.from(`preview of ${m.uid}`)]]);
         if (query.headers) row.headers = Buffer.from(m.headers || '');
@@ -420,6 +421,33 @@ test('a message whose structure could not be read lists by its envelope, and the
   const again = await s.syncFolder('INBOX', { limit: 10, known: new Map(res.messages.map((m) => [m.uid, m])), uidValidity: '9' });
   assert.deepEqual(asked, [{ range: '1:*', query: ['flags'], byUid: false }]);
   assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[3, 'plain'], [4, 'deeply nested']]);
+});
+
+test('a Date header no parser reads gives an email the date the server received it, and an email cached without a date is described again', async () => {
+  const received = new Date(2026, 10, 3, 9, 30);
+  const { client, asked } = folder([
+    { uid: 3, subject: 'unreadable date', flags: [], date: 'Mon, 32 Foo 2026 25:61:00 +0000', internalDate: received },
+    { uid: 4, subject: 'no date at all', flags: [], date: undefined, internalDate: received },
+    { uid: 5, subject: 'neither readable', flags: [], date: 'garbage', internalDate: 'garbage too' },
+    { uid: 6, subject: 'cached without a date', flags: [], date: 'still garbage', internalDate: received },
+    { uid: 7, subject: 'cached fine', flags: [] }
+  ]);
+  const s = session(client);
+  const before = Date.now();
+  // An earlier Rukoo stored NaN for uid 6, which the cache file kept as null.
+  const known = new Map([
+    [6, { ...stored(6, 'cached without a date'), date: null }],
+    [7, stored(7, 'cached fine')]
+  ]);
+  const res = await s.syncFolder('INBOX', { limit: 10, known, uidValidity: '9' });
+  assert.deepEqual(asked[1], { range: '3,4,5,6', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true }, 'uid 6 is described again, uid 7 is not');
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.equal(byUid.get(3).date, received.getTime());
+  assert.equal(byUid.get(4).date, received.getTime());
+  assert.ok(byUid.get(5).date >= before && byUid.get(5).date <= Date.now(), 'with no readable date at all, when Rukoo first saw it');
+  assert.equal(byUid.get(6).date, received.getTime());
+  assert.equal(byUid.get(7).date, 1, 'a cached date stays');
+  for (const m of res.messages) assert.ok(Number.isFinite(m.date), `uid ${m.uid} has a date`);
 });
 
 test('after a UIDVALIDITY change a sync uses nothing of the cache', async () => {
@@ -512,6 +540,139 @@ test('an inbox sync counts the unread mail below the window by uid, and says nul
   assert.equal('olderUnseen' in (await s.syncFolder('INBOX', { limit: 2 })), false);
 });
 
+// #112: Load older widens the window while a sync waits for the connection, so the sync reads it when it runs.
+test('a sync reads a window given as a function when its command runs', async () => {
+  const { client, asked } = folder([3, 4, 5, 6].map((uid) => ({ uid, subject: `m${uid}`, flags: [] })));
+  const s = session(client);
+  let size = 1;
+  let finish;
+  s.run(() => new Promise((resolve) => (finish = resolve)));
+  const sync = s.syncFolder('INBOX', { limit: () => size, background: true });
+  await tick();
+  size = 3;
+  finish();
+  assert.deepEqual((await sync).messages.map((m) => m.uid), [4, 5, 6]);
+  assert.equal(asked[0].range, '2:*');
+});
+
+// #112: older mail a server search found stays current, read or deleted on another device.
+test('a sync asks the flags of the older uids it keeps, leaves out the ones gone, and asks nothing for other uids', async () => {
+  const { client, asked } = folder([1, 2, 3, 5, 6].map((uid) => ({ uid, subject: `m${uid}`, flags: uid === 2 ? ['\\Seen', '\\Flagged'] : [] })));
+  const s = session(client);
+  const known = new Map([5, 6].map((uid) => [uid, stored(uid, `m${uid}`)]));
+  // The window is 5 and 6; 6 is in it, and 4 is gone from the server.
+  const res = await s.syncFolder('INBOX', { limit: 2, known, uidValidity: '9', keep: () => [2, 3, 4, 6] });
+  assert.equal(asked.length, 2);
+  assert.deepEqual(asked[1], { range: '2,3,4', query: ['flags'], byUid: true });
+  assert.deepEqual(res.kept, [
+    { uid: 2, unread: false, starred: true, answered: false },
+    { uid: 3, unread: true, starred: false, answered: false }
+  ]);
+  assert.deepEqual(res.messages.map((m) => m.uid), [5, 6]);
+
+  // After a UIDVALIDITY change, or on a first sync, those uids are other messages: nothing is asked.
+  for (const uidValidity of ['8', null]) {
+    asked.length = 0;
+    const other = await s.syncFolder('INBOX', { limit: 2, known, uidValidity, keep: [2, 3] });
+    assert.equal('kept' in other, false);
+    assert.ok(!asked.some((a) => a.range === '2,3'));
+  }
+
+  // A server that doesn't answer leaves kept null, so the cache keeps what it had.
+  const fetch = client.fetch;
+  client.fetch = function (range, ...rest) {
+    if (range === '3') throw new Error('BAD');
+    return fetch.call(this, range, ...rest);
+  };
+  assert.equal((await s.syncFolder('INBOX', { limit: 2, known, uidValidity: '9', keep: [3] })).kept, null);
+});
+
+// #112: the search of older mail than the cache holds.
+test('a server search looks below the window at the subject and addresses, and describes only the newest matches', async () => {
+  const { client, asked } = folder([1, 2, 3, 4, 5, 6, 7, 8].map((uid) => ({ uid, subject: `m${uid}`, flags: uid === 5 ? ['\\Seen'] : [] })));
+  const searched = [];
+  client.search = async (query, opts) => {
+    searched.push({ query, opts });
+    return [2, 3, 5, 6];
+  };
+  const s = session(client);
+  const known = new Map([[6, stored(6, 'found before')]]);
+  const res = await s.searchFolder('Archive', 'Invoice', { below: 7, limit: 2, known, uidValidity: '9', criteria: { seen: false } });
+  const words = [{ subject: 'Invoice' }, { from: 'Invoice' }, { to: 'Invoice' }, { cc: 'Invoice' }];
+  assert.deepEqual(searched, [{ query: { seen: false, uid: '1:6', or: words }, opts: { uid: true } }]);
+  assert.equal(res.total, 4);
+  assert.equal(res.uidValidity, '9');
+  // The flags of the two newest, then the rest only for the one the cache didn't have.
+  assert.deepEqual(asked[0], { range: '6,5', query: ['flags'], byUid: true });
+  assert.deepEqual(asked[1], { range: '5', query: ['envelope', 'bodyStructure', 'internalDate', 'size'], byUid: true });
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.deepEqual([...byUid.keys()].sort(), [5, 6]);
+  assert.equal(byUid.get(6).subject, 'found before');
+  assert.equal(byUid.get(5).subject, 'm5');
+  assert.equal(byUid.get(5).unread, false, 'with the flags from the server');
+
+  // A folder rebuilt since (another UIDVALIDITY) reuses nothing.
+  asked.length = 0;
+  await s.searchFolder('Archive', 'Invoice', { below: 7, limit: 2, known, uidValidity: '8' });
+  assert.equal(asked[1].range, '5,6');
+
+  // Nothing is below the first uid, so nothing is asked.
+  client.search = async () => assert.fail('no search');
+  assert.deepEqual(await s.searchFolder('Archive', 'Invoice', { below: 1 }), { uidValidity: '9', total: 0, messages: [] });
+});
+
+test("a server search uses Gmail's own search, falls back to the plain one, and says when the server refuses", async () => {
+  const { client } = folder([{ uid: 4, subject: 'Invoice March', flags: [] }]);
+  client.capabilities = new Map([['X-GM-EXT-1', true]]);
+  const searched = [];
+  let gmail = async () => [4];
+  client.search = async (query) => {
+    searched.push(query);
+    return query.gmraw ? gmail() : [4];
+  };
+  const s = session(client);
+  const res = await s.searchFolder('[Gmail]/All Mail', 'invoice march');
+  assert.deepEqual(searched, [{ uid: '1:*', gmraw: 'invoice march' }]);
+  assert.deepEqual(res.messages.map((m) => m.subject), ['Invoice March']);
+
+  // Gmail's search failing, or refused, gives the plain search.
+  for (const failing of [async () => Promise.reject(new Error('BAD')), async () => false]) {
+    searched.length = 0;
+    gmail = failing;
+    assert.equal((await s.searchFolder('INBOX', 'march')).total, 1);
+    assert.deepEqual(searched.map((q) => Object.keys(q).sort()), [['gmraw', 'uid'], ['or', 'uid']]);
+  }
+
+  // Spam and Trash get the plain search: Gmail's own leaves them out unless asked.
+  searched.length = 0;
+  gmail = async () => [4];
+  await s.searchFolder('[Gmail]/Trash', 'march', { gmail: false });
+  assert.deepEqual(searched.map((q) => Object.keys(q).sort()), [['or', 'uid']]);
+
+  // A plain search the server refuses fails with a reason.
+  client.capabilities = new Map();
+  client.search = async () => false;
+  await assert.rejects(s.searchFolder('INBOX', 'march'), { message: t('errors.search.refused') });
+});
+
+// #112 with the deeply nested messages of a sync: an older match imapflow can't read the structure of is still found.
+test('a server search lists a deeply nested match by its envelope', async () => {
+  const { client, asked } = folder([
+    { uid: 2, subject: 'Invoice plain', flags: [] },
+    { uid: 3, subject: 'Invoice nested', flags: ['\\Seen'], nested: true }
+  ]);
+  client.search = async () => [2, 3];
+  const res = await session(client).searchFolder('INBOX', 'invoice', { below: 9 });
+  assert.deepEqual(asked[2], { range: '3', query: ['envelope', 'internalDate', 'size'], byUid: true });
+  assert.equal(res.total, 2);
+  const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+  assert.deepEqual([...byUid.keys()].sort(), [2, 3]);
+  assert.equal(byUid.get(3).subject, 'Invoice nested');
+  assert.equal(byUid.get(3).preview, '');
+  assert.equal(byUid.get(3).hasAttachments, false);
+  assert.equal(byUid.get(3).unread, false);
+});
+
 test('over a real connection, a message nested too deep for imapflow lists by its envelope and stays cached', async () => {
   const server = await imapServer({
     mailbox: {
@@ -546,6 +707,36 @@ test('over a real connection, a message nested too deep for imapflow lists by it
     const again = await s.syncFolder('INBOX', { limit: 10, known: byUid, uidValidity: res.uidValidity });
     assert.deepEqual(again.messages.map((m) => [m.uid, m.subject]), [[7, 'Plain one'], [8, 'Nested one']]);
     assert.deepEqual(server.commands.filter((c) => /FETCH/i.test(c)).map((c) => c.split(' ')[0]), ['FETCH']);
+  } finally {
+    await s.close();
+    await server.close();
+  }
+});
+
+test('over a real connection, an unreadable Date header gives the INTERNALDATE, and the next sync only asks the flags', async () => {
+  const server = await imapServer({
+    mailbox: {
+      path: 'INBOX',
+      uidValidity: 9,
+      messages: [
+        { uid: 7, flags: [], subject: 'Odd date', date: 'Tue, 31 Febtember 2026 99:99:99 +9999', internalDate: '05-Nov-2026 08:15:00 +0000', size: 120, bodyStructure: textStructure(11), parts: { 1: 'Hello there' } },
+        { uid: 8, flags: [], subject: 'Good date', size: 120, bodyStructure: textStructure(11), parts: { 1: 'Hello again' } }
+      ]
+    }
+  });
+  const s = new ImapAccount({ type: 'imap', email: 'me@example.com', imap: { host: '127.0.0.1', port: server.port, secure: false }, smtp: {} }, 'secret');
+  try {
+    const res = await s.syncFolder('INBOX', { limit: 10 });
+    const byUid = new Map(res.messages.map((m) => [m.uid, m]));
+    assert.equal(byUid.get(7).date, Date.UTC(2026, 10, 5, 8, 15));
+    assert.equal(byUid.get(8).date, Date.UTC(2026, 10, 7, 10, 0));
+    // As the cache file keeps it: a date that is a number.
+    const cached = new Map(JSON.parse(JSON.stringify(res.messages)).map((m) => [m.uid, m]));
+    assert.equal(cached.get(7).date, Date.UTC(2026, 10, 5, 8, 15));
+    server.commands.length = 0;
+    const again = await s.syncFolder('INBOX', { limit: 10, known: cached, uidValidity: res.uidValidity });
+    assert.deepEqual(server.commands.filter((c) => /FETCH/i.test(c)).map((c) => c.split(' ')[0]), ['FETCH']);
+    assert.equal(again.messages[0].date, Date.UTC(2026, 10, 5, 8, 15));
   } finally {
     await s.close();
     await server.close();

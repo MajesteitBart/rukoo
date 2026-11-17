@@ -2803,17 +2803,73 @@
     "message": "Underline (Ctrl+U)",
     "description": "composer > format. src/renderer/composer.js"
   },
+  "composer.image.bestFit": {
+    "message": "Best fit",
+    "description": "composer > image. Button in the bar under a selected image in the text; sets the image to a width that fits a mail app's reading pane. src/renderer/editor-images.js"
+  },
+  "composer.image.options": {
+    "message": "Image",
+    "description": "composer > image. Accessible name of the bar under a selected image in the text, a toolbar with Small, Best fit, Original size and Remove. src/renderer/editor-images.js"
+  },
+  "composer.image.original": {
+    "message": "Original size",
+    "description": "composer > image. Button in the bar under a selected image in the text; shows the image at its own size again. src/renderer/editor-images.js"
+  },
+  "composer.image.remove": {
+    "message": "Remove",
+    "description": "composer > image. Button in the bar under a selected image in the text; takes the image out of the text. src/renderer/editor-images.js"
+  },
+  "composer.image.small": {
+    "message": "Small",
+    "description": "composer > image. Button in the bar under a selected image in the text; makes the image small. src/renderer/editor-images.js"
+  },
   "composer.link.address": {
     "message": "Address",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Label of the address field in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.apply": {
+    "message": "Apply",
+    "description": "composer > link. Button in the link popover (Ctrl+K) that links the text. src/renderer/editor-links.js"
+  },
+  "composer.link.cantOpen": {
+    "message": "Rukoo only opens web and email links.",
+    "description": "composer > link. Toast after Go to link in the bubble under a link whose address Rukoo doesn't open, one that isn't http:, https: or mailto:, such as a javascript: or file: link from pasted HTML. src/renderer/editor-links.js"
+  },
+  "composer.link.change": {
+    "message": "Change",
+    "description": "composer > link. Button in the bubble under a link in the text; opens the link popover for that link. src/renderer/editor-links.js"
+  },
+  "composer.link.edit": {
+    "message": "Edit link",
+    "description": "composer > link. Accessible name of the link popover when it changes an existing link. src/renderer/editor-links.js (insertLink)"
   },
   "composer.link.insert": {
     "message": "Insert",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Button in the signature editor's link bar. src/renderer/signature.js"
+  },
+  "composer.link.open": {
+    "message": "Go to link: {url}",
+    "description": "composer > link. Tooltip and accessible name of the address in the bubble under a link in the text; opens the link in the browser. url is the link's address. src/renderer/editor-links.js (showBubble)"
+  },
+  "composer.link.options": {
+    "message": "Link",
+    "description": "composer > link. Accessible name of the bubble under a link in the text, a toolbar with Go to link, Change and Remove. src/renderer/editor-links.js"
+  },
+  "composer.link.remove": {
+    "message": "Remove",
+    "description": "composer > link. Button in the bubble under a link in the text; removes the link and keeps its text. src/renderer/editor-links.js"
+  },
+  "composer.link.text": {
+    "message": "Text",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the text that shows as the link. src/renderer/editor-links.js"
   },
   "composer.link.title": {
     "message": "Insert link",
-    "description": "composer > link. src/renderer/composer.js (insertLink)"
+    "description": "composer > link. Accessible name of the link popover when it makes a new link. src/renderer/editor-links.js (insertLink)"
+  },
+  "composer.link.url": {
+    "message": "Link",
+    "description": "composer > link. Label of the field in the link popover (Ctrl+K) for the address the link opens. src/renderer/editor-links.js"
   },
   "composer.mentions.addedCc": {
     "message": "{name} added to Cc",
@@ -2958,6 +3014,42 @@
   "composer.titles.replyAll": {
     "message": "Reply all",
     "description": "composer > titles. src/renderer/app.js (messageMenu); src/renderer/composer.js"
+  },
+  "composer.undoSend.queued": {
+    "message": "Sending email…",
+    "description": "Notice in the main window right after Send while Undo send (Settings > General) holds the email, with an Undo button; it shows for the chosen number of seconds, then the email goes and 'Email sent' (composer.status.sent) follows. src/renderer/app.js (offerUndoSend)"
+  },
+  "composer.undoSend.undone": {
+    "message": "Sending undone",
+    "description": "Notice after Undo in the 'Sending email…' notice: the email was not sent and its editor is open again. src/renderer/app.js (undoSend)"
+  },
+  "composer.undoSend.late": {
+    "message": "Too late to undo: the email is already on its way",
+    "description": "Notice after Undo in the 'Sending email…' notice when the waiting time had just run out and the email was being sent or was sent. src/renderer/app.js (undoSend)"
+  },
+  "composer.undoSend.quitUnsure": {
+    "message": "Rukoo quit before it knew whether this email went. Check Sent before you send it again.",
+    "description": "Shown under 'Sending failed' when Rukoo starts and opens an email that was still being sent when Rukoo last quit (Undo send). src/main/main.js (keepUnsent)"
+  },
+  "composer.undoSend.quitFailed": {
+    "message": "Rukoo couldn't send this email while it was quitting, or keep it in Drafts: {error}",
+    "description": "Shown under 'Sending failed' in a compose window that opens an email the server refused while Rukoo was quitting, which couldn't be saved to Drafts either: at the next start, or at once when the quit was called off. error is the server's message. src/main/main.js (waitedMailFailed)"
+  },
+  "composer.undoSend.quitTitle": {
+    "message": { "one": "{count} email is still waiting to be sent", "other": "{count} emails are still waiting to be sent" },
+    "description": "Title of the question when you quit Rukoo while an email still waits out its Undo send notice. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitHelp": {
+    "message": "Send them now and quit, or stay in Rukoo so you can still undo.",
+    "description": "Text under that question. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitSend": {
+    "message": "Send and quit",
+    "description": "Button in that question: sends the waiting emails at once, then quits. src/main/main.js (askQuitWithHeldMail)"
+  },
+  "composer.undoSend.quitStay": {
+    "message": "Don't quit",
+    "description": "Button in that question: calls the quit off; the emails keep waiting. src/main/main.js (askQuitWithHeldMail)"
   },
   "errors.account.duplicate": {
     "message": "This account has already been added.",
@@ -3378,6 +3470,10 @@
   "errors.network.privateHost": {
     "message": "{hostname} is not a public address",
     "description": "errors > network. src/main/net.js (publicLookup)"
+  },
+  "errors.search.refused": {
+    "message": "The mail server didn't run the search.",
+    "description": "errors > search. The IMAP server turned down the search of older mail than Rukoo keeps. Shown after the account's address under the search results. src/main/imap.js (searchUids)"
   },
   "errors.send.identity": {
     "message": "You cannot send as {address} from this account.",
@@ -3814,6 +3910,48 @@
     "message": "Move to",
     "description": "mailbox > move. src/renderer/app.js (pickFolder)"
   },
+  "mailbox.older.available": {
+    "message": "{count} more on the server",
+    "description": "Message list, the row at the end of a folder: how many older emails are on the server and not in the list yet, beside the Load older emails button. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.failed": {
+    "message": "Couldn't search older mail on the server. {error}",
+    "description": "Message list, under search results: the search of older mail on the server failed. {error} names the account and the reason. A Retry button follows. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.found": {
+    "message": {
+      "one": "Found {count} older email on the server",
+      "other": "Found {count} older emails on the server"
+    },
+    "description": "Message list, under search results: how many of the results are older mail that the server search found, beyond the emails Rukoo keeps. {count} is that number. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.load": {
+    "message": "Load older emails",
+    "description": "Message list, the row at the end of a folder: button that fetches the next batch of older emails from the server into the list. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.loadFailed": {
+    "message": "Couldn't load older emails. {error}",
+    "description": "Toast after Load older emails failed. {error} names the account and the reason. src/renderer/app.js (loadOlder)"
+  },
+  "mailbox.older.loading": {
+    "message": "Loading older emails…",
+    "description": "Message list, the row at the end of a folder: the accessible name of the Load older emails button while the server sends them; the button shows a spinner. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.more": {
+    "message": {
+      "one": "{count} more older email matches. Add a word to narrow the search.",
+      "other": "{count} more older emails match. Add a word to narrow the search."
+    },
+    "description": "Message list, under search results: the server found more older matches than it sent (the newest 50 per folder). {count} is how many more. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.none": {
+    "message": "No older mail on the server matches",
+    "description": "Message list, under search results: the search of older mail on the server found nothing beyond the emails Rukoo keeps. src/renderer/app.js (olderHtml)"
+  },
+  "mailbox.older.searching": {
+    "message": "Searching older mail on the server…",
+    "description": "Message list, under search results or in place of an empty result: Rukoo is searching the server for older mail than it keeps. src/renderer/app.js (olderHtml, listHtml)"
+  },
   "mailbox.saved.save": {
     "message": "Save to Saved emails",
     "description": "mailbox > saved. src/renderer/app.js (messageMenu)"
@@ -3872,6 +4010,10 @@
       "other": "{count} results for \"{query}\" in {scope}"
     },
     "description": "mailbox > search. src/renderer/app.js (listTitle)"
+  },
+  "mailbox.search.summaryWaiting": {
+    "message": "\"{query}\" in {scope}",
+    "description": "mailbox > search. Message list header subtitle while the cache has no matches and the server is still searched for older mail, so no result count yet. {query}: the search text; {scope}: the folder or the search scope. src/renderer/app.js (listTitle)"
   },
   "mailbox.selection.allShortcut": {
     "message": "Select all (Ctrl+A)",
@@ -5133,6 +5275,14 @@
   "settings.general.stackSendersHelp": {
     "message": "Three or more read emails in a row from the same sender, on the same day, share a row in the list. Unread mail always gets its own row. Right arrow and Left arrow open and close a group.",
     "description": "Settings > General: explanation under the switch that groups mail from one sender. src/renderer/settings.js (render)"
+  },
+  "settings.general.undoSend": {
+    "message": "Undo send",
+    "description": "Settings > General: row title for how long an email waits after Send, so the notice that follows can take it back. Opens a choice of Off or 5 to 30 seconds (settings.undoSend.*). src/renderer/settings.js (render)"
+  },
+  "settings.general.undoSendHelp": {
+    "message": "After you press Send, the email waits this long, so you can still take it back.",
+    "description": "Settings > General: explanation under the Undo send row. src/renderer/settings.js (render)"
   },
   "settings.general.fit": {
     "message": "Fit content to window",
@@ -6669,6 +6819,14 @@
   "settings.sync.thirtyMinutes": {
     "message": "Every 30 minutes",
     "description": "settings > sync. src/renderer/settings.js"
+  },
+  "settings.undoSend.off": {
+    "message": "Off",
+    "description": "Settings > General > Undo send: choice that sends email right away, without an Undo notice. src/renderer/settings.js (UNDO_SEND)"
+  },
+  "settings.undoSend.seconds": {
+    "message": { "one": "{count} second", "other": "{count} seconds" },
+    "description": "Settings > General > Undo send: choice for how long an email waits after Send; count is 5, 10, 20 or 30. src/renderer/settings.js (UNDO_SEND)"
   },
   "settings.theme.dark": {
     "message": "Dark",
