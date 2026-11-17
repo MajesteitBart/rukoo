@@ -228,7 +228,12 @@ const bubble = (page) => page.locator('.link-bubble');
 async function capture(page, name) {
   const dir = process.env.RUKOO_CAPTURE_DIR;
   if (dir) fs.mkdirSync(dir, { recursive: true });
-  await page.screenshot({ path: dir ? path.join(dir, `${name}.png`) : test.info().outputPath(`${name}.png`) });
+  // Playwright's page capture crops to CSS pixels at 200% zoom. Capture the complete Electron window.
+  const window = await app.browserWindow(page);
+  const image = await window.evaluate(async (win) => (await win.capturePage()).toPNG().toString('base64'));
+  await window.dispose();
+  const file = dir ? path.join(dir, `${name}.png`) : test.info().outputPath(`${name}.png`);
+  fs.writeFileSync(file, Buffer.from(image, 'base64'));
 }
 // A bar or bubble against the window, and against its anchor, the index-th match of anchor: how many rows its
 // buttons take, whether its separator shows, and what is wrong with where it is. It belongs 8 pixels inside the
