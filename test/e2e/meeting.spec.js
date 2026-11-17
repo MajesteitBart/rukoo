@@ -732,7 +732,7 @@ test('notes Markdown round trips editor structures and sanitizes pasted controls
   expect(result.labels).toEqual(['a*b', 'a*b', 'a*b']);
 });
 
-test('notes link addresses with backticks and backslashes keep them when the notes are read back', async () => {
+test('notes link addresses with backticks and backslashes keep them when the notes are read back', async ({}, testInfo) => {
   const result = await win.evaluate(async () => {
     const { notesToMarkdown, markdownToNotes } = await import('./notes-markdown.js');
     const editor = document.createElement('div');
@@ -777,6 +777,20 @@ test('notes link addresses with backticks and backslashes keep them when the not
   expect(result.code).toEqual(['[x](<https://a.example/>)', ['https://b.example/`z`']]);
   expect(result.crossed).toEqual(['<div><code>[x](&lt;https://a.example/</code>&gt;) after</div>', true]);
   expect(result.nul).toEqual([['https://a.example/0', 't']]);
+
+  const id = voiceStarts({ title: 'Release links' });
+  const markdown = 'See [the agenda](<https://example.com/`agenda>) and `npm start`.\nOpen [the archive](<https://example.com/archive\\>).';
+  await expect.poll(() => app.evaluate((_e, id) => Boolean(global.__semVoice.get(id)), id)).toBe(true);
+  await win.evaluate(({ id, markdown }) => window.mail.call('meetingSaveNotes', id, markdown, 0), { id, markdown });
+  await openMeetings();
+  const notes = view().locator('.mt-notes-input');
+  const agenda = notes.getByRole('link', { name: 'the agenda' });
+  await expect(agenda).toHaveAttribute('href', 'https://example.com/`agenda');
+  await expect(notes.getByRole('link', { name: 'the archive' })).toHaveAttribute('href', 'https://example.com/archive\\');
+  await expect(notes.locator('code')).toHaveText('npm start');
+  await agenda.click();
+  await expect(view().locator('.link-bubble .link-go-url')).toHaveText('https://example.com/`agenda');
+  await win.screenshot({ path: testInfo.outputPath('notes-links-after-reopening.png'), animations: 'disabled' });
 });
 
 test('blank list continuations and long escaped notes survive editing and restart without loss', async () => {
