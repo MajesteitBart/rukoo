@@ -159,3 +159,46 @@ test('a chat started in the calendar leaves out the email left open in Mail', as
   await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
   await expect(heading()).toHaveText('What should Hermes do with this email?');
 });
+
+for (const method of ['findFor', 'forPanel']) {
+  test(`switching to Calendar leaves a pending email chat lookup behind: ${method}`, async () => {
+    const subject = 'Your parcel is on its way';
+    const messageId = await win.locator('.item', { hasText: subject }).first().getAttribute('data-id');
+    await app.evaluate((_e, { method, messageId, subject }) => {
+      const hub = global.__semAgents;
+      const conversation = hub.create({ agent: 'hermes', message: { id: messageId, subject } });
+      const original = hub[method].bind(hub);
+      const releases = [];
+      global.__semCalendarLookup = {
+        releases,
+        release() {
+          hub[method] = original;
+          for (const resolve of releases) resolve();
+        }
+      };
+      hub[method] = (...args) => {
+        const result = original(...args);
+        const target = method === 'findFor' ? args[0].id === messageId : args[0] === conversation.id;
+        if (!target) return result;
+        return new Promise((resolve) => releases.push(() => resolve(result)));
+      };
+    }, { method, messageId, subject });
+    await openChat(subject);
+    await expect.poll(() => app.evaluate(() => global.__semCalendarLookup.releases.length)).toBeGreaterThan(0);
+
+    await win.click('[data-mode="calendar"]');
+    const heading = pane().locator('.bui-rec__title');
+    await expect(win.locator('.calendar')).toBeVisible();
+    await app.evaluate(() => global.__semCalendarLookup.release());
+    await win.evaluate(async () => {
+      // Allow the delivered lookup and any follow-up call for its transcript to reach the renderer.
+      await window.mail.call('agentList');
+      await window.mail.call('agentList');
+    });
+    await expect(heading).toHaveText('Ask Hermes about your calendar');
+    await expect(pane().locator('.bui-pb .bui-entity')).toHaveCount(0);
+
+    await win.click('[data-mode="mail"]');
+    await expect(pane().locator('.ap-title')).toHaveText(subject);
+  });
+}

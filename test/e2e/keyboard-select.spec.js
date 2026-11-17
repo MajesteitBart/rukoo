@@ -55,7 +55,7 @@ test('the keyboard alone selects the first, fourth and seventh email, archives e
   await expect(count()).toHaveText('1 selected');
 
   // Ctrl+Down moves the focus ring and nothing else: the open email and the selection stay.
-  await press('Control+ArrowDown', 3);
+  await press('ControlOrMeta+ArrowDown', 3);
   await expect(row(fourth)).toHaveClass(/cursor/);
   await expect(win.locator('.list-scroll .item.cursor')).toHaveCount(1);
   await expect(win.locator('.reader-subject')).toHaveText(opened);
@@ -149,13 +149,19 @@ test("in Gmail's scheme X selects, J and K move the ring and keep the selection,
 test('in a narrow window the list stays on screen while the keyboard selects', async ({}, testInfo) => {
   await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
   await expect(win.locator('html')).not.toHaveClass(/light/);
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(820, 700));
-  await win.click('[data-reader="back"]');
-  await expect(win.locator('.listpane')).toBeVisible();
   const all = await ids();
-  await win.locator('.list-scroll').focus();
+  await expect(win.locator('.reader-subject')).toHaveText((await subjects())[0]);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(820, 700));
+  const back = win.locator('[data-reader="back"]');
+  await expect(back).toBeVisible();
+  await expect(win.locator('.listpane')).toBeHidden();
+  await back.focus();
   await press(SELECT);
-  await press('Control+ArrowDown', 2);
+  await expect(win.locator('.listpane')).toBeVisible();
+  await expect(win.locator('.list-scroll')).toBeFocused();
+  await expect(row(all[0])).toHaveClass(/cursor/);
+  await expect(row(all[0])).toHaveClass(/checked/);
+  await press('ControlOrMeta+ArrowDown', 2);
   await press(SELECT);
   await expect(count()).toHaveText('2 selected');
   await win.screenshot({ path: testInfo.outputPath('narrow-keyboard-selection.png'), animations: 'disabled' });
@@ -168,6 +174,23 @@ test('in a narrow window the list stays on screen while the keyboard selects', a
   await press('Escape');
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
   await expect(win.locator('.listpane')).toBeVisible();
+});
+
+test('moving the keyboard focus from the expanded reader reveals the list', async () => {
+  const all = await ids();
+  const [opened] = await subjects();
+  await expect(win.locator('.reader-subject')).toHaveText(opened);
+  const expand = win.locator('[data-reader="expand"]');
+  await expand.click();
+  await expect(win.locator('.listpane')).toBeHidden();
+  await expand.focus();
+  await press('ControlOrMeta+ArrowDown');
+  await expect(win.locator('.listpane')).toBeVisible();
+  await expect(win.locator('.list-scroll')).toBeFocused();
+  await expect(row(all[1])).toHaveClass(/cursor/);
+  await expect(win.locator('.reader-subject')).toHaveText(opened);
+  await press(SELECT);
+  expect(await checkedIds()).toEqual([all[1]]);
 });
 
 test('inside an open group of mail from one sender, the select key picks single emails and the group stays open', async () => {
@@ -183,10 +206,10 @@ test('inside an open group of mail from one sender, the select key picks single 
   await press('ArrowRight');
   await expect(last).toBeVisible();
 
-  await press('Control+ArrowDown');
+  await press('ControlOrMeta+ArrowDown');
   await expect(member).toHaveClass(/cursor/);
   await press(SELECT);
-  await press('Control+ArrowDown');
+  await press('ControlOrMeta+ArrowDown');
   await expect(last).toHaveClass(/cursor/);
   await press(SELECT);
   await expect(count()).toHaveText('2 selected');
@@ -226,9 +249,9 @@ test('in the unified inbox of two accounts the keyboard selects and deletes sing
   const all = await ids();
 
   await win.locator('.list-scroll').focus();
-  await press('Control+ArrowDown');
+  await press('ControlOrMeta+ArrowDown');
   await press(SELECT);
-  await press('Control+ArrowDown', 2);
+  await press('ControlOrMeta+ArrowDown', 2);
   await press(SELECT);
   await expect(count()).toHaveText('2 selected');
   expect((await checkedIds()).sort()).toEqual([all[1], all[3]].sort());

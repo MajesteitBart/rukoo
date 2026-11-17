@@ -2,13 +2,13 @@
 // No DOM in here, so node can test it (test/linkify.test.js).
 
 // An address starts with https://, http:// or www., not in the middle of a word or of another address, and runs to
-// the next space, angle bracket or double quote. After a colon it would be part of another address, such as
-// blob:https://… or data:www.…
-const CANDIDATE = /(?<![\p{L}\p{N}@._/+=:-])(?:https?:\/\/|www\.)[^\s<>"“”«»]+/giu;
+// the next space, angle bracket or double quote. Consume data: and blob: tokens whole so an address inside one
+// is skipped even when its prefix ends with a comma or other punctuation.
+const CANDIDATE = /(?<![\p{L}\p{N}@._/+=:-])(?:(?:data|blob):|(?<web>https?:\/\/|www\.))[^\s<>"“”«»]+/giu;
 // Punctuation that ends a sentence rather than an address, in Latin and in Chinese or Japanese text.
 const TRAILING = '.,;:!?\'"’‘”。、，．；：！？';
 const CLOSERS = { ')': '(', ']': '[' };
-const emphasisBefore = (text, start) => /(?:\*{1,2}|~~)$/.exec(text.slice(Math.max(0, start - 2), start))?.[0];
+const emphasisBefore = (text, start) => /(?:\*{1,3}|~~)$/.exec(text.slice(Math.max(0, start - 3), start))?.[0];
 
 // The address without the punctuation after it: "(see www.example.com)." keeps www.example.com, while a closing
 // bracket that has its opening one in the address stays. The brackets are counted once, so a long run of them after
@@ -34,8 +34,9 @@ function trimUrl(text, emphasis) {
 // A site: a name, or an IPv6 address in brackets such as [::1].
 function hasHost(text) {
   if (/^www\./i.test(text)) return /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text);
-  if (/^https?:\/\/\[/i.test(text)) return Boolean(URL.parse(text)?.hostname.startsWith('['));
-  return /^https?:\/\/[\p{L}\p{N}]/iu.test(text);
+  const authority = /^https?:\/\/([^/\\?#]+)/i.exec(text)?.[1] || '';
+  if (authority.includes('[') || authority.includes(']')) return Boolean(URL.parse(text)?.hostname.startsWith('['));
+  return /^[\p{L}\p{N}]/u.test(authority);
 }
 
 // The address a link to text gets: www.example.com opens over https.
@@ -46,6 +47,7 @@ export function findUrls(text) {
   const source = String(text || '');
   const found = [];
   for (const m of source.matchAll(CANDIDATE)) {
+    if (!m.groups.web) continue;
     const url = trimUrl(m[0], emphasisBefore(source, m.index));
     if (hasHost(url)) found.push({ start: m.index, end: m.index + url.length, text: url, href: hrefFor(url) });
   }

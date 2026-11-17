@@ -1686,9 +1686,25 @@ function toggleAtCursor() {
 // focus from wherever it is, so the ring can show.
 function keyboardInList(take = false) {
   const list = $('.list-scroll');
-  if (!list) return;
+  if (!list) return false;
+  if (take && !list.getClientRects().length) {
+    if (S.composer) return false;
+    if (S.expanded) {
+      S.expanded = false;
+      renderShell();
+      renderReader();
+    }
+    // A narrow window shows one pane at a time. Return to the list at the same message.
+    if (!list.getClientRects().length) {
+      S.cursorId = cursor();
+      S.picking = true;
+      closeReader();
+    }
+    if (!list.getClientRects().length) return false;
+  }
   list.classList.add('kbd');
   if (document.activeElement === document.body || (take && !list.contains(document.activeElement))) list.focus({ preventScroll: true });
+  return true;
 }
 
 function clearChecks() {
@@ -3329,11 +3345,10 @@ function shortcutAction(action, list, m, e) {
     case 'focusNext':
     case 'focusPrevious':
       if (e.target.closest?.('.reader-scroll, .divider')) return false;
-      keyboardInList(true);
+      if (!keyboardInList(true)) return false;
       return step(action === 'focusNext' ? 1 : -1, { keep: true });
     case 'toggleSelect':
-      keyboardInList(true);
-      return toggleAtCursor();
+      return keyboardInList(true) && toggleAtCursor();
   }
   if (!list.length) return false;
   switch (action) {
