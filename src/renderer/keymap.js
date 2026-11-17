@@ -8,8 +8,7 @@
 // Selecting emails one at a time: toggleSelect adds or removes the email at the focus ring, and focusNext and
 // focusPrevious move the ring without opening anything. Gmail uses X, Outlook and Thunderbird Ctrl+Space. On a Mac,
 // Command+Space is Spotlight and Control+arrows are Mission Control, so there the schemes take Control+Space and
-// Command+arrows. macOS can take Control+Space for switching input sources too, so Rukoo's own scheme also binds X
-// and shows it first on a Mac.
+// Command+arrows. macOS can take Control+Space for switching input sources too, so those schemes also bind X on Mac.
 
 export const SCHEMES = ['rukoo', 'gmail', 'outlook', 'apple', 'thunderbird'];
 
@@ -102,7 +101,7 @@ const KEYMAPS = {
     category: ['Ctrl+Shift+C'],
     next: ['ArrowDown', 'Ctrl+.'],
     previous: ['ArrowUp', 'Ctrl+,'],
-    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }],
+    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }, { mac: 'X' }],
     focusNext: ['Ctrl+ArrowDown'],
     focusPrevious: ['Ctrl+ArrowUp'],
     search: ['Ctrl+E', 'F3'],
@@ -143,7 +142,7 @@ const KEYMAPS = {
     category: ['Ctrl+Shift+C'],
     next: ['F', 'ArrowDown'],
     previous: ['B', 'ArrowUp'],
-    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }],
+    toggleSelect: [{ mac: 'Control+Space', other: 'Ctrl+Space' }, { mac: 'X' }],
     focusNext: ['Ctrl+ArrowDown'],
     focusPrevious: ['Ctrl+ArrowUp'],
     search: ['Ctrl+K'],

@@ -138,6 +138,7 @@ test("on a Mac, selecting leaves Spotlight's Command+Space and Mission Control's
     k.setKeymap(scheme);
     assert.equal(k.keyLabel('toggleSelect'), '⌃Space', scheme);
     assert.equal(k.actionFor(key(' ', { ctrlKey: true })), 'toggleSelect', scheme);
+    assert.equal(k.actionFor(key('x')), 'toggleSelect', scheme);
     assert.equal(k.actionFor(key(' ', { metaKey: true })), null, scheme);
   }
   k.setKeymap('gmail');

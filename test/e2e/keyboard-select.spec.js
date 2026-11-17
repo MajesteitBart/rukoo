@@ -41,7 +41,7 @@ const press = async (key, times = 1) => {
 // The select key of Rukoo's own scheme. Control+Space on every platform: on a Mac Command+Space is Spotlight.
 const SELECT = 'Control+Space';
 
-test('the keyboard alone selects the first, fourth and seventh email, archives exactly those, and Ctrl+Z brings them back', async () => {
+test('the keyboard alone selects the first, fourth and seventh email, archives exactly those, and Ctrl+Z brings them back', async ({}, testInfo) => {
   const before = await subjects();
   const all = await ids();
   expect(all.length).toBeGreaterThan(7);
@@ -85,6 +85,8 @@ test('the keyboard alone selects the first, fourth and seventh email, archives e
   await expect(row(seventh)).toHaveClass(/cursor/);
   await expect(win.locator('.list-scroll')).toBeFocused();
   await expect(win.locator('.list-scroll')).toHaveClass(/kbd/);
+  await expect(win.locator('.list-scroll')).toHaveAttribute('aria-activedescendant', await row(seventh).getAttribute('id'));
+  await win.screenshot({ path: testInfo.outputPath('three-keyboard-selected.png'), animations: 'disabled' });
 
   await press('e');
   for (const id of [first, fourth, seventh]) await expect(row(id)).toHaveCount(0);
@@ -133,11 +135,20 @@ test("in Gmail's scheme X selects, J and K move the ring and keep the selection,
   await expect(win.locator('.reader-subject')).toHaveText(names[2]);
   await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
   await expect(row(all[2])).toHaveClass(/selected/);
+
+  // Enter also clears a selection when the focused email is already the one open.
+  await press('x');
+  await expect(count()).toHaveText('1 selected');
+  await press('Enter');
+  await expect(win.locator('.list-tools.selecting')).toHaveCount(0);
+  await expect(win.locator('.reader-subject')).toHaveText(names[2]);
 });
 
 // A narrow window shows the reading pane in the list's place, and with two or more emails checked it shows how many.
 // While the select key builds the selection, the list stays, so the ring stays in view.
-test('in a narrow window the list stays on screen while the keyboard selects', async () => {
+test('in a narrow window the list stays on screen while the keyboard selects', async ({}, testInfo) => {
+  await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
+  await expect(win.locator('html')).not.toHaveClass(/light/);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(820, 700));
   await win.click('[data-reader="back"]');
   await expect(win.locator('.listpane')).toBeVisible();
@@ -147,6 +158,7 @@ test('in a narrow window the list stays on screen while the keyboard selects', a
   await press('Control+ArrowDown', 2);
   await press(SELECT);
   await expect(count()).toHaveText('2 selected');
+  await win.screenshot({ path: testInfo.outputPath('narrow-keyboard-selection.png'), animations: 'disabled' });
   await expect(win.locator('.listpane')).toBeVisible();
   await expect(row(all[2])).toHaveClass(/cursor/);
   await press('ArrowDown');
@@ -230,7 +242,7 @@ test('in the unified inbox of two accounts the keyboard selects and deletes sing
   await expect.poll(subjects).toEqual(before);
 });
 
-test('Settings lists the select keys of each scheme, in English and Dutch', async () => {
+test('Settings lists the select keys of each scheme, in English and Dutch', async ({}, testInfo) => {
   const page = win.locator('.page.settings');
   const keys = (name) => page.locator('.row.static', { has: win.locator('.title', { hasText: new RegExp(`^${name}$`) }) }).locator('kbd');
   const open = async () => {
@@ -248,7 +260,7 @@ test('Settings lists the select keys of each scheme, in English and Dutch', asyn
   await page.locator('[data-a="keymap:gmail"]').click();
   await expect(keys('Select or deselect email')).toHaveText(['X']);
   await page.locator('[data-a="keymap:outlook"]').click();
-  await expect(keys('Select or deselect email')).toHaveText([mac ? '⌃Space' : 'Ctrl+Space']);
+  await expect(keys('Select or deselect email')).toHaveText(mac ? ['⌃Space', 'X'] : ['Ctrl+Space']);
   await page.locator('[data-a="keymap:apple"]').click();
   await expect(keys('Select or deselect email')).toHaveCount(0);
   await page.locator('[data-a="keymap:rukoo"]').click();
@@ -261,4 +273,6 @@ test('Settings lists the select keys of each scheme, in English and Dutch', asyn
   await expect(keys('E-mail selecteren of deselecteren')).toHaveText(mac ? ['X', '⌃Space'] : ['Ctrl+Space', 'X']);
   await expect(keys('Volgende e-mail zonder te openen')).toHaveCount(1);
   await expect(page.locator('.settings-text').last()).toContainText('Enter opent de e-mail in het kader.');
+  await keys('E-mail selecteren of deselecteren').first().scrollIntoViewIfNeeded();
+  await win.screenshot({ path: testInfo.outputPath('keyboard-settings-nl.png'), animations: 'disabled' });
 });

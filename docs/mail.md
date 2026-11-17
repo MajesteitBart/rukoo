@@ -111,7 +111,7 @@ A blue outline, the focus ring, shows where the keyboard is in the list. To sele
 
 Gmail's scheme selects with `X`, Outlook's and Thunderbird's with `Ctrl+Space`, and Apple Mail's has no key for it. In a group of mail from one sender, open the group with `→` and select inside it; the group stays open while you do. The unified inbox of all accounts works the same. In a narrow window the list stays on screen while you select, instead of making way for the count of selected emails.
 
-On a Mac, `⌘Space` opens Spotlight and `⌃↑` and `⌃↓` belong to Mission Control. Rukoo's own scheme selects with `X` or `⌃Space` there, Outlook's and Thunderbird's with `⌃Space`, and the ring moves with `⌘↑` and `⌘↓`. When macOS uses `⌃Space` to switch input sources, use `X`, or turn that shortcut off in System Settings → Keyboard → Keyboard Shortcuts → Input Sources.
+On a Mac, the focus ring moves with `⌘↑` and `⌘↓`. Rukoo, Outlook and Thunderbird can select with `⌃Space` or `X`. Use `X` if macOS uses `⌃Space` to switch input sources.
 
 ## Email links
 

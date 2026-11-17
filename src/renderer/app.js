@@ -1324,6 +1324,7 @@ function renderList() {
   renderListTools();
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
+  syncActiveRow(scroll);
   renderShell();
   updateNewPill();
   // The reader showed the selection; it follows what is left of it, as after a move or delete.
@@ -1492,7 +1493,7 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
       : `<button class="stack-btn" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(`${stackLabel} (→)`)}" aria-label="${esc(stackLabel)}" aria-expanded="false">${icons.stack}<span>+${stack.count - 1}</span></button>`
     : '';
   return `<div class="item-wrap ${stacked ? 'stacked' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}">${swipe}
-    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
+    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" id="mail-row-${encodeURIComponent(m.id)}" data-id="${esc(m.id)}" role="option" aria-selected="${S.checked.size ? checked : selected}" draggable="true">
       <span class="unread-dot" aria-hidden="true"></span>
       <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" title="${esc(tip(t('mailbox.message.select'), 'toggleSelect'))}" tabindex="-1">${icons.check}</button></div>
       <div class="body">
@@ -1559,10 +1560,17 @@ function fetchLogos() {
   }
 }
 
+function syncActiveRow(scroll) {
+  if (!scroll) return;
+  const active = scroll.querySelector('.item.cursor');
+  if (active) scroll.setAttribute('aria-activedescendant', active.id);
+  else scroll.removeAttribute('aria-activedescendant');
+}
+
 function syncRowClasses() {
+  const scroll = $('.list-scroll');
   // A selection inside a folded stack unfolds it.
   if (S.selectedId && !$(`.list-scroll .item[data-id="${CSS.escape(S.selectedId)}"]`) && rows().some((m) => m.id === S.selectedId)) {
-    const scroll = $('.list-scroll');
     const top = scroll ? scroll.scrollTop : 0;
     scroll.innerHTML = listHtml();
     scroll.scrollTop = top;
@@ -1575,11 +1583,12 @@ function syncRowClasses() {
     el.classList.toggle('selected', selected);
     el.classList.toggle('checked', checked);
     el.classList.toggle('cursor', id === at);
-    el.setAttribute('aria-selected', String(selected || checked));
+    el.setAttribute('aria-selected', String(S.checked.size ? checked : selected));
     const box = el.querySelector('.check');
     box?.classList.toggle('on', checked);
     box?.setAttribute('aria-checked', String(checked));
   }
+  syncActiveRow(scroll);
 }
 
 function revealRow(id) {
@@ -1657,8 +1666,9 @@ function checkRange(toId) {
 // The select key: adds or removes the email at the focus ring, and only that one, also when another email is open.
 // An email in a group keeps the group open, also once it leaves the selection, so the ring doesn't fold away with it.
 function toggleAtCursor() {
-  const at = cursor();
-  if (!at || !visibleRows().some((m) => m.id === at)) return false;
+  const visible = visibleRows();
+  const at = cursor() || visible[0]?.id;
+  if (!at || !visible.some((m) => m.id === at)) return false;
   const layout = stackLayout();
   const head = layout.headOf.get(at);
   if (head) S.openStacks.add(layout.heads.get(head).id);
@@ -3268,7 +3278,7 @@ document.addEventListener('keydown', (e) => {
   // open one. Without the ring (.kbd, gone with the pointer) Enter does what it always did.
   if (e.key === 'Enter' && !ctrl && !e.altKey && !e.shiftKey && e.target.matches?.('.list-scroll.kbd')) {
     const at = cursor();
-    if (at && at !== S.selectedId && visibleRows().some((x) => x.id === at)) {
+    if (at && (at !== S.selectedId || S.checked.size) && visibleRows().some((x) => x.id === at)) {
       e.preventDefault();
       clearChecks();
       S.anchorId = at;
