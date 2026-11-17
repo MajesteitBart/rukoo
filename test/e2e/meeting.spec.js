@@ -47,17 +47,18 @@ const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWin
 
 // A window size and zoom the page has taken in before the test goes on. A Linux window manager applies them after
 // setSize() and setZoomFactor() have returned, and Rukoo closes an open menu on every resize event (ui.js). A late one
-// closed the Screen menu while it still said Loading, so it never listed the displays (#313). Waits until the page
-// has the size the window has, then for the next frames, which dispatch the resize event.
+// can close the Screen menu while it still says Loading (#313).
 async function resizeTo(width, height, zoom = 1) {
   await setSize(width, height);
   await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(zoom), zoom);
   const taken = async () => {
-    const [w, h, z] = await app.evaluate(({ BrowserWindow }) => {
+    const { size, content, zoomFactor } = await app.evaluate(({ BrowserWindow }) => {
       const x = BrowserWindow.getAllWindows()[0];
-      return [...x.getContentSize(), x.webContents.getZoomFactor()];
+      return { size: x.getSize(), content: x.getContentSize(), zoomFactor: x.webContents.getZoomFactor() };
     });
-    return win.evaluate(([w, h]) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1, [w / z, h / z]);
+    if (size[0] !== width || size[1] !== height || Math.abs(zoomFactor - zoom) > 0.001) return false;
+    const [w, h] = content;
+    return win.evaluate(([w, h]) => Math.abs(innerWidth - w) <= 1 && Math.abs(innerHeight - h) <= 1, [w / zoom, h / zoom]);
   };
   await expect.poll(taken).toBe(true);
   await win.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
