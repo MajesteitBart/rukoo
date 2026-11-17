@@ -63,10 +63,12 @@ async function expectWhole(rows, label) {
 }
 
 async function shot(name, testInfo) {
+  const zoomed = name.endsWith('zoom');
   for (const theme of ['dark', 'light']) {
     await setTheme(theme);
-    await win.locator('.dialog').screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: 'disabled' });
-    await expectWhole(name.endsWith('zoom') ? 2 : 1, `${name}, ${theme}`);
+    await expectWhole(zoomed ? 2 : 1, `${name}, ${theme}`);
+    const target = zoomed ? win : win.locator('.dialog');
+    await target.screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: 'disabled' });
   }
   await setTheme('dark');
 }
