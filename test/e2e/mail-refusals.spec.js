@@ -122,7 +122,7 @@ test('an Undo the server refuses leaves the email archived and offers Undo again
   await expect.poll(() => inView('archive')).not.toContain('Sign in to Bencompare');
 });
 
-test('Empty Trash reports a refused delete and leaves the email visible', async () => {
+test('Empty Trash reports a refused delete and leaves the email visible', async ({}, testInfo) => {
   const subject = 'Sign in to Bencompare';
   await row(subject).click();
   await win.click('[data-reader="delete"]');
@@ -132,9 +132,10 @@ test('Empty Trash reports a refused delete and leaves the email visible', async 
   await win.click('.nav-item[data-view="trash"]');
   await expect(row(subject)).toBeVisible();
   await win.click('.list-head [data-action="list-more"]');
-  await win.getByRole('button', { name: 'Empty Trash', exact: true }).click();
+  await win.getByRole('menuitem', { name: 'Empty Trash', exact: true }).click();
   await win.locator('.dialog').getByRole('button', { name: 'Empty', exact: true }).click();
 
   await expect(notice()).toContainText("The mail server didn't delete the email.");
   await expect(row(subject)).toBeVisible();
+  await win.screenshot({ path: testInfo.outputPath('refused-empty-trash.png'), animations: 'disabled' });
 });
