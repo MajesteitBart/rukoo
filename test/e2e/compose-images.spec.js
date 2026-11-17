@@ -253,3 +253,58 @@ test('a draft keeps the size of its image when it is saved, closed and opened ag
   const stored = await editor(win).evaluate((e) => e.innerHTML);
   expect(stored).not.toMatch(/img-frame|img-handle|img-bubble/);
 });
+
+test('a linked image keeps its link when it changes size, and Ctrl+Z keeps it too', async () => {
+  await launch('en');
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  await insertImage(win);
+  await image(win).evaluate((img) => {
+    const a = document.createElement('a');
+    a.href = 'https://example.org/';
+    img.replaceWith(a);
+    a.append(img);
+  });
+  const link = () => image(win).evaluate((img) => img.parentElement.closest('a')?.getAttribute('href') || null);
+  await image(win).click();
+  await action(win, 'small').click();
+  await expect.poll(() => size(win)).toEqual({ attr: '200', shown: 200, ratio: 2 });
+  expect(await link()).toBe('https://example.org/');
+  await action(win, 'fit').click();
+  await expect.poll(() => size(win)).toEqual({ attr: '560', shown: 560, ratio: 2 });
+  expect(await link()).toBe('https://example.org/');
+  await undo(win);
+  await expect.poll(() => size(win)).toEqual({ attr: '200', shown: 200, ratio: 2 });
+  expect(await link()).toBe('https://example.org/');
+  expect(await editor(win).locator('a').count()).toBe(1);
+});
+
+test('a save during a drag waits for it, so a drag that Escape cancels never reaches the draft', async () => {
+  await launch('en');
+  await win.click('[data-action="compose"]');
+  await win.waitForSelector('.composer .editor');
+  await win.locator('.composer [data-field="subject"]').fill('A dragged picture');
+  await insertImage(win);
+  await image(win).click();
+  await action(win, 'fit').click();
+  await expect.poll(() => size(win)).toEqual({ attr: '560', shown: 560, ratio: 2 });
+
+  const drop = await dragCorner(win, 'se', -160);
+  await expect.poll(async () => (await size(win)).shown).toBe(400);
+  await win.keyboard.press('ControlOrMeta+s');
+  // The save holds off while the corner is down.
+  await win.waitForTimeout(800);
+  await expect(win.locator('.composer')).toHaveAttribute('data-dirty', 'true');
+  await win.keyboard.press('Escape');
+  await drop();
+  await expect(win.locator('.composer')).toHaveAttribute('data-dirty', 'false');
+  await expect.poll(() => size(win)).toEqual({ attr: '560', shown: 560, ratio: 2 });
+  await win.locator('.composer [data-c="close"]').click();
+  await expect(win.locator('.composer')).toHaveCount(0);
+
+  await win.click('[data-view="drafts"]');
+  await win.locator('.item', { hasText: 'A dragged picture' }).first().click();
+  await win.locator('[data-reader="edit"]').click();
+  await win.waitForSelector('.composer .editor');
+  await expect.poll(() => size(win)).toEqual({ attr: '560', shown: 560, ratio: 2 });
+});

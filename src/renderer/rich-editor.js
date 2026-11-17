@@ -76,5 +76,5 @@ export function mountRichEditor(page, editor, { onChange = () => {}, onSelection
   listen(document, 'selectionchange', () => {
     if (editor.contains(document.activeElement)) updateToolbar();
   });
-  return { editorRange, restoreRange, insertLink, updateToolbar, dispose: () => cleanups.forEach((fn) => fn()) };
+  return { editorRange, restoreRange, insertLink, updateToolbar, idle: images.idle, dispose: () => cleanups.forEach((fn) => fn()) };
 }

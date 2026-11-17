@@ -77,6 +77,9 @@ export function mountEditorImages(editor, { onChange }) {
   // shown: the image the frame is around. drag: the resize under way.
   let shown = null;
   let drag = null;
+  // Settles when the drag under way ends, so a save waits for the size the drag leaves rather than the one it shows.
+  let dragged = Promise.resolve();
+  let dragEnded = () => {};
 
   const hide = () => {
     shown = null;
@@ -166,9 +169,18 @@ export function mountEditorImages(editor, { onChange }) {
       next.removeAttribute('width');
       next.style.width = '';
     }
+    // A link around only the image goes with the image, or the command drops it. The new link takes its place.
+    const link = img.parentElement.closest('a');
+    const linked = link && editor.contains(link) && link.textContent.trim() === '' && link.querySelectorAll('img').length === 1;
+    let html = next.outerHTML;
+    if (linked) {
+      const wrap = link.cloneNode(true);
+      wrap.querySelector('img').replaceWith(next);
+      html = wrap.outerHTML;
+    }
     editor.focus();
-    selectNode(img);
-    document.execCommand('insertHTML', false, next.outerHTML);
+    selectNode(linked ? link : img);
+    document.execCommand('insertHTML', false, html);
     const now = images()[index];
     if (now) selectNode(now);
     onChange();
@@ -252,14 +264,16 @@ export function mountEditorImages(editor, { onChange }) {
     else img.setAttribute('style', style);
     if (apply && width !== from && img.isConnected) resize(img, width);
     else sync();
+    dragEnded();
   };
   listen(frame, 'pointerdown', (e) => {
     const handle = e.target.closest('.img-handle');
     const img = shown;
-    if (!handle || !img || e.button !== 0) return;
+    if (drag || !handle || !img || e.button !== 0) return;
     e.preventDefault();
     handle.setPointerCapture(e.pointerId);
     const from = Math.round(img.getBoundingClientRect().width);
+    dragged = new Promise((resolve) => (dragEnded = resolve));
     drag = { img, handle, id: e.pointerId, x: e.clientX, from, width: from, style: img.getAttribute('style'), sign: handle.dataset.corner.endsWith('e') ? 1 : -1 };
     frame.classList.add('dragging');
     if (bar.matches(':popover-open')) bar.hidePopover();
@@ -284,5 +298,5 @@ export function mountEditorImages(editor, { onChange }) {
     endDrag(false);
   }, true);
 
-  return { dispose: () => cleanups.forEach((fn) => fn()) };
+  return { idle: () => dragged, dispose: () => { endDrag(false); cleanups.forEach((fn) => fn()); } };
 }

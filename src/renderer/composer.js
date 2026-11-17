@@ -1290,10 +1290,13 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       flushInputs();
       st.saving = true;
       describeSaved();
-      const editsBefore = editCount;
       let failed = false;
       try {
         await settleAttachments();
+        // A corner drag only shows a size; the draft gets the one it leaves.
+        await richEditor.idle();
+        if (sending || closed) return false;
+        const editsBefore = editCount;
         const sent = st.attachments.slice();
         const id = await api('saveDraft', payload(sent));
         st.draftId = id;
