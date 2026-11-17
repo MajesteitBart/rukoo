@@ -2,6 +2,7 @@
 // --lang=en-US, which gives Chromium's time field the "12:30 PM" format on every platform. The fields used to have a
 // fixed 96px time field that cut that off to "12:30 P".
 const { test, expect, _electron: electron } = require('@playwright/test');
+const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
@@ -67,8 +68,15 @@ async function shot(name, testInfo) {
   for (const theme of ['dark', 'light']) {
     await setTheme(theme);
     await expectWhole(zoomed ? 2 : 1, `${name}, ${theme}`);
-    const target = zoomed ? win : win.locator('.dialog');
-    await target.screenshot({ path: testInfo.outputPath(`${name}-${theme}.png`), animations: 'disabled' });
+    const output = testInfo.outputPath(`${name}-${theme}.png`);
+    if (zoomed) {
+      // Playwright's page screenshot crops the Electron window to CSS pixels at non-default zoom.
+      const image = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64'));
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, Buffer.from(image, 'base64'));
+    } else {
+      await win.locator('.dialog').screenshot({ path: output, animations: 'disabled' });
+    }
   }
   await setTheme('dark');
 }
