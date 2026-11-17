@@ -6,13 +6,12 @@
 // editing commands, so Ctrl+Z takes it back in one step.
 import { t } from './i18n.js';
 import { esc } from './ui.js';
+import { placePopover } from './editor-links.js';
 
 // Widths in pixels. Best fit is what the reading pane of most mail apps shows without scaling.
 export const IMAGE_SMALL = 200;
 export const IMAGE_FIT = 560;
 const MIN = 24;
-const GAP = 6;
-const EDGE = 8;
 
 // The image a selection holds when it holds that image and nothing else.
 export function soleImage(range) {
@@ -102,15 +101,15 @@ export function mountEditorImages(editor, { onChange }) {
     bottom = Math.min(bottom, window.innerHeight);
     return right > left && bottom > top ? { left, top, right, bottom } : null;
   };
-  // Under the image, or above it where the window has no room below; never past the window's edge.
+  // Under the image, or above it where the window has no room below; never past the window's edge. In a window too
+  // narrow for one row the buttons wrap, and the separator goes, as it would end the first row. Whether they wrap is
+  // measured where the bar has the most room, as placePopover() measures its size.
   const placeBar = (at) => {
-    const w = bar.offsetWidth;
-    const h = bar.offsetHeight;
-    const below = at.bottom + GAP;
-    const fits = below + h <= window.innerHeight - EDGE;
-    const top = fits || at.top - GAP - h < EDGE ? below : at.top - GAP - h;
-    bar.style.left = `${Math.max(EDGE, Math.min(at.left, window.innerWidth - w - EDGE))}px`;
-    bar.style.top = `${Math.max(EDGE, Math.min(top, window.innerHeight - h - EDGE))}px`;
+    bar.style.left = '0px';
+    bar.removeAttribute('data-wrapped');
+    const buttons = bar.querySelectorAll('button');
+    bar.toggleAttribute('data-wrapped', buttons[buttons.length - 1].offsetTop > buttons[0].offsetTop);
+    placePopover(bar, at);
   };
   // Which of the sizes the image has now.
   const sizeOf = (img) => {

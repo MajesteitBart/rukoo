@@ -3986,6 +3986,14 @@ body.compose-window {
 .img-bubble:popover-open {
   display: flex;
 }
+/* In a window too narrow for one row, such as a compose window at 200% zoom, the image bar's buttons wrap. The script
+   drops the separator then, as it would end the first row. */
+.img-bubble {
+  flex-wrap: wrap;
+}
+.img-bubble[data-wrapped] .sep {
+  display: none;
+}
 .link-bubble button,
 .img-bubble button {
   flex: none;
