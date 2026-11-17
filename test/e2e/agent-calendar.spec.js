@@ -120,3 +120,35 @@ test('the calendar card speaks Dutch, and Cancel adds nothing', async () => {
     .toMatch(/The user declined: <unsafe_content source="calendar">Add "Call with Sanne" to the calendar<\/unsafe_content>/);
   expect(await events('Call with Sanne')).toEqual([]);
 });
+
+// #312: the email stays open in Mail behind the calendar, but a chat started in the calendar isn't about it.
+test('a chat started in the calendar leaves out the email left open in Mail', async () => {
+  const chip = () => pane().locator('.bui-pb .bui-entity');
+  const heading = () => pane().locator('.bui-rec__title');
+  await openChat('Your parcel is on its way');
+  await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
+  await expect(heading()).toHaveText('What should Hermes do with this email?');
+
+  await win.click('[data-mode="calendar"]');
+  await expect(win.locator('.calendar')).toBeVisible();
+  await expect(heading()).toHaveText('Ask Hermes about your mail');
+  await expect(chip()).toHaveCount(0);
+  await say('Schedule a call with Sanne');
+  await expect(transcript().locator('.bui-approval')).toBeVisible();
+  // Named after its first message, as a chat without an email is.
+  await expect(pane().locator('.ap-title')).toHaveText('Schedule a call with Sanne');
+  await expect(chip()).toHaveCount(0);
+  expect(await app.evaluate(() => global.__semAgents.list().map((c) => ({ title: c.title, message: c.message })))).toEqual([{ title: 'Schedule a call with Sanne', message: null }]);
+  await shot('04-calendar-chat');
+
+  // New chat starts without the email too.
+  await win.click('.agentpane [data-ap="new"]');
+  await expect(heading()).toHaveText('Ask Hermes about your mail');
+  await expect(chip()).toHaveCount(0);
+
+  // Back in Mail the panel follows the open email again.
+  await win.click('[data-mode="mail"]');
+  await expect(win.locator('.reader-subject')).toHaveText('Your parcel is on its way');
+  await expect(chip().locator('.bui-entity__name')).toHaveText('Your parcel is on its way');
+  await expect(heading()).toHaveText('What should Hermes do with this email?');
+});

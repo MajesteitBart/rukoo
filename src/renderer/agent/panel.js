@@ -914,8 +914,10 @@ export function mountAgentPanel(ctx) {
   // ---------- following the email on screen ----------
 
   function currentEmail() {
-    // In meeting mode the chat is about the meeting on screen, not the email that stays open behind it.
+    // In meeting mode the chat is about the meeting on screen, and in calendar mode about no email: the email that
+    // stays open behind them is off screen.
     if (ctx.meetingMode && ctx.meetingMode()) return null;
+    if (ctx.calendarMode && ctx.calendarMode()) return null;
     const m = S.message;
     return m && m.id && m.id === S.selectedId && !m.error && m.role !== 'drafts' ? m : null;
   }

@@ -3570,6 +3570,8 @@ export const ctx = {
     if (S.message) renderReader();
     S.composer?.retheme(S.data);
   },
+  // In calendar mode the chat panel leaves out the email that stays open behind the calendar.
+  calendarMode: () => calendarMode(),
   // Rukoo Voice's meetings (meeting.js): the chat panel follows the one on screen in meeting mode, and a calendar
   // card records an event.
   meetingMode: () => meetingMode(),
