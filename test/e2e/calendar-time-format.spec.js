@@ -39,6 +39,18 @@ async function setTheme(theme) {
 const resize = (width, height) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [width, height]);
 const zoomTo = (factor) => app.evaluate(({ BrowserWindow }, f) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(f), factor);
 
+async function expectWindowWidth(width, factor) {
+  // With Windows title-bar chrome, the native window's content can be wider than its outer bounds.
+  await expect.poll(async () => {
+    const { outer, content, zoom } = await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      return { outer: w.getSize()[0], content: w.getContentSize()[0], zoom: w.webContents.getZoomFactor() };
+    });
+    const viewport = await win.evaluate(() => innerWidth);
+    return outer === width && zoom === factor && Math.abs(viewport - content / factor) <= 1;
+  }).toBe(true);
+}
+
 // Each date and time field beside the width its own text needs: a copy of it in the same place, so the same rules
 // style it, but out of the flow and as wide as its content.
 const fields = () =>
@@ -100,11 +112,11 @@ test('the event dialog shows a 12-hour time whole, with its date, wide, narrow a
   await shot('wide', testInfo);
   // The narrowest main window: the dialog is still 600px wide, so the two still share a row.
   await resize(760, 800);
-  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThanOrEqual(760);
+  await expectWindowWidth(760, 1);
   await shot('narrow', testInfo);
-  // Zoomed to 200% the window is 380px wide for the page: Ends goes under Starts, and every field stays whole.
+  // At 200% the page has half the content width: Ends goes under Starts, and every field stays whole.
   await zoomTo(2);
-  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThanOrEqual(380);
+  await expectWindowWidth(760, 2);
   await shot('narrow-zoom', testInfo);
   await zoomTo(1);
 });

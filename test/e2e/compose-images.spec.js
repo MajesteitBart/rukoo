@@ -295,14 +295,18 @@ test('in a compose window 680 pixels wide at 200 percent the image bar and the l
       '<div>Een kort adres: <a href="https://a.io/">kort</a></div><div>Een lang adres: <a href="https://www.example.com/a/very/long/path/that/goes/on/to/the/report-2026.pdf">rapport</a></div>'
     );
   });
-  const zoom = (factor) =>
-    app.evaluate(({ BrowserWindow }, factor) => {
-      const compose = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('compose.html'));
-      compose.setSize(680, 720);
-      compose.webContents.setZoomFactor(factor);
-    }, factor);
+  const compose = await app.browserWindow(page);
+  await compose.evaluate((w) => {
+    // Size the content to 680 pixels, including on Windows where the content extends into the frame.
+    w.setSize(680, 720);
+    const frameWidth = w.getSize()[0] - w.getContentSize()[0];
+    if (frameWidth) w.setSize(680 + frameWidth, 720);
+  });
+  const zoom = async (factor) => {
+    await compose.evaluate((w, f) => w.webContents.setZoomFactor(f), factor);
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBe(680 / factor);
+  };
   await zoom(2);
-  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(340);
 
   // The image bar wraps inside the window, without the separator that would end its first row.
   const imageBar = () => placed(page, '.img-bubble', '.editor img', 0, true);
@@ -340,6 +344,7 @@ test('in a compose window 680 pixels wide at 200 percent the image bar and the l
   await expect(bar(page)).toBeVisible();
   await expect.poll(imageBar).toEqual({ rows: 2, separator: false, problems: [] });
   await capture(page, 'image-bar-680-200-nl-light');
+  await compose.dispose();
 });
 
 test('a draft keeps the size of its image when it is saved, closed and opened again, and the reader shows it at that size', async () => {
