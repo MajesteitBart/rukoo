@@ -70,11 +70,14 @@ test('Markdown emphasis and Chinese or Japanese punctuation after an address sta
   assert.equal(linkedHtml('**https://example.com**'), '**<a href="https://example.com">https://example.com</a>**');
   const typed = typedUrl('see **https://example.com**');
   assert.deepEqual([typed.start, typed.end], [6, 25]);
+  assert.deepEqual(texts('https://example.com/~ https://example.com/* **https://example.com/a/**).'), [
+    'https://example.com/~', 'https://example.com/*', 'https://example.com/a/'
+  ]);
 });
 
 test('an address in brackets is an IPv6 address, or no address', async () => {
   const { findUrls } = await load();
-  assert.deepEqual(findUrls('https://[evil and https://[evil]/x and http://[]/'), []);
+  assert.deepEqual(findUrls('https://[evil https://[evil]/x http://[]/ https://[::::]/ https://[::12345]/ https://[a]@example.com'), []);
   assert.deepEqual(found(findUrls('https://[2001:db8::1]/a http://[::ffff:192.0.2.1]')), [
     ['https://[2001:db8::1]/a', 'https://[2001:db8::1]/a'],
     ['http://[::ffff:192.0.2.1]', 'http://[::ffff:192.0.2.1]']

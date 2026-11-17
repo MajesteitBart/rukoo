@@ -5,15 +5,15 @@
 // the next space, angle bracket or double quote. After a colon it would be part of another address, such as
 // blob:https://… or data:www.…
 const CANDIDATE = /(?<![\p{L}\p{N}@._/+=:-])(?:https?:\/\/|www\.)[^\s<>"“”«»]+/giu;
-// Punctuation that ends a sentence rather than an address, in Latin and in Chinese or Japanese text, and the
-// asterisks and tildes of **bold** and ~~struck~~ Markdown around one.
-const TRAILING = '.,;:!?\'"’‘”*~。、，．；：！？';
+// Punctuation that ends a sentence rather than an address, in Latin and in Chinese or Japanese text.
+const TRAILING = '.,;:!?\'"’‘”。、，．；：！？';
 const CLOSERS = { ')': '(', ']': '[' };
+const emphasisBefore = (text, start) => /(?:\*{1,2}|~~)$/.exec(text.slice(Math.max(0, start - 2), start))?.[0];
 
 // The address without the punctuation after it: "(see www.example.com)." keeps www.example.com, while a closing
 // bracket that has its opening one in the address stays. The brackets are counted once, so a long run of them after
 // an address takes no longer than any other text.
-function trimUrl(text) {
+function trimUrl(text, emphasis) {
   const n = { '(': 0, ')': 0, '[': 0, ']': 0 };
   for (let i = 0; i < text.length; i++) if (text[i] in n) n[text[i]]++;
   let end = text.length;
@@ -23,22 +23,30 @@ function trimUrl(text) {
     else if (CLOSERS[last] && n[last] > n[CLOSERS[last]]) {
       n[last]--;
       end--;
+    } else if (emphasis && text.endsWith(emphasis, end)) {
+      end -= emphasis.length;
+      emphasis = undefined;
     } else break;
   }
   return text.slice(0, end);
 }
 
 // A site: a name, or an IPv6 address in brackets such as [::1].
-const hasHost = (text) => (/^www\./i.test(text) ? /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text) : /^https?:\/\/(?:[\p{L}\p{N}]|\[[\da-f.]*:[\da-f:.]*\])/iu.test(text));
+function hasHost(text) {
+  if (/^www\./i.test(text)) return /^www\.[\p{L}\p{N}-]+\.[\p{L}\p{N}]/iu.test(text);
+  if (/^https?:\/\/\[/i.test(text)) return Boolean(URL.parse(text)?.hostname.startsWith('['));
+  return /^https?:\/\/[\p{L}\p{N}]/iu.test(text);
+}
 
 // The address a link to text gets: www.example.com opens over https.
 const hrefFor = (text) => (/^www\./i.test(text) ? `https://${text}` : text);
 
 // The addresses in text, in order: [{ start, end, text, href }].
 export function findUrls(text) {
+  const source = String(text || '');
   const found = [];
-  for (const m of String(text || '').matchAll(CANDIDATE)) {
-    const url = trimUrl(m[0]);
+  for (const m of source.matchAll(CANDIDATE)) {
+    const url = trimUrl(m[0], emphasisBefore(source, m.index));
     if (hasHost(url)) found.push({ start: m.index, end: m.index + url.length, text: url, href: hrefFor(url) });
   }
   return found;
@@ -62,7 +70,7 @@ export function typedUrl(before) {
   if (start === s.length) return null;
   const word = s.slice(start);
   const url = findUrls(word).pop();
-  if (!url || trimUrl(word.slice(url.start)) !== url.text) return null;
+  if (!url || trimUrl(word.slice(url.start), emphasisBefore(word, url.start)) !== url.text) return null;
   return { ...url, start: start + url.start, end: start + url.end };
 }
 
