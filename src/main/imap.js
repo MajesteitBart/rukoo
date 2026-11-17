@@ -51,6 +51,15 @@ function notDone(client, key) {
   return Object.assign(new Error(t(key)), { refused: true });
 }
 
+async function deleteCommand(client, uid) {
+  try {
+    return await client.messageDelete(String(uid), { uid: true });
+  } catch (_) {
+    // ImapFlow can throw before the delete command runs, for example after a lost connection.
+    return false;
+  }
+}
+
 // messageDelete sets \Deleted before EXPUNGE. If the email is still there after a failure, try to clear the flag
 // so a later EXPUNGE won't remove a message Rukoo has put back in the list.
 async function restoreDeleteFlag(client, uid) {
@@ -694,7 +703,7 @@ class ImapAccount {
         if (client.capabilities && !client.capabilities.has('MOVE')) {
           res = await client.messageCopy(String(uid), destination, opts);
           if (!res) throw notDone(client, 'errors.move.refused');
-          if (!(await client.messageDelete(String(uid), opts))) {
+          if (!(await deleteCommand(client, uid))) {
             await restoreDeleteFlag(client, uid);
             throw Object.assign(new Error(t('errors.move.copied')), { copied: true });
           }
@@ -718,7 +727,7 @@ class ImapAccount {
     return this.run(async (client) => {
       const lock = await client.getMailboxLock(path);
       try {
-        if (await client.messageDelete(String(uid), { uid: true })) return;
+        if (await deleteCommand(client, uid)) return;
         if (client.usable === false) throw notDone(client, 'errors.delete.refused');
         const state = await restoreDeleteFlag(client, uid);
         if (state === 'kept') throw notDone(client, 'errors.delete.refused');

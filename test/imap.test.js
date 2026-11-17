@@ -655,7 +655,8 @@ function mover({ caps = ['MOVE', 'UIDPLUS'], move = null, copy = null, deletes =
     },
     messageDelete: async (set) => {
       log.push(`delete ${set} in ${client.mailbox.path}`);
-      return deletes.shift();
+      const result = deletes.shift();
+      return typeof result === 'function' ? result() : result;
     },
     messageFlagsRemove: async (set, list) => {
       log.push(`-${list.join(' ')} ${set}`);
@@ -722,6 +723,18 @@ test('without MOVE a failed delete after COPY keeps the copy and reports the par
   m = mover({ caps: ['UIDPLUS'], copy: copyUid(5, 41), deletes: [false], flags: null });
   await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { copied: true });
   assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'delete 5 in INBOX', 'flags 5', 'release INBOX']);
+
+  // A disconnect after COPY can throw from messageDelete before it sends anything.
+  m = mover({
+    caps: ['UIDPLUS'],
+    copy: copyUid(5, 41),
+    deletes: [() => {
+      m.client.usable = false;
+      throw Object.assign(new Error('Connection not available'), { code: 'NoConnection' });
+    }]
+  });
+  await assert.rejects(m.s.move('INBOX', 5, 'Archive'), { message: t('errors.move.copied'), copied: true });
+  assert.deepEqual(m.log, ['lock INBOX', 'COPY 5 Archive', 'delete 5 in INBOX', 'release INBOX']);
 
   // A server without UIDPLUS may not report the copy's new UID either.
   m = mover({ caps: [], copy: { path: 'INBOX', destination: 'Archive' }, deletes: [false] });

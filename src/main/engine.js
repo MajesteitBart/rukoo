@@ -2211,8 +2211,17 @@ class Engine extends EventEmitter {
 
   async emptyFolder(accountId, folderPath) {
     const ids = this.listMessages({ scope: accountId, view: 'folder', folder: folderPath }).map((m) => m.id);
-    for (const id of ids) await this.remove(id, { force: true }).catch(() => {});
-    return ids.length;
+    let count = 0;
+    let error = null;
+    for (const id of ids) {
+      try {
+        await this.remove(id, { force: true });
+        count++;
+      } catch (err) {
+        error ||= err.message;
+      }
+    }
+    return { count, total: ids.length, error };
   }
 
   toggleVip(address) {

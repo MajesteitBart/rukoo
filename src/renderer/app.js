@@ -2104,18 +2104,26 @@ async function chooseSort() {
 
 async function emptyCurrent() {
   const accounts = scopedAccounts();
+  const role = S.view;
   const what =
-    S.view === 'trash'
+    role === 'trash'
       ? t('mailbox.emptyFolder.permanent')
       : t('mailbox.emptyFolder.trash');
   const ok = await confirmDialog(t('mailbox.emptyFolder.title', { folder: viewLabel() }), what, t('mailbox.emptyFolder.confirm'), true);
   if (!ok) return;
-  let n = 0;
+  let count = 0;
+  let total = 0;
+  let error = null;
   for (const a of accounts) {
-    const f = a.folders.find((x) => x.role === S.view);
-    if (f) n += await api('emptyFolder', a.id, f.path);
+    const f = a.folders.find((x) => x.role === role);
+    if (!f) continue;
+    const result = await api('emptyFolder', a.id, f.path);
+    count += result.count;
+    total += result.total;
+    error ||= result.error;
   }
-  toast(t('mailbox.delete.deletedCount', { count: n }));
+  if (error) return toast(count ? t('mailbox.delete.deletedSome', { count, total, error }) : error, 5000);
+  toast(t('mailbox.delete.deletedCount', { count }));
 }
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
