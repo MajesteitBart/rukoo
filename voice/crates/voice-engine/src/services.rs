@@ -25,9 +25,18 @@ use crate::api::{EngineOptions, Locale, Theme};
 use crate::media::{RecordedScreen, ScreenMedia};
 use crate::meetings::controller::ControllerTiming;
 use crate::meetings::screen::{ScreenTiming, SCREEN_EXE};
+use crate::permissions::Permissions;
 
 /// Whether a key is physically down.
 pub type KeyState = Arc<dyn Fn(Key) -> bool + Send + Sync>;
+
+/// How long ago a key that isn't a modifier went down anywhere, `None` where the platform
+/// doesn't say (voice-input's `since_key_down`).
+pub type KeyActivity = Arc<dyn Fn() -> Option<Duration> + Send + Sync>;
+
+/// Whether someone is at this computer's console: on a Mac, the session is the one on the
+/// console and its screen isn't locked. Voice ignores hotkey presses otherwise.
+pub type AtConsole = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Text into the focused app, and the selection out of it.
 ///
@@ -67,10 +76,50 @@ pub type AudioSink = Box<dyn FnMut(&[i16]) + Send>;
 /// An open microphone. Dropping it stops the capture.
 pub trait MicStream: Send {}
 
+/// Runs once, on a thread of its own, when an open microphone stops for good.
+pub type MicLost = Box<dyn FnOnce() + Send>;
+
+/// Which dictation opens the microphone, for the one line its capture logs about what it opened:
+/// the dictation's id, and whether this is its first open or a reopen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MicOpen {
+    pub dictation: u64,
+    /// `0` for the dictation's first open, then the reopen's number: `1` for the first reopen.
+    pub reopen: u32,
+}
+
+impl MicOpen {
+    /// The first open of dictation `dictation`.
+    pub fn first(dictation: u64) -> MicOpen {
+        MicOpen {
+            dictation,
+            reopen: 0,
+        }
+    }
+
+    /// The `reopen`th open of dictation `dictation` after the first.
+    pub fn reopen(dictation: u64, reopen: u32) -> MicOpen {
+        MicOpen { dictation, reopen }
+    }
+}
+
 pub trait Microphone: Send + Sync {
     /// Opens the default microphone; blocks until it is open or failed. The error is an English
     /// sentence for the notification.
     fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String>;
+    /// [`Microphone::open`], calling `on_lost` when the device goes away or changes under the
+    /// stream, which then delivers nothing more. `about` says which dictation this is for, so
+    /// the capture can log what it opened under that dictation's id. The default never calls
+    /// `on_lost` and logs nothing.
+    fn open_watched(
+        &self,
+        on_audio: AudioSink,
+        on_lost: MicLost,
+        about: MicOpen,
+    ) -> Result<Box<dyn MicStream>, String> {
+        let _ = (on_lost, about);
+        self.open(on_audio)
+    }
 }
 
 /// Speech and rewrite providers, and the local model.
@@ -121,7 +170,7 @@ pub trait Speech: Send + Sync {
 }
 
 pub trait Chime: Send + Sync {
-    /// The ready chime: Windows' "Asterisk" sound, asynchronous.
+    /// The ready chime: Windows' "Asterisk" sound, or macOS' alert sound, asynchronous.
     fn play(&self);
 }
 
@@ -144,11 +193,36 @@ pub trait System: Send + Sync {
     fn free_bytes(&self, path: &Path) -> Option<u64>;
 }
 
+/// The safety limits on a held dictation.
+#[derive(Clone, Copy, Debug)]
+pub struct DictationTiming {
+    /// How often the watchdog reads a recording's key. Two reads in a row that find it up stop
+    /// the recording, whatever happened to the key-up.
+    pub watchdog: Duration,
+    /// The longest a recording runs before it stops as if the key came up.
+    pub longest: Duration,
+}
+
+impl Default for DictationTiming {
+    fn default() -> DictationTiming {
+        DictationTiming {
+            watchdog: Duration::from_secs(1),
+            // 19 MB of 16 kHz WAV, under the 25 MB a cloud provider such as OpenAI takes.
+            longest: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
 /// Everything [`crate::start_with`] runs on.
 pub struct Services {
     /// `None` reads the real keyboard through voice-input's poller; tests inject the key state.
     pub key_state: Option<KeyState>,
     pub hotkey_interval: Duration,
+    pub dictation_timing: DictationTiming,
+    /// The app passes the Mac's session state in; Windows has no such check yet, so the
+    /// default is always at the console.
+    pub at_console: AtConsole,
+    pub key_activity: KeyActivity,
     pub input: Arc<dyn TextInput>,
     pub microphone: Arc<dyn Microphone>,
     pub speech: Arc<dyn Speech>,
@@ -156,6 +230,8 @@ pub struct Services {
     pub autostart: Arc<dyn Autostart>,
     pub updates: Arc<dyn Updates>,
     pub system: Arc<dyn System>,
+    /// The macOS privacy permissions Settings shows; no permissions on Windows and Linux.
+    pub permissions: Arc<dyn Permissions>,
     /// Ownkey's settings, read only by the import.
     pub ownkey_config: Option<PathBuf>,
     /// Ownkey's model folder, read only.
@@ -171,7 +247,8 @@ pub struct Services {
     pub screen_files: Arc<dyn ScreenFiles>,
     /// The same, for media links: frames and video clips.
     pub screen_media: Arc<dyn ScreenMedia>,
-    /// Keeps the bucket secret and the encryption key readable only by this Windows user.
+    /// Keeps the bucket secret and the encryption key readable only by this user: DPAPI on
+    /// Windows, the login keychain on macOS.
     pub protector: Arc<dyn Protector>,
     /// Bucket sync's clocks and sizes; tests shorten them.
     pub sync_timing: SyncTiming,
@@ -196,6 +273,9 @@ impl Services {
         Services {
             key_state: None,
             hotkey_interval: voice_input::POLL_INTERVAL,
+            dictation_timing: DictationTiming::default(),
+            at_console: Arc::new(|| true),
+            key_activity: Arc::new(voice_input::since_key_down),
             input: Arc::new(SystemInput),
             microphone: Arc::new(crate::dictation::capture::DefaultMicrophone),
             speech: Arc::new(SystemSpeech {
@@ -203,9 +283,10 @@ impl Services {
                 speakers: SpeakerLabels::new(speakers),
             }),
             chime: Arc::new(crate::platform::SystemChime),
-            autostart: Arc::new(crate::autostart::RunValue::for_current_exe()),
+            autostart: crate::autostart::system(),
             updates: Arc::new(GitHubUpdates),
             system: Arc::new(crate::platform::SystemInfo),
+            permissions: Arc::new(crate::permissions::SystemPermissions),
             ownkey_config: voice_core::paths::ownkey_config(),
             ownkey_models,
             recorder_exe: options.exe_dir.join(RECORDER_EXE),
@@ -216,7 +297,7 @@ impl Services {
             // The screen folder for both, sharing one frame index cache.
             screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
             screen_media: screen,
-            protector: voice_sync::protect::system(),
+            protector: voice_sync::protect::system(&options.data_dir),
             sync_timing: SyncTiming::default(),
         }
     }

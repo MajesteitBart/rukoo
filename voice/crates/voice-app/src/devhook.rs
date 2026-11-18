@@ -3,13 +3,13 @@
 //! name first, then renames it), Voice removes it, does what it asks and answers in
 //! `<folder>/reply-<id>.json` the same way. `voice/scripts/live-meeting.mjs` uses it.
 //!
-//! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window and the whole Settings
-//! state), `start_meeting` and `stop_meeting` (what the tray's items call), `pill_screen_click` (what
-//! a click on the pill's screen button does: opens its menu), `pill_screen_set` with meeting, mode
-//! and optional monitor (the selected menu action), and
+//! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window, on macOS its native
+//! recipe and its panels', whether Settings' window is open and the whole Settings state), `start_meeting` and `stop_meeting` (what the tray's
+//! items call), `pill_screen_click` (what a click on the pill's screen button does: opens its menu),
+//! `pill_screen_set` with meeting, mode and optional monitor (the selected menu action), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
-//! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from
-//! WebView2. Nothing here sends input or reads the screen.
+//! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from the
+//! web view. Nothing here sends input or reads the screen.
 //!
 //! Settings and bucket sync, as the page would change them: `{"cmd": "settings", "key":
 //! "storage.sync.bucket", "value": "test"}` calls `settings_set`, and `{"cmd": "sync", "action":
@@ -80,8 +80,13 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
                 "pid": std::process::id(),
                 "pill": engine.pill_snapshot(),
                 "pillWindow": shared.pill.status(),
+                // macOS: the pill's and its panels' window recipe (level, Spaces behaviour, sharing
+                // type), so a script can check it reached AppKit. Null elsewhere.
+                "pillNative": pill_native(app, &shared),
+                // Whether Settings is open, which a second launch has to ask for.
+                "settingsWindow": app.get_webview_window(settings_window::LABEL).is_some(),
                 "tray": { "meeting": tray.meeting, "meetingAtMs": tray.meeting_at_ms },
-                "settings": engine.settings_state(),
+                "settings": engine.settings_state_quiet(),
             }))
         }
         "start_meeting" => engine
@@ -128,6 +133,29 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
     }
 }
 
+/// `Pill::native_status`, read on the event loop thread that owns the windows.
+#[cfg(target_os = "macos")]
+fn pill_native(app: &AppHandle, shared: &Shared) -> Value {
+    let pill = shared.pill.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if app
+        .run_on_main_thread(move || {
+            let _ = tx.send(pill.native_status());
+        })
+        .is_err()
+    {
+        return Value::Null;
+    }
+    rx.recv_timeout(Duration::from_secs(5))
+        .unwrap_or_else(|_| json!({ "error": "the event loop didn't answer" }))
+}
+
+/// Only macOS has a native recipe to report; elsewhere `status` doesn't wait on the event loop.
+#[cfg(not(target_os = "macos"))]
+fn pill_native(_app: &AppHandle, _shared: &Shared) -> Value {
+    Value::Null
+}
+
 /// The bucket sync commands of Settings > Storage.
 fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, String> {
     let text = |name: &str| request[name].as_str().map(str::to_string);
@@ -139,9 +167,10 @@ fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, 
         "test" => engine.settings_sync_test(),
         "key" => engine.settings_sync_key("show", None),
         "import" => engine.settings_sync_key("import", text("code")),
+        "retry" => engine.settings_sync_key("retry", None),
         "restore_list" => engine.settings_sync_restore("list"),
         "restore_start" => engine.settings_sync_restore("start"),
-        "status" => Ok(engine.settings_state()["sync"].clone()),
+        "status" => Ok(engine.settings_state_quiet()["sync"].clone()),
         other => return Err(format!("unknown sync action {other:?}")),
     };
     result.map_err(|e| e.to_string())
@@ -190,7 +219,7 @@ fn capture(
     }))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn png(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     let Some(window) = window else {
         return json!({ "file": path.display().to_string(), "error": "no window" });
@@ -201,7 +230,7 @@ fn png(window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn png(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
     json!({ "file": path.display().to_string(), "error": "captures need WebView2" })
 }

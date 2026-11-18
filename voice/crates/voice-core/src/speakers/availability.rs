@@ -18,19 +18,23 @@ use crate::local::Job;
 use crate::local::{Located, ModelRegistry, ModelSpec};
 use crate::paths;
 
-/// The runtime is built for Windows on x86-64 only.
-const PLATFORM_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64"));
+/// The runtime is built for Windows on x86-64 and, with its own build, for macOS on Apple Silicon.
+const PLATFORM_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64"))
+    || cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 /// Why speaker labels can't run. Serialized with the Settings reason code in `code`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "code", rename_all = "camelCase")]
 pub enum Unavailable {
-    /// Not Windows on x86-64.
+    /// Not Windows on x86-64 or macOS on Apple Silicon.
     Platform,
     /// The processor lacks features the runtime needs.
     Cpu { missing: Vec<String> },
     /// No runtime folder verifies, or the worker program is missing.
     Runtime,
+    /// This platform's runtime isn't in the manifest at all, so there is no folder to look for and
+    /// no installation to repair: macOS until its runtime is published.
+    NotPublished,
     /// A worker refused to load the runtime or the model, or crashed while loading, since Voice
     /// started.
     RuntimeFailed { detail: String },
@@ -47,6 +51,7 @@ impl Unavailable {
             Unavailable::Platform => "platform",
             Unavailable::Cpu { .. } => "cpu",
             Unavailable::Runtime => "runtime",
+            Unavailable::NotPublished => "notPublished",
             Unavailable::RuntimeFailed { .. } => "runtimeFailed",
             Unavailable::Model => "model",
             Unavailable::ModelDamaged { .. } => "modelDamaged",
@@ -58,13 +63,18 @@ impl fmt::Display for Unavailable {
     /// English, for logs. Settings shows its own text for each code.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Unavailable::Platform => f.write_str("Speaker labels work on Windows only."),
+            Unavailable::Platform => f.write_str(
+                "Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.",
+            ),
             Unavailable::Cpu { missing } => write!(
                 f,
                 "This processor lacks {}, which speaker labels need.",
                 missing.join(", ")
             ),
             Unavailable::Runtime => f.write_str("The speaker label runtime is missing."),
+            Unavailable::NotPublished => f.write_str(
+                "Speaker labels aren't available on this platform yet: its NeMo runtime isn't published.",
+            ),
             Unavailable::RuntimeFailed { detail } | Unavailable::ModelDamaged { detail } => {
                 f.write_str(detail)
             }
@@ -230,7 +240,7 @@ impl SpeakerLabels {
         if let Some(detail) = self.memory().runtime_failed.clone() {
             return Err(Unavailable::RuntimeFailed { detail });
         }
-        let runtime = find_runtime(&opts).ok_or(Unavailable::Runtime)?;
+        let runtime = find_runtime(&opts)?;
         let model = opts
             .registry
             .locate(&opts.model)
@@ -339,17 +349,26 @@ impl SpeakerLabels {
 }
 
 /// The runtime folder, and only when the worker program exists too.
-fn find_runtime(opts: &SpeakerOptions) -> Option<RuntimeInfo> {
-    if !opts.worker().is_some_and(|exe| exe.is_file()) {
-        return None;
+fn find_runtime(opts: &SpeakerOptions) -> Result<RuntimeInfo, Unavailable> {
+    locate(opts, runtime::manifest())
+}
+
+/// [`find_runtime`] with the manifest explicit. A platform whose entry pins no files has nothing to
+/// install: its runtime isn't published yet, which is macOS today, and saying "reinstall" would
+/// send the user after a file that doesn't exist.
+fn locate(opts: &SpeakerOptions, manifest: &runtime::Manifest) -> Result<RuntimeInfo, Unavailable> {
+    if opts.worker().is_some_and(|exe| exe.is_file()) {
+        let dev = opts.nemo_dir.as_deref().filter(|_| opts.dev_mode);
+        if let Some(runtime) =
+            runtime::locate_in(&opts.exe_dir, dev, opts.ownkey_runtime.as_deref(), manifest)
+        {
+            return Ok(runtime);
+        }
     }
-    let dev = opts.nemo_dir.as_deref().filter(|_| opts.dev_mode);
-    runtime::locate_in(
-        &opts.exe_dir,
-        dev,
-        opts.ownkey_runtime.as_deref(),
-        runtime::manifest(),
-    )
+    if manifest.files().is_empty() {
+        return Err(Unavailable::NotPublished);
+    }
+    Err(Unavailable::Runtime)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -363,7 +382,7 @@ mod tests {
 
     use super::*;
     use crate::local::{Location, ModelFile};
-    use crate::speakers::runtime::{RuntimeLocation, RUNTIME_DLLS};
+    use crate::speakers::runtime::{Manifest, RuntimeLocation, RUNTIME_DLLS};
     use crate::speakers::tests::TempDir;
 
     const MODEL_BYTES: &[u8] = b"a tiny stand-in for the speaker model";
@@ -372,6 +391,9 @@ mod tests {
         fma: true,
         f16c: true,
         bmi2: true,
+        neon: true,
+        dotprod: true,
+        fp16: true,
     };
 
     fn spec() -> ModelSpec {
@@ -426,6 +448,16 @@ mod tests {
         SpeakerLabels::with_platform(opts, true)
     }
 
+    /// What a platform with nothing to find reports: a build whose manifest pins no files for its
+    /// target has no runtime to install, which is macOS until the runtime is published.
+    fn no_runtime_here() -> Unavailable {
+        if runtime::manifest().files().is_empty() {
+            Unavailable::NotPublished
+        } else {
+            Unavailable::Runtime
+        }
+    }
+
     #[test]
     fn codes_match_the_serialized_reason() {
         let cases = [
@@ -434,6 +466,7 @@ mod tests {
                 missing: vec!["avx2".into()],
             },
             Unavailable::Runtime,
+            Unavailable::NotPublished,
             Unavailable::RuntimeFailed { detail: "x".into() },
             Unavailable::Model,
             Unavailable::ModelDamaged { detail: "y".into() },
@@ -473,15 +506,15 @@ mod tests {
     fn missing_cpu_features_give_cpu() {
         let temp = TempDir::new("avail-cpu");
         let mut opts = ready(&temp);
-        opts.cpu = CpuFeatures {
-            bmi2: false,
-            f16c: false,
-            ..ALL
+        opts.cpu = CpuFeatures::default();
+        let expected = Unavailable::Cpu {
+            missing: CpuFeatures::default()
+                .missing()
+                .into_iter()
+                .map(String::from)
+                .collect(),
         };
         let labels = labels(opts);
-        let expected = Unavailable::Cpu {
-            missing: vec!["f16c".into(), "bmi2".into()],
-        };
         assert_eq!(labels.availability(), Err(expected.clone()));
         assert_eq!(labels.diarizer().err(), Some(expected));
     }
@@ -546,11 +579,11 @@ mod tests {
 
         let mut no_runtime = opts.clone();
         no_runtime.nemo_dir = Some(temp.join("nowhere"));
-        assert_eq!(labels(no_runtime).availability(), Err(Unavailable::Runtime));
+        assert_eq!(labels(no_runtime).availability(), Err(no_runtime_here()));
 
         let mut no_worker = opts.clone();
         no_worker.worker_exe = Some(temp.join("missing.exe"));
-        assert_eq!(labels(no_worker).availability(), Err(Unavailable::Runtime));
+        assert_eq!(labels(no_worker).availability(), Err(no_runtime_here()));
 
         let mut no_model = opts.clone();
         no_model.registry = ModelRegistry::new(temp.join("other-data")).with_ownkey_models(None);
@@ -568,7 +601,43 @@ mod tests {
         let mut opts = ready(&temp);
         opts.dev_mode = false;
         // Only the development folder holds a runtime, and it's ignored now.
-        assert_eq!(labels(opts).availability(), Err(Unavailable::Runtime));
+        assert_eq!(labels(opts).availability(), Err(no_runtime_here()));
+    }
+
+    /// A platform whose manifest entry pins no files has no runtime to install: macOS, until its
+    /// runtime is published. Settings then says so instead of asking for a reinstall.
+    #[test]
+    fn an_unpublished_runtime_is_not_a_broken_installation() {
+        let temp = TempDir::new("avail-unpublished");
+        let mut opts = ready(&temp);
+        // Nothing in place: no development folder, an empty exe folder.
+        opts.nemo_dir = None;
+        let unpublished = Manifest {
+            format: 2,
+            ..Manifest::default()
+        };
+        assert!(unpublished.files().is_empty());
+        assert_eq!(locate(&opts, &unpublished), Err(Unavailable::NotPublished));
+        // Once a target pins its files, a folder that doesn't hold them is a broken install again.
+        let published = Manifest {
+            format: 2,
+            commit: "97a15afa5caa9bce5baaa86c1184103877af4101".into(),
+            targets: [(
+                runtime::TARGET.to_string(),
+                runtime::Target {
+                    files: Some(vec![runtime::ManifestFile {
+                        path: "runtime.json".into(),
+                        size: 1,
+                        sha256: "0".repeat(64),
+                    }]),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Manifest::default()
+        };
+        assert_eq!(published.files().len(), 1);
+        assert_eq!(locate(&opts, &published), Err(Unavailable::Runtime));
     }
 
     #[test]
@@ -585,7 +654,11 @@ mod tests {
         assert_eq!(
             forced("cpu", true),
             Err(Unavailable::Cpu {
-                missing: vec!["avx2".into(), "fma".into(), "f16c".into(), "bmi2".into()]
+                missing: CpuFeatures::default()
+                    .missing()
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
             })
         );
         assert_eq!(forced("runtime", true), Err(Unavailable::Runtime));

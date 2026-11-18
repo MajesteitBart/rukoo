@@ -9,6 +9,7 @@ mod dictation;
 mod engine;
 pub mod media;
 pub mod meetings;
+pub mod permissions;
 mod pill;
 mod platform;
 pub mod services;
@@ -29,6 +30,7 @@ pub use api::{
     Notice, Notification, PillPhase, PillRepair, PillSnapshot, StopReason, Theme, TrayState,
     UiOptions, UiSink,
 };
+pub use platform::SystemInfo;
 pub use services::Services;
 
 use crate::dictation::Dictation;
@@ -42,6 +44,7 @@ use crate::settings::SettingsRuntime;
 /// Notification titles the engine uses besides dictation's (voice/ui/i18n `app.notify.*`).
 pub const NOTIFY_SETTINGS: &str = "app.notify.settings";
 pub const NOTIFY_WELCOME: &str = "app.notify.welcome";
+pub use engine::{NOTIFY_CALL_SILENT, NOTIFY_SCREEN_PERMISSION};
 pub use sync::NOTIFY_SYNC;
 
 /// Every notification title the engine sends; voice-app checks that both catalogs have them.
@@ -308,7 +311,7 @@ pub fn start_with(
         .name("update-check".into())
         .spawn(move || settings::schedule_updates(weak));
     if first_run {
-        let status = settings::state(&core)["dictation"]["status"].clone();
+        let status = settings::state(&core, false)["dictation"]["status"].clone();
         if status == "modelMissing" || status == "noKey" {
             notices.push((
                 NOTIFY_WELCOME,

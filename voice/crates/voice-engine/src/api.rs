@@ -16,7 +16,7 @@ use serde_json::Value;
 pub struct EngineOptions {
     /// Voice's data folder: `RUKOO_VOICE_DATA_DIR`, or the platform default.
     pub data_dir: PathBuf,
-    /// `RUKOO_VOICE_DATA_DIR` is set: F13/F14, no automatic Ownkey import, no autostart.
+    /// `RUKOO_VOICE_DATA_DIR` is set: F13/F14 on Windows and Linux, no automatic Ownkey import, no autostart.
     pub dev_mode: bool,
     /// The folder holding `rukoo-voice-recorder`, `rukoo-voice-screen` and `rukoo-voice-local`.
     pub exe_dir: PathBuf,
@@ -28,6 +28,10 @@ pub struct EngineOptions {
     /// Development only: `RUKOO_VOICE_TEST_MONITOR`, the monitor every screen process records,
     /// e.g. `\\.\DISPLAY2`.
     pub test_monitor: Option<String>,
+    /// Development only, and never in a release build: `RUKOO_VOICE_DUMP_EMPTY_DICTATION=1`
+    /// keeps the audio of a dictation that inserted nothing under `dictation-dumps` in the data
+    /// folder, because that file holds what the person said (see `dictation::dump`).
+    pub dump_empty_dictation: bool,
     /// `--import-ownkey <copy>`: the only way a development copy imports Ownkey's settings.
     pub import_ownkey_from: Option<PathBuf>,
     /// Voice's version, `CARGO_PKG_VERSION` of the app.
@@ -50,6 +54,9 @@ pub trait UiSink: Send + Sync + 'static {
     fn ui_changed(&self);
     /// Show the pill's native screen mode and monitor menu for this live meeting.
     fn screen_menu(&self, _info: Value) {}
+    /// A meeting with the screen on started without macOS' Screen Recording grant. The app asks
+    /// macOS for it once, which puts Voice in System Settings' list; the screen helper never asks.
+    fn screen_permission_needed(&self) {}
     /// The pill didn't ack snapshot `seq` after a show or a phase change: 500 ms after it the
     /// app nudges the window (resize by a pixel and raise it), after 2 s it builds a new window
     /// and replays [`EngineApi::pill_snapshot`] (pill-settings-design.md 3.2, step 5).
@@ -155,6 +162,9 @@ pub enum Locale {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiOptions {
     pub theme: Theme,
+    /// The Theme setting is System: `theme` is what the system shows now, and the windows follow
+    /// the system's changes instead of being given a fixed appearance.
+    pub theme_follows_system: bool,
     pub locale: Locale,
     pub pill_edge: Edge,
     pub hide_pill_from_capture: bool,
@@ -176,8 +186,12 @@ pub struct TrayState {
 pub struct Notification {
     /// Catalog key of the title, e.g. `app.notify.dictationFailed`.
     pub title_key: String,
-    /// The body, already in the user's language or an English provider message.
+    /// The body, already in the user's language or an English provider message. With a
+    /// `body_key` it is the English fallback.
     pub body: String,
+    /// Catalog key of a body with English and Dutch text, which the app shows in the user's
+    /// language instead of `body`.
+    pub body_key: Option<String>,
 }
 
 /// Rejection of a command, `{ code, message }` in API.md.
@@ -238,7 +252,17 @@ pub trait EngineApi: Send + Sync + 'static {
     ) -> Result<(), ApiError>;
 
     // Settings (API.md "Settings"). Values are the JSON shapes API.md defines.
+    /// The whole state, reading the privacy permissions because the page is asking.
     fn settings_state(&self) -> Value;
+    /// The same state without reading the privacy permissions, for callers that aren't the page,
+    /// such as the development hooks. Asking while Settings is closed must not make macOS list
+    /// Voice in System Settings.
+    #[doc(hidden)]
+    fn settings_state_quiet(&self) -> Value;
+    /// The Settings window was built or shown: pushed states now read the privacy permissions.
+    fn settings_opened(&self);
+    /// The Settings window is gone: pushed states leave the privacy permissions out.
+    fn settings_closed(&self);
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError>;
     fn settings_save_provider(&self, save: Value) -> Result<(), ApiError>;
     fn settings_remove_key(&self, target: &str) -> Result<(), ApiError>;
@@ -275,6 +299,17 @@ pub trait EngineApi: Send + Sync + 'static {
 
     // The shell.
     fn ui(&self) -> UiOptions;
+    /// A hotkey's key-up may never arrive: the Mac's session resigned (a fast
+    /// user switch), the screen locked, or the Mac or its screens slept. Ends a
+    /// running dictation as if the key came up, so recording never stays on.
+    /// Returns once the release was handled, or after two seconds when a press
+    /// is still opening the microphone. Other platforms have no such observer
+    /// yet, so the default does nothing.
+    fn release_hotkeys(&self) {}
+    /// The system's theme or language changed. A setting that follows the system shows the new one
+    /// in the pill and Settings, and the app re-reads [`EngineApi::ui`] when something changed. Safe
+    /// to call when nothing did.
+    fn system_looks_changed(&self);
     fn tray_state(&self) -> TrayState;
     /// Stops dictation, transcription and the bridge, and waits for the clipboard to come back.
     /// Never stops a recorder that is recording: the meeting goes on and the next start reattaches.
@@ -285,6 +320,11 @@ pub trait EngineApi: Send + Sync + 'static {
     fn meeting_control(&self) -> Option<Arc<dyn voice_bridge::MeetingControl>> {
         None
     }
+
+    /// For tests: a change the screen supervisor reported, delivered as the app's own wiring
+    /// delivers it. Nothing in the tests can make macOS stop a real capture.
+    #[doc(hidden)]
+    fn on_screen(&self, _change: crate::meetings::screen::ScreenChange) {}
 }
 
 /// Shared handle the app keeps.

@@ -9270,7 +9270,8 @@ body.meeting-mode .titlebar-search {
 .mt-line::after {
   content: '';
   flex: 1;
-  min-width: 16px;
+  /* No minimum: beside a mark that wraps, a 16px stub would hang mid-sentence. */
+  min-width: 0;
   height: 1px;
   background: var(--border);
 }
@@ -9286,7 +9287,8 @@ body.meeting-mode .titlebar-search {
 .mt-mark.is-gap .mt-line svg,
 .mt-mark.is-dropped .mt-line svg,
 .mt-mark.is-video_dropped .mt-line svg,
-.mt-mark.is-screen_gap .mt-line svg {
+.mt-mark.is-screen_gap .mt-line svg,
+.mt-mark.is-silent .mt-line svg {
   color: var(--warn);
 }
 
