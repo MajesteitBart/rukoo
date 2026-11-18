@@ -44,6 +44,9 @@ pub struct MacVideoWriter {
     last_picture: Option<PixelBuffer>,
     /// The newest frame held back, newer than `last_boot`, and its capture time.
     held: Option<(PixelBuffer, u64)>,
+    /// The last presentation time handed to the encoder, in meeting ms, the priming frame's 0
+    /// included. VideoToolbox needs them strictly increasing.
+    last_pts: Option<u64>,
     /// The file's first sample, which must be a keyframe.
     first: bool,
     options: WriterOptions,
@@ -139,6 +142,8 @@ impl MacVideoWriter {
             last_boot: None,
             last_picture: None,
             held: None,
+            // The priming frame went in at 0.
+            last_pts: Some(0),
             first: true,
             options,
             encoder_name,
@@ -158,12 +163,18 @@ impl MacVideoWriter {
             // The next write of the file fails, as on a real full disk.
             return Err(VideoError::Disk("write-fail test switch".into()));
         }
+        // A frame that arrives late after a re-submit, or a file's first frame at meeting time 0
+        // after the priming frame, would go in at or before the time before it. It goes in a
+        // millisecond after that instead, before the encoder sees it, as the Windows writer
+        // keeps its samples a unit apart.
+        let at = next_pts(at, self.last_pts);
         let input = self.encoder_input(picture)?;
         let mp4 = self
             .mp4
             .as_mut()
             .ok_or_else(|| VideoError::Encoder("the file is closed".into()))?;
         let sync = self.first || mp4.needs_keyframe(at);
+        self.last_pts = Some(at);
         let samples = self
             .encoder
             .encode(&input, at, sync)
@@ -252,6 +263,15 @@ impl MacVideoWriter {
         let scaled = crate::frames::upscale::scale_to(&pixels, self.width, self.height);
         PixelBuffer::from_pixels(&scaled)
             .ok_or_else(|| VideoError::Encoder("can't make the encoder's frame".into()))
+    }
+}
+
+/// The presentation time for a frame at `at`: `at`, or a millisecond after `last` when `at` isn't
+/// later than it.
+fn next_pts(at: u64, last: Option<u64>) -> u64 {
+    match last {
+        Some(last) if at <= last => last + 1,
+        _ => at,
     }
 }
 
@@ -586,6 +606,68 @@ mod tests {
 
         // A full disk leaves a file that reads to its last complete fragment.
         let index = mp4::index_path(&dir.join("disk.mp4")).unwrap();
+        assert_eq!(index.complete_len, index.file_len);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn presentation_times_only_go_forward() {
+        assert_eq!(next_pts(0, None), 0);
+        assert_eq!(next_pts(40, Some(0)), 40);
+        // The first frame of a file at meeting time 0, after the priming frame at 0.
+        assert_eq!(next_pts(0, Some(0)), 1);
+        // A frame captured before the re-submit that went in ahead of it.
+        assert_eq!(next_pts(1_200, Some(1_250)), 1_251);
+    }
+
+    /// A file that starts at meeting time 0: its first frame comes right after the priming frame
+    /// at the same time, and still becomes the file's first sample.
+    #[test]
+    fn a_file_that_starts_at_zero_keeps_its_first_frame() {
+        let dir = temp_dir("zero");
+        let path = dir.join("000001.mp4");
+        let options = WriterOptions {
+            allow_software: true,
+            start_t: 0,
+            ..Default::default()
+        };
+        let mut writer = MacVideoWriter::create(&path, 320, 180, options).unwrap();
+        let picture = PixelBuffer::new(320, 180).unwrap();
+        picture.fill([0x30, 0x60, 0x90, 0xff]);
+        let mut boot = 7_000_000_000u64;
+        for _ in 0..30 {
+            writer.write(&picture, boot).unwrap();
+            boot += 666_667;
+        }
+        writer.finish().unwrap();
+        let index = mp4::index_path(&path).unwrap();
+        let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+        assert_eq!(samples, 30, "every frame is a sample, the first one too");
+        assert!(index.fragments[0].first_sync);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tick re-submits the last frame at the current time, and then a frame captured before
+    /// that arrives: it goes in after the re-submit, and the file's times keep going forward.
+    #[test]
+    fn a_frame_that_arrives_after_a_resubmit_goes_in_after_it() {
+        let dir = temp_dir("late");
+        let path = dir.join("000001.mp4");
+        let mut writer = MacVideoWriter::create(&path, 320, 180, software()).unwrap();
+        let picture = PixelBuffer::new(320, 180).unwrap();
+        picture.fill([0x30, 0x60, 0x90, 0xff]);
+        let start = 7_000_000_000u64;
+        writer.write(&picture, start).unwrap();
+        // 300 ms without a frame: the tick writes the last one again.
+        writer.tick(start + 3_000_000).unwrap();
+        // A frame captured at 200 ms, delivered after that re-submit.
+        picture.fill([0xa0, 0x40, 0x10, 0xff]);
+        writer.write(&picture, start + 2_000_000).unwrap();
+        writer.write(&picture, start + 4_000_000).unwrap();
+        writer.finish().unwrap();
+        let index = mp4::index_path(&path).unwrap();
+        let samples: u32 = index.fragments.iter().map(|f| f.samples).sum();
+        assert_eq!(samples, 4, "{index:?}");
         assert_eq!(index.complete_len, index.file_len);
         let _ = std::fs::remove_dir_all(&dir);
     }
