@@ -5,8 +5,8 @@ name: Release Rukoo Voice for macOS
 # makes the draft; this one only adds the Mac files, so the two never race for it and a Mac failure leaves the
 # Windows release as it was. Wait for these files before publishing the draft.
 #
-# It starts when a "Release Rukoo Voice" run succeeds, or by hand with an existing tag. A run started by a tag push
-# names the tag as its head branch; a dispatched Windows run names it in its artifact, rukoo-voice-<tag>. Without a
+# It starts when a "Release Rukoo Voice" run succeeds, or by hand with an existing tag. The Windows run, pushed or
+# dispatched, names the tag in its artifact, rukoo-voice-<tag>. Without a
 # voice-v tag it stops. workflow_run only fires for workflows on the default branch, so try it on a fork's main with a
 # manual dispatch first.
 #
@@ -61,18 +61,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           DISPATCHED_TAG: ${{ inputs.tag }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          RUN_HEAD: ${{ github.event.workflow_run.head_branch }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
           tag=""
           if [[ -n "$DISPATCHED_TAG" ]]; then
             tag="$DISPATCHED_TAG"
-          elif [[ "$RUN_EVENT" == "push" ]]; then
-            tag="$RUN_HEAD"
           elif [[ -n "$RUN_ID" ]]; then
-            # A dispatched Windows run: its artifact is rukoo-voice-<tag>.
+            # The Windows run, pushed or dispatched, named its artifact rukoo-voice-<tag>.
             tag=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name' | sed -n 's/^rukoo-voice-\(voice-v.*\)$/\1/p' | head -n 1)
           fi
           if [[ ! "$tag" =~ ^voice-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
