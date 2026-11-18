@@ -492,11 +492,11 @@
     "description": "Settings > Dictation: description of Dictation key. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.paste": {
-    "message": "Paste instead of type",
+    "message": "Paste mode",
     "description": "Settings > Dictation: switch for inserting text through the clipboard instead of typing it key by key. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.pasteHelp": {
-    "message": "Voice pastes the text through the clipboard and puts your clipboard back afterwards. Faster, and more reliable in most apps. When off, Voice types the text key by key.",
+    "message": "Inserts text through the clipboard and puts your clipboard back afterwards. Faster, and more reliable in most apps.",
     "description": "Settings > Dictation: description of Paste mode. voice/ui/settings.js (mainPage)."
   },
   "settings.dictation.chime": {
@@ -548,7 +548,7 @@
     "description": "Settings > Dictation: value of the Rewriting row when auto-rewrite and the rewrite key are both on. voice/ui/settings.js (rewritingValue)."
   },
   "settings.pill.edge": {
-    "message": "Recording indicator position",
+    "message": "Pill position",
     "description": "Settings > Dictation: row and choice dialog title for where the pill (the small status bar during dictation) appears. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.bottom": {
@@ -560,11 +560,11 @@
     "description": "Settings > Dictation > Pill position: choice. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.hide": {
-    "message": "Hide the recording indicator from screen sharing",
+    "message": "Hide the pill from screen sharing",
     "description": "Settings > Dictation: switch that keeps the pill out of screen shares and recordings. voice/ui/settings.js (mainPage)."
   },
   "settings.pill.hideHelp": {
-    "message": "Keeps the recording indicator, the small bar that shows while Voice listens or records, out of screen shares and screen recordings.",
+    "message": "Keeps the pill out of screen shares and screen recordings.",
     "description": "Settings > Dictation: description of Hide the pill from screen sharing. voice/ui/settings.js (mainPage)."
   },
   "settings.provider.custom": {
@@ -787,7 +787,7 @@
     "description": "Settings > Transcription: title of the row with the folder Voice downloads Orukeet to or reads it from. voice/ui/settings.js (modelCard)."
   },
   "settings.model.folderHelp": {
-    "message": "Where Voice stores the transcription models it downloads. You can also choose a folder that already contains the extracted model files.",
+    "message": "Download here, or choose a folder that already contains the extracted model files.",
     "description": "Settings > Transcription: description of Model folder. voice/ui/settings.js (modelCard)."
   },
   "settings.model.folderAuto": {
@@ -1209,8 +1209,8 @@
     "description": "Settings > Speaker labels: the status row with the switch off. voice/ui/settings.js (speakersPage, speakersReason)."
   },
   "settings.speakers.reason.platform": {
-    "message": "Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.",
-    "description": "Settings > Speaker labels and the Meetings row: why labels are off on this computer, such as Linux on a PC or an Intel Mac. voice/ui/settings.js (speakersReason)."
+    "message": "Speaker labels work on Windows only in this version.",
+    "description": "Settings > Speaker labels and the Meetings row: why labels are off on macOS or Linux. voice/ui/settings.js (speakersReason)."
   },
   "settings.speakers.reason.cpu": {
     "message": "This processor lacks {missing}, which speaker labels need. Meetings label the whole call as one speaker.",
@@ -1472,11 +1472,7 @@
   },
   "settings.sync.unlocking": {
     "message": "Waiting for the keychain. If macOS asks whether Voice may use it, choose Always Allow.",
-    "description": "Settings > Storage: status under the sync switch while Voice waits for macOS to open its encryption key, usually for the answer to the keychain dialog. 'Always Allow' is the button in macOS's dialog. This is the macOS text; other platforms show settings.sync.unlockingSystem. voice/ui/settings.js (syncStatus)."
-  },
-  "settings.sync.unlockingSystem": {
-    "message": "Waiting for this computer to unlock the encryption key.",
-    "description": "Settings > Storage: status under the sync switch while Voice waits for a system other than macOS to open its encryption key, which Windows does through DPAPI without asking. The macOS text is settings.sync.unlocking. voice/ui/settings.js (syncStatus)."
+    "description": "Settings > Storage: status under the sync switch while Voice waits for macOS to open its encryption key, usually for the answer to the keychain dialog. 'Always Allow' is the button in macOS's dialog. Only macOS reports this state. voice/ui/settings.js (syncStatus)."
   },
   "settings.sync.keyNotSaved": {
     "message": "You haven't saved it yet.",
@@ -1843,7 +1839,7 @@
   },
   "settings.keys.rightCommand": {
     "message": "Right Command",
-    "description": "Settings: key name on macOS, where Right Command is Voice's rewrite key by default. voice/ui/settings.js (KEY_NAMES)."
+    "description": "Settings: key name on macOS, where Right Command is Voice's rewrite key by default. voice/ui/settings.js (MAC_KEY_NAMES)."
   },
   "settings.keys.rightOption": {
     "message": "Right Option",

@@ -56,7 +56,9 @@ const SCREEN_NOTICES = {
 };
 const SCREENS = new Set(['off', 'frames', 'video']);
 
-const LABEL_MAX = 260;
+// The Mac's longer notices (Accessibility, Screen Recording) need 260 px; elsewhere a label stays at
+// 220 px, so the meeting buttons always fit in the window.
+const LABEL_MAX = /^Mac/.test(navigator.platform) ? 260 : 220;
 const EXIT_MS = 140;
 const LABEL_OUT_MS = 140;
 const POLL_MS = 1000;

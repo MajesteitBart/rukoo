@@ -298,7 +298,7 @@ check('Screen recording says what this computer can\'t record, and is off where 
 
 const SPEAKER_TEXT = {
   off: 'Off. Meetings label the whole call as one speaker.',
-  platform: 'Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.',
+  platform: 'Speaker labels work on Windows only in this version.',
   cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
   runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
   notPublished: "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
@@ -812,18 +812,6 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
     return page.locator('[data-section="sync"]').innerText();
   };
   assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
-  // Only a manifest still to go: nothing waits, so the chip isn't an orange "0 files waiting".
-  await statusOf('on');
-  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 0 })));
-  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('Everything is in the bucket'));
-  const uploading = page.locator('[data-section="sync"] .sync-status');
-  assert.doesNotMatch(await uploading.innerText(), /0 files waiting/);
-  assert.equal(await uploading.locator('.status[data-tone="busy"]').count(), 0, 'no warning tone');
-  assert.equal(await uploading.locator('.status[data-tone="ok"]').count(), 1, 'neutral and fine');
-  await statusOf('on');
-  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 2 })));
-  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('2 files waiting'));
-  assert.equal(await page.locator('[data-section="sync"] .status[data-tone="busy"]').count(), 1, 'a real queue is busy');
   assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
   const retrying = await statusOf('retrying');
   assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
@@ -846,21 +834,6 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
   await page.click('[data-a="sync-details:last"]');
   assert.match(await dialogText(page), /Uploads stopped\.[\s\S]*HTTP 500/);
   assert.doesNotMatch(await dialogText(page), /The test failed/);
-});
-
-check('the free space on the Storage page is read again when the window gets the focus', async ({ open, page }) => {
-  await open('settings.html?mock=1&lang=en&page=storage');
-  const usage = () => page.locator('[data-section="local"]').innerText();
-  assert.match(await usage(), /free on this drive/);
-  // The disk changed while Settings sat open, and the app sends no state for that.
-  await page.evaluate(() => window.__settingsMockEdit((s) => (s.storage.freeBytes = 12_340_000_000), { emit: false }));
-  assert.doesNotMatch(await usage(), /12 GB/, 'nothing is pushed');
-  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await page.waitForFunction(() => document.querySelector('[data-section="local"]').innerText.includes('12 GB'));
-  // The same reading shows on the top page's Storage row.
-  await page.click('[data-a="back"], .back');
-  await page.waitForSelector('[data-a="go:storage"]');
-  assert.match(await page.locator('[data-a="go:storage"]').innerText(), /12 GB free/);
 });
 
 check('Show key says what went wrong when the app can\'t give the key', async ({ open, page }) => {
@@ -1027,20 +1000,13 @@ check('a refused keychain offers Try again, waits for the keychain, then is up t
   }
 });
 
-check('waiting for the key names the keychain on a Mac and nothing of macOS elsewhere', async ({ open, page }) => {
+check('waiting for the key names the keychain on a Mac', async ({ open, page }) => {
+  // Only a Mac reports unlocking: it waits for its keychain dialog, so its text says so.
   const section = page.locator('[data-section="sync"]');
-  // A Mac waits for its keychain dialog, so its text says so.
   await open('settings.html?mock=1&lang=en&page=storage&platform=macos&sync=unlocking');
   assert.match(await section.innerText(), /Waiting for the keychain\. If macOS asks whether Voice may use it, choose Always Allow\./);
-  // Windows hands the key over through DPAPI without asking: the same state says nothing of a keychain.
-  await open('settings.html?mock=1&lang=en&page=storage&sync=unlocking');
-  const english = await section.innerText();
-  assert.match(english, /Waiting for this computer to unlock the encryption key\./);
-  assert.doesNotMatch(english, /macOS|keychain/i);
-  await open('settings.html?mock=1&lang=nl&page=storage&sync=unlocking');
-  const dutch = await section.innerText();
-  assert.match(dutch, /Wacht tot deze computer de encryptiesleutel ontgrendelt\./);
-  assert.doesNotMatch(dutch, /macOS|sleutelhanger/i);
+  await open('settings.html?mock=1&lang=nl&page=storage&platform=macos&sync=unlocking');
+  assert.match(await section.innerText(), /Wacht op de sleutelhanger\./);
 });
 
 check('the bucket retention saves from its segmented control', async ({ open, page, mockState }) => {

@@ -93,9 +93,6 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
-    // macOS permissions, from the preflight calls; other platforms have none (API.md).
-    permissions: null,
-    callSound: null,
     features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
@@ -491,7 +488,10 @@ export function createMock(params) {
       notAsked: { microphone: 'notAsked', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
       mixed: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'granted', screenRecording: 'notAsked' }
     };
+    // macOS permissions, from the preflight calls, and what the last call taught; other platforms
+    // have neither key (API.md).
     state.permissions = states[params.get('permissions')] || states.mixed;
+    state.callSound = null;
   }
   // state.features as the engine builds it: every part with later=1, else those listed; a scenario parameter of
   // a feature (screen's, &speakers=, &sync=) turns that feature on too.

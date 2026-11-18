@@ -19,15 +19,15 @@ const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 
 const MAC_HOTKEYS = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15'];
 const KEY_NAMES = {
   'right alt': 'settings.keys.rightAlt',
-  'right command': 'settings.keys.rightCommand',
   'right ctrl': 'settings.keys.rightCtrl',
   'right shift': 'settings.keys.rightShift',
   pause: 'settings.keys.pause',
   'scroll lock': 'settings.keys.scrollLock'
 };
-// macOS names, as System Settings and the keyboard print them.
+// macOS names, as System Settings and the keyboard print them, and the Mac's own key.
 const MAC_KEY_NAMES = {
   'right alt': 'settings.keys.rightOption',
+  'right command': 'settings.keys.rightCommand',
   'right ctrl': 'settings.keys.rightControl'
 };
 // The keys a choice can't share, with the hint that says who has it.
@@ -985,14 +985,7 @@ function syncStatus() {
         if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
         break;
       case 'uploading':
-        // A manifest or the index still to go while no file waits: the chip would say "0 files
-        // waiting" in a warning tone. An empty queue is the good news `idle` gives.
-        if (s.waiting > 0) {
-          parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
-        } else {
-          parts.push(status('ok', t('settings.sync.upToDate')));
-          if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
-        }
+        parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
         break;
       case 'live':
         parts.push(status('busy', t('settings.sync.live')), note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
@@ -1011,9 +1004,8 @@ function syncStatus() {
         break;
       }
       case 'unlocking':
-        // A Mac waits for the keychain dialog. Windows hands the key over through DPAPI and asks nothing, so its
-        // text names neither the keychain nor macOS.
-        parts.push(status('busy', t(macos() ? 'settings.sync.unlocking' : 'settings.sync.unlockingSystem')), waiting());
+        // Only a Mac reports this: it waits for the keychain dialog.
+        parts.push(status('busy', t('settings.sync.unlocking')), waiting());
         break;
       case 'key':
         // macOS refused the keychain item: the key is fine, so the way out is to allow Voice, not to enter the key.
@@ -2112,8 +2104,6 @@ function go(name, { anchor } = {}) {
   if (name !== current()) stack.push(name);
   dictionary.error = '';
   render({ full: true });
-  // Storage's free-space figure is a reading, not a setting: read it when the page opens.
-  if (name === 'storage') refreshStorage();
   page.classList.remove('entering');
   void page.offsetWidth;
   page.classList.add('entering');
@@ -2272,27 +2262,7 @@ async function refreshPermissions() {
     // Settings keeps what it showed; the next state or focus tries again.
   }
 }
-
-// The recordings drive's free space and the size the meetings use change while Settings is open,
-// and the app only sends a state when something of its own changes. Reading them again when the
-// window gets the focus or the Storage page opens keeps the figure from being the one the page was
-// built with, which is what makes it disagree with the disk.
-async function refreshStorage() {
-  if (!state) return;
-  try {
-    const next = await invoke('settings_state');
-    if (!next?.storage || !state || next.seq < state.seq) return;
-    if (JSON.stringify(next.storage) === JSON.stringify(state.storage)) return;
-    state.storage = next.storage;
-    if (current() === 'storage' || current() === 'main') render();
-  } catch {
-    // Settings keeps what it showed; the next state or focus tries again.
-  }
-}
-window.addEventListener('focus', () => {
-  refreshPermissions();
-  refreshStorage();
-});
+window.addEventListener('focus', refreshPermissions);
 
 async function start() {
   await connect('settings');

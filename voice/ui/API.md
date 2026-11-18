@@ -66,7 +66,7 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
 | `meeting.stopEnabled` | bool | Draw the stop button. `false` during a dictation in a meeting and in `processing` and `failed`. |
 | `meeting.rukooConnected` | bool | Not drawn in 0.1. |
 | `edge` | string | `bottom` or `top`: the direction of the entry animation. |
-| `theme` | string | `light` or `dark`, resolved from Settings. System follows Windows or macOS, and a state with the new theme arrives when the system changes while Voice runs. |
+| `theme` | string | `light` or `dark`, resolved from Settings. System follows Windows or macOS; on macOS a state with the new theme arrives when the system changes while Voice runs. |
 | `locale` | string | `en` or `nl`, resolved from Settings. |
 | `dev` | bool, optional | Shows a small "Dev" tag, so a development pill can't be mistaken for the installed one. Send `true` when `RUKOO_VOICE_DATA_DIR` is set. |
 
@@ -124,7 +124,7 @@ What the page shows:
 - `button` is `null` when no stop button is drawn: no meeting, `stopEnabled` false, the pill hidden or leaving. Hide the stop window then.
 - `screenButton` is `null` when no monitor button is drawn: `screenSwitch` false or missing, no meeting that records or is paused, the pill hidden or leaving. Hide the monitor window then. An app from before the monitor button ignores it.
 - `pill` is `null` while nothing is drawn.
-- `seq` is the snapshot the layout was measured for. A layout replaces the one the app holds unless it is older than that one; it is not compared with the newest snapshot, which the app can have and the page not yet: the page only sends a layout when the rectangles change, so a refused layout would leave the native windows where the pill no longer draws its buttons.
+- `seq` is the snapshot the layout was measured for. On Windows the app ignores a layout whose `seq` is older than the newest snapshot that has a stop button. On macOS a layout replaces the one the app holds unless it is older than that one; it is not compared with the newest snapshot, which the app can have and the page not yet: the page only sends a layout when the rectangles change, so a refused layout would leave the native panels where the pill no longer draws its buttons.
 - The page reports after every change: a new snapshot, the end of the entry animation, every frame of a width transition (the label sliding to 0 when the pill compacts, the button widening to "Stop?") and when Inter finishes loading. It never sends the same layout twice in a row.
 
 ### Strings the app reads from the catalogs
@@ -153,7 +153,7 @@ The page can open at a page or a group: `settings.html?page=<page>`, where `<pag
 
 ### Command `settings_state`
 
-`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it on load, and again when its window gains the focus or the Storage page opens, for the parts that change without the app: the macOS permissions and `storage`'s free space.
+`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it on load, and on macOS again when its window gains the focus, for the permissions, which change in System Settings without the app.
 
 ### Event `settings://state`
 
@@ -167,7 +167,6 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
-  "permissions": null,
   "features": { "screen": true, "speakers": true, "sync": true },
   "theme": "dark",
   "locale": "en",
@@ -222,8 +221,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `version` | Voice's version, shown under About. |
 | `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14, except on a Mac, where they start on Right Option and Right Command like an installed copy. |
 | `platform` | `windows`, `macos` or `linux`. |
-| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; System Audio Recording before a tap can be checked). `systemAudio` has no preflight call, so it shows what the last meeting's call track showed while Voice runs: `granted` once it recorded sound, else `unknown`: a call of only exact silence is a hint, not proof, so it doesn't make the row `denied`. `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
-| `callSound` | What the last meeting's call track showed while Voice runs: `heard` once it recorded sound, `silent` when it held only exact silence for a minute while another app had its audio output open (a hint: the permission may be off, or nobody talked), `null` before either. In every state, also one built while Settings is closed. On macOS the System Audio Recording row then says to check the switch. |
+| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; System Audio Recording before a tap can be checked). `systemAudio` has no preflight call, so it shows what the last meeting's call track showed while Voice runs: `granted` once it recorded sound, else `unknown`: a call of only exact silence is a hint, not proof, so it doesn't make the row `denied`. Only the macOS state has the key; Windows and Linux states leave it out, and Settings shows no permission rows there. `null` in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
+| `callSound` | macOS only, like `permissions`. What the last meeting's call track showed while Voice runs: `heard` once it recorded sound, `silent` when it held only exact silence for a minute while another app had its audio output open (a hint: the permission may be off, or nobody talked), `null` before either. In every macOS state, also one built while Settings is closed. The System Audio Recording row then says to check the switch. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
 | `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
@@ -237,19 +236,19 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. The free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows; Settings reads it again when the Storage page opens or the window gains the focus, because nothing of the app changes when another program fills the disk. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. On macOS the free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows. |
 | `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: the screen program is there and this computer can capture the screen: Windows 10 2004 or later on Windows, and always on macOS, where `permissions.screenRecording` says whether Voice has the permission; `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the languages the system's text recognition reads, Windows' OCR on Windows and Vision on macOS, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
 | `sync.available` | Bucket sync works here: Windows or macOS, with the sync store open. The Storage page shows the sync card only then. When the store didn't open (locked, damaged or from a newer Voice) and `storage.sync.enabled` is on, `state` is `paused`, `lastError` says why, and the page shows only the switch, with a line that nothing uploads and that retention keeps the audio while the switch is on, so the user can turn it off. |
-| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change, Test connection passes or 15 minutes pass; `key`, Voice can't open its encryption key or the bucket secret, and nothing uploads until the user acts: `lastError.code` `key` for a key that is missing, damaged or from another user (the way out is the recovery code), `key_denied` for one macOS's keychain refused (the user chose Deny, or macOS couldn't ask), whose way out is `settings_sync_key({ action: "retry" })` and Always Allow, or a restart; `unlocking`, Voice waits for the system to open the key or the secret, on macOS for the answer to the keychain dialog, and then goes on to another state; `paused`, the switch is on but a connection field or the secret changed since the last passed Test connection, so nothing uploads or comes back from the bucket until a test passes, and retention keeps holding what hasn't uploaded. |
+| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change, Test connection passes or 15 minutes pass; `key`, Voice can't open its encryption key or the bucket secret, and nothing uploads until the user acts: `lastError.code` `key` for a key that is missing, damaged or from another user (the way out is the recovery code), `key_denied` on macOS for one the keychain refused (the user chose Deny, or macOS couldn't ask), whose way out is `settings_sync_key({ action: "retry" })` and Always Allow, or a restart; `unlocking`, macOS only, Voice waits for the keychain to open the key or the secret, usually for the answer to the keychain dialog, and then goes on to another state; `paused`, the switch is on but a connection field or the secret changed since the last passed Test connection, so nothing uploads or comes back from the bucket until a test passes, and retention keeps holding what hasn't uploaded. |
 | `sync.waiting`, `waitingBytes`, `oldestWaiting` | Files waiting to upload, their size, and when the oldest was queued (epoch ms or `null`). |
 | `sync.lastUpload` | When the last file reached the bucket, or `null`. |
 | `sync.lastError` | `{ "at", "code", "message" }` of the last failure, `null` after a success. `code` is one of the Test connection codes; `message` is English, for Error details. |
 | `sync.failingSince` | When uploads started failing without a success since, or `null`. |
 | `sync.lost` | Files Voice removed from this computer before they reached the bucket, because the disk was almost full (under 10 GiB free). |
 | `sync.screenRecording` | A meeting records the screen now. The page closes the key dialogs when it turns true. |
-| `sync.key` | `exists`: Voice has an encryption key and could open it the last time it read it (`false` while `lastError` is a `key` or `key_denied` for the key itself); `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
+| `sync.key` | `exists`: Voice has an encryption key, and on macOS could open it the last time it read it (`false` there while `lastError` is a `key` or `key_denied` for the key itself); `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
 | `sync.restore` | `state`: `idle`, `listing`, `available`, `restoring`, `done` or `failed`; `available`: meetings in the bucket that aren't on this computer; `done` and `total` while restoring; `error`: English text after a failure. |
 | `sync.otherKeys` | How many other encryption keys have meetings in this bucket, from the last Test connection. |
 
@@ -257,7 +256,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Key | Values | Default | From Ownkey's |
 |---|---|---|---|
-| `dictation.hotkey` | `right alt`, `right command`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
+| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock`, and on macOS `right command` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
 | `dictation.rewriteHotkey` | `off` or a key above | `right ctrl` on Windows; `right command` on macOS; `f14` in dev mode | `rewrite_hotkey` |
 | `dictation.pasteMode` | bool | `true` | `paste_mode` |
 | `dictation.readyChime` | bool | `false` | `ready_chime` |
@@ -286,7 +285,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
 
-A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: a key stored on another platform still parses and is shown by its own name.
+A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: on a Mac, a key stored on Windows still parses and is shown by its own name. Windows loads only its own keys, as before.
 
 Bucket sync, saved in `config.json` under `storage_sync`:
 
@@ -439,7 +438,7 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_open_permission`
 
-`invoke('settings_open_permission', { permission })` → nothing. Opens that permission's pane in System Settings on macOS. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table. Checked on macOS 27:
+`invoke('settings_open_permission', { permission })` → nothing. Only the macOS build has this command: it opens that permission's pane in System Settings. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table. Checked on macOS 27:
 
 | `permission` | System Settings pane |
 |---|---|
@@ -482,7 +481,7 @@ The system audio permission shares the Screen & System Audio Recording pane, who
 - `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen, with `key` when Voice can't open its encryption key on this computer, for instance after a Windows password reset or with the login keychain item gone, and with `key_denied` when macOS's keychain refused Voice the item (the key is fine; the page asks the user to allow Voice). Waits while macOS shows the keychain dialog.
 - `saved` → nothing: the user saved the code; `sync.key.exported` becomes `true`. Rejects with `key` when there is no key, or Voice can't open it.
 - `import` with `code` → `{ "id" }`: this computer uses that key from now on. Rejects with `invalid_value` for a code that isn't a key, `key_in_use` once this computer uploaded meetings with its own key, `key_denied` while macOS's keychain refuses Voice its current key (that key still opens once allowed, so it isn't replaced unchecked), and `recording_screen` while a meeting records the screen.
-- `retry` → nothing, at once: Voice reads its key and the bucket secret again on the sync worker's thread and tries the bucket again. The page's Try again after `key_denied`; `sync.state` is `unlocking` while macOS asks, then `idle` (or another state), or `key` with `key_denied` again.
+- `retry`, macOS only → nothing, at once: Voice reads its key and the bucket secret again on the sync worker's thread and tries the bucket again. The page's Try again after `key_denied`; `sync.state` is `unlocking` while macOS asks, then `idle` (or another state), or `key` with `key_denied` again.
 
 The page shows the code only in its dialog, with the window hidden from capture (`settings_protect`), and closes the dialog when `sync.screenRecording` turns true.
 
