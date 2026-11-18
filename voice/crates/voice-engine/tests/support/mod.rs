@@ -311,6 +311,9 @@ pub struct FakeInput {
     /// What `copy_hidden` put on the fake clipboard, and whether `clear_if` emptied it.
     pub clipboard: Mutex<Option<String>>,
     pub hidden_copies: Mutex<Vec<String>>,
+    /// Where a copy marks its own Cmd+C as the newest key-down, as a Mac's HID state does: the
+    /// harness's `typed`, when a test sets it.
+    pub copy_key_down: Mutex<Option<Arc<Mutex<Option<Instant>>>>>,
 }
 
 impl FakeInput {
@@ -329,6 +332,7 @@ impl FakeInput {
             entered: AtomicUsize::new(0),
             clipboard: Mutex::new(None),
             hidden_copies: Mutex::new(Vec::new()),
+            copy_key_down: Mutex::new(None),
         }
     }
 
@@ -382,6 +386,9 @@ impl TextInput for FakeInput {
         self.before_keys(before_keys)?;
         lock(&self.capture_held).push(self.held());
         self.captures.fetch_add(1, Ordering::SeqCst);
+        if let Some(typed) = lock(&self.copy_key_down).as_ref() {
+            *lock(typed) = Some(Instant::now());
+        }
         if let Some(error) = lock(&self.capture_fail).clone() {
             return Err(error);
         }
