@@ -291,9 +291,13 @@ fn parse_traf(
     if flags & 0x20 != 0 {
         default_flags = be32(buf, at)?;
     }
-    if let Some((_, tfdt, _)) = child(buf, start, end, b"tfdt") {
-        moof.decode_times_at
-            .push((tfdt + 4, buf.get(tfdt) == Some(&1)));
+    if let Some((_, tfdt, tfdt_end)) = child(buf, start, end, b"tfdt") {
+        // After the version and flags, version 1 holds a 64-bit time and version 0 a 32-bit one.
+        let wide = buf.get(tfdt) == Some(&1);
+        if tfdt + 4 + if wide { 8 } else { 4 } > tfdt_end {
+            return None;
+        }
+        moof.decode_times_at.push((tfdt + 4, wide));
     }
     if !timing {
         return Some(());
@@ -1115,6 +1119,12 @@ mod tests {
         decode: u64,
     ) -> Vec<u8> {
         let tfdt = bx(b"tfdt", &full(1, 0, &decode.to_be_bytes()));
+        fragment_with(at, sequence, samples, fill, &tfdt)
+    }
+
+    /// A fragment as [`fragment`] writes it, with `tfdt` after the `tfhd`.
+    #[cfg(target_os = "macos")]
+    fn fragment_with(at: u64, sequence: u32, samples: &[Sample], fill: u8, tfdt: &[u8]) -> Vec<u8> {
         // Built as Media Foundation's, at an offset that leaves room for the tfdt, then grown.
         let pair = fragment(at + tfdt.len() as u64, sequence, samples, fill);
         let moof_len = u32::from_be_bytes(pair[..4].try_into().unwrap()) as usize;
@@ -1131,6 +1141,18 @@ mod tests {
             moof[box_at..box_at + 4].copy_from_slice(&size.to_be_bytes());
         }
         [moof, mdat.to_vec()].concat()
+    }
+
+    /// A `tfdt` too short for its version's time is no fragment to cut, so the cut never writes
+    /// past it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_short_tfdt_is_no_fragment() {
+        let short = bx(b"tfdt", &full(1, 0, &[0; 4]));
+        let pair = fragment_with(0, 1, &six_seconds()[0], 1, &short);
+        let moof_len = u32::from_be_bytes(pair[..4].try_into().unwrap()) as usize;
+        let movie = parse_moov(&moov(TS));
+        assert!(parse_moof(&pair[..moof_len], &movie).is_none());
     }
 
     /// A clip cut from a Mac video starts at 0 however late its first fragment is, and its
