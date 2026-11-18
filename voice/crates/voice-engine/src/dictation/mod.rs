@@ -78,7 +78,9 @@ struct Recording {
     /// The key that started it, and when the press was seen.
     key: Key,
     pressed: Instant,
-    /// Voice posted Cmd+C or Ctrl+C during the hold, for the selection.
+    /// Voice posted Cmd+C or Ctrl+C during the hold, for the selection. A Mac's key activity
+    /// leaves Voice's own keys out, so only the other platforms read it.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     posted_keys: bool,
     mode: Mode,
     cfg: Arc<Config>,
