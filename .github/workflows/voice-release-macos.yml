@@ -194,7 +194,6 @@ jobs:
             exit 1
           fi
           gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-          gh release edit "$RELEASE_TAG" --latest=false
           {
             echo "macOS package: ad-hoc signed, not notarized."
             echo ""
