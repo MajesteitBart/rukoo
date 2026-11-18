@@ -2369,6 +2369,7 @@ function markLine(k) {
     case 'dropped':
       if (k.detail === 'crash') return `${at} [Rukoo Voice stopped recording the screen: its screen recorder failed too often]`;
       if (k.detail === 'capture') return `${at} [Rukoo Voice stopped recording the screen: the screen capture kept stopping]`;
+      if (k.detail === 'permission') return `${at} [Rukoo Voice records no screen in this meeting: the computer doesn't let it record the screen]`;
       return `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
     case 'video_dropped':
       // After a lost graphics device the frames may stop too; a dropped mark then follows.

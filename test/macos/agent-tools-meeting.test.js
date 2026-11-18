@@ -1,8 +1,9 @@
 'use strict';
 
 // read_meeting_transcript's lines for the marks only a Mac Voice sends: a call that held only silence while another
-// app played, and a screen recording that stopped because macOS' screen capture kept stopping. macOS CI runs this
-// folder (`node --test "test/macos/*.test.js"`); the rest of the meeting tools are in test/agent-tools-meeting.test.js.
+// app played, a screen recording that stopped because macOS' screen capture kept stopping, and one that never started
+// because Screen Recording was off. macOS CI runs this folder (`node --test "test/macos/*.test.js"`); the rest of the
+// meeting tools are in test/agent-tools-meeting.test.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
@@ -70,5 +71,17 @@ test('the transcript says the screen recording stopped when the screen capture k
   const res = data(await call('read_meeting_transcript', { meeting_id: M }));
   assert.deepEqual(untag(res.transcript).trim().split('\n'), [
     '[00:01:05] [Rukoo Voice stopped recording the screen: the screen capture kept stopping]'
+  ]);
+});
+
+test('the transcript says no screen was recorded when Screen Recording was off', async (t) => {
+  const { feed, call } = await setup(t);
+  feed([
+    startedEv(M, { screen: 'frames' }),
+    ev('mark', M, { id: 'dropped-frames', kind: 'dropped', at: 0, until: null, track: 'screen', detail: 'permission', label: null })
+  ]);
+  const res = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.deepEqual(untag(res.transcript).trim().split('\n'), [
+    "[00:00:00] [Rukoo Voice records no screen in this meeting: the computer doesn't let it record the screen]"
   ]);
 });

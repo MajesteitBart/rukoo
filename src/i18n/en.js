@@ -9663,6 +9663,10 @@
     "message": "Screen recording stopped: the screen capture kept stopping",
     "description": "Meeting view transcript: the operating system's screen capture failed to start or stopped by itself ten times in a row, so Rukoo Voice no longer records the screen in this meeting; the audio goes on. src/renderer/meeting.js (markText)"
   },
+  "meeting.mark.droppedPermission": {
+    "message": "Screen recording off: Screen Recording isn't switched on for Rukoo Voice",
+    "description": "Meeting view transcript: the meeting was to record the screen, but the Mac doesn't let Rukoo Voice record it, because its Screen Recording permission is off, so no screen is recorded in this meeting; the audio goes on. Name the permission as System Settings does in this language. src/renderer/meeting.js (markText)"
+  },
   "meeting.mark.droppedCrash": {
     "message": "Screen recording stopped: the screen recorder failed too often",
     "description": "Meeting view transcript: Rukoo Voice's screen recorder stopped five times in a row, so Voice no longer records the screen in this meeting; the audio goes on. src/renderer/meeting.js (markText)"

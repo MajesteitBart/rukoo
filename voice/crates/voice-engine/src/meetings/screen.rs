@@ -351,6 +351,9 @@ impl ScreenLive {
 struct LiveView {
     mode: ScreenMode,
     phase: Phase,
+    /// The Screen Recording grant is off, or the user stopped the capture: macOS only.
+    #[cfg(target_os = "macos")]
+    no_permission: bool,
     file: Option<ScreenFile>,
     /// The newest status the process answered.
     status: Option<Value>,
@@ -958,6 +961,14 @@ impl ScreenSupervisor {
             if let Err(e) = self.finalize(id, dir, "failed") {
                 log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
             }
+        } else {
+            // Nothing of the screen was journaled, so nothing would tell Rukoo that the screen
+            // doesn't record, and it would hold back its notifications until the meeting ends. The
+            // drop it reads as a `dropped` mark goes in the journal instead. Only macOS refuses.
+            #[cfg(target_os = "macos")]
+            if let Err(e) = journal_refusal(dir) {
+                log::warn!("screen: {id}: couldn't journal the refusal: {e}");
+            }
         }
         self.emit(ScreenChange::NoPermission {
             id: id.to_string(),
@@ -1241,8 +1252,15 @@ impl ScreenSupervisor {
         // The journal knows of every drop; the status says so too, a moment sooner.
         let on = |part: &str, known: bool| live && known && status[part].as_bool() != Some(false);
         let monitors = self.monitor_list(&status);
+        // On macOS a screen that lost the Screen Recording grant, or that the user stopped, records
+        // no more in this meeting: Rukoo, which holds back its notifications while the screen
+        // records, hears `off` after a reconnect too.
+        #[cfg(target_os = "macos")]
+        let screen = answered_mode(view.mode, view.no_permission);
+        #[cfg(not(target_os = "macos"))]
+        let screen = view.mode;
         Ok(json!({
-            "screen": view.mode,
+            "screen": screen,
             "state": state,
             "video": on("video", view.video),
             "frames": on("frames", view.frames),
@@ -1285,6 +1303,8 @@ impl ScreenSupervisor {
             Some(live) if live.id == id => Ok(LiveView {
                 mode: live.mode,
                 phase: live.phase,
+                #[cfg(target_os = "macos")]
+                no_permission: live.no_permission,
                 file: live.file.clone(),
                 status: live.status.clone(),
                 video: live.recording()
@@ -1819,6 +1839,42 @@ fn journal_has_content(dir: &Path) -> bool {
     fs::metadata(paths::journal_path(dir)).is_ok_and(|m| m.len() > 0)
 }
 
+/// What `screen.get` says the meeting records: `off` once the Screen Recording grant went or the
+/// user stopped the capture, since nothing records the screen again in that meeting.
+#[cfg(target_os = "macos")]
+fn answered_mode(mode: ScreenMode, no_permission: bool) -> ScreenMode {
+    if no_permission {
+        ScreenMode::Off
+    } else {
+        mode
+    }
+}
+
+/// The journal of a meeting whose screen process refused to start without the Screen Recording
+/// grant: the frames dropped with reason `permission` and `stop`, at the recorder's latest
+/// meeting time. The pipeline turns the drop into the `dropped` mark Rukoo hears.
+#[cfg(target_os = "macos")]
+fn journal_refusal(dir: &Path) -> io::Result<()> {
+    let t = voice_meetings::MeetingDir::at(dir)
+        .and_then(|meeting| meeting.timeline().iter().filter_map(|line| line.t()).max())
+        .unwrap_or(0);
+    let mut journal = journal::JournalWriter::open(dir).map_err(|e| match e {
+        journal::OpenError::Busy => io::Error::other("another process writes the screen journal"),
+        journal::OpenError::Io(e) => e,
+    })?;
+    journal.write(&Line::Dropped {
+        t,
+        what: "frames".into(),
+        reason: "permission".into(),
+    })?;
+    journal.write(&Line::Stop {
+        t,
+        reason: "dropped".into(),
+    })?;
+    journal.sync();
+    Ok(())
+}
+
 /// Waits for a child up to `timeout`; kills it after that.
 fn wait_child(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
@@ -2064,6 +2120,50 @@ mod tests {
         // A line read later says nothing more.
         assert!(live.read_journal(true).is_empty());
         drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A screen process that refused to start leaves a journal Rukoo hears of: the frames dropped
+    /// for the permission, at the recorder's latest time, which the pipeline turns into the
+    /// `dropped` mark that ends Rukoo's notification hold. `screen.get` then says `off`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refusal_is_journaled_as_a_drop_and_answered_as_off() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("timeline.jsonl"),
+            "{\"kind\":\"session\",\"t\":0,\"wall\":1,\"session\":1,\"pid\":7,\"resumed\":false,\"version\":1,\"recorder\":\"0.1.0\"}\n{\"kind\":\"heartbeat\",\"t\":4200,\"wall\":4201}\n",
+        )
+        .unwrap();
+        journal_refusal(&dir).unwrap();
+        let lines = journal::read_all(&dir).unwrap();
+        assert!(
+            matches!(lines.as_slice(), [Line::Dropped { t: 4200, what, reason }, Line::Stop { t: 4200, reason: stop }]
+                if what == "frames" && reason == "permission" && stop == "dropped"),
+            "{lines:?}"
+        );
+        let derived = voice_meetings::ScreenFollower::new(&dir).poll().unwrap();
+        let marks: Vec<_> = derived
+            .iter()
+            .filter_map(|d| match d {
+                voice_meetings::ScreenDerived::Mark(mark) => Some(mark),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks.len(), 1, "{derived:?}");
+        assert_eq!(marks[0].id, "dropped-frames");
+        assert_eq!(marks[0].at, 4200);
+        assert_eq!(marks[0].detail.as_deref(), Some("permission"));
+        assert_eq!(answered_mode(ScreenMode::Frames, true), ScreenMode::Off);
+        assert_eq!(answered_mode(ScreenMode::Video, false), ScreenMode::Video);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

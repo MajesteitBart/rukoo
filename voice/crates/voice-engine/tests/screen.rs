@@ -1765,6 +1765,12 @@ fn a_screen_without_permission_says_so_and_is_not_retried() {
             .any(|n| n.body.contains("stopped 5 times in a row")),
         "the give-up notice came too"
     );
+    // Rukoo hears of it: the journal has the drop it reads as a `dropped` mark.
+    let journal = voice_screen_files::journal::read_all(&dir).unwrap();
+    assert!(
+        journal.iter().any(|l| matches!(l, Line::Dropped { what, reason, .. } if what == "frames" && reason == "permission")),
+        "{journal:?}"
+    );
 
     // The audio goes on.
     let timeline = dir.join("timeline.jsonl");
