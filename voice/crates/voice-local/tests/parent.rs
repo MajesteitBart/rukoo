@@ -4,7 +4,7 @@
 //! runner with it: a shell that names itself in the variable Voice writes, prints its pid and then
 //! waits to be killed. The worker needs no model for this: it sits in its read loop.
 
-#![cfg(unix)]
+#![cfg(target_os = "macos")]
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};

@@ -1,5 +1,5 @@
 //! The client for the `rukoo-voice-speakers` worker: one process per stream, in the kill-on-close
-//! job on Windows and watching its parent on Unix, at below-normal priority.
+//! job on Windows and watching its parent on macOS, at below-normal priority.
 //!
 //! The protocol is voice-local's framing: one JSON request per line on stdin, raw audio bytes
 //! after a request that names `bytes`, one JSON reply line per request on stdout, and the
@@ -325,7 +325,7 @@ impl Worker {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         {
             use std::os::unix::process::CommandExt;
             // The worker ends with Voice, also when Voice is hard-killed.

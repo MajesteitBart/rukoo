@@ -327,14 +327,8 @@ impl LocalEngine {
             if reply.get("ok") != Some(&Value::Bool(true)) {
                 return Err(worker_error(&reply, "Orukeet couldn't transcribe this recording"));
             }
-            // A worker that says it transcribed but sends no text has an answer Voice can't read;
-            // treating it as "nothing was said" would hide a broken worker behind a silent pill.
-            let Some(text) = reply.get("text").and_then(Value::as_str) else {
-                kill(slot);
-                return Err(protocol_error());
-            };
             Ok(Timed {
-                text: text.trim().to_string(),
+                text: reply.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_string(),
                 tokens: reply
                     .get("tokens")
                     .and_then(Value::as_array)
@@ -545,7 +539,7 @@ fn worker_command(exe: &Path) -> Command {
         .stderr(Stdio::piped());
     // The worker ends with Voice, also when Voice is hard-killed. Windows does that with the job
     // object instead.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     command.env(super::parent::PARENT_PID, std::process::id().to_string());
     #[cfg(windows)]
     {

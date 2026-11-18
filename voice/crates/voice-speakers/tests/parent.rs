@@ -2,10 +2,10 @@
 //!
 //! Voice is a stand-in here because `kill -9` of a process this test owns would take the test
 //! runner with it: a shell that names itself in the variable Voice writes, prints its pid and then
-//! waits to be killed. Off Windows the worker refuses a load, but it serves the protocol until
-//! then, which is the mode this test watches.
+//! waits to be killed. The worker serves the protocol without a load, which is the mode this test
+//! watches. Only macOS has the watch; Windows ends workers with a job object.
 
-#![cfg(unix)]
+#![cfg(target_os = "macos")]
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};

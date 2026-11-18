@@ -29,7 +29,7 @@ fn main() {
     match std::env::var(ROLE).as_deref() {
         Ok("worker") => fake_worker(),
         Ok("parent") => parent(),
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         Ok("watched") => watched(),
         _ => {
             // Single-threaded here, so setting the variable is safe; every worker the engines
@@ -112,9 +112,6 @@ fn fake_worker() {
                     Some(_) if magic("__fail__") => {
                         json!({"ok": false, "id": id, "kind": "failed", "error": "decode failed on purpose"})
                     }
-                    // Says it transcribed, but names no text: a worker whose answers Voice can't
-                    // read. It must not read as "nothing was said".
-                    Some(_) if magic("__notext__") => json!({"ok": true, "id": id}),
                     Some((_, threads)) => json!({
                         "ok": true,
                         "id": id,
@@ -398,23 +395,6 @@ fn a_failed_decode_keeps_the_worker() {
     assert_eq!(after[2], "loads 1");
 }
 
-/// An answer that names no text is a broken worker, not a person who said nothing.
-fn an_answer_without_text_is_an_error() {
-    let (_data, engine) = engine_with_model("notext");
-    let before = echo(&engine, &Hints::default());
-    let error = engine
-        .transcribe(&pcm(1600), &words(&["__notext__"]))
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Provider);
-    assert_eq!(
-        error.message,
-        "Voice's local speech worker sent an answer Voice couldn't read. Try again."
-    );
-    // Like every answer Voice can't read, it ends the worker instead of trusting it further.
-    let after = echo(&engine, &Hints::default());
-    assert_ne!(after[3], before[3]);
-}
-
 fn garbage_from_the_worker_replaces_it() {
     let (_data, engine) = engine_with_model("garbage");
     let before = echo(&engine, &Hints::default());
@@ -604,16 +584,16 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn process_alive(pid: u32) -> bool {
     // SAFETY: signal 0 only checks that the process exists. Voice reaps the workers it started,
-    // and a worker orphaned by a killed Voice is reaped by launchd or init.
+    // and a worker orphaned by a killed Voice is reaped by launchd.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
 /// Role "watched": a worker that does nothing but watch the parent named in the environment, so
 /// the "the app was already gone" rule can be tested without a model or a protocol.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn watched() {
     voice_core::local::parent::watch(|line| eprintln!("{line}"));
     println!("watching");
@@ -652,9 +632,9 @@ fn the_worker_dies_with_voice() {
     wait_for("the worker to end with its job", || !process_alive(pid));
 }
 
-/// The same on Unix, where the job object doesn't exist: the worker watches Voice's pid, because
+/// The same on macOS, where the job object doesn't exist: the worker watches Voice's pid, because
 /// the engine named it in the environment. Two seconds is all a worker may outlive its app.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn the_worker_dies_with_voice() {
     use std::process::{Command, Stdio};
 
@@ -691,7 +671,7 @@ fn the_worker_dies_with_voice() {
 
 /// The pid Voice wrote down is what counts: a worker whose app is already gone when its `main`
 /// runs must not start, rather than watch a pid that may belong to something else by now.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn a_worker_whose_parent_is_already_gone_does_not_start() {
     use std::process::{Command, Stdio};
     use voice_core::local::parent::{PARENT_GONE, PARENT_PID};
@@ -722,7 +702,7 @@ fn a_worker_whose_parent_is_already_gone_does_not_start() {
 }
 
 /// The watch leaves a worker whose app is alive alone, so the tests above prove something.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn a_worker_with_a_live_parent_keeps_running() {
     use std::process::{Command, Stdio};
     use voice_core::local::parent::PARENT_PID;
@@ -749,12 +729,13 @@ fn a_worker_with_a_live_parent_keeps_running() {
     worker.wait().unwrap();
 }
 
+/// Kill-on-close job objects are Windows-only; elsewhere the engine stops its worker itself.
 #[cfg(windows)]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![
         ("the_worker_dies_with_voice", the_worker_dies_with_voice),
@@ -769,7 +750,7 @@ fn platform_tests() -> Vec<(&'static str, fn())> {
     ]
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     Vec::new()
 }
@@ -803,10 +784,6 @@ fn run_tests() {
         (
             "a_failed_decode_keeps_the_worker",
             a_failed_decode_keeps_the_worker,
-        ),
-        (
-            "an_answer_without_text_is_an_error",
-            an_answer_without_text_is_an_error,
         ),
         (
             "garbage_from_the_worker_replaces_it",

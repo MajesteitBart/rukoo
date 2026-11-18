@@ -2,7 +2,7 @@
 //! in a process of its own, so a crash in the native runtime never takes the app down.
 //!
 //! The app's speaker client (voice-core `speakers::client`) starts one worker per labelled
-//! meeting stream, in its kill-on-close job on Windows and watching its parent on Unix, at
+//! meeting stream, in its kill-on-close job on Windows and watching its parent on macOS, at
 //! below-normal priority. The worker only runs NVIDIA Nemotron 3 Diarization; turning the
 //! probabilities into speaker turns and stable `call-N` ids happens in the app. It reads the
 //! runtime folder and the model file it is given and writes nothing to disk.
@@ -12,11 +12,11 @@
 //! The framing is voice-local's: one JSON request per line on stdin, a request that names `bytes`
 //! followed by that many raw bytes, one JSON line per request on stdout in order, except `quit`.
 //! Logs and the runtime's own output go to stderr. The worker exits 0 on `quit` and when stdin
-//! closes, and 70 on Unix when the app that started it is gone.
+//! closes, and 70 on macOS when the app that started it is gone.
 //!
 //! | Request | Response |
 //! |---|---|
-//! | `{"op":"ping","id":1}` | `{"id":1,"ok":true,"pid":4242,"version":"0.1.0","cpu":{"avx2":true,"fma":true,"f16c":true,"bmi2":true,"neon":false,"dotprod":false,"fp16":false}}` |
+//! | `{"op":"ping","id":1}` | `{"id":1,"ok":true,"pid":4242,"version":"0.1.0","cpu":{"avx2":true,"fma":true,"f16c":true,"bmi2":true}}`, plus `neon`, `dotprod` and `fp16` on Apple Silicon |
 //! | `{"op":"load","id":2,"runtime":"C:\\…\\nemo_speech","model":"C:\\…\\Nemotron-3-Diarization.q8_0.gguf","preset":"v3-streaming","chunkFrames":38,"rightContextFrames":1}` | `{"id":2,"ok":true,"speakers":8,"secondsPerFrame":0.01,"loadMs":812,"runtimeVersion":"…"}` |
 //! | `{"op":"open","id":3}` | `{"id":3,"ok":true}` |
 //! | `{"op":"push","id":4,"rate":16000,"bytes":32000}` + 32000 bytes of s16le mono | `{"id":4,"ok":true,"first":0,"frames":304,"count":304,"probs":"<base64>"}` |
@@ -51,7 +51,7 @@ mod cpu;
 mod nemo;
 // The watch Voice uses to end this worker with itself lives in voice-core, next to the client that
 // spawns it. Included by path rather than as a dependency: a worker that a native runtime takes
-// down shouldn't link the app's network and archive stacks for a `kqueue` and `pidfd` watch.
+// down shouldn't link the app's network and archive stacks for a `kqueue` watch.
 #[path = "../../voice-core/src/local/parent.rs"]
 mod parent;
 mod protocol;

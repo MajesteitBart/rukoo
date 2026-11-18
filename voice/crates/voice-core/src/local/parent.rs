@@ -1,16 +1,17 @@
-//! Ends a worker when the app that started it dies, on Unix.
+//! Ends a worker when the app that started it dies, on macOS.
 //!
 //! Windows keeps this problem away: the local speech worker and the speaker label worker run in a
-//! kill-on-close job object (`local/job.rs`), so Windows ends them with Voice. Unix has nothing
+//! kill-on-close job object (`local/job.rs`), so Windows ends them with Voice. macOS has nothing
 //! like it, and a worker whose app was hard-killed keeps a 1 GB model in a process nobody talks
 //! to. So the spawning code writes its own pid in `PARENT_PID` and the worker watches it:
 //!
 //! - The worker reads that pid as its first act. `getppid()` alone won't do: Voice may already be
-//!   gone and the worker reparented to launchd or init before `main` runs, and `getppid()` would
-//!   then name a process that isn't Voice at all. The pid Voice wrote down stays right.
-//! - macOS and the BSDs get a `kqueue` queue with `EVFILT_PROC` and `NOTE_EXIT` on that pid.
-//! - Linux gets `pidfd_open` and `poll`, or a second of `kill(pid, 0)` and `getppid()` where the
-//!   kernel is older than 5.3.
+//!   gone and the worker reparented to launchd before `main` runs, and `getppid()` would then name
+//!   a process that isn't Voice at all. The pid Voice wrote down stays right.
+//! - A `kqueue` queue with `EVFILT_PROC` and `NOTE_EXIT` on that pid wakes the watch, with a
+//!   second of `kill(pid, 0)` and `getppid()` as the fallback.
+//!
+//! Everywhere else `watch` does nothing, as before macOS existed.
 //!
 //! When the parent is gone the worker logs one line and exits with `PARENT_GONE`. That is safe
 //! because a worker holds nothing that needs saving: the local model is memory, and the speaker
@@ -18,15 +19,15 @@
 //! the app, so the detached spawn in `voice-engine` never names a parent.
 
 /// Windows ends workers through the job object in `local/job.rs`, so there is nothing to watch.
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 pub fn watch(_log: impl Fn(&str) + Send + Sync + 'static) {}
 
-/// Everything below is Unix-only; the glob keeps the constants out of the import list a binary
+/// Everything below is macOS-only; the glob keeps the constants out of the import list a binary
 /// crate doesn't use.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub use watched::*;
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 mod watched {
     use std::sync::Arc;
     use std::thread;
@@ -120,14 +121,6 @@ mod watched {
         }
     }
 
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd",
-        target_os = "dragonfly"
-    ))]
     fn wait_for_exit(pid: u32, own_parent: bool) {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -173,64 +166,6 @@ mod watched {
                 poll_until_gone(pid, own_parent);
             }
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn wait_for_exit(pid: u32, own_parent: bool) {
-        use std::os::fd::AsRawFd;
-
-        let Some(fd) = pidfd(pid) else {
-            return poll_until_gone(pid, own_parent);
-        };
-        let mut pending = libc::pollfd {
-            fd: fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        loop {
-            // SAFETY: one valid pollfd and no timeout.
-            let ready = unsafe { libc::poll(&mut pending, 1, -1) };
-            if ready > 0 {
-                return;
-            }
-            if ready == 0 {
-                break;
-            }
-            // A signal interrupted the wait; the process may still be running.
-            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                break;
-            }
-        }
-        poll_until_gone(pid, own_parent);
-    }
-
-    /// A descriptor that turns readable when the process exits, where the kernel has
-    /// `pidfd_open` (Linux 5.3 and later).
-    #[cfg(target_os = "linux")]
-    fn pidfd(pid: u32) -> Option<std::os::fd::OwnedFd> {
-        use std::os::fd::FromRawFd;
-
-        // SAFETY: pidfd_open takes a pid and flags, and the descriptor is owned from here on.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0) };
-        if fd < 0 {
-            None
-        } else {
-            Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as libc::c_int) })
-        }
-    }
-
-    /// Every other Unix: a second of polling.
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "netbsd",
-        target_os = "openbsd",
-        target_os = "dragonfly"
-    )))]
-    fn wait_for_exit(pid: u32, own_parent: bool) {
-        poll_until_gone(pid, own_parent);
     }
 
     #[cfg(test)]
