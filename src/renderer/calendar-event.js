@@ -374,14 +374,18 @@ export function followScroll(scroll) {
 }
 
 // A window resize or a zoom: calendar.js closes the cards through closePop, but the quick popover may hold a title
-// being typed, so it stays and moves along. This listener captures, so it runs before calendar.js's.
+// being typed, so it stays and moves along, and so do the guest suggestions beside a field that moved. This listener
+// captures, so it runs before calendar.js's.
 let resizing = false;
 window.addEventListener(
   'resize',
   () => {
     resizing = true;
     setTimeout(() => (resizing = false), 0);
-    requestAnimationFrame(() => quick && place(quick.el, quick.anchor));
+    requestAnimationFrame(() => {
+      if (quick) place(quick.el, quick.anchor);
+      if (suggestion && suggestion.input.isConnected) suggestion.place();
+    });
   },
   true
 );
@@ -936,13 +940,25 @@ function bindGuests(root, v, mode, onChange) {
       pick(hits[Number(b.dataset.i)]);
     });
     document.body.appendChild(el);
-    const r = input.closest('.cal-gbox').getBoundingClientRect();
-    el.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8))}px`;
-    el.style.width = `${Math.max(240, r.width)}px`;
-    const below = r.bottom + 4;
-    el.style.top = `${below + el.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - el.offsetHeight - 4) : below}px`;
+    // Under the guest field, as wide, or above it when there is no room below. The width first, so the left edge
+    // keeps the list on screen at the width it gets.
+    const box = input.closest('.cal-gbox');
+    const placeList = () => {
+      const r = box.getBoundingClientRect();
+      el.style.width = `${Math.max(240, r.width)}px`;
+      el.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8))}px`;
+      const below = r.bottom + 4;
+      el.style.top = `${below + el.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - el.offsetHeight - 4) : below}px`;
+    };
+    placeList();
     input.setAttribute('aria-expanded', 'true');
-    suggestion = { el, input, hits };
+    suggestion = { el, input, hits, place: placeList };
+    // Typed while the dialog or popover still pops in (scale 0.97 to 1, styles.css), the field measures a little
+    // narrower and off to the side, so the list goes into place once more when that is over (#260).
+    const settling = document.getAnimations().filter((a) => a.playState !== 'finished' && a.effect && a.effect.target instanceof Element && a.effect.target.contains(box));
+    if (settling.length) {
+      Promise.all(settling.map((a) => a.finished.catch(() => {}))).then(() => suggestion && suggestion.el === el && placeList());
+    }
   };
   const moveActive = (step) => {
     const buttons = $$('button', suggestion.el);

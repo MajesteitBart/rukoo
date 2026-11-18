@@ -118,7 +118,7 @@ test('flush sends everything that waits at once, and waits for emails already on
   assert.deepEqual(log.slice(2), [['sent', 'First', 'main'], ['sent', 'Second', 'main']]);
 });
 
-test('left() lists what still waits or is on its way, for the quit to write down', async () => {
+test('left() lists what still waits or is on its way', async () => {
   const { box, clock, release } = outbox({ hold: true });
   const a = box.queue({ payload: { subject: 'A' }, restore: { html: 'a' }, origin: 'window', ms: 5000 });
   const b = box.queue({ payload: { subject: 'B' }, restore: { html: 'b' }, ms: 30000 });
@@ -144,6 +144,86 @@ test('a refused send runs failed() with the error and the editor to reopen, and 
   clock.advance(5000);
   await box.flush();
   assert.deepEqual(log, [['send', 'Hi'], ['failed', 'Hi', 'Mailbox full', restore]]);
+  assert.equal(box.size, 0);
+});
+
+// #256: main writes changed()'s list to held.json, so the list must follow every email in and out, with its state.
+function journaled({ failWith = null, failed = async () => {} } = {}) {
+  const clock = fakeClock();
+  const lists = [];
+  const box = new Outbox({
+    send: async () => {
+      if (failWith) throw new Error(failWith);
+    },
+    failed: (entry, err) => failed(entry, err, lists),
+    changed: (list) => lists.push(list.map(({ restore, state, origin }) => [restore.html, state, origin])),
+    timers: clock.timers,
+    now: clock.now
+  });
+  return { box, clock, lists };
+}
+
+test('changed() follows an email from the queue to Undo, without its payload', () => {
+  const { box, lists } = journaled();
+  const { id } = box.queue({ payload: { subject: 'Hi', html: '<p>secret payload</p>' }, restore: { html: 'a' }, origin: 'window', ms: 5000 });
+  assert.deepEqual(lists, [[['a', 'waiting', 'window']]]);
+  assert.deepEqual(Object.keys(box.journal()[0]).sort(), ['id', 'origin', 'restore', 'state']);
+  assert.equal(box.journal()[0].id, id);
+  box.undo(id);
+  assert.deepEqual(lists.at(-1), [], 'taken back, it is gone from the list');
+  assert.equal(lists.length, 2);
+});
+
+test('changed() follows an email that waits, goes on its way and is sent', async () => {
+  const { box, clock, lists } = journaled();
+  box.queue({ payload: {}, restore: { html: 'a' }, ms: 5000 });
+  box.queue({ payload: {}, restore: { html: 'b' }, ms: 30000 });
+  clock.advance(5000);
+  assert.deepEqual(lists.at(-1), [['a', 'sending', 'main'], ['b', 'waiting', 'main']]);
+  await box.flush();
+  assert.deepEqual(lists, [
+    [['a', 'waiting', 'main']],
+    [['a', 'waiting', 'main'], ['b', 'waiting', 'main']],
+    [['a', 'sending', 'main'], ['b', 'waiting', 'main']],
+    [['a', 'sending', 'main'], ['b', 'sending', 'main']],
+    [['b', 'sending', 'main']],
+    []
+  ]);
+});
+
+test('a refused email stays in the list until failed() is done with it, then leaves', async () => {
+  let during = null;
+  const { box, clock, lists } = journaled({
+    failWith: 'Mailbox full',
+    failed: async (entry, err, seen) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      during = seen.at(-1);
+    }
+  });
+  box.queue({ payload: {}, restore: { html: 'a' }, ms: 5000 });
+  clock.advance(5000);
+  await box.flush();
+  assert.deepEqual(during, [['a', 'sending', 'main']], 'held while failed() tries Drafts');
+  assert.deepEqual(lists.at(-1), []);
+  assert.equal(box.size, 0);
+});
+
+test('a changed() that throws does not stop the outbox', async () => {
+  const clock = fakeClock();
+  const sent = [];
+  const box = new Outbox({
+    send: async (payload) => sent.push(payload.subject),
+    changed: () => {
+      throw new Error('disk full');
+    },
+    timers: clock.timers,
+    now: clock.now
+  });
+  const { id } = box.queue({ payload: { subject: 'A' }, restore: {}, ms: 5000 });
+  assert.ok(box.undo(id));
+  box.queue({ payload: { subject: 'B' }, restore: {}, ms: 5000 });
+  await box.flush();
+  assert.deepEqual(sent, ['B']);
   assert.equal(box.size, 0);
 });
 

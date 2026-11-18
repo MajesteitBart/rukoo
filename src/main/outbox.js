@@ -4,23 +4,40 @@
 // main window shows a notice whose Undo takes it back. It sits above Engine.send, so IMAP and the demo account wait
 // the same way. Calendar answers and booking mail call engine.send themselves and go at once.
 //
-// The queue is kept in memory only. A quit sends what still waits before Rukoo exits (flush(), from will-quit in
-// main.js); what the quit can't send or keep in Drafts, main writes down for the next start (unsent.json). A crash
-// loses the queue, apart from a draft the editor had saved: that stays on the server until the email is sent,
-// because Engine.send deletes it only afterwards.
+// A quit sends what still waits before Rukoo exits (flush(), from will-quit in main.js); what the quit can't send or
+// keep in Drafts, main writes down for the next start (unsent.json). changed() hears of every email that comes, goes
+// on its way or leaves, and main writes the list to the profile each time (held.json), so a crash or a killed process
+// during the wait loses none: the next start opens them in compose windows, unsent (#256). A draft the editor had
+// saved stays on the server until the email is sent too, because Engine.send deletes it only afterwards.
 const crypto = require('crypto');
 
 class Outbox {
   // send(payload): sends one email (engine.send). sent(entry) runs after it went, failed(entry, err) after it was
-  // refused, and flush() waits for both. timers and now are the clock, which the tests replace.
-  constructor({ send, sent = () => {}, failed = () => {}, timers = { setTimeout, clearTimeout }, now = Date.now }) {
+  // refused, and flush() waits for both. changed(list) gets journal() after each change to the emails held or their
+  // state. timers and now are the clock, which the tests replace.
+  constructor({ send, sent = () => {}, failed = () => {}, changed = () => {}, timers = { setTimeout, clearTimeout }, now = Date.now }) {
     this.sendMail = send;
     this.afterSent = sent;
     this.afterFailed = failed;
+    this.onChange = changed;
     this.timers = timers;
     this.now = now;
     // id -> { id, payload, restore, origin, until, state: 'waiting' | 'sending', timer, done }
     this.entries = new Map();
+  }
+
+  // What the profile keeps of each email held, to open its editor again: { id, restore, origin, state }. Not the
+  // payload, which the editor builds anew from restore.
+  journal() {
+    return [...this.entries.values()].map(({ id, restore, origin, state }) => ({ id, restore, origin, state }));
+  }
+
+  changed() {
+    try {
+      this.onChange(this.journal());
+    } catch (_) {
+      // The journal is a safety net; the outbox goes on without it.
+    }
   }
 
   // Emails that still wait or are on their way.
@@ -40,6 +57,7 @@ class Outbox {
     const entry = { id, payload, restore, origin, until: this.now() + ms, state: 'waiting', timer: null, done: null };
     entry.timer = this.timers.setTimeout(() => this.go(entry), ms);
     this.entries.set(id, entry);
+    this.changed();
     return { id, until: entry.until };
   }
 
@@ -78,6 +96,7 @@ class Outbox {
     if (!entry || entry.state !== 'waiting') return null;
     this.timers.clearTimeout(entry.timer);
     this.entries.delete(id);
+    this.changed();
     return { payload: entry.payload, restore: entry.restore, origin: entry.origin };
   }
 
@@ -92,9 +111,11 @@ class Outbox {
     return Promise.all([...this.entries.values()].map((entry) => entry.done)).then(() => {});
   }
 
+  // The email stays held until sent() or failed() is done, so the journal keeps it while failed() tries Drafts.
   go(entry) {
     if (entry.state !== 'waiting') return entry.done;
     entry.state = 'sending';
+    this.changed();
     entry.done = Promise.resolve()
       .then(() => this.sendMail(entry.payload))
       .then(
@@ -102,7 +123,10 @@ class Outbox {
         (err) => this.afterFailed(entry, err)
       )
       .catch(() => {})
-      .finally(() => this.entries.delete(entry.id));
+      .finally(() => {
+        this.entries.delete(entry.id);
+        this.changed();
+      });
     return entry.done;
   }
 }

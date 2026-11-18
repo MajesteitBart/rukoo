@@ -1192,13 +1192,49 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     const files = filesDrag(e) ? [...(e.dataTransfer.files || [])] : [];
     if (!files.length) return;
     e.preventDefault();
+    pendingDrops += 1;
+    const read = dropFiles(files)
+      .catch(() => {})
+      .finally(() => (pendingDrops -= 1));
+    dropping = Promise.all([dropping, read]).then(() => {});
+  });
+
+  // A dropped file on disk is attached from its path. One without a path, such as an attachment dragged from Outlook,
+  // a file inside a zip or a picture dragged out of an email, goes to main as bytes, which keeps it in a temp file
+  // (composeAddFile, #240), up to the size main takes. They are attached together, in the order dropped, once all are
+  // read; one that can't be read says so, and the draft only counts as changed when something was attached.
+  const DROP_FILE_MAX = 50 * 1024 * 1024;
+  // Drops whose files are still being read, and how many. Send, a save, popping out, moving on and closing wait for
+  // them first, so a file let go just before goes along. Closing the window or quitting waits too (isBusy and the
+  // compose window's beforeunload), also for an editor with nothing else to keep, and then asks about the file.
+  let dropping = Promise.resolve();
+  let pendingDrops = 0;
+  async function dropFiles(files) {
+    const added = [];
+    const unreadable = [];
+    let tooLarge = null;
     for (const f of files) {
       const p = window.mail.pathForFile(f);
-      if (p) st.attachments.push(keyed({ path: p, filename: f.name, size: f.size }));
+      if (p) added.push({ path: p, filename: f.name, size: f.size });
+      else if (f.size > DROP_FILE_MAX) tooLarge = tooLarge || f.name;
+      else {
+        try {
+          added.push(await api('composeAddFile', { name: f.name, data: new Uint8Array(await f.arrayBuffer()) }));
+        } catch (_) {
+          unreadable.push(f.name);
+        }
+      }
     }
-    changed();
-    renderAttachments();
-  });
+    if (closed) return;
+    if (added.length) {
+      st.attachments.push(...added.map(keyed));
+      changed();
+      renderAttachments();
+    }
+    if (tooLarge) toast(t('composer.attachments.tooLarge', { name: tooLarge }), 5000);
+    else if (unreadable.length === 1) toast(t('composer.attachments.unreadable', { name: unreadable[0] }), 5000);
+    else if (unreadable.length) toast(t('composer.attachments.unreadableCount', { count: unreadable.length }), 5000);
+  }
 
   // ----- saving, sending, closing -----
 
@@ -1285,6 +1321,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   function saveDraft({ auto }) {
     clearTimeout(autosaveTimer);
     saving = saving.then(async () => {
+      await dropping;
       if (sending || closed) return false;
       if (auto && !st.dirty) return true;
       flushInputs();
@@ -1337,7 +1374,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       return;
     }
     if (message) api('toastMain', message).catch(() => {});
-    api('composeClose');
+    // true: the editor answered (sent, saved, deleted, or nothing to keep), which main needs to know for an email it
+    // reopened after a crash (main.js heldSettled).
+    api('composeClose', true);
   }
 
   // This editor as it is now, for Undo send: main keeps it while the email waits, and restoredState() opens the
@@ -1405,6 +1444,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       showSaveState('');
       // Nothing typed from here on would make it into the mail, so lock the editor until it is sent.
       page.inert = true;
+      await dropping;
       await saving;
       await settleAttachments();
       const res = await api('send', payload(undefined, { sending: true }), undoState());
@@ -1458,6 +1498,11 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   async function ask() {
+    await dropping;
+    // Meanwhile the editor may have closed, or started to save and close or to send (leave(), Send): it answers as
+    // close() does then, without a question behind that.
+    if (closed) return true;
+    if (closing || sending) return false;
     flushInputs();
     if (!st.dirty) {
       finish(st.draftId && st.mode !== 'draft' ? t('composer.status.kept') : null);
@@ -1503,6 +1548,8 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   // Moving on to another message: keep what was written as a draft without asking.
   async function leave() {
     if (closed) return true;
+    await dropping;
+    if (closed) return true;
     if (sending || closing || asking) return false;
     flushInputs();
     if (!st.dirty) {
@@ -1513,7 +1560,9 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
   }
 
   async function popOut() {
-    if (sending || closing || closed) return;
+    if (sending || closing || closed || asking) return;
+    await dropping;
+    if (sending || closing || closed || asking || answer) return;
     flushInputs();
     if (st.dirty || st.draftId) {
       if (st.dirty && !(await saveAndFinish(null))) return;
@@ -1700,7 +1749,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
     // The window's close button: keep the window open while there are unsaved changes and ask instead.
     listen(window, 'beforeunload', (e) => {
       if (closed) return;
-      if (!st.dirty && !sending && !closing) {
+      if (!st.dirty && !sending && !closing && !pendingDrops) {
         if (st.draftId && st.mode !== 'draft') api('toastMain', t('composer.status.kept')).catch(() => {});
         return;
       }
@@ -1749,7 +1798,7 @@ export function mountComposer(host, { data, opts, message, inline, onDone, onPop
       return st.draftId;
     },
     isDirty: () => st.dirty,
-    isBusy: () => sending || closing || asking,
+    isBusy: () => sending || closing || asking || pendingDrops > 0,
     key,
     // The stored draft this composer leaves behind, or null once it was sent or deleted.
     get savedDraftId() {

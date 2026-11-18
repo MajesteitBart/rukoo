@@ -100,4 +100,5 @@ async function closeApp(app) {
   throw new Error(`Rukoo (pid ${proc.pid}) did not exit within ${CLOSE_WAIT / 1000} s of closing, so the test killed it${where}`);
 }
 
-module.exports = { closeApp, CLOSE_WAIT };
+// kill: ends an instance at once, without a quit, as a crash or Task Manager would (undo-send.spec.js).
+module.exports = { closeApp, kill, CLOSE_WAIT };

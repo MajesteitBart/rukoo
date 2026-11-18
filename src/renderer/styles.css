@@ -2276,21 +2276,55 @@ body.dragging-mail .nav-item * {
   height: 100%;
   object-fit: cover;
 }
-/* The spinner in place of a save icon while a large email's attachments come in (app.js wholeMessage), the size of
-   the icon so the button keeps its shape. */
+/* The spinner in place of a button's icon while the button waits for a large email to come in whole (app.js
+   busyButton): Save, Save all, Retry, Unsubscribe, and Reply, Reply all, Forward and Edit in the bar. The size of the
+   icon it stands in for, so the button keeps its shape. */
 .att .icon-btn .spinner,
-.atts-head .link-btn .spinner {
+.atts-head .link-btn .spinner,
+.download-note .link-btn .spinner,
+.reader .chip-btn .spinner,
+.reader-bar .spinner {
   width: 15px;
   height: 15px;
   margin: 0;
   border-color: color-mix(in srgb, currentColor 30%, transparent);
   border-top-color: currentColor;
 }
+.reader .chip-btn .spinner {
+  width: 14px;
+  height: 14px;
+}
+.reader-bar .tbtn .spinner {
+  width: 17px;
+  height: 17px;
+  color: var(--text-2);
+}
+.reader-bar .icon-btn .spinner {
+  width: 18px;
+  height: 18px;
+}
 @media (prefers-reduced-motion: reduce) {
   .att .icon-btn .spinner,
-  .atts-head .link-btn .spinner {
+  .atts-head .link-btn .spinner,
+  .download-note .link-btn .spinner,
+  .reader .chip-btn .spinner,
+  .reader-bar .spinner {
     animation-duration: 2s;
   }
+}
+/* A large email whose text showed first and whose whole download then failed (app.js downloadNoteHtml): one quiet
+   line under the attachment cards, with Retry. */
+.download-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.download-note .link-btn {
+  font-size: 12.5px;
 }
 
 /* Related emails under the header (app.js relatedHtml): one line per email in a card, newest first. The card folds
@@ -2830,6 +2864,12 @@ body.dragging-mail .nav-item * {
 }
 .toast.show.has-action {
   pointer-events: auto;
+}
+/* An editor's bar (attach, picture, calendar, Send) runs along the bottom of the reading pane and of a compose window,
+   where the notice would cover its buttons and an Undo notice would take their clicks (#260). The notice goes above
+   the bar's 54px instead, 12px clear of it. */
+body:has(.composer .composer-bar) .toast {
+  bottom: 66px;
 }
 /* A 24px target; the negative margins keep the notice as tall as one without a button. */
 .toast button {
