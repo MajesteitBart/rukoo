@@ -36,6 +36,11 @@ object RukooIcons {
             "collapse" to spec { path("M20 4l-6 6M14 5v5h5M4 20l6-6M10 19v-5H5") },
             "up" to spec { path("m5 15 7-7 7 7") },
             "down" to spec { path("m5 9 7 7 7-7") },
+            // A pile of emails: a folded stack in the list.
+            "stack" to spec {
+                rect(4f, 10f, 16f, 10f, 2.5f)
+                path("M6.5 6.5h11M9 3.5h6")
+            },
             "back" to spec { path("m15 4-8 8 8 8") },
             "close" to spec { path("M5 5l14 14M19 5 5 19") },
             "reply" to spec {
@@ -296,6 +301,7 @@ object RukooIcons {
     val Collapse: ImageVector get() = named("collapse")
     val Up: ImageVector get() = named("up")
     val Down: ImageVector get() = named("down")
+    val Stack: ImageVector get() = named("stack")
     val Back: ImageVector get() = named("back")
     val Close: ImageVector get() = named("close")
     val Reply: ImageVector get() = named("reply")

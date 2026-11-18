@@ -73,6 +73,8 @@ fun RkTopBar(
      * (styles.css .list-head.cat-head), so it can't be taken for Inbox itself.
      */
     tint: Color? = null,
+    /** The list's subline wraps to a second line rather than cutting off the account on a narrow pane. */
+    subtitleMaxLines: Int = 1,
 ) {
     val c = Rk.colors
     val wash = if (tint != null) Modifier.background(Brush.verticalGradient(listOf(tint.copy(alpha = 0.18f), Color.Transparent))) else Modifier
@@ -95,7 +97,7 @@ fun RkTopBar(
                         Text(title, style = titleStyle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (subtitle != null) {
-                        Text(subtitle, style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(subtitle, style = Rk.type.text12, color = c.text3, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, content = actions)

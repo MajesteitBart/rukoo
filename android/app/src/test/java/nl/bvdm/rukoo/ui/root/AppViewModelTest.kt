@@ -9,6 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -468,6 +469,114 @@ class AppViewModelTest {
         vm.openChat(withoutEmail = true)
         assertNull(vm.state.value.chatEmailId)
         assertNull(vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aChatStartedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openMessage("a")
+        vm.openChat(null, "a")
+        vm.openMessage("b")
+        // The reader moved on to b; the lookup for b's chat is still out when the first message creates the new chat.
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        vm.chatCreated("c_1")
+        lookup.complete(ChatFollow.To(null))
+        assertFalse(follow.await())
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+    }
+
+    @Test
+    fun aChatStillBeingCreatedWhenTheLookupAnswersStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat(null, "a")
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        // The first message is out; the hub hasn't made its conversation yet when the lookup answers.
+        vm.chatStarting()
+        lookup.complete(ChatFollow.To("c_2"))
+        assertFalse(follow.await())
+        assertNull(vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+        vm.chatCreated("c_1")
+        assertEquals("c_1", vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun aNewUnsentChatOpenedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        // Every unsent chat has no conversation id, so the id alone can't tell them apart.
+        suspend fun duringLookup(open: (AppViewModel) -> Unit): AppViewModel {
+            val (_, vm) = setup(twoPane = true)
+            vm.openChat(null, "a")
+            vm.openMessage("b")
+            val lookup = CompletableDeferred<ChatFollow>()
+            val follow = async { vm.followOpened("b") { lookup.await() } }
+            open(vm)
+            lookup.complete(ChatFollow.To("c_2"))
+            assertFalse(follow.await())
+            assertNull(vm.state.value.chatConversationId)
+            return vm
+        }
+        // New chat (ChatController.newChat) about b, the email the reader shows.
+        assertEquals("b", duringLookup { it.openChat(null, null) }.state.value.chatEmailId)
+        // The agent button on b.
+        assertEquals("b", duringLookup { it.openChat(emailId = "b") }.state.value.chatEmailId)
+        // An agent switch on an unsent chat that left the email out.
+        assertNull(duringLookup { it.openChat(null, null, withoutEmail = true) }.state.value.chatEmailId)
+        // A new chat about another email opens that email in the reader too.
+        val other = duringLookup { it.openChat(null, "z") }.state.value
+        assertEquals("z", other.chatEmailId)
+        assertEquals("z", other.openMessageId)
+    }
+
+    @Test
+    fun aChatOpenedWhileTheOpenedEmailIsLookedUpStays() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        vm.openChat("c_9", "z")
+        lookup.complete(ChatFollow.To("c_2"))
+        assertFalse(follow.await())
+        assertEquals("c_9", vm.state.value.chatConversationId)
+    }
+
+    @Test
+    fun theChatFollowsTheOpenedEmailWhenNothingChangedMeanwhile() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.interacted(Pane.READER)
+        vm.openMessage("b")
+        val lookup = CompletableDeferred<ChatFollow>()
+        val follow = async { vm.followOpened("b") { lookup.await() } }
+        lookup.complete(ChatFollow.To("c_2"))
+        assertTrue(follow.await())
+        assertEquals("c_2", vm.state.value.chatConversationId)
+        assertEquals("b", vm.state.value.chatEmailId)
+        assertEquals(Pane.READER, vm.state.value.lastInteracted)
+        // No chat about c: a new chat about it.
+        vm.openMessage("c")
+        assertTrue(vm.followOpened("c") { ChatFollow.To(null) })
+        assertNull(vm.state.value.chatConversationId)
+        assertEquals("c", vm.state.value.chatEmailId)
+    }
+
+    @Test
+    fun theChatStaysWhenTheOpenedEmailIsGoneOrAnotherOpened() = runTest(main) {
+        val (_, vm) = setup(twoPane = true)
+        vm.openChat("c_1", "a")
+        vm.openMessage("b")
+        assertFalse(vm.followOpened("b") { ChatFollow.Missing })
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertFalse(vm.followOpened("b") { vm.openMessage("c"); ChatFollow.To("c_2") })
+        assertEquals("c_1", vm.state.value.chatConversationId)
+        assertEquals("a", vm.state.value.chatEmailId)
+        vm.closeChat()
+        assertFalse(vm.followOpened("c") { ChatFollow.To("c_3") })
+        assertFalse(vm.state.value.chatOpen)
     }
 
     @Test

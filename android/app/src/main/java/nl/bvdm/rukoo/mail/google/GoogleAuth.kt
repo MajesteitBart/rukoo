@@ -20,6 +20,10 @@ import kotlinx.serialization.json.jsonObject
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.core.UriComponent
+import nl.bvdm.rukoo.core.net.FRAMING_ALLOWANCE
+import nl.bvdm.rukoo.core.net.MeteredSocketFactory
+import nl.bvdm.rukoo.core.net.compressed
+import nl.bvdm.rukoo.core.net.ownConnection
 import nl.bvdm.rukoo.mail.MailException
 import nl.bvdm.rukoo.mail.MailStrings
 import nl.bvdm.rukoo.mail.google.GoogleOAuth.string
@@ -151,11 +155,28 @@ class GoogleAuth(
         return TokenGrant(access, clock.now() + (tokens.string("expires_in")?.toLongOrNull() ?: 3600) * 1000, scopes)
     }
 
+    /**
+     * One call to Google's token endpoint. Its answer is a few KiB: at most [MAX_ANSWER] of it is read, and every byte
+     * read off the connection counts, headers and chunk framing too, on a connection of its own (#252).
+     */
     private suspend fun tokenRequest(form: Map<String, String>): JsonObject = withContext(Dispatchers.IO) {
         val body = FormBody.Builder().apply { form.forEach { (k, v) -> add(k, v) } }.build()
-        val request = Request.Builder().url(tokenEndpoint).post(body).build()
+        // As it was sent, so what is read is what was downloaded: OkHttp would ask for gzip and unpack it first.
+        val request = Request.Builder().url(tokenEndpoint).header("Accept-Encoding", "identity").post(body).build()
+        val sockets = MeteredSocketFactory(MAX_ANSWER + FRAMING_ALLOWANCE)
         val (ok, status, text) = try {
-            http.newCall(request).execute().use { Triple(it.isSuccessful, it.code, it.body?.string().orEmpty()) }
+            ownConnection(http, sockets).newCall(request).execute().use { res ->
+                if (res.compressed()) throw IOException("a compressed answer")
+                val source = res.body?.source()
+                val text = if (source == null) {
+                    ""
+                } else {
+                    source.request(MAX_ANSWER + 1)
+                    if (source.buffer.size > MAX_ANSWER) throw IOException("an answer over $MAX_ANSWER bytes")
+                    source.buffer.readUtf8()
+                }
+                Triple(res.isSuccessful, res.code, text)
+            }
         } catch (e: IOException) {
             throw oauthError(strings.get(R.string.engine_errors_google_connection), "network")
         }
@@ -307,5 +328,10 @@ class GoogleAuth(
             "<body style=\"font:16px system-ui,'Segoe UI',sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0\">\n" +
             "<div style=\"text-align:center;max-width:420px;padding:0 24px\"><h1 style=\"font-weight:600;font-size:24px\">$t</h1>" +
             "<p style=\"color:#aaa\">$p</p>$link</div></body></html>"
+    }
+
+    internal companion object {
+        /** The most of a token answer that is read: one takes a few KiB, its ID token most of that. */
+        const val MAX_ANSWER = 256L * 1024
     }
 }

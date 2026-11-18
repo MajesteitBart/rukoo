@@ -14,7 +14,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -25,6 +24,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import nl.bvdm.rukoo.core.Clock
+import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.SecretCipher
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
@@ -654,7 +654,7 @@ class AccountServiceTest {
         first.signUp("k@example.com", PASSWORD)
         first.put("category", "updates", cat("Updates"))
         first.sync()
-        first.close()
+        first.settle()
 
         val again = device(srv, "desk", dir)
         assertTrue(again.status().signedIn)
@@ -666,7 +666,7 @@ class AccountServiceTest {
         again.signOut()
         assertFalse(again.status().signedIn)
         assertEquals(cat("Promotions"), again.value("category", "promotions"))
-        val saved = File(dir, "account.json").readText()
+        val saved = stateOnDisk(dir).toString()
         assertFalse("no session left on disk", saved.contains("token") || saved.contains("dataKey"))
     }
 
@@ -678,7 +678,7 @@ class AccountServiceTest {
         first.signUp("lost@example.com", PASSWORD)
         first.put("category", "updates", cat("Updates"))
         first.sync()
-        first.close()
+        first.settle()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val forgetful = object : SecretCipher {
             override fun encrypt(plain: String) = PlainSecrets.encrypt(plain)
@@ -704,7 +704,22 @@ class AccountServiceTest {
         return AccountService(dir, PlainSecrets, defaultServer, name, http, scope, devHosts = true, platform = "linux").also { devices += it }
     }
 
-    private fun stateOnDisk(dir: File) = Json.parseToJsonElement(File(dir, "account.json").readText()) as JsonObject
+    // Through the lock JsonFiles.write holds while it replaces the file: Windows refuses to open a file that is being
+    // replaced, and a read in between could see neither version.
+    private fun stateOnDisk(dir: File) = JsonFiles.read(File(dir, "account.json"), JsonObject.serializer(), JsonObject(emptyMap()))
+
+    /**
+     * Closes the service once the sync it started on signing up or in has saved its state. The next service on the same
+     * folder then reads what this one wrote last, and no late write of this one replaces that service's file while it
+     * reads it (#254).
+     */
+    private suspend fun AccountService.settle() {
+        close()
+        while (true) {
+            val sync = running()?.takeUnless { it.isCompleted } ?: break
+            runCatching { sync.await() }
+        }
+    }
 
     @Test
     fun `a phone signed in at the old default keeps that address when the default moves, until it signs out`() = runBlocking {
@@ -714,13 +729,13 @@ class AccountServiceTest {
         before.signUp("pin@example.com", PASSWORD)
         before.put("category", "updates", cat("Updates"))
         before.sync()
-        before.close()
+        before.settle()
         assertNull("the default is not stored", stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
         // As an older Rukoo wrote it, without the session's address: the server info fetched at sign-in names it.
         val older = stateOnDisk(dir).toMutableMap()
         older.remove("sessionServer")
         assertEquals(OLD_DEFAULT, ((older["info"] as JsonObject)["server"] as JsonPrimitive).content)
-        File(dir, "account.json").writeText(JsonObject(older).toString())
+        JsonFiles.write(File(dir, "account.json"), JsonObject.serializer(), JsonObject(older))
 
         // The update: the same session, still at the address its password proofs were made for.
         val after = release(srv, NEW_DEFAULT, dir)
@@ -737,7 +752,7 @@ class AccountServiceTest {
         // A phone at the new default can't sign in to it: the proof is made for the other address.
         val fresh = release(srv, NEW_DEFAULT, tmp.newFolder(), "laptop")
         rejects("unauthorized") { fresh.signIn("pin@example.com", "another long password") }
-        after.close()
+        after.settle()
 
         // Restarts keep it, now from the stored address.
         val again = release(srv, NEW_DEFAULT, dir)
@@ -761,7 +776,7 @@ class AccountServiceTest {
         val dir = tmp.newFolder()
         val before = release(srv, OLD_DEFAULT, dir)
         before.signUp("move@example.com", PASSWORD)
-        before.close()
+        before.settle()
 
         val after = release(srv, NEW_DEFAULT, dir)
         assertEquals(OLD_DEFAULT, after.status().server)
@@ -770,7 +785,7 @@ class AccountServiceTest {
         assertNull(stateOnDisk(dir)["server"]?.takeIf { it != JsonNull })
         after.signUp("move@example.com", PASSWORD)
         assertEquals(NEW_DEFAULT, after.status().server)
-        after.close()
+        after.settle()
 
         // Signed in at the default of the day: nothing to pin.
         val again = release(srv, NEW_DEFAULT, dir)
@@ -786,7 +801,7 @@ class AccountServiceTest {
         val dir = tmp.newFolder()
         val first = device(srv, "desk", dir)
         first.signUp("fork@example.com", PASSWORD)
-        first.close()
+        first.settle()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
         val other = srv.url.replace("127.0.0.1", "localhost")
         val moved = AccountService(dir, PlainSecrets, other, "desk", OkHttpAccountHttp(okhttp), scope, devHosts = true, platform = "linux").also { devices += it }
@@ -801,10 +816,10 @@ class AccountServiceTest {
         val phoneDir = tmp.newFolder()
         val desk = release(srv, OLD_DEFAULT, deskDir, "desk")
         desk.signUp("moved@example.com", PASSWORD)
-        desk.close()
+        desk.settle()
         val phone = release(srv, OLD_DEFAULT, phoneDir, "phone")
         phone.signIn("moved@example.com", PASSWORD)
-        phone.close()
+        phone.settle()
         val newDesk = release(srv, NEW_DEFAULT, deskDir, "desk")
         val newPhone = release(srv, NEW_DEFAULT, phoneDir, "phone")
         assertEquals(OLD_DEFAULT, newDesk.status().server)
@@ -824,7 +839,7 @@ class AccountServiceTest {
         val dir = tmp.newFolder()
         val before = release(srv, OLD_DEFAULT, dir)
         before.serverInfo()
-        before.close()
+        before.settle()
         val after = release(srv, NEW_DEFAULT, dir)
         assertEquals(NEW_DEFAULT, after.status().server)
         assertNull("the old address's info isn't shown for the new one", after.status().info)

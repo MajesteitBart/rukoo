@@ -60,6 +60,15 @@ sealed interface UiEffect {
     data class OpenUrl(val url: String) : UiEffect
 }
 
+/** What the lookup of [AppViewModel.followOpened] found for the email opened beside the chat. */
+sealed interface ChatFollow {
+    /** The chat about the email, or null for a new chat about it. */
+    data class To(val conversationId: String?) : ChatFollow
+
+    /** The email can't be read, so the chat stays as it is. */
+    data object Missing : ChatFollow
+}
+
 /**
  * Navigation state for both layouts, above the layout so folding keeps everything (spec 6 §5.6), and
  * the way panes reach the app's services ([services]). Intents are plain calls; the state machine is
@@ -284,6 +293,7 @@ class AppViewModel(
             conversationId != null -> services.agents.get(conversationId)?.message?.id
             else -> _state.value.openMessageId
         }
+        chatChanges++
         set { it.openChat(conversationId, email) }
     }
 
@@ -292,6 +302,31 @@ class AppViewModel(
      * doesn't bring the chat forward or count as using it, so folding afterwards still shows the reader.
      */
     fun followEmail(conversationId: String?, emailId: String?) = set { it.followEmail(conversationId, emailId) }
+
+    /**
+     * Two panes: the open chat follows [openId], the email the reader beside it just opened, to the chat [lookup] finds
+     * for it, or to a new chat about it. The lookup waits for the email and the hub, and the user may act meanwhile: a
+     * chat started, opened or closed beside the reader in that time stays as the user left it (desktop #185), and so does
+     * everything when the email can't be read ([ChatFollow.Missing]) or another one opened. Unsent chats all have no
+     * conversation id, so a new chat opened meanwhile, also about the same email, is told apart by [chatChanges]; a
+     * chat whose first message is still being sent counts too ([chatStarting]). Returns whether the chat followed.
+     */
+    suspend fun followOpened(openId: String, lookup: suspend () -> ChatFollow): Boolean {
+        val before = _state.value.chatConversationId
+        val began = chatChanges
+        val found = lookup() as? ChatFollow.To ?: return false
+        if (chatChanges != began) return false
+        var followed = false
+        set { now ->
+            if (!now.chatOpen || now.openMessageId != openId || now.chatConversationId != before) {
+                now
+            } else {
+                followed = true
+                now.followEmail(found.conversationId, openId)
+            }
+        }
+        return followed
+    }
 
     /**
      * A notification tap. The inbox of an account needs the accounts loaded, which on a cold start they
@@ -353,10 +388,22 @@ class AppViewModel(
     /** The chat input took the emails [chatEmails] offered. */
     fun takeChatEmails(): List<String> = _chatEmails.value.also { _chatEmails.value = emptyList() }
 
+    // How often the chat on screen changed by the user's hand: a chat opened (also a new, unsent one, which has no
+    // conversation id to tell it by), closed, or started with its first message. See followOpened.
+    private var chatChanges = 0
+
+    /** The first message of a new chat is on its way: its conversation is being created. */
+    fun chatStarting() {
+        chatChanges++
+    }
+
     /** The first message created the conversation of a new chat. */
     fun chatCreated(conversationId: String) = set { it.chatCreated(conversationId) }
 
-    fun closeChat() = set { it.closeChat() }
+    fun closeChat() {
+        chatChanges++
+        set { it.closeChat() }
+    }
 
     fun showList() = set { it.showList(twoPane) }
 

@@ -378,6 +378,35 @@ class HttpDesktopLinkTest {
     }
 
     @Test
+    fun aStreamLineThatNeverEndsFailsAtTheLimit() = runBlocking {
+        val c = paired()
+        // 1,000,000 bytes is the most a line may take; 4 MB without a line end comes after the first line.
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/x-ndjson")
+                .setBody("""{"seq":1,"type":"started","turnId":"t_1"}""" + "\n" + "x".repeat(4_000_000)),
+        )
+        val got = mutableListOf<nl.bvdm.rukoo.agents.model.HostLine>()
+        val e = failure { link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList(got) }
+        assertEquals(DesktopErrors.PROTOCOL, e.code)
+        assertEquals(listOf(1L), got.map { it.seq })
+        // A last line without a line end still counts, as readUtf8Line read it.
+        server.enqueue(MockResponse().setBody("""{"seq":1,"type":"started","turnId":"t_1"}""" + "\r\n" + """{"seq":2,"type":"done","status":"done"}"""))
+        assertEquals(listOf(1L, 2L), link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList().map { it.seq })
+        // A line of exactly the most, ended by \r\n: its \r doesn't count toward it. One byte more fails.
+        fun line(size: Int): String {
+            val head = """{"seq":3,"type":"text","delta":""""
+            return head + "x".repeat(size - head.length - 2) + "\"}"
+        }
+        val done = """{"seq":4,"type":"done","status":"done"}""" + "\n"
+        server.enqueue(MockResponse().setBody(line(1_000_000) + "\r\n" + done))
+        val full = link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList()
+        assertEquals(listOf(3L, 4L), full.map { it.seq })
+        assertEquals(1_000_000 - 34, (full[0].event as AdapterEvent.Text).delta.length)
+        server.enqueue(MockResponse().setBody(line(1_000_001) + "\n" + done))
+        assertEquals(DesktopErrors.PROTOCOL, failure { link.startTurn(c.pairingId, HostTurnRequest("claude", HostConversation("c_1"), "in", "t")).toList() }.code)
+    }
+
+    @Test
     fun aDroppedStreamEndsWithoutDone() = runBlocking {
         val c = paired()
         server.enqueue(
