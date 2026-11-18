@@ -46,7 +46,7 @@ Every segment is 16 kHz, mono, signed 16-bit little-endian PCM with the canonica
 
 A hard kill can leave three things: a file the timeline doesn't name, holding only its header; samples at the end of a file that the header doesn't count yet, at most one append; and half a sample. It can also leave segments without a `segment_end` line: the open one, and ones that had closed but weren't on disk yet. `finalize` and `--resume` end each of them from its file. A power cut can lose up to the last 5 s, plus however long the disk takes to sync.
 
-While it records on Windows, the recorder holds the timeline and the open segment with read and delete sharing only. Other processes can read them, and a second writer can't open them.
+While it records, the recorder keeps a second writer out of the timeline and of every segment it has open: on Windows it shares them for reading and deleting only, and on macOS and Linux it holds an exclusive lock on each open file. Other processes can read them, and a second writer can't open them. The lock goes with the process, so a recorder that was hard-killed leaves its meeting writable.
 
 ### Reading
 
@@ -60,13 +60,15 @@ The recorder never writes silence to cover a gap: a lost device, a crash, a paus
 
 The one exception is real silence on a loopback track (`default-output` or `output:<id>`). The loopback endpoint delivers nothing while nothing plays, so while its device is healthy, the recorder pads the track with zeros from the clock once it trails the clock by more than 0.5 s, and again up to the moment of a pause or stop. This is what Ownkey does (`meetings/capture.py:414-418`). Padding stops the moment the device reports an error, and it never trims a track that runs ahead.
 
+On macOS the loopback is a Core Audio process tap. Like WASAPI loopback, it delivers nothing while nothing plays (measured on a Mac mini's speakers, with cpal's tap and with the recorder's own), so it is padded the same way, and a tap that stopped delivering looks the same as a quiet one: only the alive, sample rate and default-device checks notice a lost device. A tap opens without an error when macOS doesn't let Voice record system audio, and the call track then holds only exact zeros, padding or delivered. The recorder checks for that (`silence.rs`): when a call track has held only exact zeros, delivered or padded, since it started, while another process had its output open by Core Audio's process list, for 60 s in a row, or for 240 s when the list can't be read, it writes `silent`. A moment with no other output open starts the count again. An open output isn't sound, so `silent` is a hint: a call nobody talks in gives it too, and the first sound after that writes `sound`. Any sound before proves the grant and ends the check for the session. The recording never stops over it.
+
 ## The timeline
 
 `timeline.jsonl` holds one JSON object per line. The recorder writes each line with a single write and a trailing newline, and starts every object with `kind`.
 
 - A reader ignores a last line without a newline, any line that doesn't parse, and kinds and fields it doesn't know. Before a recorder or `finalize` writes to a timeline, it cuts off a last line without a newline.
 - `t` is meeting time in milliseconds. Session 1 starts at `t = 0`; its `session` line holds the wall time of that moment. A later session starts at `t` = the wall time now minus that of session 1, but never earlier than anything already recorded, even when the wall clock went back. Within a session `t` follows the monotonic clock, and after a suspend it jumps ahead by the time the computer slept, never by a step of the wall clock. Pauses don't stop the clock.
-- On Windows, `session` and `heartbeat` lines also carry `boot`: the Windows interrupt time read right after `t`, in 100 ns units. It counts sleep and comes from the same counter as the recorder's monotonic clock, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs.
+- On Windows and macOS, `session` and `heartbeat` lines also carry `boot`: a clock that counts sleep, read right after `t`, in 100 ns units. It is the Windows interrupt time on Windows and `mach_continuous_time` on macOS. It counts sleep and the meeting clock follows the same counter, so within a session `t + (boot_now - boot) / 10,000` is the meeting time of any later moment, read in any process. `wall` can't do that: in a `session` line it is read 11 to 27 ms before the clock starts, and it follows time syncs. Linux has no shared counter that counts sleep, so the field is missing there.
 - Lines appear in the order they were written, which is close to the order of `t` but not exactly, so readers take the order of events from `t`, never from the order of the lines. A line can have a lower `t` than a line written before it:
   - `segment_end` carries the end computed from the samples, and comes once the segment is on disk: after the track's next `segment`, after the `device_lost`, `pause` or `suspend` that closed it, and after heartbeats written while the disk worked.
   - A padded loopback track writes its `segment` line up to 0.5 s after the segment's `t`.
@@ -77,18 +79,20 @@ The one exception is real silence on a loopback track (`default-output` or `outp
 
 | `kind` | Fields | When |
 |---|---|---|
-| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `recorder` | A recorder starts recording into the meeting. `session` counts from 1, `version` is the format version 1, `recorder` the recorder's version. `boot` is the Windows interrupt time when `t` was read, in 100 ns units; it counts sleep, and it is missing on other platforms |
+| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `recorder` | A recorder starts recording into the meeting. `session` counts from 1, `version` is the format version 1, `recorder` the recorder's version. `boot` is the clock that counts sleep when `t` was read, in 100 ns units: the Windows interrupt time, or `mach_continuous_time` on macOS. It is missing on Linux |
 | `track` | `t`, `track`, `source`, `device`, `deviceId`, `nativeRate`, `nativeChannels` | A track opened a device: at the start, after a loss, after a move and after a suspend. `device` is its name |
 | `segment` | `t`, `track`, `seq`, `file` | A segment starts at `t`. `file` is relative to the meeting folder, with forward slashes |
-| `segment_end` | `t`, `track`, `seq`, `samples` | A segment closed; `t` is its end |
+| `segment_end` | `t`, `track`, `seq`, `samples` | A segment closed; `t` is its end. The next segment of a running stream starts there, unless the stream delivered more than 100 ms more or less audio than the clock says passed during the segment, such as a loopback track that was padded while nothing played and whose first block after it arrived up to 0.6 s behind the padding, or a device that skipped a stretch shorter than the 0.5 s after which a loopback track is padded: then it starts where its first audio was heard, and the two times differ |
 | `heartbeat` | `t`, `wall`, `boot`, `samples` | Every second. `samples` maps each track with an open segment to the samples on disk in it; a track without one is missing. `boot` as in `session` |
-| `device_lost` | `t`, `track`, `error` | A track has no device: it failed to open, the device failed, a microphone sent nothing for 5 s, or the disk refused the audio. Its segment closed |
+| `device_lost` | `t`, `track`, `error` | A track has no device: it failed to open, its open has taken more than 5 s so far, the device failed, a microphone sent nothing for 5 s, or the disk refused the audio. Its segment closed |
 | `device` | `t`, `track`, `device`, `reason` | A track got a device back, `reconnected`, or moved to another one, `default`. A `track` line follows |
 | `pause`, `resume` | `t` | The user paused or resumed |
 | `mark` | `t`, `id`, `label` | A user mark. `id` is `k-<n>` and `n` keeps counting across sessions; `label` is `null` without one |
 | `dictation` | `t`, `state` | The app reports dictation on the microphone: `start` or `end`. Only a change is written. The app reads the microphone through a tap and closes it when the user stops dictating, quits or crashes, so the recorder writes `end` itself when the microphone's last tap goes and a dictation is open. A dictation the dead session left open ends at `lastSeen` |
 | `suspend` | `t`, `until` | The computer slept for more than 3 s: since the last heartbeat, more time passed by a clock that counts sleep than the computer was awake. A stalled recorder or a step of the wall clock doesn't count. `t` is the last heartbeat before it, `until` the meeting time after it. The segments ended before the line, though their `segment_end` lines can follow it; `track` lines follow as the devices reopen |
 | `crash` | `t`, `lastSeen` | Written by a resumed session: the previous one died, and audio is missing from `lastSeen` to `t` |
+| `silent` | `t`, `track`, `since` | The track has recorded only exact zeros since `since` while another app played sound, so the system may not let Voice record it: on macOS, System Audio Recording is off for Voice or its grant went stale. At most once per session |
+| `sound` | `t`, `track` | The first sound on a track after its `silent` line |
 | `stop` | `t`, `wall`, `reason` | Recording ended: `user`, `rukoo`, `limit` or `interrupted`. Nothing follows |
 
 A microphone that was unplugged for two seconds, with the heartbeats after the first left out:
@@ -129,11 +133,12 @@ rukoo-voice-recorder devices
 | `output:<id>` | Loopback of one output device, by an `id` from `devices`; padded |
 | `synthetic:tone:<hz>` | For tests: a sine at half scale, 48 kHz stereo, in real-time 10 ms blocks |
 | `synthetic:idle` | For tests: a healthy loopback with nothing playing, which delivers nothing; padded |
+| `synthetic:tap[,sound-at=<ms>[,sound-until=<ms>]][,zeros][,playing]` | For tests: a macOS process tap, which delivers nothing while silent, so it is padded, a 600 Hz tone between the two times, and the silence check. `zeros` delivers blocks of exact zeros while silent instead; `playing` says another app plays sound the whole time |
 | `file:<path>[,loop]` | A WAV file in real time, then silence, or looped. For end-to-end tests with recorded speech |
 
-The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default) and `,open-ms=<ms>` (every open takes this long on the recorder's thread, as a Bluetooth headset switching profile can). The times count from the start of the session. Device sources work on Windows only in this version; elsewhere `record` refuses them with exit code 2.
+The synthetic sources take `,fail-at=<ms>` (the device disappears, reported through the same path as a real loss), `,back-at=<ms>` (it can be opened again), `,switch-at=<ms>` (another device becomes the default), `,open-ms=<ms>` (every open takes this long, as a Bluetooth headset switching profile can, or macOS' first process tap while its prompt waits) and `,skip-at=<ms>,skip-ms=<ms>` (the device delivers nothing for that long and then goes on in time, that stretch lost). The times count from the start of the session. Device sources work on Windows and macOS in this version; elsewhere `record` refuses them with exit code 2.
 
-Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, and `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes.
+Four options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--segment-ms <ms>` the 30 s segment length, `--silence-ms <ms>` the 30 s the silence check waits, and `--test-sync-delay-ms <ms>` makes every sync to disk wait that long first, as on a busy disk, so a test can check that no time in the timeline depends on how long a sync takes.
 
 | Exit code | Meaning |
 |---|---|
@@ -148,12 +153,14 @@ Three options exist for tests: `--limit-ms <ms>` replaces the 8-hour limit, `--s
 - It refuses to start while `recorder.json` names a recorder that answers on its port.
 - `--resume` continues a meeting whose recorder died. With an empty timeline it starts session 1.
 - It captures each device in the device's own format and converts it to 16 kHz mono.
-- A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed.
-- A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. Unplugging and Bluetooth profile switches show up this way.
+- Each device opens on a thread of its own, so the control port answers and the other track records while one opens. An open that takes more than 5 s writes `device_lost`, timed from when the open started, so it comes 5 s after lines with a later `t`, and the track gets `device` with `reconnected` when it opens at last. macOS holds the first process tap of an app until the user answers the System Audio Recording prompt, however long that takes.
+- On macOS, `default-output` and `output:<id>` record through a Core Audio process tap of that output device and a private aggregate device, which macOS removes with the recorder, also after a hard kill. cpal makes them for an output device without inputs. An output device that has inputs of its own, such as a USB headset or an audio interface, would give cpal's input stream its microphone instead, so the recorder makes the tap itself then, with the same settings, and opens the aggregate. Forced onto a Mac mini's speakers with nothing playing, that path opened without a prompt: the aggregate was in the device list at once and cpal opened it at 48 kHz, 2 channels. A Mac without a microphone has no `default-input`: the track says "No microphone is available." and retries every second.
+- A `default-*` track checks the default device every 2 s and moves to a new one. It also rebuilds its stream when Windows reports the default changed, and on macOS when the device's sample rate changes: the new `track` line has the new `nativeRate`.
+- A failed device closes the segment and writes `device_lost`, timed when the device reported the failure, or where the track's audio ends if that is later. The track retries every second: a `default-*` track opens whatever is the default, an `input:` or `output:` track waits for its own device. A macOS process tap that keeps failing to open waits twice as long after each try, up to 30 s, because each try creates a tap and an aggregate device in the audio server. Unplugging and Bluetooth profile switches show up this way.
 - It stops on the `stop` command, when the meeting reaches 8 hours (reason `limit`), or when it's killed. It doesn't stop when its parent exits. It never reads stdin, writes nothing to stdout, and reports problems on stderr.
 - On stop it pads healthy loopback tracks up to the moment the command arrived, closes every segment there, waits until every segment is on disk, writes their `segment_end` lines and `stop`, syncs the timeline, removes `recorder.json` and only then replies. Audio that arrived after the command isn't recorded, however long the recorder took to get to it.
 - It logs on stderr every sync and every segment file creation that takes over 0.5 s, and a heartbeat that comes over 1.5 s after the one before, so a recording that stalls can be told from a slow disk.
-- On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app.
+- On Windows the app starts it detached: no console, its own process group, and outside any kill-on-close job, so it outlives the app. On macOS the app starts it in a process group of its own, so it outlives the app there too.
 
 ### `recorder.json`
 
@@ -179,6 +186,8 @@ The recorder writes it to a temporary name and syncs it before the session start
 { "inputs": [{ "id": "wasapi:{0.0.1.00000000}.{00000000-0000-0000-0000-000000000001}", "name": "Microphone (USB Audio CODEC)", "default": true }], "outputs": [{ "id": "wasapi:{0.0.0.00000000}.{00000000-0000-0000-0000-000000000002}", "name": "Speakers", "default": true }] }
 ```
 
+On macOS an id is `coreaudio:` and the device's Core Audio UID, such as `coreaudio:BuiltInSpeakerDevice`. A Mac without a microphone lists no inputs.
+
 ## The control port
 
 The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sends one JSON object per line and gets one line back for each. Every request carries the token, and a connection can carry several requests. The first request must arrive within 5 s of connecting, or the recorder closes the connection; after it, a connection may stay idle.
@@ -189,7 +198,7 @@ The recorder listens on `127.0.0.1` at the port in `recorder.json`. A client sen
 
 | `cmd` | Arguments | Reply |
 |---|---|---|
-| `status` | | `{"ok":true,"state":"recording","t":5120,"tracks":{"mic":{"device":"…","ok":true}}}`; `state` is `recording` or `paused`; a track without a device has `"device":null,"ok":false` and an `error` |
+| `status` | | `{"ok":true,"state":"recording","t":5120,"tracks":{"mic":{"device":"…","ok":true}}}`; `state` is `recording` or `paused`; a track without a device has `"device":null,"ok":false` and an `error`; a track whose device is opening has `"opening":true`, with `"ok":true` for its first 5 s; a track the silence check watches has `"silent":true` while it reports the call silent and `"heard":true` once it delivered sound |
 | `stop` | `reason`: `user` (default) or `rukoo` | `{"ok":true,"t":8160}` once `stop` is written; then the recorder exits |
 | `pause` | | `{"ok":true,"t":…}`, or `not_recording` when already paused |
 | `resume` | | `{"ok":true,"t":…}`, or `not_recording` when not paused |
@@ -231,7 +240,7 @@ Relative paths in the journal use forward slashes and start with `screen/`.
 
 ### Meeting time on the screen
 
-`t` in the screen journal is meeting time in milliseconds on the recorder's clock, so a frame and a passage with the same time show the same moment. The screen process takes its anchor from the latest `session` or `heartbeat` line of the recorder's current session and maps a moment to meeting time with `t = anchor.t + (boot - anchor.boot) / 10,000`, where `boot` is the moment's Windows interrupt time. A captured frame's own interrupt time comes from its capture timestamp, read back to back with the current interrupt time, so only the frame's age of a few milliseconds goes through another counter. Without `boot` in the timeline, it uses `t = anchor.t + (wall - anchor.wall)` and writes `anchor` `wall` in its `session` line.
+`t` in the screen journal is meeting time in milliseconds on the recorder's clock, so a frame and a passage with the same time show the same moment. The screen process takes its anchor from the latest `session` or `heartbeat` line of the recorder's current session and maps a moment to meeting time with `t = anchor.t + (boot - anchor.boot) / 10,000`, where `boot` is the moment's clock that counts sleep: the interrupt time on Windows, `mach_continuous_time` on macOS. A captured frame's own moment comes from its capture timestamp, read back to back with the current value of that clock, so only the frame's age of a few milliseconds goes through another counter. Without `boot` in the timeline, it uses `t = anchor.t + (wall - anchor.wall)` and writes `anchor` `wall` in its `session` line.
 
 - Time never steps back: a frame captured before the last time handed out gets that time.
 - A new recorder `session` line moves the anchor. When the new mapping differs from the old one by more than 50 ms at the same moment, the open video file ends with `video_end` reason `clock` and a new one starts, so each file maps to meeting time with one offset.
@@ -247,18 +256,20 @@ The screen process writes it after its `session` line, to a temporary name that 
 
 ### The screen journal
 
-`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records on Windows, the screen process holds the journal with read and delete sharing only, so a second screen process can't open it.
+`journal.jsonl` follows the timeline's rules: one JSON object per line, written with a single write and a trailing newline, `kind` first. A reader ignores a last line without a newline, lines that don't parse, and kinds and fields it doesn't know; a writer cuts off a last line without a newline before it appends. While it records, the screen process keeps a second screen process out of the journal: on Windows with read and delete sharing only, on macOS and Linux with an exclusive lock on the open file.
 
 | `kind` | Fields | When |
 |---|---|---|
-| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on other platforms |
-| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`. `id` is the Windows device name, such as `\\.\DISPLAY1` |
+| `session` | `t`, `wall`, `boot`, `session`, `pid`, `resumed`, `version`, `mode`, `anchor`, `screen` | The process starts recording into the meeting. `mode` is `off`, `frames` or `video`, `anchor` is `boot` or `wall`, the clock it maps with, `version` is the format version 1 and `screen` the screen process's version. `boot` is missing on Linux |
+| `monitor` | `t`, `id`, `name`, `width`, `height`, `primary`, `reason` | Capture moves to a monitor: `start`, `resume`, `user` or `lost`, or the monitor's size changed: `resize`, after which capture starts again at the new size in a new video file. `id` is the platform's monitor id: the Windows device name such as `\\.\DISPLAY1`, or the display id on macOS. `width` and `height` are the monitor's pixels on both platforms: on a scaled Retina display the pixels of its current mode, such as 3456 x 2234, not the points macOS lays windows out in |
 | `capture` | `t`, `wall`, `monitor`, `width`, `height` | The first frame of a capture session arrived: at the start, after a switch, an unlock, a resume, a new graphics device or a monitor that came back |
 | `video` | `t`, `seq`, `file`, `width`, `height`, `fps`, `encoder`, `hardware` | A video file starts; its media time 0 is meeting time `t`. `encoder` is the encoder's name and `hardware` whether it is a hardware encoder |
 | `video_end` | `t`, `seq`, `reason`, `bytes` | A video file ended; `t` is the end of its last sample. `reason` is `pause`, `lock`, `monitor`, `resize`, `clock`, `stop`, `error`, `disk` or `crash` |
-| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what Windows read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
-| `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder` or `device` |
+| `frame` | `t`, `id`, `file`, `width`, `height`, `text`, `ocr`, `language` | A frame was saved and read. `text` is what the platform's text reader read on it, lines separated by `\n`, at most 8,000 characters; `ocr` is `ok`, `none`, `skipped` or `failed`, and `language` the OCR language or `null` |
+| `dropped` | `t`, `what`, `reason` | A part stopped for the rest of the meeting: `what` is `video` or `frames`, `reason` is `disk`, `encoder`, `device` or `capture` |
 | `lock`, `unlock` | `t` | The session locked or disconnected, and came back. Nothing is captured in between |
+| `no_permission` | `t` | macOS' Screen Recording is off for Voice, or was switched off during the meeting. Written just before the `dropped` lines that end the screen part, so they aren't read as a lost graphics device |
+| `stopped_by_user` | `t` | The user stopped the capture from macOS' own screen sharing control. Written just before the `dropped` lines that end the screen part, in place of `no_permission` |
 | `device_lost` | `t` | The graphics device was removed or reset. The next `capture` line ends the gap |
 | `no_monitor` | `t` | No monitor is left to record, or the one `--monitor` pinned went away. Written once per wait; the next `capture` line ends it |
 | `heartbeat` | `t`, `wall`, `boot`, `frames`, `videoBytes` | Every 2 s: the frames saved and the bytes of the open video file |
@@ -294,7 +305,7 @@ A frames meeting with one slide change, locked for a minute, the heartbeats left
 - Video is H.264 at up to 15 frames per second, from a hardware encoder. A fragment ends at the first keyframe once it holds a second of video, and the sample after that second is always a keyframe. A frame goes to the encoder while the screen changes. One that changed next to nothing since the last frame sent waits, as Windows can hand over unchanged frames at 15 a second: after a quarter second without a sample the newest waiting frame goes in at its capture time, or else the last picture again. So a still screen records about four frames a second, a small change such as typed text shows within half a second, and fragments are 1 to 2 s long. The cursor isn't recorded.
 - A video file has the monitor's own size when each side is at most 4096 and the picture at most 36,864 macroblocks of 16 x 16, else it is scaled by one factor to fit both. Both sides are then rounded down to even, so a portrait 1440 x 2560 monitor keeps its size and 5120 x 1440 becomes 4096 x 1152.
 - A frame is saved when at least 1% of a 1/8-scale picture changed noticeably since the last saved frame, once the screen is still for 0.7 s or 3 s after the change began, at most one every 2 s, and one every 10 s after 10 saves in a row at that pace. One is always saved at the start of a capture, after a monitor switch, an unlock and a resume.
-- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by Windows' own OCR, in the user's language when Windows has a recognizer for it.
+- Frames are JPEG at quality 0.75 with the longest side at most 2560 pixels. Their text is read on this computer by the platform's text reader, Windows' OCR on Windows and Vision on macOS, in the user's language when it reads that language.
 
 ### Readers
 
@@ -321,7 +332,7 @@ When both parts are dropped, the process writes `stop` with reason `dropped` and
 ### `rukoo-voice-screen`
 
 ```
-rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
 rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 rukoo-voice-screen probe
 rukoo-voice-screen inspect <file.mp4>
@@ -331,7 +342,10 @@ rukoo-voice-screen inspect <file.mp4>
 
 - It refuses to start while `screen.json` names a process that answers on its port (exit code 4), when the journal has `stop`, and when `screen/` has content and `--resume` isn't given (exit code 3).
 - It waits up to 5 s for a `session` line in the timeline, else it exits with code 1.
-- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
+- It records the monitor of the topmost ordinary window from the foreground window down, skipping hidden, minimized, cloaked, tool, shell and capture-excluded windows such as Rukoo's; else the cursor's monitor; else the primary. On macOS the windows of this process, of the app that started it, of Rukoo's bundle `nl.bvdm.rukoo-mail` and of every `--exclude-pid` count as capture-excluded, since the stream leaves them out. With `--monitor`, it records that monitor or exits with code 1; it never records another one. When a pinned monitor goes away mid-meeting, or no monitor is left, capture stops until one is back, with a `no_monitor` line.
+- `--exclude-pid <pid>` (repeatable) names a process whose windows stay out of the recording. Voice passes the pid of every connected Rukoo, and sends the running process `exclude` with the new list whenever a Rukoo connects, comes back with another pid or goes. On macOS the stream's filter leaves out those processes, Voice's own and the apps with the bundle ids of Rukoo, Voice and a development Voice, so the frames and the video show what is behind them. The process reads the running applications again every 2 s while it captures and gives the stream a new filter when what it must leave out changed, so Rukoo started after the stream, and Voice restarted mid-meeting with a new pid, stay out too; the log names the pids and bundle ids each filter leaves out and the pids asked for that no application has. Windows ignores the switch and the command, because Rukoo hides its windows from capture itself.
+- On macOS it asks `CGPreflightScreenCaptureAccess` before it starts, and never asks for the permission itself: the app does, once, when the screen process refused to start for it (see `voice/ui/API.md`, `settings_open_permission`). Without the Screen Recording grant `record` exits with code 5 and a line that names Screen Recording and where to switch it on; it journals nothing and the meeting's audio goes on. Voice shows that reason and doesn't start it again. A stream that stops with the grant gone writes `no_permission`, and one that the user stops from the system's menu `stopped_by_user`; then it drops the video and the frames with reason `device`, ends the video file with `error` and stops the session with reason `dropped`; Voice reads the `no_permission` or `stopped_by_user` line first and shows the notice for it. macOS doesn't stop a running stream when Screen Recording is switched off, so while it captures the process asks `CGPreflightScreenCaptureAccess` every second, and its re-read of the running applications every 2 s fails with the permission's code; either one ends the screen part the same way. A stream that stops because its display went follows the monitor rules above, and one that stops with its display still there, or doesn't start, is started again after 1 s, then 2, 4, 8 and 16 s and 30 s from then on. After ten such failures in a row the video and the frames are dropped with reason `capture` and the session stops with reason `dropped`; a capture that has delivered frames for a minute starts the count again.
+- On macOS a display is captured at its native pixels. A monitor's size is the pixel size of its current mode, so a scaled Retina display such as a 16-inch MacBook Pro (1728 x 1117 points) records 3456 x 2234. When that is more than the encoder takes (see "Video and frames"), ScreenCaptureKit itself delivers the size `caps::video_size` gives the video, 4096 x 2304 for a 5K display, so no frame is converted and scaled on the CPU; the frames' JPEGs stop at 2560 pixels as everywhere. The `capture` line's size is the frame's, so it can be smaller than the `monitor` line's. A monitor's `x` and `y` stay in points, the unit of window frames, because the display choice places windows by them.
 - It follows the timeline every 250 ms: it stops capturing at `pause` and starts again at `resume`, and at `stop` it ends at the `stop` line's `t`, finishes the video file, reads the frames still queued, writes `video_end` and `stop` with reason `meeting`, removes `screen.json` and exits with code 0.
 - It stops by itself, with reason `interrupted`, when the timeline has had no new line for 60 s of awake time and nobody asked its `status` in that time: the screen is never recorded without the audio.
 - It never reads stdin and writes nothing to stdout. Its stderr log never holds frame text, window titles or monitor names. Frames are logged by id, size, bytes and JPEG and OCR time only. A development copy also logs the graphics memory it uses once a minute.
@@ -344,9 +358,11 @@ rukoo-voice-screen inspect <file.mp4>
 { "version": 1, "capture": true, "encoders": [{ "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }], "hardwareEncoder": { "name": "NVIDIA H.264 Encoder MFT", "hardware": true, "vendor": "VEN_10DE" }, "ocr": ["nl-NL"], "monitors": [{ "id": "\\\\.\\DISPLAY1", "name": "DELL S3220DGF", "x": 0, "y": 0, "width": 2560, "height": 1440, "primary": true }] }
 ```
 
-`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads.
+On macOS the output also has `"screenRecording": true` or `false`: whether this process holds the Screen Recording grant, from a call that never prompts for it. `capture` is true there, because ScreenCaptureKit is part of the system; a Mac without the grant starts the screen process, which exits with code 5. Windows leaves `screenRecording` out.
 
-`record`, `finalize` and `probe` need Windows; elsewhere they exit with code 2. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it.
+`inspect` prints the fragments, their durations and the keyframes of a video file. It works on every platform; on Windows it also counts the samples Media Foundation reads, and on macOS the shared box walker reads them.
+
+`record`, `finalize` and `probe` work on Windows and macOS; on other platforms they exit with code 2. On macOS the real screen is ScreenCaptureKit: one `SCStream` on the monitor's display, `420f` frames in sRGB at the video's frame rate, encoded by VideoToolbox as they are. The frames' JPEGs say sRGB too. The exit codes are the recorder's: 0 done, 1 failed, also for a pinned monitor that isn't there, 2 wrong arguments or platform, 3 not allowed in this meeting's state, 4 another screen process records into it, and 5, only on macOS, Screen Recording is off.
 
 `--test` is honoured only in a development copy, with `RUKOO_VOICE_DATA_DIR` set. It replaces the screen with a synthetic source and adds faults, as `synthetic:<w>x<h>` followed by options separated by commas:
 
@@ -364,6 +380,7 @@ rukoo-voice-screen inspect <file.mp4>
 | `no-video-device=<n>` | With `device-lost-at`, the next `n` new devices after the loss have no video support |
 | `monitor-gone-at=<ms>` | The first monitor leaves the monitor list then, without the capture's `Closed` notice, as when that notice is lost |
 | `warp` | The graphics device is WARP, Microsoft's software rasterizer, as on a CI runner |
+| `format=420f` | On macOS the frames are bi-planar full-range YCbCr, as ScreenCaptureKit sends them, instead of BGRA. Windows ignores it |
 
 ### The screen control port
 
@@ -375,11 +392,12 @@ The screen process listens on `127.0.0.1` at the port in `screen.json` and speak
 
 | `cmd` | Arguments | Reply |
 |---|---|---|
-| `status` | | `{"ok":true,"state":"recording","t":…,"mode":"video","video":true,"frames":true,"monitor":"\\\\.\\DISPLAY1","monitors":[…],"dropped":{"video":null,"frames":null},"encoder":"NVIDIA H.264 Encoder MFT","hardware":true,"saved":12}`; `state` is `starting`, `recording`, `paused`, `locked` or `stopped`, `video` and `frames` whether each part still records, `dropped` the reason for each part that stopped, `hardware` whether the encoder is a hardware one (`null` without an encoder), and `saved` the frames saved |
+| `status` | | `{"ok":true,"state":"recording","t":…,"mode":"video","video":true,"frames":true,"monitor":"\\\\.\\DISPLAY1","monitors":[…],"dropped":{"video":null,"frames":null},"encoder":"NVIDIA H.264 Encoder MFT","hardware":true,"saved":12,"pending":0}`; `state` is `starting`, `recording`, `paused`, `locked` or `stopped`, `video` and `frames` whether each part still records, `dropped` the reason for each part that stopped, `hardware` whether the encoder is a hardware one (`null` without an encoder), `saved` the frames saved, and `pending` the frames whose JPEG or text the frame worker still works on. A frame's line is written after both |
 | `monitors` | | `{"ok":true,"monitors":[…]}`, left to right, as in `probe`; with `--monitor`, only that monitor |
 | `monitor` | `id`, 1 to 64 characters | `{"ok":true,"monitor":"\\\\.\\DISPLAY2"}` once capture moved there; `unknown_monitor` for a monitor that isn't there, and with `--monitor` for every other monitor; `stopped` once recording ended |
 | `pause`, `resume` | | `{"ok":true}`. Each first reads the recorder's timeline and acts only when its latest `pause` or `resume` line agrees: `pause` then stops capturing at once, and `resume` starts again. The two can arrive in either order, so a `resume` that arrives after a newer pause records nothing, and a `pause` that arrives after a newer resume stops nothing. The timeline's own lines end or start a pause within 250 ms without them |
 | `stop` | | `{"ok":true,"t":…}` once `stop` is written; then the process exits |
+| `exclude` | `pids`, an array of up to 64 pids from 1 up | `{"ok":true}`. The processes whose windows stay out of the recording from now on, in place of `--exclude-pid`'s; an empty array leaves out only Voice and Rukoo by bundle id |
 
 Errors are `{"ok":false,"error":"<code>"}`. `bad_token`, and a line that isn't a JSON object (`bad_request`), close the connection; a missing `cmd` or bad arguments (`bad_request`), `unknown_command`, `unknown_monitor` and `stopped` leave it open.
 

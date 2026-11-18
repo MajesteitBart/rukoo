@@ -6,10 +6,13 @@
 
 pub mod clock;
 pub mod control;
+#[cfg(target_os = "macos")]
+mod coreaudio;
 pub mod devices;
 pub mod disk;
 pub mod meeting;
 pub mod record;
+pub mod silence;
 pub mod source;
 mod syncer;
 pub mod timeline;
@@ -118,6 +121,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
     let mut tracks: Vec<(String, source::SourceSpec)> = Vec::new();
     let mut limit_ms = DEFAULT_LIMIT_MS;
     let mut segment_ms = DEFAULT_SEGMENT_MS;
+    let mut silence_ms = silence::DEFAULT_THRESHOLD_MS;
     let mut sync_delay_ms = 0;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -147,7 +151,8 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                 }
                 tracks.push((name.to_string(), source));
             }
-            // For tests: the length limit is 8 hours and a segment 30 s otherwise.
+            // For tests: the length limit is 8 hours, a segment 30 s and the silence check's wait
+            // 30 s otherwise.
             "--limit-ms" => {
                 limit_ms = value()?
                     .parse()
@@ -159,6 +164,13 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                     .ok()
                     .filter(|&ms| ms >= 100)
                     .ok_or_else(|| ExitError::usage("--segment-ms needs at least 100 ms"))?;
+            }
+            "--silence-ms" => {
+                silence_ms = value()?
+                    .parse()
+                    .ok()
+                    .filter(|&ms| ms >= 100)
+                    .ok_or_else(|| ExitError::usage("--silence-ms needs at least 100 ms"))?;
             }
             // For tests: every sync to disk waits this long first, as on a busy disk.
             "--test-sync-delay-ms" => {
@@ -188,6 +200,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
         tracks,
         limit_ms,
         segment_ms,
+        silence_ms,
         sync_delay_ms,
     })
 }

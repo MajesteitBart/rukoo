@@ -1,10 +1,13 @@
 // Mock of the app's side of Settings, for settings.html?mock=1. Not used inside the app. Paths and versions are
 // made up; no real profile is read.
 //
-// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1
+// settings.html?mock=1&page=<page>&theme=light|dark&lang=en|nl&scenario=<scenario>&later=1&features=<list>&sync=<sync>&eventFirst=1&platform=macos&permissions=<state>
 //   <scenario>: default (set up, imported, Orukeet loaded), fresh (first start), busy (download running, Ownkey on
 //   the same keys, Rukoo outdated), cloud (cloud meeting transcription without consent), failed (errors), dev
 //   (development copy).
+//   platform=macos shows the macOS Permissions group and the Mac key names; permissions=granted, denied, notAsked
+//   or mixed (the default) picks the states the five rows show. System audio stays unknown, as it has no
+//   public preflight.
 //   later=1 turns every feature in state.features on; features=screen,speakers,sync turns on the ones listed.
 //   speakers=ready|off|platform|cpu|runtime|runtimeFailed|model|modelDamaged|key|consent|mistral|stopped: Speaker labels
 //   in that state, with the feature on.
@@ -12,8 +15,9 @@
 //   and tested, still off), on (up to date), live (a meeting uploads), retrying (the bucket can't be reached), failing
 //   (the bucket refuses, three files lost), paused (a new secret or field waits for Test connection, with files still
 //   waiting), unavailable (the switch is on but the sync store didn't open), key (the encryption key can't be opened),
-//   restore (two meetings to restore), restore-failed (a restore that stopped). 1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket
-//   "shared".
+//   key-denied (macOS refused Voice the keychain item, with Try again), unlocking (waiting for the system to open the
+//   key, the keychain dialog on macOS), restore (two meetings to restore), restore-failed (a restore that stopped).
+//   1 means on. Test connection fails for the bucket "fail" and finds another key in the bucket "shared".
 //   eventFirst=1: the first settings_state answers with the state from before a change whose event arrives first,
 //   as the app can (for dev/check.js).
 //   features=<comma list>: the features this Voice shows (screen, speakers, sync); later=1 turns on all of them.
@@ -89,6 +93,9 @@ function baseState() {
     version: '0.1.0',
     devMode: false,
     platform: 'windows',
+    // macOS permissions, from the preflight calls; other platforms have none (API.md).
+    permissions: null,
+    callSound: null,
     features: { screen: false, speakers: false, sync: false },
     theme: 'dark',
     locale: 'en',
@@ -288,6 +295,25 @@ const SYNC_SCENARIOS = {
     Object.assign(s.sync, { state: 'key', key: { exists: true, id: '0f1e2d3c', exported: false } });
     return false;
   },
+  'key-denied': (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, {
+      state: 'key',
+      waiting: 3,
+      lastError: {
+        at: NOW - MIN,
+        code: 'key_denied',
+        message: "macOS didn't allow Voice to read its encryption key in the login keychain (error -128). Choose Try again in Settings > Storage, then Always Allow when macOS asks."
+      },
+      key: { exists: false, id: '0f1e2d3c', exported: true }
+    });
+    return false;
+  },
+  unlocking: (s) => {
+    SYNC_SCENARIOS.on(s);
+    Object.assign(s.sync, { state: 'unlocking', lastError: null });
+    return false;
+  },
   restore: (s) => {
     SYNC_SCENARIOS.on(s);
     Object.assign(s.sync, { lastUpload: null, restore: { state: 'available', available: 2, done: 0, total: 0, error: null } });
@@ -372,6 +398,14 @@ const SPEAKER_SCENARIOS = {
   runtime: (s, forced) => {
     forced.reason = 'runtime';
   },
+  // macOS has no published NeMo runtime: no folder to look for, so no reinstall either.
+  notPublished: (s, forced) => {
+    s.platform = 'macos';
+    forced.reason = 'notPublished';
+    // A Mac that never ran Ownkey has no model either, which is when the page must not offer to
+    // download one it can't use.
+    Object.assign(s.models.nemotron, { stage: 'missing', location: null, path: null, removable: false });
+  },
   runtimeFailed: (s, forced) => {
     forced.reason = 'runtimeFailed';
     forced.detail = 'LoadLibraryExW failed for C:\\Users\\you\\AppData\\Local\\Programs\\Rukoo Voice\\nemo_speech\\nemo_speech_asr_c.dll: The specified module could not be found. (os error 126)';
@@ -422,15 +456,43 @@ function speakersState(state, forced) {
     reason,
     detail: reason && reason === forced.reason ? forced.detail || null : null,
     missing: reason === 'cpu' ? forced.missing || [] : [],
-    cpu: forced.cpu || { avx2: true, fma: true, f16c: true, bmi2: true },
+    cpu: forced.cpu || { avx2: true, fma: true, f16c: true, bmi2: true, neon: false, dotprod: false, fp16: false },
     runtime: !forced.reason && installed ? { location: 'voice', commit: '97a15af' } : null,
     live: forced.live || []
   };
 }
 
+// The folders a Mac shows: Voice's own data folder, and no Ownkey anywhere. Only a model that sat in Ownkey's
+// folder moves, so one that is missing stays missing.
+const MAC_DATA = '/Users/you/Library/Application Support/Rukoo Voice';
+function macosFolders(state) {
+  for (const model of Object.values(state.models)) {
+    if (model.location !== 'ownkey') continue;
+    model.location = 'voice';
+    model.removable = true;
+    model.path = `${MAC_DATA}/models/${model.id === 'nemotron' ? 'nemotron-3-diarization' : 'orukeet-onnx-int8'}`;
+  }
+  state.storage.folder = `${MAC_DATA}/meetings`;
+  state.rukoo.discoveryPath = `${MAC_DATA}/bridge.json`;
+}
+
 export function createMock(params) {
   const state = baseState();
   (SCENARIOS[params.get('scenario')] || SCENARIOS.default)(state);
+  // A Mac shows the Permissions group, Mac key names and only the keys a Mac keyboard has. A
+  // development copy there starts on the same keys as an installed one; F13 and F14 stay for Windows.
+  if (params.get('platform') === 'macos') {
+    state.platform = 'macos';
+    state.config.dictation.hotkey = 'right alt';
+    state.config.dictation.rewriteHotkey = 'right command';
+    const states = {
+      granted: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'granted', accessibility: 'granted', screenRecording: 'granted' },
+      denied: { microphone: 'denied', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
+      notAsked: { microphone: 'notAsked', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'denied', screenRecording: 'denied' },
+      mixed: { microphone: 'granted', systemAudio: 'unknown', inputMonitoring: 'denied', accessibility: 'granted', screenRecording: 'notAsked' }
+    };
+    state.permissions = states[params.get('permissions')] || states.mixed;
+  }
   // state.features as the engine builds it: every part with later=1, else those listed; a scenario parameter of
   // a feature (screen's, &speakers=, &sync=) turns that feature on too.
   const later = params.get('later') === '1';
@@ -447,6 +509,8 @@ export function createMock(params) {
     state.features.speakers = true;
   }
   state.speakers = speakersState(state, forcedSpeakers);
+  // A Mac has never run Ownkey: the models are in Voice's own folder, and nothing there is shared with Ownkey.
+  if (state.platform === 'macos') macosFolders(state);
   if (params.has('sync')) state.features.sync = true;
   state.sync.available = state.features.sync;
   let ownUploads = params.has('sync') ? (SYNC_SCENARIOS[params.get('sync')] || SYNC_SCENARIOS.fresh)(state) : false;
@@ -647,6 +711,7 @@ export function createMock(params) {
     },
     settings_open_folder: () => null,
     settings_open_link: () => null,
+    settings_open_permission: () => null,
     settings_clean_preview: ({ preview }) => clean(preview.text, preview),
     settings_check_updates: async () => {
       await wait(900);
@@ -708,6 +773,18 @@ export function createMock(params) {
         if (state.sync.state === 'key') state.sync.state = 'idle';
         emit();
         return { id: state.sync.key.id };
+      }
+      if (action === 'retry') {
+        // As if the user chose Always Allow at once: unlocking, then up to date.
+        if (state.sync.state === 'key' && state.sync.lastError?.code === 'key_denied') {
+          Object.assign(state.sync, { state: 'unlocking', lastError: null });
+          emit();
+          setTimeout(() => {
+            Object.assign(state.sync, { state: 'idle', waiting: 0, key: { ...state.sync.key, exists: true } });
+            emit();
+          }, 300);
+        }
+        return null;
       }
       return fail('invalid_value', `Unknown action ${action}.`);
     },

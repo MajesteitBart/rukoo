@@ -4,29 +4,36 @@
 //!
 //! The binary `rukoo-voice-screen` runs as its own process, so a graphics driver, encoder or OCR
 //! crash never costs audio.
+//!
+//! `record` and `video::thread` are the orchestration and build on every platform; everything an
+//! operating system provides for them — capture, the graphics device, thumbnails, pixels, the
+//! video writer, JPEG, OCR, the clocks, the monitors and free space — sits behind the traits in
+//! `platform`. The Windows backend is `platform::windows` and the macOS one
+//! `platform::macos`; elsewhere the commands still refuse to record.
 
 use std::fmt;
 
 pub mod args;
+pub mod finalize;
 pub mod inspect;
+pub mod platform;
+pub mod record;
 pub mod video;
 
-#[cfg(windows)]
+pub mod frames;
+
+#[cfg(any(windows, target_os = "macos"))]
 pub mod capture;
+#[cfg(target_os = "macos")]
+pub mod clock_mac;
 #[cfg(windows)]
 pub mod clockwin;
 #[cfg(windows)]
 mod com;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod disk;
-#[cfg(windows)]
-pub mod finalize;
-#[cfg(windows)]
-pub mod frames;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub mod probe;
-#[cfg(windows)]
-pub mod record;
 
 /// The screen process's own version, written into `session` lines.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -42,6 +49,9 @@ pub mod exit {
     pub const CONFLICT: i32 = 3;
     /// Another screen process is recording into this meeting.
     pub const BUSY: i32 = 4;
+    /// The computer doesn't let this process capture the screen: macOS' Screen Recording grant is
+    /// off. It starts nothing and writes nothing, so Voice shows that reason and doesn't retry.
+    pub const NO_PERMISSION: i32 = 5;
 }
 
 #[derive(Debug)]
@@ -72,6 +82,13 @@ impl ExitError {
         }
     }
 
+    pub fn no_permission(message: impl Into<String>) -> Self {
+        Self {
+            code: exit::NO_PERMISSION,
+            message: message.into(),
+        }
+    }
+
     pub fn failed(message: impl Into<String>) -> Self {
         Self {
             code: exit::FAILED,
@@ -86,8 +103,8 @@ impl fmt::Display for ExitError {
     }
 }
 
-/// The message `record`, `finalize` and `probe` give on other platforms.
-pub const NEEDS_WINDOWS: &str = "Screen recording needs Windows.";
+/// The message `record`, `finalize` and `probe` give where the crate has no backend.
+pub const NEEDS_WINDOWS: &str = "Screen recording needs Windows or macOS.";
 
 /// Whether this is a development copy: `RUKOO_VOICE_DATA_DIR` is set, as for the app's own test
 /// switches. Only then does `--test` work.
@@ -98,7 +115,7 @@ pub fn dev_mode() -> bool {
 /// Runs one command line (without the program name):
 ///
 /// ```text
-/// rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--test <spec>]
+/// rukoo-voice-screen record   --meeting <dir> --mode frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
 /// rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
 /// rukoo-voice-screen probe
 /// rukoo-voice-screen inspect <file.mp4>
@@ -116,24 +133,40 @@ pub fn run(args: &[String]) -> Result<(), ExitError> {
             }
         }
         #[cfg(windows)]
-        args::Cmd::Record(opts) => record::record(opts),
+        args::Cmd::Record(opts) => record::record(platform::windows::WindowsPlatform::new(), opts),
+        #[cfg(target_os = "macos")]
+        args::Cmd::Record(opts) => record::record(platform::macos::MacPlatform::new(), opts),
         #[cfg(windows)]
         args::Cmd::Finalize { meeting, reason } => {
-            let done = finalize::finalize(&meeting, &reason)?;
-            print_line(&done.to_json().to_string());
-            Ok(())
+            finalize_with(platform::windows::WindowsPlatform::new(), &meeting, &reason)
         }
-        #[cfg(windows)]
+        #[cfg(target_os = "macos")]
+        args::Cmd::Finalize { meeting, reason } => {
+            finalize_with(platform::macos::MacPlatform::new(), &meeting, &reason)
+        }
+        #[cfg(any(windows, target_os = "macos"))]
         args::Cmd::Probe => {
             let caps = probe::probe();
             print_line(&serde_json::to_string(&caps).unwrap_or_default());
             Ok(())
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         args::Cmd::Record(_) | args::Cmd::Finalize { .. } | args::Cmd::Probe => {
             Err(ExitError::usage(NEEDS_WINDOWS))
         }
     }
+}
+
+/// `finalize` on the platform's backend, its report printed.
+#[cfg(any(windows, target_os = "macos"))]
+fn finalize_with<P: platform::Platform>(
+    platform: P,
+    meeting: &std::path::Path,
+    reason: &str,
+) -> Result<(), ExitError> {
+    let done = finalize::finalize(&platform, meeting, reason)?;
+    print_line(&done.to_json().to_string());
+    Ok(())
 }
 
 /// Prints a result line. A closed stdout is the caller's business, not a reason to panic.

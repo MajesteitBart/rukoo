@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use support::{lock, sync_state, wait_for, Harness, TempDir, BUCKET, BUCKET_SECRET};
 use voice_core::config::{Consent, ConsentMode};
 use voice_core::{ErrorKind, ProviderError};
+use voice_engine::permissions::{Permission, PermissionState};
 use voice_engine::Folder;
 
 const SECRET: &str = "sk-test-0123456789";
@@ -35,9 +36,11 @@ fn the_state_has_every_part_api_md_lists() {
         "providers",
         "dictation",
         "rukoo",
+        "permissions",
         "models",
         "speakers",
         "storage",
+        "callSound",
         "screen",
         "updates",
         "ownkey",
@@ -45,17 +48,40 @@ fn the_state_has_every_part_api_md_lists() {
     ] {
         assert!(state.get(field).is_some(), "{field} is missing");
     }
-    // Every feature is in this Voice; bucket sync shows where its store opened (`sync.available`).
+    // Every feature is in this Voice; bucket sync shows only where this platform can keep its keys
+    // safe, which Settings report as `sync.available` (voice-sync's protector decides both). That
+    // is Windows (DPAPI) and macOS (the login keychain), and not Linux.
     assert_eq!(
         state["features"],
         json!({"screen": true, "speakers": true, "sync": state["sync"]["available"]})
     );
-    assert_eq!(state["features"]["sync"], cfg!(windows));
+    let keeps_keys = cfg!(any(windows, target_os = "macos"));
+    assert_eq!(state["features"]["sync"], keeps_keys);
+    assert_eq!(state["sync"]["available"], keeps_keys);
+    assert_eq!(state["features"]["sync"], voice_sync::protect::SUPPORTED);
     // No screen program here, so no probe answered.
     assert_eq!(state["screen"], Value::Null);
     assert_eq!(state["config"]["meetings"]["screen"], "off");
     assert_eq!(state["devMode"], true);
     assert_eq!(state["version"], "0.1.0-test");
+    // macOS lists each privacy permission's real state; other platforms have none, so Settings
+    // shows no permission rows.
+    if cfg!(target_os = "macos") {
+        for id in [
+            "microphone",
+            "systemAudio",
+            "inputMonitoring",
+            "accessibility",
+            "screenRecording",
+        ] {
+            assert!(
+                state["permissions"][id].is_string(),
+                "permission {id} is missing"
+            );
+        }
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
     assert_eq!(state["theme"], "dark");
     assert_eq!(state["config"]["dictation"]["hotkey"], "f13");
     assert_eq!(state["config"]["dictation"]["startAtLogin"], false);
@@ -79,7 +105,8 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["speakers"]["reason"], "platform");
     assert_eq!(state["speakers"]["runtime"], Value::Null);
     assert_eq!(state["speakers"]["live"], json!([]));
-    for feature in ["avx2", "fma", "f16c", "bmi2"] {
+    // The processor's features, as this platform's build needs them.
+    for feature in ["avx2", "fma", "f16c", "bmi2", "neon", "dotprod", "fp16"] {
         assert!(state["speakers"]["cpu"][feature].is_boolean(), "{feature}");
     }
     let mistral = state["providers"]["audio"]
@@ -118,6 +145,112 @@ fn the_state_has_every_part_api_md_lists() {
     assert_eq!(state["sync"]["state"], "off");
     assert_eq!(state["features"]["sync"], state["sync"]["available"]);
     assert_eq!(state["config"]["storage"]["sync"]["enabled"], false);
+    engine.shutdown();
+}
+
+#[test]
+fn permissions_come_from_the_permissions_service() {
+    let h = Harness::new("permissions");
+    h.permissions
+        .set(Permission::Microphone, PermissionState::Granted);
+    h.permissions
+        .set(Permission::InputMonitoring, PermissionState::Denied);
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::NotAsked);
+    h.permissions
+        .set(Permission::ScreenRecording, PermissionState::Granted);
+    h.config(json!({}));
+    let engine = h.start();
+    let state = engine.settings_state();
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            state["permissions"],
+            json!({
+                "microphone": "granted",
+                "systemAudio": "unknown",
+                "inputMonitoring": "denied",
+                "accessibility": "notAsked",
+                "screenRecording": "granted",
+            })
+        );
+        // Settings reads them again for every state, so a change made in System Settings shows
+        // the next time the window asks.
+        h.permissions
+            .set(Permission::Accessibility, PermissionState::Granted);
+        assert_eq!(
+            engine.settings_state()["permissions"]["accessibility"],
+            "granted"
+        );
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+    engine.shutdown();
+}
+
+#[test]
+fn permissions_are_read_only_when_settings_asks_or_its_window_exists() {
+    let h = Harness::new("permissions-closed");
+    // A first start: the welcome path builds a state too.
+    let engine = h.start();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "starting Voice read the privacy permissions"
+    );
+    assert_eq!(
+        lock(&h.sink.settings).last().unwrap()["permissions"],
+        Value::Null,
+        "a pushed state while Settings is closed carries no permissions"
+    );
+
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        0,
+        "a setting change with Settings closed read the privacy permissions"
+    );
+    assert_eq!(
+        engine.settings_state_quiet()["permissions"],
+        Value::Null,
+        "a state for a caller that isn't the page read the privacy permissions"
+    );
+
+    // The page asks on load and on focus.
+    let state = engine.settings_state();
+    assert_eq!(
+        h.permissions.calls(),
+        5,
+        "the page's state didn't read every permission"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(state["permissions"]["accessibility"], "unknown");
+    } else {
+        assert_eq!(state["permissions"], Value::Null);
+    }
+
+    // While the window exists, pushed states carry them too; closing stops the reads.
+    engine.settings_opened();
+    let opened = h.permissions.calls();
+    assert!(opened > 5, "opening Settings read no permissions");
+    engine
+        .settings_set("dictation.readyChime", json!(false))
+        .unwrap();
+    assert!(
+        h.permissions.calls() > opened,
+        "a pushed state with Settings open read no permissions"
+    );
+    engine.settings_closed();
+    let closed = h.permissions.calls();
+    engine
+        .settings_set("dictation.readyChime", json!(true))
+        .unwrap();
+    assert_eq!(
+        h.permissions.calls(),
+        closed,
+        "a setting change after Settings closed read the permissions again"
+    );
     engine.shutdown();
 }
 
@@ -221,6 +354,70 @@ fn a_setting_is_saved_applied_and_sent() {
     assert!(!saved.paste_mode);
     assert_eq!(saved.vocabulary, ["Rukoo", "Hermes"]);
     assert!(saved.filler_languages.is_empty());
+    engine.shutdown();
+}
+
+/// The app applies "Hide pill from capture" to its windows from `EngineApi::ui`, and only when the
+/// engine says the UI changed. Both directions have to arrive, with the new value, or the pill's
+/// windows keep the sharing type they had.
+#[test]
+fn a_capture_toggle_reaches_the_app_with_the_new_value_both_ways() {
+    let h = Harness::new("capture-toggle");
+    let engine = h.start();
+    assert!(engine.ui().hide_pill_from_capture, "a new Voice hides it");
+    for hidden in [false, true, false] {
+        let changes = h.sink.ui_changes.load(Ordering::SeqCst);
+        engine
+            .settings_set("ui.hidePillFromCapture", json!(hidden))
+            .unwrap();
+        assert_eq!(engine.ui().hide_pill_from_capture, hidden);
+        assert_eq!(
+            h.sink.ui_changes.load(Ordering::SeqCst),
+            changes + 1,
+            "the app hears about {hidden}"
+        );
+        assert_eq!(h.saved_config().pill_hide_from_capture, hidden);
+    }
+    engine.shutdown();
+}
+
+#[test]
+fn a_system_theme_change_reaches_the_pill_and_settings_only_while_the_theme_follows_it() {
+    use voice_engine::Theme;
+
+    let h = Harness::new("system-theme");
+    let engine = h.start();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert!(engine.ui().theme_follows_system);
+
+    // The theme is System: macOS switches to light and tells the engine.
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Light);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Light);
+    assert_eq!(h.sink.last_settings()["theme"], "light");
+    assert!(h.sink.last_settings()["seq"].as_u64().unwrap() > seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // Nothing changed since: nothing is sent again.
+    let seq = h.sink.last_settings()["seq"].as_u64().unwrap();
+    engine.system_looks_changed();
+    assert_eq!(h.sink.last_settings()["seq"].as_u64().unwrap(), seq);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes + 1);
+
+    // A theme the user chose stays when the system changes.
+    engine.settings_set("ui.theme", json!("dark")).unwrap();
+    assert!(!engine.ui().theme_follows_system);
+    let ui_changes = h.sink.ui_changes.load(Ordering::SeqCst);
+    h.set_system_theme(Theme::Dark);
+    engine.system_looks_changed();
+    h.set_system_theme(Theme::Light);
+    engine.system_looks_changed();
+    assert_eq!(engine.ui().theme, Theme::Dark);
+    assert_eq!(engine.pill_snapshot().theme, Theme::Dark);
+    assert_eq!(h.sink.ui_changes.load(Ordering::SeqCst), ui_changes);
     engine.shutdown();
 }
 
@@ -871,9 +1068,12 @@ fn a_development_copy_imports_only_on_request_and_keeps_its_keys() {
     let engine = h.start();
     let cfg = h.saved_config();
     assert_eq!(cfg.audio_provider, "mistral");
+    // An import in development never changes the keys: it keeps this platform's default.
+    let (hotkey, rewrite_hotkey) =
+        voice_core::config::default_hotkeys_on(true, cfg!(target_os = "macos"));
     assert_eq!(
         (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
-        ("f13", "f14")
+        (hotkey, rewrite_hotkey)
     );
     assert_eq!(
         engine.settings_state()["ownkey"]["report"]["hotkeys"],
@@ -902,7 +1102,7 @@ fn a_damaged_config_is_kept_aside_and_voice_starts_with_defaults() {
     assert!(note.body.contains("damaged"), "{}", note.body);
     assert_eq!(
         engine.settings_state()["config"]["dictation"]["hotkey"],
-        "f13"
+        voice_core::config::default_hotkeys_on(true, cfg!(target_os = "macos")).0
     );
     let kept = std::fs::read_dir(h.data())
         .unwrap()

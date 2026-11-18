@@ -32,6 +32,82 @@ check('a key list greys out the other keys in use and saves the choice', async (
   assert.match(await page.locator('[data-section="status"]').innerText(), /Hold F13 to dictate/);
 });
 
+check('a Mac key list shows Mac names and only the keys a Mac has', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  const labels = await page.locator('.radio-row .rl').allInnerTexts();
+  for (const name of ['Right Option', 'Right Command', 'Right Control', 'Right Shift', 'F13', 'F14', 'F15']) {
+    assert.ok(labels.includes(name), `${name} is offered on a Mac: ${labels.join()}`);
+  }
+  for (const name of ['Right Alt', 'Pause', 'Scroll Lock']) {
+    assert.ok(!labels.includes(name), `${name} isn't a Mac key: ${labels.join()}`);
+  }
+  assert.equal(await page.locator('.radio-row', { hasText: 'Right Command' }).isDisabled(), true, 'the rewrite key is taken');
+  await page.locator('.radio-row', { hasText: 'F15' }).click();
+  assert.equal((await mockState()).config.dictation.hotkey, 'f15');
+});
+
+check('the Permissions group shows each macOS state and opens its pane', async ({ open, page, calls }) => {
+  await open('settings.html?mock=1&lang=en');
+  assert.equal(await page.locator('#group-permissions').count(), 0, 'no permission rows on Windows');
+  await open('settings.html?mock=1&lang=en&platform=macos');
+  const section = page.locator('[data-section="permissions"]');
+  assert.match(
+    await section.innerText(),
+    /Microphone[\s\S]*System Audio Recording Only[\s\S]*Input Monitoring[\s\S]*Device Control and Data Access[\s\S]*Screen & System Audio Recording/,
+    'the English rows use the macOS 27 pane names'
+  );
+  const rows = section.locator('.row');
+  assert.equal(await rows.count(), 5);
+  assert.match(await rows.nth(0).innerText(), /Records your voice for dictation and meetings\.[\s\S]*On/, 'the microphone is on');
+  assert.match(await rows.nth(1).innerText(), /Unknown/, 'the system audio section has no preflight');
+  assert.match(await rows.nth(2).innerText(), /Off/, 'Input Monitoring is off');
+  assert.match(
+    await rows.nth(2).innerText(),
+    /Rukoo Voice reads the dictation key without it/,
+    'the row says Voice does not need Input Monitoring'
+  );
+  assert.doesNotMatch(await rows.nth(2).innerText(), /switch on Input Monitoring/, 'and never asks for it');
+  assert.match(await rows.nth(3).innerText(), /On/, 'device control and data access is on');
+  assert.match(await rows.nth(4).innerText(), /Not asked yet/, 'screen recording is not an error');
+  await rows.nth(3).locator('[data-a="permission:accessibility"]').click();
+  assert.ok(
+    (await calls()).some(([command, args]) => command === 'settings_open_permission' && args.permission === 'accessibility'),
+    'the app opens the Device Control and Data Access pane'
+  );
+  // The action sentence names the same pane the row does.
+  await open('settings.html?mock=1&lang=en&platform=macos&permissions=denied');
+  const english = await page.locator('[data-section="permissions"]').innerText();
+  assert.match(
+    english,
+    /switch on Device Control and Data Access; if Rukoo Voice is already switched on there, remove it with the minus button and add it again\./,
+    'the English off note names the macOS 27 pane'
+  );
+  // Dutch keeps the group and the action sentence whole, and names the panes as macOS 27 does.
+  await open('settings.html?mock=1&lang=nl&platform=macos&permissions=denied');
+  const dutch = await page.locator('[data-section="permissions"]').innerText();
+  assert.match(dutch, /Machtigingen[\s\S]*Microfoon[\s\S]*minknop en voeg het opnieuw toe/);
+  assert.match(
+    dutch,
+    /Microfoon[\s\S]*Alleen systeemaudio-opname[\s\S]*Invoer vastleggen[\s\S]*Apparaatbeheer en gegevenstoegang[\s\S]*Scherm- en systeemaudio-opname/,
+    'the Dutch rows use the macOS 27 pane names'
+  );
+});
+
+check('Settings reads the permissions again when its window gains focus', async ({ open, page, mockState }) => {
+  await open('settings.html?mock=1&lang=en&platform=macos&permissions=mixed');
+  const accessibility = page.locator('[data-section="permissions"] .row').nth(3);
+  assert.match(await accessibility.innerText(), /On/);
+  const seq = (await mockState()).seq;
+  // The user switched it off in System Settings. No state event comes: only focus tells the page.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.permissions.accessibility = 'denied'), { emit: false }));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelector('[data-section="permissions"] .row:nth-child(4)').innerText.includes('remove it with the minus button'));
+  assert.equal((await mockState()).seq, seq, 'the app did not have to send a state');
+});
+
+
 check('Escape goes back one page, and the back button too', async ({ open, page }) => {
   await open('settings.html?mock=1&lang=en&page=dictionary');
   assert.equal(await page.locator('h1').innerText(), 'Dictionary');
@@ -47,7 +123,7 @@ check('text being typed survives the download progress redrawing its card', asyn
   await page.click('[data-a="model:orukeet:download"]');
   const minutes = page.locator('[data-field="local.idleMinutes"]');
   await minutes.click();
-  await minutes.press('Control+A');
+  await minutes.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
   for (const key of ['4', '5']) {
     await page.keyboard.type(key);
     await page.waitForTimeout(450);
@@ -172,6 +248,17 @@ check('a development copy can\'t import or start at login', async ({ open, page 
   assert.match(await page.locator('.page-actions').innerText(), /--import-ownkey <copy>/);
 });
 
+check('a development copy starts on F13 and F14 on Windows and on the installed keys on a Mac', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&scenario=dev');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold F13 to dictate/);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  assert.match(await page.locator('body').innerText(), /Development copies start with F13 and F14/);
+  await open('settings.html?mock=1&lang=en&scenario=dev&platform=macos');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /Hold Right Option to dictate\. Hold Right Command to change selected text\./);
+  await page.click('[data-a="choose:dictation.hotkey"]');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Development copies start with F13/);
+});
+
 check('Screen recording shows for a Voice that has it, and saves the choice', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en');
   assert.equal(await page.locator('[data-a^="seg:meetings.screen:"]').count(), 0, 'no screen feature, no row');
@@ -211,9 +298,10 @@ check('Screen recording says what this computer can\'t record, and is off where 
 
 const SPEAKER_TEXT = {
   off: 'Off. Meetings label the whole call as one speaker.',
-  platform: 'Speaker labels work on Windows only in this version.',
+  platform: 'Speaker labels need Windows on an Intel or AMD PC, or an Apple Silicon Mac.',
   cpu: 'This processor lacks BMI2, which speaker labels need. Meetings label the whole call as one speaker.',
   runtime: 'The speaker label runtime is missing from this installation. Reinstall Rukoo Voice.',
+  notPublished: "Speaker labels aren't available on macOS yet. Meetings label the whole call as one speaker.",
   runtimeFailed: "The speaker label runtime couldn't start. Voice tries again after a restart.",
   model: 'Download the speaker model to label speakers.',
   modelDamaged: 'The speaker model is damaged. Remove it and download it again.',
@@ -257,6 +345,37 @@ check('every reason labels are off shows its text on the Speaker labels page', a
   }
   await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
   assert.match(await page.locator('[data-section="status"]').innerText(), /Ready\. New meetings label each voice on the call\.[\s\S]*Nemotron on this computer/);
+});
+
+check('a platform that cannot run the model is not offered its download', async ({ open, page }) => {
+  // macOS has no published speaker runtime: a download would fetch 107 MB that cannot run here.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=notPublished');
+  const card = page.locator('[data-section="model"]');
+  assert.match(await page.locator('[data-section="status"]').innerText(), /aren't available on macOS yet/);
+  assert.equal(await card.locator('[data-a="model:nemotron:download"]').count(), 0, 'no Download');
+  assert.equal(await card.locator('[data-a="model:nemotron:remove"]').count(), 0);
+  assert.doesNotMatch(await card.innerText(), /Model files/, 'no model row');
+  assert.doesNotMatch(await card.innerText(), /107 MB download/);
+  // The rest of the card stays useful: the switch is there, and it applies to new meetings.
+  assert.equal(await card.locator('[data-a="toggle:meetings.liveSpeakers"]').count(), 1);
+  // A platform where labels can run keeps its download, also when the model is missing.
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=model');
+  assert.equal(await page.locator('[data-a="model:nemotron:download"]').count(), 1);
+});
+
+check('a Mac mock shows Mac folders and no Ownkey', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready');
+  const windows = await page.locator('[data-section="model"]').innerText();
+  assert.match(windows, /C:\\Users\\you\\AppData\\Local\\Ownkey\\models\\nemotron-3-diarization/);
+  assert.match(windows, /Shared with Ownkey\. Remove it in Ownkey\./);
+  await open('settings.html?mock=1&lang=en&page=speakers&speakers=ready&platform=macos');
+  const mac = await page.locator('[data-section="model"]').innerText();
+  assert.match(mac, /\/Users\/you\/Library\/Application Support\/Rukoo Voice\/models\/nemotron-3-diarization/);
+  assert.doesNotMatch(mac, /Ownkey/);
+  assert.match(mac, /Remove download/);
+  // The rest of the Mac page follows: a Mac's meetings folder, and no Ownkey anywhere.
+  await open('settings.html?mock=1&lang=en&page=storage&platform=macos');
+  assert.doesNotMatch(await page.locator('body').innerText(), /Ownkey/);
 });
 
 check('the switch stays usable without the model and applies to new meetings', async ({ open, page, mockState }) => {
@@ -693,6 +812,18 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
     return page.locator('[data-section="sync"]').innerText();
   };
   assert.match(await statusOf('on'), /Everything is in the bucket[\s\S]*Last upload/);
+  // Only a manifest still to go: nothing waits, so the chip isn't an orange "0 files waiting".
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 0 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('Everything is in the bucket'));
+  const uploading = page.locator('[data-section="sync"] .sync-status');
+  assert.doesNotMatch(await uploading.innerText(), /0 files waiting/);
+  assert.equal(await uploading.locator('.status[data-tone="busy"]').count(), 0, 'no warning tone');
+  assert.equal(await uploading.locator('.status[data-tone="ok"]').count(), 1, 'neutral and fine');
+  await statusOf('on');
+  await page.evaluate(() => window.__settingsMockEdit((s) => Object.assign(s.sync, { state: 'uploading', waiting: 2 })));
+  await page.waitForFunction(() => document.querySelector('[data-section="sync"]').innerText.includes('2 files waiting'));
+  assert.equal(await page.locator('[data-section="sync"] .status[data-tone="busy"]').count(), 1, 'a real queue is busy');
   assert.match(await statusOf('live'), /Audio and frames go up while the meeting records[\s\S]*3 files waiting/);
   const retrying = await statusOf('retrying');
   assert.match(retrying, /Can't reach the bucket\. Voice keeps trying\.[\s\S]*14 files waiting[\s\S]*Waiting since[\s\S]*as long as 10 GB stay free/);
@@ -715,6 +846,21 @@ check('the sync status says what the bucket is doing', async ({ open, page }) =>
   await page.click('[data-a="sync-details:last"]');
   assert.match(await dialogText(page), /Uploads stopped\.[\s\S]*HTTP 500/);
   assert.doesNotMatch(await dialogText(page), /The test failed/);
+});
+
+check('the free space on the Storage page is read again when the window gets the focus', async ({ open, page }) => {
+  await open('settings.html?mock=1&lang=en&page=storage');
+  const usage = () => page.locator('[data-section="local"]').innerText();
+  assert.match(await usage(), /free on this drive/);
+  // The disk changed while Settings sat open, and the app sends no state for that.
+  await page.evaluate(() => window.__settingsMockEdit((s) => (s.storage.freeBytes = 12_340_000_000), { emit: false }));
+  assert.doesNotMatch(await usage(), /12 GB/, 'nothing is pushed');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelector('[data-section="local"]').innerText.includes('12 GB'));
+  // The same reading shows on the top page's Storage row.
+  await page.click('[data-a="back"], .back');
+  await page.waitForSelector('[data-a="go:storage"]');
+  assert.match(await page.locator('[data-a="go:storage"]').innerText(), /12 GB free/);
 });
 
 check('Show key says what went wrong when the app can\'t give the key', async ({ open, page }) => {
@@ -863,6 +1009,40 @@ check('Restore brings the bucket\'s meetings back with progress', async ({ open,
   assert.match(await dialogText(page), /Weekly/);
 });
 
+check('a refused keychain offers Try again, waits for the keychain, then is up to date', async ({ open, page }) => {
+  for (const [lang, denied, waiting] of [
+    ['en', /didn't let Voice open its encryption key/, /Waiting for the keychain/],
+    ['nl', /liet Voice de encryptiesleutel/, /Wacht op de sleutelhanger/]
+  ]) {
+    await open(`settings.html?mock=1&lang=${lang}&page=storage&platform=macos&sync=key-denied`);
+    const section = page.locator('[data-section="sync"]');
+    assert.match(await section.innerText(), denied);
+    // The key is fine, so nothing offers to replace it here and Show key waits.
+    assert.equal(await section.locator('[data-a="sync-key-use"]').count(), 0);
+    assert.equal(await page.locator('[data-a="sync-key-show"]').isDisabled(), true);
+    await page.click('[data-a="sync-key-retry"]');
+    await page.waitForFunction((re) => new RegExp(re).test(document.querySelector('[data-section="sync"]').innerText), waiting.source);
+    await page.waitForSelector('[data-section="sync"] [data-a="sync-key-retry"]', { state: 'detached' });
+    await page.waitForFunction(() => !document.querySelector('[data-a="sync-key-show"]').disabled, null, { timeout: 4000 });
+  }
+});
+
+check('waiting for the key names the keychain on a Mac and nothing of macOS elsewhere', async ({ open, page }) => {
+  const section = page.locator('[data-section="sync"]');
+  // A Mac waits for its keychain dialog, so its text says so.
+  await open('settings.html?mock=1&lang=en&page=storage&platform=macos&sync=unlocking');
+  assert.match(await section.innerText(), /Waiting for the keychain\. If macOS asks whether Voice may use it, choose Always Allow\./);
+  // Windows hands the key over through DPAPI without asking: the same state says nothing of a keychain.
+  await open('settings.html?mock=1&lang=en&page=storage&sync=unlocking');
+  const english = await section.innerText();
+  assert.match(english, /Waiting for this computer to unlock the encryption key\./);
+  assert.doesNotMatch(english, /macOS|keychain/i);
+  await open('settings.html?mock=1&lang=nl&page=storage&sync=unlocking');
+  const dutch = await section.innerText();
+  assert.match(dutch, /Wacht tot deze computer de encryptiesleutel ontgrendelt\./);
+  assert.doesNotMatch(dutch, /macOS|sleutelhanger/i);
+});
+
 check('the bucket retention saves from its segmented control', async ({ open, page, mockState }) => {
   await open('settings.html?mock=1&lang=en&page=storage&sync=on');
   await page.click('[data-a="seg:storage.sync.retention:days90"]');
@@ -965,6 +1145,7 @@ check('the screen notices read right in both languages, with the screen glyph', 
     'meeting-video-dropped-device': ['Video stopped: graphics card', 'Video gestopt: videokaart'],
     'meeting-frames-dropped': ['Screen stopped: disk almost full', 'Scherm gestopt: schijf bijna vol'],
     'meeting-screen-failed': ['Screen recording stopped', 'Schermopname gestopt'],
+    'meeting-screen-permission': ['Screen Recording is off', 'Schermopname staat uit'],
     'meeting-screen-moved': ['Screen: DELL U2720Q', 'Scherm: DELL U2720Q']
   };
   for (const [state, texts] of Object.entries(notices)) {
@@ -975,6 +1156,15 @@ check('the screen notices read right in both languages, with the screen glyph', 
     }
   }
   assert.equal(await page.locator('.ind.tone-text2').count(), 1, 'a move is news, not a warning');
+});
+
+check('the silent-call notice reads right in both languages, with the info glyph in orange', async ({ open, page }) => {
+  for (const [lang, text] of [['en', 'No sound from the call'], ['nl', 'Geen geluid van het gesprek']]) {
+    await open(`pill.html?mock=meeting-call-silent&lang=${lang}`);
+    assert.equal(await page.locator('.label:not(.out)').innerText(), text, `in ${lang}`);
+    assert.equal(await page.locator('.ind [data-icon="info"]').count(), 1, `the info glyph in ${lang}`);
+    assert.equal(await page.locator('.ind.tone-orange').count(), 1, `orange in ${lang}`);
+  }
 });
 
 check('a meeting snapshot with an unknown screen mode is ignored', async ({ open, page }) => {

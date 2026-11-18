@@ -29,6 +29,8 @@ fn main() {
     match std::env::var(ROLE).as_deref() {
         Ok("worker") => fake_worker(),
         Ok("parent") => parent(),
+        #[cfg(unix)]
+        Ok("watched") => watched(),
         _ => {
             // Single-threaded here, so setting the variable is safe; every worker the engines
             // start from now on inherits it.
@@ -41,6 +43,9 @@ fn main() {
 // The fake worker -----------------------------------------------------------------------------
 
 fn fake_worker() {
+    // What the real worker's `main` does first: when the app that started it is gone, end. The
+    // engine sets the variable, so this is the same path Voice takes.
+    voice_core::local::parent::watch(|line| eprintln!("fake worker: {line}"));
     let stdin = std::io::stdin();
     let mut input = BufReader::new(stdin.lock());
     let mut output = std::io::stdout().lock();
@@ -107,6 +112,9 @@ fn fake_worker() {
                     Some(_) if magic("__fail__") => {
                         json!({"ok": false, "id": id, "kind": "failed", "error": "decode failed on purpose"})
                     }
+                    // Says it transcribed, but names no text: a worker whose answers Voice can't
+                    // read. It must not read as "nothing was said".
+                    Some(_) if magic("__notext__") => json!({"ok": true, "id": id}),
                     Some((_, threads)) => json!({
                         "ok": true,
                         "id": id,
@@ -220,9 +228,13 @@ fn echo(engine: &LocalEngine, hints: &Hints) -> Vec<String> {
     text.split('|').map(str::to_string).collect()
 }
 
-fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+fn wait_for(what: &str, done: impl FnMut() -> bool) {
     // Generous: CI machines are slow, and the idle check runs on its own clock.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    wait_until(Duration::from_secs(10), what, done);
+}
+
+fn wait_until(within: Duration, what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + within;
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
@@ -384,6 +396,23 @@ fn a_failed_decode_keeps_the_worker() {
     let after = echo(&engine, &Hints::default());
     assert_eq!(after[3], before[3]);
     assert_eq!(after[2], "loads 1");
+}
+
+/// An answer that names no text is a broken worker, not a person who said nothing.
+fn an_answer_without_text_is_an_error() {
+    let (_data, engine) = engine_with_model("notext");
+    let before = echo(&engine, &Hints::default());
+    let error = engine
+        .transcribe(&pcm(1600), &words(&["__notext__"]))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Provider);
+    assert_eq!(
+        error.message,
+        "Voice's local speech worker sent an answer Voice couldn't read. Try again."
+    );
+    // Like every answer Voice can't read, it ends the worker instead of trusting it further.
+    let after = echo(&engine, &Hints::default());
+    assert_ne!(after[3], before[3]);
 }
 
 fn garbage_from_the_worker_replaces_it() {
@@ -575,6 +604,23 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists. Voice reaps the workers it started,
+    // and a worker orphaned by a killed Voice is reaped by launchd or init.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Role "watched": a worker that does nothing but watch the parent named in the environment, so
+/// the "the app was already gone" rule can be tested without a model or a protocol.
+#[cfg(unix)]
+fn watched() {
+    voice_core::local::parent::watch(|line| eprintln!("{line}"));
+    println!("watching");
+    std::io::stdout().flush().unwrap();
+    std::thread::sleep(Duration::from_secs(60));
+}
+
 #[cfg(windows)]
 fn the_worker_dies_with_voice() {
     use std::process::{Command, Stdio};
@@ -606,13 +652,124 @@ fn the_worker_dies_with_voice() {
     wait_for("the worker to end with its job", || !process_alive(pid));
 }
 
-/// Kill-on-close job objects are Windows-only; elsewhere the engine stops its worker itself.
+/// The same on Unix, where the job object doesn't exist: the worker watches Voice's pid, because
+/// the engine named it in the environment. Two seconds is all a worker may outlive its app.
+#[cfg(unix)]
+fn the_worker_dies_with_voice() {
+    use std::process::{Command, Stdio};
+
+    let data = TempDir::new("parent");
+    let options = options(data.path(), GOOD_TOKENS);
+    install_model(&options.registry.own_dir(&options.model), GOOD_TOKENS);
+    let mut voice = Command::new(std::env::current_exe().unwrap())
+        .env(ROLE, "parent")
+        .env(PARENT_DATA, data.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(voice.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let pid: u32 = line
+        .trim()
+        .strip_prefix("pid ")
+        .expect("the worker pid")
+        .parse()
+        .unwrap();
+    assert!(process_alive(pid));
+    // A hard kill, like a crash: Voice gets no chance to stop its worker itself.
+    voice.kill().unwrap();
+    voice.wait().unwrap();
+    wait_until(
+        Duration::from_secs(2),
+        "the worker to end with Voice",
+        || !process_alive(pid),
+    );
+}
+
+/// The pid Voice wrote down is what counts: a worker whose app is already gone when its `main`
+/// runs must not start, rather than watch a pid that may belong to something else by now.
+#[cfg(unix)]
+fn a_worker_whose_parent_is_already_gone_does_not_start() {
+    use std::process::{Command, Stdio};
+    use voice_core::local::parent::{PARENT_GONE, PARENT_PID};
+
+    // Any process that has certainly ended: a shell that exits at once.
+    let mut gone = Command::new("sh").arg("-c").arg("exit 0").spawn().unwrap();
+    let gone_pid = gone.id();
+    gone.wait().unwrap();
+
+    let started = Instant::now();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .env(ROLE, "watched")
+        .env(PARENT_PID, gone_pid.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(output.status.code(), Some(PARENT_GONE), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "the worker started watching: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is gone"),
+        "{output:?}"
+    );
+}
+
+/// The watch leaves a worker whose app is alive alone, so the tests above prove something.
+#[cfg(unix)]
+fn a_worker_with_a_live_parent_keeps_running() {
+    use std::process::{Command, Stdio};
+    use voice_core::local::parent::PARENT_PID;
+
+    let mut worker = Command::new(std::env::current_exe().unwrap())
+        .env(ROLE, "watched")
+        .env(PARENT_PID, std::process::id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(worker.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "watching");
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(
+        matches!(worker.try_wait(), Ok(None)),
+        "the watch ended a worker whose parent is alive"
+    );
+    worker.kill().unwrap();
+    worker.wait().unwrap();
+}
+
 #[cfg(windows)]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn platform_tests() -> Vec<(&'static str, fn())> {
+    vec![
+        ("the_worker_dies_with_voice", the_worker_dies_with_voice),
+        (
+            "a_worker_whose_parent_is_already_gone_does_not_start",
+            a_worker_whose_parent_is_already_gone_does_not_start,
+        ),
+        (
+            "a_worker_with_a_live_parent_keeps_running",
+            a_worker_with_a_live_parent_keeps_running,
+        ),
+    ]
+}
+
+#[cfg(not(any(unix, windows)))]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     Vec::new()
 }
@@ -646,6 +803,10 @@ fn run_tests() {
         (
             "a_failed_decode_keeps_the_worker",
             a_failed_decode_keeps_the_worker,
+        ),
+        (
+            "an_answer_without_text_is_an_error",
+            an_answer_without_text_is_an_error,
         ),
         (
             "garbage_from_the_worker_replaces_it",

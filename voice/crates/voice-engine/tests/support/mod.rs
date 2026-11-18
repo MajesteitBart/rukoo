@@ -2,7 +2,7 @@
 //! network is ever touched.
 #![allow(dead_code)]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -20,9 +20,10 @@ use voice_engine::media::{RecordedScreen, ScreenMedia};
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::meetings::screen::ScreenTiming;
 use voice_engine::meetings::PipelineOptions;
+use voice_engine::permissions::{Permission, PermissionState, Permissions};
 use voice_engine::services::{
-    AudioSink, Autostart, Chime, KeyState, MicStream, Microphone, Services, Speech, System,
-    TextInput, Updates,
+    AudioSink, Autostart, Chime, DictationTiming, KeyState, MicLost, MicOpen, MicStream,
+    Microphone, Services, Speech, System, TextInput, Updates,
 };
 use voice_engine::{
     Engine, EngineOptions, Locale, Notification, PillPhase, PillSnapshot, Theme, TrayState, UiSink,
@@ -138,6 +139,8 @@ pub struct FakeSink {
     pub trays: Mutex<Vec<TrayState>>,
     pub ui_changes: AtomicUsize,
     pub screen_menus: Mutex<Vec<Value>>,
+    /// How often the engine asked the app to request Screen Recording.
+    pub screen_permission_asks: AtomicUsize,
 }
 
 impl UiSink for FakeSink {
@@ -167,6 +170,10 @@ impl UiSink for FakeSink {
 
     fn screen_menu(&self, info: Value) {
         lock(&self.screen_menus).push(info);
+    }
+
+    fn screen_permission_needed(&self) {
+        self.screen_permission_asks.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -233,9 +240,22 @@ impl FakeSink {
 // Keys ---------------------------------------------------------------------------------------
 
 #[derive(Clone, Default)]
-pub struct Keys(Arc<Mutex<HashSet<Key>>>);
+pub struct Keys(Arc<Mutex<HashSet<Key>>>, Arc<Mutex<HashSet<Key>>>);
 
 impl Keys {
+    /// Lets go of `key` without the hotkey poller noticing: its thread keeps reading the key as
+    /// down, as when a key-up never reaches the poll, while every other reader sees it up.
+    pub fn lose_release(&self, key: Key) {
+        lock(&self.1).insert(key);
+        lock(&self.0).remove(&key);
+    }
+
+    /// The poller reads the real state of `key` again.
+    pub fn find_release(&self, key: Key) {
+        lock(&self.1).remove(&key);
+        thread::sleep(Duration::from_millis(40));
+    }
+
     pub fn down(&self, key: Key) {
         lock(&self.0).insert(key);
     }
@@ -253,7 +273,10 @@ impl Keys {
 
     pub fn state(&self) -> KeyState {
         let keys = self.clone();
-        Arc::new(move |key| keys.is_down(key))
+        Arc::new(move |key| {
+            let poller = thread::current().name() == Some("hotkeys");
+            keys.is_down(key) || (poller && lock(&keys.1).contains(&key))
+        })
     }
 }
 
@@ -273,8 +296,12 @@ pub struct FakeInput {
     pub selection: Mutex<Option<String>>,
     /// Ctrl+C sent, with the hotkeys held at that moment.
     pub captures: AtomicUsize,
+    /// A copy that fails, as a missing Accessibility grant makes it on macOS.
+    pub capture_fail: Mutex<Option<InputError>>,
     pub capture_held: Mutex<Vec<Vec<Key>>>,
     pub target: Mutex<TextTarget>,
+    /// How long reading the focused app takes, as two Accessibility requests to a busy app can.
+    pub target_delay: Mutex<Duration>,
     pub fail: Mutex<Option<InputError>>,
     /// How long an insertion or a capture waits for the clipboard before its keys, as behind the
     /// previous paste's restore.
@@ -293,8 +320,10 @@ impl FakeInput {
             inserted: Mutex::new(Vec::new()),
             selection: Mutex::new(None),
             captures: AtomicUsize::new(0),
+            capture_fail: Mutex::new(None),
             capture_held: Mutex::new(Vec::new()),
             target: Mutex::new(TextTarget::Selected),
+            target_delay: Mutex::new(Duration::ZERO),
             fail: Mutex::new(None),
             clipboard_wait: Mutex::new(Duration::ZERO),
             entered: AtomicUsize::new(0),
@@ -353,10 +382,15 @@ impl TextInput for FakeInput {
         self.before_keys(before_keys)?;
         lock(&self.capture_held).push(self.held());
         self.captures.fetch_add(1, Ordering::SeqCst);
+        if let Some(error) = lock(&self.capture_fail).clone() {
+            return Err(error);
+        }
         Ok(lock(&self.selection).clone())
     }
 
     fn text_target(&self) -> TextTarget {
+        let delay = *lock(&self.target_delay);
+        thread::sleep(delay);
         *lock(&self.target)
     }
 
@@ -383,6 +417,8 @@ impl TextInput for FakeInput {
 pub enum MicPlan {
     /// Delivers these blocks 2 ms apart, then nothing.
     Blocks(Vec<Vec<i16>>),
+    /// Delivers these blocks, then the device goes away: the stream says it is lost.
+    Lost(Vec<Vec<i16>>),
     Fail(String),
 }
 
@@ -402,12 +438,20 @@ pub fn tone(blocks: usize, amplitude: f32) -> MicPlan {
 #[derive(Default)]
 pub struct FakeMic {
     pub plans: Mutex<VecDeque<MicPlan>>,
+    /// Opens started.
     pub opens: AtomicUsize,
+    /// Opens that finished, after [`FakeMic::open_delay`].
+    pub opened: AtomicUsize,
+    /// Streams open right now.
+    pub streams: Arc<AtomicUsize>,
+    /// How long an open takes, as a Bluetooth headset switching to its microphone does.
+    pub open_delay: Mutex<Duration>,
     pub delivered: Arc<AtomicUsize>,
 }
 
 struct FakeStream {
     closed: Arc<AtomicBool>,
+    streams: Arc<AtomicUsize>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -415,6 +459,7 @@ impl MicStream for FakeStream {}
 
 impl Drop for FakeStream {
     fn drop(&mut self) {
+        self.streams.fetch_sub(1, Ordering::SeqCst);
         self.closed.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -423,14 +468,28 @@ impl Drop for FakeStream {
 }
 
 impl Microphone for FakeMic {
-    fn open(&self, mut on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
+    fn open(&self, on_audio: AudioSink) -> Result<Box<dyn MicStream>, String> {
+        // The fake logs nothing, so no dictation needs a name here.
+        self.open_watched(on_audio, Box::new(|| {}), MicOpen::first(0))
+    }
+
+    fn open_watched(
+        &self,
+        mut on_audio: AudioSink,
+        on_lost: MicLost,
+        _about: MicOpen,
+    ) -> Result<Box<dyn MicStream>, String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
+        let delay = *lock(&self.open_delay);
+        thread::sleep(delay);
+        self.opened.fetch_add(1, Ordering::SeqCst);
         let plan = lock(&self.plans)
             .pop_front()
             .unwrap_or_else(|| tone(40, 8000.0));
-        let blocks = match plan {
+        let (blocks, lost) = match plan {
             MicPlan::Fail(message) => return Err(message),
-            MicPlan::Blocks(blocks) => blocks,
+            MicPlan::Blocks(blocks) => (blocks, None),
+            MicPlan::Lost(blocks) => (blocks, Some(on_lost)),
         };
         let closed = Arc::new(AtomicBool::new(false));
         let delivered = Arc::clone(&self.delivered);
@@ -445,10 +504,16 @@ impl Microphone for FakeMic {
                     delivered.fetch_add(block.len(), Ordering::SeqCst);
                     thread::sleep(Duration::from_millis(2));
                 }
+                // As cpal does: the loss is reported on a thread that doesn't hold the stream.
+                if let Some(on_lost) = lost {
+                    thread::spawn(on_lost);
+                }
             }
         });
+        self.streams.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FakeStream {
             closed,
+            streams: Arc::clone(&self.streams),
             thread: Some(thread),
         }))
     }
@@ -677,11 +742,11 @@ pub type FreeSpace = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// Plenty of room: more than every free-space floor (bucket sync holds media above 10 GiB).
 pub const ROOMY: u64 = 500 << 30;
 
-pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>);
+pub struct FakeSystem(pub Arc<Mutex<FreeSpace>>, pub Arc<Mutex<Theme>>);
 
 impl System for FakeSystem {
     fn theme(&self) -> Theme {
-        Theme::Dark
+        *lock(&self.1)
     }
 
     fn locale(&self) -> Locale {
@@ -698,6 +763,52 @@ impl System for FakeSystem {
     }
 }
 
+/// The macOS permissions Settings shows, as a platform without them (every state `None`) or with
+/// the states a test set. Missing entries are `unknown`, as a preflight this version can't read.
+pub struct FakePermissions {
+    /// Whether this platform reports the permissions at all, as macOS does.
+    pub supported: AtomicBool,
+    pub states: Mutex<HashMap<Permission, PermissionState>>,
+    /// How often the engine asked, one per permission per state that reads them.
+    calls: AtomicUsize,
+    /// How often the engine asked the system for a permission, showing its dialog.
+    requests: AtomicUsize,
+}
+
+impl FakePermissions {
+    pub fn set(&self, permission: Permission, state: PermissionState) {
+        lock(&self.states).insert(permission, state);
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    /// How often Voice asked the system for a permission, as macOS's own dialog does.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+}
+
+impl Permissions for FakePermissions {
+    fn state(&self, permission: Permission) -> Option<PermissionState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.supported.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(
+            lock(&self.states)
+                .get(&permission)
+                .copied()
+                .unwrap_or(PermissionState::Unknown),
+        )
+    }
+
+    fn request(&self, _permission: Permission) {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 /// An engine on fakes in a temp data folder.
 pub struct Harness {
     pub dir: TempDir,
@@ -709,6 +820,7 @@ pub struct Harness {
     pub chime: Arc<FakeChime>,
     pub autostart: Arc<FakeAutostart>,
     pub updates: Arc<FakeUpdates>,
+    pub permissions: Arc<FakePermissions>,
     pub ownkey_config: Option<PathBuf>,
     pub ownkey_models: Option<PathBuf>,
     pub recorder_exe: PathBuf,
@@ -717,10 +829,18 @@ pub struct Harness {
     pub screen_exe: PathBuf,
     pub screen_timing: ScreenTiming,
     pub dev_mode: bool,
+    /// The production watchdog and limit unless a test shortens them.
+    pub dictation_timing: DictationTiming,
+    /// Whether the session is at the console; true unless a test locks it.
+    pub at_console: Arc<AtomicBool>,
+    /// When a key that isn't a hotkey last went down; `None` is a platform that doesn't say.
+    pub typed: Arc<Mutex<Option<Instant>>>,
     pub import_from: Option<PathBuf>,
     pub test_sources: Option<String>,
     /// Free space as the engine sees it; [`ROOMY`] unless a test changes it.
     pub free: Arc<Mutex<FreeSpace>>,
+    /// The theme the system shows: dark unless a test changes it with [`Harness::set_system_theme`].
+    pub system_theme: Arc<Mutex<Theme>>,
     pub screen_files: Arc<dyn ScreenFiles>,
     pub screen_media: Arc<dyn ScreenMedia>,
     pub sync_timing: SyncTiming,
@@ -728,6 +848,9 @@ pub struct Harness {
     pub protector: Arc<dyn Protector>,
     pub test_screen: Option<String>,
     pub test_monitor: Option<String>,
+    /// Whether this engine keeps the audio of a dictation that inserted nothing; off unless a
+    /// test turns it on, as a development copy does with its environment variable.
+    pub dump_empty_dictation: AtomicBool,
 }
 
 impl Harness {
@@ -739,6 +862,7 @@ impl Harness {
         let screen = Arc::new(RecordedScreen::default());
         Harness {
             free: Arc::new(Mutex::new(roomy)),
+            system_theme: Arc::new(Mutex::new(Theme::Dark)),
             screen_files: Arc::clone(&screen) as Arc<dyn ScreenFiles>,
             screen_media: screen,
             sync_timing: SyncTiming::default(),
@@ -755,14 +879,24 @@ impl Harness {
             chime: Arc::new(FakeChime::default()),
             autostart: Arc::new(FakeAutostart::default()),
             updates: Arc::new(FakeUpdates::default()),
+            permissions: Arc::new(FakePermissions {
+                supported: AtomicBool::new(cfg!(target_os = "macos")),
+                states: Mutex::new(HashMap::new()),
+                calls: AtomicUsize::new(0),
+                requests: AtomicUsize::new(0),
+            }),
             ownkey_config: None,
             ownkey_models: None,
             timing: ControllerTiming::default(),
             dev_mode: true,
+            dictation_timing: DictationTiming::default(),
+            at_console: Arc::new(AtomicBool::new(true)),
+            typed: Arc::new(Mutex::new(None)),
             import_from: None,
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: AtomicBool::new(false),
         }
     }
 
@@ -775,6 +909,9 @@ impl Harness {
         let data = self.data();
         std::fs::create_dir_all(&data).unwrap();
         let mut cfg = voice_core::Config::defaults(self.dev_mode);
+        // The tests press F13 and F14 on every platform; a Mac's default keys are other ones.
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
         cfg.switch_audio_provider("orukeet");
         let mut value = serde_json::to_value(&cfg).unwrap();
         for (key, v) in patch.as_object().unwrap() {
@@ -795,13 +932,26 @@ impl Harness {
         Services {
             key_state: Some(self.keys.state()),
             hotkey_interval: Duration::from_millis(5),
+            dictation_timing: self.dictation_timing,
+            at_console: {
+                let at_console = Arc::clone(&self.at_console);
+                Arc::new(move || at_console.load(Ordering::SeqCst))
+            },
+            key_activity: {
+                let typed = Arc::clone(&self.typed);
+                Arc::new(move || lock(&typed).map(|at| at.elapsed()))
+            },
             input: self.input.clone(),
             microphone: self.mic.clone(),
             speech: Arc::new(SpeechHandle(Arc::clone(&self.speech))),
             chime: Arc::new(ChimeHandle(Arc::clone(&self.chime))),
             autostart: Arc::new(AutostartHandle(Arc::clone(&self.autostart))),
             updates: Arc::new(UpdatesHandle(Arc::clone(&self.updates))),
-            system: Arc::new(FakeSystem(Arc::clone(&self.free))),
+            system: Arc::new(FakeSystem(
+                Arc::clone(&self.free),
+                Arc::clone(&self.system_theme),
+            )),
+            permissions: Arc::clone(&self.permissions) as Arc<dyn Permissions>,
             ownkey_config: self.ownkey_config.clone(),
             ownkey_models: self.ownkey_models.clone(),
             recorder_exe: self.recorder_exe.clone(),
@@ -817,6 +967,10 @@ impl Harness {
     }
 
     /// Sets the free space the engine sees from now on.
+    pub fn set_system_theme(&self, theme: Theme) {
+        *lock(&self.system_theme) = theme;
+    }
+
     pub fn set_free(&self, free: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) {
         *lock(&self.free) = Arc::new(free);
     }
@@ -829,6 +983,7 @@ impl Harness {
             test_sources: self.test_sources.clone(),
             test_screen: self.test_screen.clone(),
             test_monitor: self.test_monitor.clone(),
+            dump_empty_dictation: self.dump_empty_dictation.load(Ordering::SeqCst),
             import_ownkey_from: self.import_from.clone(),
             version: "0.1.0-test".into(),
         }
@@ -856,6 +1011,39 @@ impl Harness {
 pub const BUCKET: &str = "test";
 pub const ACCESS_KEY: &str = "test";
 pub const BUCKET_SECRET: &str = "test-secret-4711";
+
+/// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
+/// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
+/// back. Without the variable nothing is written.
+pub fn log_skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {
+        return;
+    };
+    // One write of the whole line, so tests running in parallel threads don't interleave.
+    let line = format!("{} {test}: {reason}\n", env!("CARGO_PKG_NAME"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// True, after printing why, when CI's host probe found the host too stalled for timing windows
+/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
+/// tight window on a late tick returns early on it. Windows and Linux CI never set it.
+pub fn skip_on_slow_host(test: &str) -> bool {
+    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    if slow {
+        let reason =
+            "RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow";
+        eprintln!("skipped {test}: {reason}");
+        log_skip(test, reason);
+    }
+    slow
+}
 
 /// A fake S3 on a free port of this computer, objects in memory.
 pub fn fake_s3() -> voice_s3_fake::FakeS3 {
