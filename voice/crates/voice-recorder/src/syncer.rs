@@ -18,8 +18,10 @@ use crate::disk;
 use crate::record::log;
 use crate::timeline::Line;
 
-/// A sync slower than this is logged, so a recording that stalls can be told from a slow disk.
-pub const SLOW: Duration = Duration::from_millis(500);
+/// A sync slower than this is logged, so a recording that stalls can be told from a slow disk. On
+/// Windows a sync of an open file also holds up the recorder thread's next write to that file (the
+/// handles share one file object), so syncs this short matter (#209).
+pub const SLOW: Duration = Duration::from_millis(100);
 
 /// Files to sync, each with what to call it in the log.
 type Files = Vec<(String, File)>;

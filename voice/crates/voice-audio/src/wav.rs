@@ -46,11 +46,26 @@ impl SegmentWriter {
     /// Creates a new segment. Fails if the file already exists, so a resumed recording can never
     /// overwrite audio from an earlier session.
     pub fn create(path: &Path) -> io::Result<Self> {
+        Self::create_with(path, write_all_at)
+    }
+
+    /// [`SegmentWriter::create`], with the write that puts the header in place given, so a test
+    /// can make it fail.
+    fn create_with(
+        path: &Path,
+        write_header: fn(&File, &[u8], u64) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         exclusive_writer(&mut options);
         let file = options.open(path)?;
-        write_all_at(&file, &segment_header(0), 0)?;
+        if let Err(e) = write_header(&file, &segment_header(0), 0) {
+            // The file is this call's own and holds nothing; left behind, it would hold a segment
+            // number no segment uses.
+            drop(file);
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
         Ok(Self {
             file,
             path: path.to_path_buf(),
@@ -394,6 +409,19 @@ mod tests {
         let mut expected = ramp(1600);
         expected.extend(ramp(320));
         assert_eq!(samples, expected);
+    }
+
+    #[test]
+    fn a_failed_header_write_leaves_no_file() {
+        let dir = TempDir::new("header-fails");
+        let path = dir.file("000001.wav");
+        let err = SegmentWriter::create_with(&path, |_, _, _| Err(io::Error::other("disk full")))
+            .err()
+            .unwrap();
+        assert_eq!(err.to_string(), "disk full");
+        assert!(!path.exists(), "the half-made file stays");
+        // The number is free again.
+        SegmentWriter::create(&path).unwrap();
     }
 
     #[test]

@@ -55,6 +55,48 @@ pub fn highest_seq_on_disk(dir: &Path, track: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Removes the segment files that no `segment` line names and that hold no audio, and returns
+/// how many went. A recorder creates each track's next file ahead of time, so one that died
+/// leaves such a file per track. A file with audio in it always stays; one that can't go is
+/// reported in `problems`.
+pub fn remove_unnamed_empty_segments(
+    dir: &Path,
+    history: &History,
+    problems: &mut Vec<String>,
+) -> usize {
+    let mut removed = 0;
+    for track in TRACKS {
+        let Ok(entries) = fs::read_dir(dir.join("audio").join(track)) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name();
+            let Some(seq) = name
+                .to_str()
+                .and_then(|name| name.strip_suffix(".wav"))
+                .and_then(|seq| seq.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let named = history
+                .segments
+                .iter()
+                .any(|s| s.track == track && s.seq == seq);
+            let empty = entry
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.len() <= voice_audio::HEADER_LEN);
+            if named || !empty {
+                continue;
+            }
+            match fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => problems.push(format!("audio/{track}/{}: {e}", name.to_string_lossy())),
+            }
+        }
+    }
+    removed
+}
+
 /// `recorder.json` written and synced under a temporary name, waiting for the rename that puts
 /// it in place, so a reader never sees half. The recorder does the slow part before its session
 /// starts and renames the file after its `session` line.
@@ -180,6 +222,7 @@ pub fn finalize(dir: &Path, reason: &str) -> Result<Finalized, ExitError> {
     let history = History::from_lines(&lines);
     let mut report = Finalized::default();
     let samples = repair_segments(dir, &history.segments, &mut report.problems);
+    remove_unnamed_empty_segments(dir, &history, &mut report.problems);
     let on_disk = |s: &SegmentRecord| samples.get(&(s.track.clone(), s.seq)).copied().unwrap_or(0);
 
     for s in history.open_segments() {

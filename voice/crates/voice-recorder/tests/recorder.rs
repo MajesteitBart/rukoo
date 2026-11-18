@@ -34,6 +34,12 @@ fn finalize_repairs_headers_and_is_idempotent() {
     let mic = segments(&m, &lines, "mic");
     let path = m.segment_path(&mic.last().unwrap().file);
     let counted = mic.last().unwrap().pcm.len();
+    // The file the recorder created ahead for the next segment: no line names it and it holds
+    // only its header.
+    let ahead = m
+        .dir
+        .join(format!("audio/mic/{:06}.wav", mic.last().unwrap().seq + 1));
+    assert_eq!(fs::read(&ahead).unwrap(), voice_audio::segment_header(0));
     let mut file = OpenOptions::new().append(true).open(&path).unwrap();
     for _ in 0..100 {
         file.write_all(&1000i16.to_le_bytes()).unwrap();
@@ -97,6 +103,8 @@ fn finalize_repairs_headers_and_is_idempotent() {
         m.recorder_file().is_none(),
         "finalize removes the stale recorder.json"
     );
+    assert!(!ahead.exists(), "finalize removes the file created ahead");
+    assert!(path.exists());
 
     // Again: nothing to do, nothing written.
     let before = m.timeline_text();
@@ -127,9 +135,21 @@ fn resume_continues_numbering_and_stays_paused() {
     child.kill().unwrap();
     child.wait().unwrap();
 
-    // A file the dead session created but never named in the timeline.
+    // The dead session created each track's next file ahead: no line names it and it holds only
+    // its header.
+    for track in ["mic", "call"] {
+        let ahead = m.dir.join("audio").join(track).join("000002.wav");
+        let bytes = fs::read(&ahead).unwrap();
+        assert_eq!(bytes, voice_audio::segment_header(0), "{track}");
+    }
+    // A file the timeline doesn't name that holds audio, as a power cut that lost its `segment`
+    // line could leave. It replaces the microphone's empty one.
     let orphan = m.dir.join("audio").join("mic").join("000002.wav");
-    fs::write(&orphan, voice_audio::segment_header(0)).unwrap();
+    let mut audio = voice_audio::segment_header(100).to_vec();
+    for _ in 0..100 {
+        audio.extend_from_slice(&1000i16.to_le_bytes());
+    }
+    fs::write(&orphan, &audio).unwrap();
 
     let mut child = m.record(&tracks, &["--resume"]);
     let (mut client, token) = m.connect(2);
@@ -170,10 +190,11 @@ fn resume_continues_numbering_and_stays_paused() {
     let lines = m.lines();
     let mic = segments(&m, &lines, "mic");
     let seqs: Vec<u64> = mic.iter().map(|s| s.seq).collect();
-    assert_eq!(seqs, vec![1, 3], "numbering skips the orphan file");
+    assert_eq!(seqs, vec![1, 3], "numbering skips the file with audio");
     assert_eq!(mic[1].file, "audio/mic/000003.wav");
     assert!(mic[1].t >= t(&resume));
-    assert_eq!(fs::read(&orphan).unwrap(), voice_audio::segment_header(0));
+    assert_eq!(fs::read(&orphan).unwrap(), audio, "never overwritten");
+    // The call's empty file went with the resume, so its numbering continues right after.
     let call: Vec<u64> = segments(&m, &lines, "call").iter().map(|s| s.seq).collect();
     assert_eq!(call, vec![1, 2]);
 }
@@ -1015,16 +1036,120 @@ fn a_slow_disk_never_holds_up_the_heartbeats() {
     assert!(log.contains("took"), "{log}");
 }
 
-/// A recorder that a failing test kills, instead of leaving it to record for 8 hours.
-struct Running(std::process::Child);
+#[test]
+fn slow_file_creates_never_hold_up_the_heartbeats() {
+    let m = TempMeeting::new("slow-create");
+    // Every new segment file takes 0.3 s to create, as when a virus scanner checks each new file
+    // right after a build. Two tracks start a segment every second, so creating them on the
+    // recorder thread held up a heartbeat by 0.6 s, past the bound below (#209).
+    let mut child = m.record(
+        &["mic=synthetic:tone:440", "call=synthetic:tone:660"],
+        &["--segment-ms", "1000", "--test-create-delay-ms", "300"],
+    );
+    let (mut client, token) = m.connect(1);
+    m.wait_for_heartbeat(7_000);
+    let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(wait_exit(&mut child).success());
 
-impl Drop for Running {
-    fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
+    let lines = m.lines();
+    let log = fs::read_to_string(m.root.join("stderr-1.log")).unwrap_or_default();
+    let heartbeats: Vec<u64> = of_kind(&lines, "heartbeat").iter().map(|l| t(l)).collect();
+    assert!(heartbeats.len() >= 6, "{heartbeats:?}");
+    for pair in heartbeats.windows(2) {
+        assert!(
+            pair[1] - pair[0] <= 1_300,
+            "heartbeats {} and {}\n{log}",
+            pair[0],
+            pair[1]
+        );
     }
+    assert_eq!(lines.last().unwrap()["kind"], "stop");
+    for (track, hz) in [("mic", 440.0), ("call", 660.0)] {
+        let segs = segments(&m, &lines, track);
+        assert!(segs.len() >= 6, "{track}: {segs:?}");
+        for pair in segs.windows(2) {
+            assert_eq!(pair[1].seq, pair[0].seq + 1, "{track} numbering");
+            assert_eq!(
+                pair[0].pcm.len(),
+                16_000,
+                "{track} {} isn't full",
+                pair[0].seq
+            );
+            assert_eq!(pair[1].t, pair[0].end(), "{track} {} moved", pair[1].seq);
+        }
+        // The last segment ends at the stop and can be too short to measure.
+        for seg in &segs[..segs.len() - 1] {
+            assert_tone(&seg.pcm, hz, &format!("{track} segment {}", seg.seq));
+        }
+        // A finished meeting keeps no file the timeline doesn't name.
+        let mut on_disk: Vec<String> = fs::read_dir(m.dir.join("audio").join(track))
+            .unwrap()
+            .map(|e| format!("audio/{track}/{}", e.unwrap().file_name().to_string_lossy()))
+            .collect();
+        on_disk.sort();
+        let named: Vec<String> = segs.iter().map(|s| s.file.clone()).collect();
+        assert_eq!(on_disk, named, "{track}");
+    }
+}
+
+#[test]
+fn a_failing_test_stops_its_recorder() {
+    let m = TempMeeting::new("failing-test");
+    // A test that fails while its recorder runs. `resume_unwind` panics without the message a
+    // failed assertion prints, and carries the recorder's control port out of the test.
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _child = m.record(&["mic=synthetic:tone:440"], &[]);
+        m.wait_for_heartbeat(0);
+        let file = m.recorder_file().expect("recorder.json");
+        std::panic::resume_unwind(Box::new(file));
+    }));
+    let file = *failed
+        .expect_err("the test failed")
+        .downcast::<voice_recorder::meeting::RecorderFile>()
+        .unwrap();
+    // The recorder stopped with the test: its control port closes, and its timeline stops growing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let answering = loop {
+        match Client::connect(file.port, Duration::from_millis(500)) {
+            Err(_) => break None,
+            Ok(client) if std::time::Instant::now() >= deadline => break Some(client),
+            Ok(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
+    if let Some(mut client) = answering {
+        // Stop it here, so this failure doesn't leave it recording for 8 hours either.
+        command(&mut client, &file.token, json!({ "cmd": "stop" }));
+        panic!("the recorder still answers after the test failed");
+    }
+    let before = m.timeline_text().len();
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert_eq!(m.timeline_text().len(), before, "the timeline still grows");
+}
+
+#[cfg(windows)]
+#[test]
+fn the_recorder_runs_above_normal_priority() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        GetPriorityClass, OpenProcess, ABOVE_NORMAL_PRIORITY_CLASS,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let m = TempMeeting::new("priority");
+    let mut child = m.record(&["mic=synthetic:tone:440"], &[]);
+    let (mut client, token) = m.connect(1);
+    // SAFETY: the handle is closed below; the process is the recorder this test started.
+    let class = unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, child.id()).unwrap();
+        let class = GetPriorityClass(process);
+        let _ = CloseHandle(process);
+        class
+    };
+    command(&mut client, &token, json!({ "cmd": "stop" }));
+    assert!(wait_exit(&mut child).success());
+    // A busy computer, building software for instance, must not keep the recorder waiting for
+    // the CPU (#209).
+    assert_eq!(class, ABOVE_NORMAL_PRIORITY_CLASS.0);
 }
 
 #[test]
@@ -1035,10 +1160,10 @@ fn a_segment_end_reaches_the_timeline_only_after_its_audio_is_on_disk() {
     // behind it. A `segment_end` written at the close would go to disk with that sync of the
     // timeline, ahead of its audio: after a power cut the timeline would say the segment is
     // complete, and a resume would trust it instead of repairing the segment.
-    let mut child = Running(m.record(
+    let mut child = m.record(
         &["mic=synthetic:tone:440"],
         &["--segment-ms", "300", "--test-sync-delay-ms", "1500"],
-    ));
+    );
     // The syncer logs every sync this slow once it is done, before it hands the `segment_end`
     // back to the recorder thread. So when a `segment_end` shows up in the timeline, a read of
     // the log after that read of the timeline must already have its segment synced.
@@ -1051,7 +1176,7 @@ fn a_segment_end_reaches_the_timeline_only_after_its_audio_is_on_disk() {
     let mut checked = Vec::new();
     let mut overlapped = false;
     let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
-    while child.0.try_wait().unwrap().is_none() {
+    while child.try_wait().unwrap().is_none() {
         let lines = m.lines_so_far();
         let log = read_log();
         for end in of_kind(&lines, "segment_end") {
@@ -1090,7 +1215,7 @@ fn a_segment_end_reaches_the_timeline_only_after_its_audio_is_on_disk() {
     }
     let reply = stopping.expect("the stop was sent").join().unwrap();
     assert_eq!(reply["ok"], true, "{reply}");
-    assert!(child.0.wait().unwrap().success());
+    assert!(child.wait().unwrap().success());
 
     let log = read_log();
     // The segments waited behind that sync of the timeline.
@@ -1131,25 +1256,25 @@ fn resume_ends_segments_still_waiting_for_the_disk() {
     // Every sync takes 1.5 s and a segment closes every 0.3 s, so the recorder dies with closed
     // segments that have no `segment_end` yet, next to the open one.
     let tracks = ["mic=synthetic:tone:440"];
-    let mut child = Running(m.record(
+    let mut child = m.record(
         &tracks,
         &["--segment-ms", "300", "--test-sync-delay-ms", "1500"],
-    ));
+    );
     wait_until(WAIT_TIMEOUT, || {
         (of_kind(&m.lines_so_far(), "segment").len() >= 4).then_some(())
     });
-    child.0.kill().unwrap();
-    child.0.wait().unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
     let lines = m.lines();
     let started = of_kind(&lines, "segment").len();
     let ended = of_kind(&lines, "segment_end").len();
     assert!(started >= ended + 2, "{started} segments, {ended} ended");
 
-    let mut child = Running(m.record(&tracks, &["--resume"]));
+    let mut child = m.record(&tracks, &["--resume"]);
     let (mut client, token) = m.connect(2);
     let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
     assert_eq!(reply["ok"], true, "{reply}");
-    assert!(wait_exit(&mut child.0).success());
+    assert!(wait_exit(&mut child).success());
 
     let lines = m.lines();
     let session = lines
