@@ -102,6 +102,8 @@ The bell shows how many chats have a reply ready or wait for you. It turns orang
 
 Pick a chat to open it together with its email. For a chat you continued from a newer email, that's the newest one. If the email has moved since, Rukoo finds it again by its Message-ID. Opening a chat marks its reply as read. A chat you stopped yourself doesn't count as news. Rukoo keeps which replies you haven't read in `conversations.json`, so they're still marked after a restart.
 
+Hermes, OpenClaw and custom agents use one token for all their chats, so they name the chat in each tool call with the `conversation_id` Rukoo gives them. A card, plan, list of sources or draft goes to that chat. A call that names no chat goes to the one chat the agent is working in. If the agent is working in more than one chat, Rukoo shows nothing and tells the agent to name the chat, so a card never lands in a chat you aren't looking at while the agent says it's ready. A call that names another agent's chat gets an error that says the agent's setup has the wrong token. When a card lands in another of the agent's chats than the one it's answering in, the agent is told so and can tell you where it is. A call from outside any chat, such as Clark on WhatsApp, opens a chat of its own in the panel.
+
 ## While the agent works
 
 You can keep typing while the agent answers. A message you send then goes one of two ways:

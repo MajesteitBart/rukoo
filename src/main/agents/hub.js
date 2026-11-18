@@ -2645,9 +2645,11 @@ class AgentHub extends EventEmitter {
   }
 
   // The chat a tool call is for, and whether the call is bound to it: tied to it by something the model doesn't
-  // pick, so that the chat's own level counts (permissionFor()).
+  // pick, so that the chat's own level counts (permissionFor()). unclear says why a tool that puts something in a chat
+  // must not go by the guess (tools.chatFor): conversation_id names another agent's chat ('foreign', so the token is
+  // the wrong one), or no usable conversation_id while more than one of the agent's chats is working ('ambiguous').
   resolveCall(identity, args = {}, meta = {}) {
-    const none = { conversation: null, bound: false };
+    const none = { conversation: null, bound: false, unclear: null };
     if (!identity) return none;
     const own = (id) => {
       const c = typeof id === 'string' && id ? this.conversations.get(id) : null;
@@ -2657,19 +2659,32 @@ class AgentHub extends EventEmitter {
     // calls into another chat of the same agent; only tokens without a chat (Codex, Clark) are routed by it.
     if (identity.conversationId) {
       const c = own(identity.conversationId);
-      return c ? { conversation: c, bound: true } : none;
+      return c ? { conversation: c, bound: true, unclear: null } : none;
     }
     // Codex's token is shared, but its thread id comes from Codex in _meta, not from the model, so it counts before
     // conversation_id, as in phonehost.route().
     const codex = meta && isObj(meta['x-codex-turn-metadata']) ? meta['x-codex-turn-metadata'].thread_id : null;
     const threadId = (meta && meta.threadId) || codex;
     const mapped = threadId ? own(this.threads.get(String(threadId))) : null;
-    if (mapped) return { conversation: mapped, bound: !identity.remote };
+    if (mapped) return { conversation: mapped, bound: !identity.remote, unclear: null };
     // The model writes conversation_id, and the one running turn is only a guess.
-    const byArg = own(args && args.conversation_id);
-    if (byArg) return { conversation: byArg, bound: false };
-    const running = [...this.turns.keys()].map((id) => this.conversations.get(id)).filter((c) => c && c.agent === identity.agent);
-    return { conversation: running.length === 1 ? running[0] : null, bound: false };
+    const id = args && typeof args.conversation_id === 'string' ? args.conversation_id : '';
+    const byArg = own(id);
+    if (byArg) return { conversation: byArg, bound: false, unclear: null };
+    const running = [...this.turns.keys()].map((cid) => this.conversations.get(cid)).filter((c) => c && c.agent === identity.agent);
+    const named = id ? this.conversations.get(id) : null;
+    const unclear = named ? { reason: 'foreign', id: named.id } : running.length > 1 ? { reason: 'ambiguous' } : null;
+    return { conversation: running.length === 1 ? running[0] : null, bound: false, unclear };
+  }
+
+  // Whether agent has a turn running in another chat and none in cid: the user talks to it elsewhere.
+  workingElsewhere(agent, cid) {
+    if (this.turns.has(cid)) return false;
+    for (const id of this.turns.keys()) {
+      const c = id !== cid && this.conversations.get(id);
+      if (c && c.agent === agent) return true;
+    }
+    return false;
   }
 
   // The level a tool call goes by, once it has its chat (ensureConversation()). A chat's own level, a looser one

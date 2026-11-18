@@ -1495,6 +1495,74 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   expect(await app.evaluate(() => global.__semAgents.list()[0].agent)).toBe('openclaw');
 });
 
+// #281: OpenClaw calls Rukoo's tools with one token for all its chats and names the chat in each call. Its card has to
+// land in the chat the user asked in, also while another OpenClaw chat still works; a call that doesn't say which chat
+// gets an error instead of a chat of its own, which the user wouldn't see while the agent said the card was ready.
+test('an OpenClaw card lands in the chat you asked in, while another OpenClaw chat works, in the calendar', async () => {
+  // OpenClaw's turns run until the test ends them, like a gateway stream that went quiet.
+  await app.evaluate(() => {
+    const adapter = global.__semAgents.adapters.get('openclaw');
+    adapter.held = [];
+    adapter.runTurn = (turn) =>
+      new Promise((resolve) => {
+        adapter.held.push(() => resolve({ status: 'done' }));
+        turn.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true });
+      });
+  });
+  await win.evaluate(() => window.mail.call('agentUpdateConfig', { defaultAgent: 'openclaw' }));
+  const working = () => app.evaluate(() => [...global.__semAgents.turns.keys()]);
+  // A chat about an email that is still working.
+  await openChat('Your parcel is on its way');
+  await expect(win.locator('.agentpane .ap-agent')).toHaveText('OpenClaw');
+  await say('Track the parcel');
+  await expect.poll(() => working().then((ids) => ids.length)).toBe(1);
+  const [stuck] = await working();
+  // In the calendar the user asks for the meeting in a new chat.
+  await win.click('[data-mode="calendar"]');
+  await expect(win.locator('[data-mode="calendar"]')).toHaveAttribute('aria-selected', 'true');
+  await win.click('.agentpane [data-ap="new"]');
+  await say('maak meetings aan voor maandag 11:30u met titel SRS');
+  await expect.poll(() => working().then((ids) => ids.length)).toBe(2);
+  const chat = (await working()).find((id) => id !== stuck);
+
+  // OpenClaw's MCP client, as hub.identify() knows it.
+  const openclaw = (args) =>
+    app.evaluate(async (_e, args) => {
+      const res = await global.__semAgents.callTool({ agent: 'openclaw', conversationId: null, remote: false }, 'create_event', args, {});
+      return { error: res.isError ? res.content[0].text : null, data: res.structuredContent || null };
+    }, args);
+  const monday = new Date();
+  monday.setDate(monday.getDate() + ((8 - monday.getDay()) % 7 || 7));
+  const start = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}T11:30`;
+  const chats = await app.evaluate(() => global.__semAgents.list().length);
+
+  // The call names the chat, as the turn tells OpenClaw to: the card is in the chat on screen.
+  const named = await openclaw({ conversation_id: chat, title: 'SRS', start });
+  expect(named.error).toBeNull();
+  expect([named.data.status, named.data.conversation_id, named.data.elsewhere]).toEqual(['waiting_for_user', chat, undefined]);
+  const card = transcript().locator('.bui-approval');
+  await expect(card).toHaveCount(1);
+  await expect(card.locator('.bui-approval__title')).toHaveText('OpenClaw wants to add an event to your calendar');
+  await expect(card.locator('.bui-approval__v').first()).toHaveText('SRS');
+  await expect(card.getByRole('button', { name: 'Create', exact: true })).toBeVisible();
+
+  // Without conversation_id, with two chats working, Rukoo can't tell which one: it says so and opens no chat.
+  const bare = await openclaw({ title: 'SRS', start });
+  expect(bare.error).toBe(
+    "Rukoo showed nothing: more than one of your chats is working right now, so Rukoo can't tell which one this is for. Call again with the conversation_id from the message you are answering."
+  );
+  expect(await app.evaluate(() => global.__semAgents.list().length)).toBe(chats);
+  expect(await app.evaluate((_e, id) => global.__semAgents.get(id).items.filter((i) => i.type === 'approval').length, stuck)).toBe(0);
+  // The chat on screen stays, with its one card, and no toast points elsewhere.
+  await win.waitForTimeout(500);
+  await expect(card).toHaveCount(1);
+  await expect(win.locator('#toast', { hasText: 'An agent is waiting for your approval' })).toHaveCount(0);
+  await shot('openclaw-card-in-calendar');
+
+  await app.evaluate(() => global.__semAgents.adapters.get('openclaw').held.splice(0).forEach((end) => end()));
+  await expect.poll(() => working().then((ids) => ids.length)).toBe(0);
+});
+
 test('a reopened reply-all draft rewritten as a private reply loses the old Cc', async () => {
   await openChat('Call on Thursday');
   await say('Hello there');

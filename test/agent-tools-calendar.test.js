@@ -22,24 +22,24 @@ const { fakeCalendar, setup: googleSetup, monday, at, day } = require('./fixture
 
 test.afterEach(() => i18n.setLanguage('en'));
 
-async function hubFor(engine, dir, calendars, deps = {}) {
+async function hubFor(engine, dir, calendars, deps = {}, adapters = {}) {
   const hub = new AgentHub({
     engine,
     dataDir: dir,
     deps: { appVersion: '1.0.0', tempDir: path.join(dir, 'agent-tmp'), calendars, calendarFree: (o) => free(calendars, engine.settings, null, o), ...deps },
-    adapters: {},
+    adapters,
     listen: false
   });
   await hub.start();
   return hub;
 }
 
-async function demo(deps = {}) {
+async function demo(deps = {}, adapters = {}) {
   const dir = tempDir('sem-cal-tools-');
   const engine = new Engine({ dataDir: dir }).init();
   const acc = await engine.addAccount({ type: 'demo' });
   const calendars = new Calendars({ engine });
-  const hub = await hubFor(engine, dir, calendars, deps);
+  const hub = await hubFor(engine, dir, calendars, deps, adapters);
   const done = async () => {
     await hub.dispose();
     calendars.flush();
@@ -600,6 +600,186 @@ test('create_event on Google invites the guests and adds Meet, as the card says'
     await hub.dispose();
     calendars.flush();
     await engine.close();
+  }
+});
+
+// ---------- the chat a card lands in, for agents with one token for all their chats (#281) ----------
+
+// OpenClaw's MCP client, as hub.identify() knows it: one token for every chat, so the chat comes from conversation_id
+// or from the one turn OpenClaw has running.
+const openclaw = { agent: 'openclaw', conversationId: null, remote: false };
+
+// An adapter whose turns run until the test lets them end, like OpenClaw's stream while its agent works or after it
+// went quiet (openclaw.js waits 30 minutes before it gives up on one).
+function holder() {
+  const waiting = [];
+  const adapter = {
+    async status() {
+      return { state: 'ready' };
+    },
+    runTurn() {
+      return new Promise((resolve) => waiting.push(() => resolve({ status: 'done' })));
+    },
+    async dispose() {
+      for (const end of waiting.splice(0)) end();
+    }
+  };
+  return { adapter, count: () => waiting.length, release: () => waiting.splice(0).forEach((end) => end()) };
+}
+
+// Chats the hub made on its own for calls from outside a chat (hub.ensureConversation).
+const externals = (hub) => [...hub.conversations.values()].filter((c) => c.origin === 'external');
+const cardsIn = (c) => c.items.filter((i) => i.type === 'approval');
+
+async function working(t, held, ...chats) {
+  for (const c of chats) t.hub.send(c.id, { text: 'maak meetings aan voor maandag 11:30u met titel SRS in TPH + RevOS' });
+  for (let i = 0; i < 200 && (held.count() < chats.length || !chats.every((c) => t.hub.turns.has(c.id))); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(held.count(), chats.length, 'every chat has its turn running');
+}
+
+test('create_event from OpenClaw lands in the chat it works in, also for two at once with and without conversation_id', async () => {
+  const held = holder();
+  const t = await demo({}, { openclaw: held.adapter });
+  try {
+    const c = t.hub.create({ agent: 'openclaw', message: null });
+    await working(t, held, c);
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    const results = await Promise.all([
+      t.hub.callTool(openclaw, 'create_event', { conversation_id: c.id, title: 'SRS', start, calendar: 'personal' }),
+      t.hub.callTool(openclaw, 'create_event', { conversation_id: c.id, title: 'SRS', start, calendar: 'work' }),
+      t.hub.callTool(openclaw, 'create_event', { title: 'SRS', start, calendar: 'personal' }),
+      t.hub.callTool(openclaw, 'create_event', { title: 'SRS', start, calendar: 'work' })
+    ]);
+    for (const res of results.map(data)) {
+      assert.deepEqual([res.status, res.conversation_id, res.elsewhere], ['waiting_for_user', c.id, undefined]);
+    }
+    assert.equal(cardsIn(c).length, 4, 'all four cards in the chat on screen');
+    assert.deepEqual(externals(t.hub), []);
+  } finally {
+    held.release();
+    await t.done();
+  }
+});
+
+test('with two OpenClaw chats working, a card without conversation_id is refused instead of going to a chat of its own', async () => {
+  const held = holder();
+  const t = await demo({}, { openclaw: held.adapter });
+  const events = [];
+  t.hub.on('event', (e) => events.push(e));
+  try {
+    // One chat whose stream went quiet, and the one the user asks in.
+    const stuck = t.hub.create({ agent: 'openclaw', message: null });
+    const chat = t.hub.create({ agent: 'openclaw', message: null });
+    await working(t, held, stuck, chat);
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    const refused =
+      "Rukoo showed nothing: more than one of your chats is working right now, so Rukoo can't tell which one this is for. Call again with the conversation_id from the message you are answering.";
+    assert.equal(failure(await t.hub.callTool(openclaw, 'create_event', { title: 'SRS', start })), refused);
+    // A conversation_id Rukoo doesn't know (a deleted chat, one an agent remembered wrong) is no better.
+    assert.equal(failure(await t.hub.callTool(openclaw, 'create_event', { conversation_id: 'c_gone', title: 'SRS', start })), refused);
+    // The same for every tool that puts something in a chat.
+    for (const [name, args] of [
+      ['propose_action', { title: 'Add a task' }],
+      ['show_plan', { tasks: [{ title: 'Book the room' }] }],
+      ['show_sources', { sources: [{ title: 'Agenda' }] }],
+      ['write_draft', { mode: 'new', body: 'Hi' }]
+    ]) {
+      assert.equal(failure(await t.hub.callTool(openclaw, name, args)), refused, name);
+    }
+    assert.deepEqual(externals(t.hub), [], 'no chat of its own');
+    assert.equal(events.filter((e) => e.kind === 'reveal').length, 0);
+    assert.deepEqual([cardsIn(stuck).length, cardsIn(chat).length], [0, 0]);
+    // Read-only tools still work, and the chat named in the call gets its card.
+    data(await t.hub.callTool(openclaw, 'list_events', { ...week }));
+    const res = data(await t.hub.callTool(openclaw, 'create_event', { conversation_id: chat.id, title: 'SRS', start }));
+    assert.deepEqual([res.status, res.conversation_id, res.elsewhere], ['waiting_for_user', chat.id, undefined]);
+    assert.deepEqual([cardsIn(stuck).length, cardsIn(chat).length], [0, 1]);
+  } finally {
+    held.release();
+    await t.done();
+  }
+});
+
+test("a conversation_id of another agent's chat is refused with a hint that the token is the wrong one", async () => {
+  const held = holder();
+  const t = await demo({}, { openclaw: held.adapter });
+  try {
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    // OpenClaw passes a Claude chat's id: Rukoo shows nothing anywhere.
+    const claude = t.hub.create({ agent: 'claude', message: null });
+    assert.equal(
+      failure(await t.hub.callTool(openclaw, 'create_event', { conversation_id: claude.id, title: 'SRS', start })),
+      `Rukoo showed nothing: conversation ${claude.id} belongs to another agent, and this call comes with the token Rukoo gave OpenClaw. If the user is talking to you in that chat, your Rukoo setup has the wrong token: tell the user to copy your setup from Rukoo's settings again.`
+    );
+    // OpenClaw set up with Clark's token: its chat's id comes with Clark's identity. Clark has no turn running, so
+    // before, the card went to an external Clark chat while OpenClaw's chat stayed empty.
+    const chat = t.hub.create({ agent: 'openclaw', message: null });
+    await working(t, held, chat);
+    const clark = { agent: 'clark', conversationId: null, remote: true };
+    assert.match(
+      failure(await t.hub.callTool(clark, 'create_event', { conversation_id: chat.id, title: 'SRS', start })),
+      new RegExp(`^Rukoo showed nothing: conversation ${chat.id} belongs to another agent, and this call comes with the token Rukoo gave Hermes\\. `)
+    );
+    assert.deepEqual([cardsIn(claude).length, cardsIn(chat).length, externals(t.hub).length], [0, 0, 0]);
+  } finally {
+    held.release();
+    await t.done();
+  }
+});
+
+test('a card in another chat of the agent than the one it works in tells the agent so', async () => {
+  const held = holder();
+  const t = await demo({}, { openclaw: held.adapter });
+  try {
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    const earlier = t.hub.create({ agent: 'openclaw', message: null });
+    // A chat about an email is named after its subject, which the sender wrote.
+    earlier.title = 'Plan the offsite';
+    const now = t.hub.create({ agent: 'openclaw', message: null });
+    await working(t, held, now);
+    // The agent remembered the id of an earlier chat: the card goes there, and the result says so.
+    const res = data(await t.hub.callTool(openclaw, 'create_event', { conversation_id: earlier.id, title: 'SRS', start }));
+    assert.deepEqual([res.status, res.conversation_id], ['waiting_for_user', earlier.id]);
+    assert.equal(
+      res.elsewhere,
+      'Rukoo showed this in another chat, <unsafe_content source="chat title">Plan the offsite</unsafe_content>, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.'
+    );
+    assert.equal(cardsIn(earlier).length, 1);
+    // Untitled, it is just another chat. In the chat it works in, nothing is said.
+    earlier.title = '';
+    const plan = data(await t.hub.callTool(openclaw, 'show_plan', { conversation_id: earlier.id, tasks: [{ title: 'Book the room' }] }));
+    assert.equal(plan.elsewhere, 'Rukoo showed this in another chat, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.');
+    assert.equal(data(await t.hub.callTool(openclaw, 'create_event', { conversation_id: now.id, title: 'SRS', start })).elsewhere, undefined);
+    // With no turn running anywhere (Clark on WhatsApp, say), there is no chat the user is in to compare with.
+    held.release();
+    for (let i = 0; i < 200 && t.hub.turns.size; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(data(await t.hub.callTool(openclaw, 'create_event', { conversation_id: earlier.id, title: 'SRS', start })).elsewhere, undefined);
+  } finally {
+    held.release();
+    await t.done();
+  }
+});
+
+// Android's HubToolsSeamTest has the same case for the phone's thread map.
+test("a call from a chat's own thread is tied to that chat: no note about another chat while another one works", async () => {
+  const held = holder();
+  const t = await demo({}, { codex: held.adapter });
+  try {
+    const start = `${day(at(MON, 7, 0))}T11:30`;
+    const codex = { agent: 'codex', conversationId: null, remote: false };
+    const mapped = t.hub.create({ agent: 'codex', message: null });
+    t.hub.mapThread('th-mapped', mapped.id);
+    const busy = t.hub.create({ agent: 'codex', message: null });
+    await working(t, held, busy);
+    // Codex says which thread calls: the card is in that thread's chat, where it belongs.
+    const fromThread = data(await t.hub.callTool(codex, 'create_event', { title: 'SRS', start }, { threadId: 'th-mapped' }));
+    assert.deepEqual([fromThread.status, fromThread.conversation_id, fromThread.elsewhere], ['waiting_for_user', mapped.id, undefined]);
+    // The same chat named by conversation_id alone is the model's pick, so the note comes.
+    const named = data(await t.hub.callTool(codex, 'create_event', { conversation_id: mapped.id, title: 'SRS', start }));
+    assert.equal(named.elsewhere, 'Rukoo showed this in another chat, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.');
+  } finally {
+    held.release();
+    await t.done();
   }
 });
 
