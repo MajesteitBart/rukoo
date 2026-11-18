@@ -3,12 +3,18 @@
 
 mod support;
 
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 use serde_json::json;
 use support::{lock, tone, wait_for, Harness, MicPlan};
 use voice_core::{ErrorKind, ProviderError};
+#[cfg(target_os = "macos")]
+use voice_engine::permissions::{Permission, PermissionState};
 use voice_engine::PillPhase;
 use voice_input::{InputError, InsertMode, Key, TextTarget};
 
@@ -190,6 +196,57 @@ fn an_empty_transcript_also_shows_nothing_heard() {
     engine.shutdown();
 }
 
+/// With the development switch on, the audio of a dictation that inserted nothing is kept, so a
+/// miss can be looked into afterwards. Without it nothing is written.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_audio_of_a_dictation_that_inserted_nothing_is_kept_only_when_asked() {
+    let h = Harness::new("kept-audio");
+    h.config(json!({}));
+    h.dump_empty_dictation.store(true, Ordering::SeqCst);
+    let engine = h.start();
+    h.speech.say("  um  ");
+    h.hold(Key::F13);
+    h.sink.wait_phase(PillPhase::NothingHeard);
+    let folder = h.data().join("dictation-dumps");
+    wait_for("the kept audio", || {
+        std::fs::read_dir(&folder).is_ok_and(|mut entries| entries.next().is_some())
+    });
+    let kept: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .map(|entries| entries.filter_map(|e| e.ok().map(|e| e.path())).collect())
+        .unwrap_or_default();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let (pcm, rate) = voice_audio::read_wav_i16(&kept[0]).unwrap();
+    assert_eq!(rate, 16_000);
+    assert!(!pcm.is_empty(), "the capture's audio is in the file");
+    engine.shutdown();
+
+    let off = Harness::new("not-kept-audio");
+    off.config(json!({}));
+    let engine = off.start();
+    off.speech.say("  um  ");
+    off.hold(Key::F13);
+    off.sink.wait_phase(PillPhase::NothingHeard);
+    assert!(!off.data().join("dictation-dumps").exists());
+    engine.shutdown();
+}
+
+/// A full sentence that the model returns as nothing keeps its audio too, and one that inserts
+/// text keeps none.
+#[cfg(target_os = "macos")]
+#[test]
+fn only_a_dictation_that_inserted_nothing_keeps_its_audio() {
+    let h = Harness::new("kept-once");
+    h.config(json!({}));
+    h.dump_empty_dictation.store(true, Ordering::SeqCst);
+    let engine = h.start();
+    h.speech.say("hello");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert!(!h.data().join("dictation-dumps").exists());
+    engine.shutdown();
+}
+
 fn last_error(h: &Harness) -> String {
     h.sink.wait_phase(PillPhase::Error).notice.unwrap().key
 }
@@ -332,9 +389,16 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
     let engine = h.start();
     h.hold(Key::F13);
     assert_eq!(last_error(&h), "pill.error.blocked");
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         h.sink.wait_note("app.notify.dictationFailed").body,
         "Windows blocked typing into an app that runs as administrator."
+    );
+    // The notice says why in macOS's terms: Secure Event Input.
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        h.sink.wait_note("app.notify.dictationFailed").body,
+        InputError::Blocked.to_string()
     );
     *lock(&h.input.fail) = None;
     lock(&h.sink.pills).clear();
@@ -347,6 +411,108 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
     lock(&h.sink.pills).clear();
     h.hold(Key::F14);
     assert_eq!(last_error(&h), "pill.error.selectionTooLong");
+    engine.shutdown();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_missing_accessibility_grant_has_its_own_notice() {
+    let h = Harness::new("accessibility");
+    h.config(json!({"rewrite_api_key": "k"}));
+    // macOS with the grant off: neither typing nor reading the selection works, and the
+    // message says which setting to switch on.
+    *lock(&h.input.fail) = Some(InputError::Accessibility);
+    let engine = h.start();
+    h.hold(Key::F13);
+    assert_eq!(last_error(&h), "pill.error.accessibility");
+    assert_eq!(
+        h.sink.wait_note("app.notify.dictationFailed").body,
+        InputError::Accessibility.to_string()
+    );
+    *lock(&h.input.fail) = None;
+    lock(&h.sink.pills).clear();
+    // A rewrite over a selection Voice may not read says so instead of "Nothing selected".
+    *lock(&h.input.capture_fail) = Some(InputError::Accessibility);
+    let transcribed = h.speech.heard().len();
+    h.hold(Key::F14);
+    assert_eq!(last_error(&h), "pill.error.accessibility");
+    assert_eq!(
+        h.sink.wait_note("app.notify.rewriteFailed").body,
+        InputError::Accessibility.to_string()
+    );
+    assert_eq!(
+        h.speech.heard().len(),
+        transcribed,
+        "the instruction was never transcribed"
+    );
+    engine.shutdown();
+}
+
+/// macOS with the Accessibility grant off: a dictation or a rewrite is refused before the
+/// microphone opens, the pill says what to switch on, and macOS is asked once in the run. The
+/// grant is read again at the next press, so switching it on needs no restart.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_press_without_the_accessibility_grant_records_nothing_and_asks_once() {
+    let h = Harness::new("accessibility-refused");
+    h.config(json!({}));
+    // The fake reports macOS's permission states on every platform.
+    h.permissions.supported.store(true, Ordering::SeqCst);
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::Denied);
+    *lock(&h.input.selection) = Some("selected words".into());
+    let engine = h.start();
+
+    // Each press ends at once with the pill's message, and no audio is asked for. The pill hides
+    // after its hold, so the next refusal shows the same view again instead of being coalesced.
+    let refused = |key: Key| {
+        lock(&h.sink.pills).clear();
+        h.keys.down(key);
+        let pill = h.sink.wait_phase(PillPhase::Error);
+        h.keys.up(key);
+        h.sink.wait_hidden_after(PillPhase::Error);
+        pill
+    };
+
+    let first = refused(Key::F13);
+    assert_eq!(first.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0, "nothing recorded");
+    assert_eq!(h.permissions.requests(), 1, "macOS was asked once");
+    assert!(h.input.texts().is_empty());
+    assert!(h.speech.heard().is_empty());
+
+    // A second press shows the same message without a second dialog.
+    let second = refused(Key::F13);
+    assert_eq!(second.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0, "nothing recorded");
+    assert_eq!(
+        h.permissions.requests(),
+        1,
+        "the dialog is asked once per run"
+    );
+
+    // A rewrite is refused the same way, before the selection is read.
+    let rewrite = refused(Key::F14);
+    assert_eq!(rewrite.notice.unwrap().key, "pill.error.accessibility");
+    assert_eq!(
+        h.input.captures.load(Ordering::SeqCst),
+        0,
+        "the selection was never read"
+    );
+    assert_eq!(h.permissions.requests(), 1);
+
+    // Switching the grant on in System Settings is enough: the next press records and inserts.
+    h.permissions
+        .set(Permission::Accessibility, PermissionState::Granted);
+    h.speech.say("hello again");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts().len() == 1);
+    assert_eq!(h.input.texts(), ["hello again"]);
+    assert!(
+        h.mic.opens.load(Ordering::SeqCst) > 0,
+        "the microphone opened"
+    );
+    assert_eq!(h.permissions.requests(), 1, "no dialog once it is on");
     engine.shutdown();
 }
 
@@ -364,6 +530,32 @@ fn no_text_box_warns_but_inserts_anyway() {
     wait_for("the insertion", || h.input.texts().len() == 1);
     h.sink.wait_note("app.notify.noTextBox");
     h.sink.wait_hidden_after(PillPhase::Warning);
+    engine.shutdown();
+}
+
+/// Reading the focused app can take a busy Mac app up to two seconds. The microphone opens first,
+/// so the first words aren't lost, and the release isn't held up by the read either.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_microphone_opens_before_the_focused_app_is_read() {
+    let h = Harness::new("target-after-open");
+    h.config(json!({}));
+    *lock(&h.input.target) = TextTarget::NotSelected;
+    *lock(&h.input.target_delay) = Duration::from_millis(1500);
+    let engine = h.start();
+    h.speech.say("early");
+    let pressed = Instant::now();
+    h.hold(Key::F13);
+    assert!(
+        pressed.elapsed() < Duration::from_millis(1000),
+        "audio came while the app was still being read"
+    );
+    wait_for("the transcription", || h.speech.heard().len() == 1);
+    assert!(
+        pressed.elapsed() < Duration::from_millis(1500),
+        "the release didn't wait for the read"
+    );
+    wait_for("the insertion", || h.input.texts() == ["early"]);
     engine.shutdown();
 }
 
@@ -454,6 +646,335 @@ fn the_copy_after_the_release_waits_for_the_next_key_too() {
         h.input.texts().first().map(String::as_str) == Some("Rewritten.")
     });
     assert_eq!(lock(&h.input.capture_held).clone(), [Vec::<Key>::new()]);
+    engine.shutdown();
+}
+
+/// The session resigned, the screen locked or the Mac slept while the key was held. The app hears
+/// that from the system and drops the held recording: nothing is transcribed, sent to a provider
+/// or inserted, and the pill goes, because nobody at this console could have meant it. When the
+/// real release does arrive, it ends nothing a second time. This release comes once audio
+/// arrived; `a_release_while_the_microphone_opens_stops_the_recording` covers one that comes while
+/// the microphone is still opening.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_release_drops_the_held_recording() {
+    let h = Harness::new("session-release");
+    h.config(json!({}));
+    let engine = h.start();
+    engine.release_hotkeys(); // nothing held: nothing happens
+    h.keys.down(Key::F13);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    engine.release_hotkeys();
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    // The key-up reaches the poller after the session comes back: it stops nothing.
+    h.keys.up(Key::F13);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        h.speech.heard().is_empty(),
+        "nothing was sent to a transcription provider"
+    );
+    assert!(h.input.texts().is_empty(), "nothing was inserted");
+    assert_eq!(
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
+    );
+    // The debounce was cleared, so the next hold dictates again.
+    h.speech.say("again");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["again"]);
+    engine.shutdown();
+}
+
+/// A lock in the middle of a rewrite hold sends the selection nowhere: the recording is dropped
+/// before the worker could read the selection or ask a rewrite provider.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_release_drops_a_held_rewrite() {
+    let h = Harness::new("session-release-rewrite");
+    h.config(json!({"rewrite_api_key": "k"}));
+    *lock(&h.input.selection) = Some("private draft".into());
+    let engine = h.start();
+    h.keys.down(Key::F14);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    engine.release_hotkeys();
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    h.keys.up(Key::F14);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        lock(&h.speech.rewrite_requests).is_empty(),
+        "the selection went nowhere"
+    );
+    assert!(h.speech.heard().is_empty(), "the instruction was not sent");
+    assert!(h.input.texts().is_empty());
+    engine.shutdown();
+}
+
+/// The screen locks while the microphone is still opening, which takes a Bluetooth headset a second
+/// or more. The release has to drop the recording once the microphone is open: if it ran before the
+/// recording existed, it would find nothing to stop, the real key-up would be ignored and the
+/// microphone would stay open with the pill on Listening.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_release_while_the_microphone_opens_stops_the_recording() {
+    let h = Harness::new("slow-open");
+    h.config(json!({}));
+    *lock(&h.mic.open_delay) = Duration::from_millis(500);
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    wait_for("the microphone to start opening", || {
+        h.mic.opens.load(Ordering::SeqCst) == 1
+    });
+    engine.release_hotkeys();
+    h.keys.up(Key::F13);
+    wait_for("the microphone to finish opening", || {
+        h.mic.opened.load(Ordering::SeqCst) == 1
+    });
+    // Well inside the watchdog's two reads a second apart, so this is the release's doing.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while h.mic.streams.load(Ordering::SeqCst) != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the microphone stayed open after the release"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_ne!(h.sink.last_pill().unwrap().phase, PillPhase::Listening);
+    assert!(
+        h.speech.heard().is_empty(),
+        "the locked hold was not transcribed"
+    );
+    assert!(h.input.texts().is_empty(), "and nothing was inserted");
+    // Push-to-talk let go of the key, so the next hold dictates.
+    *lock(&h.mic.open_delay) = Duration::ZERO;
+    h.speech.say("next");
+    h.hold(Key::F13);
+    wait_for("the next insertion", || h.input.texts() == ["next"]);
+    engine.shutdown();
+}
+
+/// The key-up never reaches the poller, so no release stops the recording. The watchdog reads the
+/// key up twice in a row and stops it as a release would, once.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_watchdog_stops_a_recording_whose_release_was_lost() {
+    let mut h = Harness::new("watchdog");
+    h.dictation_timing.watchdog = Duration::from_millis(50);
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("kept");
+    h.keys.down(Key::F13);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    h.keys.lose_release(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["kept"]);
+    assert_eq!(
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
+    );
+    // The poller sees the key-up after all: it stops nothing a second time, and the next hold
+    // dictates.
+    h.keys.find_release(Key::F13);
+    h.speech.say("next");
+    h.hold(Key::F13);
+    wait_for("the next insertion", || h.input.texts() == ["kept", "next"]);
+    assert_eq!(h.speech.heard().len(), 2);
+    engine.shutdown();
+}
+
+/// A key that reads down for the longest a recording may take, such as a key-down another app
+/// posted without its key-up, stops at that length with a notification. The key-up that comes
+/// later stops nothing.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_recording_stops_at_its_longest() {
+    let mut h = Harness::new("longest");
+    h.dictation_timing.watchdog = Duration::from_millis(20);
+    h.dictation_timing.longest = Duration::from_millis(300);
+    h.config(json!({}));
+    let engine = h.start();
+    h.speech.say("long");
+    h.keys.down(Key::F13);
+    wait_for("the transcription", || h.speech.heard().len() == 1);
+    assert!(h.keys.is_down(Key::F13), "stopped while the key reads down");
+    assert_eq!(
+        h.mic.streams.load(Ordering::SeqCst),
+        0,
+        "the microphone closed"
+    );
+    let note = h.sink.wait_note("app.notify.dictationFailed");
+    assert!(note.body.contains("longest"), "{}", note.body);
+    // The insertion waits for the key, as every insertion does.
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["long"]);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(h.speech.heard().len(), 1);
+    engine.shutdown();
+}
+
+/// A press while the screen is locked or the session is switched out records nothing: the
+/// microphone stays closed and the pill stays hidden. Its release does nothing either, and the
+/// first press back at the console dictates.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_press_away_from_the_console_is_ignored() {
+    let h = Harness::new("console");
+    h.config(json!({}));
+    h.at_console.store(false, Ordering::SeqCst);
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    std::thread::sleep(Duration::from_millis(100));
+    h.at_console.store(true, Ordering::SeqCst);
+    h.keys.up(Key::F13);
+    assert_eq!(h.mic.opens.load(Ordering::SeqCst), 0);
+    assert!(h.sink.phases().is_empty() || !h.sink.last_pill().unwrap().visible);
+    h.speech.say("back");
+    h.hold(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["back"]);
+    engine.shutdown();
+}
+
+/// Right Option held with a letter types a character such as é or @. A key that went down during
+/// the hold drops the recording: nothing is sent or inserted, and the pill goes away. The next hold
+/// without typing dictates.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_key_typed_during_the_hold_drops_the_recording() {
+    let mut h = Harness::new("typed");
+    h.dev_mode = false;
+    h.config(json!({"hotkey": "right alt", "rewrite_hotkey": "off"}));
+    let engine = h.start();
+    h.speech.say("typed");
+    h.keys.down(Key::RightAlt);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    *lock(&h.typed) = Some(Instant::now());
+    std::thread::sleep(Duration::from_millis(100));
+    h.keys.up(Key::RightAlt);
+    wait_for("the microphone to close", || {
+        h.mic.streams.load(Ordering::SeqCst) == 0
+    });
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(h.speech.heard().is_empty(), "nothing was sent");
+    assert!(h.input.texts().is_empty());
+    h.hold(Key::RightAlt);
+    wait_for("the next insertion", || h.input.texts() == ["typed"]);
+    engine.shutdown();
+}
+
+/// Right Command is the Mac's rewrite key, and Voice copies the selection at the press with its own
+/// Cmd+C, which the key activity leaves out. A shortcut typed during the hold, such as Cmd+S, drops
+/// the recording like any other typed key; a hold with only Voice's own copy in it still rewrites.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_right_command_shortcut_drops_the_rewrite_and_a_plain_hold_still_rewrites() {
+    let mut h = Harness::new("typed-command");
+    h.dev_mode = false;
+    h.config(
+        json!({"hotkey": "right alt", "rewrite_hotkey": "right command", "rewrite_api_key": "k"}),
+    );
+    *lock(&h.input.selection) = Some("teh draft".into());
+    lock(&h.speech.rewrites).push_back(Ok("The draft.".into()));
+    let engine = h.start();
+    h.speech.say("fix the spelling");
+
+    // Cmd+S during the hold.
+    h.keys.down(Key::RightCommand);
+    wait_for("the copy", || h.input.captures.load(Ordering::SeqCst) == 1);
+    wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
+    *lock(&h.typed) = Some(Instant::now());
+    std::thread::sleep(Duration::from_millis(100));
+    h.keys.up(Key::RightCommand);
+    wait_for("the microphone to close", || {
+        h.mic.streams.load(Ordering::SeqCst) == 0
+    });
+    wait_for("the pill to go", || !h.sink.last_pill().unwrap().visible);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(h.speech.heard().is_empty(), "nothing was sent");
+    assert!(h.input.texts().is_empty(), "the selection stays");
+
+    // The same hold without a shortcut: only Voice's own Cmd+C went down.
+    let before = h.mic.delivered.load(Ordering::SeqCst);
+    h.keys.down(Key::RightCommand);
+    wait_for("the second copy", || {
+        h.input.captures.load(Ordering::SeqCst) == 2
+    });
+    wait_for("audio", || {
+        h.mic.delivered.load(Ordering::SeqCst) >= before + 3200
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    h.keys.up(Key::RightCommand);
+    h.sink.wait_phase(PillPhase::Rewrote);
+    assert_eq!(h.input.texts(), ["The draft."]);
+    engine.shutdown();
+}
+
+/// The microphone goes away halfway through a dictation, or changes its format. Voice opens the
+/// default one again into the same recording, so what was said after it is transcribed too.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_microphone_that_stops_mid_dictation_is_opened_again() {
+    let h = Harness::new("mic-lost");
+    h.config(json!({}));
+    {
+        let mut plans = lock(&h.mic.plans);
+        let MicPlan::Blocks(first) = tone(20, 8000.0) else {
+            unreachable!()
+        };
+        plans.push_back(MicPlan::Lost(first));
+        plans.push_back(tone(40, 8000.0));
+    }
+    let engine = h.start();
+    h.speech.say("both halves");
+    h.keys.down(Key::F13);
+    wait_for("the second microphone", || {
+        h.mic.opened.load(Ordering::SeqCst) == 2
+    });
+    wait_for("its audio", || {
+        h.mic.delivered.load(Ordering::SeqCst) >= 60 * 160
+    });
+    h.keys.up(Key::F13);
+    wait_for("the insertion", || h.input.texts() == ["both halves"]);
+    assert!(
+        h.speech.heard()[0] >= 60 * 160,
+        "both microphones fed one recording: {:?}",
+        h.speech.heard()
+    );
+    assert_eq!(h.mic.streams.load(Ordering::SeqCst), 0);
+    engine.shutdown();
+}
+
+/// When the microphone that stopped can't be opened again, the pill says no audio comes in and a
+/// notification says why. The release still ends the recording.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_microphone_that_stops_and_wont_reopen_says_so() {
+    let h = Harness::new("mic-lost-for-good");
+    h.config(json!({}));
+    {
+        let mut plans = lock(&h.mic.plans);
+        let MicPlan::Blocks(first) = tone(20, 8000.0) else {
+            unreachable!()
+        };
+        plans.push_back(MicPlan::Lost(first));
+        plans.push_back(MicPlan::Fail("No microphone is available.".into()));
+    }
+    let engine = h.start();
+    h.keys.down(Key::F13);
+    let note = h.sink.wait_note("app.notify.dictationFailed");
+    assert!(note.body.contains("didn't open again"), "{}", note.body);
+    h.sink.wait_phase(PillPhase::Listening);
+    wait_for("the no-audio notice", || {
+        lock(&h.sink.pills)
+            .iter()
+            .any(|p| p.notice.as_ref().is_some_and(|n| n.key == "pill.noAudio"))
+    });
+    h.keys.up(Key::F13);
+    wait_for("the recording to end", || {
+        h.mic.streams.load(Ordering::SeqCst) == 0 && h.speech.heard().len() == 1
+    });
     engine.shutdown();
 }
 

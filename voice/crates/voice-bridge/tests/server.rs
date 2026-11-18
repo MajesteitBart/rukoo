@@ -67,6 +67,56 @@ fn protection_waits_for_rukoo_windows_but_not_diagnostic_clients() {
     assert_eq!(handle.protection_clients().len(), 1);
 }
 
+/// The pid a Rukoo on macOS sends in its `hello`.
+#[cfg(target_os = "macos")]
+const RUKOO_PID: u32 = 4821;
+
+/// A Rukoo client whose `hello` carries a pid, as Rukoo on macOS sends it.
+#[cfg(target_os = "macos")]
+fn rukoo_with_pid(bridge: &Bridge) -> Client {
+    let mut client = Client::connect(bridge.port());
+    client.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.3.0", "pid": RUKOO_PID, "instance":null, "after":0}));
+    assert_eq!(client.read()["type"], "welcome");
+    client
+}
+
+/// macOS leaves the windows of every connected Rukoo out of its screen recording, by pid.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_pids_are_the_welcomed_rukoo_clients_that_sent_one() {
+    let bridge = Bridge::start("server-rukoo-pids");
+    let handle = bridge.handle.as_ref().unwrap();
+    assert!(handle.rukoo_pids().is_empty());
+    let mut rukoo = rukoo_with_pid(&bridge);
+    assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
+    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+    let clients = handle.clients();
+    assert_eq!(clients.connected[0].pid, Some(u64::from(RUKOO_PID)));
+
+    // A client with another name, or one without a pid, isn't a Rukoo window to leave out.
+    let mut probe = Client::connect(bridge.port());
+    probe.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"probe", "pid": 7, "instance":null, "after":0}));
+    assert_eq!(probe.read()["type"], "welcome");
+    let mut older = Client::connect(bridge.port());
+    older.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.1.0", "instance":null, "after":0}));
+    assert_eq!(older.read()["type"], "welcome");
+    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+
+    // A second Rukoo on the same pid is one process: it is named once.
+    let mut again = rukoo_with_pid(&bridge);
+    assert!(read_until_status_reply(&mut again, "rukoo-again").is_empty());
+    assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+
+    // A client that leaves takes its pid with it.
+    drop(rukoo);
+    drop(again);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handle.rukoo_pids().is_empty() {
+        assert!(Instant::now() < deadline, "the pid stayed in the list");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn the_discovery_file_describes_the_server_and_goes_on_shutdown() {
     let mut bridge = Bridge::start("server-discovery");

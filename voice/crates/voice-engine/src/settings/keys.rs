@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 use voice_core::cleanup::{self, FILLER_LANGUAGES};
 use voice_core::config::{
-    Config, PillEdge, Retention, RewriteTone, ScreenMode, Theme, UiLanguage, HOTKEYS,
+    offered_hotkeys, Config, PillEdge, Retention, RewriteTone, ScreenMode, Theme, UiLanguage,
 };
 
 use crate::api::ApiError;
@@ -193,7 +193,7 @@ fn hotkey(key: &str, value: &Value, allow_off: bool) -> Result<String, ApiError>
         .as_str()
         .map(|s| s.trim().to_lowercase())
         .ok_or_else(|| invalid(key))?;
-    if (allow_off && name == "off") || HOTKEYS.contains(&name.as_str()) {
+    if (allow_off && name == "off") || offered_hotkeys().contains(&name.as_str()) {
         Ok(name)
     } else {
         Err(invalid(key))
@@ -342,7 +342,14 @@ mod tests {
             ("rewriting.formatting", json!(false)),
             ("rewriting.instructions", json!("Keep greetings.")),
             ("meetings.retention", json!("after_transcription")),
-            ("meetings.stopKey", json!("pause")),
+            (
+                "meetings.stopKey",
+                json!(if cfg!(target_os = "macos") {
+                    "right shift"
+                } else {
+                    "pause"
+                }),
+            ),
             ("meetings.screen", json!("off")),
             ("meetings.liveSpeakers", json!(false)),
             ("ui.language", json!("nl")),
@@ -404,9 +411,33 @@ mod tests {
         assert_eq!(cfg, Config::defaults(true), "nothing changed");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_keys_this_keyboard_has_can_be_chosen() {
+        let mut cfg = Config::defaults(true);
+        cfg.hotkey = "f13".into();
+        cfg.rewrite_hotkey = "f14".into();
+        for key in ["pause", "scroll lock"] {
+            assert_eq!(
+                set(&mut cfg, "dictation.hotkey", json!(key))
+                    .unwrap_err()
+                    .code,
+                "invalid_value",
+                "{key} isn't on a Mac keyboard"
+            );
+        }
+        set(&mut cfg, "dictation.hotkey", json!("right command")).unwrap();
+        assert_eq!(cfg.hotkey, "right command");
+    }
+
     #[test]
     fn a_key_can_only_have_one_role() {
         let mut cfg = Config::defaults(true);
+        // Pinned on a Mac, whose development copy has other keys.
+        if cfg!(target_os = "macos") {
+            cfg.hotkey = "f13".into();
+            cfg.rewrite_hotkey = "f14".into();
+        }
         assert_eq!(
             set(&mut cfg, "dictation.hotkey", json!("f14"))
                 .unwrap_err()

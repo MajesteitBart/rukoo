@@ -9,6 +9,8 @@ use tauri::{
 };
 use voice_engine::{EngineApi, Theme, UiOptions};
 
+#[cfg(target_os = "macos")]
+use crate::appearance;
 use crate::catalog::{keys, Catalog};
 use crate::pill::place::Rect;
 
@@ -54,6 +56,7 @@ pub fn background(theme: Theme) -> Color {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn native_theme(theme: Theme) -> tauri::Theme {
     match theme {
         Theme::Dark => tauri::Theme::Dark,
@@ -74,7 +77,7 @@ pub fn open(
     app: &AppHandle,
     engine: &dyn EngineApi,
     catalog: &Catalog,
-    webview_dir: PathBuf,
+    webview_dir: Option<PathBuf>,
     focus: bool,
     page: Option<String>,
 ) -> tauri::Result<WebviewWindow> {
@@ -84,27 +87,52 @@ pub fn open(
         if focus {
             window.set_focus()?;
         }
+        // On macOS Settings' pushed states read the privacy permissions while it exists.
+        #[cfg(target_os = "macos")]
+        engine.settings_opened();
         return Ok(window);
     }
     let ui = engine.ui();
-    let window =
+    let mut builder =
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(url(page.as_deref()).into()))
             .title(catalog.text(ui.locale, keys::SETTINGS_TITLE))
             .inner_size(WIDTH, HEIGHT)
             .min_inner_size(MIN, MIN)
             .resizable(true)
             .background_color(background(ui.theme))
-            .theme(Some(native_theme(ui.theme)))
             .focused(focus)
             .visible(false)
-            .disable_drag_drop_handler()
-            .data_directory(webview_dir)
-            .build()?;
+            .disable_drag_drop_handler();
+    // Off macOS the window takes Voice's theme from the builder, as before. On macOS tao would pin
+    // the whole app with it, so the appearance comes after the build.
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.theme(Some(native_theme(ui.theme)));
+    }
+    if let Some(dir) = webview_dir {
+        builder = builder.data_directory(dir);
+    }
+    // Tauri's macOS default is a title bar style that makes the web view fill the whole window,
+    // under a translucent title bar that takes its colour from the page beneath. That bar came up
+    // near-black over a light page. Transparent keeps the web view below the title bar and draws
+    // the bar in the window's background colour, which Voice sets from the theme (`background`).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+    }
+    let window = builder.build()?;
+    #[cfg(target_os = "macos")]
+    {
+        appearance::apply_to_window(&window, &ui);
+        appearance::log_state(&window, "settings window built");
+    }
     place_under_cursor(&window);
     window.show()?;
     if focus {
         window.set_focus()?;
     }
+    #[cfg(target_os = "macos")]
+    engine.settings_opened();
     Ok(window)
 }
 
@@ -133,7 +161,13 @@ pub fn apply_ui(app: &AppHandle, ui: &UiOptions, catalog: &Catalog) {
     };
     let _ = window.set_title(&catalog.text(ui.locale, keys::SETTINGS_TITLE));
     let _ = window.set_background_color(Some(background(ui.theme)));
+    #[cfg(not(target_os = "macos"))]
     let _ = window.set_theme(Some(native_theme(ui.theme)));
+    #[cfg(target_os = "macos")]
+    {
+        appearance::apply_to_window(&window, ui);
+        appearance::log_state(&window, "settings window restyled");
+    }
 }
 
 #[cfg(test)]

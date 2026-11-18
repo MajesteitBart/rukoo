@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_bridge::ControlError;
-use voice_meetings::{CreateMeeting, Library, MeetingFile};
+use voice_meetings::{CreateMeeting, Library, MeetingDir, MeetingFile};
 use voice_protocol::{ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::control::Client;
 use voice_recorder::meeting::{self, RecorderFile};
@@ -86,11 +86,14 @@ pub enum Change {
         id: String,
         at_ms: u64,
     },
-    /// The recorder's clock and microphone, about once a second.
+    /// The recorder's clock, microphone and call, about once a second.
     Clock {
         id: String,
         at_ms: u64,
         mic_ok: bool,
+        /// What the recorder's silence check knows of the call track (voice-recorder
+        /// `silence.rs`).
+        call: CallSound,
     },
     /// The recorder died and a new one took over with `--resume`.
     Restarted {
@@ -181,6 +184,7 @@ struct Live {
     at_ms: u64,
     at_when: Instant,
     mic_ok: bool,
+    call: CallSound,
     restarting: bool,
     stopping: bool,
     restarts: u32,
@@ -191,6 +195,32 @@ struct Live {
 impl Live {
     fn clock(&self) -> u64 {
         self.at_ms + self.at_when.elapsed().as_millis() as u64
+    }
+}
+
+/// What the recorder's silence check says about the call track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CallSound {
+    /// Nothing either way yet, or the meeting records no call track.
+    #[default]
+    Unknown,
+    /// The track delivered sound: the system lets Voice record it.
+    Heard,
+    /// Only exact zeros while another app played sound: on a Mac, System Audio Recording is
+    /// probably off for Voice or went stale.
+    Silent,
+}
+
+impl CallSound {
+    /// From a track in the recorder's `status` reply.
+    pub fn of(track: &Value) -> CallSound {
+        if track["silent"] == true {
+            CallSound::Silent
+        } else if track["heard"] == true {
+            CallSound::Heard
+        } else {
+            CallSound::Unknown
+        }
     }
 }
 
@@ -289,41 +319,7 @@ impl Controller {
                 continue;
             }
             if let Some(file) = meeting::live_recorder(dir.path()) {
-                let mut inner = self.lock();
-                if inner.is_some() {
-                    continue;
-                }
-                let status = request(&file, json!({"cmd": "status"}), Duration::from_secs(2)).ok();
-                let paused = status.as_ref().is_some_and(|s| s["state"] == "paused");
-                let at_ms = status.as_ref().and_then(|s| s["t"].as_u64()).unwrap_or(0);
-                // A dictation the app before this one started can't end any more: that app is
-                // gone. The recorder ends it when the app's tap closes; this covers a dictation
-                // without a tap. Nothing here dictates yet: the lock keeps `dictation` out.
-                if History::from_lines(&lines).dictating.is_some() {
-                    let _ = request(
-                        &file,
-                        json!({"cmd": "dictation", "state": "end"}),
-                        Duration::from_secs(2),
-                    );
-                }
-                *inner = Some(Live {
-                    id: id.clone(),
-                    dir: dir.path().to_path_buf(),
-                    tracks: tracks_of(dir.meeting().ok().as_ref(), &lines, &self.sources),
-                    child: None,
-                    file,
-                    paused,
-                    at_ms,
-                    at_when: Instant::now(),
-                    mic_ok: true,
-                    restarting: false,
-                    stopping: false,
-                    restarts: 0,
-                    alive_since: Instant::now(),
-                    failed_pings: 0,
-                });
-                drop(inner);
-                self.emit(Change::Reattached { id, paused, at_ms });
+                self.reattach(&dir, &lines, file, true);
                 continue;
             }
             if History::from_lines(&lines).stopped {
@@ -331,12 +327,79 @@ impl Controller {
             }
             match meeting::finalize(dir.path(), "interrupted") {
                 Ok(_) => self.emit(Change::Finalized { id }),
+                Err(e) if cfg!(target_os = "macos") && e.code == EXIT_BUSY => {
+                    // On macOS: a recorder still holds the meeting: it lives and didn't answer in
+                    // time, as on a computer that is busy starting up. The meeting goes on, so it
+                    // is live here too and the watchdog keeps asking the recorder.
+                    match meeting::read_recorder_file(dir.path()) {
+                        Some(file) => self.reattach(&dir, &lines, file, false),
+                        None => self.emit(Change::Notify {
+                            title_key: NOTIFY_MEETING,
+                            body: format!("Voice couldn't finish a meeting that was cut off: {e}"),
+                        }),
+                    }
+                }
                 Err(e) => self.emit(Change::Notify {
                     title_key: NOTIFY_MEETING,
                     body: format!("Voice couldn't finish a meeting that was cut off: {e}"),
                 }),
             }
         }
+    }
+
+    /// Takes the meeting in `dir`, which the recorder of `file` records, as the live one. When
+    /// that recorder didn't answer (`answers` is false), on macOS the timeline says whether the
+    /// meeting is paused and how far it got until the watchdog's next answer does; elsewhere it
+    /// counts as running from 0, as before.
+    fn reattach(&self, dir: &MeetingDir, lines: &[Line], file: RecorderFile, answers: bool) {
+        let mut inner = self.lock();
+        if inner.is_some() {
+            return;
+        }
+        let history = History::from_lines(lines);
+        let status = answers
+            .then(|| request(&file, json!({"cmd": "status"}), Duration::from_secs(2)).ok())
+            .flatten();
+        let paused = match &status {
+            Some(status) => status["state"] == "paused",
+            None if cfg!(target_os = "macos") => history.paused,
+            None => false,
+        };
+        let at_ms = match &status {
+            Some(status) => status["t"].as_u64().unwrap_or(0),
+            None if cfg!(target_os = "macos") => history.latest_t,
+            None => 0,
+        };
+        // A dictation the app before this one started can't end any more: that app is gone. The
+        // recorder ends it when the app's tap closes; this covers a dictation without a tap.
+        // Nothing here dictates yet: the lock keeps `dictation` out.
+        if history.dictating.is_some() {
+            let _ = request(
+                &file,
+                json!({"cmd": "dictation", "state": "end"}),
+                Duration::from_secs(2),
+            );
+        }
+        let id = dir.id().to_string();
+        *inner = Some(Live {
+            id: id.clone(),
+            dir: dir.path().to_path_buf(),
+            tracks: tracks_of(dir.meeting().ok().as_ref(), lines, &self.sources),
+            child: None,
+            file,
+            paused,
+            at_ms,
+            at_when: Instant::now(),
+            mic_ok: true,
+            call: CallSound::Unknown,
+            restarting: false,
+            stopping: false,
+            restarts: 0,
+            alive_since: Instant::now(),
+            failed_pings: 0,
+        });
+        drop(inner);
+        self.emit(Change::Reattached { id, paused, at_ms });
     }
 
     /// Starts recording a new meeting.
@@ -395,6 +458,7 @@ impl Controller {
                     at_ms: 0,
                     at_when: now,
                     mic_ok: true,
+                    call: CallSound::Unknown,
                     restarting: false,
                     stopping: false,
                     restarts: 0,
@@ -483,6 +547,17 @@ impl Controller {
             let deadline = Instant::now() + Duration::from_secs(5);
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
+            }
+            // It answered `stop` after syncing its last line, so nothing is lost: on macOS a
+            // recorder still running holds only a device open that never finished.
+            #[cfg(target_os = "macos")]
+            if matches!(child.try_wait(), Ok(None)) {
+                log::warn!(
+                    "meeting {}: the recorder didn't exit after its stop; ending it",
+                    live.id
+                );
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
         let id = live.id.clone();
@@ -676,6 +751,7 @@ impl Controller {
             }
             live.paused = status["state"] == "paused";
             live.mic_ok = status["tracks"]["mic"]["ok"] != false;
+            live.call = CallSound::of(&status["tracks"]["call"]);
             if live.restarts > 0 && live.alive_since.elapsed() >= self.timing.stable_after {
                 live.restarts = 0;
             }
@@ -683,6 +759,7 @@ impl Controller {
                 id: live.id.clone(),
                 at_ms: live.at_ms,
                 mic_ok: live.mic_ok,
+                call: live.call,
             };
             drop(inner);
             self.emit(change);
@@ -960,6 +1037,11 @@ fn last_line(path: &Path) -> Option<String> {
 
 /// Starts the recorder (or the screen process) outside the app's console, process group and
 /// kill-on-close job, so it outlives the app (voice/RECORDING.md).
+///
+/// That is the difference from Voice's own workers, which end with the app: the local speech
+/// worker and the speaker label worker get `local::parent`'s variable from their spawn code and
+/// watch Voice's pid, while the recorder is never told a parent to watch. A meeting can't be
+/// repeated, so the recorder keeps recording after Voice crashes.
 pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     #[cfg(windows)]
     {

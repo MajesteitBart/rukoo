@@ -17,9 +17,26 @@ fn processor_refused() -> bool {
             && std::arch::is_x86_feature_detected!("f16c")
             && std::arch::is_x86_feature_detected!("bmi2"))
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    // Every Apple Silicon Mac has the arm64 runtime's baseline.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        false
+    }
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
     {
         true
+    }
+}
+
+/// The C ABI library of this platform's runtime.
+fn library_name() -> &'static str {
+    if cfg!(windows) {
+        "nemo_speech_asr_c.dll"
+    } else {
+        "libnemo_speech_asr_c.dylib"
     }
 }
 
@@ -44,6 +61,10 @@ fn ping_answers_with_the_pid_and_the_processor() {
     for feature in ["avx2", "fma", "f16c", "bmi2"] {
         assert!(pong["cpu"][feature].is_boolean(), "{pong}");
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    for feature in ["neon", "dotprod", "fp16"] {
+        assert!(pong["cpu"][feature].is_boolean(), "{pong}");
+    }
 }
 
 #[test]
@@ -60,6 +81,10 @@ fn load_from_a_missing_folder_is_a_missing_runtime() {
     // Elsewhere the worker refuses before it looks for the runtime.
     let expected = if cfg!(windows) {
         "nemo_speech_asr_c.dll"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        library_name()
+    } else if cfg!(target_os = "macos") {
+        "Apple Silicon"
     } else {
         "Windows only"
     };
@@ -72,7 +97,7 @@ fn load_from_a_missing_folder_is_a_missing_runtime() {
     assert_failure(&worker.request(&json!({"op": "open"})), "bad_request");
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "macos", target_arch = "aarch64")))]
 #[test]
 fn a_damaged_runtime_dll_fails_the_load_and_the_worker_lives_on() {
     if processor_refused() {
@@ -80,7 +105,7 @@ fn a_damaged_runtime_dll_fails_the_load_and_the_worker_lives_on() {
     }
     let temp = TempDir::new("damaged");
     fs::write(
-        temp.path().join("nemo_speech_asr_c.dll"),
+        temp.path().join(library_name()),
         b"MZ\x90\0 this is not a library",
     )
     .unwrap();

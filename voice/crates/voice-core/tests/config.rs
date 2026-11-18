@@ -23,7 +23,11 @@ fn installed_defaults() {
     let cfg = Config::defaults(false);
     assert_eq!(cfg.version, 1);
     assert_eq!(cfg.hotkey, "right alt");
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(cfg.rewrite_hotkey, "right ctrl");
+    // A Mac rewrites with Right Command: most Mac laptops have no Right Control key.
+    #[cfg(target_os = "macos")]
+    assert_eq!(cfg.rewrite_hotkey, "right command");
     assert!(cfg.paste_mode);
     assert!(!cfg.ready_chime);
     assert_eq!(cfg.audio_provider, "mistral");
@@ -61,6 +65,7 @@ fn installed_defaults() {
     assert_eq!(cfg.meeting_consent(), ConsentState::NotNeeded);
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn development_defaults_never_use_ownkeys_keys() {
     let cfg = Config::defaults(true);
@@ -72,6 +77,47 @@ fn development_defaults_never_use_ownkeys_keys() {
         (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
         ("f13", "f14")
     );
+}
+
+/// A Mac has no Ownkey and few F13 keys, so a development copy there uses the installed copy's
+/// keys, and so does a config whose key is unknown.
+#[cfg(target_os = "macos")]
+#[test]
+fn development_defaults_never_use_ownkeys_keys() {
+    let keys = ("right alt", "right command");
+    let cfg = Config::defaults(true);
+    assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
+    let cfg = Config::from_value(&json!({"hotkey": "nonsense"}), true);
+    assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn defaults_follow_the_platform_and_a_development_copy() {
+    use voice_core::config::default_hotkeys_on;
+    // Windows keeps Ownkey's Right Alt and Right Ctrl.
+    assert_eq!(
+        default_hotkeys_on(false, false),
+        ("right alt", "right ctrl")
+    );
+    // A Mac starts on Right Option and Right Command: most Mac laptops have no Right Control key, and
+    // Fn/Globe already opens the emoji picker and macOS dictation.
+    assert_eq!(
+        default_hotkeys_on(false, true),
+        ("right alt", "right command")
+    );
+    // A development copy on Windows or Linux uses F13 and F14, so it never answers Ownkey. On a
+    // Mac there is no Ownkey and most keyboards have no F13, so it uses the installed keys.
+    assert_eq!(default_hotkeys_on(true, false), ("f13", "f14"));
+    assert_eq!(
+        default_hotkeys_on(true, true),
+        default_hotkeys_on(false, true)
+    );
+    // Right Command is the one key a Mac adds; the rest stay Ownkey's names.
+    assert!(voice_core::config::HOTKEYS.contains(&"right command"));
+    assert!(voice_core::config::MACOS_HOTKEYS.contains(&"right command"));
+    assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"pause"));
+    assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"scroll lock"));
 }
 
 #[test]
@@ -374,9 +420,15 @@ fn values_are_checked_on_load() {
         );
     }
     assert_eq!(load(json!({"language": "xx"})).language, "auto");
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         load(json!({"rewrite_hotkey": "bogus"})).rewrite_hotkey,
         "right ctrl"
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        load(json!({"rewrite_hotkey": "bogus"})).rewrite_hotkey,
+        "right command"
     );
 }
 

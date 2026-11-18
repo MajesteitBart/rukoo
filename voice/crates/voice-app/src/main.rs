@@ -5,17 +5,27 @@
 // A release build has no console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+mod appearance;
 mod args;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_mac;
 mod catalog;
 mod commands;
 mod devhook;
 mod engine;
 mod fake;
 mod logging;
+#[cfg(target_os = "macos")]
+mod notify_mac;
 mod pill;
+#[cfg(target_os = "macos")]
+mod screen_permission_mac;
 mod selftest;
+#[cfg(target_os = "macos")]
+mod session_mac;
 mod settings_window;
 mod shell;
 mod single_instance;
@@ -27,6 +37,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use voice_engine::{ApiError, Edge, Notification, Theme, UiOptions};
@@ -50,6 +62,28 @@ fn main() {
 }
 
 /// The development flags only run in a development copy, so they can never meet the real profile.
+/// The installed Voice's bundle, whose Keychain items hold the real sync keys. The development
+/// bundle (`nl.bvdm.rukoo.voice.dev`) and a plain cargo build have other identities.
+#[cfg(target_os = "macos")]
+const RELEASE_BUNDLE_ID: &str = "nl.bvdm.rukoo.voice";
+
+/// The development flags run only outside the installed Voice. Keychain lets that app read its sync
+/// keys without asking, and `--dev-hooks` hands out the recovery code, so pointing
+/// RUKOO_VOICE_DATA_DIR at the real data folder would pass them to any program that launched it.
+#[cfg(target_os = "macos")]
+fn check_release_bundle(args: &Args, bundle: Option<&str>) -> Result<(), String> {
+    let dev_flag =
+        args.fake_engine.is_some() || args.self_test.is_some() || args.dev_hooks.is_some();
+    if dev_flag && bundle == Some(RELEASE_BUNDLE_ID) {
+        return Err(
+            "--fake-engine, --self-test and --dev-hooks don't run in the installed Rukoo Voice. Use the \
+             development bundle (voice/scripts/dev-app-macos.mjs) or a cargo build."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn check_dev_flags(args: &Args, dev_mode: bool) -> Result<(), String> {
     let dev_flag =
         args.fake_engine.is_some() || args.self_test.is_some() || args.dev_hooks.is_some();
@@ -82,6 +116,26 @@ fn run() -> i32 {
             return EXIT_USAGE;
         }
     };
+    // The installed Mac Voice is never a development copy: it refuses the development flags, and
+    // RUKOO_VOICE_DATA_DIR, which makes one, goes before anything reads it. The programs Voice
+    // starts inherit that, so they all use the real data folder.
+    #[cfg(target_os = "macos")]
+    let ignored_data_dir = {
+        let bundle = objc2_foundation::NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|id| id.to_string());
+        if let Err(error) = check_release_bundle(&args, bundle.as_deref()) {
+            system::fail(&error);
+            return EXIT_USAGE;
+        }
+        let ignored = bundle.as_deref() == Some(RELEASE_BUNDLE_ID)
+            && std::env::var_os(voice_core::paths::DATA_DIR_ENV).is_some();
+        if ignored {
+            // No other thread runs yet.
+            std::env::remove_var(voice_core::paths::DATA_DIR_ENV);
+        }
+        ignored
+    };
     let dev_mode = voice_core::paths::dev_mode();
     // Before anything touches the data folder: a development flag without RUKOO_VOICE_DATA_DIR would
     // otherwise write to the installed Voice's folder.
@@ -101,6 +155,12 @@ fn run() -> i32 {
         data_dir.display(),
         log.display()
     );
+    #[cfg(target_os = "macos")]
+    if ignored_data_dir {
+        log::warn!(
+            "RUKOO_VOICE_DATA_DIR is ignored: this is the installed Voice, not a development copy"
+        );
+    }
     let guard = match single_instance::acquire(&data_dir) {
         Instance::First(guard) => guard,
         Instance::Running => {
@@ -117,7 +177,13 @@ fn run() -> i32 {
 fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
     let exit_code = Arc::new(AtomicI32::new(0));
     let setup_code = exit_code.clone();
-    let built = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // A menu bar app never asks to be the active app at launch. tao asks by default, with
+    // `activateIgnoringOtherApps(true)`, and macOS can hold that request for an app launched in the
+    // background and grant it later, when the pill first shows: the user's app then loses the keys.
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(false);
+    let built = builder
         .invoke_handler(commands::handler())
         .setup(move |app| {
             setup(app.handle(), data_dir, dev_mode, args, guard, &setup_code);
@@ -131,6 +197,15 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             return 1;
         }
     };
+    // A menu bar app: no Dock icon and no entry in Cmd+Tab, only the tray. Tauri starts as a regular app, and
+    // an installed build's `LSUIElement` doesn't reach a binary that runs outside a bundle. Set before the
+    // event loop runs, so no window can show as a regular app first.
+    #[cfg(target_os = "macos")]
+    let app = {
+        let mut app = app;
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        app
+    };
     let code = app.run_return(|app, event| match event {
         // A tray app outlives its windows; only Quit (an exit with a code) ends it.
         RunEvent::ExitRequested {
@@ -140,8 +215,27 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             event: WindowEvent::ThemeChanged(_),
             ..
         } => {
+            // macOS follows the system's look through the engine; elsewhere the windows re-read
+            // ui(), as before.
+            #[cfg(target_os = "macos")]
+            system_appearance_changed(app);
+            #[cfg(not(target_os = "macos"))]
             if let Some(shared) = app.try_state::<Shared>() {
                 shared.sink.refresh_ui();
+            }
+        }
+        // Finder, Launchpad and Spotlight don't start a second copy of a running app; they send it this.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => reopen(app),
+        // Settings' own states stop reading the privacy permissions once its window is gone.
+        #[cfg(target_os = "macos")]
+        RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Destroyed,
+            ..
+        } if label == settings_window::LABEL => {
+            if let Some(shared) = app.try_state::<Shared>() {
+                shared.engine.settings_closed();
             }
         }
         RunEvent::Exit => shut_down(app),
@@ -150,6 +244,40 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
     match exit_code.load(Ordering::Relaxed) {
         0 => code,
         failed => failed,
+    }
+}
+
+/// The system's theme changed on macOS: the engine learns the new look for the Settings that
+/// follow the system, and the windows take what it says. macOS says so through
+/// [`appearance::watch_system`] and tao's `ThemeChanged`. It runs on a thread of its own because
+/// the engine and the windows both take their own locks.
+///
+/// macOS posts its notification before the user defaults the engine reads always show the new
+/// style, so a second look follows a moment later. It finds nothing to do when the first one
+/// already saw the change.
+#[cfg(target_os = "macos")]
+fn system_appearance_changed(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || {
+        for pause in [Duration::ZERO, Duration::from_millis(500)] {
+            thread::sleep(pause);
+            let Some(shared) = app.try_state::<Shared>() else {
+                return;
+            };
+            shared.engine.system_looks_changed();
+            shared.sink.refresh_ui();
+        }
+    });
+}
+
+/// The webview's profile in the data folder, so a development copy never shares the installed
+/// one's. WKWebView keeps its own store and ignores this, so macOS passes none and a fresh data
+/// folder there has no empty `WebView2/` folder.
+fn webview_profile(data_dir: &std::path::Path) -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(data_dir.join("WebView2"))
     }
 }
 
@@ -162,15 +290,16 @@ fn setup(
     exit_code: &AtomicI32,
 ) {
     let catalog = Arc::new(Catalog::embedded());
-    let webview_dir = data_dir.join("WebView2");
+    let webview_dir = webview_profile(&data_dir);
     let slot = EngineSlot::default();
-    // Until the engine answers: Windows' theme and language.
+    // Until the engine answers: the system's theme and language.
     let ui = UiOptions {
         theme: if system::prefers_light_theme() {
             Theme::Light
         } else {
             Theme::Dark
         },
+        theme_follows_system: true,
         locale: system::locale(),
         pill_edge: Edge::Bottom,
         hide_pill_from_capture: true,
@@ -231,7 +360,7 @@ fn setup(
         pill: pill.clone(),
         tray: tray.clone(),
         sink: sink.clone(),
-        shell: Arc::new(SystemShell),
+        shell: Arc::new(SystemShell::new(app)),
         catalog,
         webview_dir,
         settings_loads: AtomicU64::new(0),
@@ -239,6 +368,21 @@ fn setup(
     });
 
     sink.refresh_ui();
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.clone();
+        appearance::watch_system(move || system_appearance_changed(&handle));
+    }
+    // A key-up can be lost when the session goes away. Every one of these events ends a held
+    // hotkey's recording, so push-to-talk never stays on while the screen is locked or the Mac sleeps.
+    #[cfg(target_os = "macos")]
+    {
+        let engine_for_session = engine.clone();
+        session_mac::watch_releases(move |event| {
+            log::info!("{}: releasing held hotkeys", event.description());
+            engine_for_session.release_hotkeys();
+        });
+    }
     tray.update(engine.tray_state());
     let handle = app.clone();
     if let Err(error) = tray.install(move |action| tray_action(&handle, action)) {
@@ -284,6 +428,16 @@ fn open_settings(app: &AppHandle, focus: bool, page: Option<String>) {
     }
 }
 
+/// The user opened the running app again (Finder, Launchpad, Spotlight). Does what a second launch does:
+/// Settings comes forward, whether or not the pill or another window is visible. This runs on the event
+/// loop, and `open_settings` must not, so it gets its own thread.
+#[cfg(target_os = "macos")]
+fn reopen(app: &AppHandle) {
+    log::info!("Voice was opened again; opening Settings");
+    let app = app.clone();
+    thread::spawn(move || open_settings(&app, true, None));
+}
+
 /// Tray clicks arrive on the event loop; everything they start runs on its own thread.
 fn tray_action(app: &AppHandle, action: TrayAction) {
     let app = app.clone();
@@ -313,6 +467,7 @@ fn tray_action(app: &AppHandle, action: TrayAction) {
             shared.tray.notify(&Notification {
                 title_key: keys::TRAY_TOOLTIP.to_string(),
                 body: error.message,
+                body_key: None,
             });
         }
     });
@@ -364,5 +519,35 @@ mod tests {
         };
         assert!(check_dev_flags(&hooks, false).is_err());
         assert!(check_dev_flags(&hooks, true).is_ok());
+    }
+
+    /// The installed Mac bundle refuses the development flags; the development bundle and a plain
+    /// cargo build, which have no bundle identifier, run them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_installed_mac_bundle_refuses_the_development_flags() {
+        let hooks = Args {
+            dev_hooks: Some(PathBuf::from("hooks")),
+            ..Args::default()
+        };
+        assert!(check_release_bundle(&hooks, Some(RELEASE_BUNDLE_ID)).is_err());
+        assert!(check_release_bundle(&args(Some("idle"), false), Some(RELEASE_BUNDLE_ID)).is_err());
+        assert!(check_release_bundle(&args(None, false), Some(RELEASE_BUNDLE_ID)).is_ok());
+        assert!(check_release_bundle(&hooks, Some("nl.bvdm.rukoo.voice.dev")).is_ok());
+        assert!(check_release_bundle(&hooks, None).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_keeps_no_webview2_folder_in_the_data_folder() {
+        let data = std::path::Path::new("/tmp/voice-data");
+        let profile = webview_profile(data);
+        if cfg!(target_os = "macos") {
+            // WKWebView ignores a profile folder, so asking for one under the data folder only left
+            // an empty `WebView2/` there.
+            assert_eq!(profile, None);
+        } else {
+            assert_eq!(profile, Some(data.join("WebView2")));
+        }
     }
 }

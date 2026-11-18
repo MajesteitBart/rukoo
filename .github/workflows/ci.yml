@@ -64,6 +64,11 @@ jobs:
       - run: npm ci
       - run: npm test
         if: runner.os == 'macOS' || matrix.shard == 2
+      # Rukoo Voice's macOS scripts and the meeting tools' lines for marks only a Mac Voice sends. `npm test` leaves
+      # test/macos/ out, so Windows and Linux never run them.
+      - name: Test the macOS-only Node cases
+        if: runner.os == 'macOS' && matrix.arch == 'arm64'
+        run: node --test "test/macos/*.test.js"
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb openbox dbus-x11 gnome-keyring libsecret-tools libgtk-3-0 libnss3 libasound2 libgbm1 libnotify4 libsecret-1-0
@@ -109,6 +114,10 @@ jobs:
       - name: Test native macOS desktop interactions
         if: runner.os == 'macOS'
         run: npx playwright test test/e2e/macos.spec.js
+      # The meeting view's silent-call mark, which only a Mac Voice sends; meeting.spec.js registers it on macOS only.
+      - name: Test the meeting view's macOS marks
+        if: runner.os == 'macOS' && matrix.arch == 'arm64'
+        run: npx playwright test test/e2e/meeting.spec.js -g "a silent call mark"
       - name: Build Windows or Linux packages
         if: runner.os != 'macOS' && matrix.shard == 3
         run: npm run dist -- --${{ matrix.arch }} --publish never

@@ -20,6 +20,54 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub const EXE: &str = env!("CARGO_BIN_EXE_rukoo-voice-speakers");
 
+/// Live speaker labels need the worker to run faster than real time. Below this many seconds of
+/// audio per second, a host (a hosted macOS runner measured 0.5, a Windows runner 8, an M4 27)
+/// can't keep labels up, and a test that asks for the speed would only fail.
+/// `RUKOO_VOICE_TEST_MIN_REALTIME` overrides it, to see the skip on a fast machine.
+#[cfg(target_os = "macos")]
+pub fn min_realtime_factor() -> f64 {
+    std::env::var("RUKOO_VOICE_TEST_MIN_REALTIME")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0)
+}
+
+/// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
+/// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
+/// back. Without the variable nothing is written.
+#[cfg(target_os = "macos")]
+pub fn log_skip(test: &str, reason: &str) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {
+        return;
+    };
+    // One write of the whole line, so tests running in parallel threads don't interleave.
+    let line = format!("{} {test}: {reason}\n", env!("CARGO_PKG_NAME"));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// True, after printing why, when the worker measured `factor` and that is below
+/// [`min_realtime_factor`].
+#[cfg(target_os = "macos")]
+pub fn too_slow_for_live_labels(test: &str, factor: f64) -> bool {
+    let min = min_realtime_factor();
+    let slow = factor < min;
+    if slow {
+        let reason = format!(
+            "the speaker worker runs at {factor} times real time on this host, below the {min} that live labels need"
+        );
+        eprintln!("skipped the speed check of {test}: {reason}");
+        log_skip(test, &format!("speed check skipped: {reason}"));
+    }
+    slow
+}
+
 pub struct Worker {
     child: Child,
     stdin: Option<ChildStdin>,

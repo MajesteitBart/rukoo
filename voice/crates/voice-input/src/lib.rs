@@ -1,9 +1,13 @@
-//! Input for Rukoo Voice dictation on Windows: push-to-talk hotkeys, text
-//! insertion, selection capture and the focused window.
+//! Input for Rukoo Voice dictation: push-to-talk hotkeys, text insertion,
+//! selection capture and the focused window.
 //!
-//! Other platforms compile and return [`InputError::Unsupported`]; the
-//! platform-neutral parts ([`HotkeyPoller::spawn_with`], [`PushToTalk`],
-//! [`target::classify`]) work everywhere.
+//! Windows has the full backend. macOS has the pasteboard, Secure Event Input,
+//! the physical keyboard (without a permission), posted keys (Cmd+V to paste,
+//! Cmd+C to copy, Unicode events to type), the Accessibility API for the
+//! selection and the focused element, and the foreground app. Other platforms
+//! return [`InputError::Unsupported`] for everything; the platform-neutral
+//! parts ([`HotkeyPoller::spawn_with`], [`PushToTalk`], [`target::classify`])
+//! work everywhere.
 //!
 //! The behavior ports Ownkey for Windows. Where Voice differs on purpose
 //! (clipboard restore, Shift+Enter for newlines), the code says so.
@@ -20,17 +24,23 @@ mod ptt;
 mod strokes;
 pub mod target;
 
+// The stubs in `unsupported` serve Linux for every call. On macOS the module
+// compiles to nothing: `mac` implements each call.
 #[cfg(not(windows))]
 mod unsupported;
-#[cfg(not(windows))]
-use unsupported as sys;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
 use win as sys;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+use mac as sys;
+#[cfg(not(any(windows, target_os = "macos")))]
+use unsupported as sys;
 
 pub use clipboard::BeforeKeys;
-pub use hotkeys::{HotkeyEvent, HotkeyPoller, Stopper, POLL_INTERVAL};
+pub use hotkeys::{HotkeyEvent, HotkeyPoller, InOrder, Stopper, POLL_INTERVAL};
 pub use keys::{Key, UnknownKey};
 pub use ptt::{Action, HotkeyConfig, Mode, PushToTalk};
 pub use target::{TextTarget, WindowInfo};
@@ -49,10 +59,14 @@ pub enum InsertMode {
 pub enum InputError {
     /// Not available on this platform yet.
     Unsupported,
-    /// Windows inserted fewer key events than were sent. User Interface
-    /// Privilege Isolation does that for a window of an app that runs as
-    /// administrator.
+    /// The app refuses the keys. On Windows, User Interface Privilege
+    /// Isolation does that for a window of an app that runs as administrator.
+    /// On macOS, Secure Event Input does it while a password field or
+    /// Terminal's Secure Keyboard Entry is active.
     Blocked,
+    /// macOS doesn't let Voice type into other apps: the Accessibility
+    /// permission is missing. The message says where to switch it on.
+    Accessibility,
     /// Another app kept the clipboard open.
     ClipboardBusy,
     /// A clipboard call failed, with the system's message.
@@ -61,15 +75,41 @@ pub enum InputError {
     System(String),
 }
 
+/// Why the platform refused keys, in its own terms.
+fn blocked_message() -> &'static str {
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Windows blocked typing into an app that runs as administrator."
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
+    }
+}
+
+/// Why nothing can be typed, with the switch the user has to turn on. macOS
+/// grants this per app and loses the grant when an ad-hoc signed build
+/// changes, so the wording names the pane rather than saying "denied".
+fn accessibility_message() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Voice isn't allowed to type into other apps. Switch Voice on under \
+         Privacy & Security › Device Control and Data Access in System Settings, then try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Voice isn't allowed to type into other apps. Its Accessibility permission is missing."
+    }
+}
+
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InputError::Unsupported => {
                 f.write_str("Typing and hotkeys aren't supported on this platform yet.")
             }
-            InputError::Blocked => {
-                f.write_str("Windows blocked typing into an app that runs as administrator.")
-            }
+            InputError::Blocked => f.write_str(blocked_message()),
+            InputError::Accessibility => f.write_str(accessibility_message()),
             InputError::ClipboardBusy => {
                 f.write_str("Another app is using the clipboard. Try again.")
             }
@@ -84,7 +124,8 @@ impl std::error::Error for InputError {}
 /// Inserts `text` into the focused app. Empty text does nothing.
 ///
 /// [`InsertMode::Paste`] takes a snapshot of the clipboard, puts the text on
-/// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V.
+/// it hidden from clipboard history and cloud clipboard, and presses Ctrl+V
+/// (Cmd+V on macOS).
 /// It returns right away. A background thread waits 2 s and then puts the
 /// snapshot back, unless something else was copied by then or the window the
 /// keys went to doesn't answer within 1 s: an app that hasn't handled Ctrl+V
@@ -92,6 +133,10 @@ impl std::error::Error for InputError {}
 /// dictation stays on the clipboard then. The next paste or
 /// [`capture_selection`] waits for that restore, and so does
 /// [`wait_for_clipboard_restore`], which the app should call before quitting.
+/// On macOS 15.4 and later Voice reads nothing of the user's clipboard unless
+/// its pasteboard access is set to Always Allow, because a read would make
+/// macOS ask: it takes no snapshot then, and the dictation stays on the
+/// clipboard, as in Ownkey.
 ///
 /// [`InsertMode::Type`] sends each character as a Unicode key event, 5 ms
 /// apart, and a newline as Shift+Enter. It doesn't touch the clipboard.
@@ -156,29 +201,13 @@ pub fn wait_for_clipboard_restore() {
 /// For a secret the user saves, such as bucket sync's recovery code, whose copy a page's
 /// `navigator.clipboard` would leave in Win+V history and, with cloud clipboard on, online.
 pub fn copy_hidden(text: &str) -> Result<(), InputError> {
-    #[cfg(windows)]
-    {
-        win::copy_hidden(text)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err(InputError::Unsupported)
-    }
+    sys::copy_hidden(text)
 }
 
 /// Empties the clipboard, but only while it still holds exactly `text`: something the user copied
 /// since stays. Returns whether it emptied it. For [`copy_hidden`]'s text after a while.
 pub fn clear_if(text: &str) -> Result<bool, InputError> {
-    #[cfg(windows)]
-    {
-        win::clear_if(text)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err(InputError::Unsupported)
-    }
+    sys::clear_if(text)
 }
 
 /// The foreground window, or `None` when there is none (for example on the
@@ -198,6 +227,48 @@ pub fn is_key_down(key: Key) -> bool {
     sys::is_key_down(key)
 }
 
+/// Forgets which right-hand modifiers were seen held, for a moment where a
+/// key-up can be lost: a session switch, the lock screen or sleep. Call it
+/// where the app treats a held hotkey as released, so a key let go of while the
+/// Mac slept doesn't keep reading down through the shared code of its pair. A
+/// key still held is read down, and remembered again, on the next read. Only
+/// the macOS backend keeps such a memory; elsewhere this does nothing.
+pub fn forget_held_modifiers() {
+    #[cfg(target_os = "macos")]
+    mac::forget_held_modifiers();
+}
+
+/// How long ago any key that isn't a modifier went down, anywhere in the
+/// session. Dictation uses it to tell a held Right Option that types a
+/// character from one held to speak. `None` where the platform doesn't say,
+/// which is everywhere but macOS.
+pub fn since_key_down() -> Option<Duration> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::since_key_down()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Whether macOS lets Voice post keys into other apps and read their accessibility objects: the
+/// Accessibility grant. It reads the grant without prompting. Settings shows the same reading,
+/// so the row and the error that names the switch can't disagree.
+#[cfg(target_os = "macos")]
+pub fn accessibility_trusted() -> bool {
+    mac::is_accessibility_trusted()
+}
+
+/// Asks macOS for the Accessibility grant, which shows its own dialog with the button that opens
+/// Privacy & Security. It returns at once; read the grant again with [`accessibility_trusted`].
+/// Voice asks once in a run, at a key press that couldn't insert anything.
+#[cfg(target_os = "macos")]
+pub fn prompt_accessibility() {
+    mac::prompt_accessibility()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,9 +282,15 @@ mod tests {
 
     #[test]
     fn errors_read_as_user_messages() {
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             InputError::Blocked.to_string(),
             "Windows blocked typing into an app that runs as administrator."
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            InputError::Blocked.to_string(),
+            "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
         );
         assert_eq!(
             InputError::Clipboard("Access is denied.".into()).to_string(),
@@ -221,7 +298,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn other_platforms_say_unsupported() {
         assert_eq!(
@@ -246,5 +323,32 @@ mod tests {
             HotkeyPoller::spawn(vec![Key::F13], tx).unwrap_err(),
             InputError::Unsupported
         );
+    }
+
+    /// macOS reads the physical keyboard through Core Graphics. F15 has a Mac
+    /// key code, so every read here asks Core Graphics' HID state, which needs
+    /// no grant and posts nothing; whether F15 is held doesn't matter, so a
+    /// desktop someone uses is fine.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_os_reads_the_physical_keyboard_without_a_grant() {
+        assert!(Key::F15.mac_code().is_some(), "the read reaches macOS");
+        let _ = is_key_down(Key::F15);
+        // Polling starts and keeps reading: no permission is involved, so it
+        // can't say Unsupported, and a read that failed would end the thread.
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let poller = HotkeyPoller::spawn(vec![Key::F15], tx).expect("macOS polls the keyboard");
+        std::thread::sleep(POLL_INTERVAL * 3);
+        assert!(poller.is_running());
+        poller.join();
+        // A key a Mac keyboard doesn't have is answered without asking macOS.
+        assert!(!is_key_down(Key::Pause));
+        // The reason a Mac without the grant gets says what to switch on.
+        let message = InputError::Accessibility.to_string();
+        assert!(
+            message.contains("Device Control and Data Access"),
+            "{message}"
+        );
+        assert!(message.contains("Privacy & Security"), "{message}");
     }
 }

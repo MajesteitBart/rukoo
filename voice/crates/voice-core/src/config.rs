@@ -28,6 +28,7 @@ use crate::providers::{
 pub const CONFIG_VERSION: u64 = 1;
 
 /// The keys Voice offers for dictation, the rewrite key and the meeting stop key, as stored.
+#[cfg(not(target_os = "macos"))]
 pub const HOTKEYS: [&str; 8] = [
     "right alt",
     "right ctrl",
@@ -38,6 +39,45 @@ pub const HOTKEYS: [&str; 8] = [
     "pause",
     "scroll lock",
 ];
+/// The keys a Mac accepts on load, as stored: Ownkey's and Right Command, so a config copied from
+/// Windows keeps its key.
+#[cfg(target_os = "macos")]
+pub const HOTKEYS: [&str; 9] = [
+    "right alt",
+    "right command",
+    "right ctrl",
+    "right shift",
+    "f13",
+    "f14",
+    "f15",
+    "pause",
+    "scroll lock",
+];
+/// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there; Right Command is the one
+/// Mac key Voice adds, and Right Option is the same key as Right Alt.
+#[cfg(target_os = "macos")]
+pub const MACOS_HOTKEYS: [&str; 7] = [
+    "right alt",
+    "right command",
+    "right ctrl",
+    "right shift",
+    "f13",
+    "f14",
+    "f15",
+];
+
+/// The keys this platform can offer in Settings, so a key the keyboard lacks can't be chosen:
+/// [`HOTKEYS`] off macOS, as before.
+pub fn offered_hotkeys() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &MACOS_HOTKEYS
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &HOTKEYS
+    }
+}
 pub const LANGUAGES: [&str; 11] = [
     "auto", "en", "nl", "de", "fr", "es", "it", "pt", "pl", "ja", "zh",
 ];
@@ -262,8 +302,9 @@ impl From<io::Error> for ConfigError {
 }
 
 impl Config {
-    /// Ownkey's defaults plus Voice's. In development mode the keys are F13 and F14, so a dev
-    /// copy never answers the installed Ownkey's Right Alt and Right Ctrl.
+    /// Ownkey's defaults plus Voice's. In development mode on Windows and Linux the keys are F13
+    /// and F14, so a dev copy never answers the installed Ownkey's Right Alt and Right Ctrl. A Mac
+    /// has no Ownkey and few F13 keys, so a dev copy there uses the installed copy's keys.
     pub fn defaults(dev_mode: bool) -> Config {
         let (hotkey, rewrite_hotkey) = default_hotkeys(dev_mode);
         Config {
@@ -590,7 +631,18 @@ pub fn provider_form_problem(
 }
 
 fn default_hotkeys(dev_mode: bool) -> (&'static str, &'static str) {
-    if dev_mode {
+    default_hotkeys_on(dev_mode, cfg!(target_os = "macos"))
+}
+
+/// The keys a fresh config gets. A development copy on Windows or Linux uses F13 and F14, so it
+/// never answers the installed Ownkey's keys. A Mac starts with Right Option and Right Command,
+/// installed or not: Ownkey doesn't exist there, most Mac keyboards have no F13 or F14, most Mac
+/// laptops have no Right Control key, and Fn/Globe already opens the emoji picker and macOS
+/// dictation. A dev copy and an installed Voice on one Mac therefore answer the same keys.
+pub fn default_hotkeys_on(dev_mode: bool, macos: bool) -> (&'static str, &'static str) {
+    if macos {
+        ("right alt", "right command")
+    } else if dev_mode {
         ("f13", "f14")
     } else {
         ("right alt", "right ctrl")

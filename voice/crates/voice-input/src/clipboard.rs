@@ -14,7 +14,7 @@
 //! risk pasting the user's old clipboard into it.
 //!
 //! The logic is written against small traits so it can be tested with a fake
-//! clipboard; the Windows backend implements them.
+//! clipboard; the Windows and macOS backends implement them.
 
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread;
@@ -98,10 +98,24 @@ pub(crate) struct Snapshot {
 }
 
 pub(crate) trait Clipboard {
-    /// `GetClipboardSequenceNumber`: changes whenever the content does.
+    /// The user's clipboard contents in the shape this platform keeps them:
+    /// Windows' formats, or the general pasteboard's items. Only the backend
+    /// that took the snapshot reads it again.
+    type Snapshot;
+
+    /// `GetClipboardSequenceNumber` or `NSPasteboard.changeCount`: changes
+    /// whenever the content does.
     fn sequence(&self) -> u32;
-    /// Copies every format [`holds_hglobal`] accepts.
-    fn snapshot(&mut self) -> Result<Snapshot, InputError>;
+    /// Whether Voice may read what someone else put on the clipboard without
+    /// the system asking the user. Always on Windows. macOS 15.4 and later ask
+    /// unless the user allows it: Voice then takes no snapshot and puts
+    /// nothing back, and the dictation stays on the clipboard as in Ownkey.
+    fn may_read(&self) -> bool {
+        true
+    }
+    /// Copies everything the platform can put back: Windows' formats, or the
+    /// pasteboard's items and their types.
+    fn snapshot(&mut self) -> Result<Self::Snapshot, InputError>;
     /// Replaces the content with `text`, hidden from clipboard history, and
     /// returns the sequence number read before the clipboard closed, which
     /// belongs to exactly that text. Read after the close, it could already
@@ -110,17 +124,29 @@ pub(crate) trait Clipboard {
     /// The Unicode text on the clipboard, if any, and the sequence number
     /// read while the clipboard was open, which belongs to exactly that text.
     fn text(&mut self) -> Result<(Option<String>, u32), InputError>;
-    /// Replaces the content with the snapshot, hidden from clipboard history.
+    /// Replaces the content with the snapshot. On Windows that is hidden from
+    /// clipboard history; on macOS the items go back exactly as they were.
     /// With `expected`, it first compares the sequence number while it holds
-    /// the clipboard open, so nobody can copy in between, and leaves the
-    /// clipboard alone when it differs. Returns whether it restored.
-    fn restore(&mut self, snapshot: &Snapshot, expected: Option<u32>) -> Result<bool, InputError>;
+    /// the clipboard open (or, on macOS, as late as the pasteboard allows),
+    /// so a copy made in between wins, and leaves the clipboard alone when it
+    /// differs. Returns whether it restored.
+    fn restore(
+        &mut self,
+        snapshot: &Self::Snapshot,
+        expected: Option<u32>,
+    ) -> Result<bool, InputError>;
 }
 
 pub(crate) trait Keyboard {
     /// Sends one batch. [`InputError::Blocked`] when Windows inserted fewer
     /// events than it was given.
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError>;
+    /// Types one chunk of text as a single keyboard event with
+    /// `CGEventKeyboardSetUnicodeString`. Windows has no such event: it sends
+    /// Unicode key strokes, which [`crate::strokes::typing`] cuts into one
+    /// batch per character.
+    #[cfg(target_os = "macos")]
+    fn send_text(&mut self, text: &str) -> Result<(), InputError>;
 }
 
 /// Runs before every batch of keys. The caller waits there until the user
@@ -145,6 +171,12 @@ impl Keyboard for Guarded<'_> {
     fn send(&mut self, strokes: &[Stroke]) -> Result<(), InputError> {
         (self.before)()?;
         self.keyboard.send(strokes)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn send_text(&mut self, text: &str) -> Result<(), InputError> {
+        (self.before)()?;
+        self.keyboard.send_text(text)
     }
 }
 
@@ -193,29 +225,34 @@ impl Clock for SystemClock {
 
 /// The user's clipboard, waiting to be put back after a paste.
 #[derive(Debug)]
-pub(crate) struct PendingRestore {
-    snapshot: Snapshot,
+pub(crate) struct PendingRestore<J> {
+    /// `None` when Voice may not read the clipboard: nothing goes back.
+    snapshot: Option<J>,
     /// The sequence number our text got, read while the clipboard was open.
     ours: u32,
 }
 
 /// Puts `text` on the clipboard and presses Ctrl+V. The caller then calls
 /// [`finish_paste`].
-pub(crate) fn paste(
+pub(crate) fn paste<J>(
     text: &str,
-    clipboard: &mut dyn Clipboard,
+    clipboard: &mut dyn Clipboard<Snapshot = J>,
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
-) -> Result<PendingRestore, InputError> {
-    let snapshot = clipboard.snapshot()?;
+) -> Result<PendingRestore<J>, InputError> {
+    let snapshot = if clipboard.may_read() {
+        Some(clipboard.snapshot()?)
+    } else {
+        None
+    };
     let before = clipboard.sequence();
     let ours = match clipboard.set_text(text) {
         Ok(ours) => ours,
         Err(err) => {
             let after = clipboard.sequence();
-            if after != before {
+            if let Some(snapshot) = snapshot.as_ref().filter(|_| after != before) {
                 // It may have emptied the clipboard before it failed.
-                let _ = clipboard.restore(&snapshot, Some(after));
+                let _ = clipboard.restore(snapshot, Some(after));
             }
             return Err(err);
         }
@@ -234,12 +271,15 @@ pub(crate) fn paste(
 /// back once the window the keys went to answers. When it doesn't answer
 /// within [`TARGET_ANSWER`], it may still paste later, so the dictation stays
 /// on the clipboard. Returns whether the snapshot went back.
-pub(crate) fn finish_paste(
-    clipboard: &mut dyn Clipboard,
+pub(crate) fn finish_paste<J>(
+    clipboard: &mut dyn Clipboard<Snapshot = J>,
     clock: &dyn Clock,
     target: &dyn Target,
-    pending: &PendingRestore,
+    pending: &PendingRestore<J>,
 ) -> Result<bool, InputError> {
+    if pending.snapshot.is_none() {
+        return Ok(false);
+    }
     clock.sleep(RESTORE_AFTER);
     if !target.answers(TARGET_ANSWER) {
         return Ok(false);
@@ -249,28 +289,37 @@ pub(crate) fn finish_paste(
 
 /// Puts the snapshot back unless the clipboard changed after our paste.
 /// Returns whether it did.
-pub(crate) fn restore_if_unchanged(
-    clipboard: &mut dyn Clipboard,
-    pending: &PendingRestore,
+pub(crate) fn restore_if_unchanged<J>(
+    clipboard: &mut dyn Clipboard<Snapshot = J>,
+    pending: &PendingRestore<J>,
 ) -> Result<bool, InputError> {
+    let Some(snapshot) = &pending.snapshot else {
+        return Ok(false);
+    };
     if clipboard.sequence() != pending.ours {
         // Someone copied something since; theirs wins.
         return Ok(false);
     }
     // Checked again with the clipboard open: a copy made in between wins too.
-    clipboard.restore(&pending.snapshot, Some(pending.ours))
+    clipboard.restore(snapshot, Some(pending.ours))
 }
 
 /// Copies the selection with Ctrl+C and returns its text, then puts the
 /// user's clipboard back. Makes two attempts, as Ownkey did, each waiting up
 /// to `timeout` for the app to copy. `None` when nothing with text was copied.
-pub(crate) fn capture(
-    clipboard: &mut dyn Clipboard,
+/// Where Voice may not read the clipboard unasked, it still reads the copy it
+/// asked for but takes no snapshot, so the selection stays on the clipboard.
+pub(crate) fn capture<J>(
+    clipboard: &mut dyn Clipboard<Snapshot = J>,
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
     timeout: Duration,
 ) -> Result<Option<String>, InputError> {
-    let snapshot = clipboard.snapshot()?;
+    let snapshot = if clipboard.may_read() {
+        Some(clipboard.snapshot()?)
+    } else {
+        None
+    };
     let original = clipboard.sequence();
     let copied = copy_selection(clipboard, keyboard, clock, timeout);
     // The selection's copy is what goes; a copy the user makes after it stays.
@@ -278,7 +327,7 @@ pub(crate) fn capture(
         Ok(Some((_, seen))) => *seen,
         _ => clipboard.sequence(),
     };
-    if selection != original {
+    if let Some(snapshot) = snapshot.filter(|_| selection != original) {
         // A failed restore leaves the selection on the clipboard, which is
         // what Ownkey always did; the captured text is still good.
         let _ = clipboard.restore(&snapshot, Some(selection));
@@ -287,8 +336,8 @@ pub(crate) fn capture(
 }
 
 /// The selection's text and the sequence number it was read at.
-fn copy_selection(
-    clipboard: &mut dyn Clipboard,
+fn copy_selection<J>(
+    clipboard: &mut dyn Clipboard<Snapshot = J>,
     keyboard: &mut dyn Keyboard,
     clock: &dyn Clock,
     timeout: Duration,
@@ -422,6 +471,11 @@ mod tests {
         copied_after_write: Option<Vec<Format>>,
         /// The window the paste went to doesn't answer, as while it is busy.
         target_busy: bool,
+        /// Reading what another app copied would make the system ask the user.
+        #[cfg(target_os = "macos")]
+        unreadable: bool,
+        #[cfg(target_os = "macos")]
+        snapshots: u32,
         /// How long each question to the target waited.
         asked: Vec<Duration>,
         sent: Vec<Vec<Stroke>>,
@@ -476,15 +530,15 @@ mod tests {
             self.0.borrow_mut()
         }
 
-        fn paste(&self, text: &str) -> Result<PendingRestore, InputError> {
+        fn paste(&self, text: &str) -> Result<PendingRestore<Snapshot>, InputError> {
             paste(text, &mut self.clone(), &mut self.clone(), &self.clone())
         }
 
-        fn restore(&self, pending: &PendingRestore) -> Result<bool, InputError> {
+        fn restore(&self, pending: &PendingRestore<Snapshot>) -> Result<bool, InputError> {
             restore_if_unchanged(&mut self.clone(), pending)
         }
 
-        fn finish(&self, pending: &PendingRestore) -> Result<bool, InputError> {
+        fn finish(&self, pending: &PendingRestore<Snapshot>) -> Result<bool, InputError> {
             finish_paste(&mut self.clone(), &self.clone(), &self.clone(), pending)
         }
 
@@ -505,14 +559,26 @@ mod tests {
     }
 
     impl Clipboard for Fake {
+        type Snapshot = Snapshot;
+
         fn sequence(&self) -> u32 {
             let mut desk = self.desk();
             desk.settle_copy();
             desk.sequence
         }
 
+        #[cfg(target_os = "macos")]
+        fn may_read(&self) -> bool {
+            !self.desk().unreadable
+        }
+
         fn snapshot(&mut self) -> Result<Snapshot, InputError> {
-            let desk = self.desk();
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut desk = self.desk();
+            #[cfg(target_os = "macos")]
+            {
+                desk.snapshots += 1;
+            }
             desk.open()?;
             let formats = desk
                 .formats
@@ -579,6 +645,22 @@ mod tests {
                 desk.copy_at = Some(desk.time + desk.copy_delay);
             }
             Ok(())
+        }
+
+        #[cfg(target_os = "macos")]
+        fn send_text(&mut self, text: &str) -> Result<(), InputError> {
+            // One Unicode event on macOS; the fake keeps the units as the strokes Windows would
+            // send, so the same test reads both.
+            let batch: Vec<Stroke> = text
+                .encode_utf16()
+                .flat_map(|unit| {
+                    [
+                        Stroke::Unicode { unit, up: false },
+                        Stroke::Unicode { unit, up: true },
+                    ]
+                })
+                .collect();
+            self.send(&batch)
         }
     }
 
@@ -799,9 +881,15 @@ mod tests {
         fake.desk().blocked = true;
         let err = fake.paste("dictated").unwrap_err();
         assert_eq!(err, InputError::Blocked);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             err.to_string(),
             "Windows blocked typing into an app that runs as administrator."
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            err.to_string(),
+            "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
         );
         let desk = fake.desk();
         assert_eq!(desk.formats, rich_clipboard());
@@ -823,6 +911,41 @@ mod tests {
         );
         assert_eq!(desk.formats, rich_clipboard());
         assert_eq!(desk.sequence, 100);
+    }
+
+    /// macOS would ask the user before Voice reads their clipboard: no snapshot, no restore and no
+    /// 2 s wait, and the dictation stays on the clipboard.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn without_read_access_the_dictation_stays_on_the_clipboard() {
+        let mut desk = Desk::with(rich_clipboard());
+        desk.unreadable = true;
+        let fake = Fake::new(desk);
+        let pending = fake.paste("dictated").unwrap();
+        assert_eq!(fake.finish(&pending), Ok(false));
+        let desk = fake.desk();
+        assert_eq!(desk.pasted, [Some("dictated".to_string())]);
+        assert_eq!(desk.snapshots, 0, "nothing of the user's was read");
+        assert_eq!(desk.restores, 0);
+        assert_eq!(desk.sleeps, [PASTE_SETTLE]);
+        assert!(desk.asked.is_empty());
+        assert_eq!(decode(&desk.formats).as_deref(), Some("dictated"));
+    }
+
+    /// The copy Voice asked for is still read, but nothing else of the user's, and the selection
+    /// stays on the clipboard.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn without_read_access_a_capture_reads_only_its_copy() {
+        let mut desk = Desk::with(rich_clipboard());
+        desk.unreadable = true;
+        desk.selection = Some(vec![text_format("selected words")]);
+        let fake = Fake::new(desk);
+        assert_eq!(fake.capture(), Ok(Some("selected words".to_string())));
+        let desk = fake.desk();
+        assert_eq!(desk.snapshots, 0);
+        assert_eq!(desk.restores, 0);
+        assert_eq!(decode(&desk.formats).as_deref(), Some("selected words"));
     }
 
     #[test]

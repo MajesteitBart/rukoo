@@ -6,9 +6,19 @@ use voice_screen_files::policy::Part;
 
 use crate::ExitError;
 
+#[cfg(not(target_os = "macos"))]
 pub const USAGE: &str = "\
 usage:
   rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+  rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
+  rukoo-voice-screen probe
+  rukoo-voice-screen inspect <file.mp4>";
+
+/// macOS also takes `--exclude-pid`, the processes whose windows ScreenCaptureKit leaves out.
+#[cfg(target_os = "macos")]
+pub const USAGE: &str = "\
+usage:
+  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
   rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
   rukoo-voice-screen probe
   rukoo-voice-screen inspect <file.mp4>";
@@ -43,17 +53,21 @@ impl Mode {
 /// `--test synthetic:<w>x<h>[,change-every=<ms>][,text=<word>][,monitors=<n>][,type-every=<ms>]
 /// [,idle-every=<ms>][,dirty][,software-encoder][,no-hardware][,free-bytes-file=<path>]
 /// [,encoder-fail-at=<ms>][,write-fail=<video|frames>@<ms>][,device-lost-at=<ms>[x<n>]]
-/// [,no-video-device=<n>][,monitor-gone-at=<ms>][,warp]`: a synthetic screen instead of the real
+/// [,no-video-device=<n>][,monitor-gone-at=<ms>][,warp][,format=<bgra|420f>]`: a synthetic screen
+/// instead of the real
 /// monitors, and the faults the tests need. Times are meeting time in ms, except `type-every` and
 /// `idle-every`, which count from the start of capture. `type-every` types a small mark every so
 /// often, as a keystroke does. `idle-every` sends the unchanged picture again that often, as
 /// Windows can on a still screen.
 /// `dirty` gives each frame the dirty regions Windows reports; without it frames have none.
 /// `warp` makes the graphics device Microsoft's software rasterizer, as on a CI runner without
-/// a GPU. `no-video-device` gives the next `n` graphics devices after the `device-lost-at` loss
-/// no video support, as a basic display driver has while the real one restarts.
+/// a GPU; it does nothing on macOS, which has no such device. `no-video-device` gives the next
+/// `n` graphics devices after the `device-lost-at` loss no video support, as a basic display
+/// driver has while the real one restarts.
 /// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
 /// capture's `Closed` notice, as when that notice is lost.
+/// `format=420f` makes macOS' synthetic frames bi-planar full-range YCbCr, as ScreenCaptureKit
+/// sends them, instead of BGRA. Only macOS takes `format`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestSpec {
     pub width: u32,
@@ -74,6 +88,8 @@ pub struct TestSpec {
     pub no_video_devices: u32,
     pub monitor_gone_at_ms: Option<u64>,
     pub warp: bool,
+    /// `format=420f`: bi-planar frames on macOS.
+    pub biplanar: bool,
 }
 
 impl TestSpec {
@@ -130,6 +146,10 @@ impl TestSpec {
                 ("software-encoder", None) => test.software_encoder = true,
                 ("no-hardware", None) => test.no_hardware = true,
                 ("warp", None) => test.warp = true,
+                #[cfg(target_os = "macos")]
+                ("format", Some("420f")) => test.biplanar = true,
+                #[cfg(target_os = "macos")]
+                ("format", Some("bgra")) => test.biplanar = false,
                 ("free-bytes-file", Some(v)) if !v.is_empty() => {
                     test.free_bytes_file = Some(PathBuf::from(v))
                 }
@@ -180,9 +200,16 @@ pub struct RecordOptions {
     pub resume: bool,
     /// `--monitor`: record this monitor or exit 1.
     pub monitor: Option<String>,
+    /// `--exclude-pid`: leave the windows of each of these processes out of the recording. macOS
+    /// only; Windows leaves Rukoo out through Rukoo's own content protection, and its list stays
+    /// empty.
+    pub exclude_pids: Vec<u32>,
     pub test: Option<TestSpec>,
 }
 
+// `record`'s options are much larger than the other commands' arguments, which is fine for a
+// command line that is parsed once.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Record(RecordOptions),
@@ -213,6 +240,8 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
     let mut mode = None;
     let mut resume = false;
     let mut monitor = None;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut exclude_pids: Vec<u32> = Vec::new();
     let mut test = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -229,6 +258,22 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
                 })?);
             }
             "--resume" => resume = true,
+            #[cfg(target_os = "macos")]
+            "--exclude-pid" => {
+                let v = value()?;
+                let pid = v
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&pid| pid != 0)
+                    .ok_or_else(|| {
+                        ExitError::usage(format!(
+                            "--exclude-pid takes a process id of 1 or more, got {v:?}"
+                        ))
+                    })?;
+                if !exclude_pids.contains(&pid) {
+                    exclude_pids.push(pid);
+                }
+            }
             "--monitor" => {
                 let v = value()?;
                 if v.is_empty() || v.chars().count() > 64 {
@@ -260,6 +305,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
         mode: mode.ok_or_else(|| ExitError::usage(format!("--mode is required\n{USAGE}")))?,
         resume,
         monitor,
+        exclude_pids,
         test,
     })
 }
@@ -326,9 +372,69 @@ mod tests {
                 mode: Mode::Video,
                 resume: true,
                 monitor: Some(r"\\.\DISPLAY2".into()),
+                exclude_pids: Vec::new(),
                 test: None,
             })
         );
+    }
+
+    /// macOS parses the exclusions, which ScreenCaptureKit filters by process.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_repeated_exceptions() {
+        let cmd = parse(
+            &args(&[
+                "record",
+                "--meeting",
+                "m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "4821",
+                "--exclude-pid",
+                "77",
+                "--exclude-pid",
+                "4821",
+            ]),
+            false,
+        )
+        .unwrap();
+        let Cmd::Record(opts) = cmd else {
+            panic!("not a record command")
+        };
+        assert_eq!(opts.exclude_pids, vec![4821, 77]);
+        // A line without the switch excludes nothing but this process, which the screen process
+        // adds itself.
+        let Cmd::Record(opts) =
+            parse(&args(&["record", "--meeting", "m", "--mode", "off"]), false).unwrap()
+        else {
+            panic!("not a record command")
+        };
+        assert!(opts.exclude_pids.is_empty());
+    }
+
+    /// The synthetic screen's `format` and the bad `--exclude-pid` values, which only macOS reads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_the_macos_switches() {
+        let test = TestSpec::parse("synthetic:640x480,format=420f").unwrap();
+        assert!(test.biplanar);
+        assert!(
+            !TestSpec::parse("synthetic:640x480,format=bgra")
+                .unwrap()
+                .biplanar
+        );
+        assert!(TestSpec::parse("synthetic:640x480,format=yuv").is_err());
+        for bad in [
+            &["--exclude-pid", "0"][..],
+            &["--exclude-pid", "-3"],
+            &["--exclude-pid", "rukoo"],
+            &["--exclude-pid"],
+        ] {
+            let mut line = args(&["record", "--meeting", "m", "--mode", "frames"]);
+            line.extend(args(bad));
+            assert!(parse(&line, false).is_err(), "{line:?}");
+        }
     }
 
     #[test]
@@ -381,6 +487,7 @@ mod tests {
                 no_video_devices: 3,
                 monitor_gone_at_ms: Some(5000),
                 warp: true,
+                biplanar: false,
             }
         );
         let once =

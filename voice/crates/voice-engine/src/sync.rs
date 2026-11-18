@@ -120,11 +120,17 @@ pub fn sync_config(cfg: &Config) -> Option<SyncConfig> {
 }
 
 /// Tells bucket sync what Settings say now.
+///
+/// On macOS it never reads the key: a read waits while the keychain dialog is open, and this runs
+/// while Voice starts and while Settings commit. The sync worker reads the key on its own thread
+/// and makes it when there is none, under voice-sync's key lock, so it and Show key never both
+/// make one; Settings show `sync.state` `unlocking` until the read returns.
 pub(crate) fn configure_sync(core: &Core, cfg: &Config) {
     let Some(sync) = &core.sync else {
         return;
     };
     let bucket = sync_config(cfg);
+    #[cfg(not(target_os = "macos"))]
     if bucket.is_some() {
         // The key exists before the worker connects, so the worker and Show key never both make
         // one: voice-sync's load-or-create isn't atomic, and two keys made at once would leave

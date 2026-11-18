@@ -23,10 +23,12 @@ use crate::api::{
 };
 use crate::dictation::Dictation;
 use crate::media::MediaService;
-use crate::meetings::controller::{Change, NOTIFY_MEETING};
+use crate::meetings::controller::{CallSound, Change, NOTIFY_MEETING};
 use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
-use crate::pill::{notices, Looks, MeetingPhase, PillDriver, DROP_HOLD, MOVED_HOLD};
+#[cfg(target_os = "macos")]
+use crate::permissions::PermissionState;
+use crate::pill::{notices, Looks, MeetingPhase, PillDriver, ACTION_HOLD, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
 use crate::services::{Services, Speech};
 use crate::settings::SettingsRuntime;
@@ -54,7 +56,13 @@ pub(crate) struct Core {
     rukoo: Mutex<Value>,
     /// What Settings > Speaker labels last showed about running meetings.
     labels: Mutex<Value>,
+    /// The last meeting's call track as the recorder's silence check saw it, and that meeting's
+    /// id: Settings' System Audio Recording row shows it, and a change to silent is told once.
+    call_sound: Mutex<Option<(String, CallSound)>>,
     pub settings_seq: AtomicU64,
+    /// Whether the Settings window exists. Its states read the privacy permissions; nothing else
+    /// does, so starting Voice doesn't call TCC before anyone opens Settings.
+    settings_open: AtomicBool,
     /// Settings states go out one at a time, each built after its `seq` was given.
     emitting: Mutex<()>,
     /// The engine itself, for work that outlives a call: set once by `start_with`.
@@ -97,7 +105,9 @@ impl Core {
             last_chime: Mutex::new(None),
             rukoo: Mutex::new(Value::Null),
             labels: Mutex::new(Value::Null),
+            call_sound: Mutex::new(None),
             settings_seq: AtomicU64::new(1),
+            settings_open: AtomicBool::new(false),
             emitting: Mutex::new(()),
             this: OnceLock::new(),
         }
@@ -137,6 +147,18 @@ impl Core {
             self.sink.notify(Notification {
                 title_key: title_key.to_string(),
                 body,
+                body_key: None,
+            });
+        }
+    }
+
+    /// A notification whose body has a catalog string; `english` is the fallback.
+    pub fn notify_keyed(&self, title_key: &str, body_key: &str, english: &str) {
+        if !self.shutting_down() {
+            self.sink.notify(Notification {
+                title_key: title_key.to_string(),
+                body: english.to_string(),
+                body_key: Some(body_key.to_string()),
             });
         }
     }
@@ -240,11 +262,41 @@ impl Core {
         }
         let _emitting = lock(&self.emitting);
         self.settings_seq.fetch_add(1, Ordering::SeqCst);
-        self.sink.settings(crate::settings::state(self));
+        self.sink
+            .settings(crate::settings::state(self, self.settings_open()));
+    }
+
+    /// Settings now exists: its states carry the privacy permissions, and the window gets a fresh
+    /// one. Called when the window is built or shown again.
+    pub fn settings_opened(&self) {
+        self.settings_open.store(true, Ordering::SeqCst);
+        self.settings_changed();
+    }
+
+    /// Settings is gone: pushed states leave the privacy permissions out again.
+    pub fn settings_closed(&self) {
+        self.settings_open.store(false, Ordering::SeqCst);
+    }
+
+    pub fn settings_open(&self) -> bool {
+        self.settings_open.load(Ordering::SeqCst)
     }
 
     pub fn looks(&self) -> Looks {
         looks(&self.opts, &self.svc, &self.config())
+    }
+
+    /// Re-reads the system's theme and language for the Settings that follow them. The pill and
+    /// the Settings page only learn a look from here or from a changed setting, so without this a
+    /// system change would reach neither until the user changed something else.
+    pub fn refresh_looks(&self) {
+        let now = self.looks();
+        if self.pill.read(|p| p.looks()) == now {
+            return;
+        }
+        self.pill.update(|p, _| p.set_looks(now));
+        self.sink.ui_changed();
+        self.settings_changed();
     }
 
     pub fn tray(&self) -> TrayState {
@@ -366,11 +418,17 @@ impl Core {
                 self.screen_paused(&id, false);
                 self.meeting_changed();
             }
-            Change::Clock { at_ms, mic_ok, .. } => {
+            Change::Clock {
+                id,
+                at_ms,
+                mic_ok,
+                call,
+            } => {
                 self.pill.update(|p, now| {
                     p.meeting_clock(at_ms, now);
                     p.meeting_mic(mic_ok, now);
                 });
+                self.call_sound(&id, call);
                 self.rukoo_changed();
             }
             Change::Restarted { .. } => {}
@@ -403,6 +461,57 @@ impl Core {
         }
     }
 
+    /// What the recorder's silence check says about the call. A call that turns silent while
+    /// another app plays sound gets a pill notice and a notification once per meeting; the
+    /// recording goes on. Rukoo hears of it through the timeline's `silent` mark. What the
+    /// check learned stays for Settings' System Audio Recording row.
+    fn call_sound(&self, id: &str, call: CallSound) {
+        let previous = {
+            let mut last = lock(&self.call_sound);
+            let previous = last
+                .as_ref()
+                .filter(|(last_id, _)| last_id == id)
+                .map(|(_, sound)| *sound);
+            // Unknown teaches nothing: a new meeting, or a recorder that restarted and checks
+            // again, keeps what was learned until it knows more.
+            if call == CallSound::Unknown || previous == Some(call) {
+                return;
+            }
+            *last = Some((id.to_string(), call));
+            previous
+        };
+        if self.meetings.controller.current().map(|r| r.id).as_deref() == Some(id) {
+            let silent = call == CallSound::Silent;
+            self.pill
+                .update(|p, now| p.meeting_call_silent(silent, now));
+        }
+        if call == CallSound::Silent && previous != Some(CallSound::Silent) {
+            self.notify_keyed(NOTIFY_MEETING, NOTIFY_CALL_SILENT, CALL_SILENT_TEXT);
+        }
+        self.settings_changed();
+    }
+
+    /// `SettingsState.callSound`: `heard`, `silent` or `null`. macOS only, as the key is.
+    #[cfg(target_os = "macos")]
+    pub fn call_sound_view(&self) -> Value {
+        match lock(&self.call_sound).as_ref().map(|(_, sound)| *sound) {
+            Some(CallSound::Heard) => Value::from("heard"),
+            Some(CallSound::Silent) => Value::from("silent"),
+            _ => Value::Null,
+        }
+    }
+
+    /// What the last meeting learned about System Audio Recording, for Settings. macOS only.
+    #[cfg(target_os = "macos")]
+    pub fn system_audio_learned(&self) -> Option<PermissionState> {
+        match lock(&self.call_sound).as_ref()?.1 {
+            CallSound::Heard => Some(PermissionState::Granted),
+            // A silent call is only a hint (voice-recorder `silence.rs`): the row stays unknown
+            // rather than saying macOS refused.
+            CallSound::Silent | CallSound::Unknown => None,
+        }
+    }
+
     /// Forwards a pause or resume to the screen process, off the event thread.
     fn screen_paused(&self, id: &str, paused: bool) {
         let screen = Arc::clone(&self.meetings.screen);
@@ -423,11 +532,14 @@ impl Core {
     }
 
     /// What the screen supervisor reports: drops and give-ups become pill notices and tray
-    /// notifications, a move shows the monitor's name.
-    pub fn on_screen(self: &Arc<Self>, change: ScreenChange) {
+    /// notifications, a move shows the monitor's name, and a screen recording that stopped for
+    /// good keeps its notice for the rest of the meeting.
+    pub fn on_screen(&self, change: ScreenChange) {
         match change {
             ScreenChange::Mode { id } => {
                 self.pill_screen(&id);
+                // The screen records again, so a stop's standing notice is over.
+                self.screen_standing(&id, None);
                 self.settings_changed();
             }
             ScreenChange::Dropped { id, what, reason } => {
@@ -436,6 +548,47 @@ impl Core {
                     self.notify(NOTIFY_MEETING, body.to_string());
                 }
                 self.pill_screen(&id);
+                self.settings_changed();
+            }
+            ScreenChange::NoPermission {
+                id,
+                refused,
+                was_recording,
+            } => {
+                // At the start of a meeting or in the middle of one: either way the screen is
+                // gone and the audio goes on. The notice names the setting, because retrying
+                // can't help. A meeting that recorded the screen keeps the notice for the rest
+                // of the meeting; one that never got to has it for a while, long enough to read
+                // because with notifications off it is the only trace on screen.
+                self.pill_screen(&id);
+                if was_recording {
+                    self.screen_standing(&id, Some(notices::SCREEN_PERMISSION));
+                } else {
+                    self.screen_notice(
+                        &id,
+                        Some(notices::SCREEN_PERMISSION),
+                        Map::new(),
+                        ACTION_HOLD,
+                    );
+                }
+                // A screen process that refused to start: the app asks macOS once, which puts
+                // Voice in the Screen Recording list for the user to switch on.
+                if refused {
+                    self.sink.screen_permission_needed();
+                }
+                self.notify_keyed(
+                    NOTIFY_MEETING,
+                    NOTIFY_SCREEN_PERMISSION,
+                    SCREEN_PERMISSION_TEXT,
+                );
+                self.settings_changed();
+            }
+            ScreenChange::StoppedByUser { id } => {
+                // Only a running screen process writes this, so the meeting was recording the
+                // screen and its stop stands for the rest of the meeting.
+                self.notify_keyed(NOTIFY_MEETING, NOTIFY_SCREEN_STOPPED, SCREEN_STOPPED_TEXT);
+                self.pill_screen(&id);
+                self.screen_standing(&id, Some(notices::SCREEN_STOPPED));
                 self.settings_changed();
             }
             ScreenChange::GaveUp { id } => {
@@ -479,6 +632,16 @@ impl Core {
         }
         self.pill
             .update(|p, now| p.meeting_notice(key, args, hold, now));
+    }
+
+    /// A screen notice that stands for the rest of the meeting, or `None` once the screen records
+    /// again.
+    fn screen_standing(&self, id: &str, key: Option<&'static str>) {
+        if self.meetings.controller.current().map(|r| r.id).as_deref() != Some(id) {
+            return;
+        }
+        self.pill
+            .update(|p, now| p.meeting_screen_stopped(key, now));
     }
 
     /// The pill's screen button opens a menu without changing the recording.
@@ -692,12 +855,26 @@ pub(crate) fn screen_mode(cfg: &Config) -> ScreenMode {
     }
 }
 
+/// The body of the notification when macOS doesn't let Voice record the screen
+/// (voice/ui/i18n `app.notify.screenPermission`), and its English text for a catalog without it.
+pub const NOTIFY_SCREEN_PERMISSION: &str = "app.notify.screenPermission";
+pub const NOTIFY_CALL_SILENT: &str = "app.notify.callSilent";
+const CALL_SILENT_TEXT: &str = "Voice has heard no sound from the call for a minute while another app had its audio output open. If people in the call are talking, macOS may not be letting Voice record it. Check System Settings > Privacy & Security > Screen & System Audio Recording: Rukoo Voice should be switched on under System Audio Recording Only. If it is on and the call stays silent after an update of Voice, remove Rukoo Voice there with the minus button and add it again. The recording goes on.";
+const SCREEN_PERMISSION_TEXT: &str = "Screen Recording is off for Rukoo Voice, so Voice records no screen in this meeting. The audio goes on. Switch it on in System Settings > Privacy & Security > Screen & System Audio Recording, then start a new meeting.";
+
+/// The body of the notification when the user stopped the screen capture from macOS' own
+/// control (voice/ui/i18n `app.notify.screenStopped`), and its English text.
+pub const NOTIFY_SCREEN_STOPPED: &str = "app.notify.screenStopped";
+const SCREEN_STOPPED_TEXT: &str = "The screen recording was stopped from macOS' screen sharing control, so Voice records no screen for the rest of this meeting. The audio goes on.";
+
 /// The pill notice for a part of the screen recording that stopped.
 fn drop_notice(what: Part, reason: Reason) -> &'static str {
     match (what, reason) {
         (Part::Video, Reason::Disk) => notices::VIDEO_DROPPED_DISK,
         (Part::Video, Reason::Encoder) => notices::VIDEO_DROPPED_ENCODER,
         (Part::Video, Reason::Device) => notices::VIDEO_DROPPED_DEVICE,
+        // The frames go in the same moment, and their notice is the one shown.
+        (Part::Video, Reason::Capture) => notices::SCREEN_FAILED,
         (Part::Frames, Reason::Disk) => notices::FRAMES_DROPPED_DISK,
         (Part::Frames, _) => notices::SCREEN_FAILED,
     }
@@ -713,7 +890,8 @@ fn drop_text(what: Part, reason: Reason) -> Option<&'static str> {
         (Part::Video, Reason::Device) => "Voice stopped the screen video: the graphics device didn't come back with video support.",
         (Part::Frames, Reason::Disk) => "Voice stopped recording the screen to keep recording audio: the disk is almost full.",
         (Part::Frames, Reason::Device) => "Voice stopped recording the screen: the graphics device couldn't be started again. The audio goes on.",
-        (Part::Frames, Reason::Encoder) => return None,
+        (Part::Frames, Reason::Capture) => "Voice stopped recording the screen: the screen capture kept stopping. The audio goes on.",
+        (Part::Frames, Reason::Encoder) | (Part::Video, Reason::Capture) => return None,
     })
 }
 
@@ -930,13 +1108,26 @@ impl EngineApi for EngineImpl {
                 self.0.sink.notify(Notification {
                     title_key: NOTIFY_MEETING.into(),
                     body: e.message.clone(),
+                    body_key: None,
                 });
                 ApiError::new(e.code.as_str(), e.message)
             })
     }
 
     fn settings_state(&self) -> Value {
-        crate::settings::state(&self.0)
+        crate::settings::state(&self.0, true)
+    }
+
+    fn settings_state_quiet(&self) -> Value {
+        crate::settings::state(&self.0, false)
+    }
+
+    fn settings_opened(&self) {
+        self.0.settings_opened();
+    }
+
+    fn settings_closed(&self) {
+        self.0.settings_closed();
     }
 
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError> {
@@ -1043,11 +1234,24 @@ impl EngineApi for EngineImpl {
             .map_err(control_error)
     }
 
+    /// macOS follows a system theme or language change into the pill and Settings. Elsewhere it
+    /// does nothing, and the app re-reads `ui()` on a theme change, as before.
+    fn system_looks_changed(&self) {
+        if cfg!(target_os = "macos") {
+            self.0.refresh_looks();
+        }
+    }
+
+    fn release_hotkeys(&self) {
+        crate::dictation::release_all(&self.0);
+    }
+
     fn ui(&self) -> UiOptions {
         let cfg = self.0.config();
         let looks = self.0.looks();
         UiOptions {
             theme: looks.theme,
+            theme_follows_system: cfg.ui_theme == core_config::Theme::System,
             locale: looks.locale,
             pill_edge: looks.edge,
             hide_pill_from_capture: cfg.pill_hide_from_capture,
@@ -1068,6 +1272,10 @@ impl EngineApi for EngineImpl {
             .meetings
             .control()
             .map(|control| control as Arc<dyn voice_bridge::MeetingControl>)
+    }
+
+    fn on_screen(&self, change: ScreenChange) {
+        self.0.on_screen(change);
     }
 }
 
@@ -1126,6 +1334,18 @@ mod drop_tests {
             .unwrap()
             .contains("Frames go on"));
         assert!(drop_text(Part::Frames, Reason::Device).is_some());
+        // A capture that kept stopping takes both parts at once; the frames speak for both. Only
+        // a Mac's screen process gives up on its capture.
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                drop_notice(Part::Frames, Reason::Capture),
+                "pill.screenFailed"
+            );
+            assert!(drop_text(Part::Frames, Reason::Capture)
+                .unwrap()
+                .contains("kept stopping"));
+            assert_eq!(drop_text(Part::Video, Reason::Capture), None);
+        }
         assert!(drop_text(Part::Frames, Reason::Disk).is_some());
     }
 }

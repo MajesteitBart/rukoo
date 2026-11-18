@@ -10,6 +10,7 @@
 //! never stops a screen process because the app is quitting, and it never touches the recorder.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,8 @@ pub const SCREEN_EXE: &str = "rukoo-voice-screen";
 /// The screen process's exit codes, as the recorder's (voice/RECORDING.md).
 const EXIT_CONFLICT: i32 = 3;
 const EXIT_BUSY: i32 = 4;
+/// The computer won't let the screen process capture: macOS' Screen Recording is off.
+const EXIT_NO_PERMISSION: i32 = 5;
 /// How long a control request may take.
 const REQUEST_WAIT: Duration = Duration::from_secs(1);
 /// How long `stop` over the control port may take: it finalizes the video and drains OCR.
@@ -98,6 +101,8 @@ pub type FreeBytes = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 /// app run.
 pub type RukooClients = Box<dyn Fn() -> (usize, bool) + Send + Sync>;
 pub type ProtectionClients = Box<dyn Fn() -> Vec<u64> + Send + Sync>;
+/// The pids whose windows the screen process leaves out, as `--exclude-pid`.
+pub type ExcludePids = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
 
 pub struct ScreenOptions {
     pub data_dir: PathBuf,
@@ -127,6 +132,22 @@ pub enum ScreenChange {
     Moved {
         id: String,
         name: String,
+    },
+    /// The computer won't let the screen process capture the screen: macOS' Screen Recording is
+    /// off, or was switched off during the meeting. The screen isn't recorded; the audio goes on.
+    NoPermission {
+        id: String,
+        /// The screen process refused to start for the grant, as opposed to a grant that went
+        /// while it recorded.
+        refused: bool,
+        /// The meeting had recorded screen content, so the screen is gone for the rest of it.
+        /// A refusal at the very start of a meeting leaves this false.
+        was_recording: bool,
+    },
+    /// The user stopped the screen capture from the system's own control, such as macOS' menu
+    /// bar button for screen sharing. The screen isn't recorded any more; the audio goes on.
+    StoppedByUser {
+        id: String,
     },
     /// The screen process died five times in a row; the screen isn't recorded any more.
     GaveUp {
@@ -169,7 +190,16 @@ struct ScreenLive {
     /// The `stop` line's reason, once the journal has one.
     stopped: Option<String>,
     gave_up: bool,
+    /// The journal says the Screen Recording grant is gone or the user stopped the capture, or
+    /// the process refused to start for lack of the grant. Retrying can't help, and the drops
+    /// that follow aren't a graphics device: their reason has a notice of its own.
+    no_permission: bool,
     monitors: Option<usize>,
+    /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
+    /// its command line. Another process, or other pids, and the watchdog tells it again. macOS
+    /// only.
+    #[cfg(target_os = "macos")]
+    excluded: Option<(u32, Vec<u32>)>,
 }
 
 impl ScreenLive {
@@ -190,7 +220,10 @@ impl ScreenLive {
             dropped_frames: None,
             stopped: None,
             gave_up: false,
+            no_permission: false,
             monitors: None,
+            #[cfg(target_os = "macos")]
+            excluded: None,
         }
     }
 
@@ -211,6 +244,10 @@ impl ScreenLive {
                         }
                     }
                 }
+                // Voice's own refusal at the launch, which only a Mac journals: the grant is
+                // missing, also for the app that reads the journal again after a restart.
+                #[cfg(target_os = "macos")]
+                Line::Dropped { reason, .. } if reason == "permission" => self.no_permission = true,
                 Line::Dropped { what, reason, .. } => {
                     let (Some(part), Some(reason)) = (Part::parse(&what), Reason::parse(&reason))
                     else {
@@ -222,7 +259,8 @@ impl ScreenLive {
                     };
                     if slot.is_none() {
                         *slot = Some(reason);
-                        if report {
+                        // The permission's own notice already said so.
+                        if report && !self.no_permission {
                             changes.push(ScreenChange::Dropped {
                                 id: self.id.clone(),
                                 what: part,
@@ -237,6 +275,29 @@ impl ScreenLive {
                             id: self.id.clone(),
                             name,
                         });
+                    }
+                }
+                Line::StoppedByUser { .. } => {
+                    if !self.no_permission {
+                        self.no_permission = true;
+                        if report {
+                            changes.push(ScreenChange::StoppedByUser {
+                                id: self.id.clone(),
+                            });
+                        }
+                    }
+                }
+                Line::NoPermission { .. } => {
+                    if !self.no_permission {
+                        self.no_permission = true;
+                        if report {
+                            changes.push(ScreenChange::NoPermission {
+                                id: self.id.clone(),
+                                refused: false,
+                                // Only a screen process that ran writes this line.
+                                was_recording: true,
+                            });
+                        }
                     }
                 }
                 Line::Stop { reason, .. } => self.stopped = Some(reason),
@@ -294,6 +355,9 @@ impl ScreenLive {
 struct LiveView {
     mode: ScreenMode,
     phase: Phase,
+    /// The Screen Recording grant is off, or the user stopped the capture: macOS only.
+    #[cfg(target_os = "macos")]
+    no_permission: bool,
     file: Option<ScreenFile>,
     /// The newest status the process answered.
     status: Option<Value>,
@@ -323,6 +387,7 @@ pub struct ScreenSupervisor {
     acked: Condvar,
     clients: Mutex<Option<RukooClients>>,
     protection_clients: Mutex<Option<ProtectionClients>>,
+    exclude_pids: Mutex<Option<ExcludePids>>,
     mode_change: Mutex<()>,
     mode_acks: Mutex<Option<ModeProtection>>,
     mode_acked: Condvar,
@@ -361,6 +426,7 @@ impl ScreenSupervisor {
             acked: Condvar::new(),
             clients: Mutex::new(None),
             protection_clients: Mutex::new(None),
+            exclude_pids: Mutex::new(None),
             mode_change: Mutex::new(()),
             mode_acks: Mutex::new(None),
             mode_acked: Condvar::new(),
@@ -387,10 +453,55 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
+    /// The pids the screen process leaves out of its capture, on macOS. A launch passes them on
+    /// its command line, and the watchdog sends the running process `exclude` when they change,
+    /// as when a Rukoo connects, reconnects with another pid or quits mid-meeting. Nothing sets
+    /// them elsewhere, so the command line stays as before and no `exclude` goes out.
+    pub fn set_exclude_pids(&self, pids: ExcludePids) {
+        *lock(&self.exclude_pids) = Some(pids);
+    }
+
     fn protection_clients(&self) -> HashSet<u64> {
         lock(&self.protection_clients)
             .as_ref()
             .map_or_else(HashSet::new, |clients| clients().into_iter().collect())
+    }
+
+    fn exclude_pids(&self) -> Vec<u32> {
+        let mut pids = lock(&self.exclude_pids)
+            .as_ref()
+            .map_or_else(Vec::new, |pids| pids());
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+
+    /// Tells the running screen process which pids to leave out. A process that doesn't know
+    /// the command, from an older Voice, keeps what its command line said; only a request that
+    /// didn't arrive is tried again on the next round. macOS only.
+    #[cfg(target_os = "macos")]
+    fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
+        let reply = match request(
+            file,
+            json!({ "cmd": "exclude", "pids": pids }),
+            REQUEST_WAIT,
+        ) {
+            Ok(reply) => reply,
+            Err(e) => {
+                log::warn!("screen: {id}: couldn't send the pids to leave out: {e}");
+                return;
+            }
+        };
+        if reply["ok"] != true {
+            log::warn!("screen: {id}: the screen process refused the pids to leave out: {reply}");
+        }
+        let mut slot = self.lock();
+        if let Some(live) = slot
+            .as_mut()
+            .filter(|l| l.id == id && l.file.as_ref() == Some(file))
+        {
+            live.excluded = Some((file.pid, pids));
+        }
     }
 
     pub fn ack_mode(&self, id: &str, request: &str, connection: u64) {
@@ -815,6 +926,11 @@ impl ScreenSupervisor {
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 live.file = screenfile::live(dir);
             }
+            // Only the Mac's screen process exits for want of a grant.
+            Err(e) if cfg!(target_os = "macos") && e.code == Some(EXIT_NO_PERMISSION) => {
+                self.refused_without_permission(slot, id, dir, &e.message);
+                return;
+            }
             // The watchdog's next round counts it as a process that died.
             Err(e) => log::warn!(
                 "screen: {id}: the screen process didn't start: {}",
@@ -823,6 +939,47 @@ impl ScreenSupervisor {
         }
         drop(slot);
         self.changed.notify_all();
+    }
+
+    /// A screen process that refused to start, or to start again, because the computer doesn't
+    /// let it capture the screen. Starting it again can't work until the user switches the grant
+    /// on, so the screen part ends here without the five tries of a process that crashes, and
+    /// the notice names the setting. A journal with content, from a process that recorded before
+    /// the grant went, is closed like a given-up one. The slot's lock is released first.
+    fn refused_without_permission(
+        &self,
+        mut slot: MutexGuard<'_, Option<ScreenLive>>,
+        id: &str,
+        dir: &Path,
+        message: &str,
+    ) {
+        if let Some(live) = slot.as_mut().filter(|l| l.id == id) {
+            live.phase = Phase::Stopped;
+            live.gave_up = true;
+            live.no_permission = true;
+        }
+        drop(slot);
+        self.changed.notify_all();
+        log::warn!("screen: {id}: the screen process won't start without permission: {message}");
+        let was_recording = journal_has_content(dir);
+        if was_recording {
+            if let Err(e) = self.finalize(id, dir, "failed") {
+                log::warn!("screen: {id}: couldn't finish the screen journal: {e}");
+            }
+        } else {
+            // Nothing of the screen was journaled, so nothing would tell Rukoo that the screen
+            // doesn't record, and it would hold back its notifications until the meeting ends. The
+            // drop it reads as a `dropped` mark goes in the journal instead. Only macOS refuses.
+            #[cfg(target_os = "macos")]
+            if let Err(e) = journal_refusal(dir) {
+                log::warn!("screen: {id}: couldn't journal the refusal: {e}");
+            }
+        }
+        self.emit(ScreenChange::NoPermission {
+            id: id.to_string(),
+            refused: true,
+            was_recording,
+        });
     }
 
     /// The start handshake: `meeting.starting`, then a wait for every connected Rukoo's
@@ -1100,8 +1257,15 @@ impl ScreenSupervisor {
         // The journal knows of every drop; the status says so too, a moment sooner.
         let on = |part: &str, known: bool| live && known && status[part].as_bool() != Some(false);
         let monitors = self.monitor_list(&status);
+        // On macOS a screen that lost the Screen Recording grant, or that the user stopped, records
+        // no more in this meeting: Rukoo, which holds back its notifications while the screen
+        // records, hears `off` after a reconnect too.
+        #[cfg(target_os = "macos")]
+        let screen = answered_mode(view.mode, view.no_permission);
+        #[cfg(not(target_os = "macos"))]
+        let screen = view.mode;
         Ok(json!({
-            "screen": view.mode,
+            "screen": screen,
             "state": state,
             "video": on("video", view.video),
             "frames": on("frames", view.frames),
@@ -1144,6 +1308,8 @@ impl ScreenSupervisor {
             Some(live) if live.id == id => Ok(LiveView {
                 mode: live.mode,
                 phase: live.phase,
+                #[cfg(target_os = "macos")]
+                no_permission: live.no_permission,
                 file: live.file.clone(),
                 status: live.status.clone(),
                 video: live.recording()
@@ -1356,21 +1522,14 @@ impl ScreenSupervisor {
         resume: bool,
     ) -> Result<(Child, ScreenFile), LaunchError> {
         let mut command = Command::new(&self.exe);
-        command
-            .arg("record")
-            .arg("--meeting")
-            .arg(dir)
-            .arg("--mode")
-            .arg(mode.as_str());
-        if resume {
-            command.arg("--resume");
-        }
-        if let Some(monitor) = &self.test_monitor {
-            command.arg("--monitor").arg(monitor);
-        }
-        if let Some(test) = &self.test {
-            command.arg("--test").arg(test);
-        }
+        command.args(record_args(
+            dir,
+            mode,
+            resume,
+            self.test_monitor.as_deref(),
+            self.test.as_deref(),
+            &self.exclude_pids(),
+        ));
         let log_name = format!("screen-{id}.log");
         command
             .stdin(Stdio::null())
@@ -1442,6 +1601,9 @@ impl ScreenSupervisor {
     /// One watchdog round. The status request runs without the slot's lock, so a screen process
     /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
     fn check(&self) {
+        // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
+        #[cfg(target_os = "macos")]
+        let wanted = self.exclude_pids();
         let (id, file, exited, mut changes) = {
             let mut slot = self.lock();
             let Some(live) = slot.as_mut() else {
@@ -1486,7 +1648,15 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
+            #[cfg(target_os = "macos")]
+            let exclude = file
+                .clone()
+                .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
             drop(slot);
+            #[cfg(target_os = "macos")]
+            if let Some(file) = exclude {
+                self.send_exclude(&id, &file, wanted);
+            }
             self.emit_all(changes);
             return;
         }
@@ -1583,6 +1753,10 @@ impl ScreenSupervisor {
                 live.file = Some(file);
                 live.alive_since = Instant::now();
             }
+            Err(e) if cfg!(target_os = "macos") && e.code == Some(EXIT_NO_PERMISSION) => {
+                self.refused_without_permission(slot, &id, &dir, &e.message);
+                return;
+            }
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 // Another screen process records into it after all: watch that one. It is
                 // alive, so this attempt doesn't count.
@@ -1595,6 +1769,41 @@ impl ScreenSupervisor {
         drop(slot);
         self.changed.notify_all();
     }
+}
+
+/// The arguments of `rukoo-voice-screen record`, without the program name.
+fn record_args(
+    dir: &Path,
+    mode: ScreenMode,
+    resume: bool,
+    test_monitor: Option<&str>,
+    test: Option<&str>,
+    exclude_pids: &[u32],
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![
+        "record".into(),
+        "--meeting".into(),
+        dir.as_os_str().to_owned(),
+        "--mode".into(),
+        mode.as_str().into(),
+    ];
+    if resume {
+        args.push("--resume".into());
+    }
+    if let Some(monitor) = test_monitor {
+        args.push("--monitor".into());
+        args.push(monitor.into());
+    }
+    if let Some(test) = test {
+        args.push("--test".into());
+        args.push(test.into());
+    }
+    // Every connected Rukoo's pid, so its windows stay out of the recording.
+    for pid in exclude_pids {
+        args.push("--exclude-pid".into());
+        args.push(pid.to_string().into());
+    }
+    args
 }
 
 fn watch(supervisor: Weak<ScreenSupervisor>) {
@@ -1633,6 +1842,42 @@ fn journal_history(dir: &Path) -> Option<journal::History> {
 
 fn journal_has_content(dir: &Path) -> bool {
     fs::metadata(paths::journal_path(dir)).is_ok_and(|m| m.len() > 0)
+}
+
+/// What `screen.get` says the meeting records: `off` once the Screen Recording grant went or the
+/// user stopped the capture, since nothing records the screen again in that meeting.
+#[cfg(target_os = "macos")]
+fn answered_mode(mode: ScreenMode, no_permission: bool) -> ScreenMode {
+    if no_permission {
+        ScreenMode::Off
+    } else {
+        mode
+    }
+}
+
+/// The journal of a meeting whose screen process refused to start without the Screen Recording
+/// grant: the frames dropped with reason `permission` and `stop`, at the recorder's latest
+/// meeting time. The pipeline turns the drop into the `dropped` mark Rukoo hears.
+#[cfg(target_os = "macos")]
+fn journal_refusal(dir: &Path) -> io::Result<()> {
+    let t = voice_meetings::MeetingDir::at(dir)
+        .and_then(|meeting| meeting.timeline().iter().filter_map(|line| line.t()).max())
+        .unwrap_or(0);
+    let mut journal = journal::JournalWriter::open(dir).map_err(|e| match e {
+        journal::OpenError::Busy => io::Error::other("another process writes the screen journal"),
+        journal::OpenError::Io(e) => e,
+    })?;
+    journal.write(&Line::Dropped {
+        t,
+        what: "frames".into(),
+        reason: "permission".into(),
+    })?;
+    journal.write(&Line::Stop {
+        t,
+        reason: "dropped".into(),
+    })?;
+    journal.sync();
+    Ok(())
 }
 
 /// Waits for a child up to `timeout`; kills it after that.
@@ -1688,6 +1933,59 @@ mod tests {
         assert_eq!(timing.handshake, Duration::from_millis(500));
         assert_eq!(timing.reconnect, Duration::from_secs(5));
         assert_eq!(timing.end_wait, Duration::from_secs(10));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_screen_process_learns_the_pids_to_leave_out() {
+        let args = record_args(
+            Path::new("/m"),
+            ScreenMode::Frames,
+            false,
+            None,
+            None,
+            &[4821, 77],
+        );
+        assert_eq!(
+            args,
+            [
+                "record",
+                "--meeting",
+                "/m",
+                "--mode",
+                "frames",
+                "--exclude-pid",
+                "4821",
+                "--exclude-pid",
+                "77",
+            ]
+            .map(OsString::from)
+        );
+        // Without Rukoo's pid the command line is what it was before the field existed.
+        let none = record_args(
+            Path::new("/m"),
+            ScreenMode::Video,
+            true,
+            Some("display-2"),
+            Some("synthetic:640x480"),
+            &[],
+        );
+        assert_eq!(
+            none,
+            [
+                "record",
+                "--meeting",
+                "/m",
+                "--mode",
+                "video",
+                "--resume",
+                "--monitor",
+                "display-2",
+                "--test",
+                "synthetic:640x480",
+            ]
+            .map(OsString::from)
+        );
     }
 
     fn live(mode: ScreenMode) -> ScreenLive {
@@ -1772,6 +2070,149 @@ mod tests {
             "{changes:?}"
         );
         assert_eq!(live.shown_mode(), ScreenMode::Frames);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A screen process that lost the Screen Recording grant writes `no_permission` and then the
+    /// drops. The supervisor reports the permission once, and the drops after it as no news of
+    /// their own: a graphics device that went isn't what happened.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_lost_permission_is_reported_instead_of_the_drops_that_follow() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-permission-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-1", &dir, ScreenMode::Video, Phase::Running);
+        use voice_screen_files::journal::Line;
+        journal.write(&Line::NoPermission { t: 4200 }).unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 4200,
+                what: "video".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 4200,
+                what: "frames".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        journal
+            .write(&Line::Stop {
+                t: 4300,
+                reason: "dropped".into(),
+            })
+            .unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(changes.as_slice(), [ScreenChange::NoPermission { id, refused: false, was_recording: true }] if id == "m-1"),
+            "{changes:?}"
+        );
+        assert!(live.no_permission);
+        // The drops are still noted, so the pill shows no screen.
+        assert_eq!(live.dropped_frames, Some(Reason::Device));
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
+        // A line read later says nothing more.
+        assert!(live.read_journal(true).is_empty());
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A screen process that refused to start leaves a journal Rukoo hears of: the frames dropped
+    /// for the permission, at the recorder's latest time, which the pipeline turns into the
+    /// `dropped` mark that ends Rukoo's notification hold. `screen.get` then says `off`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refusal_is_journaled_as_a_drop_and_answered_as_off() {
+        let root = std::env::temp_dir().join(format!(
+            "voice-engine-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // The recorder's time is read from a meeting folder, which is named by the meeting's id.
+        let dir = root.join("m-20261030-171203-4f2a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("timeline.jsonl"),
+            "{\"kind\":\"session\",\"t\":0,\"wall\":1,\"session\":1,\"pid\":7,\"resumed\":false,\"version\":1,\"recorder\":\"0.1.0\"}\n{\"kind\":\"heartbeat\",\"t\":4200,\"wall\":4201,\"samples\":{}}\n",
+        )
+        .unwrap();
+        journal_refusal(&dir).unwrap();
+        let lines = journal::read_all(&dir).unwrap();
+        assert!(
+            matches!(lines.as_slice(), [Line::Dropped { t: 4200, what, reason }, Line::Stop { t: 4200, reason: stop }]
+                if what == "frames" && reason == "permission" && stop == "dropped"),
+            "{lines:?}"
+        );
+        let derived = voice_meetings::ScreenFollower::new(&dir).poll().unwrap();
+        let marks: Vec<_> = derived
+            .iter()
+            .filter_map(|d| match d {
+                voice_meetings::ScreenDerived::Mark(mark) => Some(mark),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks.len(), 1, "{derived:?}");
+        assert_eq!(marks[0].id, "dropped-frames");
+        assert_eq!(marks[0].at, 4200);
+        assert_eq!(marks[0].detail.as_deref(), Some("permission"));
+        assert_eq!(answered_mode(ScreenMode::Frames, true), ScreenMode::Off);
+        assert_eq!(answered_mode(ScreenMode::Video, false), ScreenMode::Video);
+        // After Voice restarts, the journal alone still says the grant is missing.
+        let mut restarted = ScreenLive::new("m-1", &dir, ScreenMode::Frames, Phase::Running);
+        restarted.read_journal(false);
+        assert!(restarted.no_permission);
+        assert_eq!(
+            answered_mode(restarted.mode, restarted.no_permission),
+            ScreenMode::Off
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A capture the user stopped from the system's control has its own change, and the drops
+    /// after it none, so Voice doesn't say Screen Recording is off when it is on.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_capture_the_user_stopped_is_reported_as_such() {
+        let dir = std::env::temp_dir().join(format!(
+            "voice-engine-user-stopped-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut journal = voice_screen_files::journal::JournalWriter::open(&dir).unwrap();
+        let mut live = ScreenLive::new("m-2", &dir, ScreenMode::Frames, Phase::Running);
+        use voice_screen_files::journal::Line;
+        journal.write(&Line::StoppedByUser { t: 900 }).unwrap();
+        journal
+            .write(&Line::Dropped {
+                t: 900,
+                what: "frames".into(),
+                reason: "device".into(),
+            })
+            .unwrap();
+        let changes = live.read_journal(true);
+        assert!(
+            matches!(changes.as_slice(), [ScreenChange::StoppedByUser { id }] if id == "m-2"),
+            "{changes:?}"
+        );
+        assert_eq!(live.shown_mode(), ScreenMode::Off);
         drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
     }

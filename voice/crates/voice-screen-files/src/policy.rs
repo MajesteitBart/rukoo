@@ -58,15 +58,18 @@ pub enum Reason {
     Disk,
     Encoder,
     Device,
+    /// The platform's capture failed to start or stopped by itself too many times in a row.
+    Capture,
 }
 
 impl Reason {
-    /// The journal's `reason` and the mark's `detail`: `disk`, `encoder` or `device`.
+    /// The journal's `reason` and the mark's `detail`: `disk`, `encoder`, `device` or `capture`.
     pub fn as_str(self) -> &'static str {
         match self {
             Reason::Disk => "disk",
             Reason::Encoder => "encoder",
             Reason::Device => "device",
+            Reason::Capture => "capture",
         }
     }
 
@@ -75,6 +78,7 @@ impl Reason {
             "disk" => Some(Reason::Disk),
             "encoder" => Some(Reason::Encoder),
             "device" => Some(Reason::Device),
+            "capture" => Some(Reason::Capture),
             _ => None,
         }
     }
@@ -493,6 +497,9 @@ mod tests {
         for reason in [Reason::Disk, Reason::Encoder, Reason::Device] {
             assert_eq!(Reason::parse(reason.as_str()), Some(reason));
         }
+        // Only a Mac's screen process gives up on its capture; any computer reads the reason.
+        #[cfg(target_os = "macos")]
+        assert_eq!(Reason::parse("capture"), Some(Reason::Capture));
         assert_eq!(Part::parse("audio"), None);
         assert_eq!(Reason::parse(""), None);
     }

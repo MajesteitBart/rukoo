@@ -133,7 +133,12 @@ pub fn provider_error(error: &ProviderError) -> ApiError {
 
 // The state --------------------------------------------------------------------------------
 
-pub fn state(core: &Core) -> Value {
+/// The whole `SettingsState`. On macOS it also holds `permissions` and `callSound`; Windows and
+/// Linux states keep main's shape. `permissions` is read only when Settings needs it: a state the
+/// page asks for, or a pushed state while its window exists. Starting Voice and changing a setting
+/// with Settings closed must not call TCC, because on macOS 27 a preflight read alone can list the
+/// app.
+pub fn state(core: &Core, read_permissions: bool) -> Value {
     let cfg = core.config();
     let looks = core.looks();
     let start_at_login = !core.opts.dev_mode && core.svc.autostart.is_on();
@@ -141,7 +146,10 @@ pub fn state(core: &Core) -> Value {
     let (update_state, update_version) = lock(&core.settings.updates).clone();
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
-    json!({
+    #[cfg(not(target_os = "macos"))]
+    let _ = read_permissions;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut state = json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
         "version": core.opts.version,
         "devMode": core.opts.dev_mode,
@@ -169,7 +177,23 @@ pub fn state(core: &Core) -> Value {
         "updates": { "state": update_state, "version": update_version },
         "ownkey": ownkey::state(core, &cfg, &slow.ownkey_keys, slow.ownkey_found, slow.ownkey_running),
         "sync": sync,
-    })
+    });
+    #[cfg(target_os = "macos")]
+    {
+        state["permissions"] = read_permissions
+            .then(|| {
+                crate::permissions::view_learning(
+                    &*core.svc.permissions,
+                    core.system_audio_learned(),
+                )
+            })
+            .flatten()
+            .unwrap_or(Value::Null);
+        // What the last meeting's call track showed while Voice runs, in every state, also one
+        // built while Settings is closed (voice/ui/API.md).
+        state["callSound"] = core.call_sound_view();
+    }
+    state
 }
 
 /// What this computer can record of the screen, from `rukoo-voice-screen probe`: `null` until
@@ -663,7 +687,8 @@ fn change_secret(
 }
 
 /// `show` gives the recovery code (making the key when there is none), `saved` records that the
-/// user kept it, `import` switches to a key from another computer.
+/// user kept it, `import` switches to a key from another computer, and on macOS `retry` reads the
+/// key again after the keychain refused Voice.
 pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<Value, ApiError> {
     let code = code.map(voice_sync::Zeroizing::new);
     let result = match action {
@@ -677,6 +702,13 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             bucket_sync(core)?
                 .mark_key_saved()
                 .map_err(|e| sync_error(&e))?;
+            Value::Null
+        }
+        // Try again after the keychain refused Voice: the worker reads the key again on its own
+        // thread, so this returns at once and `sync.state` shows `unlocking` meanwhile.
+        #[cfg(target_os = "macos")]
+        "retry" => {
+            bucket_sync(core)?.retry();
             Value::Null
         }
         "import" => {
@@ -701,6 +733,9 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             })?;
             json!({ "id": crate::sync::short_id(&id) })
         }
+        #[cfg(target_os = "macos")]
+        _ => return Err(invalid("action is show, saved, import or retry.")),
+        #[cfg(not(target_os = "macos"))]
         _ => return Err(invalid("action is show, saved or import.")),
     };
     core.settings_changed();

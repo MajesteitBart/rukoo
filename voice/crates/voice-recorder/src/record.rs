@@ -19,6 +19,9 @@ use crate::control::{self, Command, Reply};
 use crate::disk;
 use crate::meeting::{self, RecorderFile};
 use crate::opener::{self, Opener, Prepared};
+use crate::silence::{self, SilenceCheck, Verdict};
+#[cfg(target_os = "macos")]
+use crate::source::Opened;
 use crate::source::{Backend, Capture, DeviceInfo, Failure, Sink, SourceSpec, StreamFlags};
 use crate::syncer::Syncer;
 use crate::timeline::{self, samples_to_ms, History, Line, TimelineWriter};
@@ -37,6 +40,9 @@ const APPEND_SAMPLES: usize = 2 * 1_600;
 /// PAD_THRESHOLD_SECONDS).
 const PAD_THRESHOLD_MS: u64 = 500;
 const RETRY: Duration = Duration::from_secs(1);
+/// A macOS process tap that fails to open is retried less and less often, up to this: each try
+/// creates and destroys a tap and an aggregate device in the audio server.
+const TAP_RETRY_MAX: Duration = Duration::from_secs(30);
 const DEFAULT_POLL: Duration = Duration::from_secs(2);
 const SYNC: Duration = Duration::from_secs(5);
 /// A microphone delivers blocks continuously, even of silence; one that stops is gone.
@@ -46,6 +52,17 @@ const STALL: Duration = Duration::from_secs(5);
 const RESYNC_MS: u64 = 100;
 /// About 20 s of 10 ms blocks from two tracks.
 const EVENT_QUEUE: usize = 4_096;
+/// A device that hasn't opened after this long is marked lost until it does, so the gap shows.
+/// The open itself goes on: macOS holds the first process tap until the user answers its prompt.
+#[cfg(target_os = "macos")]
+const OPEN_SLOW: Duration = Duration::from_secs(5);
+/// What a call track waiting on a slow macOS process tap says in the timeline and the status.
+pub const WAITING_FOR_TAP: &str = "Waiting for macOS to start recording system audio. It may be \
+     asking whether Rukoo Voice may record it.";
+#[cfg(target_os = "macos")]
+const WAITING: &str = "The device is taking long to open.";
+/// How often the silence check asks whether another app plays sound.
+const PLAYING_POLL: Duration = Duration::from_secs(1);
 /// A heartbeat this long after the one before is logged: something held up the recorder thread.
 /// Heartbeats come every second, a tick later at most, so 1.2 s is already late.
 const LATE_HEARTBEAT_MS: u64 = 1_200;
@@ -64,6 +81,8 @@ pub struct RecordOptions {
     pub limit_ms: u64,
     /// Segment length; only tests change it.
     pub segment_ms: u64,
+    /// How long the silence check waits; only tests change it.
+    pub silence_ms: u64,
     /// Every sync to disk waits this long first; only tests set it.
     pub sync_delay_ms: u64,
     /// Every segment create waits this long first; only tests set it.
@@ -86,6 +105,13 @@ pub(crate) enum Event {
         reply: Sender<Reply>,
         /// When the control port received it.
         at: Instant,
+    },
+    /// A device open finished on its own thread (macOS).
+    #[cfg(target_os = "macos")]
+    Opened {
+        track: usize,
+        generation: u64,
+        result: Result<Opened, String>,
     },
 }
 
@@ -112,6 +138,17 @@ pub fn padding(
     } else {
         0
     }
+}
+
+/// How long a track waits before it tries its device again after `failures` failed opens in a
+/// row: a second, except for a macOS process tap, which doubles that up to `TAP_RETRY_MAX`.
+pub fn retry_after(tap: bool, failures: u32) -> Duration {
+    if !tap {
+        return RETRY;
+    }
+    RETRY
+        .saturating_mul(1 << failures.saturating_sub(1).min(5))
+        .min(TAP_RETRY_MAX)
 }
 
 /// The meeting time where `samples` of padding end, added to a track whose audio ends at
@@ -250,7 +287,7 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     };
     // Set up the audio host before the clock starts, so the devices open close to the session
     // start. Synthetic faults count from here too.
-    let backend = Backend::prepare();
+    let backend = Arc::new(Backend::prepare());
     let clock = MeetingClock::starting_at(start_t);
     // Read next to the clock's start, so another process can map its own moments onto `t`.
     let boot = clock::boot_100ns();
@@ -301,6 +338,10 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
             covered_until: start_t,
             cover_from: None,
             taps: Vec::new(),
+            silence: SilenceCheck::new(opts.silence_ms),
+            playing: None,
+            failures: 0,
+            silence_us: 0,
         })
         .collect();
     let mut recorder = Recorder {
@@ -319,7 +360,15 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         heartbeat: (start_t, started),
         stop: None,
     };
+    // On macOS the devices open on threads of their own, so the control port answers from the
+    // start, also while macOS holds a process tap for its permission prompt.
     for i in 0..recorder.tracks.len() {
+        #[cfg(target_os = "macos")]
+        {
+            let at = recorder.clock.now();
+            recorder.begin_open(i, false, at);
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Err(error) = recorder.try_open(i, false) {
             recorder.mark_lost(i, error, recorder.clock.now());
         }
@@ -347,6 +396,36 @@ fn raise_priority() {
 
 #[cfg(not(windows))]
 fn raise_priority() {}
+
+/// Runs an open, turning a panic inside it (cpal, Core Audio) into a failed open, so the track
+/// retries instead of waiting for an `Opened` that never comes.
+#[cfg(target_os = "macos")]
+fn catching(open: impl FnOnce() -> Result<Opened, String>) -> Result<Opened, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(open)).unwrap_or_else(|panic| {
+        let why = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        Err(format!("Opening the device failed: {why}"))
+    })
+}
+
+/// What a track whose open takes long says while it waits: on macOS a process tap waits for the
+/// System Audio Recording prompt.
+#[cfg(target_os = "macos")]
+fn waiting_error(spec: &SourceSpec) -> &'static str {
+    if is_tap(spec) {
+        WAITING_FOR_TAP
+    } else {
+        WAITING
+    }
+}
+
+/// A macOS process tap: opening one creates objects in the audio server.
+fn is_tap(spec: &SourceSpec) -> bool {
+    cfg!(target_os = "macos") && matches!(spec, SourceSpec::DefaultOutput | SourceSpec::Output(_))
+}
 
 pub(crate) fn log(message: impl Display) {
     let _ = writeln!(io::stderr(), "rukoo-voice-recorder: {message}");
@@ -412,12 +491,47 @@ struct Track {
     /// With no segment open, a healthy loopback track is padded from here.
     cover_from: Option<u64>,
     taps: Vec<SyncSender<Vec<u8>>>,
+    /// Watches a source that records silence when it isn't allowed to record.
+    silence: SilenceCheck,
+    /// Whether another app played sound at the last poll, for the silence check.
+    playing: Option<bool>,
+    /// Failed opens in a row, for `retry_after`.
+    failures: u32,
+    /// Microseconds of audio the silence check hasn't counted yet.
+    silence_us: u64,
 }
 
 enum State {
     Open(Box<Live>),
-    Lost { error: String, next_try: Instant },
+    /// The source is opening on a thread of its own; `Event::Opened` ends this. macOS only:
+    /// elsewhere a source opens on the recorder thread, as before macOS.
+    #[cfg(target_os = "macos")]
+    Opening(Opening),
+    Lost {
+        error: String,
+        next_try: Instant,
+    },
 }
+
+#[cfg(target_os = "macos")]
+struct Opening {
+    /// When the open started, and its meeting time.
+    since: Instant,
+    at: u64,
+    /// The track was without a device before; an open device is `reconnected` then.
+    after_loss: bool,
+    /// The open took longer than `OPEN_SLOW` and the timeline says the track has no device.
+    waiting: Option<String>,
+    flags: Arc<StreamFlags>,
+    /// Blocks the new stream delivered before the recorder heard that it opened, with when they
+    /// arrived; they go to the track once it is open.
+    early: Vec<(Instant, Vec<f32>)>,
+}
+
+/// At most this many early blocks are kept, a few seconds' worth; a stream can't deliver much
+/// between its start and the recorder handling `Opened`.
+#[cfg(target_os = "macos")]
+const EARLY_BLOCKS: usize = 512;
 
 struct Live {
     _capture: Box<dyn Capture>,
@@ -425,6 +539,11 @@ struct Live {
     resampler: Resampler,
     flags: Arc<StreamFlags>,
     last_packet: Instant,
+    /// Native frames per second and channels, to measure what a block holds.
+    rate: u32,
+    channels: u16,
+    /// The silence check watches this stream.
+    silent_when_denied: bool,
 }
 
 struct Segment {
@@ -473,6 +592,7 @@ struct Schedule {
     heartbeat: Instant,
     poll: Instant,
     sync: Instant,
+    playing: Instant,
 }
 
 /// The next time of a periodic task; a schedule that fell behind restarts from now.
@@ -492,7 +612,7 @@ struct Recorder {
     /// records.
     syncer: Syncer,
     clock: MeetingClock,
-    backend: Backend,
+    backend: Arc<Backend>,
     events: SyncSender<Event>,
     tracks: Vec<Track>,
     paused: bool,
@@ -514,6 +634,7 @@ impl Recorder {
             heartbeat: now + HEARTBEAT,
             poll: now + DEFAULT_POLL,
             sync: now + SYNC,
+            playing: now,
         };
         while self.stop.is_none() {
             let wait = schedule.tick.saturating_duration_since(Instant::now());
@@ -562,6 +683,12 @@ impl Recorder {
                 }
             }
             Event::Command { command, reply, at } => self.on_command(command, reply, at),
+            #[cfg(target_os = "macos")]
+            Event::Opened {
+                track,
+                generation,
+                result,
+            } => self.on_opened(track, generation, result),
         }
     }
 
@@ -572,9 +699,15 @@ impl Recorder {
             self.suspend(&stamp);
             schedule.heartbeat = Instant::now() + HEARTBEAT;
         }
+        if now >= schedule.playing {
+            schedule.playing = now + PLAYING_POLL;
+            self.poll_playing();
+        }
         for i in 0..self.tracks.len() {
             self.check_failure(i);
             self.check_stall(i, now);
+            #[cfg(target_os = "macos")]
+            self.check_opening(i, now);
             self.retry(i, now);
             self.pad(i, PAD_THRESHOLD_MS);
             self.flush_pending(i);
@@ -610,10 +743,28 @@ impl Recorder {
         if track.generation != generation {
             return;
         }
+        let live = match &mut track.state {
+            State::Open(live) => live,
+            // The stream started before the recorder heard that it opened: keep the block.
+            #[cfg(target_os = "macos")]
+            State::Opening(opening) => {
+                if opening.early.len() < EARLY_BLOCKS {
+                    opening.early.push((at, data.to_vec()));
+                }
+                return;
+            }
+            State::Lost { .. } => return,
+        };
+        live.last_packet = Instant::now();
+        if live.silent_when_denied {
+            let frames = data.len() as u64 / live.channels.max(1) as u64;
+            let us = frames * 1_000_000 / live.rate.max(1) as u64;
+            self.check_silence(i, silence::all_zero(data), us, arrived);
+        }
+        let track = &mut self.tracks[i];
         let State::Open(live) = &mut track.state else {
             return;
         };
-        live.last_packet = Instant::now();
         let overrun = live.flags.overrun.swap(false, Ordering::Relaxed);
         if overrun && !paused && track.segment.is_some() {
             // Blocks were dropped before this one: end the segment first, so the gap shows
@@ -713,12 +864,28 @@ impl Recorder {
             .tracks
             .iter()
             .map(|track| {
-                let value = match &track.state {
+                let mut value = match &track.state {
                     State::Open(live) => json!({ "device": live.device.name, "ok": true }),
+                    // A short open isn't a problem to report; a long one is marked lost.
+                    #[cfg(target_os = "macos")]
+                    State::Opening(Opening { waiting: None, .. }) => {
+                        json!({ "device": null, "ok": true, "opening": true })
+                    }
+                    #[cfg(target_os = "macos")]
+                    State::Opening(Opening {
+                        waiting: Some(error),
+                        ..
+                    }) => json!({ "device": null, "ok": false, "opening": true, "error": error }),
                     State::Lost { error, .. } => {
                         json!({ "device": null, "ok": false, "error": error })
                     }
                 };
+                if track.silence.silent() {
+                    value["silent"] = json!(true);
+                }
+                if track.silence.heard() {
+                    value["heard"] = json!(true);
+                }
                 (track.name.clone(), value)
             })
             .collect();
@@ -757,8 +924,10 @@ impl Recorder {
         t
     }
 
-    /// Opens the track's source and writes `track`, preceded by `device` when the track got
-    /// its device back or moved to another one.
+    /// Opens the track's source on the recorder thread and writes `track`, preceded by `device`
+    /// when the track got its device back or moved to another one. Windows and Linux open this way;
+    /// macOS opens on a thread of its own (`begin_open`).
+    #[cfg(not(target_os = "macos"))]
     fn try_open(&mut self, i: usize, after_loss: bool) -> Result<(), String> {
         let track = &mut self.tracks[i];
         track.generation += 1;
@@ -803,8 +972,187 @@ impl Recorder {
             resampler,
             flags,
             last_packet: Instant::now(),
+            rate: opened.rate,
+            channels: opened.channels,
+            silent_when_denied: opened.silent_when_denied,
         }));
         Ok(())
+    }
+
+    /// Starts opening the track's source on a thread of its own. `Event::Opened` brings the
+    /// result to `on_opened`; a failure counts from meeting time `at`.
+    #[cfg(target_os = "macos")]
+    fn begin_open(&mut self, i: usize, after_loss: bool, at: u64) {
+        let track = &mut self.tracks[i];
+        track.generation += 1;
+        let generation = track.generation;
+        let flags = Arc::new(StreamFlags::default());
+        let sink = Sink::new(self.events.clone(), i, generation, flags.clone());
+        track.state = State::Opening(Opening {
+            since: Instant::now(),
+            at,
+            after_loss,
+            waiting: None,
+            flags,
+            early: Vec::new(),
+        });
+        let backend = self.backend.clone();
+        let spec = track.spec.clone();
+        let events = self.events.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("open-{}", track.name))
+            .spawn(move || {
+                let result = catching(|| backend.open(&spec, sink));
+                // Blocks while the queue is full: the result must not be lost. A recorder that
+                // stopped has dropped the receiver, and the stream then stops right here.
+                let _ = events.send(Event::Opened {
+                    track: i,
+                    generation,
+                    result,
+                });
+            });
+        if let Err(e) = spawned {
+            self.open_failed(i, format!("can't start opening the device: {e}"));
+        }
+    }
+
+    /// An open finished. One that a later open, a suspend or the stop replaced is dropped, which
+    /// stops its stream.
+    #[cfg(target_os = "macos")]
+    fn on_opened(&mut self, i: usize, generation: u64, result: Result<Opened, String>) {
+        if self.tracks[i].generation != generation
+            || !matches!(self.tracks[i].state, State::Opening(_))
+        {
+            return;
+        }
+        let early = match &mut self.tracks[i].state {
+            State::Opening(opening) => std::mem::take(&mut opening.early),
+            _ => Vec::new(),
+        };
+        match result.and_then(|opened| self.opened(i, opened)) {
+            Ok(()) => {
+                for (at, data) in early {
+                    self.on_audio(i, generation, at, &data);
+                }
+            }
+            Err(error) => self.open_failed(i, error),
+        }
+    }
+
+    /// The open of an `Opening` track failed: a first failure writes `device_lost`, a failed
+    /// retry only waits for the next one.
+    #[cfg(target_os = "macos")]
+    fn open_failed(&mut self, i: usize, error: String) {
+        let State::Opening(opening) = &self.tracks[i].state else {
+            return;
+        };
+        if opening.after_loss || opening.waiting.is_some() {
+            let track = &mut self.tracks[i];
+            track.failures += 1;
+            track.state = State::Lost {
+                error,
+                next_try: Instant::now() + retry_after(is_tap(&track.spec), track.failures),
+            };
+        } else {
+            let at = opening.at;
+            self.mark_lost(i, error, at);
+        }
+    }
+
+    /// The track's source is open: writes `track`, preceded by `device` when the track got its
+    /// device back or moved to another one.
+    #[cfg(target_os = "macos")]
+    fn opened(&mut self, i: usize, opened: Opened) -> Result<(), String> {
+        let resampler = Resampler::new(opened.rate, opened.channels)
+            .ok_or_else(|| "The device reports no sample rate or channels.".to_string())?;
+        let t = self.clock.now();
+        let track = &mut self.tracks[i];
+        let State::Opening(opening) = &track.state else {
+            return Ok(());
+        };
+        let after_loss = opening.after_loss || opening.waiting.is_some();
+        let flags = opening.flags.clone();
+        let moved = track
+            .device_id
+            .as_ref()
+            .is_some_and(|id| *id != opened.device.id);
+        let reason = match (after_loss, moved) {
+            (_, true) => Some("default"),
+            (true, false) => Some("reconnected"),
+            (false, false) => None,
+        };
+        if let Some(reason) = reason {
+            self.journal.write(Line::Device {
+                t,
+                track: track.name.clone(),
+                device: opened.device.name.clone(),
+                reason: reason.into(),
+            });
+        }
+        self.journal.write(Line::Track {
+            t,
+            track: track.name.clone(),
+            source: track.spec.to_string(),
+            device: opened.device.name.clone(),
+            device_id: opened.device.id.clone(),
+            native_rate: opened.rate,
+            native_channels: opened.channels,
+        });
+        track.device_id = Some(opened.device.id.clone());
+        track.cover_from = (!self.paused).then_some(t);
+        track.covered_until = track.covered_until.max(t);
+        track.failures = 0;
+        track.state = State::Open(Box::new(Live {
+            _capture: opened.capture,
+            device: opened.device,
+            resampler,
+            flags,
+            last_packet: Instant::now(),
+            rate: opened.rate,
+            channels: opened.channels,
+            silent_when_denied: opened.silent_when_denied,
+        }));
+        Ok(())
+    }
+
+    /// An open that takes longer than `OPEN_SLOW` goes on, but the track counts as lost from
+    /// when it started, so the timeline shows the gap and the status says why.
+    #[cfg(target_os = "macos")]
+    fn check_opening(&mut self, i: usize, now: Instant) {
+        let track = &self.tracks[i];
+        let State::Opening(opening) = &track.state else {
+            return;
+        };
+        if opening.waiting.is_some() || now.duration_since(opening.since) < OPEN_SLOW {
+            return;
+        }
+        let error = waiting_error(&track.spec);
+        let (t, already_lost) = (opening.at.max(track.covered_until), opening.after_loss);
+        if let State::Opening(opening) = &mut self.tracks[i].state {
+            opening.waiting = Some(error.into());
+        }
+        // A track that was lost already has its `device_lost` line.
+        if !already_lost {
+            self.journal.write(Line::DeviceLost {
+                t,
+                track: self.tracks[i].name.clone(),
+                error: error.into(),
+            });
+        }
+        self.drop_taps(i);
+    }
+
+    /// Asks whether another app plays sound, for the tracks the silence check still watches.
+    fn poll_playing(&mut self) {
+        for i in 0..self.tracks.len() {
+            let track = &self.tracks[i];
+            let watched = matches!(&track.state, State::Open(live) if live.silent_when_denied);
+            // Once it heard sound or said the call is silent, the check needs no more answers:
+            // only a first sound can change it then.
+            if watched && !track.silence.heard() && !track.silence.silent() {
+                self.tracks[i].playing = crate::source::others_playing(&self.tracks[i].spec);
+            }
+        }
     }
 
     /// Records that the track has no device from meeting time `at`, or from where its audio ends
@@ -812,9 +1160,10 @@ impl Recorder {
     fn mark_lost(&mut self, i: usize, error: String, at: u64) {
         let track = &mut self.tracks[i];
         let t = at.max(track.covered_until);
+        track.failures += 1;
         track.state = State::Lost {
             error: error.clone(),
-            next_try: Instant::now() + RETRY,
+            next_try: Instant::now() + retry_after(is_tap(&track.spec), track.failures),
         };
         track.cover_from = None;
         self.journal.write(Line::DeviceLost {
@@ -866,6 +1215,9 @@ impl Recorder {
             error: reason,
             next_try: Instant::now(),
         };
+        #[cfg(target_os = "macos")]
+        self.begin_open(i, false, at);
+        #[cfg(not(target_os = "macos"))]
         if let Err(error) = self.try_open(i, false) {
             self.mark_lost(i, error, at);
         }
@@ -897,15 +1249,26 @@ impl Recorder {
         let State::Lost { next_try, .. } = &self.tracks[i].state else {
             return;
         };
-        let next_try = *next_try;
-        if now < next_try {
-            return;
+        #[cfg(target_os = "macos")]
+        {
+            if now < *next_try {
+                return;
+            }
+            let at = self.clock.now();
+            self.begin_open(i, true, at);
         }
-        if let Err(error) = self.try_open(i, true) {
-            self.tracks[i].state = State::Lost {
-                error,
-                next_try: later(next_try, RETRY, now),
-            };
+        #[cfg(not(target_os = "macos"))]
+        {
+            let next_try = *next_try;
+            if now < next_try {
+                return;
+            }
+            if let Err(error) = self.try_open(i, true) {
+                self.tracks[i].state = State::Lost {
+                    error,
+                    next_try: later(next_try, RETRY, now),
+                };
+            }
         }
     }
 
@@ -934,7 +1297,13 @@ impl Recorder {
         let mut was_lost = Vec::with_capacity(self.tracks.len());
         for i in 0..self.tracks.len() {
             self.close_segment(i, None);
-            was_lost.push(matches!(self.tracks[i].state, State::Lost { .. }));
+            // A track that was opening counts as lost when the timeline already says so.
+            was_lost.push(match &self.tracks[i].state {
+                State::Lost { .. } => true,
+                #[cfg(target_os = "macos")]
+                State::Opening(o) => o.after_loss || o.waiting.is_some(),
+                State::Open(_) => false,
+            });
             self.tracks[i].state = State::Lost {
                 error: "The computer was asleep.".into(),
                 next_try: Instant::now(),
@@ -946,6 +1315,12 @@ impl Recorder {
             .advance_to(clock::after_sleep(from, current, &before, woke));
         let until = self.clock.now();
         self.journal.write(Line::Suspend { t: from, until });
+        // On macOS the devices open on their own threads, as at the start.
+        #[cfg(target_os = "macos")]
+        for (i, lost) in was_lost.into_iter().enumerate() {
+            self.begin_open(i, lost, until);
+        }
+        #[cfg(not(target_os = "macos"))]
         for (i, lost) in was_lost.into_iter().enumerate() {
             if let Err(error) = self.try_open(i, lost) {
                 self.mark_lost(i, error, self.clock.now());
@@ -958,6 +1333,33 @@ impl Recorder {
     fn pad(&mut self, i: usize, threshold_ms: u64) {
         let now = self.clock.now();
         self.pad_until(i, now, threshold_ms);
+    }
+
+    /// Feeds the silence check `ms` of the track's audio up to meeting time `at`, and writes what
+    /// it found out.
+    fn check_silence(&mut self, i: usize, zero: bool, us: u64, at: u64) {
+        let track = &mut self.tracks[i];
+        // Whole milliseconds go to the check and the rest waits for the next block, so a block of
+        // 512 frames at 48 kHz counts its 10.67 ms and one under a millisecond still adds up.
+        track.silence_us += us;
+        let ms = track.silence_us / 1000;
+        track.silence_us %= 1000;
+        let verdict = track.silence.feed(zero, ms, at, track.playing);
+        let name = track.name.clone();
+        match verdict {
+            Some(Verdict::Silent { since }) => {
+                log(format_args!(
+                    "{name}: only exact zeros since {since} ms while another app plays sound"
+                ));
+                self.journal.write(Line::Silent {
+                    t: at,
+                    track: name,
+                    since,
+                });
+            }
+            Some(Verdict::Sound) => self.journal.write(Line::Sound { t: at, track: name }),
+            None => {}
+        }
     }
 
     fn pad_until(&mut self, i: usize, now: u64, threshold_ms: u64) {
@@ -987,6 +1389,11 @@ impl Recorder {
         // it ends, which is the clock only when it covered the whole deficit: the next segment
         // must continue the padding, not start at the clock.
         let needed = needed.min(self.segment_samples);
+        // A process tap delivers nothing while nothing plays, and a denied one may never deliver:
+        // the padding is the silence the check has to hear about (`silence.rs`).
+        if matches!(&self.tracks[i].state, State::Open(live) if live.silent_when_denied) {
+            self.check_silence(i, true, needed * 1000 / SAMPLES_PER_MS, now);
+        }
         let track = &mut self.tracks[i];
         track
             .pending
@@ -1364,6 +1771,43 @@ mod tests {
         assert_eq!(next_segment_start(30_000, 29_950), 30_000);
         assert_eq!(next_segment_start(30_000, 30_150), 30_150);
         assert_eq!(next_segment_start(30_000, 29_850), 29_850);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_panic_while_opening_is_a_failed_open() {
+        let result = catching(|| panic!("the HAL went away"));
+        assert_eq!(
+            result.err().as_deref(),
+            Some("Opening the device failed: the HAL went away")
+        );
+        let missing = catching(|| Err("not connected".into()));
+        assert_eq!(missing.err().as_deref(), Some("not connected"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_slow_call_open_names_the_permission_prompt_on_a_mac() {
+        assert_eq!(waiting_error(&SourceSpec::DefaultOutput), WAITING_FOR_TAP);
+        assert_eq!(
+            waiting_error(&SourceSpec::Output("coreaudio:x".into())),
+            WAITING_FOR_TAP
+        );
+        assert_eq!(waiting_error(&SourceSpec::DefaultInput), WAITING);
+        let synthetic: SourceSpec = "synthetic:tap,open-ms=7000".parse().unwrap();
+        assert_eq!(waiting_error(&synthetic), WAITING);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failing_tap_backs_off_and_a_microphone_does_not() {
+        let secs = |f| retry_after(true, f).as_secs();
+        assert_eq!(
+            (1..=7).map(secs).collect::<Vec<_>>(),
+            [1, 2, 4, 8, 16, 30, 30]
+        );
+        assert_eq!(retry_after(true, 100), TAP_RETRY_MAX);
+        assert_eq!(retry_after(false, 100), RETRY);
     }
 
     #[test]

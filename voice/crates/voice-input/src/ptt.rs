@@ -110,6 +110,16 @@ impl PushToTalk {
         self.recording = None;
     }
 
+    /// Treats the held hotkey as released: its key-up may never arrive, for
+    /// example when the Mac's session resigns, the screen locks or the Mac
+    /// sleeps. A key-up that does arrive later is ignored. Returns whether a
+    /// recording was running, which the caller then ends: the session release
+    /// drops it, while the watchdog ends it as a key-up would.
+    pub fn release_all(&mut self) -> bool {
+        self.down = false;
+        self.recording.take().is_some()
+    }
+
     /// Settings changed the hotkeys. The poller keeps running, because it
     /// polls every offered key and the new config applies from the next event.
     pub fn set_config(&mut self, config: HotkeyConfig) {
@@ -244,6 +254,46 @@ mod tests {
         });
         assert!(!ptt.is_down());
         assert_eq!(ptt.handle(Released(Key::RightCtrl)), None);
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate))
+        );
+    }
+
+    /// A session event that can swallow a key-up (a fast user switch, the
+    /// lock screen, sleep) releases the held key once and leaves nothing for
+    /// the real release to stop a second time. Which event it was doesn't
+    /// reach push-to-talk; the app's tests cover the observers. macOS only,
+    /// whose session events and watchdog call it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn release_all_stops_a_held_recording_once() {
+        let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate))
+        );
+        assert!(ptt.release_all(), "the recording is stopped");
+        assert!(!ptt.is_down() && !ptt.is_recording());
+        // The key-up arrives after the session came back: nothing runs twice.
+        assert_eq!(ptt.handle(Released(Key::RightAlt)), None);
+        assert!(!ptt.release_all(), "no second stop");
+        assert_eq!(
+            ptt.handle(Pressed(Key::RightAlt)),
+            Some(Action::Start(Mode::Dictate)),
+            "the next hold works"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn releasing_without_a_hold_does_nothing() {
+        let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
+        assert!(!ptt.release_all());
+        ptt.handle(Pressed(Key::RightAlt));
+        ptt.recording_ended();
+        assert!(!ptt.release_all(), "a failed start left nothing to stop");
+        assert!(!ptt.is_down());
         assert_eq!(
             ptt.handle(Pressed(Key::RightAlt)),
             Some(Action::Start(Mode::Dictate))

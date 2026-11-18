@@ -1,7 +1,8 @@
 //! The screen process's control port: the recorder's line protocol (`voice/RECORDING.md`, "The
 //! control port") on `127.0.0.1`, one JSON object per line, each request carrying the token.
 //!
-//! Commands: `status`, `monitors`, `monitor { id }`, `pause`, `resume`, `stop`.
+//! Commands: `status`, `monitors`, `monitor { id }`, `pause`, `resume`, `stop`, `mode`, and on
+//! macOS `exclude { pids }`.
 //!
 //! Connection threads only read, check and answer what is wrong with a request; the process's
 //! main loop answers the rest, so the journal keeps a single writer.
@@ -22,9 +23,40 @@ pub const FIRST_REQUEST: Duration = Duration::from_secs(5);
 /// The longest request line, in bytes.
 pub const MAX_LINE: usize = 64 * 1024;
 /// The commands the port knows; anything else is `unknown_command`.
+#[cfg(not(target_os = "macos"))]
 pub const COMMANDS: [&str; 7] = [
     "status", "monitors", "monitor", "pause", "resume", "stop", "mode",
 ];
+/// The commands the port knows on macOS, where `exclude` leaves processes' windows out of the
+/// capture; anything else is `unknown_command`.
+#[cfg(target_os = "macos")]
+pub const COMMANDS: [&str; 8] = [
+    "status", "monitors", "monitor", "pause", "resume", "stop", "mode", "exclude",
+];
+/// The most pids `exclude` takes.
+#[cfg(target_os = "macos")]
+pub const MAX_EXCLUDED: usize = 64;
+
+/// The pids of an `exclude` request: an array of at most `MAX_EXCLUDED` pids from 1 up, sorted
+/// and without repeats. `None` when `pids` isn't that.
+#[cfg(target_os = "macos")]
+pub fn excluded_pids(request: &Value) -> Option<Vec<u32>> {
+    let list = request["pids"].as_array()?;
+    if list.len() > MAX_EXCLUDED {
+        return None;
+    }
+    let mut pids = list
+        .iter()
+        .map(|pid| {
+            pid.as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .filter(|&pid| pid > 0)
+        })
+        .collect::<Option<Vec<u32>>>()?;
+    pids.sort_unstable();
+    pids.dedup();
+    Some(pids)
+}
 /// The longest monitor id `monitor` takes, as `screen.select` in the bridge.
 pub const MAX_MONITOR_ID: usize = 64;
 
@@ -157,6 +189,10 @@ fn check(request: &Value) -> Result<(), &'static str> {
         if id.is_empty() || id.chars().count() > MAX_MONITOR_ID {
             return Err("bad_request");
         }
+    }
+    #[cfg(target_os = "macos")]
+    if cmd == "exclude" && excluded_pids(request).is_none() {
+        return Err("bad_request");
     }
     if cmd == "mode" && !matches!(request["mode"].as_str(), Some("off" | "frames" | "video")) {
         return Err("bad_request");
@@ -478,6 +514,55 @@ mod tests {
         // A line that isn't a JSON object is answered and closes it.
         assert_eq!(exchange(&mut stream, "[1, 2]"), Some(error("bad_request")));
         assert!(closed(&mut stream));
+    }
+
+    /// The port refuses a malformed `exclude` before the main loop sees it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bad_exclude_is_refused() {
+        let (port, token, seen) = served();
+        let mut stream = connect(port);
+        let with = |extra: Value| {
+            let mut o = json!({ "token": token });
+            o.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            o.to_string()
+        };
+        for line in [
+            with(json!({ "cmd": "exclude" })),
+            with(json!({ "cmd": "exclude", "pids": [0] })),
+            with(json!({ "cmd": "exclude", "pids": ["4821"] })),
+            with(json!({ "cmd": "exclude", "pids": [-1] })),
+            with(json!({ "cmd": "exclude", "pids": vec![7; MAX_EXCLUDED + 1] })),
+        ] {
+            assert_eq!(
+                exchange(&mut stream, &line),
+                Some(error("bad_request")),
+                "{line}"
+            );
+        }
+        assert!(seen.try_recv().is_err(), "the main loop saw none of them");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exclude_takes_a_short_list_of_pids() {
+        assert_eq!(
+            excluded_pids(&json!({ "pids": [4821, 77, 4821] })),
+            Some(vec![77, 4821])
+        );
+        assert_eq!(excluded_pids(&json!({ "pids": [] })), Some(vec![]));
+        assert_eq!(
+            excluded_pids(&json!({ "pids": [u64::from(u32::MAX) + 1] })),
+            None
+        );
+        assert_eq!(excluded_pids(&json!({ "pids": 4821 })), None);
+        assert_eq!(excluded_pids(&json!({ "pids": [1.5] })), None);
+        assert_eq!(
+            excluded_pids(&json!({ "pids": vec![9; MAX_EXCLUDED] })),
+            Some(vec![9])
+        );
     }
 
     #[test]

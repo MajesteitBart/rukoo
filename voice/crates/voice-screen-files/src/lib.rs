@@ -5,11 +5,13 @@
 //! mapping from the recorder's clock to meeting time, when a frame is saved, which frames go to
 //! the video encoder, which part to drop
 //! when the disk fills, the monitor choice, the fragmented MP4 box walker, the control port, and
-//! the answers to `frame.get` and `clip.get`.
+//! the answers to `frame.get` and `clip.get`. macOS adds the fragmented MP4 writer (`fmp4`).
 
 pub mod caps;
 pub mod clock;
 pub mod control;
+#[cfg(target_os = "macos")]
+pub mod fmp4;
 mod follow;
 pub mod frames;
 pub mod gate;

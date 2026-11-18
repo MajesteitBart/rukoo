@@ -463,6 +463,29 @@ fn the_asset_script_pins_the_same_nemotron() {
     );
 }
 
+/// The macOS asset script, speaker-assets.mjs, pins the same Nemotron: URL, SHA-256 and size.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_macos_asset_script_pins_the_same_nemotron() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/speaker-assets.mjs");
+    // A renamed or deleted script fails here rather than passing without a comparison.
+    let text =
+        fs::read_to_string(&script).unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
+    let gguf = &ModelSpec::nemotron().files[0];
+    assert!(
+        text.contains(gguf.url.as_deref().unwrap()),
+        "speaker-assets.mjs downloads another Nemotron URL"
+    );
+    assert!(
+        text.to_lowercase().contains(&gguf.sha256),
+        "speaker-assets.mjs checks another Nemotron SHA-256"
+    );
+    assert!(
+        text.contains(&format!("const NEMOTRON_SIZE = {};", gguf.size)),
+        "speaker-assets.mjs expects another Nemotron size"
+    );
+}
+
 #[test]
 fn file_mode_installs_into_voices_own_folder() {
     let server = file_server(Reply::bytes(200, GGUF.to_vec()));

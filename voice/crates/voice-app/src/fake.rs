@@ -23,16 +23,6 @@ use voice_engine::{
 
 pub const SCENARIOS: &[&str] = &["idle", "meeting", "dictation", "cycle", "first-run"];
 
-const KEYS: &[&str] = &[
-    "right alt",
-    "right ctrl",
-    "right shift",
-    "f13",
-    "f14",
-    "f15",
-    "pause",
-    "scroll lock",
-];
 const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
 /// Mistral's realtime models stream meetings; nothing else does.
 const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
@@ -207,6 +197,10 @@ struct State {
     acked: u64,
     settings_seq: u64,
     settings: Value,
+    /// The Settings window exists, so its states read this computer's privacy permissions. Only
+    /// macOS has them in its Settings state, as in the real engine.
+    #[cfg(target_os = "macos")]
+    settings_open: bool,
     meeting: Option<Meeting>,
     meetings_started: u32,
     script: Option<Script>,
@@ -284,6 +278,8 @@ impl FakeEngine {
                 acked: 0,
                 settings_seq: 0,
                 settings,
+                #[cfg(target_os = "macos")]
+                settings_open: false,
                 meeting: None,
                 meetings_started: 0,
                 script: None,
@@ -486,6 +482,7 @@ impl State {
         let ui = &self.settings["config"]["ui"];
         UiOptions {
             theme: resolve_theme(ui["theme"].as_str().unwrap_or("system")),
+            theme_follows_system: ui["theme"].as_str().unwrap_or("system") == "system",
             locale: resolve_locale(ui["language"].as_str().unwrap_or("system")),
             pill_edge: if ui["pillEdge"] == "top" {
                 Edge::Top
@@ -517,6 +514,15 @@ impl State {
     fn settings_changed(&mut self, out: &mut Vec<Out>) {
         self.settings_seq += 1;
         self.settings["seq"] = json!(self.settings_seq);
+        #[cfg(target_os = "macos")]
+        {
+            self.settings["permissions"] = if self.settings_open {
+                voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+        }
         self.settings["speakers"] = self.speakers();
         out.push(Out::Settings(self.settings.clone()));
     }
@@ -755,12 +761,10 @@ fn installed_model(id: &str, data_dir: &Path) -> Value {
 fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
     let discovery = voice_protocol::paths::bridge_path_here(voice_protocol::Side::Voice)
         .unwrap_or_else(|| data_dir.join("bridge.json"));
-    let (dictate, rewrite) = if dev_mode {
-        ("f13", "f14")
-    } else {
-        ("right alt", "right ctrl")
-    };
-    json!({
+    let (dictate, rewrite) =
+        voice_core::config::default_hotkeys_on(dev_mode, cfg!(target_os = "macos"));
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut settings = json!({
         "seq": 0,
         "version": version,
         "devMode": dev_mode,
@@ -818,7 +822,14 @@ fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
             "restore": { "state": "idle", "available": 0, "done": 0, "total": 0, "error": null },
             "otherKeys": 0
         }
-    })
+    });
+    // On macOS the fake engine still reads this computer's privacy permissions, but only when
+    // Settings asks or its window exists: a preflight read alone can list the app on macOS 27.
+    #[cfg(target_os = "macos")]
+    {
+        settings["permissions"] = Value::Null;
+    }
+    settings
 }
 
 /// The recovery code the fake shows: zeros, never a key.
@@ -942,7 +953,33 @@ impl EngineApi for FakeEngine {
     }
 
     fn settings_state(&self) -> Value {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut state = self.lock();
+        #[cfg(target_os = "macos")]
+        if state.settings_open {
+            state.settings["permissions"] =
+                voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                    .unwrap_or(Value::Null);
+        }
+        state.settings.clone()
+    }
+
+    fn settings_state_quiet(&self) -> Value {
         self.lock().settings.clone()
+    }
+
+    // Only the macOS app tells the engine when Settings opens and closes.
+    fn settings_opened(&self) {
+        #[cfg(target_os = "macos")]
+        self.apply(|st, out| {
+            st.settings_open = true;
+            st.settings_changed(out);
+        });
+    }
+
+    fn settings_closed(&self) {
+        #[cfg(target_os = "macos")]
+        self.apply(|st, _| st.settings_open = false);
     }
 
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError> {
@@ -983,7 +1020,10 @@ impl EngineApi for FakeEngine {
             };
             match key {
                 "dictation.hotkey" | "dictation.rewriteHotkey" | "meetings.stopKey" => {
-                    one_of(KEYS, key != "dictation.hotkey")?;
+                    one_of(
+                        voice_core::config::offered_hotkeys(),
+                        key != "dictation.hotkey",
+                    )?;
                     let v = value.as_str().unwrap_or_default();
                     if v != "off" && hotkeys(key).iter().any(|k| k == v) {
                         return Err(ApiError::new("same_key", format!("{v} is already in use")));
@@ -1353,6 +1393,19 @@ impl EngineApi for FakeEngine {
                         json!({ "exists": true, "id": "00000000", "exported": true });
                     json!({ "id": "00000000" })
                 }
+                // Only macOS reads the key again on request, after a refused keychain dialog.
+                #[cfg(target_os = "macos")]
+                "retry" => {
+                    if st.settings["sync"]["state"] == "key" {
+                        st.settings["sync"]["state"] = json!("idle");
+                        st.settings["sync"]["lastError"] = Value::Null;
+                        st.settings["sync"]["key"]["exists"] = json!(true);
+                    }
+                    Value::Null
+                }
+                #[cfg(target_os = "macos")]
+                _ => return Err(invalid("action is show, saved, import or retry.")),
+                #[cfg(not(target_os = "macos"))]
                 _ => return Err(invalid("action is show, saved or import.")),
             };
             st.settings_changed(out);
@@ -1515,6 +1568,13 @@ impl EngineApi for FakeEngine {
         self.lock().ui()
     }
 
+    fn system_looks_changed(&self) {
+        self.apply(|st, out| {
+            st.restyle(out);
+            st.settings_changed(out);
+        });
+    }
+
     fn tray_state(&self) -> TrayState {
         self.lock().tray()
     }
@@ -1591,6 +1651,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
@@ -1616,6 +1677,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };

@@ -9,12 +9,21 @@ on:
   pull_request:
     paths:
       - 'voice/nemo-runtime/**'
+      # The macOS runtime's files build in voice-nemo-runtime-macos.yml.
+      - '!voice/nemo-runtime/manifest-macos.json'
+      - '!voice/nemo-runtime/build-macos.sh'
+      - '!voice/nemo-runtime/macos.patch'
+      - '!voice/nemo-runtime/pack-macos.mjs'
       - '.github/workflows/voice-nemo-runtime.yml'
   push:
     # Branches only: a release tag such as v2.2.0 or voice-v0.1.0 would otherwise start a full runtime build.
     branches: ['**']
     paths:
       - 'voice/nemo-runtime/**'
+      - '!voice/nemo-runtime/manifest-macos.json'
+      - '!voice/nemo-runtime/build-macos.sh'
+      - '!voice/nemo-runtime/macos.patch'
+      - '!voice/nemo-runtime/pack-macos.mjs'
       - '.github/workflows/voice-nemo-runtime.yml'
   workflow_dispatch:
 

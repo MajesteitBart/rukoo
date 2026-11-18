@@ -54,10 +54,11 @@ Rukoo opens `ws://127.0.0.1:<port>/bridge` and sends `hello` as its first messag
 At most 16 connections wait for their upgrade or `hello` at a time. A new connection closes the oldest of them, so connections that never say `hello` can't keep Rukoo out: Rukoo sends `hello` as soon as the upgrade is done.
 
 ```json
-{ "type": "hello", "protocol": 2, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
+{ "type": "hello", "protocol": 2, "token": "…", "client": "rukoo", "clientVersion": "2.2.0", "pid": 4821, "instance": "Vb3kQ9m2X7pL1sR4tY8wZQ", "after": 1041 }
 ```
 
 - `protocol` is the highest version Rukoo speaks that is also within the file's `minProtocol` to `protocol`.
+- `pid` is Rukoo's process id: the process that owns its windows. It is optional, and it is not the discovery file's `pid`, which is Voice's. Rukoo sends it on macOS, and Voice on macOS passes it to its screen process, which leaves that process's windows out of the recording because the system can filter by application there. Without a `pid`, as on Windows, Voice relies on Rukoo hiding its own windows.
 - `instance` and `after` are the instance and the last sequence number Rukoo saw. On its first connection Rukoo sends `null` and `0`.
 
 Voice compares the token in constant time and answers with `welcome`:
@@ -216,15 +217,16 @@ Something that happened at a moment in the meeting.
 | `dictation` | The user dictated into another app | end of the dictation | `null` |
 | `gap` | The track has no audio | end of the gap | `crash`, `device` or `suspend` |
 | `device` | The track moved to another device; `label` is its name | `null` | `default`, `reconnected` or `lost` |
-| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk`, `encoder`, `device` or `crash` |
+| `dropped` | Voice stopped recording the screen, to keep recording audio | `null` | `disk`, `encoder`, `device`, `capture`, `permission` or `crash` |
 | `video_dropped` | Voice stopped the screen video, to keep recording audio; the frames go on | `null` | `disk`, `encoder` or `device` |
 | `screen_gap` | The screen has no frames | end of the gap | `locked`, `crash`, `device` or `monitor` |
 | `monitor` | Voice moved the screen recording to another monitor; `label` is its name | `null` | `user` or `lost` |
+| `silent` | From a Mac Voice: the call track has recorded only exact silence since `at`, for a minute while another app had its audio output open. A hint: the computer may not let Voice record its audio (on a Mac, System Audio Recording is off for Voice or its grant went stale after an update), or nobody talked | `null` | `null` |
 
 - `track` is `mic`, `call`, `screen` or `null` when the mark is about the whole meeting. `dropped`, `video_dropped`, `screen_gap` and `monitor` come with `screen`; `gap` never does.
 - `label` is the text the user gave a `user` mark, the device name of a `device` mark or the monitor name of a `monitor` mark.
-- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, `device` that the graphics device was reset, and `monitor` that no monitor was left to record. On `dropped`, `device` means the graphics device couldn't be started again, and `crash` that Voice's screen recorder stopped five times in a row, so Voice gave up on it for this meeting. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
-- Voice sends a mark once it is complete. A gap is sent when the audio or the screen comes back, or the meeting ends.
+- On a `screen_gap`, `locked` means the computer was locked or its session disconnected, `crash` that Voice's screen recorder restarted, `device` that the graphics device was reset, and `monitor` that no monitor was left to record. On `dropped`, `device` means the graphics device couldn't be started again, `capture`, from a Mac Voice, that the screen capture failed to start or stopped by itself ten times in a row, `permission`, from a Mac Voice, that the screen process refused to start because Screen Recording is off for Voice, so no screen was recorded, and `crash` that Voice's screen recorder stopped five times in a row, so Voice gave up on it for this meeting. On `video_dropped`, `device` means the graphics device was reset and didn't come back with the video support the encoder needs; the frames go on, unless no device came back at all, when a `dropped` with `device` follows at once. `lost` on a `monitor` mark means the monitor Voice recorded went away. When the screen recording stops for good, Voice sends `dropped`; when the video had stopped before, a `video_dropped` came first.
+- Voice sends a mark once it is complete. A gap is sent when the audio or the screen comes back, or the meeting ends. A `silent` mark is sent the moment Voice notices, with `until` `null`, at most once per recorder session, because the user can still fix it during the meeting. When the call has sound after all, Voice sends the same mark again with `until` set to that moment, and it replaces the first.
 - Rukoo shows a mark of a `kind` it doesn't know as a plain mark.
 
 ### `frame`
@@ -319,7 +321,7 @@ Both sides check what they receive with the same rules and drop a message that b
 
 - Integers are JSON numbers without a fraction. Times, `seq`, `head` and `after` are 0 or more; `seq` and `revision` are 1 or more.
 - A meeting id matches `^m-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$`, a token `^[A-Za-z0-9_-]{43}$` and an instance `^[A-Za-z0-9_-]{22}$`.
-- `hello` needs `protocol`, `token`, `client` (1 to 64 characters), `instance` (an instance or `null`) and `after`. `clientVersion` is optional.
+- `hello` needs `protocol`, `token`, `client` (1 to 64 characters), `instance` (an instance or `null`) and `after`. `clientVersion` and `pid` are optional; a `pid` is an integer of 1 or more, and `null` counts as left out.
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.

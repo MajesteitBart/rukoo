@@ -9274,6 +9274,10 @@ body.meeting-mode .titlebar-search {
   height: 1px;
   background: var(--border);
 }
+/* A silent-call mark (a Mac Voice's) wraps over several lines: a 16px stub beside it would hang mid-sentence. */
+.mt-mark.is-silent .mt-line::after {
+  min-width: 0;
+}
 .mt-line svg {
   width: 14px;
   height: 14px;
@@ -9286,7 +9290,8 @@ body.meeting-mode .titlebar-search {
 .mt-mark.is-gap .mt-line svg,
 .mt-mark.is-dropped .mt-line svg,
 .mt-mark.is-video_dropped .mt-line svg,
-.mt-mark.is-screen_gap .mt-line svg {
+.mt-mark.is-screen_gap .mt-line svg,
+.mt-mark.is-silent .mt-line svg {
   color: var(--warn);
 }
 

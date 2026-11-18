@@ -403,6 +403,17 @@ impl Bridge {
             .as_ref()
             .map_or_else(Vec::new, Handle::protection_clients)
     }
+
+    /// The pids of the connected Rukoo clients that sent one, for the screen process's
+    /// `--exclude-pid`. macOS only.
+    #[cfg(target_os = "macos")]
+    pub fn rukoo_pids(&self) -> Vec<u32> {
+        self.handle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or_else(Vec::new, Handle::rukoo_pids)
+    }
     pub fn start(log: EventLog, control: Arc<Control>, path: PathBuf, version: &str) -> Bridge {
         let bridge = Bridge {
             log,
@@ -516,6 +527,7 @@ mod tests {
         Client {
             client: name.into(),
             client_version: Some("2.2.0".into()),
+            pid: None,
             protocol: 1,
             after: 0,
             sent,

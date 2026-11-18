@@ -24,6 +24,90 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The single-instance lock file and socket (`flock`, `getuid`, `sockaddr_un`).
+libc = "0.2"
+# The objc2 family tauri 2.12.5, tao 0.37.2 and wry 0.57.1 build against, so the WKWebView handle is one
+# type. The app reads its language from AppKit, gives its windows an appearance, hears the system's
+# theme change, says in an NSAlert why it can't start,
+# captures its own pages through WKWebView, posts notifications through Notification Center,
+# chooses folders with NSOpenPanel, and shows the pill and its button panels without taking focus
+# (screens, tracking areas, and the window list for the front window's display).
+# `objc2-user-notifications` loses its default features so it doesn't bring in Core Location.
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "objc2-core-foundation",
+  "NSAccessibilityConstants",
+  "NSAccessibilityProtocols",
+  "NSAlert",
+  "NSAppearance",
+  "NSApplication",
+  "NSBitmapImageRep",
+  "NSColor",
+  "NSEvent",
+  "NSGraphics",
+  "NSGraphicsContext",
+  "NSImage",
+  "NSImageRep",
+  "NSOpenPanel",
+  "NSPanel",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSSavePanel",
+  "NSScreen",
+  "NSTrackingArea",
+  "NSView",
+  "NSWindow",
+  "NSWorkspace",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CFDictionary",
+  "CFNotificationCenter",
+  "CFNumber",
+  "CFString",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+  "CGSession",
+  "CGWindow",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "NSArray",
+  "NSBundle",
+  "NSData",
+  "NSDictionary",
+  "NSDistributedNotificationCenter",
+  "NSError",
+  "NSGeometry",
+  "NSLocale",
+  "NSNotification",
+  "NSOperation",
+  "NSString",
+  "NSURL",
+  "NSValue",
+] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "WKWebView",
+  "WKSnapshotConfiguration",
+] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "block2",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationSettings",
+  "UNNotificationSound",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+
 [target.'cfg(windows)'.dependencies]
 # The same versions tauri 2.12.5, wry and tao use, so HWNDs and WebView2 interfaces are one type.
 webview2-com = "=0.39.1"

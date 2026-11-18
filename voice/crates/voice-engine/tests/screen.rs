@@ -7,8 +7,9 @@
 //! `voice_recorder::run` and `voice_screen::run` as the two programs' mains.
 //!
 //! The screen process only ever records its synthetic source here (`--test synthetic:...`), and
-//! video uses Microsoft's software encoder (`no-hardware,software-encoder`): nothing of the real
-//! desktop is captured and no hardware encoder runs.
+//! video uses the platform's software encoder (`no-hardware,software-encoder`: Microsoft's on
+//! Windows, VideoToolbox's on macOS): nothing of the real desktop is captured and no hardware
+//! encoder runs.
 
 mod support;
 
@@ -35,7 +36,8 @@ use voice_screen_files::{control, screenfile};
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 /// What the screen process records here: a synthetic screen whose text changes every second.
 const SCREEN: &str = "synthetic:1280x720,change-every=1000,text=Slide";
-/// Video without a hardware encoder: the software MFT on the system-memory path.
+/// Video without a hardware encoder: the software MFT on the system-memory path on Windows,
+/// VideoToolbox's software encoder on macOS.
 const VIDEO: &str = "no-hardware,software-encoder";
 /// How soon after the start a screen process that waits for nobody is launched (RUK-108 4.3:
 /// under 100 ms). It takes a thread, a read of meeting.json and a file open.
@@ -61,6 +63,8 @@ fn main() {
     std::env::set_var(ROLE, "child");
     let scratch = std::env::temp_dir().join(format!("voice-engine-screen-{}", std::process::id()));
     std::env::set_var(voice_core::paths::DATA_DIR_ENV, &scratch);
+    #[cfg(target_os = "macos")]
+    warm_vision();
     let tests: Vec<(&str, fn())> = vec![
         (
             "voice_started_meeting_waits_for_rukoo_then_captures",
@@ -81,6 +85,11 @@ fn main() {
         (
             "screen_off_sends_no_meeting_starting",
             screen_off_sends_no_meeting_starting,
+        ),
+        #[cfg(target_os = "macos")]
+        (
+            "a_rukoo_that_connects_later_is_left_out",
+            a_rukoo_that_connects_later_is_left_out,
         ),
         (
             "the_watchdog_restarts_a_killed_screen_process",
@@ -118,6 +127,11 @@ fn main() {
             screen_select_answers_by_its_deadline_when_the_screen_is_slow,
         ),
         ("drops_reach_the_pill", drops_reach_the_pill),
+        #[cfg(target_os = "macos")]
+        (
+            "a_stopped_screen_stands_on_the_pill",
+            a_stopped_screen_stands_on_the_pill,
+        ),
         ("encoder_drops_reach_the_pill", encoder_drops_reach_the_pill),
         (
             "pill_screen_menu_changes_modes_and_monitors",
@@ -126,6 +140,11 @@ fn main() {
         (
             "screen_mode_changes_require_each_clients_current_ack",
             screen_mode_changes_require_each_clients_current_ack,
+        ),
+        #[cfg(target_os = "macos")]
+        (
+            "a_screen_without_permission_says_so_and_is_not_retried",
+            a_screen_without_permission_says_so_and_is_not_retried,
         ),
     ];
     let filters: Vec<String> = std::env::args()
@@ -161,6 +180,43 @@ fn main() {
 }
 
 // Helpers ------------------------------------------------------------------------------------
+
+/// Reads one slide as this binary's screen process before the tests, on a Mac. The first text a
+/// program reads makes Vision compile its model for the Neural Engine, 20 to 40 s, and the Mac
+/// keeps the result for that build of that program only, while the tests wait 20 s for a frame.
+/// It records into a data folder of its own, so no test sees its meeting.
+#[cfg(target_os = "macos")]
+fn warm_vision() {
+    let root = std::env::temp_dir().join(format!("voice-engine-vision-{}", std::process::id()));
+    let dir = root.join("meetings").join("m-20260101-000000-0000");
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = json!({
+        "kind": "session", "t": 0, "wall": now_ms(), "session": 1, "pid": std::process::id(),
+        "resumed": false, "version": 1, "recorder": "0.1.0",
+    });
+    std::fs::write(dir.join("timeline.jsonl"), format!("{session}\n")).unwrap();
+    let mut screen = std::process::Command::new(exe())
+        .args(["record", "--meeting"])
+        .arg(&dir)
+        .args(["--mode", "frames", "--test", SCREEN])
+        .env(voice_core::paths::DATA_DIR_ENV, &root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let journal = dir.join("screen").join("journal.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline
+        && !std::fs::read_to_string(&journal)
+            .unwrap_or_default()
+            .contains("\"ocr\":\"ok\"")
+    {
+        thread::sleep(Duration::from_millis(200));
+    }
+    let _ = screen.kill();
+    let _ = screen.wait();
+    let _ = std::fs::remove_dir_all(&root);
+}
 
 fn exe() -> PathBuf {
     std::env::current_exe().unwrap()
@@ -366,6 +422,48 @@ impl Rig {
             found.is_some()
         });
         found.unwrap()
+    }
+
+    /// Waits until the screen process has journaled every frame it captured: it holds none, and
+    /// two replies in a row say so with the journal's frame count unchanged between them. A
+    /// frame's line is written after its JPEG and text, so a frame captured before a mode change
+    /// can reach the journal after the change's line. One `pending: 0` reply isn't enough: a
+    /// frame already handed back can still be queued behind that reply. The reply after it is
+    /// handled after that frame, so with no work left the count no longer moves.
+    #[cfg(target_os = "macos")]
+    fn wait_frames_settled(&self, id: &str) {
+        let frames = || {
+            self.journal(id)
+                .iter()
+                .filter(|l| matches!(l, Line::Frame { .. }))
+                .count()
+        };
+        // The frame count after the last reply that found the worker empty.
+        let mut settled_at: Option<usize> = None;
+        wait_for("the screen's frames to settle", || {
+            let answer = screenfile::live(&self.dir(id)).and_then(|file| {
+                control::request(
+                    file.port,
+                    &file.token,
+                    json!({ "cmd": "status" }),
+                    Duration::from_secs(5),
+                )
+                .ok()
+            });
+            let Some(status) = answer else {
+                settled_at = None;
+                return false;
+            };
+            if status["pending"].as_u64() != Some(0) {
+                settled_at = None;
+                return false;
+            }
+            // After the reply, so it counts what that reply's request was queued behind.
+            let counted = frames();
+            let settled = settled_at == Some(counted);
+            settled_at = Some(counted);
+            settled
+        });
     }
 
     fn session(&self, id: &str) -> (u64, u64) {
@@ -646,6 +744,34 @@ fn rukoo_started_meeting_skips_the_handshake() {
         "the screen process launched {} ms after the start",
         launched.saturating_sub(started)
     );
+    rig.stop(&id);
+}
+
+/// A Rukoo that connects after the screen process started: the watchdog sends the running
+/// process its pid, which then leaves its windows out, and a Rukoo that quits is let go again.
+#[cfg(target_os = "macos")]
+fn a_rukoo_that_connects_later_is_left_out() {
+    let rig = Rig::new("exclude-later", SCREEN);
+    let pids = Arc::new(Mutex::new(Vec::<u32>::new()));
+    let read = Arc::clone(&pids);
+    rig.screen()
+        .set_exclude_pids(Box::new(move || lock(&read).clone()));
+    let id = rig.start(StartedBy::Rukoo, Some(ScreenMode::Frames));
+    rig.wait_line(&id, "the capture", |l| matches!(l, Line::Capture { .. }));
+    let log = rig.data.join("logs").join(format!("screen-{id}.log"));
+    let logged = |what: &str| {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains(what)
+    };
+    *lock(&pids) = vec![4821, 77];
+    wait_for("the screen process to hear of Rukoo", || {
+        logged("leaving out the windows of pids [77, 4821]")
+    });
+    lock(&pids).clear();
+    wait_for("the screen process to let Rukoo go", || {
+        logged("leaving out the windows of pids []")
+    });
     rig.stop(&id);
 }
 
@@ -1316,6 +1442,56 @@ fn drops_reach_the_pill() {
     engine.shutdown();
 }
 
+/// A meeting that recorded the screen and then lost it says so for the rest of the meeting: the
+/// audio goes on, and with notifications off the pill is the only place that says the screen
+/// doesn't. The screen button agrees, showing that nothing is recorded.
+#[cfg(target_os = "macos")]
+fn a_stopped_screen_stands_on_the_pill() {
+    let h = engine_harness("screen-stands", SCREEN.to_string());
+    h.config(json!({"meetings_screen": "frames"}));
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    let dir = h.data().join("meetings").join(&id);
+    wait_for("a frame", || {
+        journal_has(&dir, |l| matches!(l, Line::Frame { .. }))
+    });
+    wait_for("the pill's screen", || {
+        h.sink
+            .last_pill()
+            .and_then(|p| p.meeting)
+            .is_some_and(|m| m.screen == "frames")
+    });
+    // macOS' screen sharing control stopped the stream, which the screen process journals and the
+    // supervisor reports as this change.
+    engine.on_screen(ScreenChange::StoppedByUser { id: id.clone() });
+    let notice = wait_notice(&h, "pill.screenStopped");
+    let meeting = notice.meeting.unwrap();
+    assert_eq!(
+        (meeting.screen.as_str(), meeting.screen_switch),
+        ("off", false),
+        "the notice and the screen button agree"
+    );
+    let note = h.sink.wait_note("app.notify.meeting");
+    assert!(
+        note.body.contains("screen sharing control"),
+        "{}",
+        note.body
+    );
+    // The audio goes on.
+    let timeline = dir.join("timeline.jsonl");
+    let before = std::fs::metadata(&timeline).unwrap().len();
+    wait_for("the recorder to go on", || {
+        std::fs::metadata(&timeline).unwrap().len() > before
+    });
+    // The screen records again in this meeting: the stop is over and its notice goes.
+    engine.on_screen(ScreenChange::Mode { id: id.clone() });
+    wait_for("the notice to go", || {
+        h.sink.last_pill().is_some_and(|p| p.notice.is_none())
+    });
+    engine.stop_meeting(voice_engine::StopReason::User).unwrap();
+    engine.shutdown();
+}
+
 /// A failed encoder drops the video and says so on the pill and in the tray, and the frames go
 /// on: once on a PC without a hardware encoder, once when the encoder fails twice.
 fn encoder_drops_reach_the_pill() {
@@ -1533,6 +1709,11 @@ fn screen_mode_changes_require_each_clients_current_ack() {
         )
         .unwrap();
     assert_eq!(screen.mode_of(&id), ScreenMode::Off);
+    // On a Mac, frames the acknowledged round captured are journaled after their JPEG and text,
+    // so a few can still land after the Off line. Wait until the process holds none of them: only
+    // then is this count the one the refused round mustn't change.
+    #[cfg(target_os = "macos")]
+    rig.wait_frames_settled(&id);
     let before = rig
         .journal(&id)
         .iter()
@@ -1557,4 +1738,86 @@ fn screen_mode_changes_require_each_clients_current_ack() {
         before
     );
     rig.stop(&id);
+}
+
+/// A stand-in for `rukoo-voice-screen` that exits with code 5 on `record`, as the real one does
+/// when macOS' Screen Recording is off, and writes a line to `screen-runs.txt` each time it is
+/// asked to record. Other commands, such as `probe`, exit 0 without a word.
+#[cfg(target_os = "macos")]
+fn refusing_screen(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("screen.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = record ]; then\n  echo run >> \"$(dirname \"$0\")/screen-runs.txt\"\n  echo 'Screen Recording is off for Rukoo Voice' >&2\n  exit 5\nfi\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// A screen process that refuses for want of the Screen Recording grant: the meeting records its
+/// audio, the pill and a notification say that Screen Recording is off, and the supervisor
+/// doesn't launch it again as it would a screen process that crashed.
+#[cfg(target_os = "macos")]
+fn a_screen_without_permission_says_so_and_is_not_retried() {
+    let scripts = TempDir::new("no-permission-screen");
+    let mut h = engine_harness("no-permission", SCREEN.to_string());
+    h.screen_exe = refusing_screen(&scripts.join(""));
+    h.test_screen = None;
+    h.config(json!({"meetings_screen": "frames"}));
+    let engine = h.start();
+    let id = engine.start_meeting().unwrap();
+    let dir = h.data().join("meetings").join(&id);
+
+    let notice = wait_notice(&h, "pill.screenPermission");
+    assert_eq!(notice.phase, PillPhase::Meeting);
+    let note = h.sink.wait_note("app.notify.meeting");
+    assert_eq!(
+        note.body_key.as_deref(),
+        Some("app.notify.screenPermission"),
+        "{note:?}"
+    );
+    assert!(note.body.contains("Screen Recording"), "{}", note.body);
+    assert!(note.body.contains("Privacy & Security"), "{}", note.body);
+    // The app asks macOS once, which lists Voice under Screen Recording.
+    assert_eq!(
+        h.sink
+            .screen_permission_asks
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+
+    // The supervisor's own five tries are over in under a second at these timings, and a retry
+    // would have written the runs file again.
+    thread::sleep(Duration::from_millis(1500));
+    let runs = std::fs::read_to_string(scripts.join("screen-runs.txt")).unwrap_or_default();
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "the screen process ran again: {runs:?}"
+    );
+    assert!(
+        !h.sink
+            .notes()
+            .iter()
+            .any(|n| n.body.contains("stopped 5 times in a row")),
+        "the give-up notice came too"
+    );
+    // Rukoo hears of it: the journal has the drop it reads as a `dropped` mark.
+    let journal = voice_screen_files::journal::read_all(&dir).unwrap();
+    assert!(
+        journal.iter().any(|l| matches!(l, Line::Dropped { what, reason, .. } if what == "frames" && reason == "permission")),
+        "{journal:?}"
+    );
+
+    // The audio goes on.
+    let timeline = dir.join("timeline.jsonl");
+    let before = std::fs::metadata(&timeline).unwrap().len();
+    wait_for("the recorder to go on", || {
+        std::fs::metadata(&timeline).unwrap().len() > before
+    });
+    assert_eq!(engine.tray_state().meeting.as_deref(), Some("recording"));
+    engine.stop_meeting(voice_engine::StopReason::User).unwrap();
+    engine.shutdown();
 }

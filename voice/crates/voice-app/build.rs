@@ -26,6 +26,10 @@ const COMMANDS: &[&str] = &[
     "settings_close",
 ];
 
+/// The command only the macOS build has: Settings' Open buttons for the privacy panes. Its
+/// `allow-` permission and its capability (capabilities/settings-macos.json) exist on macOS only.
+const MACOS_COMMANDS: &[&str] = &["settings_open_permission"];
+
 /// The resource id of the tray icon for a recording meeting. Load it at the tray's size with
 /// `tauri::image::Image::from_icon_resource(32513, cx, cy)`, cx and cy from SM_CXSMICON and SM_CYSMICON, so
 /// Windows picks the matching size from the .ico instead of shrinking a large one. It is a number above the app
@@ -43,9 +47,15 @@ fn main() {
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\"\"");
+    let commands: &'static [&'static str] =
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+            Box::leak([COMMANDS, MACOS_COMMANDS].concat().into_boxed_slice())
+        } else {
+            COMMANDS
+        };
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS))
+            .app_manifest(tauri_build::AppManifest::new().commands(commands))
             .windows_attributes(
                 tauri_build::WindowsAttributes::new()
                     .append_rc_content(format!("{TRAY_RECORDING} ICON \"{path}\""))

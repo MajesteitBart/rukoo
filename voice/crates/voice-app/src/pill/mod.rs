@@ -11,6 +11,10 @@ pub mod window;
 
 #[cfg(windows)]
 pub mod hit;
+#[cfg(target_os = "macos")]
+pub mod hit_mac;
+#[cfg(target_os = "macos")]
+pub mod pointer;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,6 +47,11 @@ const REBUILD_AFTER: Duration = Duration::from_millis(2000);
 const PAGE_LOAD_LIMIT: Duration = Duration::from_secs(10);
 /// Display changes come in bursts; repair once they settle.
 const SETTLE: Duration = Duration::from_millis(300);
+/// How often the paint watchdog looks ...
+const WATCH_POLL: Duration = Duration::from_millis(100);
+/// ... and on macOS how often while the pill can't be seen, which can last until the next show.
+#[cfg(target_os = "macos")]
+const UNSEEN_POLL: Duration = Duration::from_secs(1);
 /// At most one raise per this long from the foreground hook.
 const RAISE_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -71,10 +80,16 @@ struct Inner {
     hide_gen: u64,
     watch_gen: u64,
     repair_gen: u64,
-    /// The newest snapshot that draws a stop or screen button; older layouts are stale.
+    /// The newest snapshot that draws a stop or screen button; older layouts are stale. Windows and
+    /// Linux; macOS takes the page's newest layout instead (`newer_layout`).
+    #[cfg(not(target_os = "macos"))]
     stop_seq: u64,
     layout: Option<Layout>,
     ui: UiOptions,
+    /// What "Hide pill from capture" was last applied to the windows as, so a raise or a layout
+    /// that repeats it doesn't log again and a real change says so in the log. macOS only.
+    #[cfg(target_os = "macos")]
+    capture_applied: Option<bool>,
     last_raise: Option<Instant>,
     raise_queued: bool,
     hit_visible: bool,
@@ -94,6 +109,43 @@ enum Repair {
     Rebuild,
 }
 
+/// The paint watchdog's timing: a nudge `NUDGE_AFTER` and a rebuild `REBUILD_AFTER` after the page
+/// could paint and didn't. Time while it couldn't (a covered pill or a locked screen on macOS) doesn't
+/// count, and once it can again it gets the whole grace period afresh. One nudge per snapshot, as
+/// `claim_repair` allows. macOS only: elsewhere the watchdog waits its fixed 500 ms and 2 s.
+#[cfg(target_os = "macos")]
+struct PaintClock {
+    since: Instant,
+    nudged: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl PaintClock {
+    fn new(now: Instant) -> PaintClock {
+        PaintClock {
+            since: now,
+            nudged: false,
+        }
+    }
+
+    /// The repair due at `now`, given whether the page can paint.
+    fn step(&mut self, now: Instant, expected: bool) -> Option<Repair> {
+        if !expected {
+            self.since = now;
+            return None;
+        }
+        let waited = now.saturating_duration_since(self.since);
+        if waited >= REBUILD_AFTER {
+            Some(Repair::Rebuild)
+        } else if waited >= NUDGE_AFTER && !self.nudged {
+            self.nudged = true;
+            Some(Repair::Nudge)
+        } else {
+            None
+        }
+    }
+}
+
 /// Whether a repair of snapshot `seq` still has work: it shows, isn't painted, and nobody
 /// repaired it (or a newer one) this far yet.
 fn repair_due(shown: bool, acked: u64, seq: u64, repaired: (u64, Repair), want: Repair) -> bool {
@@ -104,7 +156,7 @@ pub struct Pill {
     app: AppHandle,
     engine: EngineSlot,
     catalog: Arc<Catalog>,
-    webview_dir: PathBuf,
+    webview_dir: Option<PathBuf>,
     inner: Mutex<Inner>,
     screen_actions: Mutex<HashMap<String, ScreenChoice>>,
     screen_menu: Mutex<Option<Menu<tauri::Wry>>>,
@@ -117,12 +169,94 @@ struct ScreenChoice {
     monitor: Option<String>,
 }
 
+/// The native window over a pill button: a layered window on Windows, a non-activating panel on macOS.
 #[cfg(windows)]
+use hit::{HitEvent as ButtonEvent, HitHandler as ButtonHandler, HitWindow as ButtonWindow};
+#[cfg(target_os = "macos")]
+use hit_mac::{HitEvent as ButtonEvent, HitHandler as ButtonHandler, HitPanel as ButtonWindow};
+
+#[cfg(any(windows, target_os = "macos"))]
 thread_local! {
     // The stop window lives on the event loop thread, like the pill.
-    static HIT: std::cell::RefCell<Option<hit::HitWindow>> = const { std::cell::RefCell::new(None) };
+    static HIT: std::cell::RefCell<Option<ButtonWindow>> = const { std::cell::RefCell::new(None) };
     // So does the screen button's window.
-    static SCREEN_HIT: std::cell::RefCell<Option<hit::HitWindow>> = const { std::cell::RefCell::new(None) };
+    static SCREEN_HIT: std::cell::RefCell<Option<ButtonWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    // macOS: the inert panel under the two, over the drawn pill.
+    static BODY: std::cell::RefCell<Option<ButtonWindow>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Where a pill button's window goes on screen. Windows scales the drawn button's CSS pixels to the
+/// monitor's DPI from the client origin. On macOS a CSS pixel is a point and only the y axis turns
+/// around, and the panel reaches past the drawn button (`place::hit_areas`).
+#[cfg(windows)]
+type ButtonRect = place::Rect;
+#[cfg(target_os = "macos")]
+type ButtonRect = hit_mac::PanelFrame;
+
+/// The layout the page just sent, when it replaces the one held. The page sends them in its own
+/// order, so a late message from an older snapshot leaves the held layout alone. Its `seq` is the
+/// snapshot the page last drew, which can be older than the newest snapshot here: the page applies
+/// one at a time and only sends a layout when the rectangles change, so refusing an "older" layout
+/// would leave the panels where the pill no longer draws its buttons (a pill that just compacted,
+/// for instance) until the next change. macOS only; Windows keeps the newest snapshot with a
+/// button as its bar (`stop_seq`).
+#[cfg(target_os = "macos")]
+fn newer_layout(held: Option<&Layout>, layout: Layout) -> Option<Layout> {
+    match held {
+        Some(held) if held.seq > layout.seq => None,
+        _ => Some(layout),
+    }
+}
+
+#[cfg(windows)]
+fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
+    let css = match target {
+        Target::Stop => layout.button,
+        Target::Screen => layout.screen_button,
+    }?;
+    window::origin_and_scale(win)
+        .and_then(|(origin, scale)| place::css_to_physical(origin, scale, &css))
+}
+
+#[cfg(target_os = "macos")]
+fn button_rect(win: &WebviewWindow, layout: &Layout, target: Target) -> Option<ButtonRect> {
+    let areas = place::hit_areas(layout);
+    let area = match target {
+        Target::Stop => areas.stop,
+        Target::Screen => areas.screen,
+    }?;
+    Some(hit_mac::PanelFrame {
+        hit: window::button_frame(win, &area.hit)?,
+        button: window::button_frame(win, &area.button),
+    })
+}
+
+#[cfg(windows)]
+fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
+    window::set_capture_excluded(button.hwnd(), excluded);
+}
+
+#[cfg(target_os = "macos")]
+fn exclude_from_capture(button: &ButtonWindow, excluded: bool) {
+    button.set_capture_excluded(excluded);
+}
+
+/// "Hide pill from capture" on the pill's own window. macOS sets it on the window at once, so a
+/// capture or the `status` hook never sees the previous value.
+#[cfg(target_os = "macos")]
+fn exclude_pill_from_capture(win: &WebviewWindow, excluded: bool) {
+    window::set_capture_excluded(win, excluded);
+}
+
+/// Whether "Hide pill from capture" needs applying, given what was applied before: a raise or a
+/// layout repeats the same value many times, and only a change is worth logging. macOS only.
+#[cfg(target_os = "macos")]
+fn capture_changed(applied: Option<bool>, hidden: bool) -> bool {
+    applied != Some(hidden)
 }
 
 /// Which monitor a show uses.
@@ -159,7 +293,7 @@ impl Pill {
         app: AppHandle,
         engine: EngineSlot,
         catalog: Arc<Catalog>,
-        webview_dir: PathBuf,
+        webview_dir: Option<PathBuf>,
         ui: UiOptions,
     ) -> Arc<Pill> {
         let pill = Arc::new(Pill {
@@ -177,9 +311,12 @@ impl Pill {
                 hide_gen: 0,
                 watch_gen: 0,
                 repair_gen: 0,
+                #[cfg(not(target_os = "macos"))]
                 stop_seq: 0,
                 layout: None,
                 ui,
+                #[cfg(target_os = "macos")]
+                capture_applied: None,
                 last_raise: None,
                 raise_queued: false,
                 hit_visible: false,
@@ -331,7 +468,7 @@ impl Pill {
     /// event loop's: building a WebView2 window from inside an event handler deadlocks.
     pub fn create(self: &Arc<Self>) -> tauri::Result<()> {
         let label = self.label();
-        let window =
+        let mut builder =
             WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::App("pill.html".into()))
                 .title("Rukoo Voice")
                 .inner_size(place::WINDOW_W, place::WINDOW_H)
@@ -347,12 +484,18 @@ impl Pill {
                 .focusable(false)
                 .focused(false)
                 .visible(false)
-                .disable_drag_drop_handler()
-                .data_directory(self.webview_dir.clone())
-                .build()?;
+                .disable_drag_drop_handler();
+        if let Some(dir) = &self.webview_dir {
+            builder = builder.data_directory(dir.clone());
+        }
+        let window = builder.build()?;
         let this = self.clone();
         self.app.run_on_main_thread(move || {
             window::prepare(&window);
+            // On macOS a new window is read-only to every capture until it is told otherwise, so
+            // the setting goes on before the window can be shown or captured.
+            #[cfg(target_os = "macos")]
+            this.apply_capture();
             this.ensure_hit();
             // A snapshot that came before the window did (or before a rebuild) shows now.
             let seq = {
@@ -376,6 +519,40 @@ impl Pill {
         })
     }
 
+    /// The stop panel's recipe in the shape of Windows' styles; main thread only.
+    #[cfg(target_os = "macos")]
+    pub fn hit_styles(&self) -> Option<window::Styles> {
+        HIT.with(|cell| cell.borrow().as_ref().map(ButtonWindow::styles))
+    }
+
+    /// The native recipe of the pill and its two panels, for the `status` dev hook: level, Spaces
+    /// behaviour, sharing type and the rest of `window::Recipe`. Main thread only.
+    #[cfg(target_os = "macos")]
+    pub fn native_status(&self) -> Value {
+        let panel = |cell: &std::cell::RefCell<Option<ButtonWindow>>| {
+            json!(cell.borrow().as_ref().map(ButtonWindow::recipe))
+        };
+        json!({
+            "pill": self.window().and_then(|w| window::recipe(&w)),
+            "stopPanel": HIT.with(panel),
+            "screenPanel": SCREEN_HIT.with(panel),
+            "bodyPanel": BODY.with(panel),
+            // What the app applied ("Hide pill from capture"); every window above should report the
+            // matching sharing type, and a difference is a window that didn't take it.
+            "hidePillFromCapture": self.lock().ui.hide_pill_from_capture,
+        })
+    }
+
+    /// For the self-test: one click on the stop panel, handed straight to the panel (no event goes
+    /// through the window server), so it reaches the engine as a user's click would. Main thread only.
+    #[cfg(target_os = "macos")]
+    pub fn click_stop_for_test(&self) -> Result<(), String> {
+        HIT.with(|cell| match cell.borrow().as_ref() {
+            Some(panel) => panel.click_for_test(true),
+            None => Err("there is no stop panel".into()),
+        })
+    }
+
     // ---------- from the engine ----------
 
     pub fn snapshot(self: &Arc<Self>, s: PillSnapshot) {
@@ -387,6 +564,7 @@ impl Pill {
                 return;
             }
             let prev_phase = i.snapshot.as_ref().map(|p| p.phase);
+            #[cfg(not(target_os = "macos"))]
             if has_stop(&s) || has_screen(&s) {
                 i.stop_seq = i.stop_seq.max(s.seq);
             }
@@ -438,6 +616,15 @@ impl Pill {
     /// The engine's paint watchdog (`UiSink::pill_repair`): the page didn't ack `seq`. A nudge
     /// reapplies size, position, styles and topmost; a rebuild makes a new window, off the event
     /// loop thread, where building a WebView2 window would deadlock.
+    ///
+    /// On macOS the engine calls this under its pill lock, so nothing here waits: the decision is
+    /// made on the event loop thread, which owns the window.
+    #[cfg(target_os = "macos")]
+    pub fn engine_repair(self: &Arc<Self>, seq: u64, repair: PillRepair) {
+        self.on_main(move |p| p.engine_repair_now(seq, repair));
+    }
+
+    #[cfg(not(target_os = "macos"))]
     pub fn engine_repair(self: &Arc<Self>, seq: u64, repair: PillRepair) {
         let want = match repair {
             PillRepair::Nudge => Repair::Nudge,
@@ -449,6 +636,41 @@ impl Pill {
         log::warn!("pill: the engine saw no paint of snapshot {seq}; {repair:?}");
         match repair {
             PillRepair::Nudge => self.on_main(|p| p.nudge_now()),
+            PillRepair::Rebuild => {
+                let this = self.clone();
+                thread::spawn(move || this.rebuild(seq));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn engine_repair_now(self: &Arc<Self>, seq: u64, repair: PillRepair) {
+        let want = match repair {
+            PillRepair::Nudge => Repair::Nudge,
+            PillRepair::Rebuild => Repair::Rebuild,
+        };
+        if !self.paint_expected_here() {
+            // A pill nobody can see doesn't paint on macOS. The app's watchdog takes the snapshot on
+            // and repairs it once the pill can be seen and still isn't painted; it may not be armed
+            // already (a hide and show within one phase arms only the engine's).
+            let current = {
+                let i = self.lock();
+                i.shown && i.acked < seq && i.snapshot.as_ref().is_some_and(|s| s.seq == seq)
+            };
+            log::info!(
+                "pill: the engine saw no paint of snapshot {seq} while the pill can't be seen; no {repair:?}"
+            );
+            if current {
+                self.arm_watchdog(seq);
+            }
+            return;
+        }
+        if !self.claim_repair(seq, want) {
+            return;
+        }
+        log::warn!("pill: the engine saw no paint of snapshot {seq}; {repair:?}");
+        match repair {
+            PillRepair::Nudge => self.nudge_now(),
             PillRepair::Rebuild => {
                 let this = self.clone();
                 thread::spawn(move || this.rebuild(seq));
@@ -497,6 +719,11 @@ impl Pill {
     pub fn layout(self: &Arc<Self>, layout: Layout) {
         {
             let mut i = self.lock();
+            #[cfg(target_os = "macos")]
+            let Some(layout) = newer_layout(i.layout.as_ref(), layout) else {
+                return;
+            };
+            #[cfg(not(target_os = "macos"))]
             if layout.seq < i.stop_seq {
                 return;
             }
@@ -528,6 +755,13 @@ impl Pill {
             return;
         };
         let _ = win.set_size(LogicalSize::new(place::WINDOW_W, place::WINDOW_H));
+        // On macOS before anything can capture the pill, and again for a window the watchdog
+        // rebuilt.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = excluded;
+            self.apply_capture();
+        }
         let monitor = match (at, last) {
             (Place::Last, Some(last)) => Some(last),
             (Place::Choose, _) | (Place::Last, None) => Some(window::target_monitor()),
@@ -537,6 +771,7 @@ impl Pill {
             window::place(&win, monitor, edge);
             self.lock().monitor = Some(monitor);
         }
+        #[cfg(not(target_os = "macos"))]
         let _ = win.set_content_protected(excluded);
         window::show(&win);
         window::raise(&win);
@@ -607,26 +842,91 @@ impl Pill {
 
     fn apply_ui(self: &Arc<Self>) {
         let ui = self.lock().ui.clone();
+        #[cfg(target_os = "macos")]
+        {
+            self.apply_capture();
+            if let Some(win) = self.window() {
+                crate::appearance::apply_to_window(&win, &ui);
+                if self.lock().shown {
+                    window::apply_styles(&win);
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         if self.lock().shown {
             if let Some(win) = self.window() {
                 let _ = win.set_content_protected(ui.hide_pill_from_capture);
                 window::apply_styles(&win);
             }
         }
-        #[cfg(windows)]
-        HIT.with(|hit| {
-            if let Some(hit) = hit.borrow().as_ref() {
-                hit.set_title(&self.catalog.text(ui.locale, keys::STOP_BUTTON));
+        #[cfg(any(windows, target_os = "macos"))]
+        for (cell, key) in [
+            (&HIT, keys::STOP_BUTTON),
+            (&SCREEN_HIT, keys::SCREEN_BUTTON),
+        ] {
+            cell.with(|hit| {
+                if let Some(hit) = hit.borrow().as_ref() {
+                    hit.set_title(&self.catalog.text(ui.locale, key));
+                    #[cfg(target_os = "macos")]
+                    hit.set_appearance(&ui);
+                }
+            });
+        }
+        #[cfg(target_os = "macos")]
+        BODY.with(|body| {
+            if let Some(body) = body.borrow().as_ref() {
+                body.set_appearance(&ui);
             }
         });
-        #[cfg(windows)]
-        SCREEN_HIT.with(|hit| {
-            if let Some(hit) = hit.borrow().as_ref() {
-                hit.set_title(&self.catalog.text(ui.locale, keys::SCREEN_BUTTON));
-            }
-        });
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (&self.catalog, keys::STOP_BUTTON, keys::SCREEN_BUTTON);
+    }
+
+    /// Applies "Hide pill from capture" to the pill's window and its three panels, from the app's
+    /// copy of the setting, and says in the log when that value changed. Every path that shows,
+    /// raises, moves or re-lays the pill calls this: `status` reads AppKit's own answer, so a path
+    /// that skipped the setting left the two disagreeing for the rest of the session. Main thread
+    /// only; the panels it can't reach on another thread are left alone. macOS only: Windows applies
+    /// the setting where it did before.
+    #[cfg(target_os = "macos")]
+    fn apply_capture(self: &Arc<Self>) {
+        let hidden = self.lock().ui.hide_pill_from_capture;
+        let changed = {
+            let mut i = self.lock();
+            let changed = capture_changed(i.capture_applied, hidden);
+            i.capture_applied = Some(hidden);
+            changed
+        };
+        let win = self.window();
+        if let Some(win) = &win {
+            exclude_pill_from_capture(win, hidden);
+        }
+        {
+            for cell in [&HIT, &SCREEN_HIT] {
+                cell.with(|hit| {
+                    if let Some(hit) = hit.borrow().as_ref() {
+                        hit.set_capture_excluded(hidden);
+                    }
+                });
+            }
+            BODY.with(|body| {
+                if let Some(body) = body.borrow().as_ref() {
+                    body.set_capture_excluded(hidden);
+                }
+            });
+        }
+        if changed {
+            // What the app asked for, and what AppKit says the window has: a script's `status`
+            // reads the second, and a difference here is the only place it shows up.
+            let wording = if hidden { "hidden" } else { "shown" };
+            match &win {
+                Some(win) => log::info!(
+                    "pill: capture {wording} (hidePillFromCapture={hidden}); AppKit says {}",
+                    window::sharing_of(win).unwrap_or("?")
+                ),
+                _ => log::info!("pill: capture {wording} (hidePillFromCapture={hidden})"),
+            }
+        }
     }
 
     /// Called from the foreground hook: raise at once, or once the interval has passed.
@@ -682,7 +982,12 @@ impl Pill {
             (i.shown, i.snapshot.as_ref().map_or(0, |s| s.seq))
         };
         log::info!(
-            "pill: display changed; repairing the {} pill",
+            "pill: {} changed; repairing the {} pill",
+            if cfg!(target_os = "macos") {
+                "display or session"
+            } else {
+                "display"
+            },
             if shown { "visible" } else { "hidden" }
         );
         if shown {
@@ -696,9 +1001,9 @@ impl Pill {
 
     // ---------- the stop and screen windows ----------
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn ensure_hit(self: &Arc<Self>) {
-        let locale = self.lock().ui.locale;
+        let ui = self.lock().ui.clone();
         for (cell, target, key) in [
             (&HIT, Target::Stop, keys::STOP_BUTTON),
             (&SCREEN_HIT, Target::Screen, keys::SCREEN_BUTTON),
@@ -707,25 +1012,42 @@ impl Pill {
                 if cell.borrow().is_some() {
                     return;
                 }
-                let title = self.catalog.text(locale, key);
-                match hit::HitWindow::create(&title, self.hit_handler(target)) {
-                    Ok(window) => *cell.borrow_mut() = Some(window),
+                let title = self.catalog.text(ui.locale, key);
+                match ButtonWindow::create(&title, self.hit_handler(target)) {
+                    Ok(window) => {
+                        #[cfg(target_os = "macos")]
+                        window.set_appearance(&ui);
+                        *cell.borrow_mut() = Some(window)
+                    }
                     Err(error) => {
                         log::error!("pill: could not create the {target:?} window: {error}")
                     }
                 }
             });
         }
+        #[cfg(target_os = "macos")]
+        BODY.with(|cell| {
+            if cell.borrow().is_some() {
+                return;
+            }
+            match ButtonWindow::create_inert() {
+                Ok(panel) => {
+                    panel.set_appearance(&ui);
+                    *cell.borrow_mut() = Some(panel)
+                }
+                Err(error) => log::error!("pill: could not create the body panel: {error}"),
+            }
+        });
     }
 
     /// What a click or a pointer move on one of the native button windows does.
-    #[cfg(windows)]
-    fn hit_handler(self: &Arc<Self>, target: Target) -> hit::HitHandler {
+    #[cfg(any(windows, target_os = "macos"))]
+    fn hit_handler(self: &Arc<Self>, target: Target) -> ButtonHandler {
         let this = Arc::downgrade(self);
-        Box::new(move |event: hit::HitEvent| {
+        Box::new(move |event: ButtonEvent| {
             let Some(pill) = this.upgrade() else { return };
             match event {
-                hit::HitEvent::Pointer { hover, pressed } => {
+                ButtonEvent::Pointer { hover, pressed } => {
                     let label = pill.label();
                     let _ = pill.app.emit_to(
                         label.as_str(),
@@ -733,7 +1055,7 @@ impl Pill {
                         json!({ "hover": hover, "pressed": pressed, "target": target.as_str() }),
                     );
                 }
-                hit::HitEvent::Click => {
+                ButtonEvent::Click => {
                     // Both talk to a process of their own; keep them off the event loop.
                     if let Some(engine) = pill.engine.get() {
                         thread::spawn(move || match target {
@@ -746,55 +1068,83 @@ impl Pill {
         })
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn ensure_hit(self: &Arc<Self>) {}
 
     /// Shows the stop window over the stop button and the screen window over the screen button
     /// while the pill shows them, else hides them.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn update_hit(self: &Arc<Self>) {
-        let (want_stop, want_screen, button, screen_button, excluded) = {
+        let (want_stop, want_screen, layout, excluded) = {
             let i = self.lock();
             let snapshot = i.snapshot.as_ref().filter(|_| i.shown);
             (
                 snapshot.is_some_and(has_stop),
                 snapshot.is_some_and(has_screen),
-                i.layout.as_ref().and_then(|l| l.button),
-                i.layout.as_ref().and_then(|l| l.screen_button),
+                // macOS hides the panels with a snapshot that hides the pill.
+                i.layout
+                    .clone()
+                    .filter(|_| !cfg!(target_os = "macos") || snapshot.is_some_and(|s| s.visible)),
                 i.ui.hide_pill_from_capture,
             )
         };
         let win = self.window();
-        let rect = |want: bool, button: Option<place::CssRect>| match (want, button, &win) {
-            (true, Some(button), Some(win)) => window::origin_and_scale(win)
-                .and_then(|(origin, scale)| place::css_to_physical(origin, scale, &button)),
+        let rect = |want: bool, target: Target| match (want, &layout, &win) {
+            (true, Some(layout), Some(win)) => button_rect(win, layout, target),
             _ => None,
         };
-        let show = |cell: &std::cell::RefCell<Option<hit::HitWindow>>,
-                    rect: Option<place::Rect>| {
+        // macOS: the body panel first, so the button panels order in above it.
+        #[cfg(target_os = "macos")]
+        {
+            let body = match (&layout, &win) {
+                (Some(layout), Some(win)) => place::hit_areas(layout)
+                    .body
+                    .and_then(|css| window::button_frame(win, &css))
+                    .map(|hit| hit_mac::PanelFrame { hit, button: None }),
+                _ => None,
+            };
+            BODY.with(|cell| {
+                if let Some(panel) = cell.borrow().as_ref() {
+                    match body {
+                        Some(place) => {
+                            panel.set_capture_excluded(excluded);
+                            panel.show_at(place);
+                        }
+                        None => panel.hide(),
+                    }
+                }
+            });
+        }
+        let show = |cell: &std::cell::RefCell<Option<ButtonWindow>>, rect: Option<ButtonRect>| {
             let cell = cell.borrow();
             let Some(hit) = cell.as_ref() else {
                 return false;
             };
             match rect {
                 Some(r) => {
-                    window::set_capture_excluded(hit.hwnd(), excluded);
+                    exclude_from_capture(hit, excluded);
                     hit.show_at(r);
                 }
                 None => hit.hide(),
             }
             hit.is_visible()
         };
-        let stop = rect(want_stop, button);
-        let screen = rect(want_screen, screen_button);
+        let stop = rect(want_stop, Target::Stop);
+        let screen = rect(want_screen, Target::Screen);
         let visible = HIT.with(|cell| show(cell, stop));
         let screen_visible = SCREEN_HIT.with(|cell| show(cell, screen));
+        // On macOS the pill's window takes it too: a raise or a layout is the moment it can come
+        // back.
+        #[cfg(target_os = "macos")]
+        if let Some(win) = &win {
+            exclude_pill_from_capture(win, excluded);
+        }
         let mut i = self.lock();
         i.hit_visible = visible;
         i.screen_hit_visible = screen_visible;
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn update_hit(self: &Arc<Self>) {}
 
     // ---------- the paint watchdog ----------
@@ -827,27 +1177,98 @@ impl Pill {
                 None => return,
                 Some(true) => break,
                 Some(false) if started.elapsed() >= PAGE_LOAD_LIMIT => break,
-                Some(false) => thread::sleep(Duration::from_millis(100)),
+                Some(false) => thread::sleep(WATCH_POLL),
             }
         }
-        thread::sleep(NUDGE_AFTER);
-        if self.watch_state(seq, generation).is_none() {
-            return;
+        #[cfg(not(target_os = "macos"))]
+        {
+            thread::sleep(NUDGE_AFTER);
+            if self.watch_state(seq, generation).is_none() {
+                return;
+            }
+            if self.claim_repair(seq, Repair::Nudge) {
+                log::warn!(
+                    "pill: no paint {} ms after showing snapshot {seq}; nudging the window",
+                    NUDGE_AFTER.as_millis()
+                );
+                self.on_main(|p| p.nudge_now());
+            }
+            thread::sleep(REBUILD_AFTER - NUDGE_AFTER);
+            if self.watch_state(seq, generation).is_none() {
+                return;
+            }
+            if self.claim_repair(seq, Repair::Rebuild) {
+                self.rebuild(seq);
+            }
         }
-        if self.claim_repair(seq, Repair::Nudge) {
-            log::warn!(
-                "pill: no paint {} ms after showing snapshot {seq}; nudging the window",
-                NUDGE_AFTER.as_millis()
-            );
-            self.on_main(|p| p.nudge_now());
+        // On macOS time while the pill can't be seen doesn't count (`PaintClock`).
+        #[cfg(target_os = "macos")]
+        self.watch_while_seen(seq, generation);
+    }
+
+    /// The macOS watchdog after the page loaded: it polls, and counts only time in which the pill
+    /// can be seen and so paint.
+    #[cfg(target_os = "macos")]
+    fn watch_while_seen(self: &Arc<Self>, seq: u64, generation: u64) {
+        let mut clock = PaintClock::new(Instant::now());
+        let mut waiting_logged = false;
+        let mut pause = WATCH_POLL;
+        loop {
+            thread::sleep(pause);
+            if self.watch_state(seq, generation).is_none() {
+                return;
+            }
+            let expected = self.paint_expected();
+            pause = if expected { WATCH_POLL } else { UNSEEN_POLL };
+            if !expected && !waiting_logged {
+                log::info!(
+                    "pill: snapshot {seq} not painted while the pill can't be seen; the watchdog waits"
+                );
+                waiting_logged = true;
+            }
+            match clock.step(Instant::now(), expected) {
+                None => {}
+                Some(Repair::Nudge) => {
+                    if self.claim_repair(seq, Repair::Nudge) {
+                        log::warn!(
+                            "pill: no paint {} ms after showing snapshot {seq}; nudging the window",
+                            NUDGE_AFTER.as_millis()
+                        );
+                        self.on_main(|p| p.nudge_now());
+                    }
+                }
+                Some(_) => {
+                    if self.claim_repair(seq, Repair::Rebuild) {
+                        self.rebuild(seq);
+                    }
+                    return;
+                }
+            }
         }
-        thread::sleep(REBUILD_AFTER - NUDGE_AFTER);
-        if self.watch_state(seq, generation).is_none() {
-            return;
+    }
+
+    /// Whether the page can paint now. macOS' WebKit runs no frames while the pill can't be seen (the
+    /// window wholly covered, the lock screen, a switched-out session), so a missing acknowledgement
+    /// then says nothing about the window. Asked on the event loop thread, which owns the window; an
+    /// event loop that doesn't answer counts as painting, so the watchdog still repairs.
+    ///
+    /// Only the watchdog's own thread calls this, which holds no lock while it waits.
+    #[cfg(target_os = "macos")]
+    fn paint_expected(self: &Arc<Self>) -> bool {
+        if objc2::MainThreadMarker::new().is_some() {
+            return self.paint_expected_here();
         }
-        if self.claim_repair(seq, Repair::Rebuild) {
-            self.rebuild(seq);
-        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.on_main(move |p| {
+            let _ = tx.send(p.paint_expected_here());
+        });
+        rx.recv_timeout(Duration::from_secs(1)).unwrap_or(true)
+    }
+
+    /// `paint_expected` on the event loop thread.
+    #[cfg(target_os = "macos")]
+    fn paint_expected_here(&self) -> bool {
+        self.window().is_none_or(|win| window::paint_expected(&win))
     }
 
     /// Replaces the pill window with a new one. Runs on the watchdog's thread, never the event loop's.
@@ -880,16 +1301,18 @@ impl Pill {
     }
 }
 
-/// Which native button window took the pointer.
+/// Which native button window took the pointer. Windows and macOS have those windows; the pill's tests
+/// cover this on every platform.
+#[cfg(any(windows, target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Stop,
     Screen,
 }
 
+#[cfg(any(windows, target_os = "macos", test))]
 impl Target {
     /// `pill://pointer`'s `target`.
-    #[cfg_attr(not(windows), allow(dead_code))]
     fn as_str(self) -> &'static str {
         match self {
             Target::Stop => "stop",
@@ -946,6 +1369,82 @@ mod tests {
         let old: Layout =
             serde_json::from_str(r#"{ "seq": 3, "pill": null, "button": null }"#).unwrap();
         assert!(old.screen_button.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_capture_setting_is_applied_once_per_change() {
+        // Nothing applied yet: the first show has to tell the window.
+        assert!(capture_changed(None, true));
+        assert!(capture_changed(None, false));
+        // A raise, a layout or a move repeats the value the windows already have.
+        assert!(!capture_changed(Some(true), true));
+        assert!(!capture_changed(Some(false), false));
+        // Either direction is a change: the setting is what the status has to agree with.
+        assert!(capture_changed(Some(true), false));
+        assert!(capture_changed(Some(false), true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_layout_from_the_page_replaces_an_older_one() {
+        let wide: Layout = serde_json::from_str(
+            r#"{ "seq": 11, "pill": { "x": 70, "y": 24, "width": 244, "height": 36 },
+                 "button": { "x": 285, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        let compact: Layout = serde_json::from_str(
+            r#"{ "seq": 12, "pill": { "x": 106, "y": 24, "width": 172, "height": 36 },
+                 "button": { "x": 248, "y": 28, "width": 28, "height": 28 } }"#,
+        )
+        .unwrap();
+        // The pill compacted: the page's newer rectangles count, and the panels follow the buttons
+        // the page draws now instead of the ones it drew a moment ago.
+        assert_eq!(
+            newer_layout(Some(&wide), compact.clone()),
+            Some(compact.clone())
+        );
+        assert_eq!(newer_layout(None, compact.clone()), Some(compact.clone()));
+        // A message from before that one doesn't move the panels back.
+        assert_eq!(newer_layout(Some(&compact), wide.clone()), None);
+        // The same sequence number again is the page's answer to a rebuild, and it counts.
+        assert_eq!(
+            newer_layout(Some(&compact), compact.clone()),
+            Some(compact.clone())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_watchdog_nudges_then_rebuilds_and_only_counts_while_the_pill_can_paint() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut clock = PaintClock::new(t0);
+        assert_eq!(clock.step(t0 + ms(400), true), None);
+        assert_eq!(clock.step(t0 + ms(500), true), Some(Repair::Nudge));
+        assert_eq!(clock.step(t0 + ms(600), true), None, "one nudge");
+        assert_eq!(clock.step(t0 + ms(2000), true), Some(Repair::Rebuild));
+
+        // Covered or locked from 300 ms to a minute later: nothing, however long it lasts.
+        let mut clock = PaintClock::new(t0);
+        assert_eq!(clock.step(t0 + ms(300), true), None);
+        for at in [400, 2_000, 30_000, 60_000] {
+            assert_eq!(clock.step(t0 + ms(at), false), None, "at {at} ms");
+        }
+        // Seen again: the full grace period from there.
+        assert_eq!(clock.step(t0 + ms(60_400), true), None);
+        assert_eq!(clock.step(t0 + ms(60_500), true), Some(Repair::Nudge));
+        assert_eq!(clock.step(t0 + ms(61_999), true), None);
+        assert_eq!(clock.step(t0 + ms(62_000), true), Some(Repair::Rebuild));
+
+        // Nudged, then covered: one nudge per snapshot, as `claim_repair` allows, so after it is seen
+        // again only the rebuild is left, a full period later.
+        let mut clock = PaintClock::new(t0);
+        assert_eq!(clock.step(t0 + ms(500), true), Some(Repair::Nudge));
+        assert_eq!(clock.step(t0 + ms(1_900), false), None);
+        assert_eq!(clock.step(t0 + ms(2_400), true), None);
+        assert_eq!(clock.step(t0 + ms(3_899), true), None);
+        assert_eq!(clock.step(t0 + ms(3_900), true), Some(Repair::Rebuild));
     }
 
     #[test]

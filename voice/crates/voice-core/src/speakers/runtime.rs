@@ -2,7 +2,9 @@
 //! committed manifest, or Ownkey's copy when its files match Ownkey's known hashes.
 //!
 //! The order is fixed: a development copy's `RUKOO_VOICE_NEMO_DIR`, then `nemo_speech\` next to
-//! the exe, then the installed Ownkey's folder, read only. Voice never writes in any of them.
+//! the exe, then the installed Ownkey's folder, read only. Voice never writes in any of them. A
+//! macOS bundle keeps its own copy in `Contents/Resources/nemo_speech/`, checked against
+//! voice/nemo-runtime/manifest-macos.json, and has no Ownkey to fall back on.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -56,6 +58,7 @@ impl RuntimeInfo {
 pub(crate) const MANIFEST: &str = include_str!(concat!(env!("OUT_DIR"), "/nemo-runtime.json"));
 
 /// The five DLLs of every runtime folder. The worker loads the first; it loads the others.
+#[cfg(not(target_os = "macos"))]
 pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "nemo_speech_asr_c.dll",
     "nemo_speech_asr.dll",
@@ -64,9 +67,21 @@ pub(crate) const RUNTIME_DLLS: [&str; 5] = [
     "ggml-cpu.dll",
 ];
 
+/// The six dylibs of every macOS runtime folder, the C ABI first. There is no C runtime: libc++
+/// and libSystem come with macOS, and Accelerate is imported by the two ggml backends that use it.
+#[cfg(target_os = "macos")]
+pub(crate) const RUNTIME_DLLS: [&str; 6] = [
+    "libnemo_speech_asr_c.dylib",
+    "libnemo_speech_asr.dylib",
+    "libggml.dylib",
+    "libggml-base.dylib",
+    "libggml-cpu.dylib",
+    "libggml-blas.dylib",
+];
+
 /// The Visual C++ runtime the five DLLs import. Voice's own folder holds it, pinned by the
 /// manifest; Ownkey's sits one folder up, in Ownkey's `_internal\`, pinned by [`OWNKEY_CRT`].
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 const CRT_DLLS: [&str; 3] = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /// The NeMo-Speech.cpp commit of Ownkey's runtime: the same one Voice builds.
@@ -150,7 +165,7 @@ impl Manifest {
         serde_json::from_str(text).ok()
     }
 
-    fn files(&self) -> &[ManifestFile] {
+    pub(crate) fn files(&self) -> &[ManifestFile] {
         self.files.as_deref().unwrap_or_default()
     }
 }
@@ -194,6 +209,14 @@ pub(crate) fn locate_in(
             commit: dev_commit(dir),
         });
     }
+    #[cfg(target_os = "macos")]
+    if let Some(own) = bundled_runtime(exe_dir).filter(|dir| verify_voice(dir, manifest)) {
+        return Some(RuntimeInfo {
+            dir: own,
+            location: RuntimeLocation::Voice,
+            commit: short_commit(&manifest.commit),
+        });
+    }
     let own = exe_dir.join(RUNTIME_FOLDER);
     if verify_voice(&own, manifest) {
         return Some(RuntimeInfo {
@@ -218,6 +241,16 @@ fn short_commit(commit: &str) -> String {
 
 fn is_link(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// Where a macOS bundle keeps its runtime: `Contents/Resources`, where codesign reads the licences
+/// and `runtime.json` as plain files instead of unsigned nested code. The exe is in
+/// `Contents/MacOS`; an unbundled build keeps the folder next to its exe instead.
+#[cfg(target_os = "macos")]
+fn bundled_runtime(exe_dir: &Path) -> Option<PathBuf> {
+    exe_dir
+        .parent()
+        .map(|contents| contents.join("Resources").join(RUNTIME_FOLDER))
 }
 
 /// A development folder needs the five DLLs; its hashes aren't checked.
@@ -428,7 +461,10 @@ mod tests {
         let dir = temp.join(RUNTIME_FOLDER);
         let pinned = runtime_folder(&dir);
         assert!(verify_voice(&dir, &pinned));
+        #[cfg(not(target_os = "macos"))]
         let dll = dir.join("ggml-cpu.dll");
+        #[cfg(target_os = "macos")]
+        let dll = dir.join("libggml-cpu.dylib");
         let mut bytes = fs::read(&dll).unwrap();
         bytes[0] ^= 0x01;
         fs::write(&dll, &bytes).unwrap();
@@ -446,6 +482,36 @@ mod tests {
         assert!(!verify_voice(&dir, &pinned));
     }
 
+    /// A macOS bundle keeps the runtime in Contents/Resources; the exe lives in Contents/MacOS.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bundle_finds_the_runtime_in_its_resources() {
+        let temp = TempDir::new("runtime-bundle");
+        let contents = temp.join("Rukoo Voice.app").join("Contents");
+        let exe_dir = contents.join("MacOS");
+        fs::create_dir_all(&exe_dir).unwrap();
+        let dir = contents.join("Resources").join(RUNTIME_FOLDER);
+        let pinned = runtime_folder(&dir);
+        assert_eq!(
+            locate_in(&exe_dir, None, None, &pinned).unwrap(),
+            RuntimeInfo {
+                dir,
+                location: RuntimeLocation::Voice,
+                commit: "97a15af".into(),
+            }
+        );
+        // An unbundled build still finds the folder next to its exe.
+        let unbundled = temp.join("unbundled");
+        fs::create_dir_all(&unbundled).unwrap();
+        let pinned = runtime_folder(&unbundled.join(RUNTIME_FOLDER));
+        assert_eq!(
+            locate_in(&unbundled, None, None, &pinned).unwrap().location,
+            RuntimeLocation::Voice
+        );
+    }
+
+    /// Ownkey's runtime is a Windows install, named after its DLLs; it never ran on macOS.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ownkeys_folder_with_other_hashes_is_skipped() {
         let temp = TempDir::new("runtime-ownkey");
@@ -472,6 +538,7 @@ mod tests {
         assert!(verify_known(&ownkey, &known));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ownkeys_folder_counts_only_with_its_c_runtime_one_folder_up() {
         let temp = TempDir::new("runtime-ownkey-crt");
@@ -595,6 +662,7 @@ mod tests {
         assert_eq!(dev_dir_in(true, &blank), None);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn ownkeys_pins_are_lower_case_sha256() {
         for (name, size, sha) in OWNKEY_RUNTIME.into_iter().chain(OWNKEY_CRT) {

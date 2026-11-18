@@ -79,3 +79,42 @@ fn the_tests_read_the_ami_files_the_manifest_pins() {
         .unwrap()];
     assert_eq!(wav["size"], serde_json::json!(44 + 60 * 16_000 * 2));
 }
+
+/// The macOS asset script, `voice/scripts/speaker-assets.mjs`, fetches the same file.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_macos_assets_script_fetches_the_model_voice_core_pins() {
+    let registry = voice_file("crates/voice-core/src/local/registry.rs");
+    let start = registry
+        .find("pub fn nemotron()")
+        .expect("ModelSpec::nemotron() in registry.rs");
+    let spec = &registry[start..];
+    let spec = &spec[..spec[1..].find("pub fn ").map_or(spec.len(), |end| end + 1)];
+
+    let revision = literal_after(spec, "const REVISION: &str =");
+    let name = literal_after(spec, "file(");
+    let after_name = &spec[spec.find(name).unwrap() + name.len()..];
+    let size: String = after_name
+        .trim_start_matches(|c: char| c == '"' || c == ',' || c.is_whitespace())
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '_')
+        .filter(char::is_ascii_digit)
+        .collect();
+    let sha256 = literal_after(after_name, ",");
+
+    let script = voice_file("scripts/speaker-assets.mjs");
+    let url =
+        format!("https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/{revision}/{name}");
+    assert!(
+        script.contains(&format!("  '{url}';")),
+        "speaker-assets.mjs should fetch {url}"
+    );
+    assert!(
+        script.contains(&format!("const NEMOTRON_SIZE = {size};")),
+        "speaker-assets.mjs should expect {size} bytes"
+    );
+    assert!(
+        script.contains(&format!("const NEMOTRON_SHA256 = '{sha256}';")),
+        "speaker-assets.mjs should expect SHA-256 {sha256}"
+    );
+}
