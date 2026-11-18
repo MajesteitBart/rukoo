@@ -1327,15 +1327,18 @@ mod drop_tests {
             .unwrap()
             .contains("Frames go on"));
         assert!(drop_text(Part::Frames, Reason::Device).is_some());
-        // A capture that kept stopping takes both parts at once; the frames speak for both.
-        assert_eq!(
-            drop_notice(Part::Frames, Reason::Capture),
-            "pill.screenFailed"
-        );
-        assert!(drop_text(Part::Frames, Reason::Capture)
-            .unwrap()
-            .contains("kept stopping"));
-        assert_eq!(drop_text(Part::Video, Reason::Capture), None);
+        // A capture that kept stopping takes both parts at once; the frames speak for both. Only
+        // a Mac's screen process gives up on its capture.
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                drop_notice(Part::Frames, Reason::Capture),
+                "pill.screenFailed"
+            );
+            assert!(drop_text(Part::Frames, Reason::Capture)
+                .unwrap()
+                .contains("kept stopping"));
+            assert_eq!(drop_text(Part::Video, Reason::Capture), None);
+        }
         assert!(drop_text(Part::Frames, Reason::Disk).is_some());
     }
 }

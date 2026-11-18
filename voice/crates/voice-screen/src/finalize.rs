@@ -41,7 +41,7 @@ pub fn finalize<P: Platform>(
     meeting: &Path,
     reason: &str,
 ) -> Result<Finalized, ExitError> {
-    platform.init();
+    platform.thread_init().init_thread();
     if !meeting.is_dir() {
         return Err(ExitError::usage(format!(
             "meeting folder {} doesn't exist",

@@ -103,7 +103,7 @@ impl Source for SyntheticSource {
                 crate::com::init_mta();
                 run(d3d, to_main, spec, index, generation, flag)
             })
-            .map_err(|e| PlatformError::new(format!("can't start the synthetic screen: {e}")))?;
+            .map_err(|_| windows::core::Error::empty())?;
         self.worker = Some((handle, stop));
         Ok(())
     }

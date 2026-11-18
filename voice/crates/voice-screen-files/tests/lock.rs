@@ -4,7 +4,7 @@
 //! The test binary plays both roles, as the screen process's own crash tests do: started with
 //! `VOICE_SCREEN_FILES_TEST_ROLE=holder` it holds a journal's lock until it is killed.
 
-#![cfg(unix)]
+#![cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

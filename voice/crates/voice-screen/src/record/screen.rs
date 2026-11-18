@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use voice_screen_files::clock::{Fed, ScreenClock, REANCHOR_SPLIT_MS};
-use voice_screen_files::control::{self, Request};
+#[cfg(target_os = "macos")]
+use voice_screen_files::control;
+use voice_screen_files::control::Request;
 use voice_screen_files::frames::{own_thumb, Decision, Saver, Thumb};
 use voice_screen_files::gate::{Gate, VideoGate};
 use voice_screen_files::journal::{JournalWriter, Line};
@@ -93,6 +95,7 @@ const CAPTURE_RETRY_MAX: u32 = 30;
 /// After this many failed captures in a row the screen part ends, with reason `capture`.
 const CAPTURE_FAILURES: u32 = 10;
 /// A capture that has delivered frames this long counts as working: the failures start over.
+#[cfg(target_os = "macos")]
 const CAPTURE_STABLE: Duration = Duration::from_secs(60);
 const DEVICE_RETRY_PAUSE: Duration = Duration::from_millis(500);
 pub(crate) const EVENT_QUEUE: usize = 64;
@@ -365,13 +368,22 @@ impl<P: Platform> Screen<P> {
                     return;
                 }
                 log(format_args!("can't capture {}: {e}", self.monitor.id));
-                // A grant that went away between two starts never comes back by itself: end the
-                // screen part instead of trying again. The platform's own answer decides first.
-                if e.permission || self.permission_gone() {
-                    self.drop_for_permission();
-                    return;
+                // On macOS a grant that went away between two starts never comes back by itself:
+                // end the screen part instead of trying again. The platform's own answer decides
+                // first. A start that keeps failing there waits longer each time and gives up.
+                #[cfg(target_os = "macos")]
+                {
+                    if e.permission || self.permission_gone() {
+                        self.drop_for_permission();
+                        return;
+                    }
+                    self.capture_failed();
                 }
-                self.capture_failed();
+                // Elsewhere it tries again every second for the rest of the meeting, as before.
+                #[cfg(not(target_os = "macos"))]
+                {
+                    self.capture_retry_at = Some(Instant::now() + CAPTURE_RETRY);
+                }
             }
         }
     }
@@ -628,9 +640,8 @@ impl<P: Platform> Screen<P> {
 
     fn on_monitor_lost(&mut self) {
         let list = self.monitors(true);
-        if let Some(listed) = list.iter().find(|m| m.id == self.monitor.id) {
-            // Still there, as after a mode change: capture it again, at its size now.
-            self.monitor = listed.clone();
+        if list.iter().any(|m| m.id == self.monitor.id) {
+            // Still there, as after a mode change: capture it again.
             self.end_video("resize");
             self.stop_capture();
             self.start_capture();
@@ -669,7 +680,9 @@ impl<P: Platform> Screen<P> {
     /// The recorded monitor changed its size: the user picked another scaling, rotated it, or
     /// macOS switched its mode for a projector. A capture keeps the size it started with, and
     /// ScreenCaptureKit scales the new picture into it, so the capture starts again at the new
-    /// size, in a new video file, after a `monitor` line with reason `resize`.
+    /// size, in a new video file, after a `monitor` line with reason `resize`. macOS only: on
+    /// Windows the capture's frame pool follows a resize by itself.
+    #[cfg(target_os = "macos")]
     fn check_monitor_size(&mut self) {
         let Some(listed) = self
             .monitors(false)
@@ -1028,6 +1041,12 @@ impl<P: Platform> Screen<P> {
     }
 
     fn start_video(&mut self, frame: &Frame<P::Picture>, t: u64) {
+        // Windows checks Media Foundation before the device, as before macOS.
+        #[cfg(windows)]
+        if crate::video::mf::shared().is_none() {
+            self.drop_video_encoder("Media Foundation isn't available");
+            return;
+        }
         let Some(device) = self.device.clone() else {
             return;
         };
@@ -1346,18 +1365,23 @@ impl<P: Platform> Screen<P> {
                 .into_iter()
                 .find(|m| m.id == self.monitor.id);
             if let Some(listed) = listed {
-                // Its size now, which may have changed while capture was down.
+                // On macOS, its size now, which may have changed while capture was down.
+                #[cfg(target_os = "macos")]
                 if (listed.width, listed.height) != (self.monitor.width, self.monitor.height) {
                     self.monitor = listed;
                     self.write_monitor("resize");
                 }
+                #[cfg(not(target_os = "macos"))]
+                let _ = listed;
                 self.start_capture();
             } else {
                 // The monitor went away while capture was down: choose again.
                 self.on_monitor_lost();
             }
         }
-        // A capture that has delivered frames for a minute works: its failures start over.
+        // A capture that has delivered frames for a minute works: its failures start over. Only
+        // macOS counts them.
+        #[cfg(target_os = "macos")]
         if self
             .capture_since
             .is_some_and(|since| since.elapsed() >= CAPTURE_STABLE)
@@ -1377,6 +1401,7 @@ impl<P: Platform> Screen<P> {
             log(format_args!("{} left the monitor list", self.monitor.id));
             self.on_monitor_lost();
         }
+        #[cfg(target_os = "macos")]
         if self.capturing {
             self.check_monitor_size();
         }
@@ -1583,7 +1608,8 @@ impl<P: Platform> Screen<P> {
                 return;
             }
             // Voice's connected Rukoo clients changed: their windows stay out from now on. The
-            // port checked the list.
+            // port checked the list. macOS only, as the port is.
+            #[cfg(target_os = "macos")]
             Some("exclude") => match control::excluded_pids(&request.body) {
                 Some(pids) => {
                     if pids != self.exclude_pids {
@@ -1620,7 +1646,8 @@ impl<P: Platform> Screen<P> {
             "recording"
         };
         let monitors = monitors::ordered(&self.monitors(false));
-        json!({
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut status = json!({
             "ok": true,
             "state": state,
             "t": t,
@@ -1636,10 +1663,14 @@ impl<P: Platform> Screen<P> {
             "encoder": self.encoder.as_ref().map(|(name, _)| name.as_str()),
             "hardware": self.encoder.as_ref().map(|(_, hardware)| *hardware),
             "saved": self.frames_saved,
-            // The frames the frame worker still holds, for its JPEG or its text. A frame's
-            // `frame` line is written after both.
-            "pending": self.worker.pending(),
-        })
+        });
+        // On macOS, the frames the frame worker still holds, for its JPEG or its text. A frame's
+        // `frame` line is written after both.
+        #[cfg(target_os = "macos")]
+        {
+            status["pending"] = json!(self.worker.pending());
+        }
+        status
     }
 }
 
@@ -1681,7 +1712,8 @@ mod tests {
 
     use super::*;
 
-    /// 1, 2, 4, 8 and 16 s, then 30 s for every failure after that.
+    /// 1, 2, 4, 8 and 16 s, then 30 s for every failure after that. macOS only, as the backoff is.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_capture_retry_doubles_up_to_30_s() {
         let waits: Vec<u64> = (1..=8)

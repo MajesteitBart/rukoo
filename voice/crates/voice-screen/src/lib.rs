@@ -5,22 +5,25 @@
 //! The binary `rukoo-voice-screen` runs as its own process, so a graphics driver, encoder or OCR
 //! crash never costs audio.
 //!
-//! `record` and `video::thread` are the orchestration and build on every platform; everything an
+//! `record` and `video::thread` are the orchestration, shared by Windows and macOS; everything an
 //! operating system provides for them — capture, the graphics device, thumbnails, pixels, the
 //! video writer, JPEG, OCR, the clocks, the monitors and free space — sits behind the traits in
-//! `platform`. The Windows backend is `platform::windows` and the macOS one
-//! `platform::macos`; elsewhere the commands still refuse to record.
+//! `platform`. The Windows backend is `platform::windows` and the macOS one `platform::macos`.
+//! Elsewhere none of them is built and the commands refuse to record.
 
 use std::fmt;
 
 pub mod args;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod finalize;
+#[cfg(any(windows, target_os = "macos"))]
+pub mod frames;
 pub mod inspect;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod platform;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod record;
 pub mod video;
-
-pub mod frames;
 
 #[cfg(any(windows, target_os = "macos"))]
 pub mod capture;
@@ -103,8 +106,8 @@ impl fmt::Display for ExitError {
     }
 }
 
-/// The message `record`, `finalize` and `probe` give where the crate has no backend.
-pub const NEEDS_WINDOWS: &str = "Screen recording needs Windows or macOS.";
+/// The message `record`, `finalize` and `probe` give on other platforms.
+pub const NEEDS_WINDOWS: &str = "Screen recording needs Windows.";
 
 /// Whether this is a development copy: `RUKOO_VOICE_DATA_DIR` is set, as for the app's own test
 /// switches. Only then does `--test` work.

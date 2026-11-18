@@ -1,8 +1,8 @@
 //! The fragmented MP4 writer the macOS screen process feeds VideoToolbox's H.264 samples to.
 //!
-//! A platform-neutral writer, so its tests run on every platform the crate builds on: the caller
-//! brings the encoder's parameter sets and its AVCC samples (4-byte big-endian NAL lengths, which
-//! is what an `avcC` box declares), and this module writes the file. The layout is the one
+//! The writer itself is platform-neutral code, built for macOS, whose screen process is its one
+//! caller: the caller brings the encoder's parameter sets and its AVCC samples (4-byte big-endian
+//! NAL lengths, which is what an `avcC` box declares), and this module writes the file. The layout is the one
 //! `voice/RECORDING.md` and [`crate::mp4`] describe:
 //!
 //! ```text

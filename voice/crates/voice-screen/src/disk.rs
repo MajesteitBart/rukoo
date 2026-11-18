@@ -107,7 +107,9 @@ mod tests {
         assert!(!is_disk_full(&std::io::Error::from_raw_os_error(5)));
     }
 
-    /// The free bytes are within a percent of what the platform reports for the same folder.
+    /// The statvfs path reads the free bytes of a temp folder's volume. macOS only, which reads
+    /// them that way.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_volume_has_room() {
         // A full disk would make this fail; the test says the check reads something real.

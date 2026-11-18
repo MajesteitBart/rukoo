@@ -546,7 +546,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f-000001000.jpg");
         let e = write_synced(&path, b"jpeg", true).unwrap_err();
-        assert!(crate::disk::is_disk_full(&e), "{e}");
+        assert!(crate::disk::is_disk_full(&e));
         assert!(!path.exists() && !path.with_extension("jpg.tmp").exists());
         write_synced(&path, b"jpeg", false).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"jpeg");
@@ -588,10 +588,26 @@ mod tests {
         }
     }
 
-    /// The platform's parts stand-in for these tests: a JPEG that is its pixels' length, a disk
-    /// that never fails, and no thread setup. No graphics API is involved, so the threads run on
-    /// every platform.
-    fn fake_io(reader: impl Reader + 'static) -> FrameIo {
+    /// The platform's parts for these tests on Windows: WIC's real JPEG encoder, the real disk
+    /// and COM's MTA on the worker threads, as before macOS. Only the text reader is the stalled
+    /// stand-in.
+    #[cfg(windows)]
+    fn test_io(reader: impl Reader + 'static) -> FrameIo {
+        use crate::platform::Platform;
+
+        let platform = crate::platform::windows::WindowsPlatform::new();
+        FrameIo {
+            setup: platform.thread_init(),
+            jpeg: platform.jpeg(),
+            disk: platform.disk(),
+            reader: Box::new(move || Box::new(reader)),
+        }
+    }
+
+    /// The platform's parts stand-in for these tests on macOS: a JPEG that is its pixels' length,
+    /// a disk that never fails, and no thread setup.
+    #[cfg(target_os = "macos")]
+    fn test_io(reader: impl Reader + 'static) -> FrameIo {
         use crate::platform::{Disk, ImageText, ThreadInit};
 
         struct Setup;
@@ -688,6 +704,8 @@ mod tests {
     /// JPEG and a `skipped` line at once. Once OCR comes back the rest are read.
     #[test]
     fn a_hung_ocr_holds_few_frames_and_skips_the_rest() {
+        #[cfg(windows)]
+        crate::com::init_mta();
         let meeting = temp_meeting("hung-ocr");
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -696,7 +714,7 @@ mod tests {
             calls: calls.clone(),
         };
         let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
-        let mut worker = FrameWorker::start(meeting.clone(), tx, None, fake_io(reader));
+        let mut worker = FrameWorker::start(meeting.clone(), tx, None, test_io(reader));
         let total = 40u64;
         let (mut sent, mut most) = (0u64, 0usize);
         let mut lines = BTreeMap::new();
@@ -754,6 +772,8 @@ mod tests {
     /// each with its JPEG, and the late answer of the hung call adds no second line.
     #[test]
     fn skip_ocr_journals_the_frames_a_hung_ocr_holds() {
+        #[cfg(windows)]
+        crate::com::init_mta();
         let meeting = temp_meeting("skip-ocr");
         let released = Arc::new((Mutex::new(false), Condvar::new()));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -762,7 +782,7 @@ mod tests {
             calls: calls.clone(),
         };
         let (tx, rx) = mpsc::sync_channel::<Ev<()>>(64);
-        let mut worker = FrameWorker::start(meeting.clone(), tx, None, fake_io(reader));
+        let mut worker = FrameWorker::start(meeting.clone(), tx, None, test_io(reader));
         for n in 0..3 {
             while !worker.accepts() {
                 std::thread::sleep(Duration::from_millis(2));

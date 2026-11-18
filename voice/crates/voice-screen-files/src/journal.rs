@@ -168,7 +168,7 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
-    /// Exclusive writer: on Windows share READ | DELETE only, elsewhere a lock on the open file.
+    /// Exclusive writer: on Windows share READ | DELETE only, on macOS a lock on the open file.
     /// Cuts a last line without a newline. `Busy` when another writer holds it. Creates `screen/`
     /// and the journal when missing. Readers take no lock, so `JournalReader` keeps following it.
     pub fn open(meeting: &Path) -> Result<JournalWriter, OpenError> {
@@ -226,12 +226,12 @@ fn exclusive_writer(options: &mut OpenOptions) {
 #[cfg(not(windows))]
 fn exclusive_writer(_options: &mut OpenOptions) {}
 
-/// Keeps a second writer off the journal. Windows refused it at open through the share mode;
-/// elsewhere an exclusive `flock` on the open file does it, which every process sees and which
-/// ends with the process that holds it, also after a hard kill. Readers take no lock.
+/// Keeps a second writer off the journal. Windows refused it at open through the share mode; on
+/// macOS an exclusive `flock` on the open file does it, which every process sees and which ends
+/// with the process that holds it, also after a hard kill. Readers take no lock.
 ///
 /// `WouldBlock`, what EWOULDBLOCK reads as, means another screen process holds the journal.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn lock_writer(file: &File) -> Result<(), io::Error> {
     use std::os::unix::io::AsRawFd;
     loop {
@@ -247,17 +247,17 @@ fn lock_writer(file: &File) -> Result<(), io::Error> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn lock_writer(_file: &File) -> Result<(), io::Error> {
     Ok(())
 }
 
-/// Windows refuses a second writer with a sharing violation at open; Unix with a lock it can't
+/// Windows refuses a second writer with a sharing violation at open; macOS with a lock it can't
 /// take ([`io::ErrorKind::WouldBlock`]).
 fn held_by_another_writer(e: &io::Error) -> bool {
     const ERROR_SHARING_VIOLATION: i32 = 32;
     let sharing_violation = cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION);
-    sharing_violation || (cfg!(unix) && e.kind() == io::ErrorKind::WouldBlock)
+    sharing_violation || (cfg!(target_os = "macos") && e.kind() == io::ErrorKind::WouldBlock)
 }
 
 #[derive(Debug)]
@@ -529,17 +529,20 @@ mod tests {
         assert_eq!(lines[0].t(), Some(120));
         assert_eq!(lines.last().unwrap().t(), Some(15_000));
         assert_eq!(Line::Unknown.t(), None);
-        // The permission line round-trips, and a reader that doesn't know it reads `Unknown`.
-        let no_permission = Line::NoPermission { t: 4200 };
-        let json = serde_json::to_string(&no_permission).unwrap();
-        assert_eq!(json, r#"{"kind":"no_permission","t":4200}"#);
-        assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), no_permission);
-        assert_eq!(no_permission.t(), Some(4200));
-        let by_user = Line::StoppedByUser { t: 4300 };
-        let json = serde_json::to_string(&by_user).unwrap();
-        assert_eq!(json, r#"{"kind":"stopped_by_user","t":4300}"#);
-        assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), by_user);
-        assert_eq!(by_user.t(), Some(4300));
+        // The permission lines a Mac's screen process writes round-trip.
+        #[cfg(target_os = "macos")]
+        {
+            let no_permission = Line::NoPermission { t: 4200 };
+            let json = serde_json::to_string(&no_permission).unwrap();
+            assert_eq!(json, r#"{"kind":"no_permission","t":4200}"#);
+            assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), no_permission);
+            assert_eq!(no_permission.t(), Some(4200));
+            let by_user = Line::StoppedByUser { t: 4300 };
+            let json = serde_json::to_string(&by_user).unwrap();
+            assert_eq!(json, r#"{"kind":"stopped_by_user","t":4300}"#);
+            assert_eq!(serde_json::from_str::<Line>(&json).unwrap(), by_user);
+            assert_eq!(by_user.t(), Some(4300));
+        }
         // A frame line without a language reads as `None`; new fields are ignored.
         let older: Line = serde_json::from_str(
             r#"{"kind":"frame","t":1,"id":"f-000000001","file":"screen/frames/f-000000001.jpg","width":2,"height":2,"text":"","ocr":"none","colour":"blue"}"#,
@@ -620,6 +623,7 @@ mod tests {
         assert_eq!(reader.poll().unwrap(), vec![Line::Lock { t: 4 }]);
     }
 
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn a_second_writer_is_busy_but_readers_can_read() {
         let dir = TestDir::new("journal-busy");

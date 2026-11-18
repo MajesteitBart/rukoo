@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     fake_media, passage, Bridge, Client, TempDir, DONE_MEETING, FAKE_MEDIA, FAKE_MEDIA_SIZE,
-    NEW_MEETING, RUKOO_PID,
+    NEW_MEETING,
 };
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Options};
@@ -67,14 +67,31 @@ fn protection_waits_for_rukoo_windows_but_not_diagnostic_clients() {
     assert_eq!(handle.protection_clients().len(), 1);
 }
 
+/// The pid a Rukoo on macOS sends in its `hello`.
+#[cfg(target_os = "macos")]
+const RUKOO_PID: u32 = 4821;
+
+/// A Rukoo client whose `hello` carries a pid, as Rukoo on macOS sends it.
+#[cfg(target_os = "macos")]
+fn rukoo_with_pid(bridge: &Bridge) -> Client {
+    let mut client = Client::connect(bridge.port());
+    client.send(json!({"type":"hello", "protocol":voice_protocol::PROTOCOL, "token":bridge.token(), "client":"rukoo", "clientVersion":"2.3.0", "pid": RUKOO_PID, "instance":null, "after":0}));
+    assert_eq!(client.read()["type"], "welcome");
+    client
+}
+
+/// macOS leaves the windows of every connected Rukoo out of its screen recording, by pid.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_pids_are_the_welcomed_rukoo_clients_that_sent_one() {
     let bridge = Bridge::start("server-rukoo-pids");
     let handle = bridge.handle.as_ref().unwrap();
     assert!(handle.rukoo_pids().is_empty());
-    let (mut rukoo, _) = bridge.client(None, 0);
+    let mut rukoo = rukoo_with_pid(&bridge);
     assert!(read_until_status_reply(&mut rukoo, "rukoo-ready").is_empty());
     assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
+    let clients = handle.clients();
+    assert_eq!(clients.connected[0].pid, Some(u64::from(RUKOO_PID)));
 
     // A client with another name, or one without a pid, isn't a Rukoo window to leave out.
     let mut probe = Client::connect(bridge.port());
@@ -86,7 +103,7 @@ fn the_pids_are_the_welcomed_rukoo_clients_that_sent_one() {
     assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
 
     // A second Rukoo on the same pid is one process: it is named once.
-    let (mut again, _) = bridge.client(None, 0);
+    let mut again = rukoo_with_pid(&bridge);
     assert!(read_until_status_reply(&mut again, "rukoo-again").is_empty());
     assert_eq!(handle.rukoo_pids(), [RUKOO_PID]);
 
@@ -1020,7 +1037,6 @@ fn the_handle_reports_its_clients_and_the_last_refused_hello() {
     let clients = handle.clients();
     assert_eq!(clients.connected.len(), 1);
     let rukoo = &clients.connected[0];
-    assert_eq!(rukoo.pid, Some(u64::from(RUKOO_PID)));
     assert_eq!(
         (
             rukoo.client.as_str(),

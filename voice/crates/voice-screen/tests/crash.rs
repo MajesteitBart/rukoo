@@ -136,6 +136,12 @@ mod tests {
         );
         let report = voice_screen::inspect::inspect(path);
         assert_eq!(report["reader"]["error"], Value::Null, "{report}");
+        #[cfg(windows)]
+        assert_eq!(
+            report["reader"]["samples"], report["samples"],
+            "Media Foundation reads fewer samples than the file holds: {report}"
+        );
+        #[cfg(target_os = "macos")]
         assert_eq!(
             report["reader"]["samples"], report["samples"],
             "the platform's reader finds fewer samples than the file holds: {report}"
@@ -151,6 +157,9 @@ mod tests {
     /// VideoToolbox's hardware encoder on macOS. `VOICE_SCREEN_TEST_SIZE=1440x2560` runs it at the
     /// size of a portrait monitor, still on the synthetic screen.
     pub fn hard_kill_with_hardware_encoder() {
+        // A Mac without VideoToolbox's hardware encoder skips; on Windows the test fails without
+        // NVENC, as before.
+        #[cfg(target_os = "macos")]
         if voice_screen::probe::probe().hardware_encoder.is_none() {
             println!("    skipped: this computer has no hardware H.264 encoder");
             return;
@@ -1134,6 +1143,9 @@ mod tests {
 
     pub fn ocr_reads_demo_text() {
         if voice_screen::frames::languages().is_empty() {
+            #[cfg(windows)]
+            println!("    skipped: this Windows has no OCR language");
+            #[cfg(target_os = "macos")]
             println!("    skipped: this computer has no OCR language");
             return;
         }
@@ -1240,17 +1252,14 @@ mod tests {
             let samples = report["samples"].as_u64().unwrap();
             let ms = report["durationMs"].as_u64().unwrap().max(1);
             let rate = samples as f64 * 1000.0 / ms as f64;
-            println!("    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second");
-            assert!(rate <= 6.0, "{rate:.1} samples a second on a still screen");
-            // The typed marks are counted by decoding the file, which only the Windows spike
-            // has a decoder for; macOS checks the sample rate alone.
             #[cfg(windows)]
             {
                 let marks = marks_in_video(&path, 1280, 720);
                 println!(
-                    "    marks {:?}",
+                    "    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second; marks {:?}",
                     marks.iter().map(|m| m.1).collect::<Vec<_>>()
                 );
+                assert!(rate <= 6.0, "{rate:.1} samples a second on a still screen");
                 assert_eq!(marks.first().map(|m| m.1), Some(0), "{marks:?}");
                 let typed = marks.last().unwrap().1;
                 assert!(
@@ -1262,6 +1271,13 @@ mod tests {
                 // within about half a second of its keystroke.
                 let gaps = marks.windows(2).map(|w| w[1].0 - w[0].0);
                 assert!(gaps.clone().all(|g| g <= 600), "{marks:?}");
+            }
+            // The typed marks are counted by decoding the file, which only the Windows test has a
+            // decoder for; macOS checks the sample rate alone.
+            #[cfg(target_os = "macos")]
+            {
+                println!("    {extra:5}: {samples} samples in {ms} ms, {rate:.1} a second");
+                assert!(rate <= 6.0, "{rate:.1} samples a second on a still screen");
             }
         }
     }
@@ -1435,7 +1451,6 @@ mod tests {
 fn main() {
     common::play_role();
     use common::Test;
-    #[allow(unused_mut)]
     let mut tests = vec![
         Test {
             name: "screen_modes_can_stop_and_restart_without_interrupting_audio",
@@ -1547,6 +1562,22 @@ fn main() {
             ignored: false,
             run: tests::stops_when_the_recorder_is_gone,
         },
+    ];
+    // The Windows sink writer's scaling and the real screen capture are Windows spikes.
+    #[cfg(windows)]
+    tests.extend([
+        Test {
+            name: "spike_hardware_encoder_scales_large_monitors",
+            ignored: true,
+            run: tests::spike_hardware_encoder_scales_large_monitors,
+        },
+        Test {
+            name: "spike_real_capture_cadence",
+            ignored: true,
+            run: tests::spike_real_capture_cadence,
+        },
+    ]);
+    tests.extend([
         Test {
             name: "ocr_reads_demo_text",
             ignored: false,
@@ -1562,32 +1593,18 @@ fn main() {
             ignored: false,
             run: tests::a_still_screen_records_few_frames,
         },
-    ];
+    ]);
     #[cfg(target_os = "macos")]
     tests.push(Test {
         name: "biplanar_frames_record_like_bgra_ones",
         ignored: false,
         run: tests::biplanar_frames_record_like_bgra_ones,
     });
-    // The Windows sink writer's scaling and the real screen capture are Windows spikes.
-    #[cfg(windows)]
-    {
-        tests.push(Test {
-            name: "spike_hardware_encoder_scales_large_monitors",
-            ignored: true,
-            run: tests::spike_hardware_encoder_scales_large_monitors,
-        });
-        tests.push(Test {
-            name: "spike_real_capture_cadence",
-            ignored: true,
-            run: tests::spike_real_capture_cadence,
-        });
-    }
     common::run_tests(&tests);
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     common::play_role();
-    println!("the screen process's tests need Windows or macOS; skipped");
+    println!("the screen process's tests need Windows; skipped");
 }

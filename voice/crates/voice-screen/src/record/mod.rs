@@ -111,7 +111,7 @@ pub fn record<P: Platform>(platform: P, opts: RecordOptions) -> Result<(), ExitE
             return Err(ExitError::no_permission(why));
         }
         if !platform.displays().can_capture() {
-            return Err(ExitError::failed("this computer can't capture the screen"));
+            return Err(ExitError::failed("this Windows can't capture the screen"));
         }
     }
     let frames_dir = paths::screen_dir(&dir).join("frames");

@@ -16,8 +16,8 @@ getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# `flock`, which keeps a second screen process off the journal.
-[target.'cfg(unix)'.dependencies]
+# `flock`, which keeps a second screen process off the journal on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

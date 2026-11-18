@@ -1,8 +1,10 @@
 //! The screen process's orchestration without a screen: a fake backend produces frames, drinks
 //! its clock and writes fake video, and `record` runs the whole session — the journal, the frame
-//! and drop rules, the video file and the stop — on every platform. Nothing here touches a
-//! graphics API, so the split between the orchestration and a platform is covered on a Mac and on
-//! Linux CI as well as on Windows.
+//! and drop rules, the video file and the stop. Nothing here touches a graphics API, so the split
+//! between the orchestration and a platform is covered on a Mac. It runs on macOS only for now;
+//! Windows keeps its own crash tests.
+
+#![cfg(target_os = "macos")]
 
 use std::fs;
 use std::path::{Path, PathBuf};

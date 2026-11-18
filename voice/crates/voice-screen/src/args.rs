@@ -6,6 +6,16 @@ use voice_screen_files::policy::Part;
 
 use crate::ExitError;
 
+#[cfg(not(target_os = "macos"))]
+pub const USAGE: &str = "\
+usage:
+  rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--test <spec>]
+  rukoo-voice-screen finalize --meeting <dir> [--reason interrupted|failed]
+  rukoo-voice-screen probe
+  rukoo-voice-screen inspect <file.mp4>";
+
+/// macOS also takes `--exclude-pid`, the processes whose windows ScreenCaptureKit leaves out.
+#[cfg(target_os = "macos")]
 pub const USAGE: &str = "\
 usage:
   rukoo-voice-screen record   --meeting <dir> --mode off|frames|video [--resume] [--monitor <id>] [--exclude-pid <pid>]... [--test <spec>]
@@ -57,7 +67,7 @@ impl Mode {
 /// `monitor-gone-at` takes the first monitor out of the list from that moment, without the
 /// capture's `Closed` notice, as when that notice is lost.
 /// `format=420f` makes macOS' synthetic frames bi-planar full-range YCbCr, as ScreenCaptureKit
-/// sends them, instead of BGRA; Windows' synthetic screen ignores it.
+/// sends them, instead of BGRA. Only macOS takes `format`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestSpec {
     pub width: u32,
@@ -136,7 +146,9 @@ impl TestSpec {
                 ("software-encoder", None) => test.software_encoder = true,
                 ("no-hardware", None) => test.no_hardware = true,
                 ("warp", None) => test.warp = true,
+                #[cfg(target_os = "macos")]
                 ("format", Some("420f")) => test.biplanar = true,
+                #[cfg(target_os = "macos")]
                 ("format", Some("bgra")) => test.biplanar = false,
                 ("free-bytes-file", Some(v)) if !v.is_empty() => {
                     test.free_bytes_file = Some(PathBuf::from(v))
@@ -188,9 +200,9 @@ pub struct RecordOptions {
     pub resume: bool,
     /// `--monitor`: record this monitor or exit 1.
     pub monitor: Option<String>,
-    /// `--exclude-pid`: leave the windows of each of these processes out of the recording. Only
-    /// the platforms that can filter by process use it; Windows leaves Rukoo out through Rukoo's
-    /// own content protection.
+    /// `--exclude-pid`: leave the windows of each of these processes out of the recording. macOS
+    /// only; Windows leaves Rukoo out through Rukoo's own content protection, and its list stays
+    /// empty.
     pub exclude_pids: Vec<u32>,
     pub test: Option<TestSpec>,
 }
@@ -228,6 +240,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
     let mut mode = None;
     let mut resume = false;
     let mut monitor = None;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut exclude_pids: Vec<u32> = Vec::new();
     let mut test = None;
     let mut args = args.iter();
@@ -245,6 +258,7 @@ fn parse_record(args: &[String], dev_mode: bool) -> Result<RecordOptions, ExitEr
                 })?);
             }
             "--resume" => resume = true,
+            #[cfg(target_os = "macos")]
             "--exclude-pid" => {
                 let v = value()?;
                 let pid = v
@@ -364,8 +378,8 @@ mod tests {
         );
     }
 
-    /// Every platform parses the exclusions; only the platforms that can filter by process use
-    /// them.
+    /// macOS parses the exclusions, which ScreenCaptureKit filters by process.
+    #[cfg(target_os = "macos")]
     #[test]
     fn parses_repeated_exceptions() {
         let cmd = parse(
@@ -399,6 +413,30 @@ mod tests {
         assert!(opts.exclude_pids.is_empty());
     }
 
+    /// The synthetic screen's `format` and the bad `--exclude-pid` values, which only macOS reads.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_the_macos_switches() {
+        let test = TestSpec::parse("synthetic:640x480,format=420f").unwrap();
+        assert!(test.biplanar);
+        assert!(
+            !TestSpec::parse("synthetic:640x480,format=bgra")
+                .unwrap()
+                .biplanar
+        );
+        assert!(TestSpec::parse("synthetic:640x480,format=yuv").is_err());
+        for bad in [
+            &["--exclude-pid", "0"][..],
+            &["--exclude-pid", "-3"],
+            &["--exclude-pid", "rukoo"],
+            &["--exclude-pid"],
+        ] {
+            let mut line = args(&["record", "--meeting", "m", "--mode", "frames"]);
+            line.extend(args(bad));
+            assert!(parse(&line, false).is_err(), "{line:?}");
+        }
+    }
+
     #[test]
     fn test_switches_need_a_development_copy() {
         let line = args(&[
@@ -425,7 +463,7 @@ mod tests {
             "synthetic:1440x2560,change-every=10000,text=RUKOO DEMO 42,monitors=2,type-every=150,\
              idle-every=66,dirty,software-encoder,no-hardware,free-bytes-file=C:\\tmp\\free.txt,\
              encoder-fail-at=3000,write-fail=frames@4000,\
-             device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp,format=420f",
+             device-lost-at=3000x2,no-video-device=3,monitor-gone-at=5000,warp",
         )
         .unwrap();
         assert_eq!(
@@ -449,10 +487,9 @@ mod tests {
                 no_video_devices: 3,
                 monitor_gone_at_ms: Some(5000),
                 warp: true,
-                biplanar: true,
+                biplanar: false,
             }
         );
-        assert!(TestSpec::parse("synthetic:640x480,format=yuv").is_err());
         let once =
             TestSpec::parse("synthetic:640x480,device-lost-at=1500,write-fail=video@20").unwrap();
         assert_eq!(
@@ -526,41 +563,6 @@ mod tests {
                 "frames",
                 "--test",
                 "synthetic:64x64,write-fail=audio@1",
-            ],
-            vec![
-                "record",
-                "--meeting",
-                "m",
-                "--mode",
-                "frames",
-                "--exclude-pid",
-                "0",
-            ],
-            vec![
-                "record",
-                "--meeting",
-                "m",
-                "--mode",
-                "frames",
-                "--exclude-pid",
-                "-3",
-            ],
-            vec![
-                "record",
-                "--meeting",
-                "m",
-                "--mode",
-                "frames",
-                "--exclude-pid",
-                "rukoo",
-            ],
-            vec![
-                "record",
-                "--meeting",
-                "m",
-                "--mode",
-                "frames",
-                "--exclude-pid",
             ],
             vec!["finalize"],
             vec!["finalize", "--meeting", "m", "--reason", "bored"],

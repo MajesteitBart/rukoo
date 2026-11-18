@@ -125,5 +125,5 @@ fn main() {
 #[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
     common::play_role();
-    println!("the clock test needs Windows or macOS; skipped");
+    println!("the clock test needs Windows; skipped");
 }

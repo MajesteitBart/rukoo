@@ -160,6 +160,7 @@ mod tests {
         };
         let json = serde_json::to_value(&caps).unwrap();
         // Windows has no grant to report, so the field is left out.
+        #[cfg(target_os = "macos")]
         assert!(json.get("screenRecording").is_none());
         assert_eq!(json["hardwareEncoder"]["vendor"], "VEN_10DE");
         assert_eq!(json["ocr"][0], "nl-NL");
@@ -168,6 +169,7 @@ mod tests {
     }
 
     /// A Mac reports its Screen Recording grant, and a probe without the field still reads.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_screen_recording_grant_is_optional() {
         let json = serde_json::json!({

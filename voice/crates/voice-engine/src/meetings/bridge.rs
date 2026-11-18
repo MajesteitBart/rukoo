@@ -405,7 +405,8 @@ impl Bridge {
     }
 
     /// The pids of the connected Rukoo clients that sent one, for the screen process's
-    /// `--exclude-pid`.
+    /// `--exclude-pid`. macOS only.
+    #[cfg(target_os = "macos")]
     pub fn rukoo_pids(&self) -> Vec<u32> {
         self.handle
             .lock()
@@ -526,7 +527,7 @@ mod tests {
         Client {
             client: name.into(),
             client_version: Some("2.2.0".into()),
-            pid: Some(4821),
+            pid: None,
             protocol: 1,
             after: 0,
             sent,

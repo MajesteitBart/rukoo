@@ -2,6 +2,7 @@
 //! `platform::VideoWriter` (Media Foundation's sink writer on Windows).
 
 pub mod size;
+#[cfg(any(windows, target_os = "macos"))]
 pub mod thread;
 
 #[cfg(windows)]

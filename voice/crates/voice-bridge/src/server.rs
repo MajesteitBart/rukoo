@@ -302,7 +302,8 @@ impl Handle {
 
     /// The process ids of the `rukoo` clients that completed their `hello` and sent a pid,
     /// oldest connection first, without repeats: the processes whose windows a screen recording
-    /// leaves out.
+    /// leaves out. macOS only, where the screen process can leave windows out by process.
+    #[cfg(target_os = "macos")]
     pub fn rukoo_pids(&self) -> Vec<u32> {
         let registry = lock(&self.registry);
         let mut pids: Vec<u32> = Vec::new();

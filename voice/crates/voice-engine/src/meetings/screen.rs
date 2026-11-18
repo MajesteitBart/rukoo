@@ -196,7 +196,9 @@ struct ScreenLive {
     no_permission: bool,
     monitors: Option<usize>,
     /// The pids the screen process with this pid was last told to leave out, by `exclude` or on
-    /// its command line. Another process, or other pids, and the watchdog tells it again.
+    /// its command line. Another process, or other pids, and the watchdog tells it again. macOS
+    /// only.
+    #[cfg(target_os = "macos")]
     excluded: Option<(u32, Vec<u32>)>,
 }
 
@@ -220,6 +222,7 @@ impl ScreenLive {
             gave_up: false,
             no_permission: false,
             monitors: None,
+            #[cfg(target_os = "macos")]
             excluded: None,
         }
     }
@@ -443,9 +446,10 @@ impl ScreenSupervisor {
         *lock(&self.protection_clients) = Some(clients);
     }
 
-    /// The pids the screen process leaves out of its capture. A launch passes them on its
-    /// command line, and the watchdog sends the running process `exclude` when they change, as
-    /// when a Rukoo connects, reconnects with another pid or quits mid-meeting.
+    /// The pids the screen process leaves out of its capture, on macOS. A launch passes them on
+    /// its command line, and the watchdog sends the running process `exclude` when they change,
+    /// as when a Rukoo connects, reconnects with another pid or quits mid-meeting. Nothing sets
+    /// them elsewhere, so the command line stays as before and no `exclude` goes out.
     pub fn set_exclude_pids(&self, pids: ExcludePids) {
         *lock(&self.exclude_pids) = Some(pids);
     }
@@ -467,7 +471,8 @@ impl ScreenSupervisor {
 
     /// Tells the running screen process which pids to leave out. A process that doesn't know
     /// the command, from an older Voice, keeps what its command line said; only a request that
-    /// didn't arrive is tried again on the next round.
+    /// didn't arrive is tried again on the next round. macOS only.
+    #[cfg(target_os = "macos")]
     fn send_exclude(&self, id: &str, file: &ScreenFile, pids: Vec<u32>) {
         let reply = match request(
             file,
@@ -1571,7 +1576,8 @@ impl ScreenSupervisor {
     /// One watchdog round. The status request runs without the slot's lock, so a screen process
     /// that is slow to answer doesn't hold up `screen.get`, `screen.select` or the pill.
     fn check(&self) {
-        // Read before the slot's lock: the bridge answers it under a lock of its own.
+        // Read before the slot's lock: the bridge answers it under a lock of its own. macOS only.
+        #[cfg(target_os = "macos")]
         let wanted = self.exclude_pids();
         let (id, file, exited, mut changes) = {
             let mut slot = self.lock();
@@ -1617,10 +1623,12 @@ impl ScreenSupervisor {
                 });
             }
             live.status = Some(status);
+            #[cfg(target_os = "macos")]
             let exclude = file
                 .clone()
                 .filter(|file| live.excluded.as_ref() != Some(&(file.pid, wanted.clone())));
             drop(slot);
+            #[cfg(target_os = "macos")]
             if let Some(file) = exclude {
                 self.send_exclude(&id, &file, wanted);
             }
@@ -1866,6 +1874,7 @@ mod tests {
         assert_eq!(timing.end_wait, Duration::from_secs(10));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_screen_process_learns_the_pids_to_leave_out() {
         let args = record_args(
@@ -2007,6 +2016,7 @@ mod tests {
     /// A screen process that lost the Screen Recording grant writes `no_permission` and then the
     /// drops. The supervisor reports the permission once, and the drops after it as no news of
     /// their own: a graphics device that went isn't what happened.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_lost_permission_is_reported_instead_of_the_drops_that_follow() {
         let dir = std::env::temp_dir().join(format!(
@@ -2059,6 +2069,7 @@ mod tests {
 
     /// A capture the user stopped from the system's control has its own change, and the drops
     /// after it none, so Voice doesn't say Screen Recording is off when it is on.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_capture_the_user_stopped_is_reported_as_such() {
         let dir = std::env::temp_dir().join(format!(

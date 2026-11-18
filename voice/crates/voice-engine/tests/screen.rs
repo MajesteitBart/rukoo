@@ -84,6 +84,7 @@ fn main() {
             "screen_off_sends_no_meeting_starting",
             screen_off_sends_no_meeting_starting,
         ),
+        #[cfg(target_os = "macos")]
         (
             "a_rukoo_that_connects_later_is_left_out",
             a_rukoo_that_connects_later_is_left_out,
@@ -124,6 +125,7 @@ fn main() {
             screen_select_answers_by_its_deadline_when_the_screen_is_slow,
         ),
         ("drops_reach_the_pill", drops_reach_the_pill),
+        #[cfg(target_os = "macos")]
         (
             "a_stopped_screen_stands_on_the_pill",
             a_stopped_screen_stands_on_the_pill,
@@ -137,6 +139,7 @@ fn main() {
             "screen_mode_changes_require_each_clients_current_ack",
             screen_mode_changes_require_each_clients_current_ack,
         ),
+        #[cfg(target_os = "macos")]
         (
             "a_screen_without_permission_says_so_and_is_not_retried",
             a_screen_without_permission_says_so_and_is_not_retried,
@@ -388,6 +391,7 @@ impl Rig {
     /// can reach the journal after the change's line. One `pending: 0` reply isn't enough: a
     /// frame already handed back can still be queued behind that reply. The reply after it is
     /// handled after that frame, so with no work left the count no longer moves.
+    #[cfg(target_os = "macos")]
     fn wait_frames_settled(&self, id: &str) {
         let frames = || {
             self.journal(id)
@@ -706,6 +710,7 @@ fn rukoo_started_meeting_skips_the_handshake() {
 
 /// A Rukoo that connects after the screen process started: the watchdog sends the running
 /// process its pid, which then leaves its windows out, and a Rukoo that quits is let go again.
+#[cfg(target_os = "macos")]
 fn a_rukoo_that_connects_later_is_left_out() {
     let rig = Rig::new("exclude-later", SCREEN);
     let pids = Arc::new(Mutex::new(Vec::<u32>::new()));
@@ -1401,6 +1406,7 @@ fn drops_reach_the_pill() {
 /// A meeting that recorded the screen and then lost it says so for the rest of the meeting: the
 /// audio goes on, and with notifications off the pill is the only place that says the screen
 /// doesn't. The screen button agrees, showing that nothing is recorded.
+#[cfg(target_os = "macos")]
 fn a_stopped_screen_stands_on_the_pill() {
     let h = engine_harness("screen-stands", SCREEN.to_string());
     h.config(json!({"meetings_screen": "frames"}));
@@ -1664,9 +1670,10 @@ fn screen_mode_changes_require_each_clients_current_ack() {
         )
         .unwrap();
     assert_eq!(screen.mode_of(&id), ScreenMode::Off);
-    // Frames the acknowledged round captured are journaled after their JPEG and text, so a few
-    // can still land after the Off line. Wait until the process holds none of them: only then is
-    // this count the one the refused round mustn't change.
+    // On a Mac, frames the acknowledged round captured are journaled after their JPEG and text,
+    // so a few can still land after the Off line. Wait until the process holds none of them: only
+    // then is this count the one the refused round mustn't change.
+    #[cfg(target_os = "macos")]
     rig.wait_frames_settled(&id);
     let before = rig
         .journal(&id)
@@ -1697,34 +1704,23 @@ fn screen_mode_changes_require_each_clients_current_ack() {
 /// A stand-in for `rukoo-voice-screen` that exits with code 5 on `record`, as the real one does
 /// when macOS' Screen Recording is off, and writes a line to `screen-runs.txt` each time it is
 /// asked to record. Other commands, such as `probe`, exit 0 without a word.
+#[cfg(target_os = "macos")]
 fn refusing_screen(dir: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let script = dir.join("screen.cmd");
-        std::fs::write(
-            &script,
-            "@echo off\r\nif \"%1\"==\"record\" (\r\n echo run>>\"%~dp0screen-runs.txt\"\r\n echo Screen Recording is off for Rukoo Voice 1>&2\r\n exit /b 5\r\n)\r\nexit /b 0\r\n",
-        )
-        .unwrap();
-        script
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let script = dir.join("screen.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\nif [ \"$1\" = record ]; then\n  echo run >> \"$(dirname \"$0\")/screen-runs.txt\"\n  echo 'Screen Recording is off for Rukoo Voice' >&2\n  exit 5\nfi\nexit 0\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        script
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("screen.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = record ]; then\n  echo run >> \"$(dirname \"$0\")/screen-runs.txt\"\n  echo 'Screen Recording is off for Rukoo Voice' >&2\n  exit 5\nfi\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
 }
 
 /// A screen process that refuses for want of the Screen Recording grant: the meeting records its
 /// audio, the pill and a notification say that Screen Recording is off, and the supervisor
 /// doesn't launch it again as it would a screen process that crashed.
+#[cfg(target_os = "macos")]
 fn a_screen_without_permission_says_so_and_is_not_retried() {
     let scripts = TempDir::new("no-permission-screen");
     let mut h = engine_harness("no-permission", SCREEN.to_string());

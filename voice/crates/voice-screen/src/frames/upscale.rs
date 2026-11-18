@@ -46,7 +46,8 @@ pub fn upscale_2x(pixels: &Pixels) -> Pixels {
 
 /// Scales BGRA pixels to `width` x `height`, averaging each output pixel's block of source
 /// pixels. Used for the JPEG's maximum side and for a monitor larger than the video encoder
-/// takes; both only ever shrink a frame.
+/// takes; both only ever shrink a frame. macOS's JPEG and video writer use it.
+#[cfg(target_os = "macos")]
 pub fn scale_to(pixels: &Pixels, width: u32, height: u32) -> Pixels {
     let (sw, sh) = (pixels.width as usize, pixels.height as usize);
     let (dw, dh) = (width as usize, height as usize);
@@ -98,6 +99,7 @@ fn mean(a: u8, b: u8) -> u8 {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn scaling_down_averages_blocks() {
         let white_black = Pixels {
