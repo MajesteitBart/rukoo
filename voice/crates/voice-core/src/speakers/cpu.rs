@@ -18,9 +18,13 @@ pub struct CpuFeatures {
     pub fma: bool,
     pub f16c: bool,
     pub bmi2: bool,
-    /// The macOS build's baseline.
+    /// The macOS build's baseline. Serialized on Apple Silicon only, so Settings' `speakers.cpu`
+    /// keeps its four flags everywhere else.
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub neon: bool,
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub dotprod: bool,
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub fp16: bool,
 }
 
@@ -106,7 +110,7 @@ impl CpuFeatures {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
@@ -169,6 +173,7 @@ mod tests {
         assert_eq!(CpuFeatures::default().missing_among(&ARM), ARM);
     }
 
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn the_features_of_both_builds_are_serialized() {
         let value = serde_json::to_value(ALL).unwrap();

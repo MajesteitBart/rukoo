@@ -2,11 +2,11 @@
 # Builds the NeMo-Speech.cpp runtime that Rukoo Voice's speaker worker loads on Apple Silicon.
 #
 # This is the macOS counterpart of voice/nemo-runtime/build.ps1: the same pinned commit and
-# submodules from manifest.json, the same CPU-only asr profile, and the same staged nemo_speech/
-# folder of dylibs, licences and runtime.json. It is written for a clean macos-15 runner: Xcode (or
-# its Command Line Tools), git and python3 are assumed, nothing else. CMake and Ninja are installed
-# into a Python virtual environment inside the build folder, as build.ps1 does on Windows, so no
-# Homebrew and no administrator rights are needed.
+# submodules, read from manifest-macos.json, the same CPU-only asr profile, and the same staged
+# nemo_speech/ folder of dylibs, licences and runtime.json. It is written for a clean macos-15
+# runner: Xcode (or its Command Line Tools), git and python3 are assumed, nothing else. CMake and
+# Ninja are installed into a Python virtual environment inside the build folder, as build.ps1 does
+# on Windows, so no Homebrew and no administrator rights are needed.
 #
 # The folder it writes:
 #
@@ -29,7 +29,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-MANIFEST=$HERE/manifest.json
+MANIFEST=$HERE/manifest-macos.json
 PATCH=$HERE/macos.patch
 TARGET=macos-aarch64
 
@@ -67,15 +67,15 @@ if [ "$(uname -m)" != "arm64" ]; then
   exit 1
 fi
 
-# The pins, the flags and the deployment target come from manifest.json, as build.ps1 reads them,
-# so the manifest stays the one place a runtime is described.
+# The pins, the flags and the deployment target come from manifest-macos.json, as build.ps1 reads
+# them from manifest.json, so the manifest stays the one place a runtime is described.
 eval "$(python3 - "$MANIFEST" "$TARGET" <<'PY'
 import json, shlex, sys
 path, target = sys.argv[1], sys.argv[2]
 doc = json.load(open(path))
-if target not in doc.get("targets", {}):
-    sys.exit(f"{path} has no {target} entry")
-entry = doc["targets"][target]
+if doc.get("format") != 1 or doc.get("target") != target:
+    sys.exit(f"{path} isn't the {target} manifest")
+entry = doc
 q = lambda value: shlex.quote(str(value))
 print("NAME=" + q(doc["name"]))
 print("REPOSITORY=" + q(doc["repository"]))
@@ -296,7 +296,7 @@ python3 - "$staging" "$MANIFEST" "$TARGET" "$RUNNER" <<'PY'
 import hashlib, json, pathlib, subprocess, sys
 staging, manifest_path, target, runner = sys.argv[1:5]
 manifest = json.load(open(manifest_path))
-entry = manifest["targets"][target]
+entry = manifest
 root = pathlib.Path(staging)
 files = []
 for path in sorted(root.rglob("*")):

@@ -131,7 +131,11 @@ impl Backend for Native {
         check_cpu(crate::cpu::detect())?;
         Err(Failure::new(
             ErrorKind::Runtime,
-            "Speaker labels run on Windows on x86-64 and macOS on Apple Silicon only.",
+            if cfg!(target_os = "macos") {
+                "Speaker labels run on Windows on x86-64 and macOS on Apple Silicon only."
+            } else {
+                "Speaker labels run on Windows only."
+            },
         ))
     }
 

@@ -18,9 +18,13 @@ pub struct CpuFeatures {
     pub fma: bool,
     pub f16c: bool,
     pub bmi2: bool,
-    /// The macOS build's baseline.
+    /// The macOS build's baseline. Serialized on Apple Silicon only, so the ping reply keeps its
+    /// four flags everywhere else.
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub neon: bool,
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub dotprod: bool,
+    #[cfg_attr(not(all(target_os = "macos", target_arch = "aarch64")), serde(skip))]
     pub fp16: bool,
 }
 
@@ -153,87 +157,38 @@ mod tests {
         assert_eq!(ALL.refusal(), None);
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
-    fn missing_features_are_the_platforms_baseline() {
-        assert_eq!(CpuFeatures::default().missing(), REQUIRED);
-        assert!(ALL.missing().is_empty());
-    }
-
-    /// The x86-64 runtime's baseline, whichever platform runs this test.
-    const X86: [&str; 4] = ["avx2", "fma", "f16c", "bmi2"];
-    /// The arm64 runtime's baseline.
-    const ARM: [&str; 3] = ["neon", "dotprod", "fp16"];
-
-    #[test]
-    fn the_x86_baseline_is_named_in_order() {
-        let complete = CpuFeatures {
-            avx2: true,
-            fma: true,
-            f16c: true,
-            bmi2: true,
-            ..CpuFeatures::default()
-        };
-        assert!(complete.missing_among(&X86).is_empty());
-        // Everything but AVX2 and FMA.
-        let old = CpuFeatures {
-            f16c: true,
-            bmi2: true,
-            ..CpuFeatures::default()
-        };
-        assert_eq!(old.missing_among(&X86), ["avx2", "fma"]);
-        assert_eq!(CpuFeatures::default().missing_among(&X86), X86);
+    fn missing_features_are_named_in_order() {
+        let no_bmi2 = CpuFeatures { bmi2: false, ..ALL };
+        assert_eq!(no_bmi2.missing(), ["bmi2"]);
         assert_eq!(
-            CpuFeatures::refusal_of(&old.missing_among(&X86)).as_deref(),
+            no_bmi2.refusal().as_deref(),
+            Some("This processor lacks bmi2.")
+        );
+
+        let old = CpuFeatures {
+            avx2: false,
+            fma: false,
+            ..ALL
+        };
+        assert_eq!(
+            old.refusal().as_deref(),
             Some("This processor lacks avx2 and fma.")
         );
-    }
-
-    #[test]
-    fn the_arm_baseline_is_named_in_order() {
-        let complete = CpuFeatures {
-            neon: true,
-            dotprod: true,
-            fp16: true,
-            ..CpuFeatures::default()
-        };
-        assert!(complete.missing_among(&ARM).is_empty());
-        let no_dotprod = CpuFeatures {
-            neon: true,
-            fp16: true,
-            ..CpuFeatures::default()
-        };
-        assert_eq!(no_dotprod.missing_among(&ARM), ["dotprod"]);
         assert_eq!(
-            CpuFeatures::refusal_of(&no_dotprod.missing_among(&ARM)).as_deref(),
-            Some("This processor lacks dotprod.")
+            CpuFeatures::default().refusal().as_deref(),
+            Some("This processor lacks avx2, fma, f16c and bmi2.")
         );
     }
 
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     #[test]
-    fn the_refusal_lists_the_missing_features() {
-        assert_eq!(CpuFeatures::refusal_of(&[]), None);
-        for (missing, expected) in [
-            (&["bmi2"][..], "This processor lacks bmi2."),
-            (&["avx2", "fma"][..], "This processor lacks avx2 and fma."),
-            (
-                &["avx2", "fma", "f16c", "bmi2"][..],
-                "This processor lacks avx2, fma, f16c and bmi2.",
-            ),
-            (
-                &["neon", "dotprod", "fp16"][..],
-                "This processor lacks neon, dotprod and fp16.",
-            ),
-        ] {
-            assert_eq!(CpuFeatures::refusal_of(missing).as_deref(), Some(expected));
-        }
-    }
-
-    #[test]
-    fn serializes_the_features_of_both_builds() {
-        let value = serde_json::to_value(ALL).unwrap();
-        for name in ["avx2", "fma", "f16c", "bmi2", "neon", "dotprod", "fp16"] {
-            assert_eq!(value[name], serde_json::json!(true), "{name}");
-        }
+    fn serializes_as_four_flags() {
+        assert_eq!(
+            serde_json::to_value(ALL).unwrap(),
+            serde_json::json!({"avx2": true, "fma": true, "f16c": true, "bmi2": true})
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -244,17 +199,106 @@ mod tests {
         assert_eq!(detected.bmi2, std::arch::is_x86_feature_detected!("bmi2"));
     }
 
+    /// The macOS build's baseline, and the x86 one checked through the same names.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[test]
-    fn an_apple_silicon_mac_has_its_baseline() {
-        let detected = detect();
-        assert!(detected.neon);
-        assert_eq!(
-            detected.dotprod,
-            arm_feature("hw.optional.arm.FEAT_DotProd")
-        );
-        assert_eq!(detected.fp16, arm_feature("hw.optional.arm.FEAT_FP16"));
-        assert_eq!(detected.refusal(), None);
-        assert!(!detected.avx2, "an arm64 build doesn't report x86 features");
+    mod apple_silicon {
+        use super::super::*;
+        use super::ALL;
+
+        /// The x86-64 runtime's baseline, whichever platform runs this test.
+        const X86: [&str; 4] = ["avx2", "fma", "f16c", "bmi2"];
+        /// The arm64 runtime's baseline.
+        const ARM: [&str; 3] = ["neon", "dotprod", "fp16"];
+
+        #[test]
+        fn missing_features_are_the_platforms_baseline() {
+            assert_eq!(CpuFeatures::default().missing(), REQUIRED);
+            assert!(ALL.missing().is_empty());
+        }
+
+        #[test]
+        fn the_x86_baseline_is_named_in_order() {
+            let complete = CpuFeatures {
+                avx2: true,
+                fma: true,
+                f16c: true,
+                bmi2: true,
+                ..CpuFeatures::default()
+            };
+            assert!(complete.missing_among(&X86).is_empty());
+            // Everything but AVX2 and FMA.
+            let old = CpuFeatures {
+                f16c: true,
+                bmi2: true,
+                ..CpuFeatures::default()
+            };
+            assert_eq!(old.missing_among(&X86), ["avx2", "fma"]);
+            assert_eq!(CpuFeatures::default().missing_among(&X86), X86);
+            assert_eq!(
+                CpuFeatures::refusal_of(&old.missing_among(&X86)).as_deref(),
+                Some("This processor lacks avx2 and fma.")
+            );
+        }
+
+        #[test]
+        fn the_arm_baseline_is_named_in_order() {
+            let complete = CpuFeatures {
+                neon: true,
+                dotprod: true,
+                fp16: true,
+                ..CpuFeatures::default()
+            };
+            assert!(complete.missing_among(&ARM).is_empty());
+            let no_dotprod = CpuFeatures {
+                neon: true,
+                fp16: true,
+                ..CpuFeatures::default()
+            };
+            assert_eq!(no_dotprod.missing_among(&ARM), ["dotprod"]);
+            assert_eq!(
+                CpuFeatures::refusal_of(&no_dotprod.missing_among(&ARM)).as_deref(),
+                Some("This processor lacks dotprod.")
+            );
+        }
+
+        #[test]
+        fn the_refusal_lists_the_missing_features() {
+            assert_eq!(CpuFeatures::refusal_of(&[]), None);
+            for (missing, expected) in [
+                (&["bmi2"][..], "This processor lacks bmi2."),
+                (&["avx2", "fma"][..], "This processor lacks avx2 and fma."),
+                (
+                    &["avx2", "fma", "f16c", "bmi2"][..],
+                    "This processor lacks avx2, fma, f16c and bmi2.",
+                ),
+                (
+                    &["neon", "dotprod", "fp16"][..],
+                    "This processor lacks neon, dotprod and fp16.",
+                ),
+            ] {
+                assert_eq!(CpuFeatures::refusal_of(missing).as_deref(), Some(expected));
+            }
+        }
+
+        #[test]
+        fn serializes_the_features_of_both_builds() {
+            let value = serde_json::to_value(ALL).unwrap();
+            for name in ["avx2", "fma", "f16c", "bmi2", "neon", "dotprod", "fp16"] {
+                assert_eq!(value[name], serde_json::json!(true), "{name}");
+            }
+        }
+
+        #[test]
+        fn an_apple_silicon_mac_has_its_baseline() {
+            let detected = detect();
+            assert!(detected.neon);
+            assert_eq!(
+                detected.dotprod,
+                arm_feature("hw.optional.arm.FEAT_DotProd")
+            );
+            assert_eq!(detected.fp16, arm_feature("hw.optional.arm.FEAT_FP16"));
+            assert_eq!(detected.refusal(), None);
+            assert!(!detected.avx2, "an arm64 build doesn't report x86 features");
+        }
     }
 }

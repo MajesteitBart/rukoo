@@ -1,5 +1,5 @@
-// What voice/nemo-runtime/manifest.json pins and how the macOS packaging checks it, in one place: which folder holds
-// exactly an entry's files, where the pins come from, and which archive URLs may be downloaded.
+// What voice/nemo-runtime/manifest-macos.json pins and how the macOS packaging checks it, in one place: which folder
+// holds exactly the pinned files, where the pins come from, and which archive URLs may be downloaded.
 //
 // voice/nemo-runtime/pack-macos.mjs rewrites a packed runtime.json for its signed files. voice/scripts/package-macos.mjs
 // checks a downloaded folder against the manifest's pinned files and reads only the build's name and commit from
@@ -32,8 +32,8 @@ export function listFiles(dir) {
   return found.sort();
 }
 
-// The committed manifest, or --runtime-manifest, with this platform's entry. `pins` is the whole document, `entry`
-// the macos-aarch64 object, and `path` what the messages name.
+// The committed macOS manifest, or --runtime-manifest. It has manifest.json's shape (format 1) plus `target`, so a
+// Windows manifest is refused. `pins` and `entry` are both the document, and `path` is what the messages name.
 export function readRuntimeManifest(file) {
   let pins;
   try {
@@ -41,12 +41,13 @@ export function readRuntimeManifest(file) {
   } catch (error) {
     throw new Error(`${file} isn't a runtime manifest: ${error.message}`);
   }
-  if (pins.format !== 2) {
-    throw new Error(`${file} is format ${pins.format}, not the per-target format 2`);
+  if (pins.format !== 1) {
+    throw new Error(`${file} is format ${pins.format}, not format 1`);
   }
-  const entry = pins.targets && pins.targets[NEMO_TARGET];
-  if (!entry) throw new Error(`${file} pins no ${NEMO_TARGET} runtime`);
-  return { path: file, pins, entry };
+  if (pins.target !== NEMO_TARGET) {
+    throw new Error(`${file} pins no ${NEMO_TARGET} runtime`);
+  }
+  return { path: file, pins, entry: pins };
 }
 
 // Why a runtime folder doesn't match the manifest's entry, or null when it does: runtime.json's name and commit are

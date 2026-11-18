@@ -38,7 +38,7 @@
 // `--developer-id` would re-sign every dylib with the Developer ID, which no ad-hoc manifest pins, so that combination
 // is refused with the pinned archive; a notarized package needs a runtime signed with that identity and its own hashes.
 //
-// The NeMo runtime: when voice/nemo-runtime/manifest.json's macos-aarch64 entry names an archive, the script downloads
+// The NeMo runtime: when voice/nemo-runtime/manifest-macos.json names an archive, the script downloads
 // it once into <cargo target dir>/nemo-runtime/<name>, checks the archive's size and SHA-256 and every file's hash
 // against the manifest, and ships that folder. The committed manifest may only name an https: URL; a
 // --runtime-manifest may also name a file: or http://127.0.0.1 one, for a test package of a runtime that isn't
@@ -48,10 +48,10 @@
 // `--runtime-manifest` names another manifest (package.ps1's -RuntimeManifest); the programs compile it in, so voice-
 // core accepts the runtime folder it ships, and `--runtime-only` stops after the runtime is downloaded and checked.
 //
-// Before it builds anything it checks that voice/THIRD_PARTY_NOTICES.md lists the crates the lockfile gives for both
-// shipping targets (voice/scripts/notices.mjs, which package.ps1 runs too). Tauri bundles that file, and the script adds
-// a THIRD_PARTY_LICENSES.txt with the license files of the macOS build's crates and the NeMo runtime to
-// Contents/Resources.
+// Before it builds anything it checks that voice/THIRD_PARTY_NOTICES-macos.md lists the crates the lockfile gives for
+// the macOS build (voice/scripts/notices.mjs). Tauri bundles the Windows THIRD_PARTY_NOTICES.md that tauri.conf.json
+// names; before signing, the script replaces it in Contents/Resources with the macOS file, under the same name, and
+// adds a THIRD_PARTY_LICENSES.txt with the license files of the macOS build's crates and the NeMo runtime.
 //
 // The checks, all of which fail the script, are the macOS counterparts of package.ps1's:
 //   - the Info.plist keys (LSUIElement, the two usage strings, the category, the development region, the minimum
@@ -102,7 +102,9 @@ const HELPER_IDS = {
 const NEMO_FOLDER = 'nemo_speech';
 // The manifest voice/nemo-runtime/pack-macos.mjs fills in. The six dylibs are in lib/macos-sign.mjs, next to the
 // signature the runtime and this script must share; the manifest checks are in lib/nemo-runtime.mjs.
-const NEMO_MANIFEST = path.join(VOICE, 'nemo-runtime', 'manifest.json');
+const NEMO_MANIFEST = path.join(VOICE, 'nemo-runtime', 'manifest-macos.json');
+// The macOS app's notices. voice/THIRD_PARTY_NOTICES.md is the Windows installer's.
+const NOTICES_MACOS = path.join(VOICE, 'THIRD_PARTY_NOTICES-macos.md');
 const ENTITLEMENTS_AUDIO = path.join(APP, 'macos', 'entitlements-audio.plist');
 const ENTITLEMENTS_SPEAKERS = path.join(APP, 'macos', 'entitlements-speakers.plist');
 const AUDIO_INPUT = 'com.apple.security.device.audio-input';
@@ -119,7 +121,7 @@ Options:
   --nemo-dir <folder>  a local NeMo runtime (the six dylibs, runtime.json and licenses/) to ship in
                        Contents/Resources/${NEMO_FOLDER} instead of the archive the manifest pins
   --runtime-manifest <manifest>  take the runtime pins from <manifest> instead of
-                       voice/nemo-runtime/manifest.json, for a test package of a runtime that isn't
+                       voice/nemo-runtime/manifest-macos.json, for a test package of a runtime that isn't
                        published yet; the programs compile it in, as package.ps1's -RuntimeManifest
   --runtime-only       download and check the runtime, then stop without building anything
   --no-speakers        package without speaker labels, for testing only; says so loudly
@@ -237,8 +239,8 @@ function buildEnv() {
 
 // Where voice-core's speaker lookup finds the runtime. `PLATFORM_SUPPORTED` covers macOS on Apple Silicon, and on
 // macOS the lookup checks the bundle's Contents/Resources/nemo_speech before the folder next to the exe. `verify_voice`
-// reads manifest format 1 or 2 and compares the folder against this target's file list, so the folder this script
-// ships has to hold exactly the files the manifest pins, at their pinned hashes.
+// compares the folder against the file list of manifest-macos.json, which voice-core's build.rs compiles in on macOS,
+// so the folder this script ships has to hold exactly the files the manifest pins, at their pinned hashes.
 function runtimeManifestPath() {
   return ARGS.runtimeManifest ?? NEMO_MANIFEST;
 }
@@ -474,12 +476,13 @@ function addRuntime(appDir, runtime, manifest) {
   }
 }
 
-// The license texts of everything the macOS app holds, in Resources next to the runtime, where the app's seal covers
-// them. THIRD_PARTY_NOTICES.md is already there: tauri.conf.json lists it as a resource. package.ps1 puts the same
-// two files in the installer.
+// The notices and license texts of everything the macOS app holds, in Resources next to the runtime, where the app's
+// seal covers them. Tauri bundled the Windows THIRD_PARTY_NOTICES.md that tauri.conf.json lists as a resource; the
+// macOS notices take its place under the same name. package.ps1 puts the Windows pair in the installer.
 function addLicenseTexts(appDir, runtime) {
   const resources = path.join(appDir, 'Contents', 'Resources');
-  const texts = licenseTexts(TRIPLE, {
+  fs.copyFileSync(NOTICES_MACOS, path.join(resources, 'THIRD_PARTY_NOTICES.md'));
+  const texts = licenseTexts({
     nemoDir: runtime ? runtime.dir : null,
     nemoLabel: `${NEMO_FOLDER}/licenses`,
   });
@@ -713,8 +716,8 @@ function assertBundle(appDir, version, runtime, signer) {
     if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new Error(`Contents/Resources/${name} is missing or empty`);
   }
   if (fs.readFileSync(path.join(appDir, 'Contents', 'Resources', 'THIRD_PARTY_NOTICES.md'), 'utf8')
-    !== fs.readFileSync(path.join(VOICE, 'THIRD_PARTY_NOTICES.md'), 'utf8')) {
-    throw new Error('the THIRD_PARTY_NOTICES.md in the app differs from voice/THIRD_PARTY_NOTICES.md');
+    !== fs.readFileSync(NOTICES_MACOS, 'utf8')) {
+    throw new Error('the THIRD_PARTY_NOTICES.md in the app differs from voice/THIRD_PARTY_NOTICES-macos.md');
   }
   ok('notices', 'THIRD_PARTY_NOTICES.md and THIRD_PARTY_LICENSES.txt in Contents/Resources');
 
@@ -850,9 +853,9 @@ async function main() {
   const release = path.join(target, 'release');
   console.log(`Rukoo Voice ${version}${signer === '-' ? ', ad-hoc signed' : `, signed as ${signer}`}`);
 
-  step('Checking THIRD_PARTY_NOTICES.md');
+  step('Checking THIRD_PARTY_NOTICES-macos.md');
   const crates = checkNotices();
-  ok('notices', `THIRD_PARTY_NOTICES.md lists the ${crates.length} crates of the Windows and macOS builds`);
+  ok('notices', `THIRD_PARTY_NOTICES-macos.md lists the ${crates.length} crates of the macOS build`);
 
   const runtime = await resolveRuntime(manifest);
   if (runtime && (runtime.dir === out || runtime.dir.startsWith(`${out}${path.sep}`))) {

@@ -3,8 +3,8 @@
 //! at least 90 % of transcript time to the right speaker, and the same ids after the worker is
 //! killed.
 //!
-//! Windows and macOS. It skips unless these are set (`speaker-assets.ps1` fetches them on Windows,
-//! `node voice/scripts/speaker-assets.mjs` on macOS):
+//! Windows and macOS. It skips unless these are set (`voice/scripts/speaker-assets.ps1` fetches
+//! them, `speaker-assets.mjs` on macOS):
 //!
 //! - `RUKOO_VOICE_TEST_NEMO_DIR`: the NeMo-Speech.cpp runtime folder.
 //! - `RUKOO_VOICE_TEST_NEMOTRON`: the Nemotron 3 Diarization GGUF, or the folder that holds it.
@@ -91,8 +91,7 @@ fn ami() -> Option<Ami> {
     Some(ami)
 }
 
-/// The three assets, or `None` after printing and logging the skip of `test`.
-fn assets(test: &str) -> Option<Assets> {
+fn assets() -> Option<Assets> {
     let (Some(runtime), Some(model), Some(ami)) = (
         var("RUKOO_VOICE_TEST_NEMO_DIR"),
         var("RUKOO_VOICE_TEST_NEMOTRON"),
@@ -101,18 +100,6 @@ fn assets(test: &str) -> Option<Assets> {
         eprintln!(
             "skipped: set RUKOO_VOICE_TEST_NEMO_DIR, RUKOO_VOICE_TEST_NEMOTRON and \
              RUKOO_VOICE_TEST_AMI to run the AMI speaker test"
-        );
-        let unset: Vec<&str> = [
-            "RUKOO_VOICE_TEST_NEMO_DIR",
-            "RUKOO_VOICE_TEST_NEMOTRON",
-            "RUKOO_VOICE_TEST_AMI",
-        ]
-        .into_iter()
-        .filter(|name| var(name).is_none())
-        .collect();
-        log_skip(
-            test,
-            &format!("speaker label assets missing: {} unset", unset.join(", ")),
         );
         return None;
     };
@@ -197,9 +184,11 @@ fn speakers_exe() -> &'static Path {
 }
 
 /// How many times faster than real time the speaker worker labels the excerpt's first 20 s on this
-/// host, from its own `--self-test`, measured once. The tests below play audio in real time and
-/// would only time out on a host under the factor `min_realtime_factor` names, so they ask first.
-/// Call it holding `one_at_a_time`, so no other test loads the host while it measures.
+/// Mac, from its own `--self-test`, measured once. The tests below play audio in real time and
+/// would only time out on a host under the factor `min_realtime_factor` names, so on macOS they ask
+/// first; a hosted macOS runner measured 0.5. Call it holding `one_at_a_time`, so no other test
+/// loads the host while it measures.
+#[cfg(target_os = "macos")]
 fn realtime_factor(assets: &Assets) -> f64 {
     static FACTOR: OnceLock<f64> = OnceLock::new();
     *FACTOR.get_or_init(|| {
@@ -516,10 +505,6 @@ fn ids_of_main(
 fn ami_oracle_hears_the_excerpt_through_the_recorder() {
     let Some(ami) = ami() else {
         eprintln!("skipped: set RUKOO_VOICE_TEST_AMI to check the AMI oracle");
-        log_skip(
-            "ami_oracle_hears_the_excerpt_through_the_recorder",
-            "the AMI excerpt is missing: RUKOO_VOICE_TEST_AMI unset",
-        );
         return;
     };
     let _one = one_at_a_time();
@@ -567,10 +552,11 @@ fn ami_oracle_hears_the_excerpt_through_the_recorder() {
 /// speaker.
 #[test]
 fn ami_three_speakers_live_and_ninety_percent_right() {
-    let Some(assets) = assets("ami_three_speakers_live_and_ninety_percent_right") else {
+    let Some(assets) = assets() else {
         return;
     };
     let _one = one_at_a_time();
+    #[cfg(target_os = "macos")]
     if too_slow_for_live_labels(
         "ami_three_speakers_live_and_ninety_percent_right",
         realtime_factor(&assets),
@@ -612,10 +598,11 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
 /// ids. The second loop makes sure all three spoke both before and after the kill.
 #[test]
 fn ami_ids_survive_a_killed_worker() {
-    let Some(assets) = assets("ami_ids_survive_a_killed_worker") else {
+    let Some(assets) = assets() else {
         return;
     };
     let _one = one_at_a_time();
+    #[cfg(target_os = "macos")]
     if too_slow_for_live_labels("ami_ids_survive_a_killed_worker", realtime_factor(&assets)) {
         return;
     }
@@ -628,17 +615,22 @@ fn ami_ids_survive_a_killed_worker() {
         .worker_pid
         .expect("a worker runs for the meeting");
     #[cfg(windows)]
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F"])
-        .stdout(Stdio::null())
-        .status()
-        .unwrap();
-    #[cfg(not(windows))]
-    let status = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success(), "killing worker {pid}");
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "taskkill {pid}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "killing worker {pid}");
+    }
     wait_until("labels to listen again", WAIT, || {
         let s = run.pipeline.labels();
         (s.worker_pid.is_some_and(|p| p != pid) && s.state == LabelState::Listening).then_some(())

@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-// Fetches what the speaker label tests need on macOS and Windows: the NeMo runtime, the Nemotron
-// model and the AMI meeting excerpt. The cross-platform counterpart of speaker-assets.ps1, which
-// stays the Windows script; both read the same pins and print the same three variables.
+// Fetches what the speaker label tests need on macOS: the NeMo runtime, the Nemotron model and the
+// AMI meeting excerpt. The macOS counterpart of speaker-assets.ps1, the Windows script; both read
+// the same model and excerpt pins and print the same three variables.
 //
 // Downloads each file once into --out and checks its size and SHA-256 against a pin; a file
 // already there with the right hash is kept. Nothing is read from or written to Ownkey's folders.
 //
 //   <out>/nemo_speech/                               --runtime: the published NeMo-Speech.cpp
-//                                                    runtime of voice/nemo-runtime/manifest.json
-//                                                    for this platform, every file checked
+//                                                    runtime of voice/nemo-runtime/
+//                                                    manifest-macos.json, every file checked
 //   <out>/nemotron/Nemotron-3-Diarization.q8_0.gguf  --model: NVIDIA Nemotron 3 Diarization, the
 //                                                    pin of voice-core's ModelSpec::nemotron()
 //   <out>/ami/                                        --ami: the three files of
 //                                                    voice/fixtures/ami/manifest.json
 //
-// Without a switch it does all three. Until a platform's runtime is published, its manifest entry
-// has no archive: --runtime says so and skips it, and --nemo-dir takes a local build
+// Without a switch it does all three. Until the macOS runtime is published, its manifest has no
+// archive: --runtime says so and skips it, and --nemo-dir takes a local build
 // (voice/nemo-runtime/build-macos.sh) instead and checks its runtime.json.
 //
 // Usage:
@@ -23,8 +23,8 @@
 //   node voice/scripts/speaker-assets.mjs --out tmp/speaker-assets --nemo-dir tmp/nemo/nemo_speech
 //   node voice/scripts/speaker-assets.mjs --out tmp/speaker-assets --model --ami
 //
-// Node's standard library only; a zip is unpacked with the platform's own tool (ditto on macOS,
-// tar on Windows, unzip elsewhere) and every file is checked against the manifest afterwards.
+// Node's standard library only; a zip is unpacked with ditto and every file is checked against
+// the manifest afterwards.
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -51,9 +51,8 @@ const NEMOTRON_SHA256 = '08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c
 
 const VOICE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** The manifest target of the platform this runs on, as nemo-runtime/manifest.json names it. */
+/** The target of nemo-runtime/manifest-macos.json, on the Mac it pins a runtime for. */
 function targetKey() {
-  if (process.platform === 'win32' && process.arch === 'x64') return 'windows-x86_64';
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'macos-aarch64';
   return null;
 }
@@ -203,17 +202,11 @@ function runtimeProblem(manifest, target, dir) {
   return null;
 }
 
-/** Unpacks `zip` into `destination` with the platform's own tool. */
+/** Unpacks `zip` into `destination` with ditto, which creates the folder. */
 function unpack(zip, destination) {
-  const tool =
-    process.platform === 'darwin'
-      ? ['ditto', ['-x', '-k', zip, destination]]
-      : process.platform === 'win32'
-        ? ['tar', ['-xf', zip, '-C', destination]]
-        : ['unzip', ['-q', '-o', zip, '-d', destination]];
-  const result = spawnSync(tool[0], tool[1], { stdio: 'inherit' });
-  if (result.error) throw new Error(`could not run ${tool[0]}: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`${tool[0]} exited with ${result.status}`);
+  const result = spawnSync('ditto', ['-x', '-k', zip, destination], { stdio: 'inherit' });
+  if (result.error) throw new Error(`could not run ditto: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`ditto exited with ${result.status}`);
 }
 
 async function main() {
@@ -232,19 +225,15 @@ async function main() {
   if (options.runtime || options.nemoDir) {
     if (!key) {
       throw new Error(
-        `speaker labels have no NeMo runtime on ${process.platform}/${process.arch}; ` +
-          'Windows on x86-64 and macOS on Apple Silicon only'
+        `this script fetches the macOS NeMo runtime, which runs on Apple Silicon, not on ` +
+          `${process.platform}/${process.arch}; on Windows use speaker-assets.ps1`
       );
     }
-    manifest = JSON.parse(readFileSync(join(VOICE, 'nemo-runtime', 'manifest.json'), 'utf8'));
-    if (manifest.format !== 2) {
-      throw new Error(`voice/nemo-runtime/manifest.json is format ${manifest.format}, not 2`);
+    manifest = JSON.parse(readFileSync(join(VOICE, 'nemo-runtime', 'manifest-macos.json'), 'utf8'));
+    if (manifest.format !== 1 || manifest.target !== key) {
+      throw new Error(`voice/nemo-runtime/manifest-macos.json isn't the ${key} manifest`);
     }
-    const entry = manifest.targets[key];
-    if (!entry) {
-      throw new Error(`voice/nemo-runtime/manifest.json pins no ${key} runtime`);
-    }
-    target = { key, entry, pinned: entry.files ?? [], archive: entry.archive ?? null };
+    target = { key, entry: manifest, pinned: manifest.files ?? [], archive: manifest.archive ?? null };
   }
 
   if (options.nemoDir) {
@@ -258,7 +247,7 @@ async function main() {
     console.log(`Runtime ${manifest.name} (${key})`);
     if (!target.archive) {
       console.log(
-        '  not published yet: voice/nemo-runtime/manifest.json has no archive for this platform, ' +
+        '  not published yet: voice/nemo-runtime/manifest-macos.json has no archive, ' +
           'so the runtime is skipped. Point --nemo-dir at a local build instead ' +
           '(voice/nemo-runtime/README.md).'
       );
@@ -275,7 +264,7 @@ async function main() {
         const problem = runtimeProblem(manifest, target, staging);
         if (problem) {
           rmSync(staging, { recursive: true, force: true });
-          throw new Error(`the runtime archive doesn't match voice/nemo-runtime/manifest.json: ${problem}`);
+          throw new Error(`the runtime archive doesn't match voice/nemo-runtime/manifest-macos.json: ${problem}`);
         }
         rmSync(dir, { recursive: true, force: true });
         renameSync(staging, dir);

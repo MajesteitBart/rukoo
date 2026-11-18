@@ -713,14 +713,36 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_processor_without_the_baseline_is_refused_before_loading() {
-        let failure = check_cpu(cpu::CpuFeatures::default()).unwrap_err();
-        assert_eq!(failure.kind, ErrorKind::Cpu);
-        assert!(
-            failure.message.starts_with("This processor lacks "),
-            "{}",
-            failure.message
+        let failure = check_cpu(cpu::CpuFeatures {
+            avx2: true,
+            fma: true,
+            f16c: true,
+            bmi2: false,
+            ..cpu::CpuFeatures::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            failure,
+            Failure::new(ErrorKind::Cpu, "This processor lacks bmi2.")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_processor_without_the_baseline_is_refused_before_loading() {
+        let failure = check_cpu(cpu::CpuFeatures {
+            neon: true,
+            dotprod: true,
+            fp16: false,
+            ..cpu::CpuFeatures::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            failure,
+            Failure::new(ErrorKind::Cpu, "This processor lacks fp16.")
         );
     }
 

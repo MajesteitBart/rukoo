@@ -175,7 +175,12 @@ pub fn run(options: &Options) -> Result<Report, String> {
     let bytes = std::fs::read(&options.wav)
         .map_err(|error| format!("could not read {}: {error}", options.wav.display()))?;
     read_wav(&bytes).map_err(|error| format!("{}: {error}", options.wav.display()))?;
-    Err("speaker labels run on Windows on x86-64 and macOS on Apple Silicon only".into())
+    Err(if cfg!(target_os = "macos") {
+        "speaker labels run on Windows on x86-64 and macOS on Apple Silicon only"
+    } else {
+        "speaker labels run on Windows only"
+    }
+    .into())
 }
 
 #[cfg(test)]

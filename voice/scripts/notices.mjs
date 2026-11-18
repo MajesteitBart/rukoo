@@ -1,19 +1,19 @@
-// The Rust crate list of voice/THIRD_PARTY_NOTICES.md, for both shipping targets, and the license texts a package ships.
-// package.ps1 and package-macos.mjs both call it, so a dependency change can't ship stale notices on either platform.
+// The Rust crate list of voice/THIRD_PARTY_NOTICES-macos.md, the notices of the macOS app, and the license texts the
+// macOS package ships. package-macos.mjs and the macOS CI job call it. The Windows installer's THIRD_PARTY_NOTICES.md
+// stays with package.ps1, which keeps its own list (-UpdateNotices).
 //
 //   node voice/scripts/notices.mjs --check
 //   node voice/scripts/notices.mjs --update
-//   node voice/scripts/notices.mjs --licenses <file> --target <triple> --nemo-dir <folder> [--nemo-label <text>]
+//   node voice/scripts/notices.mjs --licenses <file> --nemo-dir <folder> [--nemo-label <text>]
 //
-// --check exits 1 when the generated part of THIRD_PARTY_NOTICES.md differs from what the lockfile gives, and
-// --update rewrites it. The list is the union of the normal dependencies of the five programs on
-// x86_64-pc-windows-msvc and aarch64-apple-darwin, without procedural macros (they run only while compiling) and
-// without Voice's own crates. Each crate is listed once per version, and a crate only one target uses says so.
-// cargo resolves both targets from the lockfile on either operating system, so a Mac can regenerate the Windows part
-// and the reverse. It downloads the crates of the other target into the cargo registry when they aren't there.
+// --check exits 1 when the generated part of THIRD_PARTY_NOTICES-macos.md differs from what the lockfile gives, and
+// --update rewrites it. The list is the normal dependencies of the five programs on aarch64-apple-darwin, without
+// procedural macros (they run only while compiling) and without Voice's own crates, each crate once per version.
+// cargo resolves the target from the lockfile on any operating system, and downloads its crates into the cargo
+// registry when they aren't there.
 //
-// --licenses writes THIRD_PARTY_LICENSES.txt for one target: Inter's license, the license files of the NeMo runtime
-// folder, then the license files each crate of that target carries in its source package.
+// --licenses writes THIRD_PARTY_LICENSES.txt for the macOS app: Inter's license, the license files of the NeMo runtime
+// folder, then the license files each crate carries in its source package.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,13 +21,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const VOICE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NOTICES = path.join(VOICE, 'THIRD_PARTY_NOTICES.md');
+export const NOTICES = path.join(VOICE, 'THIRD_PARTY_NOTICES-macos.md');
 const INTER_LICENSE = path.join(VOICE, 'ui', 'fonts', 'Inter-LICENSE.txt');
 
-export const WINDOWS = 'x86_64-pc-windows-msvc';
 export const MACOS = 'aarch64-apple-darwin';
-export const TARGETS = [WINDOWS, MACOS];
-const TARGET_NAMES = { [WINDOWS]: 'Windows', [MACOS]: 'macOS' };
 const PROGRAM_CRATES = ['voice-app', 'voice-recorder', 'voice-local', 'voice-speakers', 'voice-screen'];
 
 const START = /<!-- rust-crates:start[^\n]*-->\n/;
@@ -79,32 +76,18 @@ export function shippedCrates(target) {
   return crates;
 }
 
-// The union of both targets: [{ key, license, targets: [triple, ...] }], sorted by key.
+// The macOS build's crates: [{ key, license }], sorted by key.
 export function allCrates() {
-  const merged = new Map();
-  for (const target of TARGETS) {
-    for (const [key, license] of shippedCrates(target)) {
-      const known = merged.get(key);
-      if (known && known.license !== license) {
-        throw new Error(`${key} has license ${known.license} on one target and ${license} on another`);
-      }
-      if (known) known.targets.push(target);
-      else merged.set(key, { key, license, targets: [target] });
-    }
-  }
-  return [...merged.values()].sort((a, b) => compare(a.key, b.key));
+  return [...shippedCrates(MACOS)]
+    .map(([key, license]) => ({ key, license }))
+    .sort((a, b) => compare(a.key, b.key));
 }
 
 export function crateBlock(crates) {
-  const only = (target) => crates.filter((c) => c.targets.length === 1 && c.targets[0] === target).length;
-  const both = crates.filter((c) => c.targets.length === TARGETS.length).length;
-  let text = `\n${crates.length} crates: ${both} in both builds, ${only(WINDOWS)} only in the Windows build and ${only(MACOS)} only in the macOS build.\n`;
+  let text = `\n${crates.length} crates.\n`;
   for (const license of [...new Set(crates.map((c) => c.license))].sort(compare)) {
     text += `\n### ${license}\n\n`;
-    for (const crate of crates.filter((c) => c.license === license)) {
-      const note = crate.targets.length === TARGETS.length ? '' : ` (${TARGET_NAMES[crate.targets[0]]} only)`;
-      text += `- ${crate.key}${note}\n`;
-    }
+    for (const crate of crates.filter((c) => c.license === license)) text += `- ${crate.key}\n`;
   }
   return `${text}\n`;
 }
@@ -128,13 +111,12 @@ export function updateNotices() {
   return { crates, changed: !current };
 }
 
-// Throws when THIRD_PARTY_NOTICES.md lists other crates than the lockfile gives.
+// Throws when THIRD_PARTY_NOTICES-macos.md lists other crates than the lockfile gives.
 export function checkNotices() {
   const crates = allCrates();
   if (!syncedNotices(crates).current) {
     throw new Error(
-      `The crate list in ${NOTICES} is out of date. Run node voice/scripts/notices.mjs --update (or `
-      + 'voice/scripts/package.ps1 -UpdateNotices) and commit the change.',
+      `The crate list in ${NOTICES} is out of date. Run node voice/scripts/notices.mjs --update and commit the change.`,
     );
   }
   return crates;
@@ -156,11 +138,12 @@ function walk(dir) {
   return files;
 }
 
-// THIRD_PARTY_LICENSES.txt for one target: Inter's and the NeMo runtime's licenses, then each crate's license files.
-export function licenseTexts(target, { nemoDir, nemoLabel }) {
-  const crates = shippedCrates(target);
+// THIRD_PARTY_LICENSES.txt for the macOS app: Inter's and the NeMo runtime's licenses, then each crate's license
+// files.
+export function licenseTexts({ nemoDir, nemoLabel }) {
+  const crates = shippedCrates(MACOS);
   const packages = new Map();
-  const metadata = JSON.parse(cargo(['metadata', '--locked', '--format-version', '1', '--filter-platform', target]));
+  const metadata = JSON.parse(cargo(['metadata', '--locked', '--format-version', '1', '--filter-platform', MACOS]));
   for (const pkg of metadata.packages) packages.set(`${pkg.name} ${pkg.version}`, pkg);
   let out = 'License files of the third-party code in Rukoo Voice. THIRD_PARTY_NOTICES.md summarizes them.\n';
   out += `\n==== Inter (voice/ui/fonts) ====\n\n${readText(INTER_LICENSE)}\n`;
@@ -205,18 +188,16 @@ function main(argv) {
     console.log(`${changed ? 'Updated' : 'Already current:'} the crate list in ${NOTICES} (${crates.length} crates).`);
   } else if (flags.has('check')) {
     const crates = checkNotices();
-    console.log(`THIRD_PARTY_NOTICES.md is current (${crates.length} crates).`);
+    console.log(`THIRD_PARTY_NOTICES-macos.md is current (${crates.length} crates).`);
   } else if (flags.has('licenses')) {
-    const target = flags.get('target');
-    if (!TARGETS.includes(target)) throw new Error(`--target must be one of ${TARGETS.join(', ')}`);
     const nemoDir = flags.get('nemo-dir');
-    const text = licenseTexts(target, {
+    const text = licenseTexts({
       nemoDir: typeof nemoDir === 'string' ? path.resolve(nemoDir) : null,
       nemoLabel: flags.get('nemo-label') || 'nemo_speech/licenses',
     });
     fs.writeFileSync(path.resolve(flags.get('licenses')), text);
   } else {
-    throw new Error('usage: node voice/scripts/notices.mjs --check | --update | --licenses <file> --target <triple> [--nemo-dir <folder>]');
+    throw new Error('usage: node voice/scripts/notices.mjs --check | --update | --licenses <file> [--nemo-dir <folder>]');
   }
 }
 

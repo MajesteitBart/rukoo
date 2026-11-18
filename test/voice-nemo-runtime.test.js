@@ -18,7 +18,9 @@ const { pathToFileURL } = require('node:url');
 const ROOT = path.join(__dirname, '..');
 const PACK = path.join(ROOT, 'voice', 'nemo-runtime', 'pack-macos.mjs');
 const PACKAGE = path.join(ROOT, 'voice', 'scripts', 'package-macos.mjs');
-const MANIFEST = path.join(ROOT, 'voice', 'nemo-runtime', 'manifest.json');
+const MANIFEST = path.join(ROOT, 'voice', 'nemo-runtime', 'manifest-macos.json');
+// The Windows runtime's manifest, which nothing on macOS may write.
+const WINDOWS_MANIFEST = path.join(ROOT, 'voice', 'nemo-runtime', 'manifest.json');
 const LIB = pathToFileURL(path.join(ROOT, 'voice', 'scripts', 'lib', 'nemo-runtime.mjs')).href;
 const SIGN_LIB = pathToFileURL(path.join(ROOT, 'voice', 'scripts', 'lib', 'macos-sign.mjs')).href;
 const DYLIBS = [
@@ -109,9 +111,9 @@ function runtime(dir, { target = 'macos-aarch64', commit } = {}) {
     commit: commit ?? pinned.commit,
     submodules: pinned.submodules,
     build: 'cpu backend (NEON, no Metal), asr profile',
-    flags: pinned.targets['macos-aarch64'].flags,
+    flags: pinned.flags,
     toolset: { runner: 'local', deploymentTarget: '15.0' },
-    cpu: pinned.targets['macos-aarch64'].cpu,
+    cpu: pinned.cpu,
     files,
   };
   fs.writeFileSync(path.join(dir, 'runtime.json'), `${JSON.stringify(doc, null, 2)}\n`);
@@ -140,7 +142,8 @@ function packed(t, name) {
   return { work, built, out, zip };
 }
 
-test('pack-macos pins the signed dylibs and leaves the Windows entry alone', { skip: SKIP }, (t) => {
+test('pack-macos pins the signed dylibs in manifest-macos.json and leaves manifest.json alone', { skip: SKIP }, (t) => {
+  const windowsBefore = fs.readFileSync(WINDOWS_MANIFEST);
   const work = folder(t, 'nemo-pack');
   const runtimeDir = path.join(work, 'built');
   fs.mkdirSync(runtimeDir);
@@ -151,22 +154,21 @@ test('pack-macos pins the signed dylibs and leaves the Windows entry alone', { s
 
   const zipName = `${pins().name}-macos-arm64.zip`;
   const zip = path.join(out, zipName);
-  const manifest = JSON.parse(fs.readFileSync(path.join(out, 'manifest.json'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(out, 'manifest-macos.json'), 'utf8'));
   const committed = pins();
 
-  assert.equal(manifest.format, 2);
-  assert.equal(manifest.name, committed.name);
-  assert.deepEqual(manifest.targets['windows-x86_64'], committed.targets['windows-x86_64']);
-  assert.equal(
-    JSON.stringify(manifest.targets['windows-x86_64'], null, 2),
-    JSON.stringify(committed.targets['windows-x86_64'], null, 2),
-  );
-  assert.deepEqual(
-    Object.keys(manifest).filter((key) => key !== 'targets'),
-    Object.keys(committed).filter((key) => key !== 'targets'),
-  );
+  // The Windows manifest is neither written nor copied: its bytes are unchanged and the output holds none.
+  assert.deepEqual(fs.readFileSync(WINDOWS_MANIFEST), windowsBefore);
+  assert.deepEqual(fs.readdirSync(out).sort(), ['manifest-macos.json', 'notes.md', zipName].sort());
 
-  const entry = manifest.targets['macos-aarch64'];
+  assert.equal(manifest.format, 1);
+  assert.equal(manifest.target, 'macos-aarch64');
+  for (const key of ['name', 'repository', 'commit', 'submodules', 'build', 'flags', 'cpu']) {
+    assert.deepEqual(manifest[key], key in built ? built[key] : committed[key], key);
+  }
+  assert.deepEqual(Object.keys(manifest).slice(0, 6), ['format', 'target', 'name', 'repository', 'commit', 'submodules']);
+
+  const entry = manifest;
   assert.equal(entry.archive.url, `https://github.com/MajesteitBart/rukoo/releases/download/${committed.name}/${zipName}`);
   assert.equal(entry.archive.size, fs.statSync(zip).size);
   assert.equal(entry.archive.sha256, sha256(zip));
@@ -219,7 +221,10 @@ test('pack-macos pins the signed dylibs and leaves the Windows entry alone', { s
   const second = pack(runtimeDir, again);
   assert.equal(second.status, 0, second.stderr + second.stdout);
   assert.equal(sha256(path.join(again, zipName)), entry.archive.sha256);
-  assert.equal(fs.readFileSync(path.join(again, 'manifest.json'), 'utf8'), fs.readFileSync(path.join(out, 'manifest.json'), 'utf8'));
+  assert.equal(
+    fs.readFileSync(path.join(again, 'manifest-macos.json'), 'utf8'),
+    fs.readFileSync(path.join(out, 'manifest-macos.json'), 'utf8'),
+  );
 });
 
 test('pack-macos refuses a Windows folder', { skip: SKIP }, (t) => {
@@ -252,17 +257,17 @@ test('pack-macos refuses a folder that runtime.json does not describe', { skip: 
   assert.match(extra.stderr, /also holds notes\.txt/);
 });
 
-// A manifest whose macos-aarch64 entry is the packed one, with the archive at `url`.
+// The packed macOS manifest, with the archive at `url`.
 function testManifest(dir, packedManifest, zip, overrides = {}) {
   const manifest = JSON.parse(fs.readFileSync(packedManifest, 'utf8'));
-  const entry = manifest.targets['macos-aarch64'];
+  const entry = manifest;
   entry.archive = {
     ...entry.archive,
     url: pathToFileURL(zip).href,
     ...overrides.archive,
   };
   if (overrides.files) entry.files = overrides.files(entry.files);
-  const file = path.join(dir, 'manifest.json');
+  const file = path.join(dir, 'manifest-macos.json');
   fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
   return file;
 }
@@ -295,7 +300,7 @@ test('package-macos downloads and checks the pinned runtime archive', { skip: SK
   const out = path.join(work, 'release');
   assert.equal(pack(built, out).status, 0);
   const zip = path.join(out, `${pins().name}-macos-arm64.zip`);
-  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip);
+  const manifest = testManifest(work, path.join(out, 'manifest-macos.json'), zip);
 
   const target = path.join(work, 'target');
   const result = runtimeOnly(manifest, target);
@@ -304,7 +309,7 @@ test('package-macos downloads and checks the pinned runtime archive', { skip: SK
   assert.match(result.stdout, new RegExp(sha256(zip)));
 
   const unpacked = path.join(target, 'nemo-runtime', pins().name, 'nemo_speech');
-  const entry = JSON.parse(fs.readFileSync(manifest, 'utf8')).targets['macos-aarch64'];
+  const entry = JSON.parse(fs.readFileSync(manifest, 'utf8'));
   assert.ok(fs.existsSync(path.join(unpacked, 'runtime.json')));
   for (const file of entry.files) {
     const full = path.join(unpacked, file.path);
@@ -331,9 +336,9 @@ test('package-macos downloads the archive over HTTP too', { skip: SKIP }, async 
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip);
+  const manifest = testManifest(work, path.join(out, 'manifest-macos.json'), zip);
   const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
-  parsed.targets['macos-aarch64'].archive.url =
+  parsed.archive.url =
     `http://127.0.0.1:${server.address().port}/${path.basename(zip)}`;
   fs.writeFileSync(manifest, `${JSON.stringify(parsed, null, 2)}\n`);
 
@@ -352,7 +357,7 @@ test('package-macos refuses an archive with another hash', { skip: SKIP }, (t) =
   const out = path.join(work, 'release');
   assert.equal(pack(built, out).status, 0);
   const zip = path.join(out, `${pins().name}-macos-arm64.zip`);
-  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip, {
+  const manifest = testManifest(work, path.join(out, 'manifest-macos.json'), zip, {
     archive: { sha256: '0'.repeat(64) },
   });
   const result = runtimeOnly(manifest, path.join(work, 'target'));
@@ -368,20 +373,20 @@ test('package-macos refuses a folder that differs from the pinned files', { skip
   const out = path.join(work, 'release');
   assert.equal(pack(built, out).status, 0);
   const zip = path.join(out, `${pins().name}-macos-arm64.zip`);
-  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip, {
+  const manifest = testManifest(work, path.join(out, 'manifest-macos.json'), zip, {
     files: (files) => files.map((file, index) => (index === 0 ? { ...file, sha256: '0'.repeat(64) } : file)),
   });
   const result = runtimeOnly(manifest, path.join(work, 'target'));
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /doesn't match .*manifest\.json: libggml-base\.dylib differs from/);
+  assert.match(result.stderr, /doesn't match .*manifest-macos\.json: libggml-base\.dylib differs from/);
 });
 
 test('package-macos still stops when the manifest names no macOS archive', { skip: SKIP }, (t) => {
   const work = folder(t, 'nemo-unpublished');
-  const manifest = path.join(work, 'manifest.json');
+  const manifest = path.join(work, 'manifest-macos.json');
   const committed = pins();
-  committed.targets['macos-aarch64'].archive = null;
-  committed.targets['macos-aarch64'].files = [];
+  committed.archive = null;
+  committed.files = [];
   fs.writeFileSync(manifest, `${JSON.stringify(committed, null, 2)}\n`);
   const result = runtimeOnly(manifest, path.join(work, 'target'));
   assert.notEqual(result.status, 0);
@@ -420,7 +425,7 @@ test('a packed dylib carries the shared signature, and signing it again keeps it
 test('the runtime in the app has to keep matching the manifest after signing', { skip: SKIP }, async (t) => {
   const { work, out, zip } = packed(t, 'nemo-post-sign');
   const { pinnedFolderProblem, readRuntimeManifest } = await import(LIB);
-  const manifest = readRuntimeManifest(path.join(out, 'manifest.json'));
+  const manifest = readRuntimeManifest(path.join(out, 'manifest-macos.json'));
 
   const app = path.join(work, 'Rukoo Voice.app', 'Contents', 'Resources', 'nemo_speech');
   unpack(zip, app);
@@ -428,7 +433,7 @@ test('the runtime in the app has to keep matching the manifest after signing', {
 
   // A dylib signed again, or any other file changed after signing, is what the check after signAll must catch.
   fs.appendFileSync(path.join(app, 'libggml.dylib'), 'signed again');
-  assert.match(pinnedFolderProblem(manifest, app), /libggml\.dylib differs from .*manifest\.json/);
+  assert.match(pinnedFolderProblem(manifest, app), /libggml\.dylib differs from .*manifest-macos\.json/);
 
   const license = path.join(work, 'license-copy');
   unpack(zip, license);
@@ -443,7 +448,7 @@ test('the runtime in the app has to keep matching the manifest after signing', {
 
 test('package-macos refuses --developer-id with a pinned runtime archive', { skip: SKIP }, (t) => {
   const { work, out, zip } = packed(t, 'nemo-developer-id');
-  const manifest = testManifest(work, path.join(out, 'manifest.json'), zip);
+  const manifest = testManifest(work, path.join(out, 'manifest-macos.json'), zip);
   const env = { ...process.env, CARGO_TARGET_DIR: path.join(work, 'target') };
   // The refusal comes before the Apple credentials are read, so this must not need them.
   for (const name of ['APPLE_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID']) delete env[name];
@@ -469,4 +474,16 @@ test('only https is accepted without --runtime-manifest', { skip: SKIP }, async 
     archiveUrlProblem(new URL('http://example.invalid/y.zip'), { local: true, final: true }),
     /redirects to http:\/\/example\.invalid\/y\.zip/,
   );
+});
+
+test('the macOS scripts read manifest-macos.json and refuse the Windows manifest', async () => {
+  const { readRuntimeManifest } = await import(LIB);
+  const macos = readRuntimeManifest(MANIFEST);
+  assert.equal(macos.pins.target, 'macos-aarch64');
+  assert.equal(macos.entry, macos.pins);
+  assert.throws(() => readRuntimeManifest(WINDOWS_MANIFEST), /pins no macos-aarch64 runtime/);
+  // Both runtimes are builds of the same NeMo-Speech.cpp commit.
+  const windows = JSON.parse(fs.readFileSync(WINDOWS_MANIFEST, 'utf8'));
+  assert.equal(macos.pins.commit, windows.commit);
+  assert.deepEqual(macos.pins.submodules, windows.submodules);
 });

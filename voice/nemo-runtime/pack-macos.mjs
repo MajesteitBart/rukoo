@@ -9,20 +9,20 @@
 // way voice/scripts/package-macos.mjs signs them, and writes three files to --out:
 //
 //   <name>-macos-arm64.zip   the runtime folder's files at the top of the archive
-//   manifest.json            the committed per-target manifest with the macos-aarch64 entry filled in: the archive's
-//                            download URL, size and SHA-256 and every file's size and hash. The windows-x86_64 entry
-//                            stays as committed.
+//   manifest-macos.json      the committed macOS manifest with the build filled in: the archive's download URL, size
+//                            and SHA-256 and every file's size and hash. It never touches manifest.json, which pins
+//                            the Windows runtime.
 //   notes.md                 the release notes: the source, flags, toolset, signature, licenses and every hash
 //
-// After the zip is published as the release asset, that manifest.json replaces voice/nemo-runtime/manifest.json
-// (README.md, "Publishing"). Nothing here publishes anything.
+// After the zip is published as the release asset, that manifest-macos.json replaces
+// voice/nemo-runtime/manifest-macos.json (README.md, "Publishing"). Nothing here publishes anything.
 //
 // Signing, and why runtime.json is rewritten: a signature is part of a Mach-O file, so signing a dylib changes its
 // bytes and its hash. build-macos.sh records the hashes of the files it built, which are only linker-signed; the zip
 // holds the signed files. So the script signs copies of the folder, rewrites the copied runtime.json to name the signed
 // files, and leaves --runtime as the build wrote it. package-macos.mjs and speaker-assets.mjs check a runtime folder
-// against its runtime.json, and voice-core checks the app's copy against the manifest, so the two records agree on the
-// signed files.
+// against its runtime.json, and voice-core checks the app's copy against manifest-macos.json, so the two records agree
+// on the signed files.
 //
 // The signature is ad-hoc with hardened runtime, no identifier override and no entitlements, exactly what
 // package-macos.mjs gives a NeMo dylib (voice/scripts/lib/macos-sign.mjs). package-macos.mjs leaves a dylib in that
@@ -42,16 +42,16 @@ import { NEMO_DYLIBS, codesign } from '../scripts/lib/macos-sign.mjs';
 import { listFiles, sha256File } from '../scripts/lib/nemo-runtime.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MANIFEST = path.join(HERE, 'manifest.json');
+const MANIFEST = path.join(HERE, 'manifest-macos.json');
 const TARGET = 'macos-aarch64';
 const USAGE = `Usage: node voice/nemo-runtime/pack-macos.mjs --runtime <folder> --out <folder> [--repository <owner/repo>]
 
 Checks a built macOS NeMo runtime folder against its runtime.json, signs the six dylibs, and writes
-<name>-macos-arm64.zip, manifest.json and notes.md to --out. It publishes nothing.
+<name>-macos-arm64.zip, manifest-macos.json and notes.md to --out. It publishes nothing.
 
 Options:
   --runtime <folder>       the runtime folder build-macos.sh wrote, with its runtime.json
-  --out <folder>           where the zip, manifest.json and notes.md go
+  --out <folder>           where the zip, manifest-macos.json and notes.md go
   --repository <owner/repo>  the GitHub repository the release belongs to
                            (default MajesteitBart/rukoo)
   -h, --help               this text`;
@@ -233,17 +233,17 @@ function writeZip(dir, zipPath, names) {
 
 // ---------- the manifest and the notes ----------
 
-// The committed manifest with this target's entry replaced by the built one plus its archive. The other targets are
-// copied as they were parsed, so the Windows entry keeps every value it had.
+// The committed macOS manifest's identity (format, target, name, repository, commit, submodules) with the build's
+// description, its archive and the signed files after it, in the order manifest.json has its Windows ones.
 function writeManifest(pins, built, files, archive, out) {
-  const entry = {};
+  const manifest = {};
+  for (const key of ['format', 'target', 'name', 'repository', 'commit', 'submodules']) manifest[key] = pins[key];
   for (const [key, value] of Object.entries(built)) {
-    if (['format', 'target', 'name', 'repository', 'commit', 'submodules'].includes(key)) continue;
-    if (key === 'files') entry.archive = archive;
-    entry[key] = key === 'files' ? files : value;
+    if (key in manifest) continue;
+    if (key === 'files') manifest.archive = archive;
+    manifest[key] = key === 'files' ? files : value;
   }
-  const manifest = { ...pins, targets: { ...pins.targets, [TARGET]: entry } };
-  fs.writeFileSync(path.join(out, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.writeFileSync(path.join(out, 'manifest-macos.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 function writeNotes(built, files, archive, zipName, out) {
@@ -255,7 +255,7 @@ function writeNotes(built, files, archive, zipName, out) {
     'The NeMo-Speech.cpp runtime that Rukoo Voice\'s speaker worker, `rukoo-voice-speakers`, loads from its '
     + '`Contents/Resources/nemo_speech/` folder to label speakers with NVIDIA Nemotron 3 Diarization. It is not a '
     + 'release of Rukoo or Rukoo Voice; Voice\'s macOS package carries these files, and '
-    + '`voice/nemo-runtime/manifest.json` pins them.\n',
+    + '`voice/nemo-runtime/manifest-macos.json` pins them.\n',
   );
   lines.push(
     `- Source: [NVIDIA/NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) at `
@@ -297,8 +297,8 @@ function main() {
     return;
   }
   const pins = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
-  if (pins.format !== 2) {
-    throw new Error(`voice/nemo-runtime/manifest.json is format ${pins.format}, not the per-target format 2`);
+  if (pins.format !== 1 || pins.target !== TARGET) {
+    throw new Error(`voice/nemo-runtime/manifest-macos.json isn't the ${TARGET} manifest`);
   }
   const built = checkBuilt(ARGS.runtime, pins);
 
@@ -341,7 +341,7 @@ function main() {
     writeNotes(built, files, archive, zipName, ARGS.out);
 
     console.log(`\nPacked ${zipName} (${archive.size.toLocaleString('en')} bytes, SHA-256 ${archive.sha256})`);
-    console.log(`Wrote manifest.json and notes.md in ${ARGS.out}`);
+    console.log(`Wrote manifest-macos.json and notes.md in ${ARGS.out}`);
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }

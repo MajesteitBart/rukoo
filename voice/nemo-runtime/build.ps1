@@ -59,10 +59,6 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
 $Manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
-# manifest.json is format 2: one entry per platform. This build is the Windows one, and the rest of
-# the script reads its build, flags, vcpkg and cpu from there.
-$Target = $Manifest.targets.'windows-x86_64'
-if (-not $Target) { throw 'voice/nemo-runtime/manifest.json pins no windows-x86_64 runtime' }
 $Libraries = @('nemo_speech_asr_c.dll', 'nemo_speech_asr.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll')
 $Crt = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 $Licenses = @('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.md')
@@ -166,7 +162,7 @@ if (-not (Test-Tool 'cmake' ([version]'3.26')) -or -not (Test-Tool 'ninja')) {
 $cachePath = Join-Path $BuildDir 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath)) {
   New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-  $seed = foreach ($flag in $Target.flags.PSObject.Properties) { "$($flag.Name):BOOL=$($flag.Value)" }
+  $seed = foreach ($flag in $Manifest.flags.PSObject.Properties) { "$($flag.Name):BOOL=$($flag.Value)" }
   [IO.File]::WriteAllText($cachePath, (($seed -join "`n") + "`n"), [Text.Encoding]::ASCII)
 }
 
@@ -177,15 +173,15 @@ Invoke-Native $windowsPowerShell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '
   '-Backend', 'cpu', '-Profile', 'asr', '-BuildDir', $BuildDir, '-Jobs', "$Jobs")
 
 $cache = Get-Content -LiteralPath $cachePath
-foreach ($flag in $Target.flags.PSObject.Properties) {
+foreach ($flag in $Manifest.flags.PSObject.Properties) {
   $line = $cache | Where-Object { $_ -match "^$($flag.Name):[A-Z]+=" } | Select-Object -First 1
   if (-not $line -or $line -notmatch "=$($flag.Value)$") {
     throw "The runtime was not built portably ($($flag.Name) is not $($flag.Value)). Delete $BuildDir and build again."
   }
 }
 $triplet = $cache | Where-Object { $_ -match '^VCPKG_TARGET_TRIPLET:[A-Z]+=' } | Select-Object -First 1
-if (-not $triplet -or ($triplet -replace '^[^=]*=', '') -ne $Target.vcpkg.triplet) {
-  throw "The build did not use the vcpkg triplet $($Target.vcpkg.triplet)"
+if (-not $triplet -or ($triplet -replace '^[^=]*=', '') -ne $Manifest.vcpkg.triplet) {
+  throw "The build did not use the vcpkg triplet $($Manifest.vcpkg.triplet)"
 }
 
 $compilerFile = Get-ChildItem -LiteralPath (Join-Path $BuildDir 'CMakeFiles') -Recurse -Filter 'CMakeCXXCompiler.cmake' | Select-Object -First 1
@@ -233,7 +229,7 @@ foreach ($name in $Crt) {
 
 # vcpkg links SentencePiece and what it builds on (protobuf, Abseil, utf8-range) statically into the DLLs. Their
 # licenses come along as vcpkg installed them, one file per package; NeMo-Speech.cpp's own notices only name them.
-$vcpkgShare = Join-Path $BuildDir "vcpkg_installed\$($Target.vcpkg.triplet)\share"
+$vcpkgShare = Join-Path $BuildDir "vcpkg_installed\$($Manifest.vcpkg.triplet)\share"
 $vcpkgLicenses = @(Get-ChildItem -LiteralPath $vcpkgShare -Directory | Where-Object {
     $_.Name -notmatch '^vcpkg-' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'copyright'))
   } | Sort-Object Name | ForEach-Object { $_.Name })
@@ -259,18 +255,16 @@ foreach ($path in @($Libraries + $Crt + $licensePaths)) {
   $files += New-Object PSObject -Property $entry
 }
 $runtime = [ordered]@{
-  # Format 1 is the build record: one folder, one platform, in the shape pack.ps1 reads.
-  format = 1
-  target = 'windows-x86_64'
+  format = $Manifest.format
   name = $Manifest.name
   repository = $Manifest.repository
   commit = $commit
   submodules = $Manifest.submodules
-  build = $Target.build
-  flags = $Target.flags
-  vcpkg = $Target.vcpkg
+  build = $Manifest.build
+  flags = $Manifest.flags
+  vcpkg = $Manifest.vcpkg
   toolset = [ordered]@{ runner = $Runner; msvc = $msvc }
-  cpu = $Target.cpu
+  cpu = $Manifest.cpu
   files = $files
 }
 $json = ($runtime | ConvertTo-Json -Depth 6).Replace("`r`n", "`n")

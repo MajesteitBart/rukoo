@@ -24,6 +24,7 @@ pub const EXE: &str = env!("CARGO_BIN_EXE_rukoo-voice-speakers");
 /// audio per second, a host (a hosted macOS runner measured 0.5, a Windows runner 8, an M4 27)
 /// can't keep labels up, and a test that asks for the speed would only fail.
 /// `RUKOO_VOICE_TEST_MIN_REALTIME` overrides it, to see the skip on a fast machine.
+#[cfg(target_os = "macos")]
 pub fn min_realtime_factor() -> f64 {
     std::env::var("RUKOO_VOICE_TEST_MIN_REALTIME")
         .ok()
@@ -34,6 +35,7 @@ pub fn min_realtime_factor() -> f64 {
 /// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
 /// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
 /// back. Without the variable nothing is written.
+#[cfg(target_os = "macos")]
 pub fn log_skip(test: &str, reason: &str) {
     use std::io::Write;
     let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {
@@ -52,6 +54,7 @@ pub fn log_skip(test: &str, reason: &str) {
 
 /// True, after printing why, when the worker measured `factor` and that is below
 /// [`min_realtime_factor`].
+#[cfg(target_os = "macos")]
 pub fn too_slow_for_live_labels(test: &str, factor: f64) -> bool {
     let min = min_realtime_factor();
     let slow = factor < min;

@@ -1,5 +1,6 @@
 // The signature Rukoo Voice gives the NeMo runtime's six dylibs, in one place: voice/nemo-runtime/pack-macos.mjs pins
-// their hashes in voice/nemo-runtime/manifest.json, and voice/scripts/package-macos.mjs signs the copy inside the app.
+// their hashes in voice/nemo-runtime/manifest-macos.json, and voice/scripts/package-macos.mjs signs the copy inside the
+// app.
 // If the two signed with different flags, every dylib's bytes and hash would change when the runtime is added to
 // Rukoo Voice.app, and voice-core would never verify the folder it ships (crates/voice-core/src/speakers/runtime.rs,
 // verify_voice).
@@ -67,7 +68,7 @@ export function entitlementsOf(target) {
 
 // True when the file already carries exactly the ad-hoc hardened-runtime signature with no entitlements that
 // package-macos.mjs gives a NeMo dylib. Signing it again would produce the same bytes, but leaving it alone keeps the
-// hashes voice/nemo-runtime/manifest.json pins, whatever codesign version runs the packaging.
+// hashes voice/nemo-runtime/manifest-macos.json pins, whatever codesign version runs the packaging.
 export function isAdHocHardened(target) {
   const out = run('codesign', ['-d', '-vv', target], { allowFailure: true });
   const text = `${out.stdout ?? ''}${out.stderr ?? ''}`;

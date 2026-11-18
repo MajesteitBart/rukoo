@@ -381,7 +381,7 @@ fn probabilities_decode() {
 
     // Below this process, like the below-normal priority class on Windows: a meeting's
     // recognition and dictation come first.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     {
         // SAFETY: getpriority only reads a value, for the worker and for this process.
         let worker_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) };
@@ -679,14 +679,34 @@ fn a_missing_worker_is_a_runtime_problem() {
 }
 
 fn an_old_processor_never_starts_a_worker() {
-    let s = setup("old-cpu", |opts| opts.cpu = CpuFeatures::default());
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let (s, lacks) = (
+        setup("old-cpu", |opts| {
+            opts.cpu = CpuFeatures {
+                avx2: false,
+                fma: true,
+                f16c: true,
+                bmi2: false,
+                ..CpuFeatures::default()
+            }
+        }),
+        "This processor lacks avx2, bmi2.",
+    );
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let (s, lacks) = (
+        setup("old-cpu", |opts| {
+            opts.cpu = CpuFeatures {
+                neon: true,
+                dotprod: false,
+                fp16: false,
+                ..CpuFeatures::default()
+            }
+        }),
+        "This processor lacks dotprod, fp16.",
+    );
     let error = s.open_err();
     assert_eq!(error.kind, DiarErrorKind::Cpu);
-    let missing = CpuFeatures::default().missing();
-    assert_eq!(
-        error.message,
-        format!("This processor lacks {}.", missing.join(", "))
-    );
+    assert_eq!(error.message, lacks);
     assert!(s.loads().is_empty());
 }
 
@@ -748,7 +768,7 @@ fn the_worker_dies_with_voice() {
     wait_for("the worker to end with its job", || !process_alive(pid));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn the_worker_dies_with_voice() {
     use std::process::{Command, Stdio};
 
@@ -784,19 +804,20 @@ fn the_worker_dies_with_voice() {
     }
 }
 
-/// Kill-on-close job objects are Windows-only; on Unix the worker watches Voice's pid, which the
-/// client named in the environment. Two seconds is all a worker may outlive its app.
+/// Kill-on-close job objects are Windows-only; on macOS the worker watches Voice's pid, which the
+/// client named in the environment, and two seconds is all a worker may outlive its app.
+/// Elsewhere the client stops its workers itself.
 #[cfg(windows)]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     vec![("the_worker_dies_with_voice", the_worker_dies_with_voice)]
 }
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn platform_tests() -> Vec<(&'static str, fn())> {
     Vec::new()
 }
