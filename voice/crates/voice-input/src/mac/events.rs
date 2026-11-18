@@ -204,6 +204,8 @@ pub(crate) struct Keys;
 
 impl Keyboard for Keys {
     fn send(&mut self, batch: &[Stroke]) -> Result<(), InputError> {
+        // Cmd+V and Cmd+C on the keys that give v and c with Command held in this layout.
+        let batch = &super::layout::shortcut_keys(batch);
         let source = private_source()?;
         for (index, event) in events_of(batch) {
             if let Err(err) = post(&source, &event) {

@@ -23,6 +23,7 @@ use crate::{InputError, Key};
 mod ax;
 mod events;
 mod keys;
+mod layout;
 mod pasteboard;
 mod secure;
 
