@@ -116,15 +116,11 @@ fn run() -> i32 {
             return EXIT_USAGE;
         }
     };
-    let dev_mode = voice_core::paths::dev_mode();
-    // Before anything touches the data folder: a development flag without RUKOO_VOICE_DATA_DIR would
-    // otherwise write to the installed Voice's folder.
-    if let Err(error) = check_dev_flags(&args, dev_mode) {
-        system::fail(&error);
-        return EXIT_USAGE;
-    }
+    // The installed Mac Voice is never a development copy: it refuses the development flags, and
+    // RUKOO_VOICE_DATA_DIR, which makes one, goes before anything reads it. The programs Voice
+    // starts inherit that, so they all use the real data folder.
     #[cfg(target_os = "macos")]
-    {
+    let ignored_data_dir = {
         let bundle = objc2_foundation::NSBundle::mainBundle()
             .bundleIdentifier()
             .map(|id| id.to_string());
@@ -132,6 +128,20 @@ fn run() -> i32 {
             system::fail(&error);
             return EXIT_USAGE;
         }
+        let ignored = bundle.as_deref() == Some(RELEASE_BUNDLE_ID)
+            && std::env::var_os(voice_core::paths::DATA_DIR_ENV).is_some();
+        if ignored {
+            // No other thread runs yet.
+            std::env::remove_var(voice_core::paths::DATA_DIR_ENV);
+        }
+        ignored
+    };
+    let dev_mode = voice_core::paths::dev_mode();
+    // Before anything touches the data folder: a development flag without RUKOO_VOICE_DATA_DIR would
+    // otherwise write to the installed Voice's folder.
+    if let Err(error) = check_dev_flags(&args, dev_mode) {
+        system::fail(&error);
+        return EXIT_USAGE;
     }
     let Some(data_dir) = voice_core::paths::data_dir() else {
         system::fail("Rukoo Voice can't find its data folder: LOCALAPPDATA isn't set.");
@@ -145,6 +155,12 @@ fn run() -> i32 {
         data_dir.display(),
         log.display()
     );
+    #[cfg(target_os = "macos")]
+    if ignored_data_dir {
+        log::warn!(
+            "RUKOO_VOICE_DATA_DIR is ignored: this is the installed Voice, not a development copy"
+        );
+    }
     let guard = match single_instance::acquire(&data_dir) {
         Instance::First(guard) => guard,
         Instance::Running => {
