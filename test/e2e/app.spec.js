@@ -303,6 +303,41 @@ test('related emails under the open email open the rest of the conversation', as
   await expect(related.locator('.rel-more')).toHaveCount(0);
 });
 
+// #230: the cache keeps References, so the older email of a thread lists a later reply that names it only there.
+test('related emails show a later reply that names the open email only in its References', async () => {
+  // An answer to a forward of the call that never reached this account: another subject, nobody in common, and
+  // In-Reply-To naming the forward.
+  await app.evaluate(async () => {
+    const engine = global.__semEngine;
+    const acc = engine.accounts[0];
+    const call = engine.listMessages({ view: 'inbox' }).find((m) => m.subject === 'Call on Thursday');
+    const raw = [
+      'From: Lotte Visser <lotte@example.com>',
+      'To: demo@example.com',
+      'Subject: Minutes',
+      `Date: ${new Date().toUTCString()}`,
+      'Message-ID: <minutes@example.com>',
+      'In-Reply-To: <forward@example.com>',
+      `References: ${call.messageId} <forward@example.com>`,
+      '',
+      'The minutes of our call.'
+    ].join('\r\n');
+    await engine.session(acc).append('Archive', raw);
+    await engine.syncAccount(acc.id);
+  });
+  await item('Call on Thursday').click();
+  const related = win.locator('.reader .related');
+  await expect(related.locator('.rel-toggle')).toHaveText('2 gerelateerde e-mails');
+  const minutes = related.locator('.rel', { hasText: 'Lotte Visser' });
+  // Its own subject, as it differs from the call's, and its folder.
+  await expect(minutes.locator('.rel-text')).toHaveText('Minutes');
+  await expect(minutes.locator('.pill')).toHaveText('Archief');
+  // And the other way round: the reply lists the call.
+  await minutes.click();
+  await expect(win.locator('.reader-subject')).toHaveText('Minutes');
+  await expect(related.locator('.rel', { hasText: 'Sanne de Vries' })).toBeVisible();
+});
+
 test('attachments are listed for messages that have them', async () => {
   await item('Vandebron').click();
   await expect(win.locator('.att-name')).toHaveText('Contract-confirmation.pdf');
@@ -712,31 +747,42 @@ test('with the Unread filter, Shift+Esc keeps the open email, Ctrl+Z undoes it, 
   await expect(win.locator('.composer')).toHaveCount(1);
 });
 
-test('when the server refuses one email, Mark all as read says so and its Undo still reaches the rest', async () => {
+// The flags of one folder go to the server in one command (#242), which the server takes or refuses as a whole.
+test('when the server refuses one folder, Mark all as read says so and its Undo still reaches the other folder', async () => {
   const inboxCount = win.locator('.nav-item[data-view="inbox"] .count');
-  await expect(inboxCount).toHaveText('7');
-  // The demo server refuses to mark this one email read.
-  await app.evaluate((_, subject) => {
+  // Two unread starred emails in two folders: Joris's answer in the inbox and the invitation it answers in Sent.
+  await win.evaluate(async () => {
+    const list = await window.mail.call('list', { scope: 'all', view: 'everything' });
+    const id = (subject) => list.find((m) => m.subject === subject).id;
+    await window.mail.call('setFlags', id('Re: Dinner on Saturday'), { unread: true });
+    await window.mail.call('setFlags', id('Dinner on Saturday'), { unread: true, starred: true });
+  });
+  await expect(inboxCount).toHaveText('8');
+  // The demo server refuses to mark inbox mail read.
+  await app.evaluate(() => {
     const engine = global.__semEngine;
-    const m = engine.listMessages({ scope: engine.accounts[0].id, view: 'inbox' }).find((x) => x.subject === subject);
-    const { acc, uid } = engine.locate(m.id);
-    const session = engine.session(acc);
-    const write = session.setFlags.bind(session);
-    session.setFlags = async (p, u, patch) => {
-      if (u === uid && patch.unread === false) throw new Error('The server refused the change.');
-      return write(p, u, patch);
+    const session = engine.session(engine.accounts[0]);
+    const write = session.setFlagsMany.bind(session);
+    session.setFlagsMany = async (p, uids, patch) => {
+      if (p === 'INBOX' && patch.unread === false) throw new Error('The server refused the change.');
+      return write(p, uids, patch);
     };
-  }, 'Call on Thursday');
+  });
+  await win.click('.nav-item[data-view="starred"]');
+  const unread = win.locator('.list-scroll .item.unread');
+  await expect(unread).toHaveCount(2);
   await win.locator('.list-scroll').focus();
   await win.keyboard.press('Shift+Escape');
-  await expect(win.locator('#toast')).toContainText('6 van 7 e-mails als gelezen gemarkeerd. The server refused the change.');
+  await expect(win.locator('#toast')).toContainText('1 van 2 e-mails als gelezen gemarkeerd. The server refused the change.');
   await expect(win.locator('#toast button')).toHaveText('Ongedaan maken');
-  await expect(item('Call on Thursday')).toHaveClass(/unread/);
-  await expect(inboxCount).toHaveText('1');
-  // Ctrl+Z still undoes the six it marked.
+  await expect(unread).toHaveCount(1);
+  await expect(unread).toContainText('Re: Dinner on Saturday');
+  await expect(inboxCount).toHaveText('8');
+  // Ctrl+Z still undoes the one in Sent it marked.
   await win.keyboard.press('Control+z');
-  await expect(win.locator('.list-scroll .item.unread')).toHaveCount(7);
-  await expect(inboxCount).toHaveText('7');
+  await expect(unread).toHaveCount(2);
+  const sentUnread = () => win.evaluate(async () => (await window.mail.call('list', { scope: 'all', view: 'sent' })).find((m) => m.subject === 'Dinner on Saturday').unread);
+  await expect.poll(sentUnread).toBe(true);
 });
 
 test('Ctrl+click selects several messages for one action', async () => {

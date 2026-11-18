@@ -3139,6 +3139,10 @@
     "message": "Yahoo didn't accept this password. Yahoo Mail only works here with an app password, not your normal Yahoo password. Create one and try again.",
     "description": "errors > connection. Shown in the setup form and under Server settings when Yahoo turns down the password of an account. The setup form shows a Create app password link under it. src/main/imap.js (friendlyError, verifyError)"
   },
+  "errors.flags.refused": {
+    "message": "The mail server didn't save the change.",
+    "description": "errors > flags. The IMAP server turned down marking emails read, unread, starred or answered, or the command didn't reach it. The emails go back to how they were. Shown in a notice, and after Mark all as read as the {error} of mailbox.actions.readSome. src/main/imap.js (setFlagsMany)"
+  },
   "errors.folder.duplicate": {
     "message": "A folder with that name already exists.",
     "description": "errors > folder. src/main/engine.js"

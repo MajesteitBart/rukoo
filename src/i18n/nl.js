@@ -790,6 +790,7 @@
   "errors.connection.refused": "Verbinding geweigerd. Controleer de server en poort.",
   "errors.connection.timeout": "Er is een time-out opgetreden bij het verbinden met de server.",
   "errors.connection.yahooAppPassword": "Yahoo heeft dit wachtwoord niet geaccepteerd. Yahoo Mail werkt hier alleen met een app-wachtwoord, niet met je gewone Yahoo-wachtwoord. Maak er een aan en probeer het opnieuw.",
+  "errors.flags.refused": "De mailserver heeft de wijziging niet opgeslagen.",
   "errors.folder.duplicate": "Er is al een map met die naam.",
   "errors.folder.invalidName": "Een mapnaam mag geen / \\ % of * bevatten.",
   "errors.folder.nameRequired": "Geef de map een naam.",

@@ -22,6 +22,7 @@ import nl.bvdm.rukoo.mail.mime.MimeParser
 import nl.bvdm.rukoo.mail.model.Account
 import nl.bvdm.rukoo.mail.model.Address
 import nl.bvdm.rukoo.mail.model.CachedMessage
+import nl.bvdm.rukoo.mail.model.MessageIds
 import nl.bvdm.rukoo.mail.session.FolderRecord
 import nl.bvdm.rukoo.mail.session.FolderSync
 import nl.bvdm.rukoo.mail.session.MailSession
@@ -151,6 +152,7 @@ class DemoSession(
         size = (m.html ?: m.text ?: "").length.toLong(),
         // The demo's own headers, as desktop's demo reads them (demo.js mailSignals(m.headers)).
         signals = MailSignals.fromHeaders(m.headers),
+        references = MessageIds.referenceIds(m.references.orEmpty().joinToString(" ")),
     )
 
     override suspend fun fetchSource(path: String, uid: Long, background: Boolean): ByteArray {

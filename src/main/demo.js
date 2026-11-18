@@ -367,7 +367,8 @@ function describe(m) {
     // Inline pictures referred to by Content-ID are part of the body, as in isAttachmentNode.
     hasAttachments: (m.attachments || []).some((a) => !a.cid),
     size: messageBytes(m),
-    signals: mailSignals(m.headers)
+    signals: mailSignals(m.headers),
+    references: util.referenceIds(m.references)
   };
 }
 
@@ -507,15 +508,24 @@ class DemoAccount {
     return node.build();
   }
 
-  async setFlags(p, uid, { unread, starred, answered }) {
-    const m = this.find(p, uid);
-    const set = new Set(m.flags);
-    if (unread === true) set.delete('\\Seen');
-    if (unread === false) set.add('\\Seen');
-    if (starred === true) set.add('\\Flagged');
-    if (starred === false) set.delete('\\Flagged');
-    if (answered === true) set.add('\\Answered');
-    m.flags = [...set];
+  setFlags(p, uid, patch) {
+    return this.setFlagsMany(p, [uid], patch);
+  }
+
+  // The flags of many messages in folder p at once, saved once, as ImapAccount.setFlagsMany. Like a server's UID
+  // STORE, it skips a uid the folder no longer has.
+  async setFlagsMany(p, uids, { unread, starred, answered }) {
+    const want = new Set(uids.map(Number));
+    for (const m of this.box(p).messages) {
+      if (!want.has(m.uid)) continue;
+      const set = new Set(m.flags);
+      if (unread === true) set.delete('\\Seen');
+      if (unread === false) set.add('\\Seen');
+      if (starred === true) set.add('\\Flagged');
+      if (starred === false) set.delete('\\Flagged');
+      if (answered === true) set.add('\\Answered');
+      m.flags = [...set];
+    }
     this.persist();
   }
 

@@ -235,6 +235,86 @@ test('real IMAP account: a large message opens with its text first, and its atta
   }
 });
 
+// #242: flags for many emails go to the server in one write per folder, and the server keeps them.
+test('real IMAP account: marking several emails read reaches the server in one write', { timeout: 180000 }, async (t) => {
+  const eth = await testAccount();
+  if (!eth) return t.skip('Ethereal not reachable');
+
+  const engine = new Engine({ dataDir: tempDir('sem-imap-flags-') }).init();
+  try {
+    const acc = await engine.addAccount({ provider: 'other', email: eth.user, password: eth.pass, imap: eth.imap, smtp: eth.smtp });
+    await engine.syncAccount(acc.id);
+    const session = engine.session(engine.account(acc.id));
+    for (const n of [1, 2, 3]) {
+      const raw = await ImapAccount.compose({ from: { name: 'Integration test', address: 'test@example.com' }, to: [{ name: '', address: eth.user }], subject: `Batch ${n}`, text: `Message ${n}` });
+      await session.append('INBOX', raw, []);
+    }
+    await engine.syncAccount(acc.id);
+    const batch = engine.listMessages({ scope: acc.id, view: 'inbox' }).filter((m) => m.subject.startsWith('Batch '));
+    assert.equal(batch.length, 3);
+    assert.ok(batch.every((m) => m.unread));
+    const writes = [];
+    const write = session.setFlagsMany.bind(session);
+    session.setFlagsMany = (p, uids, patch) => {
+      writes.push([p, [...uids].sort((a, b) => a - b)]);
+      return write(p, uids, patch);
+    };
+    const res = await engine.setFlagsMany(batch.map((m) => m.id), { unread: false, starred: true });
+    assert.deepEqual(res.failed, []);
+    assert.deepEqual(writes, [['INBOX', batch.map((m) => m.uid).sort((a, b) => a - b)]]);
+
+    // A fresh connection reads both flags back on all three.
+    const fresh = new ImapAccount({ email: eth.user, imap: eth.imap, smtp: eth.smtp }, eth.pass);
+    try {
+      const synced = await fresh.syncFolder('INBOX', { limit: 1000 });
+      const back = synced.messages.filter((m) => m.subject.startsWith('Batch '));
+      assert.deepEqual(back.map((m) => [m.subject, m.unread, m.starred]).sort(), [['Batch 1', false, true], ['Batch 2', false, true], ['Batch 3', false, true]]);
+    } finally {
+      await fresh.close();
+    }
+  } finally {
+    await engine.close();
+  }
+});
+
+// #230: the cache keeps References, so the older email of a thread finds a later reply that names it only there.
+test('real IMAP account: a later reply linked only by References is a related email of the older one', { timeout: 180000 }, async (t) => {
+  const eth = await testAccount();
+  if (!eth) return t.skip('Ethereal not reachable');
+
+  const engine = new Engine({ dataDir: tempDir('sem-imap-refs-') }).init();
+  try {
+    const acc = await engine.addAccount({ provider: 'other', email: eth.user, password: eth.pass, imap: eth.imap, smtp: eth.smtp });
+    await engine.syncAccount(acc.id);
+    const session = engine.session(engine.account(acc.id));
+    const tag = Date.now().toString(36);
+    const first = `<first-${tag}@example.com>`;
+    await session.append('INBOX', await ImapAccount.compose({ from: { name: 'Sanne', address: 'sanne@example.com' }, to: [{ name: '', address: eth.user }], subject: `Proposal ${tag}`, text: 'The proposal.', messageId: first }), []);
+    // From someone else, with another subject, answering a forward that never reached this mailbox.
+    await session.append(
+      'INBOX',
+      await ImapAccount.compose({
+        from: { name: 'Lotte', address: 'lotte@example.com' },
+        to: [{ name: '', address: eth.user }],
+        subject: `Minutes ${tag}`,
+        text: 'The minutes.',
+        inReplyTo: `<forward-${tag}@example.com>`,
+        references: [first, `<forward-${tag}@example.com>`]
+      }),
+      []
+    );
+    await engine.syncAccount(acc.id);
+    const inbox = engine.listMessages({ scope: acc.id, view: 'inbox' });
+    const proposal = inbox.find((m) => m.subject === `Proposal ${tag}`);
+    const minutes = inbox.find((m) => m.subject === `Minutes ${tag}`);
+    assert.ok(proposal && minutes, 'both synced');
+    assert.deepEqual(engine.locate(minutes.id).msg.references, [first, `<forward-${tag}@example.com>`]);
+    assert.deepEqual(engine.related(proposal.id).map((m) => m.subject), [`Minutes ${tag}`]);
+  } finally {
+    await engine.close();
+  }
+});
+
 // #99, with a window of two messages instead of the inbox's 300.
 test('real IMAP account: the unread mail below the synced window is counted on the server', { timeout: 120000 }, async (t) => {
   const eth = await testAccount();

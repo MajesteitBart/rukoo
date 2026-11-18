@@ -57,7 +57,7 @@ class ImapCategoriesTest {
         val known = mapOf(3L to stored(3, "cached"), 4L to stored(4, "cached 4").copy(signals = MailSignals(bulk = true), gmailTab = "social"))
         val res = s.syncFolder("INBOX", 10, known, "9", signals = true, gmailTabs = true)
 
-        val headers = server.commands.filter { it.contains("HEADER.FIELDS") }
+        val headers = server.commands.filter { it.contains("HEADER.FIELDS (LIST-ID") }
         assertEquals(1, headers.size)
         assertTrue("not for the message whose kind is known: ${headers[0]}", headers[0].startsWith("UID FETCH 3,5 "))
         assertTrue(headers[0].contains("HEADER.FIELDS (LIST-ID LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED FEEDBACK-ID X-CAMPAIGN X-MAILER)"))
@@ -91,17 +91,20 @@ class ImapCategoriesTest {
             emptyMap(),
         ).also { servers += it }
         val res = session(server).syncFolder("INBOX", 10, emptyMap(), "9", signals = true)
-        val headers = server.commands.single { it.contains("HEADER.FIELDS") }
+        val headers = server.commands.single { it.contains("HEADER.FIELDS (LIST-ID") }
         assertTrue(headers, headers.endsWith("]<0.${ImapSession.SIGNAL_BYTES}>)"))
         // What came after the cut isn't known; what came before is.
         assertEquals(MailSignals(bulk = true), res.messages.single().signals)
     }
 
     @Test
-    fun `a sync of another folder asks for neither`() = runBlocking {
+    fun `a sync of another folder asks for neither, only the References line`() = runBlocking {
         val server = inbox("IMAP4rev1 X-GM-EXT-1")
         val res = session(server).syncFolder("Sent", 10, emptyMap(), "9")
-        assertFalse(server.commands.any { it.contains("HEADER.FIELDS") })
+        assertEquals(
+            listOf("UID FETCH 3:5 (UID BODY.PEEK[HEADER.FIELDS (REFERENCES)]<0.${ImapSession.REFERENCE_BYTES}>)"),
+            server.commands.filter { it.contains("HEADER.FIELDS") },
+        )
         assertFalse(server.commands.any { it.startsWith("UID SEARCH") })
         assertNull(res.messages.first().signals)
         assertNull(res.messages.first().gmailTab)

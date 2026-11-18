@@ -814,7 +814,7 @@ class AgentHub extends EventEmitter {
 
   // For an email without a chat: the most recent chat about an earlier email in its thread, in the same account,
   // which the panel offers to continue. Only a header link counts (see tools.earlierInThread). The renderer passes
-  // the open email's In-Reply-To and References; the folder cache has In-Reply-To only.
+  // the open email's In-Reply-To and References; the folder cache has both as well.
   relatedFor(ref = {}) {
     const id = ref.id ? String(ref.id) : '';
     const cached = id ? this.liveMessage(id) : null;
@@ -823,7 +823,7 @@ class AgentHub extends EventEmitter {
     const email = {
       messageId: ref.messageId || (cached && cached.messageId) || null,
       inReplyTo: ref.inReplyTo || (cached && cached.inReplyTo) || null,
-      references: Array.isArray(ref.references) ? ref.references : [],
+      references: Array.isArray(ref.references) && ref.references.length ? ref.references : (cached && cached.references) || [],
       date: Number(ref.date) || (cached && cached.date) || 0
     };
     const chats = [...this.conversations.values()];
@@ -853,7 +853,7 @@ class AgentHub extends EventEmitter {
 
   // Keeps the thread headers Rukoo read for an email a chat keeps, so a reply to the same email still finds the chat
   // once this one moved to a folder Rukoo has not opened. Only from a message Rukoo loaded itself, which has its
-  // References; the folder cache gives In-Reply-To alone (messageRef). Returns whether anything changed.
+  // References; messageRef takes In-Reply-To alone from the folder cache. Returns whether anything changed.
   keepThread(ref, full) {
     if (!isObj(ref) || !isObj(full)) return false;
     const inReplyTo = full.inReplyTo ? clip(full.inReplyTo, 1000) : null;
@@ -874,7 +874,7 @@ class AgentHub extends EventEmitter {
     if (!account) return null;
     const full = await this.engine.getMessage(id).catch(() => null);
     const src = full || cached;
-    return { account, full, email: { messageId: src.messageId || null, inReplyTo: src.inReplyTo || null, references: full ? full.references || [] : [], date: src.date || 0 } };
+    return { account, full, email: { messageId: src.messageId || null, inReplyTo: src.inReplyTo || null, references: [].concat(src.references || []), date: src.date || 0 } };
   }
 
   // The user continues a chat from a newer email in its thread. The chat keeps its own email. The newer one goes to
