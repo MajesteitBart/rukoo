@@ -302,39 +302,52 @@ fn flags() -> u64 {
     CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).bits()
 }
 
-/// When Voice last posted a key-down of its own, such as the Cmd+C of a rewrite or a paste's Cmd+V.
-static OWN_KEY_DOWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Voice's last key-down of its own, such as the Cmd+C of a rewrite or a paste's Cmd+V: when it
+/// went out, and the user's newest key-down just before it, which it hides in the HID state.
+struct Own {
+    posted: Instant,
+    user_before: Option<Instant>,
+}
+
+static OWN: Mutex<Option<Own>> = Mutex::new(None);
 
 /// How far apart Voice's own post and the HID state's newest key-down can be and still be the
 /// same event.
 const OWN_KEY_MARGIN: Duration = Duration::from_millis(25);
 
-/// Notes a key-down Voice just posted, so [`since_key_down`] doesn't take it for the user's.
+/// Notes a key-down Voice is about to post, and the user's newest one before it, so
+/// [`since_key_down`] doesn't take Voice's for the user's or lose the user's.
 pub(crate) fn note_own_key_down() {
-    *OWN_KEY_DOWN.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    let user_before = since_key_down().and_then(|since| Instant::now().checked_sub(since));
+    *OWN.lock().unwrap_or_else(PoisonError::into_inner) = Some(Own {
+        posted: Instant::now(),
+        user_before,
+    });
 }
 
 /// How long ago the user pressed a key on the HID system, modifiers aside: macOS reports those as
 /// flag changes, not key-downs. `CGEventSourceSecondsSinceLastEventType` is meant to answer
 /// without a grant, which nobody has checked at a real keyboard yet. It keeps only the newest
-/// key-down, and the keys Voice posts at the HID level count too, so a newest key-down that is
-/// Voice's own reads as none.
+/// key-down, and the keys Voice posts at the HID level count too: when the newest is Voice's own,
+/// the user's newest is the one before Voice's post.
 pub(crate) fn since_key_down() -> Option<Duration> {
     let since = duration(CGEventSource::seconds_since_last_event_type(
         CGEventSourceStateID::HIDSystemState,
         CGEventType::KeyDown,
     ))?;
-    let own = OWN_KEY_DOWN
+    let own = OWN
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .map(|at| at.elapsed());
+        .as_ref()
+        .map(|own| (own.posted.elapsed(), own.user_before.map(|at| at.elapsed())));
     users_key_down(since, own)
 }
 
-/// The newest key-down, `since` ago, unless it is the one Voice posted `own_ago` ago.
-fn users_key_down(since: Duration, own_ago: Option<Duration>) -> Option<Duration> {
-    match own_ago {
-        Some(own) if since.abs_diff(own) <= OWN_KEY_MARGIN => None,
+/// The user's newest key-down: the HID state's, `since` ago, unless that is the one Voice posted
+/// `own.0` ago, and then the user's newest before it, `own.1` ago.
+fn users_key_down(since: Duration, own: Option<(Duration, Option<Duration>)>) -> Option<Duration> {
+    match own {
+        Some((posted, user_before)) if since.abs_diff(posted) <= OWN_KEY_MARGIN => user_before,
         _ => Some(since),
     }
 }
@@ -926,15 +939,28 @@ mod tests {
     }
 
     /// The HID state keeps only the newest key-down, and Voice's own Cmd+C or Cmd+V lands there
-    /// too: that one is not the user's, a key pressed after it is.
+    /// too: that one is not the user's, and a key the user pressed just before it still is.
     #[test]
     fn voices_own_key_down_is_not_the_users() {
         let ms = Duration::from_millis;
-        assert_eq!(users_key_down(ms(300), Some(ms(305))), None);
-        assert_eq!(users_key_down(ms(310), Some(ms(300))), None);
-        assert_eq!(users_key_down(ms(100), Some(ms(300))), Some(ms(100)));
+        // The newest key-down is Voice's own, with no key of the user's before it, or with Cmd+S
+        // pressed in the copy's settle, just before Voice posted.
+        assert_eq!(users_key_down(ms(300), Some((ms(305), None))), None);
+        assert_eq!(users_key_down(ms(310), Some((ms(300), None))), None);
+        assert_eq!(
+            users_key_down(ms(300), Some((ms(302), Some(ms(330))))),
+            Some(ms(330))
+        );
+        // A key after Voice's post, or no post at all.
+        assert_eq!(
+            users_key_down(ms(100), Some((ms(300), None))),
+            Some(ms(100))
+        );
         assert_eq!(users_key_down(ms(100), None), Some(ms(100)));
         // A newest key-down from before Voice's post means the post never reached the HID state.
-        assert_eq!(users_key_down(ms(900), Some(ms(300))), Some(ms(900)));
+        assert_eq!(
+            users_key_down(ms(900), Some((ms(300), None))),
+            Some(ms(900))
+        );
     }
 }

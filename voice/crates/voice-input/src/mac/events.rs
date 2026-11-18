@@ -260,10 +260,10 @@ fn post(source: &CGEventSource, event: &KeyEvent) -> Result<(), InputError> {
             CGEvent::keyboard_set_unicode_string(Some(&cg), units.len() as _, units.as_ptr())
         };
     }
-    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&cg));
     if event.down {
         super::keys::note_own_key_down();
     }
+    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&cg));
     Ok(())
 }
 
