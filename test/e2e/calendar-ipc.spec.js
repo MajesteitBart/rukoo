@@ -4,12 +4,14 @@ const { test, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { clearOfMidnight } = require('./midnight');
 
 let app;
 let win;
 let dataDir;
 
 test.beforeEach(async () => {
+  await clearOfMidnight();
   dataDir = tempDir('sem-e2e-calipc-');
   const env = { ...process.env, SEM_DATA_DIR: dataDir, SEM_HIDDEN: '1' };
   delete env.ELECTRON_RUN_AS_NODE;

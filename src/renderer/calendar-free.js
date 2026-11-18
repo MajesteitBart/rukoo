@@ -6,7 +6,7 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast } from './ui.js';
-import { C, ctx, hooks, prefs, savePrefs, cap, duration, calSettings, account, FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions } from './calendar-shared.js';
+import { C, ctx, hooks, prefs, savePrefs, setViewDate, cap, duration, calSettings, account, FREE_LENGTHS, FREE_RANGES, pcZone, freeRange, zoneOptions } from './calendar-shared.js';
 import { setHighlight, setBooking, setNotices, openEvent, openRequest } from './calendar.js';
 
 // The choices last made, kept on this computer. hours null: Booking hours while the booking page is on, else working.
@@ -303,10 +303,7 @@ function onClick(ev) {
   if (b.dataset.freeBlock) return blockDay(b.dataset.freeBlock, Number(b.dataset.freeAt));
   if (b.dataset.freeDay) {
     // The grid moves to that day; the open time already shows on it.
-    const day = Number(b.dataset.freeDay);
-    const d = new Date(day);
-    d.setHours(0, 0, 0, 0);
-    C.date = d.getTime();
+    setViewDate(Number(b.dataset.freeDay));
     C.mini = null;
     C.scroll = true;
     if (prefs.view === 'upcoming' || prefs.view === 'month') {

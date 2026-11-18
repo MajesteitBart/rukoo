@@ -10,6 +10,7 @@ import {
   hooks,
   calSettings,
   startOfDay,
+  setViewDate,
   addDays,
   firstWeekday,
   weekStart,
@@ -34,6 +35,7 @@ import {
   duration,
   inlineDay
 } from './calendar-shared.js';
+import { nextHalfHour } from './calendar-dates.js';
 
 // An event's card next to it in the grid or list, a booking request's card, the quick popover that makes an event
 // where the user clicked or dragged, the dialog with every field, and the changes themselves: save, move, delete,
@@ -1901,7 +1903,7 @@ async function askInvite(v) {
 // Shows a saved event that lies outside what is on screen.
 function showSaved(saved) {
   const r = range();
-  if (saved && (saved.start >= r.end || saved.end <= r.start) && shownView() !== 'upcoming') C.date = startOfDay(saved.start);
+  if (saved && (saved.start >= r.end || saved.end <= r.start) && shownView() !== 'upcoming') setViewDate(saved.start);
   C.pop = null;
   reload(0);
 }
@@ -2241,12 +2243,13 @@ export function newEvent(preset = {}) {
   closePop();
   let start = preset.start;
   if (!start) {
-    // The next half hour when today is on screen, otherwise nine o'clock on the day shown.
+    // The next half hour when today is on screen, otherwise nine o'clock on the day shown. From 23:30 the next half
+    // hour is tomorrow, and late on the week's last day in next week: saving then shows that week (showSaved).
     const now = Date.now();
     const view = shownView();
     const shown = range(view);
     const showsToday = view === 'upcoming' || (shown.start <= now && now < shown.end);
-    start = showsToday ? Math.ceil(now / 1800000) * 1800000 : parseLocal(dateValue(view === 'week' ? weekStart(C.date) : C.date), '09:00');
+    start = showsToday ? nextHalfHour(now) : parseLocal(dateValue(view === 'week' ? weekStart(C.date) : C.date), '09:00');
   }
   const allDay = Boolean(preset.allDay);
   // A drag on the grid says where the event ends too.

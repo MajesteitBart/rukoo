@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { clearOfMidnight } = require('./midnight');
 
 let app;
 let win;
@@ -20,6 +21,7 @@ async function launch() {
 }
 
 test.beforeEach(async () => {
+  await clearOfMidnight();
   dataDir = tempDir('sem-e2e-cal-');
   await launch();
   await win.waitForSelector('.provider-grid');
@@ -118,6 +120,9 @@ test('creates, edits and deletes an event', async () => {
   await win.locator('.dialog .buttons button.danger').click();
   await expect(win.locator('#toast')).toHaveText('Event deleted');
   await expect(event('Yoga class')).toHaveCount(0);
+  // A new event starts at the next half hour. From 23:30 on a Sunday that is in next week, where the calendar went to
+  // show it; Today brings back the week with the demo's events.
+  await win.click('[data-cal="today"]');
 
   // An event with guests in the demo account changes without asking to email them: nobody gets those emails.
   await event('Roadmap review').click();
@@ -152,6 +157,72 @@ test('creates, edits and deletes an event', async () => {
   await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('07:30');
   await win.keyboard.press('Escape');
   await expect(win.locator('.cal-form')).toHaveCount(0);
+});
+
+test('at 23:40 on a Sunday a new event starts at midnight, in next week, and the calendar goes there to show it', async () => {
+  // Only the window's clock moves, to the demo week's Sunday; its events stay where main made them.
+  const sunday = new Date();
+  sunday.setDate(sunday.getDate() - ((sunday.getDay() + 6) % 7) + 6);
+  sunday.setHours(23, 40, 0, 0);
+  await win.clock.install({ time: sunday });
+  await openCalendar();
+  await win.click('[data-cal="new"]');
+  const monday = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + 1);
+  const date = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+  await expect(win.locator('.cal-form [name="startDate"]')).toHaveValue(date);
+  await expect(win.locator('.cal-form [name="startTime"]')).toHaveValue('00:00');
+  await expect(win.locator('.cal-form [name="endTime"]')).toHaveValue('01:00');
+  await win.fill('.cal-form [name="title"]', 'Night train');
+  await win.click('.dialog .buttons button.primary');
+  await expect(win.locator('#toast')).toHaveText('Event created');
+  await expect(event('Night train')).toBeVisible();
+  await expect(event('Roadmap review')).toHaveCount(0);
+  await win.click('[data-cal="today"]');
+  await expect(event('Roadmap review')).toBeVisible();
+  await expect(event('Night train')).toHaveCount(0);
+});
+
+test('a calendar left on Sunday shows the new week when it opens on Monday, unless it was moved to another week', async () => {
+  // The window's clock: Sunday evening in the demo's week, then the next morning, with Rukoo open all along.
+  const sunday = new Date();
+  sunday.setDate(sunday.getDate() - ((sunday.getDay() + 6) % 7) + 6);
+  sunday.setHours(21, 0, 0, 0);
+  const morning = (days) => new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + days, 8);
+  await win.clock.install({ time: sunday });
+  await openCalendar();
+  await win.keyboard.press('Control+1');
+  await win.clock.setSystemTime(morning(1));
+  await win.keyboard.press('Control+2');
+  // Next week, with Monday as today: the demo's flight is on its Tuesday.
+  await expect(event('KL1691 Amsterdam to Lisbon')).toBeVisible();
+  await expect(event('Roadmap review')).toHaveCount(0);
+  await expect(win.locator('.cal-dayhead').first()).toHaveClass(/today/);
+
+  // A week the user went to stays when the day changes.
+  await win.click('[data-cal="prev"]');
+  await expect(event('Roadmap review')).toBeVisible();
+  await win.keyboard.press('Control+1');
+  await win.clock.setSystemTime(morning(2));
+  await win.keyboard.press('Control+2');
+  await expect(event('Roadmap review')).toBeVisible();
+  await expect(win.locator('.cal-dayhead.today')).toHaveCount(0);
+});
+
+test('Sunday picked just after midnight, before the calendar noticed the new day, stays picked', async () => {
+  // The calendar is open at 23:59 on the demo week's Sunday. Ten seconds after midnight, before its half-minute check
+  // of the day, the user picks Sunday in the mini month.
+  const sunday = new Date();
+  sunday.setDate(sunday.getDate() - ((sunday.getDay() + 6) % 7) + 6);
+  sunday.setHours(23, 59, 0, 0);
+  await win.clock.install({ time: sunday });
+  await openCalendar();
+  await win.clock.setSystemTime(new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + 1, 0, 0, 10));
+  await win.click(`.sidebar [data-mini-day="${new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate()).getTime()}"]`);
+  // Leaving the calendar and coming back checks the day, as the half-minute check does.
+  await win.keyboard.press('Control+1');
+  await win.keyboard.press('Control+2');
+  await expect(event('Roadmap review')).toBeVisible();
+  await expect(win.locator('.cal-dayhead.today')).toHaveCount(0);
 });
 
 test('hides a calendar, switches views and moves through the weeks by keyboard', async () => {
@@ -477,6 +548,8 @@ test('a Google calendar shows beside the demo calendar in its own colour, and ch
   expect(posts).toHaveLength(1);
   expect(posts[0].path).toBe('/calendar/v3/calendars/work@gmail.com/events');
   expect(posts[0].body.summary).toBe('Hiring sync');
+  // Late on a Sunday the new event went to next week, and the calendar with it (see "creates, edits and deletes").
+  await win.click('[data-cal="today"]');
 
   // A change made in Google Calendar shows after the next sync.
   await app.evaluate(() => (global.__google.store[0].summary = 'Board meeting (moved room)'));
