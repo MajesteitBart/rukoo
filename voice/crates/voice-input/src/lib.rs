@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn errors_read_as_user_messages() {
-        #[cfg(windows)]
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             InputError::Blocked.to_string(),
             "Windows blocked typing into an app that runs as administrator."

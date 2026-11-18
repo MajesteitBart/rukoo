@@ -60,6 +60,26 @@ fn the_assets_script_fetches_the_model_voice_core_pins() {
     );
 }
 
+#[test]
+fn the_tests_read_the_ami_files_the_manifest_pins() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&voice_file("fixtures/ami/manifest.json")).unwrap();
+    let names: Vec<&str> = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"ami_en2002d_2132.wav"), "{names:?}");
+    // The excerpt is 60 s of 16 kHz mono 16-bit audio after the canonical 44-byte header, which
+    // tests/runtime.rs relies on.
+    let wav = &manifest["files"][names
+        .iter()
+        .position(|name| *name == "ami_en2002d_2132.wav")
+        .unwrap()];
+    assert_eq!(wav["size"], serde_json::json!(44 + 60 * 16_000 * 2));
+}
+
 /// The macOS asset script, `voice/scripts/speaker-assets.mjs`, fetches the same file.
 #[cfg(target_os = "macos")]
 #[test]

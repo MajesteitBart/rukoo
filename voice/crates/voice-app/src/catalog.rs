@@ -149,6 +149,8 @@ mod tests {
         }
     }
 
+    /// Both keys are macOS-only notifications.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_notification_bodies_with_a_catalog_string_are_in_both_catalogs() {
         let catalog = Catalog::embedded();
