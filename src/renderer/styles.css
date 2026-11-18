@@ -9270,10 +9270,13 @@ body.meeting-mode .titlebar-search {
 .mt-line::after {
   content: '';
   flex: 1;
-  /* No minimum: beside a mark that wraps, a 16px stub would hang mid-sentence. */
-  min-width: 0;
+  min-width: 16px;
   height: 1px;
   background: var(--border);
+}
+/* A silent-call mark (a Mac Voice's) wraps over several lines: a 16px stub beside it would hang mid-sentence. */
+.mt-mark.is-silent .mt-line::after {
+  min-width: 0;
 }
 .mt-line svg {
   width: 14px;
