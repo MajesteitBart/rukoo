@@ -1450,6 +1450,8 @@ mod tests {
 #[cfg(any(windows, target_os = "macos"))]
 fn main() {
     common::play_role();
+    #[cfg(target_os = "macos")]
+    common::warm_vision();
     use common::Test;
     let mut tests = vec![
         Test {

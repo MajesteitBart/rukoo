@@ -44,6 +44,34 @@ pub fn play_role() {
     }
 }
 
+/// Reads one slide as this binary's screen process before the tests, on a Mac. The first text a
+/// program reads makes Vision compile its model for the Neural Engine, 20 to 40 s, and the Mac
+/// keeps the result for that build of that program only, while the tests stop the screen process
+/// sooner: on a fresh Mac their frames would never get read.
+#[cfg(target_os = "macos")]
+pub fn warm_vision() {
+    let m = TempMeeting::new("vision", "frames");
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let session = json!({
+        "kind": "session", "t": 0, "wall": wall, "session": 1, "pid": std::process::id(),
+        "resumed": false, "version": 1, "recorder": "0.1.0",
+    });
+    fs::write(m.dir.join("timeline.jsonl"), format!("{session}\n")).unwrap();
+    let mut screen = m.screen(
+        "frames",
+        Some("synthetic:1280x720,change-every=1000,text=Slide"),
+        &[],
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline && !m.journal().iter().any(|l| l["ocr"] == "ok") {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    screen.hard_kill();
+}
+
 /// One test of a `harness = false` binary.
 pub struct Test {
     pub name: &'static str,

@@ -63,6 +63,8 @@ fn main() {
     std::env::set_var(ROLE, "child");
     let scratch = std::env::temp_dir().join(format!("voice-engine-screen-{}", std::process::id()));
     std::env::set_var(voice_core::paths::DATA_DIR_ENV, &scratch);
+    #[cfg(target_os = "macos")]
+    warm_vision();
     let tests: Vec<(&str, fn())> = vec![
         (
             "voice_started_meeting_waits_for_rukoo_then_captures",
@@ -178,6 +180,43 @@ fn main() {
 }
 
 // Helpers ------------------------------------------------------------------------------------
+
+/// Reads one slide as this binary's screen process before the tests, on a Mac. The first text a
+/// program reads makes Vision compile its model for the Neural Engine, 20 to 40 s, and the Mac
+/// keeps the result for that build of that program only, while the tests wait 20 s for a frame.
+/// It records into a data folder of its own, so no test sees its meeting.
+#[cfg(target_os = "macos")]
+fn warm_vision() {
+    let root = std::env::temp_dir().join(format!("voice-engine-vision-{}", std::process::id()));
+    let dir = root.join("meetings").join("m-20260101-000000-0000");
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = json!({
+        "kind": "session", "t": 0, "wall": now_ms(), "session": 1, "pid": std::process::id(),
+        "resumed": false, "version": 1, "recorder": "0.1.0",
+    });
+    std::fs::write(dir.join("timeline.jsonl"), format!("{session}\n")).unwrap();
+    let mut screen = std::process::Command::new(exe())
+        .args(["record", "--meeting"])
+        .arg(&dir)
+        .args(["--mode", "frames", "--test", SCREEN])
+        .env(voice_core::paths::DATA_DIR_ENV, &root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let journal = dir.join("screen").join("journal.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline
+        && !std::fs::read_to_string(&journal)
+            .unwrap_or_default()
+            .contains("\"ocr\":\"ok\"")
+    {
+        thread::sleep(Duration::from_millis(200));
+    }
+    let _ = screen.kill();
+    let _ = screen.wait();
+    let _ = std::fs::remove_dir_all(&root);
+}
 
 fn exe() -> PathBuf {
     std::env::current_exe().unwrap()

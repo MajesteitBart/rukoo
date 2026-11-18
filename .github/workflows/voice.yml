@@ -218,29 +218,6 @@ jobs:
       # the skip log, and the step after the tests turns each line into a warning.
       - name: Name the skip log
         run: node scripts/skip-log.mjs init
-      # The first text a program reads on a Mac makes Vision compile its model for the Neural Engine, 20 to 40 s on a
-      # Mac mini M2 Pro, and the Mac keeps the result for that build of that program only. The screen tests wait 20 s
-      # for a frame and stop the screen process early, so on a fresh runner they all fail before the compile ends. The
-      # screen process of the test build reads one slide first, with time to finish.
-      - name: Build the tests
-        run: cargo test --workspace --no-fail-fast --no-run
-      - name: Compile Vision's text model for the screen process
-        run: |
-          data=$(mktemp -d)
-          meeting="$data/meetings/m-20260101-000000-0000"
-          mkdir -p "$meeting"
-          printf '{"kind":"session","t":0,"wall":%s,"session":1,"pid":%s,"resumed":false,"version":1,"recorder":"0.1.0"}\n' \
-            "$(node -e 'process.stdout.write(String(Date.now()))')" "$$" > "$meeting/timeline.jsonl"
-          RUKOO_VOICE_DATA_DIR="$data" target/debug/rukoo-voice-screen record --meeting "$meeting" --mode frames \
-            --test synthetic:1280x720,change-every=1000,text=Slide &
-          screen=$!
-          for _ in $(seq 120); do
-            grep -q '"ocr":"ok"' "$meeting/screen/journal.jsonl" 2>/dev/null && break
-            sleep 1
-          done
-          kill "$screen"
-          grep -q '"ocr":"ok"' "$meeting/screen/journal.jsonl" ||
-            echo "::warning::The screen process read no slide in 120 s, so the screen tests may time out waiting for frames."
       # The screen process's crash and clock tests run here on the synthetic screen with VideoToolbox's software
       # encoder and Vision; its real-screen and Windows sink writer spikes stay on Windows.
       - run: cargo test --workspace --no-fail-fast
