@@ -140,7 +140,7 @@ A new runtime, for a new NeMo-Speech.cpp commit or a new toolset, gets a new nam
 
 The macOS zip is one more asset of the same prerelease, published the same way and with the same approval:
 
-1. Take the artifact of a successful `voice-nemo-runtime-macos.yml` run on the branch that changes the runtime:
+1. Take the artifact of a successful `voice-nemo-runtime-macos.yml` run on `main`, after the change to the runtime merged (start one by hand when the merge didn't):
    ```bash
    gh run download <run id> -n nemo-runtime-97a15af-1-macos-arm64 -D tmp/nemo-macos-release
    ```
@@ -149,6 +149,6 @@ The macOS zip is one more asset of the same prerelease, published the same way a
    ```bash
    gh release upload nemo-runtime-97a15af-1 tmp/nemo-macos-release/nemo-runtime-97a15af-1-macos-arm64.zip
    ```
-4. Copy `tmp/nemo-macos-release/manifest-macos.json` over `voice/nemo-runtime/manifest-macos.json` and commit it on the same branch. From then on macOS CI fetches the runtime and runs the runtime tests instead of skipping them, and `package-macos.mjs` downloads the macOS archive.
+4. Copy `tmp/nemo-macos-release/manifest-macos.json` over `voice/nemo-runtime/manifest-macos.json` and commit it in a PR. From then on macOS CI fetches the runtime and runs the runtime tests instead of skipping them, and `package-macos.mjs` downloads the macOS archive.
 
 The workflow already signs, zips and writes the manifest, so the maintainer only downloads the artifact, reads the reports, uploads the zip and copies the manifest over. Do not build a runtime with `build-macos.sh` and publish that: its bytes differ from the pinned ones, and `package-macos.mjs` checks the archive against the pins. A new runtime name changes `name` and the pins in `manifest-macos.json` too, with its `archive` back to `null` and `files` to `[]`, and `RUNTIME_NAME` in `voice-nemo-runtime-macos.yml`.
