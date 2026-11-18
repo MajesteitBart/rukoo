@@ -35,7 +35,7 @@ const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
-const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice } = require('./desktop');
+const { titleBar, windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice } = require('./desktop');
 const { Invitations } = require('./calendar/invitations');
 const invite = require('./calendar/invite');
 // ---- agents ----
@@ -65,8 +65,6 @@ const { isMeetingId, SCREENS: MEETING_SCREENS } = require('./voice/protocol');
 // or its shortcut (named Electron, pointing at the checkout) takes over the installed app's icon.
 const APP_ID = app.isPackaged ? 'nl.bvdm.rukoo-mail' : 'nl.bvdm.rukoo-mail.dev';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
-const DARK_BAR = { color: '#141519', symbolColor: '#e6e8ee', height: 40 };
-const LIGHT_BAR = { color: '#f4f5f7', symbolColor: '#1a1c22', height: 40 };
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const WEB_PREFERENCES = {
   preload: path.join(__dirname, 'preload.js'),
@@ -220,18 +218,23 @@ function updatesState() {
   return { ...updates.state(), install: installer ? installer.state() : null };
 }
 
-function themeColors() {
-  const dark = nativeTheme.shouldUseDarkColors;
-  return { bar: dark ? DARK_BAR : LIGHT_BAR, background: dark ? DARK_BAR.color : LIGHT_BAR.color };
+// The window's background and its native window buttons, for the theme and the zoom (titleBar in desktop.js).
+function themeColors({ compose = false } = {}) {
+  const bar = titleBar(nativeTheme.shouldUseDarkColors, engine.settings.zoomLevel, { compose });
+  return { bar, background: bar.color };
+}
+
+// Every window but the main one is a compose window (windows()).
+function applyBars() {
+  if (process.platform === 'darwin') return;
+  for (const w of windows()) w.setTitleBarOverlay(themeColors({ compose: w !== win }).bar);
 }
 
 function applyTheme() {
   nativeTheme.themeSource = engine.settings.theme === 'light' ? 'light' : engine.settings.theme === 'dark' ? 'dark' : 'system';
-  const { bar, background } = themeColors();
-  for (const w of windows()) {
-    if (process.platform !== 'darwin') w.setTitleBarOverlay(bar);
-    w.setBackgroundColor(background);
-  }
+  const { background } = themeColors();
+  applyBars();
+  for (const w of windows()) w.setBackgroundColor(background);
 }
 
 function scheduleSync() {
@@ -535,11 +538,13 @@ function forwardEditMenu(w) {
 }
 
 // One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;
-// nothing else in the windows depends on it, so it is saved without the 'updated' redraw.
+// nothing else in the windows depends on it, so it is saved without the 'updated' redraw. The native window buttons
+// grow and shrink with the title bar.
 function setZoom(level) {
   if (level === engine.settings.zoomLevel) return level;
   const { zoomLevel } = engine.updateSettings({ zoomLevel: level }, { quiet: true });
   for (const w of windows()) w.webContents.setZoomFactor(zoomLevel / 100);
+  applyBars();
   broadcast('zoom', zoomLevel);
   return zoomLevel;
 }
@@ -705,7 +710,7 @@ function openComposeWindow(input) {
   const others = windows().filter((w) => w !== win);
   const last = others[others.length - 1];
   const pos = last ? { x: last.getBounds().x + 28, y: last.getBounds().y + 28 } : Number.isFinite(b.x) ? { x: b.x, y: b.y } : {};
-  const { bar, background } = themeColors();
+  const { bar, background } = themeColors({ compose: true });
   const w = new BrowserWindow({
     width: b.width,
     height: b.height,

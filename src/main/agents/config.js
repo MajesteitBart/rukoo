@@ -277,7 +277,7 @@ class AgentConfig {
     this.interfaces = interfaces;
     this.data = clone(DEFAULTS);
     // Filled in by the hub once the MCP listeners are up; never persisted.
-    this.runtime = { localPort: null, remotePort: null, note: '' };
+    this.runtime = { localPort: null, remotePort: null, note: null };
     // Per pairing, when its lastSeenAt was last written to the file (touchPairing()).
     this.seenSaved = new Map();
   }
@@ -444,7 +444,8 @@ class AgentConfig {
         address: this.address(),
         localPort: this.runtime.localPort,
         remotePort: this.runtime.remotePort,
-        note: this.runtime.note || ''
+        // A code with its details, or null: { code: 'listenFailed', host, port, error } (noteText() in hub.js).
+        note: this.runtime.note ? { ...this.runtime.note } : null
       },
       // Never the token hash.
       phone: {

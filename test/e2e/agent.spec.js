@@ -1474,6 +1474,19 @@ test('OpenClaw has a card in Settings and answers in the chat like the other age
   await expect(remoteRow.locator('.switch')).toHaveClass(/on/);
   await expect.poll(() => win.evaluate(() => window.mail.call('agentConfig').then((c) => c.openclaw.remote))).toBe(true);
   await expect(remoteRow.locator('[data-openclaw-address]')).toContainText('Could not listen on 192.0.2.1');
+  // In Dutch the note is Dutch too: main sends a code with the address, port and error, and Settings words it (#253).
+  const reopenAgents = async () => {
+    await win.click('.page.settings [data-a="back"]');
+    await win.locator('.page.settings [data-a="agents"]').click();
+  };
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+  await reopenAgents();
+  await expect(remoteRow.locator('[data-openclaw-address]')).toContainText('Rukoo luistert niet op 192.0.2.1');
+  await expect(remoteRow.locator('[data-openclaw-address]')).toContainText('Rukoo kan niet luisteren op 192.0.2.1:');
+  await expect(remoteRow.locator('[data-openclaw-address]')).not.toContainText('Could not listen');
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'en' }));
+  await reopenAgents();
+  await expect(remoteRow.locator('[data-openclaw-address]')).toContainText('Could not listen on 192.0.2.1:');
   await expect(copyDesc).toContainText("with Rukoo's Tailscale address");
   await win.locator('.page.settings .row', { hasText: 'Copy OpenClaw setup' }).click();
   await expect(win.locator('#toast')).toContainText("Rukoo isn't listening on a Tailscale address.");

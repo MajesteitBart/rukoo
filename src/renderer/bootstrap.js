@@ -9,7 +9,7 @@ document.documentElement.dataset.platform = window.mail.platform;
 
 // Linux can put the window buttons on the left, as with GNOME's button-layout "close,minimize,maximize:". The window
 // controls overlay's titlebar-area rectangle then starts after them, and styles.css lays the title bar out around them.
-// Buttons on the right keep the fixed room they have always had.
+// Buttons on the right need no mark: the bar's right padding follows the same rectangle.
 const overlay = navigator.windowControlsOverlay;
 function placeWindowControls() {
   if (overlay?.getTitlebarAreaRect().x > 0) document.documentElement.dataset.controls = 'left';
