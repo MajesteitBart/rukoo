@@ -26,6 +26,7 @@ use crate::media::MediaService;
 use crate::meetings::controller::{CallSound, Change, NOTIFY_MEETING};
 use crate::meetings::screen::ScreenChange;
 use crate::meetings::{Meetings, PipelineOptions};
+#[cfg(target_os = "macos")]
 use crate::permissions::PermissionState;
 use crate::pill::{notices, Looks, MeetingPhase, PillDriver, ACTION_HOLD, DROP_HOLD, MOVED_HOLD};
 use crate::platform::CHIME_COOLDOWN;
@@ -490,7 +491,8 @@ impl Core {
         self.settings_changed();
     }
 
-    /// `SettingsState.callSound`: `heard`, `silent` or `null`.
+    /// `SettingsState.callSound`: `heard`, `silent` or `null`. macOS only, as the key is.
+    #[cfg(target_os = "macos")]
     pub fn call_sound_view(&self) -> Value {
         match lock(&self.call_sound).as_ref().map(|(_, sound)| *sound) {
             Some(CallSound::Heard) => Value::from("heard"),
@@ -499,7 +501,8 @@ impl Core {
         }
     }
 
-    /// What the last meeting learned about System Audio Recording, for Settings.
+    /// What the last meeting learned about System Audio Recording, for Settings. macOS only.
+    #[cfg(target_os = "macos")]
     pub fn system_audio_learned(&self) -> Option<PermissionState> {
         match lock(&self.call_sound).as_ref()?.1 {
             CallSound::Heard => Some(PermissionState::Granted),
@@ -1231,8 +1234,12 @@ impl EngineApi for EngineImpl {
             .map_err(control_error)
     }
 
+    /// macOS follows a system theme or language change into the pill and Settings. Elsewhere it
+    /// does nothing, and the app re-reads `ui()` on a theme change, as before.
     fn system_looks_changed(&self) {
-        self.0.refresh_looks();
+        if cfg!(target_os = "macos") {
+            self.0.refresh_looks();
+        }
     }
 
     fn release_hotkeys(&self) {

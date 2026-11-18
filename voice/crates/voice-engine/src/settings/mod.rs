@@ -133,9 +133,11 @@ pub fn provider_error(error: &ProviderError) -> ApiError {
 
 // The state --------------------------------------------------------------------------------
 
-/// The whole `SettingsState`. `permissions` is read only when Settings needs it: a state the page
-/// asks for, or a pushed state while its window exists. Starting Voice and changing a setting with
-/// Settings closed must not call TCC, because on macOS 27 a preflight read alone can list the app.
+/// The whole `SettingsState`. On macOS it also holds `permissions` and `callSound`; Windows and
+/// Linux states keep main's shape. `permissions` is read only when Settings needs it: a state the
+/// page asks for, or a pushed state while its window exists. Starting Voice and changing a setting
+/// with Settings closed must not call TCC, because on macOS 27 a preflight read alone can list the
+/// app.
 pub fn state(core: &Core, read_permissions: bool) -> Value {
     let cfg = core.config();
     let looks = core.looks();
@@ -144,12 +146,10 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
     let (update_state, update_version) = lock(&core.settings.updates).clone();
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
-    let permissions = read_permissions
-        .then(|| {
-            crate::permissions::view_learning(&*core.svc.permissions, core.system_audio_learned())
-        })
-        .flatten();
-    json!({
+    #[cfg(not(target_os = "macos"))]
+    let _ = read_permissions;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut state = json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
         "version": core.opts.version,
         "devMode": core.opts.dev_mode,
@@ -163,10 +163,6 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "providers": providers(),
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
-        "permissions": permissions,
-        // What the last meeting's call track showed while Voice runs, in every state, also one
-        // built while Settings is closed (voice/ui/API.md).
-        "callSound": core.call_sound_view(),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),
@@ -181,7 +177,23 @@ pub fn state(core: &Core, read_permissions: bool) -> Value {
         "updates": { "state": update_state, "version": update_version },
         "ownkey": ownkey::state(core, &cfg, &slow.ownkey_keys, slow.ownkey_found, slow.ownkey_running),
         "sync": sync,
-    })
+    });
+    #[cfg(target_os = "macos")]
+    {
+        state["permissions"] = read_permissions
+            .then(|| {
+                crate::permissions::view_learning(
+                    &*core.svc.permissions,
+                    core.system_audio_learned(),
+                )
+            })
+            .flatten()
+            .unwrap_or(Value::Null);
+        // What the last meeting's call track showed while Voice runs, in every state, also one
+        // built while Settings is closed (voice/ui/API.md).
+        state["callSound"] = core.call_sound_view();
+    }
+    state
 }
 
 /// What this computer can record of the screen, from `rukoo-voice-screen probe`: `null` until

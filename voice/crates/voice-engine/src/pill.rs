@@ -1200,6 +1200,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_silent_call_stands_ahead_of_a_lost_microphone_until_it_has_sound() {
         let (mut pill, t0) = start();
@@ -1250,6 +1251,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_stopped_screen_stands_behind_a_silent_call_and_ahead_of_a_lost_microphone() {
         let (mut pill, t0) = start();
@@ -1323,6 +1325,7 @@ mod tests {
         assert_eq!(s.notice, None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn saving_hides_a_stopped_screen() {
         let (mut pill, t0) = start();

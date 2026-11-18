@@ -129,19 +129,20 @@ mod run_value {
             }
         }
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+// At the file's level, so the test keeps the name it had before macOS: autostart::tests.
+#[cfg(all(test, windows))]
+mod tests {
+    use super::run_value::{quoted, RunValue};
 
-        #[test]
-        fn the_command_is_the_quoted_exe() {
-            assert_eq!(
-                quoted("C:\\Program Files\\Rukoo Voice\\rukoo-voice.exe"),
-                "\"C:\\Program Files\\Rukoo Voice\\rukoo-voice.exe\""
-            );
-            assert!(RunValue::for_current_exe().command().starts_with('"'));
-        }
+    #[test]
+    fn the_command_is_the_quoted_exe() {
+        assert_eq!(
+            quoted("C:\\Program Files\\Rukoo Voice\\rukoo-voice.exe"),
+            "\"C:\\Program Files\\Rukoo Voice\\rukoo-voice.exe\""
+        );
+        assert!(RunValue::for_current_exe().command().starts_with('"'));
     }
 }
 

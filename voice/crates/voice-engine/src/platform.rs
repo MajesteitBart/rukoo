@@ -108,7 +108,12 @@ impl System for SystemInfo {
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         {
-            locale_from_language(std::env::var("LANG").ok().as_deref())
+            let lang = std::env::var("LANG").unwrap_or_default();
+            if lang.starts_with("nl") {
+                Locale::Nl
+            } else {
+                Locale::En
+            }
         }
     }
 
@@ -141,7 +146,7 @@ impl System for SystemInfo {
 /// What macOS' `AppleInterfaceStyle` default says: "Dark" in dark mode, and absent in light mode.
 /// With an automatic appearance the system writes the style it shows now, so this follows the
 /// schedule too.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn theme_from_style(style: Option<&str>) -> Theme {
     match style {
         Some(style) if style.eq_ignore_ascii_case("dark") => Theme::Dark,
@@ -150,9 +155,8 @@ fn theme_from_style(style: Option<&str>) -> Theme {
 }
 
 /// The language Voice speaks, from a language tag such as the first of the user's preferred
-/// languages (`nl-NL`) or `LANG` (`nl_NL.UTF-8`): Dutch for anything that starts with `nl`, else
-/// English.
-#[cfg(any(not(windows), test))]
+/// languages (`nl-NL`): Dutch for anything that starts with `nl`, else English.
+#[cfg(target_os = "macos")]
 fn locale_from_language(language: Option<&str>) -> Locale {
     match language {
         Some(language) if language.to_ascii_lowercase().starts_with("nl") => Locale::Nl,
@@ -281,7 +285,7 @@ pub(crate) mod win {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
