@@ -29,8 +29,8 @@ impl Rect {
 }
 
 // The five helpers below place the pill window and its button windows on Windows; nothing else calls
-// them yet, so they are built for Windows and for the tests, which check every scale, taskbar edge
-// and monitor layout on every platform. The macOS pill will use them too.
+// them, so they are built for Windows and for the tests, which check every scale, taskbar edge and
+// monitor layout on every platform.
 
 /// `dpi / 96`; 0 (an unknown DPI) counts as 100 %.
 #[cfg(any(windows, test))]
@@ -113,10 +113,10 @@ pub fn css_to_physical(origin: (i32, i32), scale: f64, r: &CssRect) -> Option<Re
 // ---------- macOS: AppKit points, origin at the primary display's bottom left, y up ----------
 //
 // The macOS pill places itself with the helpers below. They take the screens as plain numbers, so the
-// tests cover one display, two, a notch, a side Dock and a display that went away on every platform.
+// tests cover one display, two, a notch, a side Dock and a display that went away without real screens.
 
 /// A rectangle in AppKit's screen space: points, `y` growing upwards, `(x, y)` its bottom left.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
 pub struct Frame {
     pub x: f64,
@@ -125,7 +125,7 @@ pub struct Frame {
     pub h: f64,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 impl Frame {
     pub const fn new(x: f64, y: f64, w: f64, h: f64) -> Frame {
         Frame { x, y, w, h }
@@ -167,7 +167,7 @@ impl Frame {
 }
 
 /// One display as `NSScreen` describes it.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     /// The display's `CGDirectDisplayID` (`NSScreenNumber`), which stays the same while displays are
@@ -185,7 +185,7 @@ pub struct Screen {
 /// out, with its bottom on the visible frame's bottom (above the Dock) or its top under the menu bar
 /// and the notch, whichever reaches lower. The page draws the pill 24 pt from the window's top and
 /// 40 pt from its bottom, as on Windows.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn mac_pill_frame(screen: &Screen, edge: Edge) -> Frame {
     let (w, h) = (WINDOW_W, WINDOW_H);
     let x = screen.visible.x + (screen.visible.w - w) / 2.0;
@@ -209,7 +209,7 @@ pub fn mac_pill_frame(screen: &Screen, edge: Edge) -> Frame {
 }
 
 /// The screen that holds `point`.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn screen_at(screens: &[Screen], point: (f64, f64)) -> Option<usize> {
     screens.iter().position(|s| s.frame.contains(point))
 }
@@ -217,7 +217,7 @@ pub fn screen_at(screens: &[Screen], point: (f64, f64)) -> Option<usize> {
 /// The display the user works on: the one the front window overlaps most (or the nearest, for a
 /// window off every display), else the pointer's, else the primary display (the first `NSScreen`, the
 /// one with the menu bar).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn choose_screen(
     screens: &[Screen],
     front: Option<Frame>,
@@ -234,19 +234,19 @@ pub fn choose_screen(
 
 /// The smallest window the front-window lookup takes for the one the user works in, in points:
 /// smaller ones are an app's helper windows (a drag image, a tracking overlay).
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub const MIN_FRONT_WINDOW: f64 = 40.0;
 
 /// Whether a window-list entry can be the window the user works in: not fully transparent
 /// (`kCGWindowAlpha` 0, missing counts as opaque) and not tiny.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn is_user_window(alpha: Option<f64>, frame: &Frame) -> bool {
     alpha.is_none_or(|a| a > 0.0) && frame.w >= MIN_FRONT_WINDOW && frame.h >= MIN_FRONT_WINDOW
 }
 
 /// The screen a window is on: the one it overlaps most, else (its display is gone, or it sits in a
 /// gap after a rearrangement) the one nearest its centre.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn screen_for_frame(screens: &[Screen], frame: &Frame) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, s) in screens.iter().enumerate() {
@@ -272,7 +272,7 @@ pub fn screen_for_frame(screens: &[Screen], frame: &Frame) -> Option<usize> {
 
 /// The display a show goes to after a display change: the one the pill was placed on while it is
 /// still there, else the one nearest the window.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn screen_after_change(screens: &[Screen], last: Option<u32>, window: &Frame) -> Option<usize> {
     last.and_then(|id| screens.iter().position(|s| s.id == id))
         .or_else(|| screen_for_frame(screens, window))
@@ -280,7 +280,7 @@ pub fn screen_after_change(screens: &[Screen], last: Option<u32>, window: &Frame
 
 /// A window's bounds from `CGWindowListCopyWindowInfo` (top left origin, `y` down from the primary
 /// display's top) in AppKit's space.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn cg_to_appkit(primary_height: f64, x: f64, y: f64, w: f64, h: f64) -> Frame {
     Frame::new(x, primary_height - y - h, w, h)
 }
@@ -288,7 +288,7 @@ pub fn cg_to_appkit(primary_height: f64, x: f64, y: f64, w: f64, h: f64) -> Fram
 /// Where a rectangle of the pill's page is on screen. The page measures in CSS pixels from the
 /// window's top left, and a CSS pixel is a point on macOS, so only `y` turns around. Rounded outwards
 /// so the click area never falls short of the drawn button. `None` for an empty or broken rectangle.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn css_to_points(window: &Frame, r: &CssRect) -> Option<Frame> {
     let values = [r.x, r.y, r.width, r.height, window.x, window.y, window.h];
     if values.iter().any(|v| !v.is_finite()) || r.width <= 0.0 || r.height <= 0.0 {
@@ -303,19 +303,19 @@ pub fn css_to_points(window: &Frame, r: &CssRect) -> Option<Frame> {
 
 /// How far a macOS button panel reaches past its drawn button, in CSS pixels (points): a near miss
 /// still hits the button instead of falling through to the wallpaper, where a click reveals the desktop.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub const BUTTON_MARGIN: f64 = 6.0;
 /// Left of the first button the reach stops at half of `pill.css`'s 8px between the pill's text and
 /// that button, so a click on the text never stops the meeting.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub const LABEL_CLEARANCE: f64 = 4.0;
 /// How far the inert panel under the buttons reaches past the drawn pill.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub const BODY_MARGIN: f64 = 6.0;
 
 /// One button's panel on macOS: where it takes clicks, and the drawn button inside it, which alone
 /// shows hover and pressed. In CSS pixels from the pill window's top left, as `pill_layout` sends.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitArea {
     pub hit: CssRect,
@@ -323,7 +323,7 @@ pub struct HitArea {
 }
 
 /// The panels over the pill on macOS: the two buttons' and the inert one over the drawn pill.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HitAreas {
     pub stop: Option<HitArea>,
@@ -331,7 +331,7 @@ pub struct HitAreas {
     pub body: Option<CssRect>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn usable(r: &CssRect) -> bool {
     [r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) && r.width > 0.0 && r.height > 0.0
 }
@@ -340,7 +340,7 @@ fn usable(r: &CssRect) -> bool {
 /// the other button, where the gap between them is split in half so the two never overlap, and
 /// towards the text on its left, where it stops at `LABEL_CLEARANCE`. The body is the drawn pill with
 /// `BODY_MARGIN` around it.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub fn hit_areas(layout: &Layout) -> HitAreas {
     let stop = layout.button.filter(usable);
     let screen = layout.screen_button.filter(usable);
@@ -559,8 +559,11 @@ mod tests {
             assert!(!is_shell_class(class), "{class}");
         }
     }
+}
 
-    // ---------- macOS ----------
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::*;
 
     /// A 1920x1080 display at the origin with a 30 pt menu bar and a 60 pt Dock at the bottom.
     fn mac_display(id: u32, x: f64, y: f64) -> Screen {

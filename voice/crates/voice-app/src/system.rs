@@ -62,12 +62,17 @@ pub fn locale() -> Locale {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn locale() -> Locale {
-    locale_from_language(std::env::var("LANG").ok().as_deref())
+    let lang = std::env::var("LANG").unwrap_or_default();
+    if lang.starts_with("nl") {
+        Locale::Nl
+    } else {
+        Locale::En
+    }
 }
 
-/// The language Voice speaks, from a language tag such as `nl-NL` or `nl_NL.UTF-8`: Dutch for
-/// anything that starts with `nl`, else English.
-#[cfg(any(not(windows), test))]
+/// The language Voice speaks, from a language tag such as `nl-NL`: Dutch for anything that starts
+/// with `nl`, else English.
+#[cfg(target_os = "macos")]
 fn locale_from_language(language: Option<&str>) -> Locale {
     match language {
         Some(language) if language.to_ascii_lowercase().starts_with("nl") => Locale::Nl,
@@ -137,7 +142,7 @@ mod mac {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

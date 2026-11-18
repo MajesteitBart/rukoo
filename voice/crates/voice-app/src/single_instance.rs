@@ -1,24 +1,23 @@
 //! One Voice per data folder (decision 5): a second launch asks the running one to open Settings and
 //! exits. The names include the data folder, so a development copy runs next to the installed one.
 //!
-//! Windows names a mutex and an event after the folder. Unix holds `flock(LOCK_EX | LOCK_NB)` on
+//! Windows names a mutex and an event after the folder. macOS holds `flock(LOCK_EX | LOCK_NB)` on
 //! `<data folder>/instance.lock` for the life of the process, which the kernel drops however the
 //! process dies, so a lock file left by a crashed copy never blocks the next launch. The first copy
 //! also listens on a Unix socket; a second copy connects, sends a short message and exits.
 //!
-//! The socket is `<data folder>/instance.sock` while that path fits in `sun_path` (104 bytes on macOS,
-//! 108 on Linux, the terminator included). Data folders under a checkout's `tmp/` are longer than
-//! that, so the fallback is `rukoo-voice-<hash>/instance.sock` in the per-user runtime folder
-//! (`$XDG_RUNTIME_DIR` on Linux when it's set) or else the per-user temp folder (`$TMPDIR` on macOS),
-//! named from the FNV-1a hash of the data folder's path without its trailing separator. The fallback
+//! The socket is `<data folder>/instance.sock` while that path fits in `sun_path` (104 bytes, the
+//! terminator included). Data folders under a checkout's `tmp/` are longer than that, so the
+//! fallback is `rukoo-voice-<hash>/instance.sock` in the per-user temp folder (`$TMPDIR`), named
+//! from the FNV-1a hash of the data folder's path without its trailing separator. The fallback
 //! folder must be a real folder of this user's, made 0700, before a socket goes in it: a symlink or
 //! another user's folder leaves this copy running without a listener, and a second launch then exits
 //! after its wait, as it does when binding fails. Both copies work the path out from
 //! `RUKOO_VOICE_DATA_DIR` alone, and neither depends on the current directory.
 
 /// The FNV-1a hash of some bytes: stable across builds and platforms, unlike std's hasher. Used by
-/// `names` and by the Unix fallback's folder; a platform with neither has no use for it.
-#[cfg(any(windows, unix, test))]
+/// `names` and by the macOS fallback's folder; a platform with neither has no use for it.
+#[cfg(any(windows, target_os = "macos", test))]
 fn hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
         (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
@@ -41,12 +40,12 @@ pub fn names(data_dir: &std::path::Path) -> (String, String) {
 
 pub enum Instance {
     First(Guard),
-    /// Another Voice already runs on this data folder: Windows found its mutex, Unix found its lock
+    /// Another Voice already runs on this data folder: Windows found its mutex, macOS found its lock
     /// file taken. `main.rs` signals it and exits.
     Running,
 }
 
-/// The first instance's lock. Windows keeps a mutex and an event; Unix keeps the locked file's
+/// The first instance's lock. Windows keeps a mutex and an event; macOS keeps the locked file's
 /// descriptor and, until `on_signal` takes it, the listening socket. The handles are never closed, so
 /// the lock stays held until the process ends, however the guard itself goes.
 pub struct Guard {
@@ -54,9 +53,9 @@ pub struct Guard {
     event: isize,
     #[cfg(windows)]
     _mutex: isize,
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     _lock: Option<std::os::unix::io::RawFd>,
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     listener: std::sync::Mutex<Option<std::os::unix::net::UnixListener>>,
 }
 
@@ -147,8 +146,8 @@ mod imp {
     }
 }
 
-/// macOS and Linux: a lock file plus a socket, as `main.rs` and the module comment describe.
-#[cfg(unix)]
+/// macOS: a lock file plus a socket, as `main.rs` and the module comment describe.
+#[cfg(target_os = "macos")]
 mod imp {
     use std::fs::{self, DirBuilder, OpenOptions};
     use std::io::{Read, Write};
@@ -329,20 +328,10 @@ mod imp {
         short_base().join(format!("rukoo-voice-{:016x}", path_hash(data_dir)))
     }
 
-    /// Where the fallback folder goes: Linux's per-user runtime folder when the session sets one, else
-    /// the per-user temp folder. `/tmp` is shared, which is why the folder is checked before use.
+    /// Where the fallback folder goes: the per-user temp folder. A temp folder can be shared, which
+    /// is why the folder is checked before use.
     fn short_base() -> PathBuf {
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = xdg_runtime_dir() {
-            return dir;
-        }
         std::env::temp_dir()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn xdg_runtime_dir() -> Option<PathBuf> {
-        let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-        dir.is_absolute().then_some(dir)
     }
 
     /// The data folder's path without a trailing separator, hashed. Unix paths are case-sensitive,
@@ -360,7 +349,7 @@ mod imp {
         path.as_os_str().as_bytes().len() <= sun_path_capacity()
     }
 
-    /// The longest path `sun_path` takes: its 104 bytes on macOS or 108 on Linux, less the NUL.
+    /// The longest path `sun_path` takes: its 104 bytes, less the NUL.
     fn sun_path_capacity() -> usize {
         std::mem::size_of::<libc::sockaddr_un>()
             - std::mem::offset_of!(libc::sockaddr_un, sun_path)
@@ -405,7 +394,7 @@ mod imp {
     }
 }
 
-#[cfg(not(any(windows, unix)))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::Path;
 
@@ -429,13 +418,13 @@ pub use imp::{acquire, signal};
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    #[cfg(any(windows, unix))]
+    #[cfg(target_os = "macos")]
     use std::path::PathBuf;
 
     use super::*;
 
     /// A scratch data folder of this test's own, so the tests don't find each other's lock.
-    #[cfg(any(windows, unix))]
+    #[cfg(target_os = "macos")]
     fn temp(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("voice-app-single-{}-{name}", std::process::id()));
@@ -446,7 +435,7 @@ mod tests {
 
     /// A data folder deep enough that `<data folder>/instance.sock` is too long for `sun_path`, as a
     /// data folder under a worktree's `tmp/` can be. Such a folder gets the short fallback socket.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     fn long_data_folder(name: &str) -> PathBuf {
         let mut dir = temp(name);
         for _ in 0..3 {
@@ -471,9 +460,26 @@ mod tests {
         );
     }
 
-    /// The Windows check, run on Unix too: the second acquire finds the first, and the signal reaches
-    /// the first copy's callback.
-    #[cfg(any(windows, unix))]
+    #[cfg(windows)]
+    #[test]
+    fn a_second_acquire_finds_the_first_and_signals_it() {
+        let dir = std::env::temp_dir().join(format!("voice-app-single-{}", std::process::id()));
+        let Instance::First(guard) = acquire(&dir) else {
+            panic!("the first acquire should win");
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        guard.on_signal(move || {
+            let _ = tx.send(());
+        });
+        assert!(matches!(acquire(&dir), Instance::Running));
+        assert!(signal(&dir));
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the first instance heard the signal");
+    }
+
+    /// The Windows check, on macOS: the second acquire finds the first, and the signal reaches the
+    /// first copy's callback.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_second_acquire_finds_the_first_and_signals_it() {
         let dir = temp("second-acquire");
@@ -488,11 +494,10 @@ mod tests {
         assert!(signal(&dir));
         rx.recv_timeout(std::time::Duration::from_secs(5))
             .expect("the first instance heard the signal");
-        #[cfg(unix)]
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn another_folder_is_first() {
         use super::imp::socket_path;
@@ -509,7 +514,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&two);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_socket_and_lock_file_left_by_a_dead_process_do_not_block() {
         use std::os::unix::net::UnixListener;
@@ -538,7 +543,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_signal_without_a_first_instance_gives_up() {
         let dir = temp("no-first");
@@ -553,7 +558,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn an_unwritable_data_folder_still_starts() {
         use std::os::unix::fs::PermissionsExt;
@@ -568,7 +573,7 @@ mod tests {
         assert!(first);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_long_data_folder_gets_a_short_private_socket() {
         use std::os::unix::fs::PermissionsExt;
@@ -578,14 +583,7 @@ mod tests {
         let dir = long_data_folder("long");
         let socket = socket_path(&dir);
         assert!(!socket.starts_with(&dir), "{}", socket.display());
-        // `<base>/rukoo-voice-<hash>/instance.sock`, where the base is Linux's runtime folder when
-        // the session sets an absolute one, else the temp folder.
-        #[cfg(target_os = "linux")]
-        let base = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .unwrap_or_else(std::env::temp_dir);
-        #[cfg(not(target_os = "linux"))]
+        // `<temp folder>/rukoo-voice-<hash>/instance.sock`.
         let base = std::env::temp_dir();
         let folder = socket.parent().unwrap();
         assert_eq!(
@@ -619,7 +617,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_fallback_folder_open_to_others_is_made_private() {
         use std::os::unix::fs::PermissionsExt;
@@ -652,7 +650,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_fallback_folder_that_is_a_symlink_is_not_used() {
         use super::imp::socket_path;

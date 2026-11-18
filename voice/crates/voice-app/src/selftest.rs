@@ -3,8 +3,9 @@
 //! window recipe and front app), and captures the pill and Settings pages in both themes into
 //! `<folder>`. It never sends input and never reads the screen; the captures come from the web view
 //! rendering the app's own pages. On macOS it gives up the front once at the start, since `open` put
-//! Voice there. The report is `<folder>/self-test.json`. The app then quits, with 0 when the report
-//! says `ok` and 1 otherwise, unless `RUKOO_VOICE_SELF_TEST_KEEP_RUNNING` is set.
+//! Voice there. The report is `<folder>/self-test.json`. On Windows the app keeps running afterwards,
+//! so whoever started it stops it by its process id. On macOS the app then quits, with 0 when the
+//! report says `ok` and 1 otherwise, unless `RUKOO_VOICE_SELF_TEST_KEEP_RUNNING` is set.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,8 +51,9 @@ pub fn spawn(app: AppHandle, out: PathBuf) {
                 log::error!("self-test: could not write {}", path.display());
             }
             log::info!("self-test: report in {}", path.display());
-            // Done: the app quits, with 0 for a passing report and 1 otherwise. A test that reads
-            // the windows from outside afterwards (Windows' `tests/launch.rs`) keeps it running.
+            // Done: on macOS the app quits, with 0 for a passing report and 1 otherwise. A test
+            // that reads the windows from outside afterwards keeps it running.
+            #[cfg(target_os = "macos")]
             if std::env::var_os(KEEP_RUNNING).is_none() {
                 let code = if report["ok"] == true { 0 } else { 1 };
                 app.exit(code);
@@ -59,7 +61,8 @@ pub fn spawn(app: AppHandle, out: PathBuf) {
         });
 }
 
-/// Set (to anything) to keep the app running after the self-test wrote its report.
+/// Set (to anything) to keep the macOS app running after the self-test wrote its report.
+#[cfg(target_os = "macos")]
 pub const KEEP_RUNNING: &str = "RUKOO_VOICE_SELF_TEST_KEEP_RUNNING";
 
 fn on_main<T: Send + 'static>(
@@ -95,8 +98,8 @@ fn painted(pill: &Pill, seq: u64) -> bool {
 }
 
 /// Waits for the pill page to acknowledge that it painted the snapshot. A window that shows nothing is
-/// the fault ownkey-windows #13 was about, so on Windows the wait is final.
-#[cfg(windows)]
+/// the fault ownkey-windows #13 was about, so outside macOS the wait is final.
+#[cfg(not(target_os = "macos"))]
 fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
     wait(what, limit, || painted(pill, seq))
 }
@@ -122,16 +125,6 @@ fn await_paint(what: &str, limit: Duration, pill: &Pill, seq: u64) -> Result<(),
     Ok(())
 }
 
-/// Other platforms capture nothing here, so a missing acknowledgement is only worth a line in the log.
-#[cfg(not(any(windows, target_os = "macos")))]
-fn await_paint(what: &str, _limit: Duration, pill: &Pill, seq: u64) -> Result<(), String> {
-    thread::sleep(Duration::from_millis(500));
-    if !painted(pill, seq) {
-        log::warn!("self-test: {what}: no paint acknowledgement; capturing what the page drew");
-    }
-    Ok(())
-}
-
 /// What the report says about the session the self-test ran in, so an empty pill capture is explained.
 #[cfg(target_os = "macos")]
 fn session() -> Value {
@@ -141,11 +134,6 @@ fn session() -> Value {
         "screenLocked": screen_locked,
         "atTheConsole": crate::session_mac::at_the_console_from(on_console, screen_locked),
     })
-}
-
-#[cfg(not(target_os = "macos"))]
-fn session() -> Value {
-    Value::Null
 }
 
 #[cfg(windows)]
@@ -192,11 +180,6 @@ fn yield_front(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-fn yield_front(_app: &AppHandle) -> Result<(), String> {
-    Ok(())
-}
-
 /// macOS: a button panel made the way the pill makes its own, clicked by handing mouse events
 /// straight to it (nothing reaches the window server): a click, a press dragged off before the
 /// release, and a click again. Two clicks must arrive, and neither the panel nor Voice may become key or active.
@@ -237,11 +220,6 @@ fn panel_clicks(app: &AppHandle) -> Result<Value, String> {
             "ok": clicks.get() == 2 && !recipe.is_key && !recipe.can_become_key && !active,
         }))
     })?
-}
-
-#[cfg(not(target_os = "macos"))]
-fn panel_clicks(_app: &AppHandle) -> Result<Value, String> {
-    Ok(json!({ "ok": true }))
 }
 
 /// One click on the stop button. Windows calls what its stop window calls; macOS clicks the real stop
@@ -324,18 +302,25 @@ fn capture(_window: Option<tauri::WebviewWindow>, path: &Path) -> Value {
 /// The pill's native window styles. Windows sets and reports them, and macOS reports its recipe in the
 /// same shape (`window_mac::styles_of`): never key or main, at the pill's level, out of the window
 /// cycle.
-#[cfg(any(windows, target_os = "macos"))]
-fn styles_ok(styles: &Value) -> bool {
-    let p = &styles["pill"];
-    // The stop window is made with the pill; when it's there it never activates either.
-    let stop = &styles["stopWindow"];
-    let stop_ok = stop.is_null() || (stop["noactivate"] == true && stop["topmost"] == true);
+fn pill_ok(p: &Value) -> bool {
     p["toolwindow"] == true
         && p["noactivate"] == true
         && p["topmost"] == true
         && p["appwindow"] == false
-        && stop_ok
-        && native_ok(&styles["native"])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn styles_ok(styles: &Value) -> bool {
+    pill_ok(&styles["pill"])
+}
+
+/// macOS also checks the stop panel and AppKit's own account of the windows.
+#[cfg(target_os = "macos")]
+fn styles_ok(styles: &Value) -> bool {
+    // The stop window is made with the pill; when it's there it never activates either.
+    let stop = &styles["stopWindow"];
+    let stop_ok = stop.is_null() || (stop["noactivate"] == true && stop["topmost"] == true);
+    pill_ok(&styles["pill"]) && stop_ok && native_ok(&styles["native"])
 }
 
 /// macOS: neither the pill, the stop panel nor the body panel is ever the key window, none hides with
@@ -351,16 +336,6 @@ fn native_ok(native: &Value) -> bool {
     window_ok(&native["pill"]) && window_ok(&native["stopPanel"]) && window_ok(&native["bodyPanel"])
 }
 
-#[cfg(windows)]
-fn native_ok(_native: &Value) -> bool {
-    true
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn styles_ok(_styles: &Value) -> bool {
-    true
-}
-
 fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let shared = app.state::<Shared>();
@@ -370,14 +345,12 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     wait("the pill page to load", Duration::from_secs(60), || {
         pill.status().page_loaded
     })?;
+    #[cfg(target_os = "macos")]
     yield_front(app)?;
     let before = foreground();
 
-    // 1. A meeting: the pill shows with its stop button. `--fake-engine=meeting` starts with one
-    // already recording; the self-test then takes that one.
-    if engine.tray_state().meeting.is_none() {
-        engine.start_meeting().map_err(|e| e.to_string())?;
-    }
+    // 1. A meeting: the pill shows with its stop button.
+    engine.start_meeting().map_err(|e| e.to_string())?;
     let seq = engine.pill_snapshot().seq;
     await_paint(
         "the meeting pill to paint",
@@ -388,7 +361,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     // The button windows over the pill's stop and screen buttons: Windows and macOS. They follow the
     // layout the page sends after it painted, so on a Mac whose screen runs no frames (locked, or a
     // session nobody shows) they wait for that paint, as the capture does.
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     wait(
         "the stop window over the button",
         Duration::from_secs(5),
@@ -455,6 +428,7 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     steps.push("captured");
 
     // 4. The two-step stop as the stop window reports it, then the pill hides and shows again.
+    #[cfg(target_os = "macos")]
     let panel = panel_clicks(app)?;
     stop_click(app, &*engine, &pill)?;
     let asked = engine
@@ -484,6 +458,9 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
     steps.push("hidden and shown again");
 
     // Windows compares the foreground window, macOS the front app (`hwnd` is null there).
+    #[cfg(not(target_os = "macos"))]
+    let same = |a: &Value, b: &Value| a["hwnd"] == b["hwnd"];
+    #[cfg(target_os = "macos")]
     let same = |a: &Value, b: &Value| a["hwnd"] == b["hwnd"] && a["pid"] == b["pid"];
     let unchanged =
         same(&before, &after_pill) && same(&before, &after_settings) && same(&before, &end);
@@ -495,16 +472,18 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         && styles_ok(&shown)
         && styles_ok(&hidden)
         && styles_ok(&reshown)
-        && panel["ok"] == true
         && asked
         && saving.as_deref() == Some("processing")
         && captures.iter().all(|c| c["png"] == true);
+    // macOS also clicks a button panel the way the pill makes them.
+    #[cfg(target_os = "macos")]
+    let ok = ok && panel["ok"] == true;
 
-    Ok(json!({
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut report = json!({
         "ok": ok,
         "pid": std::process::id(),
         "steps": steps,
-        "session": session(),
         "foreground": {
             "before": before, "afterPill": after_pill, "afterSettings": after_settings, "end": end,
             "unchanged": unchanged, "everOurs": ours
@@ -513,7 +492,12 @@ fn run(app: &AppHandle, out: &Path) -> Result<Value, String> {
         "pill": pill.status(),
         "settingsLoads": shared.settings_loads.load(Ordering::Relaxed),
         "twoStepStop": { "firstClickAsks": asked, "secondClickStops": saving },
-        "panelClicks": panel,
         "captures": captures,
-    }))
+    });
+    #[cfg(target_os = "macos")]
+    {
+        report["session"] = session();
+        report["panelClicks"] = panel;
+    }
+    Ok(report)
 }

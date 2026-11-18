@@ -14,8 +14,9 @@ pub trait Shell: Send + Sync {
         start: Option<&Path>,
         owner: Option<isize>,
     ) -> Result<Option<PathBuf>, String>;
-    /// Asks the system for the Screen Recording permission where it has one to ask for, so the
-    /// app appears in the system's list: macOS only.
+    /// Asks the system for the Screen Recording permission, so the app appears in the system's
+    /// list: macOS only.
+    #[cfg(target_os = "macos")]
     fn request_screen_recording(&self) {}
 }
 
@@ -38,9 +39,9 @@ impl SystemShell {
 }
 
 /// How the macOS folder panel ended, kept apart from AppKit's constants so the mapping below is testable
-/// everywhere.
+/// without a panel.
+#[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 enum PanelAnswer {
     Ok,
     Cancel,
@@ -49,7 +50,7 @@ enum PanelAnswer {
 
 /// The panel's answer as the picker's result: `Ok(None)` when the user cancelled, so the caller leaves the
 /// setting as it was; an error when the panel showed no folder or couldn't open.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(target_os = "macos")]
 fn folder_from_panel(
     answer: PanelAnswer,
     folder: Option<PathBuf>,
@@ -315,7 +316,7 @@ impl Shell for SystemShell {
         _start: Option<&Path>,
         _owner: Option<isize>,
     ) -> Result<Option<PathBuf>, String> {
-        Err("Choosing a folder is only supported on Windows and macOS for now.".to_string())
+        Err("Choosing a folder is only supported on Windows for now.".to_string())
     }
 }
 
@@ -333,7 +334,7 @@ fn open_with_system(target: &str) -> Result<(), String> {
         .map_err(|e| format!("Could not open {target}: {e}"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

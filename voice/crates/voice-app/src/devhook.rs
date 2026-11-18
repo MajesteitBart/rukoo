@@ -4,9 +4,10 @@
 //! `<folder>/reply-<id>.json` the same way. `voice/scripts/live-meeting.mjs` uses it.
 //!
 //! Requests: `{"id": 1, "cmd": "status"}` (the pill snapshot, the pill window, on macOS its native
-//! recipe and its panels', whether Settings' window is open and the whole Settings state), `start_meeting` and `stop_meeting` (what the tray's
-//! items call), `pill_screen_click` (what a click on the pill's screen button does: opens its menu),
-//! `pill_screen_set` with meeting, mode and optional monitor (the selected menu action), and
+//! recipe and its panels' and whether Settings' window is open, and the whole Settings state),
+//! `start_meeting` and `stop_meeting` (what the tray's items call), `pill_screen_click` (what a
+//! click on the pill's screen button does: opens its menu), `pill_screen_set` with meeting, mode and
+//! optional monitor (the selected menu action), and
 //! `{"cmd": "capture", "dir": "...", "page": "rukoo"}`, which opens Settings at a page without focus
 //! and writes PNGs of the pill (`voice-pill.png`) and Settings (`voice-settings-<page>.png`) from the
 //! web view. Nothing here sends input or reads the screen.
@@ -14,8 +15,8 @@
 //! Settings and bucket sync, as the page would change them: `{"cmd": "settings", "key":
 //! "storage.sync.bucket", "value": "test"}` calls `settings_set`, and `{"cmd": "sync", "action":
 //! ...}` calls the sync commands: `secret` with `secret`, `test`, `key` (the recovery code, which
-//! the caller keeps to itself), `import` with `code`, `restore_list`, `restore_start` and `status`
-//! (Settings' `sync`).
+//! the caller keeps to itself), `import` with `code`, on macOS `retry`, `restore_list`,
+//! `restore_start` and `status` (Settings' `sync`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,18 +77,26 @@ fn handle(app: &AppHandle, request: &Value) -> Result<Value, String> {
     match request["cmd"].as_str().unwrap_or_default() {
         "status" => {
             let tray = engine.tray_state();
-            Ok(json!({
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+            let mut status = json!({
                 "pid": std::process::id(),
                 "pill": engine.pill_snapshot(),
                 "pillWindow": shared.pill.status(),
-                // macOS: the pill's and its panels' window recipe (level, Spaces behaviour, sharing
-                // type), so a script can check it reached AppKit. Null elsewhere.
-                "pillNative": pill_native(app, &shared),
-                // Whether Settings is open, which a second launch has to ask for.
-                "settingsWindow": app.get_webview_window(settings_window::LABEL).is_some(),
                 "tray": { "meeting": tray.meeting, "meetingAtMs": tray.meeting_at_ms },
                 "settings": engine.settings_state_quiet(),
-            }))
+            });
+            #[cfg(target_os = "macos")]
+            {
+                // The pill's and its panels' window recipe (level, Spaces behaviour, sharing type),
+                // so a script can check it reached AppKit.
+                status["pillNative"] = pill_native(app, &shared);
+                // Whether Settings is open, which a second launch has to ask for.
+                status["settingsWindow"] = app
+                    .get_webview_window(settings_window::LABEL)
+                    .is_some()
+                    .into();
+            }
+            Ok(status)
         }
         "start_meeting" => engine
             .start_meeting()
@@ -150,12 +159,6 @@ fn pill_native(app: &AppHandle, shared: &Shared) -> Value {
         .unwrap_or_else(|_| json!({ "error": "the event loop didn't answer" }))
 }
 
-/// Only macOS has a native recipe to report; elsewhere `status` doesn't wait on the event loop.
-#[cfg(not(target_os = "macos"))]
-fn pill_native(_app: &AppHandle, _shared: &Shared) -> Value {
-    Value::Null
-}
-
 /// The bucket sync commands of Settings > Storage.
 fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, String> {
     let text = |name: &str| request[name].as_str().map(str::to_string);
@@ -167,6 +170,7 @@ fn sync(engine: &dyn voice_engine::EngineApi, request: &Value) -> Result<Value, 
         "test" => engine.settings_sync_test(),
         "key" => engine.settings_sync_key("show", None),
         "import" => engine.settings_sync_key("import", text("code")),
+        #[cfg(target_os = "macos")]
         "retry" => engine.settings_sync_key("retry", None),
         "restore_list" => engine.settings_sync_restore("list"),
         "restore_start" => engine.settings_sync_restore("start"),

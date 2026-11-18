@@ -10,6 +10,9 @@
 //! never goes through tao for this. It clears `NSApp.appearance` and gives the window its own
 //! `NSWindow.appearance` instead: none while Voice's theme is System, so the window follows the
 //! system by itself, and Light or Dark when the user picked one.
+//!
+//! Only the macOS build has this module. On Windows the Settings builder and `set_theme` give the
+//! window its theme, and tao's `ThemeChanged` refreshes the pages.
 
 use voice_engine::{Theme, UiOptions};
 
@@ -92,18 +95,6 @@ impl Chrome for WindowChrome<'_> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl Chrome for WindowChrome<'_> {
-    fn set_app(&self, _appearance: Choice) {}
-
-    fn set_window(&self, appearance: Choice) {
-        let _ = self.0.set_theme(appearance.map(|theme| match theme {
-            Theme::Dark => tauri::Theme::Dark,
-            Theme::Light => tauri::Theme::Light,
-        }));
-    }
-}
-
 /// Gives `window` the appearance `ui` asks for. Needs no particular thread.
 pub fn apply_to_window(window: &tauri::WebviewWindow, ui: &UiOptions) {
     apply(&WindowChrome(window), plan(Platform::CURRENT, ui));
@@ -121,29 +112,21 @@ pub fn apply_to_ns_window(window: &objc2_app_kit::NSWindow, ui: &UiOptions) {
 /// Writes how the window and the app stand to the log: what was asked, and what AppKit says
 /// results (`effectiveAppearance`), so a title bar that disagrees with its page shows up there.
 pub fn log_state(window: &tauri::WebviewWindow, why: &'static str) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = window.with_webview(move |webview| {
-            // SAFETY: as in `set_window`; `inner` is the window's WKWebView.
-            let line = unsafe { mac::describe(webview.ns_window(), webview.inner()) };
-            log::info!("appearance ({why}): {line}");
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (window, why);
+    let _ = window.with_webview(move |webview| {
+        // SAFETY: as in `set_window`; `inner` is the window's WKWebView.
+        let line = unsafe { mac::describe(webview.ns_window(), webview.inner()) };
+        log::info!("appearance ({why}): {line}");
+    });
 }
 
 /// Calls `on_change` when the system's appearance changes, whether Voice's windows follow it or
 /// not. On macOS that is the system's `AppleInterfaceThemeChangedNotification`, which also
 /// arrives for an automatic Light and Dark switch; tao's `ThemeChanged` can't be relied on for
-/// it. Elsewhere tao's `ThemeChanged` is the signal and this does nothing.
+/// it.
 ///
 /// Call it once, from the main thread.
 pub fn watch_system(on_change: impl Fn() + Send + Sync + 'static) {
-    #[cfg(target_os = "macos")]
     mac::watch(on_change);
-    #[cfg(not(target_os = "macos"))]
-    let _ = on_change;
 }
 
 #[cfg(target_os = "macos")]

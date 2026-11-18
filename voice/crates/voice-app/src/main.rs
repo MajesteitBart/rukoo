@@ -5,6 +5,7 @@
 // A release build has no console window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
 mod appearance;
 mod args;
 #[cfg(any(windows, target_os = "macos"))]
@@ -36,6 +37,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
@@ -165,12 +167,20 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
             event: WindowEvent::ThemeChanged(_),
             ..
         } => {
+            // macOS follows the system's look through the engine; elsewhere the windows re-read
+            // ui(), as before.
+            #[cfg(target_os = "macos")]
             system_appearance_changed(app);
+            #[cfg(not(target_os = "macos"))]
+            if let Some(shared) = app.try_state::<Shared>() {
+                shared.sink.refresh_ui();
+            }
         }
         // Finder, Launchpad and Spotlight don't start a second copy of a running app; they send it this.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => reopen(app),
         // Settings' own states stop reading the privacy permissions once its window is gone.
+        #[cfg(target_os = "macos")]
         RunEvent::WindowEvent {
             label,
             event: WindowEvent::Destroyed,
@@ -189,14 +199,15 @@ fn run_app(data_dir: PathBuf, dev_mode: bool, args: Args, guard: Guard) -> i32 {
     }
 }
 
-/// The system's theme changed: the engine learns the new look for the Settings that follow the
-/// system, and the windows take what it says. macOS says so through
-/// [`appearance::watch_system`], Windows through tao's `ThemeChanged`. It runs on a thread of its
-/// own because the engine and the windows both take their own locks.
+/// The system's theme changed on macOS: the engine learns the new look for the Settings that
+/// follow the system, and the windows take what it says. macOS says so through
+/// [`appearance::watch_system`] and tao's `ThemeChanged`. It runs on a thread of its own because
+/// the engine and the windows both take their own locks.
 ///
 /// macOS posts its notification before the user defaults the engine reads always show the new
 /// style, so a second look follows a moment later. It finds nothing to do when the first one
 /// already saw the change.
+#[cfg(target_os = "macos")]
 fn system_appearance_changed(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
@@ -309,8 +320,11 @@ fn setup(
     });
 
     sink.refresh_ui();
-    let handle = app.clone();
-    appearance::watch_system(move || system_appearance_changed(&handle));
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.clone();
+        appearance::watch_system(move || system_appearance_changed(&handle));
+    }
     // A key-up can be lost when the session goes away. Every one of these events ends a held
     // hotkey's recording, so push-to-talk never stays on while the screen is locked or the Mac sleeps.
     #[cfg(target_os = "macos")]
@@ -459,6 +473,7 @@ mod tests {
         assert!(check_dev_flags(&hooks, true).is_ok());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_keeps_no_webview2_folder_in_the_data_folder() {
         let data = std::path::Path::new("/tmp/voice-data");

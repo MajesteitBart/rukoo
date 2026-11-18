@@ -24,10 +24,9 @@ voice-core = { path = "../voice-core" }
 voice-engine = { path = "../voice-engine" }
 voice-protocol = { path = "../voice-protocol" }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [target.'cfg(target_os = "macos")'.dependencies]
+# The single-instance lock file and socket (`flock`, `getuid`, `sockaddr_un`).
+libc = "0.2"
 # The objc2 family tauri 2.12.5, tao 0.37.2 and wry 0.57.1 build against, so the WKWebView handle is one
 # type. The app reads its language from AppKit, gives its windows an appearance, hears the system's
 # theme change, says in an NSAlert why it can't start,

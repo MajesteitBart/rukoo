@@ -1,5 +1,5 @@
 //! What the pointer does on one of the pill's native button panels on macOS (`hit_mac.rs`), apart from
-//! AppKit so the tests run everywhere. It ports `hit.rs`'s window procedure: the page draws hover and
+//! AppKit so the tests need no window. It ports `hit.rs`'s window procedure: the page draws hover and
 //! pressed from `pill://pointer`, and one press and release on the panel is one click. The panel
 //! reaches a few points past the drawn button (`place::hit_areas`), so a near miss still clicks, but
 //! only the drawn button looks hovered or pressed. The two-step stop ("Stop?", then stop) is the

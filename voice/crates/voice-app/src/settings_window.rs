@@ -9,6 +9,7 @@ use tauri::{
 };
 use voice_engine::{EngineApi, Theme, UiOptions};
 
+#[cfg(target_os = "macos")]
 use crate::appearance;
 use crate::catalog::{keys, Catalog};
 use crate::pill::place::Rect;
@@ -55,6 +56,14 @@ pub fn background(theme: Theme) -> Color {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn native_theme(theme: Theme) -> tauri::Theme {
+    match theme {
+        Theme::Dark => tauri::Theme::Dark,
+        Theme::Light => tauri::Theme::Light,
+    }
+}
+
 /// The top left that centres a window of `size` in `work`, kept inside it.
 pub fn centered(work: &Rect, size: (i32, i32)) -> (i32, i32) {
     let x = work.left + ((work.width() - size.0) / 2).max(0);
@@ -78,6 +87,8 @@ pub fn open(
         if focus {
             window.set_focus()?;
         }
+        // On macOS Settings' pushed states read the privacy permissions while it exists.
+        #[cfg(target_os = "macos")]
         engine.settings_opened();
         return Ok(window);
     }
@@ -92,6 +103,12 @@ pub fn open(
             .focused(focus)
             .visible(false)
             .disable_drag_drop_handler();
+    // Off macOS the window takes Voice's theme from the builder, as before. On macOS tao would pin
+    // the whole app with it, so the appearance comes after the build.
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.theme(Some(native_theme(ui.theme)));
+    }
     if let Some(dir) = webview_dir {
         builder = builder.data_directory(dir);
     }
@@ -104,14 +121,17 @@ pub fn open(
         builder = builder.title_bar_style(tauri::TitleBarStyle::Transparent);
     }
     let window = builder.build()?;
-    // Not through the builder's `.theme(..)`: on macOS tao would pin the whole app with it.
-    appearance::apply_to_window(&window, &ui);
-    appearance::log_state(&window, "settings window built");
+    #[cfg(target_os = "macos")]
+    {
+        appearance::apply_to_window(&window, &ui);
+        appearance::log_state(&window, "settings window built");
+    }
     place_under_cursor(&window);
     window.show()?;
     if focus {
         window.set_focus()?;
     }
+    #[cfg(target_os = "macos")]
     engine.settings_opened();
     Ok(window)
 }
@@ -141,8 +161,13 @@ pub fn apply_ui(app: &AppHandle, ui: &UiOptions, catalog: &Catalog) {
     };
     let _ = window.set_title(&catalog.text(ui.locale, keys::SETTINGS_TITLE));
     let _ = window.set_background_color(Some(background(ui.theme)));
-    appearance::apply_to_window(&window, ui);
-    appearance::log_state(&window, "settings window restyled");
+    #[cfg(not(target_os = "macos"))]
+    let _ = window.set_theme(Some(native_theme(ui.theme)));
+    #[cfg(target_os = "macos")]
+    {
+        appearance::apply_to_window(&window, ui);
+        appearance::log_state(&window, "settings window restyled");
+    }
 }
 
 #[cfg(test)]

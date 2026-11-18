@@ -64,9 +64,10 @@ pub mod ops {
         }
     }
 
-    /// The System Settings pane for each privacy permission, in one table. Checked on macOS 27:
+    /// The System Settings pane for each privacy permission, in one table. macOS only. Checked on macOS 27:
     /// each link opens its pane. System Audio Recording shares the Screen & System Audio Recording
     /// pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane.
+    #[cfg(target_os = "macos")]
     const PERMISSION_PANES: [(&str, &str); 5] = [
         (
             "microphone",
@@ -90,6 +91,7 @@ pub mod ops {
         ),
     ];
 
+    #[cfg(target_os = "macos")]
     pub fn permission_url(permission: &str) -> Result<&'static str, ApiError> {
         PERMISSION_PANES
             .iter()
@@ -100,6 +102,7 @@ pub mod ops {
             })
     }
 
+    #[cfg(target_os = "macos")]
     pub fn open_permission(shell: &dyn Shell, permission: &str) -> Result<(), ApiError> {
         let url = permission_url(permission)?;
         // macOS lists an app under Screen Recording only once it asked: asking puts Voice there,
@@ -297,6 +300,8 @@ pub async fn settings_open_link(link: String, state: State<'_, Shared>) -> Resul
     blocking(move || ops::open_link(&*shell, &link)).await
 }
 
+/// macOS only: Settings' Open button of a privacy permission.
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn settings_open_permission(
     permission: String,
@@ -406,6 +411,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         settings_choose_folder,
         settings_open_folder,
         settings_open_link,
+        #[cfg(target_os = "macos")]
         settings_open_permission,
         settings_clean_preview,
         settings_check_updates,
@@ -447,6 +453,7 @@ mod tests {
     struct FakeShell {
         opened: Mutex<Vec<String>>,
         /// How often Screen Recording was asked for.
+        #[cfg(target_os = "macos")]
         requested: std::sync::atomic::AtomicUsize,
         pick: Mutex<Option<PathBuf>>,
         picked_with: Mutex<Option<PickedWith>>,
@@ -471,6 +478,7 @@ mod tests {
                 Some((title.to_string(), start.map(Path::to_path_buf), owner));
             Ok(self.pick.lock().unwrap().clone())
         }
+        #[cfg(target_os = "macos")]
         fn request_screen_recording(&self) {
             self.requested
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -497,6 +505,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn permission_panes_come_from_the_apps_table_only() {
         let shell = FakeShell::default();
@@ -596,16 +605,19 @@ mod tests {
             catalog.text(engine.ui().locale, crate::catalog::keys::FOLDER_MODELS)
         );
         assert_eq!(owner, Some(42));
-        // The next time, the panel opens in the folder the setting holds now.
-        *shell.pick.lock().unwrap() = None;
-        assert_eq!(
-            ops::choose_folder(&*engine, &shell, &catalog, "models", Some(42)).unwrap(),
-            None
-        );
-        assert_eq!(
-            shell.picked_with.lock().unwrap().as_ref().unwrap().1,
-            Some(chosen.clone())
-        );
+        // On macOS the next panel opens in the folder the setting holds now.
+        #[cfg(target_os = "macos")]
+        {
+            *shell.pick.lock().unwrap() = None;
+            assert_eq!(
+                ops::choose_folder(&*engine, &shell, &catalog, "models", Some(42)).unwrap(),
+                None
+            );
+            assert_eq!(
+                shell.picked_with.lock().unwrap().as_ref().unwrap().1,
+                Some(chosen.clone())
+            );
+        }
         // The page hears about it through settings://state.
         let last = recorder.settings.lock().unwrap().last().cloned().unwrap();
         assert_eq!(last["config"]["local"]["modelFolder"], json!(chosen));
@@ -638,7 +650,11 @@ mod tests {
             engine
                 .settings_set(
                     "dictation.hotkey",
-                    json!(engine.settings_state()["config"]["dictation"]["rewriteHotkey"])
+                    if cfg!(target_os = "macos") {
+                        json!(engine.settings_state()["config"]["dictation"]["rewriteHotkey"])
+                    } else {
+                        json!("f14")
+                    }
                 )
                 .unwrap_err()
                 .code,

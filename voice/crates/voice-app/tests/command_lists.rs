@@ -5,7 +5,11 @@
 //!
 //! The test reads the sources as text: `src/commands.rs` for `generate_handler!`, `build.rs` for
 //! the list that generates the permissions, the capability files for what each page may call, and
-//! the pages for what they invoke.
+//! the pages for what they invoke. It runs on macOS, the build with every command: the macOS-only
+//! one carries a `#[cfg]` in the handler, sits in build.rs's `MACOS_COMMANDS` and is allowed in
+//! `capabilities/settings-macos.json`.
+
+#![cfg(target_os = "macos")]
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,8 +29,13 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
 
 fn handler_commands() -> BTreeSet<String> {
     let source = std::fs::read_to_string(Path::new(MANIFEST).join("src/commands.rs")).unwrap();
-    between(&source, "tauri::generate_handler![", "]")
+    between(&source, "tauri::generate_handler![", "\n    ]")
         .split(',')
+        // A macOS-only entry is `#[cfg(target_os = "macos")] name`; the attribute holds no comma.
+        .map(|entry| match entry.rfind(']') {
+            Some(at) => &entry[at + 1..],
+            None => entry,
+        })
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(str::to_string)
@@ -35,12 +44,23 @@ fn handler_commands() -> BTreeSet<String> {
 
 fn build_commands() -> BTreeSet<String> {
     let source = std::fs::read_to_string(Path::new(MANIFEST).join("build.rs")).unwrap();
-    between(&source, "const COMMANDS: &[&str] = &[", "];")
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect()
+    let names = |list: &str| {
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let mut commands: BTreeSet<String> =
+        names(between(&source, "const COMMANDS: &[&str] = &[", "];"))
+            .into_iter()
+            .collect();
+    commands.extend(names(between(
+        &source,
+        "const MACOS_COMMANDS: &[&str] = &[",
+        "];",
+    )));
+    commands
 }
 
 /// The `allow-*` entries of a capability file, as command names. Tauri writes an underscore as a
@@ -94,7 +114,8 @@ fn every_command_the_pages_invoke_is_registered_and_allowed() {
         "the pages invoke commands that generate_handler! doesn't register"
     );
 
-    let settings = capability_commands("settings.json");
+    let mut settings = capability_commands("settings.json");
+    settings.extend(capability_commands("settings-macos.json"));
     let pill = capability_commands("pill.json");
     for command in &handler {
         let allowed = if command.starts_with("pill_") {
