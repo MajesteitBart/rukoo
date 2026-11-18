@@ -9,8 +9,9 @@ publish = false
 
 [dependencies]
 
-# `flock`, which keeps a second writer off a live segment.
-[target.'cfg(unix)'.dependencies]
+# `flock`, which keeps a second writer off a live segment on macOS. Windows refuses a second writer
+# with its share mode.
+[target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

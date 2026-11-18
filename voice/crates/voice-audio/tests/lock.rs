@@ -6,7 +6,7 @@
 //! that forks hands its open files, and their locks, to the child for the moment between `fork`
 //! and `exec`, and other tests in the same binary spawn children all the time.
 
-#![cfg(unix)]
+#![cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

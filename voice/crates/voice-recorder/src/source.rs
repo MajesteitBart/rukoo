@@ -143,11 +143,11 @@ impl FromStr for SourceSpec {
             let (mut sound_at, mut sound_until, mut playing, mut zeros) =
                 (None, None, false, false);
             for option in parts {
-                if option == "playing" && kind == "tap" {
+                if cfg!(target_os = "macos") && option == "playing" && kind == "tap" {
                     playing = true;
                     continue;
                 }
-                if option == "zeros" && kind == "tap" {
+                if cfg!(target_os = "macos") && option == "zeros" && kind == "tap" {
                     zeros = true;
                     continue;
                 }
@@ -162,10 +162,13 @@ impl FromStr for SourceSpec {
                     "back-at" => faults.back_at = Some(ms),
                     "switch-at" => faults.switch_at = Some(ms),
                     "open-ms" => faults.open_ms = Some(ms),
-                    "skip-at" => faults.skip_at = Some(ms),
-                    "skip-ms" => faults.skip_ms = Some(ms),
-                    "sound-at" if kind == "tap" => sound_at = Some(ms),
-                    "sound-until" if kind == "tap" => sound_until = Some(ms),
+                    // The skip faults and the synthetic tap are macOS test sources.
+                    "skip-at" if cfg!(target_os = "macos") => faults.skip_at = Some(ms),
+                    "skip-ms" if cfg!(target_os = "macos") => faults.skip_ms = Some(ms),
+                    "sound-at" if cfg!(target_os = "macos") && kind == "tap" => sound_at = Some(ms),
+                    "sound-until" if cfg!(target_os = "macos") && kind == "tap" => {
+                        sound_until = Some(ms)
+                    }
                     _ => return Err(format!("source {s:?}: unknown option {key:?}")),
                 }
             }
@@ -180,7 +183,7 @@ impl FromStr for SourceSpec {
             if kind == "idle" {
                 return Ok(SourceSpec::Idle { faults });
             }
-            if kind == "tap" {
+            if cfg!(target_os = "macos") && kind == "tap" {
                 if sound_until.is_some() && sound_at.is_none() {
                     return Err(format!("source {s:?}: sound-until needs sound-at"));
                 }
@@ -192,9 +195,15 @@ impl FromStr for SourceSpec {
                 });
             }
         }
+        if cfg!(target_os = "macos") {
+            return Err(format!(
+                "unknown source {s:?}; use default-input, default-output, input:<id>, \
+                 output:<id>, synthetic:tone:<hz>, synthetic:idle, synthetic:tap or file:<path>"
+            ));
+        }
         Err(format!(
             "unknown source {s:?}; use default-input, default-output, input:<id>, output:<id>, \
-             synthetic:tone:<hz>, synthetic:idle, synthetic:tap or file:<path>"
+             synthetic:tone:<hz>, synthetic:idle or file:<path>"
         ))
     }
 }
@@ -812,9 +821,15 @@ mod cpal_capture {
             }
             _ => return Err("not a device source".into()),
         };
+        #[cfg(windows)]
+        let name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| device.to_string());
+        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
         // `to_string` on a device whose name can't be read panics in cpal 0.18.2 on macOS; the
         // id, then a plain word, stand in.
-        let id = device.id().map(|id| id.to_string()).unwrap_or_default();
+        #[cfg(target_os = "macos")]
         let name = device
             .description()
             .map(|d| d.name().to_string())
@@ -1004,29 +1019,6 @@ mod tests {
                 },
             ),
             (
-                "synthetic:tap",
-                SourceSpec::Tap {
-                    faults: Faults::default(),
-                    sound: None,
-                    zeros: false,
-                    playing: false,
-                },
-            ),
-            (
-                "synthetic:tap,open-ms=7000,skip-at=800,skip-ms=300,sound-at=0,sound-until=500,zeros,playing",
-                SourceSpec::Tap {
-                    faults: Faults {
-                        open_ms: Some(7000),
-                        skip_at: Some(800),
-                        skip_ms: Some(300),
-                        ..Faults::default()
-                    },
-                    sound: Some((0, Some(500))),
-                    zeros: true,
-                    playing: true,
-                },
-            ),
-            (
                 r"file:C:\audio\ami.wav",
                 SourceSpec::File {
                     path: PathBuf::from(r"C:\audio\ami.wav"),
@@ -1059,9 +1051,6 @@ mod tests {
             "synthetic:tone:440,fail-at=soon",
             "synthetic:tone:440,explode=1",
             "synthetic:noise",
-            "synthetic:tone:440,playing",
-            "synthetic:idle,sound-at=5",
-            "synthetic:tap,sound-until=5",
         ] {
             assert!(text.parse::<SourceSpec>().is_err(), "{text}");
         }
@@ -1106,6 +1095,50 @@ mod tests {
         ));
     }
 
+    /// The macOS test sources: the synthetic tap and the skip faults, which round-trip like the
+    /// others, and what they refuse.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_the_macos_test_sources() {
+        let cases = [
+            (
+                "synthetic:tap",
+                SourceSpec::Tap {
+                    faults: Faults::default(),
+                    sound: None,
+                    zeros: false,
+                    playing: false,
+                },
+            ),
+            (
+                "synthetic:tap,open-ms=7000,skip-at=800,skip-ms=300,sound-at=0,sound-until=500,zeros,playing",
+                SourceSpec::Tap {
+                    faults: Faults {
+                        open_ms: Some(7000),
+                        skip_at: Some(800),
+                        skip_ms: Some(300),
+                        ..Faults::default()
+                    },
+                    sound: Some((0, Some(500))),
+                    zeros: true,
+                    playing: true,
+                },
+            ),
+        ];
+        for (text, spec) in cases {
+            assert_eq!(text.parse::<SourceSpec>().unwrap(), spec, "{text}");
+            assert_eq!(spec.to_string(), text);
+        }
+        for text in [
+            "synthetic:tone:440,playing",
+            "synthetic:idle,sound-at=5",
+            "synthetic:tap,sound-until=5",
+        ] {
+            assert!(text.parse::<SourceSpec>().is_err(), "{text}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_process_tap_is_a_padded_loopback_that_follows_the_default() {
         let tap: SourceSpec = "synthetic:tap,switch-at=10".parse().unwrap();
@@ -1115,12 +1148,14 @@ mod tests {
 
     /// cpal records an output device's own inputs when it has any, which would put the user's
     /// microphone on the call track; the recorder taps such a device itself.
+    #[cfg(target_os = "macos")]
     #[test]
     fn an_output_device_with_inputs_gets_the_recorders_own_tap() {
         assert_eq!(tap_path(false), TapPath::Cpal);
         assert_eq!(tap_path(true), TapPath::Own);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_a_tap_says_whether_other_apps_play() {
         let playing: SourceSpec = "synthetic:tap,playing".parse().unwrap();
@@ -1130,6 +1165,7 @@ mod tests {
         assert_eq!(others_playing(&SourceSpec::DefaultInput), None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_skip_delivers_nothing_for_its_length() {
         let f = Faults {

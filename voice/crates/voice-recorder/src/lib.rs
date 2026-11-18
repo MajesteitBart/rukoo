@@ -122,6 +122,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
     let mut tracks: Vec<(String, source::SourceSpec)> = Vec::new();
     let mut limit_ms = DEFAULT_LIMIT_MS;
     let mut segment_ms = DEFAULT_SEGMENT_MS;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut silence_ms = silence::DEFAULT_THRESHOLD_MS;
     let mut sync_delay_ms = 0;
     let mut create_delay_ms = 0;
@@ -153,8 +154,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                 }
                 tracks.push((name.to_string(), source));
             }
-            // For tests: the length limit is 8 hours, a segment 30 s and the silence check's wait
-            // 30 s otherwise.
+            // For tests: the length limit is 8 hours and a segment 30 s otherwise.
             "--limit-ms" => {
                 limit_ms = value()?
                     .parse()
@@ -167,6 +167,8 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                     .filter(|&ms| ms >= 100)
                     .ok_or_else(|| ExitError::usage("--segment-ms needs at least 100 ms"))?;
             }
+            // For tests, on macOS: the silence check waits 60 s otherwise.
+            #[cfg(target_os = "macos")]
             "--silence-ms" => {
                 silence_ms = value()?
                     .parse()

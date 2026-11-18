@@ -15,7 +15,7 @@ fn main() {
 /// `stop` line and answered, but a device open can still be blocked inside Core Audio, such as a
 /// process tap waiting for the System Audio Recording prompt, and an exit handler that waits on
 /// a lock that thread holds would leave the recorder, and its prompt, behind.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn exit_now() -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
@@ -23,5 +23,5 @@ fn exit_now() -> ! {
     unsafe { libc::_exit(0) }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn exit_now() {}

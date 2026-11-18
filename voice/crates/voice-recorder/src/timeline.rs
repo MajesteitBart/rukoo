@@ -200,7 +200,7 @@ fn exclusive_writer(options: &mut OpenOptions) {
 fn exclusive_writer(_options: &mut OpenOptions) {}
 
 /// Keeps a second writer off the file. Windows already refused it at open through the share mode;
-/// elsewhere an exclusive `flock` on the open file does it, which every process on the machine
+/// on macOS an exclusive `flock` on the open file does it, which every process on the machine
 /// sees and which ends with this one, also when it is hard-killed. A reader never takes the lock,
 /// so following the timeline keeps working.
 ///
@@ -209,7 +209,7 @@ fn exclusive_writer(_options: &mut OpenOptions) {}
 /// no other program, so nothing holds a meeting's files that way.
 ///
 /// `WouldBlock` says another writer holds it, which callers know as [`io::ErrorKind::WouldBlock`].
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn lock_writer(file: &File) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     loop {
@@ -225,7 +225,7 @@ fn lock_writer(file: &File) -> io::Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn lock_writer(_file: &File) -> io::Result<()> {
     Ok(())
 }
@@ -603,9 +603,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Windows reports its share mode as a sharing violation; Unix as a lock it can't take. The
+    /// Windows reports its share mode as a sharing violation; macOS as a lock it can't take. The
     /// recorder maps both to its "another recorder" exit code, which `meeting.rs` tests.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_second_writer_cannot_open_the_timeline_but_a_reader_can() {
         let dir = std::env::temp_dir().join(format!(

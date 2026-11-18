@@ -49,7 +49,7 @@ fn assert_boot_follows_t(anchors: &[&Value], what: &str) {
 }
 
 #[test]
-fn session_and_heartbeats_carry_boot_where_the_clock_counts_sleep() {
+fn session_and_heartbeats_carry_boot_on_windows() {
     let m = TempMeeting::new("boot");
     let tracks = ["mic=synthetic:tone:440", "call=synthetic:tone:660"];
     let mut child = m.record(&tracks, &[]);

@@ -328,12 +328,12 @@ fn exclusive_writer(options: &mut OpenOptions) {
 #[cfg(not(windows))]
 fn exclusive_writer(_options: &mut OpenOptions) {}
 
-/// Keeps a second writer off a segment. Windows refused it at open through the share mode;
-/// elsewhere an exclusive `flock` on the open file does it. It belongs to the file, so a hard kill
+/// Keeps a second writer off a segment. Windows refused it at open through the share mode; on
+/// macOS an exclusive `flock` on the open file does it. It belongs to the file, so a hard kill
 /// releases it, and readers never take it.
 ///
 /// `WouldBlock`, what EWOULDBLOCK reads as, means another writer holds the segment.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn lock_writer(file: &File) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     loop {
@@ -349,7 +349,7 @@ fn lock_writer(file: &File) -> io::Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 fn lock_writer(_file: &File) -> io::Result<()> {
     Ok(())
 }
@@ -478,10 +478,10 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
     }
 
-    /// Windows reports its share mode as a sharing violation and Unix as a lock it can't take;
+    /// Windows reports its share mode as a sharing violation and macOS as a lock it can't take;
     /// both stop the second writer before it changes a byte. The lock of a killed recorder is in
     /// `tests/lock.rs`, which needs a process of its own.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_locked_segment_refuses_a_second_writer_but_opens_for_readers() {
         let dir = TempDir::new("lock");

@@ -82,6 +82,7 @@ pub fn boot_100ns() -> Option<u64> {
 /// macOS's `mach_timebase_info`: one tick of `mach_absolute_time` and `mach_continuous_time` is
 /// `numer / denom` nanoseconds. Apple Silicon reports 125/3, Intel Macs 1/1. Its layout is the C
 /// struct the call fills in.
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timebase {
@@ -89,6 +90,7 @@ pub struct Timebase {
     pub denom: u32,
 }
 
+#[cfg(target_os = "macos")]
 impl Timebase {
     /// `ticks` in 100 ns units, the unit of `boot` and of the Windows interrupt time. Whole units
     /// are dropped. An absurd tick count saturates instead of wrapping.
@@ -317,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn boot_time_is_there_where_the_clock_counts_sleep() {
+    fn boot_time_is_there_on_windows_only() {
         let a = boot_100ns();
         std::thread::sleep(Duration::from_millis(30));
         let b = boot_100ns();
@@ -331,8 +333,10 @@ mod tests {
     }
 
     /// A second of ticks for the timebase a Mac reports: Apple Silicon counts 24 MHz.
+    #[cfg(target_os = "macos")]
     const SECOND: u64 = 24_000_000;
 
+    #[cfg(target_os = "macos")]
     fn apple_silicon() -> Timebase {
         Timebase {
             numer: 125,
@@ -342,6 +346,7 @@ mod tests {
 
     /// A [`Stamp`] built the way [`sleep_clocks`] builds one on macOS: two tick counts through
     /// one timebase.
+    #[cfg(target_os = "macos")]
     fn mach_stamp(timebase: Timebase, awake: u64, elapsed: u64, wall: u64) -> Stamp {
         Stamp {
             awake: timebase.to_ms(awake),
@@ -350,6 +355,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_timebase_turns_ticks_into_time() {
         // Apple Silicon: a tick is 125/3 ns, so a second is 24,000,000 ticks.
@@ -365,6 +371,7 @@ mod tests {
         assert_eq!(intel.to_ms(999_999), 0);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_huge_tick_count_saturates_instead_of_wrapping() {
         // A long uptime on a fast clock needs more than 64 bits for ticks * numer.
@@ -381,6 +388,7 @@ mod tests {
         assert_eq!(coarse.to_ms(u64::MAX), u64::MAX);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn two_awake_seconds_are_not_a_sleep() {
         let timebase = apple_silicon();
@@ -391,6 +399,7 @@ mod tests {
         assert_eq!(slept(&before, &after), None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn thirty_seconds_asleep_move_the_continuous_clock_only() {
         let timebase = apple_silicon();

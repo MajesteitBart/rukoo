@@ -110,7 +110,7 @@ pub fn all_zero(samples: &[f32]) -> bool {
     samples.iter().all(|&s| s == 0.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

@@ -51,9 +51,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSUUID",
   "NSValue",
 ] }
-
-# `flock`, which keeps a second recorder off a meeting's files.
-[target.'cfg(unix)'.dependencies]
+# `flock`, which keeps a second recorder off a meeting's files, and `_exit`.
 libc = "0.2"
 
 [dev-dependencies]

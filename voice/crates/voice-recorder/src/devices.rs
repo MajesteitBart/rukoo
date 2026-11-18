@@ -23,7 +23,13 @@ pub fn list() -> Result<Value, String> {
             .iter()
             .filter_map(|d| {
                 let id = id_of(d)?;
-                // `to_string` can panic on a device whose name can't be read.
+                #[cfg(windows)]
+                let name = d
+                    .description()
+                    .map(|desc| desc.name().to_string())
+                    .unwrap_or_else(|_| d.to_string());
+                // `to_string` can panic on a macOS device whose name can't be read.
+                #[cfg(target_os = "macos")]
                 let name = d
                     .description()
                     .map(|desc| desc.name().to_string())

@@ -154,12 +154,12 @@ pub fn open_timeline(dir: &Path) -> Result<TimelineWriter, ExitError> {
     })
 }
 
-/// Windows refuses a second writer with a sharing violation at open; Unix with an advisory lock
+/// Windows refuses a second writer with a sharing violation at open; macOS with an advisory lock
 /// on the open file that it can't take ([`io::ErrorKind::WouldBlock`]).
 fn held_by_another_writer(e: &io::Error) -> bool {
     const ERROR_SHARING_VIOLATION: i32 = 32;
     let sharing_violation = cfg!(windows) && e.raw_os_error() == Some(ERROR_SHARING_VIOLATION);
-    sharing_violation || (cfg!(unix) && e.kind() == io::ErrorKind::WouldBlock)
+    sharing_violation || (cfg!(target_os = "macos") && e.kind() == io::ErrorKind::WouldBlock)
 }
 
 /// Repairs the headers of `segments` from their file lengths and returns the samples each
@@ -303,6 +303,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_second_writer_is_busy_but_readers_still_read() {
         let dir = std::env::temp_dir().join(format!(

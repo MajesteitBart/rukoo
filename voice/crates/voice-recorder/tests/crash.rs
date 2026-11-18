@@ -123,7 +123,12 @@ fn hard_kill_keeps_everything_before_it() {
         .unwrap();
     let resumed_at = t(&session);
     // A hosted Mac wakes late, so it waits a second longer for the resumed session's 1.5 s.
-    m.wait_for_heartbeat(resumed_at + if cfg!(target_os = "macos") { 3_000 } else { 2_000 });
+    let resumed_wait = if cfg!(target_os = "macos") {
+        3_000
+    } else {
+        2_000
+    };
+    m.wait_for_heartbeat(resumed_at + resumed_wait);
     let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
     assert_eq!(reply["ok"], true, "{reply}");
     assert!(wait_exit(&mut child).success());
@@ -193,7 +198,12 @@ fn microphone_removed_keeps_the_timeline_complete() {
     let (mut client, token) = m.connect(1);
     // On a Mac the device may come back as late as `back-at` + `mac::BACK_LATE_MS` (5,905 ms), and
     // the audio after it has to be there before the stop: 7,000 ms leaves it a second.
-    m.wait_for_heartbeat(if cfg!(target_os = "macos") { 7_000 } else { 6_000 });
+    let back_wait = if cfg!(target_os = "macos") {
+        7_000
+    } else {
+        6_000
+    };
+    m.wait_for_heartbeat(back_wait);
     let reply = command(&mut client, &token, json!({ "cmd": "stop" }));
     assert_eq!(reply["ok"], true, "{reply}");
     assert!(wait_exit(&mut child).success());

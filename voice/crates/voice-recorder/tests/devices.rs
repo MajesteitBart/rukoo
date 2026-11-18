@@ -1,7 +1,10 @@
 //! What real devices do that the synthetic ones play here: a device that takes long to open, as
 //! macOS' first process tap does while its permission prompt waits for an answer; a process tap
 //! that records exact zeros because the system won't let Voice record; and a device that
-//! delivers less audio than time passed, around a crash and resume.
+//! delivers less audio than time passed, around a crash and resume. macOS only: they rely on the
+//! threaded opens and the synthetic tap, which only a Mac's recorder has.
+
+#![cfg(target_os = "macos")]
 
 mod common;
 

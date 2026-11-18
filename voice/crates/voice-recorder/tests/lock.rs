@@ -1,10 +1,12 @@
 //! The one writer of a meeting's files: a second recorder can't write into a meeting that one is
 //! recording, while readers keep following the timeline and the segments, and a recorder that is
-//! hard-killed leaves no lock behind for its successor (`voice/RECORDING.md`).
+//! hard-killed leaves no lock behind for its successor (`voice/RECORDING.md`). macOS only: Windows
+//! keeps a second writer out with its share mode.
+
+#![cfg(target_os = "macos")]
 
 mod common;
 
-#[cfg(unix)]
 mod unix {
     use std::io;
 
@@ -14,7 +16,7 @@ mod unix {
     use voice_recorder::meeting;
     use voice_recorder::timeline::{self, History, Line, TimelineWriter};
 
-    /// Unix only: it asserts the lock's `WouldBlock`, which is how this platform reports a second
+    /// macOS only: it asserts the lock's `WouldBlock`, which is how this platform reports a second
     /// writer. Windows reports its share mode as a sharing violation, which `meeting.rs` covers
     /// in a unit test that runs there too. The exit code is what a second recorder reports to the
     /// app.
