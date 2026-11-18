@@ -541,7 +541,9 @@ fn a_folder_keeps_objects_across_a_restart_on_the_same_port() {
 }
 
 /// Stopping waits for an answer already on its way: the client that gets it finds its line when
-/// `stop` returns, which is what reading `log.jsonl` right after `stop` relies on.
+/// `stop` returns, which is what reading `log.jsonl` right after `stop` relies on. macOS only, as
+/// the wait is.
+#[cfg(target_os = "macos")]
 #[test]
 fn stopping_waits_for_an_answer_on_its_way() {
     let dir = Scratch::new("stop-answer");
