@@ -253,7 +253,9 @@ impl Pill {
     }
 
     /// Whether the focused app takes text, known once the microphone is open: the "select a text
-    /// box" warning shows while the key is held.
+    /// box" warning shows while the key is held. macOS reads it after the press; elsewhere the
+    /// press carries it.
+    #[cfg(target_os = "macos")]
     pub fn target_warning(&mut self, recording: u64, warning: bool) {
         if let Some(d) = self.current_dictation(recording) {
             d.target_warning = warning;

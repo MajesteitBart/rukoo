@@ -3,13 +3,17 @@
 
 mod support;
 
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 use serde_json::json;
 use support::{lock, tone, wait_for, Harness, MicPlan};
 use voice_core::{ErrorKind, ProviderError};
+#[cfg(target_os = "macos")]
 use voice_engine::permissions::{Permission, PermissionState};
 use voice_engine::PillPhase;
 use voice_input::{InputError, InsertMode, Key, TextTarget};
@@ -23,9 +27,7 @@ fn a_dictation_is_transcribed_cleaned_and_inserted() {
     h.hold(Key::F13);
     let inserted = h.sink.wait_phase(PillPhase::Inserted);
     assert_eq!(inserted.words, Some(2));
-    // A dictation that ends a sentence gets one trailing space, so the next one doesn't run
-    // into it.
-    assert_eq!(h.input.texts(), ["Hello world. "]);
+    assert_eq!(h.input.texts(), ["Hello world."]);
     assert_eq!(lock(&h.input.inserted)[0].mode, InsertMode::Paste);
     let phases = h.sink.phases();
     let expected = [
@@ -68,31 +70,10 @@ fn typing_mode_and_a_second_dictation_work_the_same_way() {
     h.speech.say("second");
     h.hold(Key::F13);
     wait_for("the second insertion", || h.input.texts().len() == 2);
-    // A word on its own ends no sentence, so it gets no trailing space.
     assert_eq!(h.input.texts(), ["first", "second"]);
     assert!(lock(&h.input.inserted)
         .iter()
         .all(|i| i.mode == InsertMode::Type));
-    engine.shutdown();
-}
-
-/// The recognizer's text is trimmed before it is cleaned and inserted, so a model that pads its
-/// transcript (Orukeet does) never starts a dictation with a space. Both platforms share this
-/// path. A fragment keeps the trim and gets no trailing space; a sentence gets exactly one,
-/// after its full stop, and not the padding the model put around it.
-#[test]
-fn a_padded_transcript_is_inserted_without_its_padding() {
-    let h = Harness::new("padded");
-    h.config(json!({}));
-    let engine = h.start();
-    h.speech.say("  padded  ");
-    h.hold(Key::F13);
-    wait_for("the insertion", || h.input.texts().len() == 1);
-    assert_eq!(h.input.texts(), ["padded"]);
-    h.speech.say("  A whole sentence.  ");
-    h.hold(Key::F13);
-    wait_for("the sentence", || h.input.texts().len() == 2);
-    assert_eq!(h.input.texts(), ["padded", "A whole sentence. "]);
     engine.shutdown();
 }
 
@@ -106,8 +87,6 @@ fn a_spoken_edit_rewrites_the_selection() {
     h.speech.say("fix the spelling");
     h.hold(Key::F14);
     h.sink.wait_phase(PillPhase::Rewrote);
-    // A rewrite replaces a selection and has to fit what stood there, so it gets no trailing
-    // space, even though its text ends a sentence.
     assert_eq!(h.input.texts(), ["The draft."]);
     let requests = lock(&h.speech.rewrite_requests).clone();
     assert_eq!(requests.len(), 1);
@@ -171,8 +150,7 @@ fn auto_rewrite_polishes_and_falls_back_to_the_transcript() {
     h.speech.say("second try");
     h.hold(Key::F13);
     wait_for("the raw text", || h.input.texts().len() == 2);
-    // The polished sentence ends a sentence and gets its space; the raw fragment doesn't.
-    assert_eq!(h.input.texts(), ["Hello there, Anna. ", "second try"]);
+    assert_eq!(h.input.texts(), ["Hello there, Anna.", "second try"]);
     let note = h.sink.wait_note("app.notify.rewriteFailed");
     assert_eq!(
         note.body,
@@ -220,6 +198,7 @@ fn an_empty_transcript_also_shows_nothing_heard() {
 
 /// With the development switch on, the audio of a dictation that inserted nothing is kept, so a
 /// miss can be looked into afterwards. Without it nothing is written.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_audio_of_a_dictation_that_inserted_nothing_is_kept_only_when_asked() {
     let h = Harness::new("kept-audio");
@@ -254,6 +233,7 @@ fn the_audio_of_a_dictation_that_inserted_nothing_is_kept_only_when_asked() {
 
 /// A full sentence that the model returns as nothing keeps its audio too, and one that inserts
 /// text keeps none.
+#[cfg(target_os = "macos")]
 #[test]
 fn only_a_dictation_that_inserted_nothing_keeps_its_audio() {
     let h = Harness::new("kept-once");
@@ -409,8 +389,13 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
     let engine = h.start();
     h.hold(Key::F13);
     assert_eq!(last_error(&h), "pill.error.blocked");
-    // The notice says why in the platform's terms: UIPI on Windows, Secure
-    // Event Input on macOS.
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(
+        h.sink.wait_note("app.notify.dictationFailed").body,
+        "Windows blocked typing into an app that runs as administrator."
+    );
+    // The notice says why in macOS's terms: Secure Event Input.
+    #[cfg(target_os = "macos")]
     assert_eq!(
         h.sink.wait_note("app.notify.dictationFailed").body,
         InputError::Blocked.to_string()
@@ -429,6 +414,7 @@ fn an_elevated_app_and_a_missing_selection_have_their_own_notices() {
     engine.shutdown();
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn a_missing_accessibility_grant_has_its_own_notice() {
     let h = Harness::new("accessibility");
@@ -465,6 +451,7 @@ fn a_missing_accessibility_grant_has_its_own_notice() {
 /// macOS with the Accessibility grant off: a dictation or a rewrite is refused before the
 /// microphone opens, the pill says what to switch on, and macOS is asked once in the run. The
 /// grant is read again at the next press, so switching it on needs no restart.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_press_without_the_accessibility_grant_records_nothing_and_asks_once() {
     let h = Harness::new("accessibility-refused");
@@ -548,6 +535,7 @@ fn no_text_box_warns_but_inserts_anyway() {
 
 /// Reading the focused app can take a busy Mac app up to two seconds. The microphone opens first,
 /// so the first words aren't lost, and the release isn't held up by the read either.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_microphone_opens_before_the_focused_app_is_read() {
     let h = Harness::new("target-after-open");
@@ -667,6 +655,7 @@ fn the_copy_after_the_release_waits_for_the_next_key_too() {
 /// real release does arrive, it ends nothing a second time. This release comes once audio
 /// arrived; `a_release_while_the_microphone_opens_stops_the_recording` covers one that comes while
 /// the microphone is still opening.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_session_release_drops_the_held_recording() {
     let h = Harness::new("session-release");
@@ -699,6 +688,7 @@ fn a_session_release_drops_the_held_recording() {
 
 /// A lock in the middle of a rewrite hold sends the selection nowhere: the recording is dropped
 /// before the worker could read the selection or ask a rewrite provider.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_session_release_drops_a_held_rewrite() {
     let h = Harness::new("session-release-rewrite");
@@ -724,6 +714,7 @@ fn a_session_release_drops_a_held_rewrite() {
 /// or more. The release has to drop the recording once the microphone is open: if it ran before the
 /// recording existed, it would find nothing to stop, the real key-up would be ignored and the
 /// microphone would stay open with the pill on Listening.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_release_while_the_microphone_opens_stops_the_recording() {
     let h = Harness::new("slow-open");
@@ -765,6 +756,7 @@ fn a_release_while_the_microphone_opens_stops_the_recording() {
 
 /// The key-up never reaches the poller, so no release stops the recording. The watchdog reads the
 /// key up twice in a row and stops it as a release would, once.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_watchdog_stops_a_recording_whose_release_was_lost() {
     let mut h = Harness::new("watchdog");
@@ -794,6 +786,7 @@ fn the_watchdog_stops_a_recording_whose_release_was_lost() {
 /// A key that reads down for the longest a recording may take, such as a key-down another app
 /// posted without its key-up, stops at that length with a notification. The key-up that comes
 /// later stops nothing.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_recording_stops_at_its_longest() {
     let mut h = Harness::new("longest");
@@ -824,6 +817,7 @@ fn a_recording_stops_at_its_longest() {
 /// A press while the screen is locked or the session is switched out records nothing: the
 /// microphone stays closed and the pill stays hidden. Its release does nothing either, and the
 /// first press back at the console dictates.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_press_away_from_the_console_is_ignored() {
     let h = Harness::new("console");
@@ -845,6 +839,7 @@ fn a_press_away_from_the_console_is_ignored() {
 /// Right Option held with a letter types a character such as é or @. A key that went down during
 /// the hold drops the recording: nothing is sent or inserted, and the pill goes away. The next hold
 /// without typing dictates.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_key_typed_during_the_hold_drops_the_recording() {
     let mut h = Harness::new("typed");
@@ -871,6 +866,7 @@ fn a_key_typed_during_the_hold_drops_the_recording() {
 
 /// The microphone goes away halfway through a dictation, or changes its format. Voice opens the
 /// default one again into the same recording, so what was said after it is transcribed too.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_microphone_that_stops_mid_dictation_is_opened_again() {
     let h = Harness::new("mic-lost");
@@ -905,6 +901,7 @@ fn a_microphone_that_stops_mid_dictation_is_opened_again() {
 
 /// When the microphone that stopped can't be opened again, the pill says no audio comes in and a
 /// notification says why. The release still ends the recording.
+#[cfg(target_os = "macos")]
 #[test]
 fn a_microphone_that_stops_and_wont_reopen_says_so() {
     let h = Harness::new("mic-lost-for-good");

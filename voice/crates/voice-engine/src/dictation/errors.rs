@@ -130,6 +130,7 @@ mod tests {
             assert_eq!(provider_notice(&e), notice, "{}", e.message);
         }
         assert_eq!(input_notice(&InputError::Blocked), BLOCKED);
+        #[cfg(target_os = "macos")]
         assert_eq!(input_notice(&InputError::Accessibility), ACCESSIBILITY);
         assert_eq!(input_notice(&InputError::ClipboardBusy), GENERIC);
     }

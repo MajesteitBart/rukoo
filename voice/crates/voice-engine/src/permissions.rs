@@ -200,7 +200,7 @@ pub fn preflight_state(allowed: bool) -> PermissionState {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use std::collections::HashMap;
 

@@ -148,6 +148,7 @@ mod tests {
         assert!(heard);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_peak_is_what_tells_silence_from_sound() {
         // Digital silence reads as the floor, so it prints as one number.

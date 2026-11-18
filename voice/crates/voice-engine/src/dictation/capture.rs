@@ -11,7 +11,7 @@ use crate::services::{AudioSink, MicLost, MicOpen, MicStream, Microphone};
 pub(crate) const NO_MICROPHONE: &str = voice_recorder::source::NO_MICROPHONE;
 
 /// What one open of a dictation's capture found: the device, and the format its stream delivers.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) struct OpenedInput<'a> {
     pub name: &'a str,
     pub rate: u32,
@@ -24,8 +24,8 @@ pub(crate) struct OpenedInput<'a> {
 /// the format the stream runs in and the rate it converts to, under the dictation's id, so an
 /// empty transcript can be read against what the microphone delivered and at which rate. The
 /// device's name is the one the person chose and stays in `app.log` in the data folder, as the
-/// recorder's journal names the microphone of a meeting.
-#[cfg(any(windows, target_os = "macos", test))]
+/// recorder's journal names the microphone of a meeting. Only macOS's dictation logs it.
+#[cfg(any(windows, target_os = "macos"))]
 fn open_line(about: MicOpen, input: OpenedInput) -> String {
     let which = match about.reopen {
         0 => "first".to_string(),
@@ -52,6 +52,9 @@ impl Microphone for DefaultMicrophone {
         open_capture(on_audio, Box::new(|| {}), None)
     }
 
+    /// On macOS a dictation hears when its microphone stops, to open it again, and logs what it
+    /// opened. Elsewhere the trait's default applies: the plain open, as before.
+    #[cfg(target_os = "macos")]
     fn open_watched(
         &self,
         on_audio: AudioSink,
@@ -84,7 +87,7 @@ fn open_capture(
 /// changed under it. cpal 0.18.2 pauses a Core Audio stream for both, a sample rate change
 /// included. Anything else passes: an overrun, or a default device that changed and that cpal
 /// followed on its own.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn ends_stream(kind: cpal::ErrorKind) -> bool {
     matches!(
         kind,
@@ -94,7 +97,9 @@ pub(crate) fn ends_stream(kind: cpal::ErrorKind) -> bool {
 
 #[cfg(any(windows, target_os = "macos"))]
 mod cpal_mic {
-    use std::sync::{mpsc, Arc, Mutex, PoisonError};
+    use std::sync::mpsc;
+    #[cfg(target_os = "macos")]
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::thread::{self, JoinHandle};
 
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -190,9 +195,18 @@ mod cpal_mic {
                 }
             }
         };
-        // A lost or changed device stops delivering. The dictation hears about it once, on a
-        // thread of its own: it replaces this stream, which joins the thread that holds it.
+        // A lost device just stops delivering; the release ends the dictation as usual.
+        #[cfg(not(target_os = "macos"))]
+        let on_error = {
+            let _ = on_lost;
+            |_: cpal::Error| {}
+        };
+        // On macOS a lost or changed device stops delivering, and the dictation hears about it
+        // once, on a thread of its own: it replaces this stream, which joins the thread that
+        // holds it.
+        #[cfg(target_os = "macos")]
         let on_lost = Arc::new(Mutex::new(Some(on_lost)));
+        #[cfg(target_os = "macos")]
         let on_error = move |error: cpal::Error| {
             if !super::ends_stream(error.kind()) {
                 return;
@@ -309,7 +323,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod opened_lines {
     use super::{open_line, OpenedInput};
     use crate::services::MicOpen;
@@ -353,7 +367,7 @@ mod opened_lines {
     }
 }
 
-#[cfg(all(test, any(windows, target_os = "macos")))]
+#[cfg(all(test, target_os = "macos"))]
 mod stream_errors {
     use super::ends_stream;
 

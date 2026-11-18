@@ -6,6 +6,7 @@
 //! optionally rewrite, then insert. The newest recording owns the pill.
 
 pub mod capture;
+#[cfg(target_os = "macos")]
 pub mod dump;
 pub mod errors;
 pub mod level;
@@ -16,7 +17,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use voice_core::cleanup::SENTENCE_END;
 use voice_core::config::Config;
 use voice_core::providers::provider_requires_key;
 use voice_core::{cleanup, prompts, RewriteRequest};
@@ -322,15 +322,18 @@ impl Dictation {
         }
         if let Some(mut recording) = lock(&self.recording).take() {
             recording.stream.take();
-            let (pcm, _, _) = take_audio(&mut recording);
-            report(
-                recording.id,
-                recording.mode,
-                recording.pressed.elapsed(),
-                audio_of(&pcm),
-                level::peak_dbfs(&pcm),
-                Ending::Dropped(Drop::Cancelled),
-            );
+            // On macOS the held recording leaves its outcome line.
+            #[cfg(target_os = "macos")]
+            {
+                let (pcm, _, _) = take_audio(&mut recording);
+                report(
+                    recording.id,
+                    recording.mode,
+                    recording.pressed.elapsed(),
+                    &pcm,
+                    Ending::Dropped(Drop::Cancelled),
+                );
+            }
         }
         // The worker ends after the job it is on; a cloud request can't be cancelled, so it
         // isn't waited for. It inserts nothing once Voice is quitting.
@@ -362,11 +365,11 @@ fn on_hotkey(core: &Arc<Core>, event: HotkeyEvent) {
             return;
         }
     }
-    // One line per press and release of a configured hotkey, so a check at the
+    // On macOS, one line per press and release of a configured hotkey, so a check at the
     // keyboard can see which key Voice read. The poller reads every known key,
     // but only these are worth a log line; a right-hand modifier that macOS
     // folds onto the left-hand code shows up here as the right-hand key.
-    if lock(&this.ptt).config().mode_for(event.key()).is_some() {
+    if cfg!(target_os = "macos") && lock(&this.ptt).config().mode_for(event.key()).is_some() {
         match event {
             HotkeyEvent::Pressed(key) => log::info!("dictation: {key} pressed"),
             HotkeyEvent::Released(key) => log::info!("dictation: {key} released"),
@@ -487,9 +490,14 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
         Selection::ready(Ok(None))
     };
     let activity = activity_of(mode);
-    // Whether the focused app takes text comes after the microphone opens: on a Mac it is two
-    // Accessibility requests, and a busy app would hold up the first words.
-    core.pill.update(|p, _| p.press(id, activity, false));
+    // Whether the focused app takes text. On a Mac it comes after the microphone opens
+    // (`read_target`): it is two Accessibility requests, and a busy app would hold up the first
+    // words.
+    #[cfg(not(target_os = "macos"))]
+    let no_text_box = core.svc.input.text_target() == TextTarget::NotSelected;
+    #[cfg(target_os = "macos")]
+    let no_text_box = false;
+    core.pill.update(|p, _| p.press(id, activity, no_text_box));
     core.meetings.set_dictating(true);
 
     let captured = Arc::new(Mutex::new(Captured {
@@ -507,7 +515,9 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
     let on_end = tap_ended(core, id, Arc::clone(&captured));
     let opened = match core.meetings.open_tap(make_sink(), on_end) {
         Some(Ok(stream)) => {
-            log::info!("{}", tap_line(id));
+            if cfg!(target_os = "macos") {
+                log::info!("{}", tap_line(id));
+            }
             Ok(stream)
         }
         // The recorder's tap failed: dictation still works on its own capture.
@@ -533,7 +543,11 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 marked: None,
             });
             mark(core, id);
-            watch(core, id, key);
+            // The watchdog and the later text-box check are macOS's.
+            if cfg!(target_os = "macos") {
+                watch(core, id, key);
+            }
+            #[cfg(target_os = "macos")]
             read_target(core, id);
             if recovered {
                 // Settings shows "no microphone" until it hears otherwise.
@@ -565,8 +579,7 @@ fn start_recording(core: &Arc<Core>, mode: Mode, key: Key) {
                 id,
                 mode,
                 pressed.elapsed(),
-                Duration::ZERO,
-                level::SILENT_DBFS,
+                &[],
                 Ending::Failed(errors::MIC),
             );
         }
@@ -610,8 +623,7 @@ fn refuse_accessibility(core: &Arc<Core>, id: u64, mode: Mode, pressed: Instant)
         id,
         mode,
         pressed.elapsed(),
-        Duration::ZERO,
-        level::SILENT_DBFS,
+        &[],
         Ending::Refused(errors::ACCESSIBILITY),
     );
 }
@@ -845,7 +857,9 @@ fn audio_sink(core: Weak<Core>, id: u64, captured: Arc<Mutex<Captured>>) -> Audi
 }
 
 /// Reads whether the focused app takes text on a thread of its own, so a slow app holds up
-/// neither the recording nor its release, and shows the warning while the key is held.
+/// neither the recording nor its release, and shows the warning while the key is held. macOS
+/// only: elsewhere the press reads it, as before.
+#[cfg(target_os = "macos")]
 fn read_target(core: &Arc<Core>, id: u64) {
     let weak = Arc::downgrade(core);
     let _ = thread::Builder::new()
@@ -978,8 +992,6 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     let activity = activity_of(recording.mode);
     core.pill
         .update(|p, _| p.working(recording.id, phase, activity, None));
-    let audio = audio_of(&pcm);
-    let peak = level::peak_dbfs(&pcm);
     let job = Job {
         id: recording.id,
         mode: recording.mode,
@@ -989,15 +1001,17 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
         heard,
         selection: recording.selection,
     };
-    let sent = lock(&this.queue).as_ref().map(|queue| queue.send(job));
-    if sent.is_none_or(|sent| sent.is_err()) {
+    let unsent = match lock(&this.queue).as_ref() {
+        Some(queue) => queue.send(job).err().map(|unsent| unsent.0),
+        None => Some(job),
+    };
+    if let Some(job) = unsent {
         // Voice is quitting: the worker is gone and nothing will process this recording.
         report(
-            recording.id,
-            recording.mode,
-            held,
-            audio,
-            peak,
+            job.id,
+            job.mode,
+            job.hold,
+            &job.pcm,
             Ending::Dropped(Drop::Cancelled),
         );
     }
@@ -1028,25 +1042,21 @@ fn take_audio(recording: &mut Recording) -> (Vec<i16>, bool, LevelMeter) {
 /// another key went down during the hold, and when the session went away under it.
 fn drop_recording(core: &Core, id: u64, mode: Mode, held: Duration, pcm: &[i16], why: Drop) {
     core.pill.update(|p, _| p.dropped(id));
-    report(
-        id,
-        mode,
-        held,
-        audio_of(pcm),
-        level::peak_dbfs(pcm),
-        Ending::Dropped(why),
-    );
+    report(id, mode, held, pcm, Ending::Dropped(why));
 }
 
-/// The one info line a dictation or a rewrite leaves in the log when it ends, so "nothing heard",
-/// an empty transcript, a dropped hold and a failed insert can be told apart. It holds counts,
-/// durations, the clip's peak level and error codes only: never the text, the selection or any
-/// part of them.
-fn report(id: u64, mode: Mode, hold: Duration, audio: Duration, peak: f32, ending: Ending) {
-    log::info!(
-        "dictation: {}",
-        outcome_line(id, mode, hold, audio, peak, &ending)
-    );
+/// The one info line a dictation or a rewrite leaves in the log on macOS when it ends, so
+/// "nothing heard", an empty transcript, a dropped hold and a failed insert can be told apart. It
+/// holds counts, durations, the clip's peak level and error codes only: never the text, the
+/// selection or any part of them. Elsewhere it logs nothing and measures nothing, as before.
+fn report(id: u64, mode: Mode, hold: Duration, pcm: &[i16], ending: Ending) {
+    if cfg!(target_os = "macos") {
+        let (audio, peak) = (audio_of(pcm), level::peak_dbfs(pcm));
+        log::info!(
+            "dictation: {}",
+            outcome_line(id, mode, hold, audio, peak, &ending)
+        );
+    }
 }
 
 fn outcome_line(
@@ -1114,9 +1124,13 @@ fn work(core: Weak<Core>, jobs: Receiver<Job>) {
         let Some(core) = core.upgrade() else {
             return;
         };
-        // A job queued just before Voice began quitting still gets its outcome line, so no
-        // recording ends without a word in the log.
+        // On macOS a job queued just before Voice began quitting still gets its outcome line, so
+        // no recording ends without a word in the log. Elsewhere the worker stops there, as
+        // before.
         let outcome = if core.shutting_down() {
+            if !cfg!(target_os = "macos") {
+                return;
+            }
             Outcome::Quiet
         } else {
             process(&core, &job)
@@ -1128,6 +1142,7 @@ fn work(core: Weak<Core>, jobs: Receiver<Job>) {
 fn finish(core: &Core, job: &Job, outcome: Outcome) {
     let id = job.id;
     let ending = ending_of(&outcome);
+    #[cfg(target_os = "macos")]
     let nothing = matches!(outcome, Outcome::NothingHeard(_));
     match outcome {
         Outcome::Inserted {
@@ -1186,22 +1201,17 @@ fn finish(core: &Core, job: &Job, outcome: Outcome) {
         }
         Outcome::Quiet => {}
     }
+    #[cfg(target_os = "macos")]
     if nothing {
         keep_audio(core, job);
     }
-    report(
-        id,
-        job.mode,
-        job.hold,
-        audio_of(&job.pcm),
-        level::peak_dbfs(&job.pcm),
-        ending,
-    );
+    report(id, job.mode, job.hold, &job.pcm, ending);
 }
 
 /// With the development switch on, keeps the audio of a recording that inserted nothing, so a
 /// miss can be looked into. Off in every normal run, and compiled out of a release build; see
-/// [`dump`] for what the file holds and how private it is.
+/// [`dump`] for what the file holds and how private it is. macOS only.
+#[cfg(target_os = "macos")]
 fn keep_audio(core: &Core, job: &Job) {
     if !core.opts.dump_empty_dictation {
         return;
@@ -1356,9 +1366,8 @@ fn dictate(core: &Core, job: &Job) -> Outcome {
         );
     }
     let words = text.split_whitespace().count() as u32;
-    let inserted = inserted_text(&text);
-    let chars = inserted.chars().count();
-    if let Err(outcome) = insert(core, cfg, &inserted) {
+    let chars = text.chars().count();
+    if let Err(outcome) = insert(core, cfg, &text) {
         return outcome;
     }
     Outcome::Inserted {
@@ -1391,7 +1400,9 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
         Some(Ok(selection)) if !selection.as_deref().is_none_or(|s| s.trim().is_empty()) => {
             Ok(selection)
         }
-        Some(Err(error)) => Err(error),
+        // On macOS a copy that failed at the press is final. Elsewhere it reads as no selection,
+        // which the copy after the release tries again, as before.
+        Some(Err(error)) if cfg!(target_os = "macos") => Err(error),
         _ => {
             // This recording's key is up, but the next one may be down by the time Ctrl+C goes out.
             let held = hotkeys_of(core, cfg);
@@ -1406,18 +1417,19 @@ fn rewrite_selection(core: &Core, job: &Job) -> Outcome {
     }
     let selection = match capture {
         Ok(Some(selection)) if !selection.trim().is_empty() => selection,
-        Ok(_) => {
-            return failed(
-                errors::SELECT_TEXT,
-                errors::TITLE_REWRITE,
-                "Nothing selected. Highlight text, then hold the rewrite key and say what should change.",
-            )
-        }
-        Err(error) => {
+        // A failed copy shows as itself on macOS, and as no selection elsewhere, as before.
+        Err(error) if cfg!(target_os = "macos") => {
             return failed(
                 errors::input_notice(&error),
                 errors::TITLE_REWRITE,
                 error.to_string(),
+            )
+        }
+        _ => {
+            return failed(
+                errors::SELECT_TEXT,
+                errors::TITLE_REWRITE,
+                "Nothing selected. Highlight text, then hold the rewrite key and say what should change.",
             )
         }
     };
@@ -1515,31 +1527,6 @@ fn wait_for_release(core: &Core, held: &[Key]) -> Result<(), InputError> {
     Ok(())
 }
 
-/// The closing quotes and brackets a sentence's full stop can be followed by.
-const SENTENCE_CLOSERS: [char; 7] = ['"', '\'', '\u{201d}', '\u{2019}', ')', ']', '\u{bb}'];
-
-/// The text a dictation inserts: the transcript, plus one trailing space when it ends a
-/// sentence. Two dictations in a row then read "One sentence. The next one." instead of running
-/// together. A fragment gets none, and neither does a text that ends in a newline or already in
-/// whitespace, so no second space is ever added. A CJK full stop gets none either: those scripts
-/// put no space after a sentence. The caller's text is already trimmed, and every reader of the
-/// transcript before this point, the pill's word count included, keeps the text without the
-/// space. A rewrite doesn't come here: it replaces a selection and fits what stood there.
-fn inserted_text(text: &str) -> String {
-    let ends_sentence = text
-        .trim_end_matches(SENTENCE_CLOSERS)
-        .chars()
-        .next_back()
-        .is_some_and(|last| SENTENCE_END.contains(&last));
-    if !ends_sentence {
-        return text.to_string();
-    }
-    let mut inserted = String::with_capacity(text.len() + 1);
-    inserted.push_str(text);
-    inserted.push(' ');
-    inserted
-}
-
 /// Inserts with no hotkey held. Keys go to whatever has focus, with the keys the user holds:
 /// pasting while Right Alt is held for the next dictation turns Ctrl+V into AltGr+V, which Ownkey
 /// did (ownkey-dictation.md 17.7). Voice waits for the release instead, on purpose, right before
@@ -1591,9 +1578,11 @@ mod tests {
     #[test]
     fn hotkeys_come_from_settings_with_ownkeys_fallbacks() {
         let mut cfg = Config::defaults(true);
-        // Pinned, so the test reads the same on a Mac, whose development copy has other defaults.
-        cfg.hotkey = "f13".into();
-        cfg.rewrite_hotkey = "f14".into();
+        // Pinned on a Mac, whose development copy has other defaults, so the test reads the same.
+        if cfg!(target_os = "macos") {
+            cfg.hotkey = "f13".into();
+            cfg.rewrite_hotkey = "f14".into();
+        }
         let (keys, stop) = hotkeys(&cfg, true);
         assert_eq!(
             (keys.dictate, keys.rewrite, stop),
@@ -1617,6 +1606,7 @@ mod tests {
         assert_eq!(keys.dictate, Key::RightAlt);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_key_typed_during_a_modifier_hold_drops_the_recording() {
         let held = Duration::from_secs(2);
@@ -1633,6 +1623,7 @@ mod tests {
         assert!(!typed_during(Key::RightAlt, held, None));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_configured_hotkeys_count_away_from_the_console() {
         let keys = HotkeyConfig {
@@ -1659,58 +1650,9 @@ mod tests {
         assert_eq!(MIN_SAMPLES_WITHOUT_ACTIVITY, 1600);
     }
 
-    /// A dictation that ends a sentence is inserted with one space after it, so the next one
-    /// doesn't run into it. Closing quotes and brackets can follow the full stop.
-    #[test]
-    fn a_dictation_that_ends_a_sentence_gets_one_trailing_space() {
-        for text in [
-            "Done.",
-            "Done!",
-            "Done?",
-            "Done\u{2026}",
-            "Really?!",
-            "He said \u{201c}done.\u{201d}",
-            "She said 'done.'",
-            "He said \"done.\"",
-            "(Done.)",
-            "[Done.]",
-            "\u{ab}Done.\u{bb}",
-        ] {
-            let inserted = inserted_text(text);
-            assert_eq!(inserted, format!("{text} "), "{text}");
-            assert_eq!(
-                inserted.matches(' ').count(),
-                text.matches(' ').count() + 1,
-                "exactly one space for {text}"
-            );
-        }
-    }
-
-    /// Nothing else gets one: a word or a fragment, a sentence that ends in a comma or a colon,
-    /// a text that ends in a newline or already in whitespace, and a CJK full stop.
-    #[test]
-    fn a_fragment_a_newline_and_cjk_get_no_trailing_space() {
-        for text in [
-            "",
-            "word",
-            "a fragment",
-            "ends in a comma,",
-            "ends in a colon:",
-            "ends in a semicolon;",
-            "Done.\n",
-            "Done. ",
-            // Chinese and Japanese end a sentence without a space, so a full stop there gets
-            // none.
-            "\u{4f60}\u{597d}\u{3002}",
-            "\u{597d}\u{7684}\u{ff01}",
-            "\u{307b}\u{3093}\u{3068}\u{3046}\u{ff1f}",
-        ] {
-            assert_eq!(inserted_text(text), text, "{text:?}");
-        }
-    }
-
     /// Every kind of ending has its own words, so a check at the keyboard can tell a missing
     /// insertion from a silent one, and a rewrite from a dictation.
+    #[cfg(target_os = "macos")]
     #[test]
     fn every_ending_gets_one_line() {
         let hold = Duration::from_millis(2400);
@@ -1804,6 +1746,7 @@ mod tests {
 
     /// A capture that delivered only digital silence says so in the line, so it reads as the
     /// microphone's fault rather than as a recognizer that heard words and returned none.
+    #[cfg(target_os = "macos")]
     #[test]
     fn an_empty_line_says_when_nothing_but_silence_arrived() {
         let silence = vec![0i16; 16_000 * 10];
@@ -1822,6 +1765,7 @@ mod tests {
     }
 
     /// A dictation during a meeting says that it takes the recorder's tap, and at which rate.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_tap_open_says_the_tap_is_used() {
         assert_eq!(
@@ -1832,6 +1776,7 @@ mod tests {
 
     /// The line carries counts, durations and a level only: the text and the selection never
     /// reach it.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_outcome_line_holds_no_text() {
         let text = "a secret sentence";
