@@ -6,8 +6,6 @@ mod support;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-#[cfg(target_os = "macos")]
-use std::sync::Arc;
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
@@ -867,8 +865,8 @@ fn a_key_typed_during_the_hold_drops_the_recording() {
 }
 
 /// Right Command is the Mac's rewrite key, and Voice copies the selection at the press with its own
-/// Cmd+C, which reads as a key-down. A shortcut typed after that copy, such as Cmd+S, drops the
-/// recording like any other typed key; a hold with only Voice's own copy in it still rewrites.
+/// Cmd+C, which the key activity leaves out. A shortcut typed during the hold, such as Cmd+S, drops
+/// the recording like any other typed key; a hold with only Voice's own copy in it still rewrites.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_right_command_shortcut_drops_the_rewrite_and_a_plain_hold_still_rewrites() {
@@ -878,12 +876,11 @@ fn a_right_command_shortcut_drops_the_rewrite_and_a_plain_hold_still_rewrites() 
         json!({"hotkey": "right alt", "rewrite_hotkey": "right command", "rewrite_api_key": "k"}),
     );
     *lock(&h.input.selection) = Some("teh draft".into());
-    *lock(&h.input.copy_key_down) = Some(Arc::clone(&h.typed));
     lock(&h.speech.rewrites).push_back(Ok("The draft.".into()));
     let engine = h.start();
     h.speech.say("fix the spelling");
 
-    // Cmd+S during the hold, after Voice's copy.
+    // Cmd+S during the hold.
     h.keys.down(Key::RightCommand);
     wait_for("the copy", || h.input.captures.load(Ordering::SeqCst) == 1);
     wait_for("audio", || h.mic.delivered.load(Ordering::SeqCst) >= 3200);
@@ -898,8 +895,7 @@ fn a_right_command_shortcut_drops_the_rewrite_and_a_plain_hold_still_rewrites() 
     assert!(h.speech.heard().is_empty(), "nothing was sent");
     assert!(h.input.texts().is_empty(), "the selection stays");
 
-    // The same hold without a shortcut: only Voice's own Cmd+C went down, long enough before the
-    // release to count as typed if it were the user's.
+    // The same hold without a shortcut: only Voice's own Cmd+C went down.
     let before = h.mic.delivered.load(Ordering::SeqCst);
     h.keys.down(Key::RightCommand);
     wait_for("the second copy", || {

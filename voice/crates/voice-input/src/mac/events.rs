@@ -261,6 +261,9 @@ fn post(source: &CGEventSource, event: &KeyEvent) -> Result<(), InputError> {
         };
     }
     CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&cg));
+    if event.down {
+        super::keys::note_own_key_down();
+    }
     Ok(())
 }
 

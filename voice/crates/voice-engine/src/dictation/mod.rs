@@ -121,9 +121,6 @@ struct Job {
 struct Selection {
     result: Mutex<Option<Result<Option<String>, InputError>>>,
     done: Condvar,
-    /// When the copy at the press finished. Voice's own Cmd+C went down before it.
-    #[cfg(target_os = "macos")]
-    finished: Mutex<Option<Instant>>,
 }
 
 impl Selection {
@@ -131,8 +128,6 @@ impl Selection {
         Arc::new(Selection {
             result: Mutex::new(Some(result)),
             done: Condvar::new(),
-            #[cfg(target_os = "macos")]
-            finished: Mutex::new(None),
         })
     }
 
@@ -140,24 +135,12 @@ impl Selection {
         Arc::new(Selection {
             result: Mutex::new(None),
             done: Condvar::new(),
-            #[cfg(target_os = "macos")]
-            finished: Mutex::new(None),
         })
     }
 
     fn set(&self, result: Result<Option<String>, InputError>) {
-        #[cfg(target_os = "macos")]
-        {
-            *lock(&self.finished) = Some(Instant::now());
-        }
         *lock(&self.result) = Some(result);
         self.done.notify_all();
-    }
-
-    /// How long ago the copy at the press finished, or `None` while it runs.
-    #[cfg(target_os = "macos")]
-    fn finished_ago(&self) -> Option<Duration> {
-        lock(&self.finished).map(|at| at.elapsed())
     }
 
     /// The copy's answer, or `None` when it hadn't finished in time.
@@ -992,22 +975,11 @@ fn end_recording(core: &Arc<Core>, mut recording: Recording) {
     #[cfg(not(target_os = "macos"))]
     let typed =
         !recording.posted_keys && typed_during(recording.key, held, (core.svc.key_activity)());
-    // A Right Command rewrite copied the selection at the press with Voice's own Cmd+C, which is a
-    // key-down too: only one after that copy finished is the user's.
+    // A Right Command rewrite copies the selection at the press with Voice's own Cmd+C. On a Mac
+    // the key activity leaves Voice's own key-downs out, so a shortcut typed during the hold, such
+    // as Cmd+S, drops the recording too.
     #[cfg(target_os = "macos")]
-    let typed = {
-        let since = (core.svc.key_activity)();
-        if recording.posted_keys {
-            typed_after_copy(
-                recording.key,
-                held,
-                since,
-                recording.selection.finished_ago(),
-            )
-        } else {
-            typed_during(recording.key, held, since)
-        }
-    };
+    let typed = typed_during(recording.key, held, (core.svc.key_activity)());
     if typed {
         // Right Option with a letter types é or @, and Right Command with one is a shortcut:
         // the key was held to type, not to talk.
@@ -1153,22 +1125,6 @@ fn typed_during(key: Key, held: Duration, since_key_down: Option<Duration>) -> b
         Key::RightAlt | Key::RightCommand | Key::RightCtrl | Key::RightShift
     );
     modifier && since_key_down.is_some_and(|since| since > TYPED_MARGIN && since < held)
-}
-
-/// [`typed_during`] for a hold during which Voice posted its own copy chord: the key-down has to
-/// be newer than that copy, which finished `copy_ago` ago. While the copy still runs, its own
-/// key-down can be the newest one, so nothing counts yet.
-#[cfg(target_os = "macos")]
-fn typed_after_copy(
-    key: Key,
-    held: Duration,
-    since_key_down: Option<Duration>,
-    copy_ago: Option<Duration>,
-) -> bool {
-    let after_copy = since_key_down
-        .zip(copy_ago)
-        .is_some_and(|(since, copy)| since < copy);
-    after_copy && typed_during(key, held, since_key_down)
 }
 
 fn work(core: Weak<Core>, jobs: Receiver<Job>) {
@@ -1673,37 +1629,6 @@ mod tests {
         // An F key's own press is a key-down; a platform that can't say drops nothing.
         assert!(!typed_during(Key::F13, held, ago(1000)));
         assert!(!typed_during(Key::RightAlt, held, None));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_shortcut_after_voices_own_copy_drops_a_right_command_rewrite() {
-        let held = Duration::from_secs(2);
-        let ago = |ms| Some(Duration::from_millis(ms));
-        // The copy finished 1.9 s ago, and Cmd+S went down a second before the release.
-        assert!(typed_after_copy(
-            Key::RightCommand,
-            held,
-            ago(1000),
-            ago(1900)
-        ));
-        // The newest key-down is Voice's own Cmd+C, before its copy finished: a deliberate rewrite.
-        assert!(!typed_after_copy(
-            Key::RightCommand,
-            held,
-            ago(1950),
-            ago(1900)
-        ));
-        // While the copy still runs, nothing can tell the two apart.
-        assert!(!typed_after_copy(Key::RightCommand, held, ago(1000), None));
-        // The margin at the release still holds, and a platform that can't say drops nothing.
-        assert!(!typed_after_copy(
-            Key::RightCommand,
-            held,
-            ago(20),
-            ago(1900)
-        ));
-        assert!(!typed_after_copy(Key::RightCommand, held, None, ago(1900)));
     }
 
     #[cfg(target_os = "macos")]

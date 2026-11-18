@@ -45,7 +45,8 @@
 //! whose key reads up.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 
@@ -301,15 +302,41 @@ fn flags() -> u64 {
     CGEventSource::flags_state(CGEventSourceStateID::HIDSystemState).bits()
 }
 
-/// How long ago any key went down on the HID system, modifiers aside: macOS reports those as
+/// When Voice last posted a key-down of its own, such as the Cmd+C of a rewrite or a paste's Cmd+V.
+static OWN_KEY_DOWN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// How far apart Voice's own post and the HID state's newest key-down can be and still be the
+/// same event.
+const OWN_KEY_MARGIN: Duration = Duration::from_millis(25);
+
+/// Notes a key-down Voice just posted, so [`since_key_down`] doesn't take it for the user's.
+pub(crate) fn note_own_key_down() {
+    *OWN_KEY_DOWN.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+}
+
+/// How long ago the user pressed a key on the HID system, modifiers aside: macOS reports those as
 /// flag changes, not key-downs. `CGEventSourceSecondsSinceLastEventType` is meant to answer
-/// without a grant, which nobody has checked at a real keyboard yet. It also counts keys an app
-/// posted at the HID level.
+/// without a grant, which nobody has checked at a real keyboard yet. It keeps only the newest
+/// key-down, and the keys Voice posts at the HID level count too, so a newest key-down that is
+/// Voice's own reads as none.
 pub(crate) fn since_key_down() -> Option<Duration> {
-    duration(CGEventSource::seconds_since_last_event_type(
+    let since = duration(CGEventSource::seconds_since_last_event_type(
         CGEventSourceStateID::HIDSystemState,
         CGEventType::KeyDown,
-    ))
+    ))?;
+    let own = OWN_KEY_DOWN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .map(|at| at.elapsed());
+    users_key_down(since, own)
+}
+
+/// The newest key-down, `since` ago, unless it is the one Voice posted `own_ago` ago.
+fn users_key_down(since: Duration, own_ago: Option<Duration>) -> Option<Duration> {
+    match own_ago {
+        Some(own) if since.abs_diff(own) <= OWN_KEY_MARGIN => None,
+        _ => Some(since),
+    }
 }
 
 /// The answer as a duration, or `None` for one that can't be a time ago.
@@ -896,5 +923,18 @@ mod tests {
             is_key_down(Key::RightCommand),
             is_key_down(Key::RightCommand)
         );
+    }
+
+    /// The HID state keeps only the newest key-down, and Voice's own Cmd+C or Cmd+V lands there
+    /// too: that one is not the user's, a key pressed after it is.
+    #[test]
+    fn voices_own_key_down_is_not_the_users() {
+        let ms = Duration::from_millis;
+        assert_eq!(users_key_down(ms(300), Some(ms(305))), None);
+        assert_eq!(users_key_down(ms(310), Some(ms(300))), None);
+        assert_eq!(users_key_down(ms(100), Some(ms(300))), Some(ms(100)));
+        assert_eq!(users_key_down(ms(100), None), Some(ms(100)));
+        // A newest key-down from before Voice's post means the post never reached the HID state.
+        assert_eq!(users_key_down(ms(900), Some(ms(300))), Some(ms(900)));
     }
 }
