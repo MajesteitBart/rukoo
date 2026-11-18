@@ -221,9 +221,11 @@ class MailLookup(private val mail: MailEngine) {
         return hits.sortedByDescending { it.date }.take(limit).map(::summary)
     }
 
+    // Desktop mailutil.js linked(): it is one of the ids, it answers one of them, or its References name one.
     private fun linked(ids: Set<String>, r: MessageSummary): Boolean {
         val mid = normId(r.messageId)
-        return (mid.isNotEmpty() && mid in ids) || (!r.inReplyTo.isNullOrEmpty() && normId(r.inReplyTo) in ids)
+        if ((mid.isNotEmpty() && mid in ids) || (!r.inReplyTo.isNullOrEmpty() && normId(r.inReplyTo) in ids)) return true
+        return r.references.any { normId(it) in ids }
     }
 
     companion object {

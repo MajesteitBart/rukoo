@@ -386,8 +386,20 @@ function threadIds(m) {
   return new Set([m.messageId, m.inReplyTo, ...[].concat(m.references || [])].map(normId).filter(Boolean));
 }
 
+// How many References a cached message keeps, the newest, as Android's hub does.
+const REFERENCES_KEPT = 50;
+
+// The Message-IDs a References header names, from its text or a list, in their <id@domain> form: the last
+// REFERENCES_KEPT, which a long thread's header has at the end. A header without angle brackets is split on spaces.
+// Ids longer than a header line can be are left out: no Message-ID is, and they would only take room in the cache.
+function referenceIds(value) {
+  const text = [].concat(value || []).join(' ');
+  const ids = text.match(/<[^<>]*>/g) || text.split(/[\s,]+/);
+  return ids.map((v) => v.trim()).filter((v) => v && v.length <= 998).slice(-REFERENCES_KEPT);
+}
+
 // Whether an email is linked by its headers to one that names these ids: it is one of them, it answers one of them,
-// or its References name one. The folder cache has no References; an email a chat keeps can have them.
+// or its References name one. The folder cache keeps References too (imap.js describe()).
 function linked(ids, r) {
   const mid = normId(r.messageId);
   if ((mid && ids.has(mid)) || (r.inReplyTo && ids.has(normId(r.inReplyTo)))) return true;
@@ -398,6 +410,8 @@ module.exports = {
   normId,
   baseSubject,
   threadIds,
+  REFERENCES_KEPT,
+  referenceIds,
   linked,
   ROLE_NAMES,
   unsubscribeInfo,

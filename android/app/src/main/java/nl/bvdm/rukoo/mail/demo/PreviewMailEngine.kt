@@ -157,6 +157,7 @@ class PreviewMailEngine(
             starred = m.starred,
             answered = m.answered,
             hasAttachments = s.attachments.isNotEmpty(),
+            references = MessageIds.referenceIds(s.references.joinToString(" ")),
         )
     }
 

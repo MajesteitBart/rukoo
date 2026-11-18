@@ -88,10 +88,14 @@ internal class FakeImap(messages: List<Msg>, var capabilities: String, val tabs:
                         when {
                             command.contains("HEADER.FIELDS") -> {
                                 val section = command.substringAfter("BODY.PEEK[").substringBefore("]")
-                                // A partial fetch (<0.n>) gets the first n bytes, as a server sends them.
-                                val most = Regex("\\]<0\\.(\\d+)>").find(command)?.groupValues?.get(1)?.toInt()
-                                val body = (m.headers + "\r\n").let { if (most != null) it.take(most) else it }
-                                val origin = if (most != null) "<0>" else ""
+                                // Only the header lines asked for, folded lines included, as a server answers.
+                                val names = section.substringAfter("(").substringBefore(")").split(' ').map { it.lowercase() }.toSet()
+                                val lines = m.headers.split(Regex("\r\n(?![ \t])")).filter { it.substringBefore(':').trim().lowercase() in names }
+                                // A partial fetch (<start.n>) gets n bytes from start on, as a server sends them.
+                                val partial = Regex("\\]<(\\d+)\\.(\\d+)>").find(command)?.groupValues
+                                val whole = lines.joinToString("") { "$it\r\n" } + "\r\n"
+                                val body = if (partial != null) whole.drop(partial[1].toInt()).take(partial[2].toInt()) else whole
+                                val origin = if (partial != null) "<${partial[1]}>" else ""
                                 sb.append("* ${i + 1} FETCH (UID ${m.uid} BODY[$section]$origin {${body.length}}\r\n$body)\r\n")
                             }
                             command.contains("ENVELOPE") -> sb.append(

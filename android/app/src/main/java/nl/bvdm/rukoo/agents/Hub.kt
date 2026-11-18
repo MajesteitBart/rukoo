@@ -717,7 +717,7 @@ class Hub(
         } catch (_: Exception) {
             emptyList()
         }
-        for (r in cached) older(ThreadEmail(r.messageId, r.inReplyTo, emptyList(), r.date))
+        for (r in cached) older(ThreadEmail(r.messageId, r.inReplyTo, r.references, r.date))
         for (r in known) older(r)
         return out
     }
@@ -744,7 +744,7 @@ class Hub(
         val email = ThreadEmail(
             messageId = ref.messageId ?: cached?.messageId,
             inReplyTo = ref.inReplyTo ?: cached?.inReplyTo,
-            references = ref.references.orEmpty(),
+            references = ref.references?.takeIf { it.isNotEmpty() } ?: cached?.references.orEmpty(),
             date = ref.date?.takeIf { it != 0L } ?: cached?.date ?: 0,
         )
         val chats = locked { convs.values.toList() }
@@ -764,7 +764,7 @@ class Hub(
         val full = fullOf(id)
         return Known(
             account, full,
-            ThreadEmail(full?.messageId ?: cached.messageId, full?.inReplyTo ?: cached.inReplyTo, full?.references.orEmpty(), full?.date ?: cached.date),
+            ThreadEmail(full?.messageId ?: cached.messageId, full?.inReplyTo ?: cached.inReplyTo, full?.references ?: cached.references, full?.date ?: cached.date),
         )
     }
 
