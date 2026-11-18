@@ -1,7 +1,8 @@
 // The Rukoo Voice mark: Rukoo's pigeon with the pill's five-bar waveform in front of its beak.
 // markSvg() returns the mark as SVG text for one pixel size, with the bars on whole pixels, so every icon size stays
 // sharp. macIconSvg() puts the same mark on the rounded square macOS wants for an app icon. make-icons.js rasterizes
-// both; voice.svg and voice-recording.svg are the mark's 256 px output, kept as the vector source.
+// the mark and make-icns.js the macOS icon; voice.svg and voice-recording.svg are the mark's 256 px output, kept as
+// the vector source.
 'use strict';
 
 const fs = require('fs');

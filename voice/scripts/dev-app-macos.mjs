@@ -294,7 +294,7 @@ function workspaceVersion() {
   return match[1];
 }
 
-// The bundle's icon: an .icns from voice-app/icons, which make-icons.js writes as icon.icns. No icon is made here;
+// The bundle's icon: an .icns from voice-app/icons, which make-icns.js writes as icon.icns. No icon is made here;
 // without one macOS shows its generic application icon.
 function bundleIcon() {
   if (!fs.existsSync(ICONS)) return null;

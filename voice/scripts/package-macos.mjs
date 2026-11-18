@@ -586,7 +586,7 @@ function assertPlist(appDir, version) {
 }
 
 // The app icon Tauri copies in from `bundle.icon` (tauri.macos.conf.json names voice-app/icons/icon.icns, which
-// make-icons.js writes). Tauri puts it in Resources and names it in CFBundleIconFile, which assertPlist checks; this
+// make-icns.js writes). Tauri puts it in Resources and names it in CFBundleIconFile, which assertPlist checks; this
 // checks that the file is the one in the repository.
 function assertIcon(appDir) {
   const shipped = path.join(appDir, 'Contents', 'Resources', 'icon.icns');

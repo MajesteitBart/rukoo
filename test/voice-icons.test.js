@@ -1,6 +1,6 @@
 'use strict';
 
-// Rukoo Voice's macOS app icon (voice/crates/voice-app/icons/icon.icns). make-icons.js writes the container itself,
+// Rukoo Voice's macOS app icon (voice/crates/voice-app/icons/icon.icns). make-icns.js writes the container itself,
 // from the PNGs it renders, so that no iconutil or other Mac tool is needed; this reads it back the way macOS does,
 // which fails here instead of on a Mac when a size is missing or a PNG doesn't match its type.
 const test = require('node:test');
@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ICNS = path.join(__dirname, '..', 'voice', 'crates', 'voice-app', 'icons', 'icon.icns');
-// Every type a macOS app icon carries, in the order make-icons.js writes them: 1x, plus 2x where Apple's types
+// Every type a macOS app icon carries, in the order make-icns.js writes them: 1x, plus 2x where Apple's types
 // define one (32 px serves 32 at 1x and 16 at 2x, and so on). The small sizes are PNGs under the icp types.
 const TYPES = [
   ['icp4', 16],
