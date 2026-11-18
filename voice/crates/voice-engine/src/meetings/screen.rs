@@ -2129,7 +2129,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_refusal_is_journaled_as_a_drop_and_answered_as_off() {
-        let dir = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "voice-engine-refusal-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -2137,6 +2137,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
+        // The recorder's time is read from a meeting folder, which is named by the meeting's id.
+        let dir = root.join("m-20261030-171203-4f2a");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("timeline.jsonl"),
@@ -2164,7 +2166,7 @@ mod tests {
         assert_eq!(marks[0].detail.as_deref(), Some("permission"));
         assert_eq!(answered_mode(ScreenMode::Frames, true), ScreenMode::Off);
         assert_eq!(answered_mode(ScreenMode::Video, false), ScreenMode::Video);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A capture the user stopped from the system's control has its own change, and the drops
