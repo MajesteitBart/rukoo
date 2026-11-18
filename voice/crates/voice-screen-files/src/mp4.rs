@@ -234,6 +234,9 @@ struct Moof {
     sequence_at: Option<usize>,
     /// Offsets of every `tfhd.base_data_offset` in the box.
     base_offsets_at: Vec<usize>,
+    /// Offsets of every `tfdt.baseMediaDecodeTime` in the box, and whether it is version 1's
+    /// 64 bits. Media Foundation writes no `tfdt`; the macOS muxer writes one per fragment.
+    decode_times_at: Vec<(usize, bool)>,
     decode_time: Option<u64>,
     samples: u32,
     duration: u64,
@@ -287,6 +290,10 @@ fn parse_traf(
     let mut default_flags = movie.default_flags;
     if flags & 0x20 != 0 {
         default_flags = be32(buf, at)?;
+    }
+    if let Some((_, tfdt, _)) = child(buf, start, end, b"tfdt") {
+        moof.decode_times_at
+            .push((tfdt + 4, buf.get(tfdt) == Some(&1)));
     }
     if !timing {
         return Some(());
@@ -568,6 +575,11 @@ fn write_cut(
         source.seek(SeekFrom::Start(range.start))?;
         written += io::copy(&mut (&mut *source).take(range.end - range.start), &mut out)?;
     }
+    // A file that states its decode times (the macOS muxer's) would keep them, so a clip from a
+    // later fragment would start late; the clip's own times start at 0 instead. Media
+    // Foundation's files have no `tfdt`: their fragments start where the durations before them
+    // end, already at 0 in a clip.
+    let mut rebase = None;
     for (n, f) in fragments.iter().enumerate() {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             return Err(io::Error::new(
@@ -591,6 +603,21 @@ fn write_cut(
             let old = be64(&moof, at).unwrap_or(0);
             let moved = old.wrapping_sub(f.offset).wrapping_add(written);
             moof[at..at + 8].copy_from_slice(&moved.to_be_bytes());
+        }
+        if n == 0 {
+            rebase = parsed.decode_time;
+        }
+        if let Some(base) = rebase {
+            for (at, wide) in parsed.decode_times_at {
+                if wide {
+                    let time = be64(&moof, at).unwrap_or(0).saturating_sub(base);
+                    moof[at..at + 8].copy_from_slice(&time.to_be_bytes());
+                } else {
+                    let time = u64::from(be32(&moof, at).unwrap_or(0)).saturating_sub(base);
+                    let time = u32::try_from(time).unwrap_or(u32::MAX);
+                    moof[at..at + 4].copy_from_slice(&time.to_be_bytes());
+                }
+            }
         }
         out.write_all(&moof)?;
         source.seek(SeekFrom::Start(f.offset + f.moof_size))?;
@@ -1075,6 +1102,79 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         assert!(!dst.exists());
         assert!(cut(&dir.path().join("missing.mp4"), 0, 1, &dst).is_err());
+    }
+
+    /// A fragment as the macOS muxer writes it: a version 1 `tfdt` with its decode time after the
+    /// `tfhd`, and the rest as [`fragment`] writes it.
+    #[cfg(target_os = "macos")]
+    fn fragment_with_tfdt(
+        at: u64,
+        sequence: u32,
+        samples: &[Sample],
+        fill: u8,
+        decode: u64,
+    ) -> Vec<u8> {
+        let tfdt = bx(b"tfdt", &full(1, 0, &decode.to_be_bytes()));
+        // Built as Media Foundation's, at an offset that leaves room for the tfdt, then grown.
+        let pair = fragment(at + tfdt.len() as u64, sequence, samples, fill);
+        let moof_len = u32::from_be_bytes(pair[..4].try_into().unwrap()) as usize;
+        let (moof, mdat) = pair.split_at(moof_len);
+        let mut moof = moof.to_vec();
+        let traf_at = 8 + 16;
+        let tfhd_len =
+            u32::from_be_bytes(moof[traf_at + 8..traf_at + 12].try_into().unwrap()) as usize;
+        let after_tfhd = traf_at + 8 + tfhd_len;
+        moof.splice(after_tfhd..after_tfhd, tfdt.iter().copied());
+        for box_at in [0, traf_at] {
+            let size = u32::from_be_bytes(moof[box_at..box_at + 4].try_into().unwrap())
+                + tfdt.len() as u32;
+            moof[box_at..box_at + 4].copy_from_slice(&size.to_be_bytes());
+        }
+        [moof, mdat.to_vec()].concat()
+    }
+
+    /// A clip cut from a Mac video starts at 0 however late its first fragment is, and its
+    /// fragments keep their spacing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_cut_from_a_file_with_decode_times_starts_at_zero() {
+        let dir = TestDir::new("mp4-cut-tfdt");
+        let src = dir.path().join("000001.mp4");
+        let mut bytes = [ftyp(), moov(TS)].concat();
+        for (i, samples) in six_seconds().iter().enumerate() {
+            let decode = i as u64 * u64::from(TS);
+            let pair = fragment_with_tfdt(
+                bytes.len() as u64,
+                i as u32 + 1,
+                samples,
+                i as u8 + 1,
+                decode,
+            );
+            bytes.extend_from_slice(&pair);
+        }
+        std::fs::write(&src, &bytes).unwrap();
+        let source = index_bytes(&bytes);
+        assert_eq!(
+            source.fragments[4].start,
+            4 * u64::from(TS),
+            "the source states its times"
+        );
+
+        // 4.5 s to 5.5 s: the fifth and sixth fragments.
+        let dst = dir.path().join("clip.mp4");
+        let cut = cut(&src, 4_500, 5_500, &dst).unwrap().unwrap();
+        assert_eq!((cut.start_ms, cut.end_ms), (4_000, 6_000));
+        let out = std::fs::read(&dst).unwrap();
+        let index = assert_well_formed(&out);
+        let starts: Vec<u64> = index.fragments.iter().map(|f| f.start).collect();
+        assert_eq!(starts, [0, u64::from(TS)]);
+        let movie = parse_moov(&out[index.moov.start as usize..index.moov.end as usize]);
+        for f in &index.fragments {
+            let moof = &out[f.offset as usize..(f.offset + f.moof_size) as usize];
+            assert_eq!(parse_moof(moof, &movie).unwrap().decode_time, Some(f.start));
+        }
+        // The source keeps its own times.
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
     }
 
     #[test]
