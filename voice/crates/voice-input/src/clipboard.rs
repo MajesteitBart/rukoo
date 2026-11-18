@@ -472,7 +472,9 @@ mod tests {
         /// The window the paste went to doesn't answer, as while it is busy.
         target_busy: bool,
         /// Reading what another app copied would make the system ask the user.
+        #[cfg(target_os = "macos")]
         unreadable: bool,
+        #[cfg(target_os = "macos")]
         snapshots: u32,
         /// How long each question to the target waited.
         asked: Vec<Duration>,
@@ -565,13 +567,18 @@ mod tests {
             desk.sequence
         }
 
+        #[cfg(target_os = "macos")]
         fn may_read(&self) -> bool {
             !self.desk().unreadable
         }
 
         fn snapshot(&mut self) -> Result<Snapshot, InputError> {
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut desk = self.desk();
-            desk.snapshots += 1;
+            #[cfg(target_os = "macos")]
+            {
+                desk.snapshots += 1;
+            }
             desk.open()?;
             let formats = desk
                 .formats
@@ -874,7 +881,7 @@ mod tests {
         fake.desk().blocked = true;
         let err = fake.paste("dictated").unwrap_err();
         assert_eq!(err, InputError::Blocked);
-        #[cfg(windows)]
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             err.to_string(),
             "Windows blocked typing into an app that runs as administrator."
@@ -908,6 +915,7 @@ mod tests {
 
     /// macOS would ask the user before Voice reads their clipboard: no snapshot, no restore and no
     /// 2 s wait, and the dictation stays on the clipboard.
+    #[cfg(target_os = "macos")]
     #[test]
     fn without_read_access_the_dictation_stays_on_the_clipboard() {
         let mut desk = Desk::with(rich_clipboard());
@@ -926,6 +934,7 @@ mod tests {
 
     /// The copy Voice asked for is still read, but nothing else of the user's, and the selection
     /// stays on the clipboard.
+    #[cfg(target_os = "macos")]
     #[test]
     fn without_read_access_a_capture_reads_only_its_copy() {
         let mut desk = Desk::with(rich_clipboard());

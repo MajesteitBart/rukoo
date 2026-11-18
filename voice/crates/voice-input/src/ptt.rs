@@ -263,7 +263,9 @@ mod tests {
     /// A session event that can swallow a key-up (a fast user switch, the
     /// lock screen, sleep) releases the held key once and leaves nothing for
     /// the real release to stop a second time. Which event it was doesn't
-    /// reach push-to-talk; the app's tests cover the observers.
+    /// reach push-to-talk; the app's tests cover the observers. macOS only,
+    /// whose session events and watchdog call it.
+    #[cfg(target_os = "macos")]
     #[test]
     fn release_all_stops_a_held_recording_once() {
         let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);
@@ -283,6 +285,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn releasing_without_a_hold_does_nothing() {
         let mut ptt = PushToTalk::new(OWNKEY_DEFAULTS);

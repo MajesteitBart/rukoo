@@ -24,8 +24,8 @@ mod ptt;
 mod strokes;
 pub mod target;
 
-// The stubs in `unsupported` are shared: macOS uses them for what step 2 still
-// fills in, and Linux uses them for every call.
+// The stubs in `unsupported` serve Linux for every call. On macOS the module
+// compiles to nothing: `mac` implements each call.
 #[cfg(not(windows))]
 mod unsupported;
 #[cfg(windows)]
@@ -77,17 +77,13 @@ pub enum InputError {
 
 /// Why the platform refused keys, in its own terms.
 fn blocked_message() -> &'static str {
-    #[cfg(windows)]
+    #[cfg(not(target_os = "macos"))]
     {
         "Windows blocked typing into an app that runs as administrator."
     }
     #[cfg(target_os = "macos")]
     {
         "macOS blocks typing while a password field or Terminal's Secure Keyboard Entry is active."
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        "Typing is blocked on this platform."
     }
 }
 

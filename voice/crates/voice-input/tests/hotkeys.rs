@@ -245,6 +245,7 @@ fn a_slow_channel_reader_still_gets_every_change_in_order() {
 /// Work from another thread, such as the app releasing a held key when the screen locks, runs on
 /// the handler's thread after the events queued before it: a release that arrives while a slow
 /// press is still handled can't overtake that press.
+#[cfg(target_os = "macos")]
 #[test]
 fn work_from_another_thread_runs_after_the_events_queued_before_it() {
     let (keyboard, opening) = (Keyboard::new(1, &[]), Arc::new(Latch::new(false)));
@@ -287,6 +288,7 @@ fn work_from_another_thread_runs_after_the_events_queued_before_it() {
 
 /// Only a poller with a handler thread runs work, and only until it stops. A handle that is still
 /// around doesn't keep the handler thread alive: `join` returns.
+#[cfg(target_os = "macos")]
 #[test]
 fn work_runs_only_on_a_running_handler_poller() {
     let keyboard = Keyboard::new(1, &[]);

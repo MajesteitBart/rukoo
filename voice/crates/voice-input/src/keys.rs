@@ -12,7 +12,8 @@ use std::str::FromStr;
 pub enum Key {
     /// Also AltGr on international layouts, and Right Option on a Mac.
     RightAlt,
-    /// A Mac keyboard's right Command key; not offered on Windows.
+    /// A Mac keyboard's right Command key. Only macOS knows it: elsewhere it is in no key list,
+    /// so no name parses to it and no poller reads it.
     RightCommand,
     RightCtrl,
     RightShift,
@@ -24,9 +25,24 @@ pub enum Key {
 }
 
 impl Key {
-    /// Every key Voice knows, on every platform. Poll all of them: which mode
-    /// a key means is decided per event, so a Settings change never needs a
-    /// new poller. A config copied from another platform keeps working too.
+    /// Every offered key, in Ownkey's order. Poll all of them: which mode a key
+    /// means is decided per event, so a Settings change never needs a new poller.
+    #[cfg(not(target_os = "macos"))]
+    pub const ALL: [Key; 8] = [
+        Key::RightAlt,
+        Key::RightCtrl,
+        Key::RightShift,
+        Key::F13,
+        Key::F14,
+        Key::F15,
+        Key::Pause,
+        Key::ScrollLock,
+    ];
+
+    /// Every key a Mac knows: Ownkey's and Right Command. Poll all of them:
+    /// which mode a key means is decided per event, so a Settings change never
+    /// needs a new poller. A config copied from Windows keeps working too.
+    #[cfg(target_os = "macos")]
     pub const ALL: [Key; 9] = [
         Key::RightAlt,
         Key::RightCommand,
@@ -39,20 +55,9 @@ impl Key {
         Key::ScrollLock,
     ];
 
-    /// The keys a Windows keyboard has, in Ownkey's order.
-    pub const WINDOWS: [Key; 8] = [
-        Key::RightAlt,
-        Key::RightCtrl,
-        Key::RightShift,
-        Key::F13,
-        Key::F14,
-        Key::F15,
-        Key::Pause,
-        Key::ScrollLock,
-    ];
-
     /// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there;
     /// Right Command is the one Mac key Voice adds.
+    #[cfg(target_os = "macos")]
     pub const MACOS: [Key; 7] = [
         Key::RightAlt,
         Key::RightCommand,
@@ -62,16 +67,6 @@ impl Key {
         Key::F14,
         Key::F15,
     ];
-
-    /// The keys this platform can offer, so a key a keyboard lacks can't be
-    /// chosen. `ALL` still parses every name, for a config from elsewhere.
-    pub fn offered() -> &'static [Key] {
-        if cfg!(target_os = "macos") {
-            &Key::MACOS
-        } else {
-            &Key::WINDOWS
-        }
-    }
 
     /// The config and display name, for example `"right alt"`.
     pub fn name(self) -> &'static str {
@@ -190,6 +185,7 @@ mod tests {
 
     // Ownkey's HOTKEY_VKS (windows_hotkeys.py:12-21), which a test there keeps
     // equal to HOTKEY_LIST.
+    #[cfg(not(target_os = "macos"))]
     const OWNKEY: [(&str, u16); 8] = [
         ("right alt", 0xA5),
         ("right ctrl", 0xA3),
@@ -201,16 +197,17 @@ mod tests {
         ("scroll lock", 0x91),
     ];
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn windows_offers_exactly_ownkeys_keys_and_codes() {
-        let ours: Vec<(&str, u16)> = Key::WINDOWS
+    fn offers_exactly_ownkeys_keys_and_codes() {
+        let ours: Vec<(&str, u16)> = Key::ALL
             .iter()
             .map(|k| (k.name(), k.vk().expect("a Windows key has a virtual key")))
             .collect();
         assert_eq!(ours, OWNKEY);
-        assert_eq!(Key::RightCommand.vk(), None);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_offers_the_keys_a_mac_keyboard_has() {
         let names: Vec<&str> = Key::MACOS.iter().map(|k| k.name()).collect();
@@ -236,6 +233,7 @@ mod tests {
 
     /// The codes the keys have. A right-hand modifier's own code is not
     /// always the one macOS reads it under: see `mac::keys`.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_mac_key_codes_match_the_keyboard() {
         let codes: Vec<(&str, u16)> = Key::MACOS
@@ -267,7 +265,6 @@ mod tests {
     #[test]
     fn parse_ignores_case_and_surrounding_space() {
         assert_eq!(Key::parse("  Right Alt "), Some(Key::RightAlt));
-        assert_eq!(Key::parse("RIGHT COMMAND"), Some(Key::RightCommand));
         assert_eq!(Key::parse("SCROLL LOCK"), Some(Key::ScrollLock));
     }
 
@@ -283,9 +280,27 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn copy_while_held_matches_ownkeys_press_capture_keys() {
-        // REWRITE_PRESS_CAPTURE_HOTKEYS, ownkey.py:195-199, plus Right Command.
+        // REWRITE_PRESS_CAPTURE_HOTKEYS, ownkey.py:195-199.
+        let press_capture: Vec<&str> = Key::ALL
+            .into_iter()
+            .filter(|k| k.can_copy_while_held())
+            .map(Key::name)
+            .collect();
+        assert_eq!(
+            press_capture,
+            ["right ctrl", "f13", "f14", "f15", "pause", "scroll lock"]
+        );
+    }
+
+    /// A Mac parses Right Command, and copies with Windows' rule for the keys
+    /// Ownkey had plus Right Command when asked for that rule.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_knows_right_command() {
+        assert_eq!(Key::parse("RIGHT COMMAND"), Some(Key::RightCommand));
         let press_capture: Vec<&str> = Key::ALL
             .into_iter()
             .filter(|k| k.copies_while_held_on(false))
@@ -307,6 +322,7 @@ mod tests {
 
     /// Cmd+C goes out while the key is held only when the key can't add a
     /// modifier to it: Right Command and keys that are no modifier.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_mac_copies_while_held_only_for_command_and_the_function_keys() {
         let press_capture: Vec<&str> = Key::MACOS

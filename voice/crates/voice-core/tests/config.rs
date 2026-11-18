@@ -21,11 +21,13 @@ fn load(value: Value) -> Config {
 #[test]
 fn installed_defaults() {
     let cfg = Config::defaults(false);
-    let (hotkey, rewrite_hotkey) =
-        voice_core::config::default_hotkeys_on(false, cfg!(target_os = "macos"));
     assert_eq!(cfg.version, 1);
-    assert_eq!(cfg.hotkey, hotkey);
-    assert_eq!(cfg.rewrite_hotkey, rewrite_hotkey);
+    assert_eq!(cfg.hotkey, "right alt");
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(cfg.rewrite_hotkey, "right ctrl");
+    // A Mac rewrites with Right Command: most Mac laptops have no Right Control key.
+    #[cfg(target_os = "macos")]
+    assert_eq!(cfg.rewrite_hotkey, "right command");
     assert!(cfg.paste_mode);
     assert!(!cfg.ready_chime);
     assert_eq!(cfg.audio_provider, "mistral");
@@ -63,22 +65,33 @@ fn installed_defaults() {
     assert_eq!(cfg.meeting_consent(), ConsentState::NotNeeded);
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn development_defaults_never_use_ownkeys_keys() {
-    // On Windows and Linux a development copy uses F13 and F14; a Mac has no Ownkey and uses the
-    // installed keys.
-    let keys = if cfg!(target_os = "macos") {
-        ("right alt", "right command")
-    } else {
+    let cfg = Config::defaults(true);
+    assert_eq!(cfg.hotkey, "f13");
+    assert_eq!(cfg.rewrite_hotkey, "f14");
+    // Missing or unknown keys fall back to the development keys too.
+    let cfg = Config::from_value(&json!({"hotkey": "nonsense"}), true);
+    assert_eq!(
+        (cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()),
         ("f13", "f14")
-    };
+    );
+}
+
+/// A Mac has no Ownkey and few F13 keys, so a development copy there uses the installed copy's
+/// keys, and so does a config whose key is unknown.
+#[cfg(target_os = "macos")]
+#[test]
+fn development_defaults_never_use_ownkeys_keys() {
+    let keys = ("right alt", "right command");
     let cfg = Config::defaults(true);
     assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
-    // Missing or unknown keys fall back to the development keys too.
     let cfg = Config::from_value(&json!({"hotkey": "nonsense"}), true);
     assert_eq!((cfg.hotkey.as_str(), cfg.rewrite_hotkey.as_str()), keys);
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn defaults_follow_the_platform_and_a_development_copy() {
     use voice_core::config::default_hotkeys_on;
@@ -103,7 +116,6 @@ fn defaults_follow_the_platform_and_a_development_copy() {
     // Right Command is the one key a Mac adds; the rest stay Ownkey's names.
     assert!(voice_core::config::HOTKEYS.contains(&"right command"));
     assert!(voice_core::config::MACOS_HOTKEYS.contains(&"right command"));
-    assert!(!voice_core::config::WINDOWS_HOTKEYS.contains(&"right command"));
     assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"pause"));
     assert!(!voice_core::config::MACOS_HOTKEYS.contains(&"scroll lock"));
 }
@@ -408,9 +420,15 @@ fn values_are_checked_on_load() {
         );
     }
     assert_eq!(load(json!({"language": "xx"})).language, "auto");
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         load(json!({"rewrite_hotkey": "bogus"})).rewrite_hotkey,
-        voice_core::config::default_hotkeys_on(false, cfg!(target_os = "macos")).1
+        "right ctrl"
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        load(json!({"rewrite_hotkey": "bogus"})).rewrite_hotkey,
+        "right command"
     );
 }
 

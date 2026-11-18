@@ -48,14 +48,18 @@ pub fn classify(focus_class: Option<&str>, has_caret: bool) -> TextTarget {
 
 /// The AX roles of the elements that take text, as `AXUIElementCopyAttributeValue`
 /// names them.
+#[cfg(target_os = "macos")]
 const MAC_TEXT_ROLES: [&str; 4] = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"];
 /// Finder's desktop and the Dock have no text box of their own. Finder's search
 /// field and rename field are text roles and win above this list.
+#[cfg(target_os = "macos")]
 const MAC_NON_TEXT_BUNDLES: [&str; 2] = ["com.apple.finder", "com.apple.dock"];
 
 /// Classifies macOS' frontmost app and the AX role of its focused element.
-/// Pure: the caller reads `NSWorkspace.frontmostApplication.bundleIdentifier`
-/// and the role through the Accessibility API, which step 2 adds.
+/// Pure: the caller (`mac/mod.rs`) reads
+/// `NSWorkspace.frontmostApplication.bundleIdentifier` and the role through the
+/// Accessibility API.
+#[cfg(target_os = "macos")]
 pub fn classify_mac(bundle_id: Option<&str>, ax_role: Option<&str>) -> TextTarget {
     if ax_role.is_some_and(|role| MAC_TEXT_ROLES.contains(&role)) {
         return TextTarget::Selected;
@@ -135,6 +139,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn mac_text_roles_are_text_targets() {
         for role in MAC_TEXT_ROLES {
@@ -151,6 +156,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn finders_desktop_and_the_dock_are_not() {
         for bundle in MAC_NON_TEXT_BUNDLES {
@@ -164,6 +170,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn other_mac_apps_are_unknown_without_a_text_role() {
         assert_eq!(
@@ -182,6 +189,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn ax_roles_are_case_sensitive() {
         assert_eq!(

@@ -342,7 +342,14 @@ mod tests {
             ("rewriting.formatting", json!(false)),
             ("rewriting.instructions", json!("Keep greetings.")),
             ("meetings.retention", json!("after_transcription")),
-            ("meetings.stopKey", json!("right shift")),
+            (
+                "meetings.stopKey",
+                json!(if cfg!(target_os = "macos") {
+                    "right shift"
+                } else {
+                    "pause"
+                }),
+            ),
             ("meetings.screen", json!("off")),
             ("meetings.liveSpeakers", json!(false)),
             ("ui.language", json!("nl")),
@@ -404,41 +411,33 @@ mod tests {
         assert_eq!(cfg, Config::defaults(true), "nothing changed");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn only_keys_this_keyboard_has_can_be_chosen() {
         let mut cfg = Config::defaults(true);
         cfg.hotkey = "f13".into();
         cfg.rewrite_hotkey = "f14".into();
-        if cfg!(target_os = "macos") {
-            for key in ["pause", "scroll lock"] {
-                assert_eq!(
-                    set(&mut cfg, "dictation.hotkey", json!(key))
-                        .unwrap_err()
-                        .code,
-                    "invalid_value",
-                    "{key} isn't on a Mac keyboard"
-                );
-            }
-            set(&mut cfg, "dictation.hotkey", json!("right command")).unwrap();
-            assert_eq!(cfg.hotkey, "right command");
-        } else {
+        for key in ["pause", "scroll lock"] {
             assert_eq!(
-                set(&mut cfg, "dictation.hotkey", json!("right command"))
+                set(&mut cfg, "dictation.hotkey", json!(key))
                     .unwrap_err()
                     .code,
                 "invalid_value",
-                "Windows has no Right Command"
+                "{key} isn't on a Mac keyboard"
             );
-            set(&mut cfg, "dictation.hotkey", json!("pause")).unwrap();
-            assert_eq!(cfg.hotkey, "pause");
         }
+        set(&mut cfg, "dictation.hotkey", json!("right command")).unwrap();
+        assert_eq!(cfg.hotkey, "right command");
     }
 
     #[test]
     fn a_key_can_only_have_one_role() {
         let mut cfg = Config::defaults(true);
-        cfg.hotkey = "f13".into();
-        cfg.rewrite_hotkey = "f14".into();
+        // Pinned on a Mac, whose development copy has other keys.
+        if cfg!(target_os = "macos") {
+            cfg.hotkey = "f13".into();
+            cfg.rewrite_hotkey = "f14".into();
+        }
         assert_eq!(
             set(&mut cfg, "dictation.hotkey", json!("f14"))
                 .unwrap_err()

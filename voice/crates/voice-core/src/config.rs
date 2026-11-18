@@ -27,8 +27,21 @@ use crate::providers::{
 
 pub const CONFIG_VERSION: u64 = 1;
 
-/// The keys Voice offers for dictation, the rewrite key and the meeting stop key, as stored. A
-/// config from another platform keeps its key, so every name is accepted on load.
+/// The keys Voice offers for dictation, the rewrite key and the meeting stop key, as stored.
+#[cfg(not(target_os = "macos"))]
+pub const HOTKEYS: [&str; 8] = [
+    "right alt",
+    "right ctrl",
+    "right shift",
+    "f13",
+    "f14",
+    "f15",
+    "pause",
+    "scroll lock",
+];
+/// The keys a Mac accepts on load, as stored: Ownkey's and Right Command, so a config copied from
+/// Windows keeps its key.
+#[cfg(target_os = "macos")]
 pub const HOTKEYS: [&str; 9] = [
     "right alt",
     "right command",
@@ -40,19 +53,9 @@ pub const HOTKEYS: [&str; 9] = [
     "pause",
     "scroll lock",
 ];
-/// The keys a Windows keyboard has, in Ownkey's order.
-pub const WINDOWS_HOTKEYS: [&str; 8] = [
-    "right alt",
-    "right ctrl",
-    "right shift",
-    "f13",
-    "f14",
-    "f15",
-    "pause",
-    "scroll lock",
-];
 /// The keys a Mac keyboard has. Pause and Scroll Lock don't exist there; Right Command is the one
 /// Mac key Voice adds, and Right Option is the same key as Right Alt.
+#[cfg(target_os = "macos")]
 pub const MACOS_HOTKEYS: [&str; 7] = [
     "right alt",
     "right command",
@@ -63,12 +66,16 @@ pub const MACOS_HOTKEYS: [&str; 7] = [
     "f15",
 ];
 
-/// The keys this platform can offer in Settings, so a key the keyboard lacks can't be chosen.
+/// The keys this platform can offer in Settings, so a key the keyboard lacks can't be chosen:
+/// [`HOTKEYS`] off macOS, as before.
 pub fn offered_hotkeys() -> &'static [&'static str] {
-    if cfg!(target_os = "macos") {
+    #[cfg(target_os = "macos")]
+    {
         &MACOS_HOTKEYS
-    } else {
-        &WINDOWS_HOTKEYS
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &HOTKEYS
     }
 }
 pub const LANGUAGES: [&str; 11] = [
