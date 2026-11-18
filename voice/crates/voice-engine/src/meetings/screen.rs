@@ -244,6 +244,10 @@ impl ScreenLive {
                         }
                     }
                 }
+                // Voice's own refusal at the launch, which only a Mac journals: the grant is
+                // missing, also for the app that reads the journal again after a restart.
+                #[cfg(target_os = "macos")]
+                Line::Dropped { reason, .. } if reason == "permission" => self.no_permission = true,
                 Line::Dropped { what, reason, .. } => {
                     let (Some(part), Some(reason)) = (Part::parse(&what), Reason::parse(&reason))
                     else {
@@ -922,7 +926,8 @@ impl ScreenSupervisor {
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 live.file = screenfile::live(dir);
             }
-            Err(e) if e.code == Some(EXIT_NO_PERMISSION) => {
+            // Only the Mac's screen process exits for want of a grant.
+            Err(e) if cfg!(target_os = "macos") && e.code == Some(EXIT_NO_PERMISSION) => {
                 self.refused_without_permission(slot, id, dir, &e.message);
                 return;
             }
@@ -1748,7 +1753,7 @@ impl ScreenSupervisor {
                 live.file = Some(file);
                 live.alive_since = Instant::now();
             }
-            Err(e) if e.code == Some(EXIT_NO_PERMISSION) => {
+            Err(e) if cfg!(target_os = "macos") && e.code == Some(EXIT_NO_PERMISSION) => {
                 self.refused_without_permission(slot, &id, &dir, &e.message);
                 return;
             }
@@ -2142,7 +2147,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("timeline.jsonl"),
-            "{\"kind\":\"session\",\"t\":0,\"wall\":1,\"session\":1,\"pid\":7,\"resumed\":false,\"version\":1,\"recorder\":\"0.1.0\"}\n{\"kind\":\"heartbeat\",\"t\":4200,\"wall\":4201}\n",
+            "{\"kind\":\"session\",\"t\":0,\"wall\":1,\"session\":1,\"pid\":7,\"resumed\":false,\"version\":1,\"recorder\":\"0.1.0\"}\n{\"kind\":\"heartbeat\",\"t\":4200,\"wall\":4201,\"samples\":{}}\n",
         )
         .unwrap();
         journal_refusal(&dir).unwrap();
@@ -2166,6 +2171,14 @@ mod tests {
         assert_eq!(marks[0].detail.as_deref(), Some("permission"));
         assert_eq!(answered_mode(ScreenMode::Frames, true), ScreenMode::Off);
         assert_eq!(answered_mode(ScreenMode::Video, false), ScreenMode::Video);
+        // After Voice restarts, the journal alone still says the grant is missing.
+        let mut restarted = ScreenLive::new("m-1", &dir, ScreenMode::Frames, Phase::Running);
+        restarted.read_journal(false);
+        assert!(restarted.no_permission);
+        assert_eq!(
+            answered_mode(restarted.mode, restarted.no_permission),
+            ScreenMode::Off
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
