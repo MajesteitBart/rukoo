@@ -140,10 +140,12 @@ fn main() {
             "the_key_dialogs_wait_while_the_screen_records",
             the_key_dialogs_wait_while_the_screen_records,
         ),
+        #[cfg(target_os = "macos")]
         (
             "a_refused_keychain_shows_in_settings_until_allowed",
             a_refused_keychain_shows_in_settings_until_allowed,
         ),
+        #[cfg(target_os = "macos")]
         (
             "the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting",
             the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting,
@@ -438,7 +440,6 @@ fn assert_steady(data: &Path, id: &str, fault: &str) {
     };
     let lines = lines(data, id);
     let mut last: Option<u64> = None;
-    let mut late = Vec::new();
     for line in &lines {
         match line {
             Line::Heartbeat { t, .. } => {
@@ -1360,6 +1361,10 @@ fn record_with_pause(engine: &Engine, data: &Path, before: u64, paused: u64, aft
 /// its `video_end`; the journal after its own `stop`; the clips and `screen.json` never (contract
 /// 2.1, spec RUK-110 2.8).
 fn screen_files_upload_by_their_rules() {
+    if !cfg!(any(windows, target_os = "macos")) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
     let h = screen_harness("sync-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
@@ -1391,10 +1396,12 @@ fn screen_files_upload_by_their_rules() {
     let stopped_at = wall_ms();
     engine.stop_meeting(StopReason::User).unwrap();
     wait_done(&h.data(), &id);
-    // `done` follows the journal's `stop`, so the closed files are final. Sync hears of `done` at
-    // the engine's next look at the event log, up to a second later, and until that scan Settings
-    // can say idle while the last frame and the journal aren't queued yet.
+    // On a Mac: `done` follows the journal's `stop`, so the closed files are final. Sync hears of
+    // `done` at the engine's next look at the event log, up to a second later, and until that
+    // scan Settings can say idle while the last frame and the journal aren't queued yet.
+    #[cfg(target_os = "macos")]
     let closed = voice_screen_files::media::closed_files(&dir).unwrap();
+    #[cfg(target_os = "macos")]
     wait_long(
         "every closed screen file in the bucket",
         Duration::from_secs(60),
@@ -1408,6 +1415,8 @@ fn screen_files_upload_by_their_rules() {
     );
     wait_uploaded(&engine);
 
+    #[cfg(not(target_os = "macos"))]
+    let closed = voice_screen_files::media::closed_files(&dir).unwrap();
     let objects = decrypt_all(&fake, &code);
     let object_of = |rel: &str| {
         let bytes = std::fs::read(dir.join(rel)).unwrap();
@@ -1481,6 +1490,10 @@ fn screen_files_upload_by_their_rules() {
 /// again after retention removed them and sync fetched them back. A range across a pause gives
 /// one stretch, with the shorter end (contract 2.3).
 fn media_open_serves_a_frame_and_a_clip() {
+    if !cfg!(any(windows, target_os = "macos")) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
     let h = screen_harness("media-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1579,6 +1592,10 @@ fn media_open_serves_a_frame_and_a_clip() {
 /// A meeting whose video hasn't reached the bucket keeps `screen/video`, with its frames and audio,
 /// past its retention; once it uploaded, the sweep removes them and keeps the journal (contract 2.6).
 fn retention_holds_screen_media() {
+    if !cfg!(any(windows, target_os = "macos")) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
     let h = screen_harness("retention-screen", "after_transcription");
     let fake = fake_s3();
     let engine = h.start();
@@ -1734,6 +1751,10 @@ fn a_restored_meeting_keeps_its_speakers() {
 /// says so in `sync.screenRecording` (spec RUK-110 D18, contract 2.7): by the screen supervisor's
 /// mode for the meeting that records, not by Voice's default.
 fn the_key_dialogs_wait_while_the_screen_records() {
+    if !cfg!(any(windows, target_os = "macos")) {
+        println!("skipped: the screen process records on Windows only");
+        return;
+    }
     let h = screen_harness("key-screen", "keep");
     let fake = fake_s3();
     let engine = h.start();
@@ -1967,10 +1988,3 @@ fn the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting() {
     engine.shutdown();
     fake.stop();
 }
-
-/// The login keychain is macOS's; DPAPI never waits for anyone.
-#[cfg(not(target_os = "macos"))]
-fn a_refused_keychain_shows_in_settings_until_allowed() {}
-
-#[cfg(not(target_os = "macos"))]
-fn the_keychain_dialog_holds_up_neither_the_start_nor_a_meeting() {}

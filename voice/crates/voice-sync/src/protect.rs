@@ -239,14 +239,14 @@ impl Protector for Unsupported {
     fn protect(&self, _plain: &[u8], _label: &str) -> Result<Vec<u8>, SyncError> {
         Err(SyncError::new(
             SyncErrorKind::Local,
-            "Bucket sync needs Windows or macOS.",
+            "Bucket sync needs Windows.",
         ))
     }
 
     fn unprotect(&self, _blob: &[u8], _label: &str) -> Result<Zeroizing<Vec<u8>>, SyncError> {
         Err(SyncError::new(
             SyncErrorKind::Key,
-            "Bucket sync needs Windows or macOS.",
+            "Bucket sync needs Windows.",
         ))
     }
 }
@@ -259,7 +259,7 @@ impl Protector for Unsupported {
 pub const SUPPORTED: bool = cfg!(any(windows, target_os = "macos"));
 
 /// Dpapi on Windows, the login keychain on macOS, and elsewhere a protector that refuses
-/// ("Bucket sync needs Windows or macOS.").
+/// ("Bucket sync needs Windows.").
 ///
 /// `data_dir` names the data folder whose keys this protector keeps; macOS's keychain item is
 /// tied to it, so a development copy and the real Voice never share a wrapping key.

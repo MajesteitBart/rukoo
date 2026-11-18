@@ -325,20 +325,24 @@ fn damaged_files_are_refused() -> Result<(), SyncError> {
     Ok(())
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_system_protector_matches_the_platform() {
-    let supported = voice_sync::protect::SUPPORTED;
-    let keeps_keys = cfg!(any(windows, target_os = "macos"));
-    assert_eq!(supported, keeps_keys);
-    if !supported {
-        let p = protect::system(Path::new("unused"));
-        assert_eq!(
-            p.protect(b"x", SECRET_LABEL).unwrap_err().message,
-            "Bucket sync needs Windows or macOS."
-        );
+    let p = protect::system(Path::new("unused"));
+    let result = p.protect(b"x", SECRET_LABEL);
+    if cfg!(windows) {
+        assert!(result.is_ok());
+    } else {
+        assert_eq!(result.unwrap_err().message, "Bucket sync needs Windows.");
     }
-    // On Windows and macOS the protector is the real one, with real credentials behind it: DPAPI
-    // is the `dpapi` module below and the login keychain is `login` below.
+}
+
+/// On macOS the protector is the login keychain, which this test leaves alone: touching it could
+/// show the keychain dialog. The `login` module below tests it on a fake store.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_system_protector_matches_the_platform() {
+    const { assert!(voice_sync::protect::SUPPORTED) };
 }
 
 #[cfg(windows)]

@@ -46,8 +46,8 @@ impl SyncError {
     }
 
     /// The code Settings maps to text: endpoint, network, auth, bucket, clock, permission,
-    /// no_secret, key, key_denied, key_in_use, off or failed. A timeout counts as `network`: in both cases
-    /// Voice couldn't get an answer from the endpoint.
+    /// no_secret, key, key_denied (macOS only), key_in_use, off or failed. A timeout counts as
+    /// `network`: in both cases Voice couldn't get an answer from the endpoint.
     pub fn code(&self) -> &'static str {
         match self.kind {
             SyncErrorKind::Endpoint => "endpoint",
@@ -122,6 +122,7 @@ mod tests {
             (NoSecret, "no_secret", false),
             (Off, "off", false),
             (Key, "key", false),
+            #[cfg(target_os = "macos")]
             (KeyDenied, "key_denied", false),
             (KeyInUse, "key_in_use", false),
             (NotInBucket, "failed", false),

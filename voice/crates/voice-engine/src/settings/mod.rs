@@ -675,8 +675,8 @@ fn change_secret(
 }
 
 /// `show` gives the recovery code (making the key when there is none), `saved` records that the
-/// user kept it, `import` switches to a key from another computer, `retry` reads the key again
-/// after the keychain refused Voice.
+/// user kept it, `import` switches to a key from another computer, and on macOS `retry` reads the
+/// key again after the keychain refused Voice.
 pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<Value, ApiError> {
     let code = code.map(voice_sync::Zeroizing::new);
     let result = match action {
@@ -694,6 +694,7 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
         }
         // Try again after the keychain refused Voice: the worker reads the key again on its own
         // thread, so this returns at once and `sync.state` shows `unlocking` meanwhile.
+        #[cfg(target_os = "macos")]
         "retry" => {
             bucket_sync(core)?.retry();
             Value::Null
@@ -720,7 +721,10 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             })?;
             json!({ "id": crate::sync::short_id(&id) })
         }
+        #[cfg(target_os = "macos")]
         _ => return Err(invalid("action is show, saved, import or retry.")),
+        #[cfg(not(target_os = "macos"))]
+        _ => return Err(invalid("action is show, saved or import.")),
     };
     core.settings_changed();
     Ok(result)

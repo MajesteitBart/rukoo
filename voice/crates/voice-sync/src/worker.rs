@@ -200,9 +200,13 @@ impl Shared {
         made
     }
 
-    /// Remembers whether the last read of the master key opened it, for `sync.key.exists`.
+    /// Remembers whether the last read of the master key opened it, for `sync.key.exists`. Only
+    /// macOS counts an unreadable key as missing there; elsewhere `exists` says whether
+    /// `key.json` names one, as before.
     pub(crate) fn note_key_read(&self, error: Option<&SyncError>) {
-        self.lock().key_unreadable = error.is_some_and(|e| e.kind.is_key());
+        if cfg!(target_os = "macos") {
+            self.lock().key_unreadable = error.is_some_and(|e| e.kind.is_key());
+        }
     }
 
     /// The error that stops uploads for this long, or until the next change for a refused key.
@@ -326,7 +330,9 @@ impl Shared {
     }
 
     /// The worker opened the key and the secret: an error that said it couldn't is over, though
-    /// nothing has uploaded since. Other errors wait for a request that succeeds.
+    /// nothing has uploaded since. Other errors wait for a request that succeeds. macOS only:
+    /// elsewhere an error stays until a request succeeds, as before.
+    #[cfg(target_os = "macos")]
     fn note_key_opened(&self) {
         let cleared = {
             let mut st = self.lock();
@@ -665,8 +671,12 @@ impl Worker {
 
     /// Reads the key and the secret when the worker is about to connect, before it takes `busy`.
     /// On macOS a read waits while the keychain dialog is open, and a meeting's deletion, a key
-    /// import or a restore must not wait for that dialog. Nothing when no connect is due.
+    /// import or a restore must not wait for that dialog. Nothing when no connect is due, and
+    /// nothing off macOS, where the connect reads them under `busy` as before.
     fn unlock(&self) -> Option<Unlocked> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
         let shared = &self.shared;
         let (on, generation, blocked) = {
             let st = shared.lock();
@@ -732,22 +742,25 @@ impl Worker {
         if self.generation == Some(generation) && self.remote.is_some() {
             return Ready::Yes;
         }
-        // The key and the secret were read for this generation; after a change they are read
-        // again first, outside `busy`.
-        let Some(unlocked) = unlocked.filter(|u| u.generation == generation) else {
-            return Ready::No(Duration::ZERO);
+        // On macOS the key and the secret were read for this generation; after a change they are
+        // read again first, outside `busy`. Elsewhere the connect reads them.
+        let unlocked = match unlocked.filter(|u| u.generation == generation) {
+            Some(unlocked) => Some(unlocked),
+            None if cfg!(target_os = "macos") => return Ready::No(Duration::ZERO),
+            None => None,
         };
         self.keep_previous();
         self.listed.clear();
         self.wait_until = None;
         // Retries that a clock running ahead scheduled for later than any backoff can.
         self.reschedule_ahead(now);
-        match self.connect(&cfg, unlocked) {
+        match self.connect(&cfg, now, unlocked) {
             Ok((remote, left_open)) => {
                 self.cancel_left_open(left_open);
                 self.remote = Some(remote);
                 self.cfg = Some(cfg);
                 self.generation = Some(generation);
+                #[cfg(target_os = "macos")]
                 shared.note_key_opened();
                 {
                     let mut st = shared.lock();
@@ -772,14 +785,23 @@ impl Worker {
     fn connect(
         &self,
         cfg: &SyncConfig,
-        unlocked: Unlocked,
+        now: u64,
+        unlocked: Option<Unlocked>,
     ) -> Result<(Remote, Vec<(String, String)>), SyncError> {
         let shared = &self.shared;
-        let key = unlocked.key?;
+        // What `unlock` read on macOS; elsewhere the key and the secret are read here.
+        let (key, secret) = match unlocked {
+            Some(unlocked) => (unlocked.key?, Some(unlocked.secret)),
+            None => (shared.key_or_create(now)?.0, None),
+        };
         if shared.queue.adopt_kid(&key.kid())? {
             log::info!("sync: the encryption key changed; the queue starts again");
         }
-        let secret = unlocked.secret?.ok_or_else(|| {
+        let secret = match secret {
+            Some(secret) => secret,
+            None => shared.keys.secret(),
+        };
+        let secret = secret?.ok_or_else(|| {
             SyncError::new(SyncErrorKind::NoSecret, "Save the secret access key first.")
         })?;
         let timing = &shared.opts.timing;

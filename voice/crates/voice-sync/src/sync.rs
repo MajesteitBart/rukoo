@@ -462,7 +462,7 @@ impl BucketSync {
             failing_since,
             lost: queue.lost().unwrap_or(0),
             key: KeyInfo {
-                exists: info.is_some() && !key_unreadable,
+                exists: info.is_some() && !(cfg!(target_os = "macos") && key_unreadable),
                 id: info.as_ref().map(|k| shown(&k.kid)),
                 exported: info.is_some_and(|k| k.exported_at.is_some()),
             },

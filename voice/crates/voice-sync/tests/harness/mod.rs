@@ -36,7 +36,8 @@ pub fn now_ms() -> u64 {
 
 /// Appends `<crate> <test>: <reason>` to the file `RUKOO_VOICE_SKIP_LOG` names. A skip prints to
 /// stderr, which libtest hides for a passing test; CI's `skip-log.mjs report` step reads this file
-/// back. Without the variable nothing is written.
+/// back. Without the variable nothing is written. macOS only: only its CI job reads the log.
+#[cfg(target_os = "macos")]
 pub fn log_skip(test: &str, reason: &str) {
     use std::io::Write;
     let Some(path) = std::env::var_os("RUKOO_VOICE_SKIP_LOG").filter(|p| !p.is_empty()) else {

@@ -48,7 +48,7 @@ pub(crate) struct SyncRuntime {
     pub status_pending: AtomicBool,
     /// Why the sync store didn't open at start, for Error details while Voice runs without it.
     pub open_error: Mutex<Option<LastError>>,
-    /// Held while Settings show (and so maybe make) or replace the encryption key. voice-sync's
+    /// Held while the engine makes, shows or replaces the encryption key. voice-sync's
     /// load-or-create isn't atomic: two calls at once could each make a key, and the code one of
     /// them shows would then open nothing that uploads. An import at that moment could be
     /// overwritten by a new key the same way.
@@ -121,7 +121,7 @@ pub fn sync_config(cfg: &Config) -> Option<SyncConfig> {
 
 /// Tells bucket sync what Settings say now.
 ///
-/// It never reads the key: on macOS a read waits while the keychain dialog is open, and this runs
+/// On macOS it never reads the key: a read waits while the keychain dialog is open, and this runs
 /// while Voice starts and while Settings commit. The sync worker reads the key on its own thread
 /// and makes it when there is none, under voice-sync's key lock, so it and Show key never both
 /// make one; Settings show `sync.state` `unlocking` until the read returns.
@@ -129,7 +129,22 @@ pub(crate) fn configure_sync(core: &Core, cfg: &Config) {
     let Some(sync) = &core.sync else {
         return;
     };
-    sync.configure(sync_config(cfg));
+    let bucket = sync_config(cfg);
+    #[cfg(not(target_os = "macos"))]
+    if bucket.is_some() {
+        // The key exists before the worker connects, so the worker and Show key never both make
+        // one: voice-sync's load-or-create isn't atomic, and two keys made at once would leave
+        // uploads under a key that isn't saved. Nothing uploads here, so importing a key stays
+        // allowed.
+        let made = {
+            let _key = lock(&core.sync_rt.key);
+            sync.show_key()
+        };
+        if let Err(e) = made {
+            log::warn!("sync: no encryption key yet: {}", e.message);
+        }
+    }
+    sync.configure(bucket);
 }
 
 /// Moves a bucket secret that `settings_set` could write into `config.json` before Voice kept
@@ -188,12 +203,6 @@ pub(crate) fn sync_view(core: &Core) -> Value {
     let mut view = serde_json::to_value(&status).unwrap_or_else(|_| json!({}));
     if paused {
         view["state"] = json!("paused");
-    }
-    // A platform whose protector can't keep the keys from other users offers no bucket sync, whatever
-    // store opened here: Settings show the sync card only where this is true (voice/ui/API.md,
-    // `sync.available` and `features.sync`).
-    if !voice_sync::protect::SUPPORTED {
-        view["available"] = json!(false);
     }
     // API.md shows the key's first 8 hex characters, enough to tell keys apart.
     if let Some(id) = view["key"]["id"].as_str() {
