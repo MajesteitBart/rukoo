@@ -24,7 +24,9 @@ use voice_engine::{PillPhase, StopReason};
 use voice_input::Key;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 use voice_recorder::meeting::read_recorder_file;
-use voice_recorder::timeline::{self, Line, TimelineWriter};
+#[cfg(target_os = "macos")]
+use voice_recorder::timeline::TimelineWriter;
+use voice_recorder::timeline::{self, Line};
 
 const ROLE: &str = "VOICE_ENGINE_TEST_ROLE";
 const REAL_RECORDER: &str = "VOICE_ENGINE_TEST_RECORDER";
@@ -55,6 +57,7 @@ fn main() {
             "a_new_controller_reattaches_to_a_live_recorder",
             a_new_controller_reattaches_to_a_live_recorder,
         ),
+        #[cfg(target_os = "macos")]
         (
             "a_recorder_that_doesnt_answer_at_start_is_reattached",
             a_recorder_that_doesnt_answer_at_start_is_reattached,
@@ -90,6 +93,8 @@ fn main() {
         ),
         ("rukoo_overrides_the_screen", rukoo_overrides_the_screen),
         ("no_screen_process_means_off", no_screen_process_means_off),
+        // Only Windows and macOS refuse a second writer of the timeline, which this test plays.
+        #[cfg(any(windows, target_os = "macos"))]
         (
             "a_recorder_that_holds_the_meeting_without_answering_keeps_it_live",
             a_recorder_that_holds_the_meeting_without_answering_keeps_it_live,
@@ -228,12 +233,16 @@ fn alive(pid: u32) -> bool {
             .unwrap();
         String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
-        // Linux could read /proc/<pid>, but macOS has none, so every Unix asks `ps` for the process state.
-        // It prints nothing for a process that is gone and "Z" for one that exited but hasn't been reaped,
-        // which counts as gone here: a controller that reattached never reaps a recorder the last one
-        // started, so that recorder waits to be reaped until this test process ends.
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS has no /proc, so it asks `ps` for the process state. It prints nothing for a
+        // process that is gone and "Z" for one that exited but hasn't been reaped, which counts as
+        // gone here: a controller that reattached never reaps a recorder the last one started, so
+        // that recorder waits to be reaped until this test process ends.
         let out = std::process::Command::new("ps")
             .args(["-o", "stat=", "-p", &pid.to_string()])
             .output();
@@ -491,8 +500,30 @@ fn a_reattach_ends_a_dictation_the_old_app_left_open() {
     b.shutdown();
 }
 
-/// Holds the meeting's timeline the way a live recorder does, as its writer: readable by others,
-/// and refusing a second writer.
+/// Holds the meeting's timeline the way a live recorder does: open for writing, readable by
+/// others, and refusing a second writer.
+#[cfg(windows)]
+fn hold_timeline(data: &Path, id: &str) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    let path = meeting_dir(data, id).join("timeline.jsonl");
+    let mut held = None;
+    // The killed recorder's own handle goes a moment after it does.
+    wait_for("the timeline to come free", || {
+        held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .open(&path)
+            .ok();
+        held.is_some()
+    });
+    held.unwrap()
+}
+
+/// The same on macOS, as the timeline's writer, whose lock refuses a second writer.
+#[cfg(target_os = "macos")]
 fn hold_timeline(data: &Path, id: &str) -> TimelineWriter {
     let path = meeting_dir(data, id).join("timeline.jsonl");
     let mut held = None;
@@ -507,6 +538,7 @@ fn hold_timeline(data: &Path, id: &str) -> TimelineWriter {
 /// A recorder that holds the meeting but doesn't answer, as one whose control port is full: the
 /// watchdog's restart and `finalize` both find it busy. The meeting is live, so it never ends
 /// on its own, and Stop keeps asking until it can finish the meeting.
+#[cfg(any(windows, target_os = "macos"))]
 fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
     let dir = TempDir::new("busy");
     let data = dir.join("data");
@@ -553,7 +585,8 @@ fn a_recorder_that_holds_the_meeting_without_answering_keeps_it_live() {
 /// A recorder that holds the meeting when Voice starts but doesn't answer in time, as on a
 /// computer that is busy starting up. The recording goes on, so Voice has to show and follow the
 /// meeting: it used to say the meeting was cut off and leave the recorder alone until the next
-/// start.
+/// start. macOS only, where that reattach is.
+#[cfg(target_os = "macos")]
 fn a_recorder_that_doesnt_answer_at_start_is_reattached() {
     let dir = TempDir::new("reattach-silent");
     let data = dir.join("data");
@@ -896,13 +929,16 @@ fn a_meeting_through_the_engine() {
         !h.sink.last_pill().unwrap().meeting.unwrap().stop_enabled,
         "no stop button while dictating"
     );
-    // The tap delivers in real time: this Mac hears exactly 11,520 samples (720 ms) for a 700 ms
-    // hold, every run. Nothing counts the samples before the key comes up (the dictation's capture
-    // is private, and `heard` is filled when it is transcribed), so the hold can't wait on them.
-    // It is long enough for a runner that stalls the recorder or the tap's reader: a hosted
-    // Windows runner delivered 6,560, 3,520 and 5,600 samples (410, 220 and 350 ms) of a 700 ms
-    // hold in three runs, and the 8,000 below is 500 ms.
-    std::thread::sleep(Duration::from_millis(2_000));
+    // The tap delivers in real time. Nothing counts the samples before the key comes up (the
+    // dictation's capture is private, and `heard` is filled when it is transcribed), so the hold
+    // can't wait on them. On a Mac it is longer, for a hosted runner that stalls the recorder or
+    // the tap's reader; the 8,000 below is 500 ms.
+    let hold = if cfg!(target_os = "macos") {
+        2_000
+    } else {
+        700
+    };
+    std::thread::sleep(Duration::from_millis(hold));
     h.keys.up(Key::F13);
     wait_for("the insertion", || h.input.texts() == ["noted"]);
     assert_eq!(

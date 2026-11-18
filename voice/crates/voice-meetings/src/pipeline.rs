@@ -1848,11 +1848,15 @@ mod tests {
             event_key("mark", &serde_json::json!({"id":"k-1"})).as_deref(),
             Some("mark:k-1")
         );
-        let ended = serde_json::json!({"id":"silent-call-30","kind":"silent","until":41000});
-        assert_eq!(
-            event_key("mark", &ended).as_deref(),
-            Some("mark:silent-call-30:until:41000")
-        );
+        // A Mac's silent mark is sent again with its end.
+        #[cfg(target_os = "macos")]
+        {
+            let ended = serde_json::json!({"id":"silent-call-30","kind":"silent","until":41000});
+            assert_eq!(
+                event_key("mark", &ended).as_deref(),
+                Some("mark:silent-call-30:until:41000")
+            );
+        }
         assert_eq!(
             event_key("frame", &serde_json::json!({"id":"f-000412000"})).as_deref(),
             Some("frame:f-000412000")

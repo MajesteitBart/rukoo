@@ -1031,11 +1031,13 @@ pub fn log_skip(test: &str, reason: &str) {
     }
 }
 
-/// True, after printing why, when CI's host probe found the host too stalled for timing windows
-/// (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test with a
-/// tight window on a late tick returns early on it. Windows and Linux CI never set it.
+/// True, after printing why, when CI's host probe found the macOS host too stalled for timing
+/// windows (`voice/scripts/host-probe.mjs` sets `RUKOO_VOICE_SLOW_HOST` for the test step). A test
+/// with a tight window on a late tick returns early on it. Off macOS it is always false, whatever
+/// the environment says, so Windows and Linux run every test.
 pub fn skip_on_slow_host(test: &str) -> bool {
-    let slow = std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
+    let slow = cfg!(target_os = "macos")
+        && std::env::var_os("RUKOO_VOICE_SLOW_HOST").is_some_and(|v| !v.is_empty());
     if slow {
         let reason =
             "RUKOO_VOICE_SLOW_HOST is set, this host stalls longer than its timing windows allow";

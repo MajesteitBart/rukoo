@@ -521,6 +521,7 @@ mod tests {
         assert_eq!(states(&events), vec![(MeetingState::Recording, 0)]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_silent_call_gives_a_mark_at_once_and_its_sound_ends_it() {
         let (_, events) = derive(&lines(&[

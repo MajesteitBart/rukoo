@@ -327,10 +327,10 @@ impl Controller {
             }
             match meeting::finalize(dir.path(), "interrupted") {
                 Ok(_) => self.emit(Change::Finalized { id }),
-                Err(e) if e.code == EXIT_BUSY => {
-                    // A recorder still holds the meeting: it lives and didn't answer in time,
-                    // as on a computer that is busy starting up. The meeting goes on, so it is
-                    // live here too and the watchdog keeps asking the recorder.
+                Err(e) if cfg!(target_os = "macos") && e.code == EXIT_BUSY => {
+                    // On macOS: a recorder still holds the meeting: it lives and didn't answer in
+                    // time, as on a computer that is busy starting up. The meeting goes on, so it
+                    // is live here too and the watchdog keeps asking the recorder.
                     match meeting::read_recorder_file(dir.path()) {
                         Some(file) => self.reattach(&dir, &lines, file, false),
                         None => self.emit(Change::Notify {
@@ -348,8 +348,9 @@ impl Controller {
     }
 
     /// Takes the meeting in `dir`, which the recorder of `file` records, as the live one. When
-    /// that recorder didn't answer (`answers` is false), the timeline says whether the meeting is
-    /// paused and how far it got until the watchdog's next answer does.
+    /// that recorder didn't answer (`answers` is false), on macOS the timeline says whether the
+    /// meeting is paused and how far it got until the watchdog's next answer does; elsewhere it
+    /// counts as running from 0, as before.
     fn reattach(&self, dir: &MeetingDir, lines: &[Line], file: RecorderFile, answers: bool) {
         let mut inner = self.lock();
         if inner.is_some() {
@@ -361,11 +362,13 @@ impl Controller {
             .flatten();
         let paused = match &status {
             Some(status) => status["state"] == "paused",
-            None => history.paused,
+            None if cfg!(target_os = "macos") => history.paused,
+            None => false,
         };
         let at_ms = match &status {
             Some(status) => status["t"].as_u64().unwrap_or(0),
-            None => history.latest_t,
+            None if cfg!(target_os = "macos") => history.latest_t,
+            None => 0,
         };
         // A dictation the app before this one started can't end any more: that app is gone. The
         // recorder ends it when the app's tap closes; this covers a dictation without a tap.
@@ -545,8 +548,9 @@ impl Controller {
             while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(20));
             }
-            // It answered `stop` after syncing its last line, so nothing is lost: a recorder
-            // still running holds only a device open that never finished.
+            // It answered `stop` after syncing its last line, so nothing is lost: on macOS a
+            // recorder still running holds only a device open that never finished.
+            #[cfg(target_os = "macos")]
             if matches!(child.try_wait(), Ok(None)) {
                 log::warn!(
                     "meeting {}: the recorder didn't exit after its stop; ending it",

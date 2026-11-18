@@ -12,7 +12,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use support::{lock, wait_for, Harness};
+#[cfg(target_os = "macos")]
+use support::lock;
+use support::{wait_for, Harness};
 use voice_bridge::EventLog;
 use voice_engine::meetings::controller::ControllerTiming;
 use voice_engine::{PillPhase, StopReason};
@@ -55,6 +57,7 @@ fn main() {
             "each_meeting_keeps_the_retention_it_started_with",
             each_meeting_keeps_the_retention_it_started_with,
         ),
+        #[cfg(target_os = "macos")]
         (
             "a_silent_call_says_so_once_and_settings_learns_it",
             a_silent_call_says_so_once_and_settings_learns_it,
@@ -385,7 +388,9 @@ fn each_meeting_keeps_the_retention_it_started_with() {
 
 /// A call track of exact zeros while another app plays, as a Mac gives without the System Audio
 /// Recording grant: the pill and a notification say so once, the recording goes on, and Settings'
-/// System Audio Recording row shows what the meeting learned.
+/// System Audio Recording row shows what the meeting learned. macOS only, where the recorder
+/// checks for silence.
+#[cfg(target_os = "macos")]
 fn a_silent_call_says_so_once_and_settings_learns_it() {
     let mut h = harness("silent-call", json!({}));
     h.test_sources = Some("mic=synthetic:tone:440,call=synthetic:tap,playing".into());
