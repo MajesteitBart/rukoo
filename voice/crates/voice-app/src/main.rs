@@ -62,6 +62,28 @@ fn main() {
 }
 
 /// The development flags only run in a development copy, so they can never meet the real profile.
+/// The installed Voice's bundle, whose Keychain items hold the real sync keys. The development
+/// bundle (`nl.bvdm.rukoo.voice.dev`) and a plain cargo build have other identities.
+#[cfg(target_os = "macos")]
+const RELEASE_BUNDLE_ID: &str = "nl.bvdm.rukoo.voice";
+
+/// The development flags run only outside the installed Voice. Keychain lets that app read its sync
+/// keys without asking, and `--dev-hooks` hands out the recovery code, so pointing
+/// RUKOO_VOICE_DATA_DIR at the real data folder would pass them to any program that launched it.
+#[cfg(target_os = "macos")]
+fn check_release_bundle(args: &Args, bundle: Option<&str>) -> Result<(), String> {
+    let dev_flag =
+        args.fake_engine.is_some() || args.self_test.is_some() || args.dev_hooks.is_some();
+    if dev_flag && bundle == Some(RELEASE_BUNDLE_ID) {
+        return Err(
+            "--fake-engine, --self-test and --dev-hooks don't run in the installed Rukoo Voice. Use the \
+             development bundle (voice/scripts/dev-app-macos.mjs) or a cargo build."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn check_dev_flags(args: &Args, dev_mode: bool) -> Result<(), String> {
     let dev_flag =
         args.fake_engine.is_some() || args.self_test.is_some() || args.dev_hooks.is_some();
@@ -100,6 +122,16 @@ fn run() -> i32 {
     if let Err(error) = check_dev_flags(&args, dev_mode) {
         system::fail(&error);
         return EXIT_USAGE;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = objc2_foundation::NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|id| id.to_string());
+        if let Err(error) = check_release_bundle(&args, bundle.as_deref()) {
+            system::fail(&error);
+            return EXIT_USAGE;
+        }
     }
     let Some(data_dir) = voice_core::paths::data_dir() else {
         system::fail("Rukoo Voice can't find its data folder: LOCALAPPDATA isn't set.");
@@ -471,6 +503,22 @@ mod tests {
         };
         assert!(check_dev_flags(&hooks, false).is_err());
         assert!(check_dev_flags(&hooks, true).is_ok());
+    }
+
+    /// The installed Mac bundle refuses the development flags; the development bundle and a plain
+    /// cargo build, which have no bundle identifier, run them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_installed_mac_bundle_refuses_the_development_flags() {
+        let hooks = Args {
+            dev_hooks: Some(PathBuf::from("hooks")),
+            ..Args::default()
+        };
+        assert!(check_release_bundle(&hooks, Some(RELEASE_BUNDLE_ID)).is_err());
+        assert!(check_release_bundle(&args(Some("idle"), false), Some(RELEASE_BUNDLE_ID)).is_err());
+        assert!(check_release_bundle(&args(None, false), Some(RELEASE_BUNDLE_ID)).is_ok());
+        assert!(check_release_bundle(&hooks, Some("nl.bvdm.rukoo.voice.dev")).is_ok());
+        assert!(check_release_bundle(&hooks, None).is_ok());
     }
 
     #[cfg(target_os = "macos")]
