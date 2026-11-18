@@ -1,5 +1,6 @@
 // The parts of voice/scripts/dev-app-macos.mjs that build `open`'s arguments, find and stop processes and fingerprint
-// the icon, apart from the script so test/voice-dev-app-macos.test.js can run them on processes it started itself.
+// the icon, apart from the script so test/macos/voice-dev-app-macos.test.js can run them on processes it started
+// itself.
 
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';

@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const ICNS = path.join(__dirname, '..', 'voice', 'crates', 'voice-app', 'icons', 'icon.icns');
+const ICNS = path.join(__dirname, '..', '..', 'voice', 'crates', 'voice-app', 'icons', 'icon.icns');
 // Every type a macOS app icon carries, in the order make-icns.js writes them: 1x, plus 2x where Apple's types
 // define one (32 px serves 32 at 1x and 16 at 2x, and so on). The small sizes are PNGs under the icp types.
 const TYPES = [

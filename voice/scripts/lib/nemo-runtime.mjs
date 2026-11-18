@@ -4,7 +4,7 @@
 // voice/nemo-runtime/pack-macos.mjs rewrites a packed runtime.json for its signed files. voice/scripts/package-macos.mjs
 // checks a downloaded folder against the manifest's pinned files and reads only the build's name and commit from
 // runtime.json; voice-core checks the app's copy against the same pins (crates/voice-core/src/speakers/runtime.rs,
-// verify_voice). Tested by test/voice-nemo-runtime.test.js without a package build.
+// verify_voice). Tested by test/macos/voice-nemo-runtime.test.js without a package build.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';

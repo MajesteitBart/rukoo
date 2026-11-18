@@ -15,7 +15,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = path.join(__dirname, '..', '..');
 const PACK = path.join(ROOT, 'voice', 'nemo-runtime', 'pack-macos.mjs');
 const PACKAGE = path.join(ROOT, 'voice', 'scripts', 'package-macos.mjs');
 const MANIFEST = path.join(ROOT, 'voice', 'nemo-runtime', 'manifest-macos.json');

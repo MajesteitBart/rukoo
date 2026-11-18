@@ -11,7 +11,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
-const LIB = pathToFileURL(path.join(__dirname, '..', 'voice', 'scripts', 'lib', 'dev-app.mjs')).href;
+const LIB = pathToFileURL(path.join(__dirname, '..', '..', 'voice', 'scripts', 'lib', 'dev-app.mjs')).href;
 const lib = () => import(LIB);
 
 function folder(t) {

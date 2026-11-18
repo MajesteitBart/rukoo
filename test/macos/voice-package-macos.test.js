@@ -11,7 +11,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 
-const LIB = pathToFileURL(path.join(__dirname, '..', 'voice', 'scripts', 'lib', 'run.mjs')).href;
+const LIB = pathToFileURL(path.join(__dirname, '..', '..', 'voice', 'scripts', 'lib', 'run.mjs')).href;
 const PASSWORD = 'abcd-efgh-ijkl-mnop';
 const APPLE_ID = 'notary-test@example.invalid';
 

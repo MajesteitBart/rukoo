@@ -1711,7 +1711,8 @@ test('marks about the screen say what happened to it, apart from the audio', asy
   await shot('screen-marks-dark-nl');
 });
 
-test('a silent call mark says where to switch System Audio Recording back on', async () => {
+// Only a Mac Voice sends this mark, so only macOS registers the case; its CI leg runs it by title.
+if (process.platform === 'darwin') test('a silent call mark says where to switch System Audio Recording back on', async () => {
   const id = voiceStarts({ title: 'Silent call' });
   say(id, 'mic', 500, 'Can you hear me?');
   voice.append('mark', id, { id: 'silent-call-30', kind: 'silent', at: 30, until: null, track: 'call', detail: null, label: null });
