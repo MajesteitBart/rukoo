@@ -74,23 +74,15 @@ jobs:
           }
           $missing = @('RUKOO_VOICE_TEST_NEMO_DIR', 'RUKOO_VOICE_TEST_NEMOTRON', 'RUKOO_VOICE_TEST_AMI') | Where-Object { -not $found.Contains($_) }
           if ($missing) {
-            # The manifest's pins are per platform since format 2; this job packages and tests the Windows one.
-            $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).targets.'windows-x86_64'.archive
+            $published = $null -ne (Get-Content -Raw -LiteralPath 'nemo-runtime/manifest.json' | ConvertFrom-Json).archive
             if ($published) {
               Write-Host "::error::Speaker label assets missing: $($missing -join ', '). The runtime is published, so the AMI and runtime tests must run; rerun the job."
               exit 1
             }
             Write-Host "::warning::Speaker label assets missing: $($missing -join ', '). The AMI label cases and the runtime tests skip, and the test output reports them as passed."
           }
-      # A test that skips itself prints to stderr, which libtest hides when the test passes. It also appends a line to
-      # the skip log, and the step after the tests turns each line into a warning.
-      - name: Name the skip log
-        run: node scripts/skip-log.mjs init
       # Includes the two recorder tests voice/AGENTS.md requires: a hard kill and a lost microphone mid-meeting.
       - run: cargo test --workspace --no-fail-fast
-      - name: Tests that skipped themselves
-        if: ${{ always() }}
-        run: node scripts/skip-log.mjs report
       # The runner's capture support, H.264 encoders, OCR languages and monitors, so a log shows why the screen tests
       # took the software encoder or skipped OCR.
       - name: What this runner can record of the screen
@@ -115,23 +107,10 @@ jobs:
           persist-credentials: false
       - name: Install ALSA headers for cpal
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      # A test that skips itself prints to stderr, which libtest hides when the test passes. It also appends a line to
-      # the skip log, and the step after the tests turns each line into a warning.
-      - name: Name the skip log
-        run: node scripts/skip-log.mjs init
       # The app, the input crate, the local worker and the screen process are Windows-first; the recorder, the bridge,
       # the transcript pipeline, the screen folder format and bucket sync must behave the same on Linux, so their tests
       # run here too. Bucket sync's tests run against voice-s3-fake; only its DPAPI cases are Windows-only.
       - run: cargo test --no-fail-fast -p voice-protocol -p voice-audio -p voice-recorder -p voice-core -p voice-bridge -p voice-meetings -p voice-screen-files -p voice-sync -p voice-s3-fake
-      - name: Tests that skipped themselves
-        if: ${{ always() }}
-        run: node scripts/skip-log.mjs report
-      # THIRD_PARTY_NOTICES.md lists the crates of both shipping builds, and package.ps1 and package-macos.mjs stop when
-      # it is stale, so a dependency change has to update it in the same PR. `cargo tree --target` reads the Windows
-      # and macOS dependency graphs from the lockfile on any host: it needs those crates' sources, which it downloads,
-      # and no toolchain for the targets. `node voice/scripts/notices.mjs --update` fixes a failure.
-      - name: Third-party notices match the lockfile
-        run: node scripts/notices.mjs --check
 
   macos:
     runs-on: macos-latest
@@ -159,6 +138,11 @@ jobs:
           key: sherpa-onnx-${{ runner.arch }}-${{ hashFiles('voice/crates/voice-local/Cargo.toml') }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # THIRD_PARTY_NOTICES-macos.md lists the macOS build's crates, and package-macos.mjs stops when it is stale, so
+      # a dependency change has to update it in the same PR. `node voice/scripts/notices.mjs --update` fixes a failure.
+      # The Windows notices stay with package.ps1, which checks them itself.
+      - name: Third-party notices of the macOS build match the lockfile
+        run: node scripts/notices.mjs --check
       # The speaker label tests need the NeMo runtime, the Nemotron model and the AMI excerpt. The runtime is built here
       # from the pinned commit, because its source path ends up in the dylibs: the path is fixed and the cache key is
       # what pins a build. The model and the excerpt are fetched once per pin and checked against their hashes; nothing
@@ -167,7 +151,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/speaker-assets
-          key: speaker-assets-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest.json', 'voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.mjs') }}
+          key: speaker-assets-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest-macos.json', 'voice/fixtures/ami/manifest.json', 'voice/scripts/speaker-assets.mjs') }}
       # A failed download (a rate limit, say) doesn't fail this step. The tests whose assets are missing return early and
       # libtest reports them as passed, so the next step warns about the skip, and once the macOS runtime is published
       # (voice/nemo-runtime/README.md) it fails the job instead: a green run then means the AMI and runtime tests ran.
@@ -179,7 +163,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/nemo-runtime
-          key: nemo-runtime-macos-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest.json', 'voice/nemo-runtime/build-macos.sh', 'voice/nemo-runtime/macos.patch') }}
+          key: nemo-runtime-macos-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest-macos.json', 'voice/nemo-runtime/build-macos.sh', 'voice/nemo-runtime/macos.patch') }}
       - name: Build the macOS NeMo runtime
         run: |
           runtime="$RUNNER_TEMP/nemo-runtime/nemo_speech"
@@ -216,8 +200,8 @@ jobs:
             missing+=("RUKOO_VOICE_TEST_AMI")
           fi
           if [ ${#missing[@]} -gt 0 ]; then
-            # The manifest's pins are per platform since format 2; this job tests the macOS one.
-            published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.targets && m.targets["macos-aarch64"] && m.targets["macos-aarch64"].archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest.json")
+            # manifest-macos.json pins the macOS runtime; manifest.json is the Windows one.
+            published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest-macos.json")
             if [ "$published" = true ]; then
               echo "::error::Speaker label assets missing: ${missing[*]}. The macOS runtime is published, so the AMI and runtime tests must run; rerun the job."
               exit 1
