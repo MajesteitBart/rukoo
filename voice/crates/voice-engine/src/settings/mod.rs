@@ -133,7 +133,10 @@ pub fn provider_error(error: &ProviderError) -> ApiError {
 
 // The state --------------------------------------------------------------------------------
 
-pub fn state(core: &Core) -> Value {
+/// The whole `SettingsState`. `permissions` is read only when Settings needs it: a state the page
+/// asks for, or a pushed state while its window exists. Starting Voice and changing a setting with
+/// Settings closed must not call TCC, because on macOS 27 a preflight read alone can list the app.
+pub fn state(core: &Core, read_permissions: bool) -> Value {
     let cfg = core.config();
     let looks = core.looks();
     let start_at_login = !core.opts.dev_mode && core.svc.autostart.is_on();
@@ -141,6 +144,11 @@ pub fn state(core: &Core) -> Value {
     let (update_state, update_version) = lock(&core.settings.updates).clone();
     let sync = crate::sync::sync_view(core);
     let secret_saved = core.sync.as_ref().is_some_and(|s| s.secret_saved());
+    let permissions = read_permissions
+        .then(|| {
+            crate::permissions::view_learning(&*core.svc.permissions, core.system_audio_learned())
+        })
+        .flatten();
     json!({
         "seq": core.settings_seq.load(Ordering::SeqCst),
         "version": core.opts.version,
@@ -155,6 +163,10 @@ pub fn state(core: &Core) -> Value {
         "providers": providers(),
         "dictation": { "status": dictation_status(core, &cfg) },
         "rukoo": rukoo(core),
+        "permissions": permissions,
+        // What the last meeting's call track showed while Voice runs, in every state, also one
+        // built while Settings is closed (voice/ui/API.md).
+        "callSound": core.call_sound_view(),
         "models": {
             "orukeet": model_state(core, &cfg, Model::Orukeet),
             "nemotron": model_state(core, &cfg, Model::Nemotron),
@@ -663,7 +675,8 @@ fn change_secret(
 }
 
 /// `show` gives the recovery code (making the key when there is none), `saved` records that the
-/// user kept it, `import` switches to a key from another computer.
+/// user kept it, `import` switches to a key from another computer, `retry` reads the key again
+/// after the keychain refused Voice.
 pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<Value, ApiError> {
     let code = code.map(voice_sync::Zeroizing::new);
     let result = match action {
@@ -677,6 +690,12 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             bucket_sync(core)?
                 .mark_key_saved()
                 .map_err(|e| sync_error(&e))?;
+            Value::Null
+        }
+        // Try again after the keychain refused Voice: the worker reads the key again on its own
+        // thread, so this returns at once and `sync.state` shows `unlocking` meanwhile.
+        "retry" => {
+            bucket_sync(core)?.retry();
             Value::Null
         }
         "import" => {
@@ -701,7 +720,7 @@ pub fn sync_key(core: &Arc<Core>, action: &str, code: Option<String>) -> Result<
             })?;
             json!({ "id": crate::sync::short_id(&id) })
         }
-        _ => return Err(invalid("action is show, saved or import.")),
+        _ => return Err(invalid("action is show, saved, import or retry.")),
     };
     core.settings_changed();
     Ok(result)

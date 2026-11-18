@@ -14,12 +14,21 @@ const LATER = mocked && params.get('later') === '1';
 const feature = (name) => LATER || state?.features?.[name] === true;
 
 const HOTKEYS = ['right alt', 'right ctrl', 'right shift', 'f13', 'f14', 'f15', 'pause', 'scroll lock'];
+// A Mac keyboard has no Pause or Scroll Lock, and adds Right Command. Right Option is the same key
+// as Right Alt, so it keeps that name in the config and gets a Mac label here.
+const MAC_HOTKEYS = ['right alt', 'right command', 'right ctrl', 'right shift', 'f13', 'f14', 'f15'];
 const KEY_NAMES = {
   'right alt': 'settings.keys.rightAlt',
+  'right command': 'settings.keys.rightCommand',
   'right ctrl': 'settings.keys.rightCtrl',
   'right shift': 'settings.keys.rightShift',
   pause: 'settings.keys.pause',
   'scroll lock': 'settings.keys.scrollLock'
+};
+// macOS names, as System Settings and the keyboard print them.
+const MAC_KEY_NAMES = {
+  'right alt': 'settings.keys.rightOption',
+  'right ctrl': 'settings.keys.rightControl'
 };
 // The keys a choice can't share, with the hint that says who has it.
 const KEY_ROLES = {
@@ -80,6 +89,7 @@ const SYNC_ERRORS = {
   clock: 'settings.sync.error.clock',
   permission: 'settings.sync.error.permission',
   no_secret: 'settings.sync.error.noSecret',
+  key_denied: 'settings.sync.error.keyDenied',
   failed: 'settings.sync.error.failed'
 };
 const KEY_ERRORS = {
@@ -112,14 +122,31 @@ const SPEAKER_REASONS = {
   platform: 'settings.speakers.reason.platform',
   cpu: 'settings.speakers.reason.cpu',
   runtime: 'settings.speakers.reason.runtime',
+  notPublished: 'settings.speakers.reason.notPublished',
   runtimeFailed: 'settings.speakers.reason.runtimeFailed',
   model: 'settings.speakers.reason.model',
   modelDamaged: 'settings.speakers.reason.modelDamaged',
   key: 'settings.speakers.reason.key',
   consent: 'settings.speakers.reason.consent'
 };
+// How a processor feature reads in Settings. The app names them lower case, as the settings state
+// documents; Windows has the x86-64 features, macOS the arm64 ones.
+const CPU_FEATURE_NAMES = { avx2: 'AVX2', fma: 'FMA', f16c: 'F16C', bmi2: 'BMI2', neon: 'NEON', dotprod: 'DotProd', fp16: 'FP16' };
 const PAGES = ['main', 'transcription', 'dictionary', 'fillers', 'rewriting', 'meetingTranscription', 'speakers', 'storage', 'rukoo', 'import'];
-const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'about'];
+const GROUP_ANCHORS = ['status', 'dictation', 'meetings', 'general', 'permissions', 'about'];
+
+// macOS privacy permissions, in the order System Settings groups them. The names are the ones
+// System Settings on macOS 27 shows, the same in both catalogs: macOS 26 and earlier said
+// "Accessibility", "Screen Recording" and "System Audio Recording". Each row says why Voice needs
+// it, or, for Input Monitoring, that it doesn't: Voice reads the dictation key by polling key
+// state, which needs no grant (voice/ui/API.md, SettingsState.permissions).
+const PERMISSIONS = [
+  ['microphone', 'settings.permissions.microphone', 'settings.permissions.microphoneWhy'],
+  ['systemAudio', 'settings.permissions.systemAudio', 'settings.permissions.systemAudioWhy'],
+  ['inputMonitoring', 'settings.permissions.inputMonitoring', 'settings.permissions.inputMonitoringWhy'],
+  ['accessibility', 'settings.permissions.accessibility', 'settings.permissions.accessibilityWhy'],
+  ['screenRecording', 'settings.permissions.screenRecording', 'settings.permissions.screenRecordingWhy']
+];
 
 const page = document.getElementById('page');
 
@@ -160,7 +187,13 @@ function setPath(object, key, value) {
   target[last] = value;
 }
 
-const keyName = (key) => (key === 'off' || !key ? t('common.off') : KEY_NAMES[key] ? t(KEY_NAMES[key]) : key.toUpperCase());
+const macos = () => state?.platform === 'macos';
+const hotkeyList = () => (macos() ? MAC_HOTKEYS : HOTKEYS);
+const keyName = (key) => {
+  if (key === 'off' || !key) return t('common.off');
+  const name = macos() ? MAC_KEY_NAMES[key] || KEY_NAMES[key] : KEY_NAMES[key];
+  return name ? t(name) : key.toUpperCase();
+};
 const kbd = (key) => `<kbd>${esc(keyName(key))}</kbd>`;
 const labelOf = (pairs, value) => {
   const found = pairs.find(([v]) => v === value);
@@ -315,7 +348,7 @@ function speakersReason() {
   if (!s || s.ready) return null;
   const key = SPEAKER_REASONS[s.reason];
   if (!key) return t('settings.meetings.speakersUnavailable');
-  const missing = (s.missing?.length ? s.missing : Object.keys(s.cpu || {}).filter((name) => s.cpu[name] === false)).map((name) => name.toUpperCase());
+  const missing = (s.missing?.length ? s.missing : Object.keys(s.cpu || {}).filter((name) => s.cpu[name] === false)).map((name) => CPU_FEATURE_NAMES[name] || name.toUpperCase());
   return t(key, { missing: list(missing), provider: providerLabel(state.config.meetings.provider, 'meetings') });
 }
 
@@ -329,6 +362,55 @@ function speakersRow() {
     value: t(!on ? 'common.off' : ready ? 'common.on' : 'settings.meetings.speakersUnavailable'),
     action: 'go:speakers'
   });
+}
+
+// A permission's state, calm: "Not asked yet" and "Unknown" are not errors.
+function permissionStatus(value) {
+  switch (value) {
+    case 'granted':
+      return status('ok', t('settings.permissions.state.on'));
+    case 'notAsked':
+      return status('off', t('settings.permissions.state.notAsked'));
+    case 'unknown':
+      return status('off', t('settings.permissions.state.unknown'));
+    default:
+      return status('off', t('settings.permissions.state.off'));
+  }
+}
+
+// Settings > Permissions, on macOS only. macOS ties a grant to the app's signature, and an ad-hoc
+// signed Voice gets a new one with every update, so an update drops them while System Settings
+// keeps showing the old entry switched on. The state comes from the preflight calls, and the row
+// says what to do when it is off.
+function permissionsCard() {
+  const permissions = state.permissions || {};
+  return card(
+    PERMISSIONS.map(([id, name, why]) => {
+      const value = permissions[id] || 'unknown';
+      // Voice reads the dictation key without Input Monitoring. The row stays for the other
+      // software that asks for it, but it never tells the user to switch it on for Voice.
+      const needed = id !== 'inputMonitoring';
+      const note = !needed
+        ? ''
+        : value === 'denied'
+          ? t('settings.permissions.denied', { name: t(name) })
+          : value === 'notAsked'
+            ? t('settings.permissions.notAskedHelp')
+            : id === 'systemAudio' && value !== 'granted' && state.callSound === 'silent'
+              ? t('settings.permissions.systemAudioSilent')
+              : id === 'systemAudio' && value === 'unknown'
+                ? t('settings.permissions.systemAudioUnknown')
+                : '';
+      return row({
+        title: t(name),
+        desc: t(why),
+        below: note ? `<div class="desc note">${icons.info}<span>${esc(note)}</span></div>` : '',
+        side: `<div class="side">${permissionStatus(value)}<button class="btn sm secondary" data-a="permission:${id}">${esc(
+          t('settings.permissions.open')
+        )}</button></div>`
+      });
+    }).join('')
+  );
 }
 
 // ---------- pages ----------
@@ -436,6 +518,9 @@ function mainPage() {
       section('dictation', groupTitle(t('settings.groups.dictation'), 'dictation') + dictationCard),
       section('meetings', groupTitle(t('settings.groups.meetings'), 'meetings') + meetingsCard),
       section('general', groupTitle(t('settings.groups.general'), 'general') + generalCard),
+      ...(macos()
+        ? [section('permissions', groupTitle(t('settings.groups.permissions'), 'permissions') + paragraph(t('settings.permissions.intro')) + permissionsCard())]
+        : []),
       section('about', groupTitle(t('settings.groups.about'), 'about') + aboutCard)
     ]
   };
@@ -774,6 +859,9 @@ function speakersPage() {
   const on = state.config.meetings.liveSpeakers;
   const mistral = s.engine === 'mistral';
   const ready = Boolean(s.ready);
+  // A platform whose runtime isn't published can't use the model yet, so neither its files nor a download
+  // are offered there: the row would ask for 107 MB the Mac can't run.
+  const usable = s.reason !== 'notPublished';
   const pill = ready
     ? status('ok', t('common.on'))
     : on
@@ -807,7 +895,7 @@ function speakersPage() {
         'model',
         groupTitle('Nemotron 3 Diarization') +
           card(
-            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${modelRows(m)}` +
+            `<p class="settings-text card-text">${esc(t('settings.speakers.about'))}</p>${usable ? modelRows(m) : ''}` +
               row({ title: t('settings.speakers.live'), desc: t('settings.speakers.liveHelp'), toggle: on, action: 'toggle:meetings.liveSpeakers' }) +
               `<div class="card-foot">${esc(t('settings.speakers.licence'))} <button class="link-btn" data-a="link:nemotron">${icons.link}${esc(t('settings.model.page'))}</button></div>`
           )
@@ -897,7 +985,14 @@ function syncStatus() {
         if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
         break;
       case 'uploading':
-        parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        // A manifest or the index still to go while no file waits: the chip would say "0 files
+        // waiting" in a warning tone. An empty queue is the good news `idle` gives.
+        if (s.waiting > 0) {
+          parts.push(status('busy', t('settings.sync.waiting', { count: s.waiting })));
+        } else {
+          parts.push(status('ok', t('settings.sync.upToDate')));
+          if (s.lastUpload) parts.push(note(esc(t('settings.sync.lastUpload', { time: dateTime(s.lastUpload) })), 'quiet'));
+        }
         break;
       case 'live':
         parts.push(status('busy', t('settings.sync.live')), note(esc(t('settings.sync.waiting', { count: s.waiting })), 'quiet'));
@@ -915,7 +1010,23 @@ function syncStatus() {
         parts.push(waiting(), note(esc(t('settings.sync.keptLocal'))));
         break;
       }
+      case 'unlocking':
+        // A Mac waits for the keychain dialog. Windows hands the key over through DPAPI and asks nothing, so its
+        // text names neither the keychain nor macOS.
+        parts.push(status('busy', t(macos() ? 'settings.sync.unlocking' : 'settings.sync.unlockingSystem')), waiting());
+        break;
       case 'key':
+        // macOS refused the keychain item: the key is fine, so the way out is to allow Voice, not to enter the key.
+        if (s.lastError?.code === 'key_denied') {
+          parts.push(
+            status('bad', t('settings.sync.keyDenied')),
+            `<button class="btn sm secondary" data-a="sync-key-retry">${esc(t('common.tryAgain'))}</button>`,
+            note(details('last').trim()),
+            waiting(),
+            note(esc(t('settings.sync.keptLocal')))
+          );
+          break;
+        }
         parts.push(status('bad', t('settings.sync.keyUnreadable')), `<button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button>`);
         break;
       case 'paused':
@@ -987,7 +1098,7 @@ function syncKeyCard() {
   const other = s.otherKeys > 0 ? `<div class="desc">${esc(t('settings.sync.otherKeys'))}</div>` : '';
   return card(
     row({ title: t('settings.sync.recovery'), desc: t('settings.sync.recoveryHelp'), below: saved + other }) +
-      `<div class="card-actions"><button class="btn sm ${key.exported ? 'secondary' : 'primary'}" data-a="sync-key-show" ${s.state === 'key' ? 'disabled' : ''}>${esc(
+      `<div class="card-actions"><button class="btn sm ${key.exported ? 'secondary' : 'primary'}" data-a="sync-key-show" ${s.state === 'key' || s.state === 'unlocking' ? 'disabled' : ''}>${esc(
         t('settings.sync.keyShow')
       )}</button><button class="btn sm secondary" data-a="sync-key-use">${esc(t('settings.sync.keyUse'))}</button></div>`
   );
@@ -1300,14 +1411,14 @@ async function keyChoice(role) {
       .filter(([key]) => key && key !== 'off')
   );
   const ownkeyKeys = state.ownkey.running ? state.ownkey.keys : [];
-  const keys = role === 'dictation.hotkey' ? HOTKEYS : ['off', ...HOTKEYS];
+  const keys = role === 'dictation.hotkey' ? hotkeyList() : ['off', ...hotkeyList()];
   const options = keys.map((key) => ({
     value: key,
     label: keyName(key),
     disabled: Boolean(taken[key]),
     hint: taken[key] ? t(taken[key]) : ownkeyKeys.includes(key) ? t('settings.keys.ownkey') : ''
   }));
-  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode ? t('settings.keys.dev') : '' });
+  const value = await choose({ title: t(KEY_TITLES[role]), options, current: getPath(c, role), note: state.devMode && !macos() ? t('settings.keys.dev') : '' });
   if (value != null && value !== getPath(c, role)) setValue(role, value);
 }
 
@@ -1552,6 +1663,10 @@ async function act(action, button) {
       return invoke('settings_open_folder', { folder: arg }).catch((error) => showError(t('settings.errors.failed'), error?.message));
     case 'link':
       return invoke('settings_open_link', { link: arg }).catch(() => {});
+    case 'permission':
+      return invoke('settings_open_permission', { permission: arg }).catch((error) =>
+        showError(t('settings.permissions.openFailed'), error?.message || String(error))
+      );
     case 'dict-mode':
       dictionary = { correcting: !dictionary.correcting, error: '' };
       render();
@@ -1614,6 +1729,16 @@ async function act(action, button) {
       return keyFlow('show');
     case 'sync-key-use':
       return keyFlow('use');
+    case 'sync-key-retry':
+      // The app reads the key again on its own thread; sync.state says unlocking until the system hands it over.
+      button.disabled = true;
+      try {
+        await invoke('settings_sync_key', { action: 'retry' });
+      } catch (error) {
+        button.disabled = false;
+        await showError(t('settings.errors.failed'), error?.message);
+      }
+      return;
     case 'sync-restore':
       // Progress arrives in sync.restore; the button goes with the next state.
       button.disabled = true;
@@ -1767,6 +1892,7 @@ async function showKeyDialog() {
     ({ code } = await invoke('settings_sync_key', { action: 'show' }));
   } catch (error) {
     if (error?.code === 'recording_screen') return 'screen';
+    if (error?.code === 'key_denied') return { error, message: t('settings.sync.keyDenied') };
     // Without a key, show makes one, so its failure isn't an unreadable key; "use your saved key" would mislead.
     return { error, message: t(state.sync?.key?.exists ? 'settings.sync.keyUnreadable' : 'settings.errors.failed') };
   }
@@ -1986,6 +2112,8 @@ function go(name, { anchor } = {}) {
   if (name !== current()) stack.push(name);
   dictionary.error = '';
   render({ full: true });
+  // Storage's free-space figure is a reading, not a setting: read it when the page opens.
+  if (name === 'storage') refreshStorage();
   page.classList.remove('entering');
   void page.offsetWidth;
   page.classList.add('entering');
@@ -2128,6 +2256,43 @@ function applyState(next, { first = false } = {}) {
   // A meeting started recording the screen, from the pill, a key or Rukoo: a key dialog closes (RUK-110 D18).
   if (keyDialog && next.sync?.screenRecording) keyDialog();
 }
+
+// macOS permissions change in System Settings while Settings is open, so read them again when the
+// window gets the focus. Only that part is taken from the answer: the app's settings events carry
+// every other change in order.
+async function refreshPermissions() {
+  if (!state || !macos()) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.permissions || !state || state.platform !== 'macos') return;
+    if (JSON.stringify(next.permissions) === JSON.stringify(state.permissions)) return;
+    state.permissions = next.permissions;
+    render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+
+// The recordings drive's free space and the size the meetings use change while Settings is open,
+// and the app only sends a state when something of its own changes. Reading them again when the
+// window gets the focus or the Storage page opens keeps the figure from being the one the page was
+// built with, which is what makes it disagree with the disk.
+async function refreshStorage() {
+  if (!state) return;
+  try {
+    const next = await invoke('settings_state');
+    if (!next?.storage || !state || next.seq < state.seq) return;
+    if (JSON.stringify(next.storage) === JSON.stringify(state.storage)) return;
+    state.storage = next.storage;
+    if (current() === 'storage' || current() === 'main') render();
+  } catch {
+    // Settings keeps what it showed; the next state or focus tries again.
+  }
+}
+window.addEventListener('focus', () => {
+  refreshPermissions();
+  refreshStorage();
+});
 
 async function start() {
   await connect('settings');

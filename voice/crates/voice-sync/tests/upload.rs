@@ -683,6 +683,10 @@ fn a_segment_that_cant_be_read_keeps_its_meeting_held() {
     m.transcript(&[("mic", 0, 900, "hello")], now_ms());
     let Some(locked) = lock(&m.path(&second)) else {
         println!("skipped: this system lets the test read a locked file");
+        log_skip(
+            "a_segment_that_cant_be_read_keeps_its_meeting_held",
+            "this system lets the test read a locked file, as it does for root",
+        );
         return;
     };
     voice.connect(&fake.endpoint());
@@ -1052,12 +1056,13 @@ fn screen_files_upload_by_their_journal() {
         .unwrap();
     journal.sync();
     voice.sync.nudge();
+    // Wait for the journal itself. `settle` alone can return before the worker has looked at the
+    // nudge: the queue is idle with nothing waiting until that scan finds the journal.
+    let ok = wait_for(WAIT, || {
+        uploaded_files(&fake, &key, &m, &["screen/journal.jsonl"]).len() == 1
+    });
+    assert!(ok, "the journal goes up after its stop: {:?}", fake.log());
     voice.settle(&fake, WAIT);
-    assert_eq!(
-        uploaded_files(&fake, &key, &m, &["screen/journal.jsonl"]).len(),
-        1,
-        "the journal goes up after its stop"
-    );
     assert!(
         uploaded_files(
             &fake,

@@ -2339,9 +2339,9 @@ function markLine(k) {
     case 'device':
       return k.detail === 'lost' ? `${at} [${where} lost its device]` : `${at} [${where} moved to ${line(k.label) || 'another device'}]`;
     case 'dropped':
-      return k.detail === 'crash'
-        ? `${at} [Rukoo Voice stopped recording the screen: its screen recorder failed too often]`
-        : `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
+      if (k.detail === 'crash') return `${at} [Rukoo Voice stopped recording the screen: its screen recorder failed too often]`;
+      if (k.detail === 'capture') return `${at} [Rukoo Voice stopped recording the screen: the screen capture kept stopping]`;
+      return `${at} [Rukoo Voice stopped recording the screen to keep the audio]`;
     case 'video_dropped':
       // After a lost graphics device the frames may stop too; a dropped mark then follows.
       return k.detail === 'device'
@@ -2349,6 +2349,9 @@ function markLine(k) {
         : `${at} [Rukoo Voice stopped the screen video to keep the audio; frames go on]`;
     case 'monitor':
       return `${at} [The screen recording moved to ${line(k.label) || 'another monitor'}]`;
+    case 'silent':
+      if (Number.isInteger(k.until)) return `${at} [No sound on ${where} for ${Math.max(1, Math.round((k.until - k.at) / 1000))} s while another app had its audio output open; then it had sound]`;
+      return `${at} [No sound on ${where} from here while another app had its audio output open; if people were talking, the computer may not have let Rukoo Voice record it]`;
     case 'screen_mode':
       return `${at} [Screen recording ${k.label === 'off' ? 'off' : k.label === 'video' ? 'on: video and frames' : 'on: frames'}]`;
     case 'screen_gap': {

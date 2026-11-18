@@ -7,7 +7,7 @@ The pill (`pill.html`) and Settings (`settings.html`) are plain HTML, CSS and Ja
 - `tauri.conf.json` sets `app.withGlobalTauri: true`. The pages use `window.__TAURI__.core.invoke(command, args)` and `window.__TAURI__.event.listen(name, handler)`; `lib/bridge.js` wraps both.
 - `frontendDist` is this folder. The pages load `i18n/en.json` and `i18n/nl.json` with `fetch`, so the asset protocol must serve `.json`. Nothing is fetched from the network; Inter is bundled in `fonts/`. `dev/` and `mock/` are development tools and may be left out of the bundle.
 - Arguments are camelCase objects. Tauri maps a top-level argument name to the Rust parameter of the same name in snake_case, so `invoke('pill_ack', { seq })` calls `fn pill_ack(seq: u64)`. Where a command takes one struct, the page passes it under one name (`layout`, `save`, `request`, `preview`), and the Rust parameter has that name. Structs use `#[serde(rename_all = "camelCase")]`.
-- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `busy`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`, and for bucket sync `needs_test`, `endpoint`, `bucket`, `clock`, `permission`, `no_secret`, `key`, `key_in_use`, `recording_screen` and `off`.
+- A command that fails returns `Err(CommandError)`, which rejects the page's promise with `{ "code": "<code>", "message": "<English text>" }`. The pages show their own text for a known `code` and put `message` behind Error details. Codes: `invalid_value`, `same_key`, `dev_mode`, `need_endpoint_model`, `not_found`, `not_removable`, `busy`, `config`, `auth`, `network`, `timeout`, `provider`, `failed`, and for bucket sync `needs_test`, `endpoint`, `bucket`, `clock`, `permission`, `no_secret`, `key`, `key_denied`, `key_in_use`, `recording_screen` and `off`.
 - Both windows need `core:event:default` in their capability. App commands registered with `invoke_handler` are allowed for every window unless the app defines command permissions; if it does, allow the `pill_*` commands for the `pill` window and the `settings_*` commands for the `settings` window only.
 - Suggested CSP for both windows: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost`. The pages set custom properties in `style` attributes, hence `'unsafe-inline'` for styles only.
 
@@ -66,7 +66,7 @@ One complete state per change, never a patch. The page ignores a snapshot whose 
 | `meeting.stopEnabled` | bool | Draw the stop button. `false` during a dictation in a meeting and in `processing` and `failed`. |
 | `meeting.rukooConnected` | bool | Not drawn in 0.1. |
 | `edge` | string | `bottom` or `top`: the direction of the entry animation. |
-| `theme` | string | `light` or `dark`, resolved from Settings (System follows Windows). |
+| `theme` | string | `light` or `dark`, resolved from Settings. System follows Windows or macOS, and a state with the new theme arrives when the system changes while Voice runs. |
 | `locale` | string | `en` or `nl`, resolved from Settings. |
 | `dev` | bool, optional | Shows a small "Dev" tag, so a development pill can't be mistaken for the installed one. Send `true` when `RUKOO_VOICE_DATA_DIR` is set. |
 
@@ -83,16 +83,18 @@ What the page shows:
 | `inserted` | | green check, "Inserted {words} words" |
 | `rewrote` | | green check, "Rewrote the selection" |
 | `nothingHeard` | | no icon, "Nothing heard" |
-| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
+| `error` | `pill.error.offline`, `.noKey`, `.auth`, `.timeout`, `.mic`, `.model`, `.modelMissing`, `.blocked`, `.accessibility`, `.selectText`, `.selectionTooLong`, `.generic` | red x on a red tint, the short error. The full text goes to a tray notification. |
 | `meeting`, `recording` | none | pulsing dot, "Recording" (or nothing when `compact`), time, the monitor button when `screenSwitch`, stop button |
 | `meeting`, `recording` or `paused` | `pill.micLost`, `pill.micBack` | microphone icon in orange or green, the notice, time, stop button |
-| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed` | screen icon in orange, the notice: the video, or the whole screen recording, stopped; the audio goes on. The app holds each for 4000 ms. |
+| `meeting`, `recording` or `paused` | `pill.videoDropped.disk`, `pill.videoDropped.encoder`, `pill.videoDropped.device`, `pill.framesDropped.disk`, `pill.screenFailed`, `pill.screenPermission` | screen icon in orange, the notice: the video, or the whole screen recording, stopped, macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control; the audio goes on. The app holds each for 4000 ms, and `pill.screenPermission` for 15 000 ms when the meeting never recorded a screen. |
+| `meeting`, `recording` or `paused` | `pill.screenPermission`, `pill.screenStopped` | screen icon in orange: macOS doesn't let Voice record the screen, or the user stopped it from macOS' screen sharing control, in a meeting that had recorded the screen. It stands for the rest of the meeting, until the screen records again or the meeting ends, and comes after `pill.callSilent` and before `pill.micLost` when those apply; a passing notice shows over it for its own time. `meeting.screen` is `off` with no screen button while it shows. The app sends `app.notify.screenPermission` or `app.notify.screenStopped` once. |
+| `meeting`, `recording` or `paused` | `pill.callSilent` | info icon in orange, "No sound from the call": the call track recorded only exact silence while another app played sound, so macOS may not let Voice record system audio; the recording goes on. It stands while the call is silent, until the call has sound or the meeting ends, and comes before `pill.micLost` when both apply; a passing notice shows over it for its own time. The app sends `app.notify.callSilent` once. |
 | `meeting`, `recording` or `paused` | `pill.screenMoved` with `args.name` | screen icon in grey, "Screen: {name}": Voice records another monitor now. The app holds it for 2200 ms. |
 | `meeting`, `paused` | | pause glyph, "Paused", grey time, stop button |
 | `meeting`, `processing` | | spinner, "Saving" |
 | `meeting`, `failed` | `pill.meetingFailed` | red x on a red tint, "Couldn't save the meeting" |
 
-`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`.
+`ProviderError` kinds map to error notices like this: `auth` → `pill.error.auth`, `network` → `pill.error.offline`, `timeout` → `pill.error.timeout`, `config` for a missing key → `pill.error.noKey`, `local_missing_model` → `pill.error.modelMissing`, anything else → `pill.error.generic`. Decision 7's `SendInput` shortfall → `pill.error.blocked`, and macOS's missing Accessibility grant, which stops both typing and reading the selection, → `pill.error.accessibility`.
 
 ### Event `pill://level`
 
@@ -122,7 +124,7 @@ What the page shows:
 - `button` is `null` when no stop button is drawn: no meeting, `stopEnabled` false, the pill hidden or leaving. Hide the stop window then.
 - `screenButton` is `null` when no monitor button is drawn: `screenSwitch` false or missing, no meeting that records or is paused, the pill hidden or leaving. Hide the monitor window then. An app from before the monitor button ignores it.
 - `pill` is `null` while nothing is drawn.
-- `seq` is the snapshot the layout was measured for. Ignore a layout whose `seq` is older than the newest snapshot that has a stop button.
+- `seq` is the snapshot the layout was measured for. A layout replaces the one the app holds unless it is older than that one; it is not compared with the newest snapshot, which the app can have and the page not yet: the page only sends a layout when the rectangles change, so a refused layout would leave the native windows where the pill no longer draws its buttons.
 - The page reports after every change: a new snapshot, the end of the entry animation, every frame of a width transition (the label sliding to 0 when the pill compacts, the button widening to "Stop?") and when Inter finishes loading. It never sends the same layout twice in a row.
 
 ### Strings the app reads from the catalogs
@@ -135,7 +137,7 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 - `settings.title`: the Settings window's title.
 - `settings.model.folder`, `settings.storage.folder`: the title of the folder picker that `settings_choose_folder` opens for `models` and `recordings`. Settings 0.1 asks only for `models` (see the command below).
 - `app.tray.tooltip`, `app.tray.tooltipRecording`, `app.tray.settings`, `app.tray.startMeeting`, `app.tray.pauseMeeting`, `app.tray.resumeMeeting`, `app.tray.stopMeeting`, `app.tray.quit`: the tray.
-- `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`, `app.notify.sync`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is.
+- `app.notify.dictationFailed`, `app.notify.rewriteFailed`, `app.notify.noTextBox`, `app.notify.meeting`, `app.notify.settings`, `app.notify.welcome`, `app.notify.sync`: the titles of the engine's tray notifications (`Notification.title_key`). The body comes from the engine as it is, unless the notification has a `body_key`: then the app shows that catalog string in the user's language, and the engine's body is the English fallback. `app.notify.screenPermission` is the body, under the title `app.notify.meeting`, when macOS doesn't let Voice record the screen: Screen Recording is off at the start of a meeting or is switched off during it. `app.notify.screenStopped` is the body, under the same title, when the user stopped the screen recording from macOS' screen sharing control. `app.notify.callSilent` is the body, under the same title, when the call track has recorded only exact silence while another app played sound, once per meeting.
 
 `app.notify.sync`, "Bucket sync", goes out once a day while uploads have failed for more than a day, with the body "Voice couldn't upload to your bucket for a day. Your audio stays on this computer until it can, as long as 10 GB stay free." When held media had to go because less than 10 GiB were free, the body is "The disk was almost full, so Voice removed meeting media that hadn't reached your bucket yet. Settings > Storage lists how much.", or, with an unreadable upload queue, "The disk was almost full, so Voice removed meeting media it couldn't check against your bucket." The engine writes these bodies as it writes the other meeting notifications.
 
@@ -147,11 +149,11 @@ The app has text of its own and reads it from `i18n/en.json` (the `message` fiel
 
 Window `settings`, `settings.html`, 760 × 680, minimum 480 × 480, native decorations. The app sets the window's background to the theme's `--bg` (`#141519` dark, `#f3f4f6` light) before the page loads, so it doesn't flash white.
 
-The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `about`. The app can use it to open Settings at the import after the first start.
+The page can open at a page or a group: `settings.html?page=<page>`, where `<page>` is `transcription`, `dictionary`, `fillers`, `rewriting`, `meetingTranscription`, `speakers`, `storage`, `rukoo` or `import`, or one of the top page's groups `status`, `dictation`, `meetings`, `general`, `permissions`, `about`. The app can use it to open Settings at the import after the first start.
 
 ### Command `settings_state`
 
-`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it once on load.
+`invoke('settings_state')` → `SettingsState`, the whole state. The page calls it on load, and again when its window gains the focus or the Storage page opens, for the parts that change without the app: the macOS permissions and `storage`'s free space.
 
 ### Event `settings://state`
 
@@ -165,6 +167,7 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
   "version": "0.1.0",
   "devMode": false,
   "platform": "windows",
+  "permissions": null,
   "features": { "screen": true, "speakers": true, "sync": true },
   "theme": "dark",
   "locale": "en",
@@ -217,8 +220,10 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 |---|---|
 | `seq` | +1 per state, and the app sends states in `seq` order, each built after its number was given. The page drops a state that isn't newer than the one it has. |
 | `version` | Voice's version, shown under About. |
-| `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14. |
+| `devMode` | `RUKOO_VOICE_DATA_DIR` is set. The page disables Start at login and the import button, with a note, and key lists say development copies use F13 and F14, except on a Mac, where they start on Right Option and Right Command like an installed copy. |
 | `platform` | `windows`, `macos` or `linux`. |
+| `permissions` | On macOS, the state of each privacy permission Voice reads: `{ "microphone", "systemAudio", "inputMonitoring", "accessibility", "screenRecording" }`, each `granted`, `denied`, `notAsked` (macOS hasn't asked yet, not an error) or `unknown` (no way to tell; System Audio Recording before a tap can be checked). `systemAudio` has no preflight call, so it shows what the last meeting's call track showed while Voice runs: `granted` once it recorded sound, else `unknown`: a call of only exact silence is a hint, not proof, so it doesn't make the row `denied`. `null` on Windows and Linux, where Settings shows no permission rows, and in a pushed state built while Settings is closed. The engine reads them when the page asks (`settings_state`) or while the Settings window exists, so starting Voice doesn't make macOS list it in System Settings before anyone opens Settings. Settings asks again when its window gains focus after the user changed something in System Settings. |
+| `callSound` | What the last meeting's call track showed while Voice runs: `heard` once it recorded sound, `silent` when it held only exact silence for a minute while another app had its audio output open (a hint: the permission may be off, or nobody talked), `null` before either. In every state, also one built while Settings is closed. On macOS the System Audio Recording row then says to check the switch. |
 | `features` | Which features' Settings this Voice shows: `screen`, `speakers` and `sync`. A feature not in this Voice is `false`. |
 | `theme`, `locale` | `ui.theme` and `ui.language` resolved: `light` or `dark`, `en` or `nl`. The page follows these, never the raw setting. |
 | `config` | Every setting, see below. API keys appear only as `keySaved` flags and the bucket secret only as `storage.sync.secretSaved`; `storage.sync.secret` is always `""`. |
@@ -232,19 +237,19 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `rukoo.behind` | The event log's head minus the last event the connected client has (its hello's `after`, then what the bridge sent it), or `null`. |
 | `models` | A `ModelState` for `orukeet` and one for `nemotron`, the speaker label model. |
 | `speakers` | A `SpeakersState`, below: whether new meetings get speaker labels, and why not. |
-| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. |
-| `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: Windows can capture the screen (Windows 10 2004 or later); `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the text recognition languages Windows has, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
+| `storage` | The recordings folder, the bytes meetings use and the free bytes on its drive. In 0.1 the folder is `meetings` in Voice's data folder and can't be moved. The free space is a `statvfs` reading of that drive's available bytes, the same number the recording floors and bucket sync compare against, in the decimal units `bytes()` shows; Settings reads it again when the Storage page opens or the window gains the focus, because nothing of the app changes when another program fills the disk. |
+| `screen` | What this computer can record of the screen, from the screen process's probe, or `null` until it answered. `available`: the screen program is there and this computer can capture the screen: Windows 10 2004 or later on Windows, and always on macOS, where `permissions.screenRecording` says whether Voice has the permission; `false` disables Screen recording. `hardwareEncoder`: the hardware H.264 encoder's name, or `null` when there is none and Video records frames only. `ocr`: the languages the system's text recognition reads, Windows' OCR on Windows and Vision on macOS, such as `nl-NL`; an empty list means frames are saved without their text. `monitors`: how many monitors there are. The page shows a note under Screen recording for each limit. |
 | `updates.state` | `idle`, `checking`, `available` (with `version`), `upToDate` or `failed`. |
 | `ownkey` | An `OwnkeyState`, below. |
-| `sync.available` | Bucket sync works here: Windows, with the sync store open. The Storage page shows the sync card only then. When the store didn't open (locked, damaged or from a newer Voice) and `storage.sync.enabled` is on, `state` is `paused`, `lastError` says why, and the page shows only the switch, with a line that nothing uploads and that retention keeps the audio while the switch is on, so the user can turn it off. |
-| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change, Test connection passes or 15 minutes pass; `key`, Voice can't open its encryption key; `paused`, the switch is on but a connection field or the secret changed since the last passed Test connection, so nothing uploads or comes back from the bucket until a test passes, and retention keeps holding what hasn't uploaded. |
+| `sync.available` | Bucket sync works here: Windows or macOS, with the sync store open. The Storage page shows the sync card only then. When the store didn't open (locked, damaged or from a newer Voice) and `storage.sync.enabled` is on, `state` is `paused`, `lastError` says why, and the page shows only the switch, with a line that nothing uploads and that retention keeps the audio while the switch is on, so the user can turn it off. |
+| `sync.state` | `off`; `idle`, everything is in the bucket; `uploading`; `live`, a meeting records and its audio and frames go up as they close; `retrying`, the bucket can't be reached and Voice tries again; `failing`, the bucket refused (see `lastError`) and nothing uploads until the settings change, Test connection passes or 15 minutes pass; `key`, Voice can't open its encryption key or the bucket secret, and nothing uploads until the user acts: `lastError.code` `key` for a key that is missing, damaged or from another user (the way out is the recovery code), `key_denied` for one macOS's keychain refused (the user chose Deny, or macOS couldn't ask), whose way out is `settings_sync_key({ action: "retry" })` and Always Allow, or a restart; `unlocking`, Voice waits for the system to open the key or the secret, on macOS for the answer to the keychain dialog, and then goes on to another state; `paused`, the switch is on but a connection field or the secret changed since the last passed Test connection, so nothing uploads or comes back from the bucket until a test passes, and retention keeps holding what hasn't uploaded. |
 | `sync.waiting`, `waitingBytes`, `oldestWaiting` | Files waiting to upload, their size, and when the oldest was queued (epoch ms or `null`). |
 | `sync.lastUpload` | When the last file reached the bucket, or `null`. |
 | `sync.lastError` | `{ "at", "code", "message" }` of the last failure, `null` after a success. `code` is one of the Test connection codes; `message` is English, for Error details. |
 | `sync.failingSince` | When uploads started failing without a success since, or `null`. |
 | `sync.lost` | Files Voice removed from this computer before they reached the bucket, because the disk was almost full (under 10 GiB free). |
 | `sync.screenRecording` | A meeting records the screen now. The page closes the key dialogs when it turns true. |
-| `sync.key` | `exists`: Voice has an encryption key; `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
+| `sync.key` | `exists`: Voice has an encryption key and could open it the last time it read it (`false` while `lastError` is a `key` or `key_denied` for the key itself); `id`: its first 8 hex characters, to tell keys apart; `exported`: the user said they saved it. Never the key. |
 | `sync.restore` | `state`: `idle`, `listing`, `available`, `restoring`, `done` or `failed`; `available`: meetings in the bucket that aren't on this computer; `done` and `total` while restoring; `error`: English text after a failure. |
 | `sync.otherKeys` | How many other encryption keys have meetings in this bucket, from the last Test connection. |
 
@@ -252,8 +257,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 
 | Key | Values | Default | From Ownkey's |
 |---|---|---|---|
-| `dictation.hotkey` | `right alt`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt`; `f13` in dev mode | `hotkey` |
-| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl`; `f14` in dev mode | `rewrite_hotkey` |
+| `dictation.hotkey` | `right alt`, `right command`, `right ctrl`, `right shift`, `f13`, `f14`, `f15`, `pause`, `scroll lock` | `right alt` on Windows; Right Option (stored as `right alt`) on macOS; `f13` in dev mode | `hotkey` |
+| `dictation.rewriteHotkey` | `off` or a key above | `right ctrl` on Windows; `right command` on macOS; `f14` in dev mode | `rewrite_hotkey` |
 | `dictation.pasteMode` | bool | `true` | `paste_mode` |
 | `dictation.readyChime` | bool | `false` | `ready_chime` |
 | `dictation.startAtLogin` | bool; `dev_mode` error in dev mode | `true` for an installed copy | the Run key |
@@ -280,6 +285,8 @@ A whole `SettingsState` with a higher `seq`, sent whenever anything in it change
 | `ui.language` | `system`, `en`, `nl` | `system` | new |
 | `ui.theme` | `system`, `light`, `dark` | `system` | new |
 | `updates.check` | bool | `false` | new |
+
+A Mac keyboard has no Pause or Scroll Lock, so Voice's macOS key picker leaves them out; Windows has no Right Command. The macOS picker shows the keys as the keyboard prints them: Right Option (`right alt`), Right Command (`right command`), Right Control (`right ctrl`), Right Shift, and F13 to F15. An existing `config.json` is never rewritten: a key stored on another platform still parses and is shown by its own name.
 
 Bucket sync, saved in `config.json` under `storage_sync`:
 
@@ -355,7 +362,7 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
   "reason": null,
   "detail": null,
   "missing": [],
-  "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true },
+  "cpu": { "avx2": true, "fma": true, "f16c": true, "bmi2": true, "neon": false, "dotprod": false, "fp16": false },
   "runtime": { "location": "voice", "commit": "97a15af" },
   "live": [{ "meeting": "m-20261102-101500-1a2b", "mode": "nemotron", "state": "listening", "speakers": 3, "reason": null, "workerPid": 4242 }]
 }
@@ -365,11 +372,11 @@ Meeting transcription has no "Same as dictation" choice. Decision 10 makes it Or
 |---|---|
 | `engine` | Who labels new meetings: `mistral` when the meeting model is a realtime model (it labels in the same stream it transcribes), else `nemotron` on this computer. Nemotron never stands in for Mistral or the other way round. |
 | `ready` | New meetings get speaker labels. Otherwise the whole call is one speaker, `call-1`. |
-| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x64), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2), `runtime` (no NeMo runtime verifies next to Voice), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
+| `reason` | Why not, or `null`: `off` (the switch), `platform` (not Windows on x86-64 or macOS on Apple Silicon), `cpu` (the processor lacks AVX2, FMA, F16C or BMI2 on Windows, NEON, dot-product or FP16 arithmetic on macOS), `runtime` (no NeMo runtime verifies for this platform), `notPublished` (this platform's runtime isn't published yet, so there is nothing to install), `runtimeFailed` (a speaker worker failed to load since Voice started; it tries again after a restart), `model` (the Nemotron model isn't there), `modelDamaged` (the model failed its check since Voice started), `key` (a realtime model without a meeting API key: the stream can't start, and the page points to Meeting transcription; it comes before `consent`), `consent` (a realtime model without a `stream` agreement for its provider and host). |
 | `detail` | The English error behind `runtimeFailed` and `modelDamaged`, for Error details; else `null`. |
-| `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]`; else `[]`. |
-| `cpu` | This processor's features. |
-| `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (next to Voice), `ownkey` (Ownkey's copy, read only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
+| `missing` | With `cpu`, the missing features in lower case, such as `["bmi2"]` or `["dotprod"]`; else `[]`. |
+| `cpu` | This processor's features. Windows reports the x86-64 build's four (`avx2`, `fma`, `f16c`, `bmi2`) and macOS the arm64 build's three (`neon`, `dotprod`, `fp16`); the features of the other platform are `false`. |
+| `runtime` | The NeMo runtime Nemotron would use, while it can run: `location` `voice` (Voice's own copy: next to the exe, or in its bundle's `Contents/Resources` on macOS), `ownkey` (Ownkey's copy, read only, Windows only) or `dev` (`RUKOO_VOICE_NEMO_DIR` in a development copy), and `commit`, the NeMo-Speech.cpp commit's first seven characters. `null` otherwise. |
 | `live` | One entry per meeting that is transcribing: `mode` `nemotron`, `mistral` or `off`; `state` `off`, `starting`, `matching`, `listening`, `catchingUp`, `restarting`, `finished` or `failed`; `speakers`, the voices labelled so far; `reason`, the code a meeting in mode `off` labels without (the codes above, `stream`, `noCall` for a meeting that records no call track, or `upgrade` for a meeting that a Voice without speaker labels started); `workerPid`, the worker's process id in a development copy, else `null`. `failed` means labels stopped for that meeting while its recording and transcription go on. |
 
 A meeting keeps the labels it started with: a change of the switch, the model or the meeting provider applies to the next meeting.
@@ -430,6 +437,20 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 `invoke('settings_open_link', { link })` → nothing. Opens a fixed address in the browser. The page never sends a URL; the app keeps the table: `orukeet` → `https://huggingface.co/oruk/orukeet`, `nemotron` → `https://huggingface.co/nvidia/Nemotron-3-Diarization`.
 
+### Command `settings_open_permission`
+
+`invoke('settings_open_permission', { permission })` → nothing. Opens that permission's pane in System Settings on macOS. `permission` is an id from `permissions`. The page names a permission, never a URL; the app keeps one table. Checked on macOS 27:
+
+| `permission` | System Settings pane |
+|---|---|
+| `microphone` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone` |
+| `systemAudio` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
+| `inputMonitoring` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent` |
+| `accessibility` | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
+| `screenRecording` | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
+
+The system audio permission shares the Screen & System Audio Recording pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane. The pane names here and in Settings are macOS 27's; macOS 26 and earlier called three of them "Accessibility", "Screen Recording" and "System Audio Recording". Rejects with `invalid_value` for an id outside the table. For `screenRecording` the app first asks macOS for the permission with `CGRequestScreenCaptureAccess`, at most once per app run and only while Voice doesn't have it: macOS lists an app under Screen & System Audio Recording only once it asked, so this puts Voice there, switched off, and shows the system's prompt once. The app asks the same way when a meeting with the screen on starts without the grant, and never at startup.
+
 ### Command `settings_clean_preview`
 
 `invoke('settings_clean_preview', { preview })` → the cleaned text. `preview` is `{ "text", "enabled", "languages", "custom" }`. The app runs `voice_core::cleanup` with those values without saving them, so the Filler words preview shows the real cleanup.
@@ -452,15 +473,16 @@ Consent: the page shows the disclosure and its checkbox when the provider isn't 
 
 ### Command `settings_sync_save_secret`
 
-`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with Windows DPAPI for this Windows user, never in `config.json`, and pauses uploads until Test connection passes again; the switch stays on. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when Windows can't protect it or `config.json` can't be saved. The passed test leaves `config.json` before the secret changes, so a failed save keeps the secret that was tested. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
+`invoke('settings_sync_save_secret', { secret })` → nothing. Keeps the bucket's secret access key with the platform's protector, DPAPI on Windows and the login keychain on macOS, readable only by this user and never in `config.json`, and pauses uploads until Test connection passes again; the switch stays on. Rejects with `invalid_value` for an empty secret or one over 1,024 characters, `failed` when the protector can't save it or `config.json` can't be saved. The passed test leaves `config.json` before the secret changes, so a failed save keeps the secret that was tested. `settings_remove_key({ target: "sync" })` removes it. The page calls it when the secret's field loses focus and keeps no copy.
 
 ### Command `settings_sync_key`
 
 `invoke('settings_sync_key', { action, code })`:
 
-- `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen, and with `key` when Voice can't open its encryption key on this computer, for instance after a Windows password reset.
+- `show` → `{ "code": "RKV1-…", "id": "0f1e2d3c" }`. Makes the key when there is none. Rejects with `recording_screen` while a meeting records the screen, with `key` when Voice can't open its encryption key on this computer, for instance after a Windows password reset or with the login keychain item gone, and with `key_denied` when macOS's keychain refused Voice the item (the key is fine; the page asks the user to allow Voice). Waits while macOS shows the keychain dialog.
 - `saved` → nothing: the user saved the code; `sync.key.exported` becomes `true`. Rejects with `key` when there is no key, or Voice can't open it.
-- `import` with `code` → `{ "id" }`: this computer uses that key from now on. Rejects with `invalid_value` for a code that isn't a key, `key_in_use` once this computer uploaded meetings with its own key, and `recording_screen` while a meeting records the screen.
+- `import` with `code` → `{ "id" }`: this computer uses that key from now on. Rejects with `invalid_value` for a code that isn't a key, `key_in_use` once this computer uploaded meetings with its own key, `key_denied` while macOS's keychain refuses Voice its current key (that key still opens once allowed, so it isn't replaced unchecked), and `recording_screen` while a meeting records the screen.
+- `retry` → nothing, at once: Voice reads its key and the bucket secret again on the sync worker's thread and tries the bucket again. The page's Try again after `key_denied`; `sync.state` is `unlocking` while macOS asks, then `idle` (or another state), or `key` with `key_denied` again.
 
 The page shows the code only in its dialog, with the window hidden from capture (`settings_protect`), and closes the dialog when `sync.screenRecording` turns true.
 
@@ -495,12 +517,13 @@ The page shows the code only in its dialog, with the window hidden from capture 
 | `pill.html?mock=dictation`, `mock=meeting`, `mock=cycle` | A dictation; a meeting with a two-step stop you can click; every state in turn |
 | `dev/gallery.html?theme=dark&lang=en` | Every pill state side by side |
 | `settings.html?mock=1&page=meetings&theme=dark&lang=nl` | Settings at a page or group |
+| `&platform=macos&permissions=granted`, `denied`, `notAsked`, `mixed` | The macOS Permissions group in that state, Mac key names, and only the keys a Mac keyboard has |
 | `&scenario=fresh`, `busy`, `cloud`, `failed`, `dev` | First start; a download with Ownkey on the same keys; cloud meeting transcription without consent; failures; a development copy |
 | `&features=screen` | The Settings of the features listed (`screen`, `speakers`, `sync`, comma-separated), as the engine lists them in `state.features` |
 | `&noEncoder=1`, `&noOcr=1`, `&screenUnavailable=1` | Screen recording on a computer without a hardware video encoder, without an OCR language, or on a Windows that can't capture; each turns on `features.screen` |
 | `&later=1` | Every feature's Settings (`features` all `true`): screen recording, speaker labels, bucket sync. Without it the mock's `features` are `false`, except those named in `&features=screen,speakers,sync` and those a scenario parameter of their own turns on. |
-| `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
-| `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `paused`, `unavailable`, `key`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; a new secret waiting for Test connection, with files waiting; the switch on while the sync store didn't open; an unreadable key; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
+| `&speakers=ready`, `off`, `platform`, `cpu`, `runtime`, `notPublished`, `runtimeFailed`, `model`, `modelDamaged`, `consent`, `mistral`, `stopped` | Speaker labels in that state, with `features.speakers` on: ready with Nemotron; the switch off; each reason labels can't run; Mistral's realtime model without and with a stream agreement; a meeting whose labels stopped |
+| `&sync=fresh`, `tested`, `on`, `live`, `retrying`, `failing`, `paused`, `unavailable`, `key`, `key-denied`, `unlocking`, `restore`, `restore-failed` | Bucket sync on Storage: nothing filled in; tested and still off; up to date; a meeting uploading; the bucket out of reach; the bucket refusing, with files lost; a new secret waiting for Test connection, with files waiting; the switch on while the sync store didn't open; an unreadable key; a key macOS's keychain refused, whose Try again goes through `unlocking` to up to date; waiting for the system to open the key, the keychain dialog on macOS; meetings to restore; a stopped restore. `&sync=1` is `on`. Test connection fails for the bucket `fail` and finds another key in the bucket `shared`. |
 
 `node voice/ui/dev/screenshots.js <outDir>` saves every pill state and every Settings page in both themes and languages, a narrow window and the dialogs, through the repository's Electron, without taking focus. Keep the images out of Git; they go on the GitHub issue.
 

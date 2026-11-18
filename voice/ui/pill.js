@@ -19,6 +19,7 @@ const ERROR_NOTICES = new Set([
   'pill.error.model',
   'pill.error.modelMissing',
   'pill.error.blocked',
+  'pill.error.accessibility',
   'pill.error.generic'
 ]);
 const NOTICES = new Set([
@@ -34,6 +35,9 @@ const NOTICES = new Set([
   'pill.videoDropped.device',
   'pill.framesDropped.disk',
   'pill.screenFailed',
+  'pill.screenPermission',
+  'pill.screenStopped',
+  'pill.callSilent',
   'pill.screenChangeFailed',
   'pill.screenMoved'
 ]);
@@ -45,12 +49,14 @@ const SCREEN_NOTICES = {
   'pill.videoDropped.device': 'orange',
   'pill.framesDropped.disk': 'orange',
   'pill.screenFailed': 'orange',
+  'pill.screenPermission': 'orange',
+  'pill.screenStopped': 'orange',
   'pill.screenChangeFailed': 'orange',
   'pill.screenMoved': 'text2'
 };
 const SCREENS = new Set(['off', 'frames', 'video']);
 
-const LABEL_MAX = 220;
+const LABEL_MAX = 260;
 const EXIT_MS = 140;
 const LABEL_OUT_MS = 140;
 const POLL_MS = 1000;
@@ -221,6 +227,9 @@ function meetingView(m, notice, view, args) {
   } else if (notice === 'pill.micBack') {
     view.indicator = glyph('mic', 14, 'green');
     view.label = text(t('pill.micBack'));
+  } else if (notice === 'pill.callSilent') {
+    view.indicator = glyph('info', 14, 'orange');
+    view.label = text(t('pill.callSilent'));
   } else if (SCREEN_NOTICES[notice]) {
     view.indicator = glyph('screen', 14, SCREEN_NOTICES[notice]);
     view.label = text(t(notice, notice === 'pill.screenMoved' ? { name: String(args.name ?? '') } : args));

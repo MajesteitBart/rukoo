@@ -23,16 +23,6 @@ use voice_engine::{
 
 pub const SCENARIOS: &[&str] = &["idle", "meeting", "dictation", "cycle", "first-run"];
 
-const KEYS: &[&str] = &[
-    "right alt",
-    "right ctrl",
-    "right shift",
-    "f13",
-    "f14",
-    "f15",
-    "pause",
-    "scroll lock",
-];
 const FILLER_LANGUAGES: &[&str] = &["en", "nl", "de", "fr", "es"];
 /// Mistral's realtime models stream meetings; nothing else does.
 const REALTIME_PREFIX: &str = "voxtral-mini-transcribe-realtime";
@@ -207,6 +197,8 @@ struct State {
     acked: u64,
     settings_seq: u64,
     settings: Value,
+    /// The Settings window exists, so its states read this computer's privacy permissions.
+    settings_open: bool,
     meeting: Option<Meeting>,
     meetings_started: u32,
     script: Option<Script>,
@@ -284,6 +276,7 @@ impl FakeEngine {
                 acked: 0,
                 settings_seq: 0,
                 settings,
+                settings_open: false,
                 meeting: None,
                 meetings_started: 0,
                 script: None,
@@ -486,6 +479,7 @@ impl State {
         let ui = &self.settings["config"]["ui"];
         UiOptions {
             theme: resolve_theme(ui["theme"].as_str().unwrap_or("system")),
+            theme_follows_system: ui["theme"].as_str().unwrap_or("system") == "system",
             locale: resolve_locale(ui["language"].as_str().unwrap_or("system")),
             pill_edge: if ui["pillEdge"] == "top" {
                 Edge::Top
@@ -517,6 +511,12 @@ impl State {
     fn settings_changed(&mut self, out: &mut Vec<Out>) {
         self.settings_seq += 1;
         self.settings["seq"] = json!(self.settings_seq);
+        self.settings["permissions"] = if self.settings_open {
+            voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
         self.settings["speakers"] = self.speakers();
         out.push(Out::Settings(self.settings.clone()));
     }
@@ -755,16 +755,16 @@ fn installed_model(id: &str, data_dir: &Path) -> Value {
 fn base_settings(data_dir: &Path, dev_mode: bool, version: &str) -> Value {
     let discovery = voice_protocol::paths::bridge_path_here(voice_protocol::Side::Voice)
         .unwrap_or_else(|| data_dir.join("bridge.json"));
-    let (dictate, rewrite) = if dev_mode {
-        ("f13", "f14")
-    } else {
-        ("right alt", "right ctrl")
-    };
+    let (dictate, rewrite) =
+        voice_core::config::default_hotkeys_on(dev_mode, cfg!(target_os = "macos"));
     json!({
         "seq": 0,
         "version": version,
         "devMode": dev_mode,
         "platform": if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
+        // The fake engine still reads this computer's privacy permissions, but only when Settings
+        // asks or its window exists: a preflight read alone can list the app on macOS 27.
+        "permissions": Value::Null,
         // Every feature is in this Voice: screen recording, speaker labels and bucket sync.
         "features": { "screen": true, "speakers": true, "sync": true },
         "theme": "dark",
@@ -942,7 +942,28 @@ impl EngineApi for FakeEngine {
     }
 
     fn settings_state(&self) -> Value {
+        let mut state = self.lock();
+        if state.settings_open {
+            state.settings["permissions"] =
+                voice_engine::permissions::view(&voice_engine::permissions::SystemPermissions)
+                    .unwrap_or(Value::Null);
+        }
+        state.settings.clone()
+    }
+
+    fn settings_state_quiet(&self) -> Value {
         self.lock().settings.clone()
+    }
+
+    fn settings_opened(&self) {
+        self.apply(|st, out| {
+            st.settings_open = true;
+            st.settings_changed(out);
+        });
+    }
+
+    fn settings_closed(&self) {
+        self.apply(|st, _| st.settings_open = false);
     }
 
     fn settings_set(&self, key: &str, value: Value) -> Result<(), ApiError> {
@@ -983,7 +1004,10 @@ impl EngineApi for FakeEngine {
             };
             match key {
                 "dictation.hotkey" | "dictation.rewriteHotkey" | "meetings.stopKey" => {
-                    one_of(KEYS, key != "dictation.hotkey")?;
+                    one_of(
+                        voice_core::config::offered_hotkeys(),
+                        key != "dictation.hotkey",
+                    )?;
                     let v = value.as_str().unwrap_or_default();
                     if v != "off" && hotkeys(key).iter().any(|k| k == v) {
                         return Err(ApiError::new("same_key", format!("{v} is already in use")));
@@ -1353,7 +1377,15 @@ impl EngineApi for FakeEngine {
                         json!({ "exists": true, "id": "00000000", "exported": true });
                     json!({ "id": "00000000" })
                 }
-                _ => return Err(invalid("action is show, saved or import.")),
+                "retry" => {
+                    if st.settings["sync"]["state"] == "key" {
+                        st.settings["sync"]["state"] = json!("idle");
+                        st.settings["sync"]["lastError"] = Value::Null;
+                        st.settings["sync"]["key"]["exists"] = json!(true);
+                    }
+                    Value::Null
+                }
+                _ => return Err(invalid("action is show, saved, import or retry.")),
             };
             st.settings_changed(out);
             Ok(result)
@@ -1515,6 +1547,13 @@ impl EngineApi for FakeEngine {
         self.lock().ui()
     }
 
+    fn system_looks_changed(&self) {
+        self.apply(|st, out| {
+            st.restyle(out);
+            st.settings_changed(out);
+        });
+    }
+
     fn tray_state(&self) -> TrayState {
         self.lock().tray()
     }
@@ -1591,6 +1630,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };
@@ -1616,6 +1656,7 @@ pub mod tests {
             test_sources: None,
             test_screen: None,
             test_monitor: None,
+            dump_empty_dictation: false,
             import_ownkey_from: None,
             version: "0.1.0".into(),
         };

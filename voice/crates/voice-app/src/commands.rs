@@ -28,9 +28,9 @@ pub struct Shared {
     pub sink: Arc<AppSink>,
     pub shell: Arc<dyn Shell>,
     pub catalog: Arc<Catalog>,
-    /// The WebView2 profile, inside Voice's data folder, so a development copy never shares the
-    /// installed one's.
-    pub webview_dir: PathBuf,
+    /// The webview's profile in the data folder, so a development copy never shares the installed
+    /// one's. `None` where the webview keeps its own store (macOS).
+    pub webview_dir: Option<PathBuf>,
     /// How often the Settings page asked for its state: it loaded and its IPC works.
     pub settings_loads: AtomicU64,
     pub shut_down: AtomicBool,
@@ -62,6 +62,52 @@ pub mod ops {
                 format!("Unknown link {link}"),
             )),
         }
+    }
+
+    /// The System Settings pane for each privacy permission, in one table. Checked on macOS 27:
+    /// each link opens its pane. System Audio Recording shares the Screen & System Audio Recording
+    /// pane, whose "System Audio Recording Only" section covers it; Apple lists no separate pane.
+    const PERMISSION_PANES: [(&str, &str); 5] = [
+        (
+            "microphone",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        ),
+        (
+            "systemAudio",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        ),
+        (
+            "inputMonitoring",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        ),
+        (
+            "accessibility",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        ),
+        (
+            "screenRecording",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        ),
+    ];
+
+    pub fn permission_url(permission: &str) -> Result<&'static str, ApiError> {
+        PERMISSION_PANES
+            .iter()
+            .find(|(id, _)| *id == permission)
+            .map(|(_, url)| *url)
+            .ok_or_else(|| {
+                ApiError::new("invalid_value", format!("Unknown permission {permission}"))
+            })
+    }
+
+    pub fn open_permission(shell: &dyn Shell, permission: &str) -> Result<(), ApiError> {
+        let url = permission_url(permission)?;
+        // macOS lists an app under Screen Recording only once it asked: asking puts Voice there,
+        // switched off, for the user to switch on in the pane that opens.
+        if permission == "screenRecording" {
+            shell.request_screen_recording();
+        }
+        shell.open_url(url).map_err(|e| ApiError::new("failed", e))
     }
 
     pub fn folder(name: &str) -> Result<Folder, ApiError> {
@@ -110,9 +156,9 @@ pub mod ops {
         purpose: &str,
         owner: Option<isize>,
     ) -> Result<Option<String>, ApiError> {
-        let title_key = match purpose {
-            "models" => keys::FOLDER_MODELS,
-            "recordings" => keys::FOLDER_RECORDINGS,
+        let (title_key, folder) = match purpose {
+            "models" => (keys::FOLDER_MODELS, Folder::Models),
+            "recordings" => (keys::FOLDER_RECORDINGS, Folder::Recordings),
             _ => {
                 return Err(ApiError::new(
                     "invalid_value",
@@ -121,8 +167,10 @@ pub mod ops {
             }
         };
         let title = catalog.text(engine.ui().locale, title_key);
+        // The picker opens where the folder is now, so a change starts from what the user sees.
+        let start = engine.folder_path(folder);
         let Some(path) = shell
-            .pick_folder(&title, owner)
+            .pick_folder(&title, start.as_deref(), owner)
             .map_err(|e| ApiError::new("failed", e))?
         else {
             return Ok(None);
@@ -219,7 +267,9 @@ pub async fn settings_choose_folder(
 ) -> Result<Option<String>, ApiError> {
     #[cfg(windows)]
     let owner = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let owner = window.ns_window().ok().map(|window| window as isize);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let owner = {
         let _ = &window;
         None
@@ -245,6 +295,15 @@ pub async fn settings_open_folder(
 pub async fn settings_open_link(link: String, state: State<'_, Shared>) -> Result<(), ApiError> {
     let shell = state.shell.clone();
     blocking(move || ops::open_link(&*shell, &link)).await
+}
+
+#[tauri::command]
+pub async fn settings_open_permission(
+    permission: String,
+    state: State<'_, Shared>,
+) -> Result<(), ApiError> {
+    let shell = state.shell.clone();
+    blocking(move || ops::open_permission(&*shell, &permission)).await
 }
 
 #[tauri::command]
@@ -347,6 +406,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         settings_choose_folder,
         settings_open_folder,
         settings_open_link,
+        settings_open_permission,
         settings_clean_preview,
         settings_check_updates,
         settings_new_token,
@@ -380,11 +440,16 @@ mod tests {
         dir
     }
 
+    /// What the fake shell heard: title, starting folder and owner window.
+    type PickedWith = (String, Option<PathBuf>, Option<isize>);
+
     #[derive(Default)]
     struct FakeShell {
         opened: Mutex<Vec<String>>,
+        /// How often Screen Recording was asked for.
+        requested: std::sync::atomic::AtomicUsize,
         pick: Mutex<Option<PathBuf>>,
-        picked_with: Mutex<Option<(String, Option<isize>)>>,
+        picked_with: Mutex<Option<PickedWith>>,
     }
 
     impl Shell for FakeShell {
@@ -399,10 +464,16 @@ mod tests {
         fn pick_folder(
             &self,
             title: &str,
+            start: Option<&Path>,
             owner: Option<isize>,
         ) -> Result<Option<PathBuf>, String> {
-            *self.picked_with.lock().unwrap() = Some((title.to_string(), owner));
+            *self.picked_with.lock().unwrap() =
+                Some((title.to_string(), start.map(Path::to_path_buf), owner));
             Ok(self.pick.lock().unwrap().clone())
+        }
+        fn request_screen_recording(&self) {
+            self.requested
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -424,6 +495,46 @@ mod tests {
                 "https://huggingface.co/nvidia/Nemotron-3-Diarization".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn permission_panes_come_from_the_apps_table_only() {
+        let shell = FakeShell::default();
+        for permission in [
+            "microphone",
+            "systemAudio",
+            "inputMonitoring",
+            "accessibility",
+            "screenRecording",
+        ] {
+            ops::open_permission(&shell, permission).unwrap();
+        }
+        assert_eq!(
+            *shell.opened.lock().unwrap(),
+            vec![
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            ]
+        );
+        // The page names a permission, never a URL.
+        assert_eq!(
+            ops::open_permission(
+                &shell,
+                "x-apple.systempreferences:com.apple.preference.security"
+            )
+            .unwrap_err()
+            .code,
+            "invalid_value"
+        );
+        assert!(
+            shell.opened.lock().unwrap().len() == 5,
+            "nothing else opened"
+        );
+        // Only Screen Recording asks the system, so Voice appears in its list.
+        assert_eq!(shell.requested.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -477,14 +588,24 @@ mod tests {
         assert_eq!(result, Some(chosen.to_string_lossy().into_owned()));
         assert_eq!(
             engine.settings_state()["config"]["local"]["modelFolder"],
-            json!(chosen)
+            json!(chosen.clone())
         );
-        let (title, owner) = shell.picked_with.lock().unwrap().clone().unwrap();
+        let (title, _first_start, owner) = shell.picked_with.lock().unwrap().clone().unwrap();
         assert_eq!(
             title,
             catalog.text(engine.ui().locale, crate::catalog::keys::FOLDER_MODELS)
         );
         assert_eq!(owner, Some(42));
+        // The next time, the panel opens in the folder the setting holds now.
+        *shell.pick.lock().unwrap() = None;
+        assert_eq!(
+            ops::choose_folder(&*engine, &shell, &catalog, "models", Some(42)).unwrap(),
+            None
+        );
+        assert_eq!(
+            shell.picked_with.lock().unwrap().as_ref().unwrap().1,
+            Some(chosen.clone())
+        );
         // The page hears about it through settings://state.
         let last = recorder.settings.lock().unwrap().last().cloned().unwrap();
         assert_eq!(last["config"]["local"]["modelFolder"], json!(chosen));
@@ -515,7 +636,10 @@ mod tests {
 
         assert_eq!(
             engine
-                .settings_set("dictation.hotkey", json!("f14"))
+                .settings_set(
+                    "dictation.hotkey",
+                    json!(engine.settings_state()["config"]["dictation"]["rewriteHotkey"])
+                )
                 .unwrap_err()
                 .code,
             "same_key"
