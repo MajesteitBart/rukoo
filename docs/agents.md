@@ -102,6 +102,8 @@ The bell shows how many chats have a reply ready or wait for you. It turns orang
 
 Pick a chat to open it together with its email. For a chat you continued from a newer email, that's the newest one. If the email has moved since, Rukoo finds it again by its Message-ID. Opening a chat marks its reply as read. A chat you stopped yourself doesn't count as news. Rukoo keeps which replies you haven't read in `conversations.json`, so they're still marked after a restart.
 
+Hermes, OpenClaw and custom agents use one token for all their chats, so they name the chat in each tool call with the `conversation_id` Rukoo gives them. A card, plan, list of sources or draft goes to that chat. A call that names no chat goes to the one chat the agent is working in. If the agent is working in more than one chat, Rukoo shows nothing and tells the agent to name the chat, so a card never lands in a chat you aren't looking at while the agent says it's ready. A call that names another agent's chat gets an error that says the agent's setup has the wrong token. When a card lands in another of the agent's chats than the one it's answering in, the agent is told so and can tell you where it is. A call from outside any chat, such as Clark on WhatsApp, opens a chat of its own in the panel.
+
 ## While the agent works
 
 You can keep typing while the agent answers. A message you send then goes one of two ways:
@@ -478,7 +480,7 @@ Before the levels, Settings had "Let agents archive, move and mark mail without 
 ## Limits
 
 - Search covers what Rukoo has downloaded: the newest 300 messages of each inbox and 100 of other folders. Older mail stays on the server.
-- Rukoo reads the text layer of a PDF, not its images. A scanned PDF reaches the agent as a file without text. Claude Code can read it with its own tools; whether Codex or Hermes can depends on what they can run. Rukoo can't read an encrypted PDF.
+- Rukoo reads the text layer of a PDF, not its images. A scanned PDF reaches the agent as a file without text. Claude Code can read it with its own tools; whether Codex or Hermes can depends on what they can run. An encrypted PDF that opens without a password, as banks and invoicing systems often send to restrict printing or copying, Rukoo reads like any other. One that needs a password reaches the agent without text.
 - Rukoo reads each PDF in a separate process, with a time limit of 10 seconds and a memory cap. A malformed or unusually built PDF can't freeze or crash the app; at worst it costs those 10 seconds. The agent then hears that Rukoo couldn't extract the text, or that the text stops where Rukoo's reader stopped, and that the rest is only in the file itself. Two PDFs are read at a time. Of the PDFs an agent asks for with `read_attachment` or `read_chat_file`, at most four (32 MB together) wait for a turn, each for at most 30 seconds; a request beyond that, or one still waiting after 30 seconds, gets no text and no file, and is told to ask again later. The PDFs of your own message also wait at most 30 seconds for a reader, and Rukoo loads each one into memory only when a reader takes it. A PDF still waiting after that goes along without text, and the agent hears that `read_chat_file` can try again.
 - Word, Excel and other files go to the agent as files. Rukoo doesn't extract their text.
 - `Ctrl+J` doesn't work while the focus is inside an email's frame. Click outside the email first.

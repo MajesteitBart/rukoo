@@ -16,8 +16,8 @@ import kotlin.concurrent.thread
 
 /**
  * An HTTP/1.1 server on a plain socket, for answers MockWebServer can't give, such as chunk extensions. It reads the
- * request line and headers of each connection's one request, lets [answer] write the whole response, and closes the
- * connection. A request body isn't read: the tests send GETs here.
+ * request line and headers of each connection's one request, and its body when it has a Content-Length, lets [answer]
+ * write the whole response, and closes the connection.
  */
 class RawHttpServer(private val answer: (target: String, out: OutputStream) -> Unit) : Closeable {
     private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
@@ -68,17 +68,31 @@ class RawHttpServer(private val answer: (target: String, out: OutputStream) -> U
         }
     }
 
-    /** The request's target, such as `/v1/records?since=0`, once its headers are in; null when the client went away. */
+    /**
+     * The request's target, such as `/v1/records?since=0`, once its headers and body are in; null when the client went
+     * away. The body is read, so closing the connection afterwards doesn't reset it under the answer.
+     */
     private fun requestTarget(input: InputStream): String? {
         val line = StringBuilder()
         var first: String? = null
+        var length = 0L
         while (true) {
             val b = input.read()
             if (b < 0) return null
             if (b == '\n'.code) {
                 val text = line.toString().trimEnd('\r')
                 line.setLength(0)
-                if (first == null) first = text else if (text.isEmpty()) return first.split(' ').getOrNull(1)
+                if (first == null) {
+                    first = text
+                } else if (text.isEmpty()) {
+                    while (length > 0) {
+                        if (input.read() < 0) return null
+                        length--
+                    }
+                    return first.split(' ').getOrNull(1)
+                } else if (text.substringBefore(':').trim().equals("Content-Length", ignoreCase = true)) {
+                    length = text.substringAfter(':').trim().toLongOrNull() ?: 0
+                }
             } else {
                 line.append(b.toChar())
             }

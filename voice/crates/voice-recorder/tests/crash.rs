@@ -7,12 +7,14 @@ mod common;
 use common::*;
 use serde_json::json;
 
-/// The first segment of a session may start this late: the device opens, then its first
-/// 10 ms block arrives. GitHub's Windows runners open the second track's source and create its
-/// first file late now and then (two cores and a virus scan of every new file), so the margin is
-/// generous. What these tests guard is that nothing recorded is lost after a kill or a lost device;
-/// the tolerances below for that stay tight.
-const START_TOLERANCE_MS: u64 = 1_000;
+/// The first segment of a session may start this late: the device opens, then its first 10 ms
+/// block arrives. The startup syncs that used to count as recording time come before the clock
+/// now (#193), and every segment file is created ahead on a thread of its own (#209), so what is
+/// left is opening the sources. 300 ms is the bound `slow_syncs_at_the_start_are_not_recording_time`
+/// in recorder.rs holds under 400 ms syncs (`SLACK_MS`), with room for a hosted runner whose
+/// threads wake up to 100 ms late. What these tests guard is that nothing recorded is lost after a
+/// kill or a lost device; the tolerances below for that stay tight.
+const START_TOLERANCE_MS: u64 = 300;
 /// Neighbouring segments of one stream may sit this far apart. Synthetic sources run on the
 /// same clock as the recorder, so in practice they are exactly contiguous.
 const JOIN_TOLERANCE_MS: u64 = 30;
@@ -121,6 +123,10 @@ fn hard_kill_keeps_everything_before_it() {
             "{track} recorded nothing after the resume"
         );
         assert!(after[0].seq > segs[0].seq, "{track} numbering restarted");
+        // The file the dead session created ahead held no audio and went with the resume, so the
+        // numbering continues right after its last segment.
+        let last_before = segs.iter().rfind(|s| s.t < resumed_at).unwrap();
+        assert_eq!(after[0].seq, last_before.seq + 1, "{track} numbering");
         let recorded: usize = after.iter().map(|s| s.pcm.len()).sum();
         assert!(
             recorded >= 16_000 * 3 / 2,

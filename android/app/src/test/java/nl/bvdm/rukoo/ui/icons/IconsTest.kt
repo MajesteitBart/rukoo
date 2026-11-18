@@ -12,10 +12,11 @@ class IconsTest {
     @Test
     fun everyDesktopIconIsPorted() {
         // icons.js had 81 icons and bui.js ICONS 40; a missing one would send a track to Material icons. The phone adds
-        // two for its composer's format row, strike and heading, and has icons.js's bellOff for muted categories.
-        assertEquals(84, RukooIcons.names.size)
+        // two for its composer's format row, strike and heading, and has icons.js's bellOff for muted categories and its
+        // stack for a folded stack's chip.
+        assertEquals(85, RukooIcons.names.size)
         assertEquals(40, PanelIcons.names.size)
-        for (name in listOf("sparkle", "bell", "bellOff", "eyeOff", "vip", "mailOpen", "markUnread", "unsubscribe", "textFormat", "chevronUpDown")) {
+        for (name in listOf("sparkle", "bell", "bellOff", "eyeOff", "vip", "mailOpen", "markUnread", "unsubscribe", "textFormat", "chevronUpDown", "stack")) {
             assertTrue(name, name in RukooIcons.names)
         }
         for (name in listOf("arrow-out", "list-check", "file-text", "chevron-up", "skill", "sliders", "stop")) {

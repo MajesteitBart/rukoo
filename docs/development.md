@@ -9,6 +9,8 @@ npm install
 npm start
 ```
 
+Use npm 10, which comes with Node.js 22, or npm 11.6.3 or newer. npm 11.5.0 to 11.6.2 rewrite `package-lock.json` during `npm install`: 11.5 and 11.6.0 drop `@electron/windows-sign` and the packages it needs, and 11.6.1 and 11.6.2 move `peer` flags between packages. Node.js 24.5 to 24.13 and 25.0 to 25.3 ship one of those versions. `npm --version` shows yours, and `npm install -g npm@latest` updates it. `devEngines` in `package.json` names the versions that leave the lockfile as it is, so npm warns during an install with any other version.
+
 `npm start` goes through `scripts/start.js`, which clears `ELECTRON_RUN_AS_NODE`. Terminals that run on Electron, such as VS Code and T3 Code, export that variable, and it makes `electron.exe` behave like plain Node.
 
 `SEM_DATA_DIR` points Rukoo at a separate profile, so a test run doesn't touch your own accounts and settings.

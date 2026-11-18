@@ -226,6 +226,29 @@ test('a saved email on screen is the open email: a chat an outside agent starts 
   }
 });
 
+test('the calendar and the meeting view hide the email left open in Mail: a chat an outside agent starts there and its draft leave it out', async () => {
+  const t = await setup();
+  try {
+    const call = t.find('Call on Thursday');
+    t.hub.view({ mode: 'mail', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), call.id);
+    t.hub.view({ mode: 'meeting', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), null);
+    t.hub.view({ mode: 'calendar', openMessageId: call.id });
+    assert.equal(t.hub.openMessageId(), null);
+    const clark = { agent: 'clark', conversationId: null, remote: true };
+    const first = data(await t.hub.callTool(clark, 'propose_action', { title: 'Add a task' }));
+    assert.equal(t.hub.get(first.conversation_id).message, null);
+    // Without an email on screen, a draft is a new email, not a reply to the one behind the calendar.
+    data(await t.hub.callTool(local(), 'write_draft', { body: 'Thursday works.' }));
+    const write = t.ui.find((u) => u.action === 'writeDraft');
+    assert.equal(write.args.mode, 'new');
+    assert.equal(write.args.messageId, null);
+  } finally {
+    await t.done();
+  }
+});
+
 test('get_context lists checked emails in the Saved view too', async () => {
   const t = await setup();
   try {
@@ -773,8 +796,12 @@ test('display tools without a conversation open an external one and ask the rend
     data(await t.hub.callTool(clark, 'show_sources', { conversation_id: c.id, sources: [{ title: 'x' }] }));
     assert.equal(t.hub.list().length, before);
     const mine = t.hub.create({ agent: 'claude', message: null });
-    data(await t.hub.callTool(clark, 'show_sources', { conversation_id: mine.id, sources: [{ title: 'y' }] }));
+    const foreign = await t.hub.callTool(clark, 'show_sources', { conversation_id: mine.id, sources: [{ title: 'y' }] });
+    assert.equal(foreign.isError, true);
+    assert.match(foreign.content[0].text, /^Rukoo showed nothing: conversation \S+ belongs to another agent, and this call comes with the token Rukoo gave Hermes\./);
     assert.equal(mine.items.length, 0, 'Clark cannot write into a Claude conversation');
+    assert.equal(c.items.filter((i) => i.type === 'sources').length, 1, 'nor into its own chat in its place');
+    assert.equal(t.hub.list().length, before + 1, 'only the Claude chat is new');
   } finally {
     await t.done();
   }

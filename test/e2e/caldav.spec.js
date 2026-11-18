@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { clearOfMidnight } = require('./midnight');
 const { caldavServer } = require('../fixtures/caldav-server');
 
 const ME = 'me@example.com';
@@ -24,6 +25,7 @@ function day(n) {
 const ics = (...lines) => ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//test//EN', 'BEGIN:VEVENT', 'DTSTAMP:20260101T000000Z', ...lines, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
 
 test.beforeEach(async () => {
+  await clearOfMidnight();
   // Floating times, so the events sit at these hours whatever the PC's time zone is.
   server = await caldavServer({
     scheduling: true,
@@ -78,7 +80,6 @@ async function addCalendarServer(address) {
 }
 
 test('a CalDAV server in Server settings brings the account calendar: read, create and answer', async () => {
-  test.setTimeout(60000);
   // Without a calendar server, the calendar says where to add one.
   await win.click('[data-mode="calendar"]');
   await expect(win.locator('.calendar .empty')).toContainText('CalDAV server in their Server settings');
@@ -127,6 +128,9 @@ test('a CalDAV server in Server settings brings the account calendar: read, crea
   await expect(event('Dentist')).toBeVisible();
   const made = server.names().find((n) => n.startsWith('home/') && !['home/standup.ics', 'home/review.ics'].includes(n));
   expect(server.object(made).data).toContain('SUMMARY:Dentist');
+  // A new event starts at the next half hour. From 23:30 on a Sunday that is in next week, where the calendar went to
+  // show it; Today brings back this week's events.
+  await win.click('[data-cal="today"]');
 
   // The shared calendar's event can't be changed.
   await event('Team offsite').click();
@@ -147,7 +151,6 @@ test('a CalDAV server in Server settings brings the account calendar: read, crea
 });
 
 test('two occurrences of a series changed one after the other both save, without a conflict', async () => {
-  test.setTimeout(60000);
   await win.click('[data-mode="calendar"]');
   await addCalendarServer(`${server.url}/`);
   await expect(win.locator('#toast')).toHaveText('Server settings saved');

@@ -18,8 +18,9 @@ use crate::clock::{self, wall_ms, MeetingClock, Stamp, HEARTBEAT};
 use crate::control::{self, Command, Reply};
 use crate::disk;
 use crate::meeting::{self, RecorderFile};
+use crate::opener::{self, Opener, Prepared};
 use crate::source::{Backend, Capture, DeviceInfo, Failure, Sink, SourceSpec, StreamFlags};
-use crate::syncer::{self, Syncer};
+use crate::syncer::Syncer;
 use crate::timeline::{self, samples_to_ms, History, Line, TimelineWriter};
 use crate::{token, ExitError, VERSION};
 
@@ -46,7 +47,14 @@ const RESYNC_MS: u64 = 100;
 /// About 20 s of 10 ms blocks from two tracks.
 const EVENT_QUEUE: usize = 4_096;
 /// A heartbeat this long after the one before is logged: something held up the recorder thread.
-const LATE_HEARTBEAT_MS: u64 = 1_500;
+/// Heartbeats come every second, a tick later at most, so 1.2 s is already late.
+const LATE_HEARTBEAT_MS: u64 = 1_200;
+/// A segment create, an append or a timeline write on the recorder thread that takes this long
+/// is logged. Each of them holds up the heartbeats, so the bar is far below the syncer's.
+const SLOW_CALL: Duration = Duration::from_millis(100);
+/// A tick that starts this late is logged. Without a slow call logged next to it, the recorder
+/// thread didn't get the CPU in time.
+const LATE_TICK: Duration = Duration::from_millis(300);
 
 #[derive(Debug)]
 pub struct RecordOptions {
@@ -58,6 +66,8 @@ pub struct RecordOptions {
     pub segment_ms: u64,
     /// Every sync to disk waits this long first; only tests set it.
     pub sync_delay_ms: u64,
+    /// Every segment create waits this long first; only tests set it.
+    pub create_delay_ms: u64,
 }
 
 pub(crate) enum Event {
@@ -132,7 +142,9 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     if meeting::live_recorder(&dir).is_some() {
         return Err(ExitError::busy());
     }
+    raise_priority();
     disk::set_test_delay(opts.sync_delay_ms);
+    disk::set_test_create_delay(opts.create_delay_ms);
     let lines = timeline::read(&meeting::timeline_path(&dir))
         .map_err(|e| ExitError::failed(format!("can't read the timeline: {e}")))?;
     let history = History::from_lines(&lines);
@@ -156,6 +168,9 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let resumed = !history.is_empty();
     let mut problems = Vec::new();
     let repaired = meeting::repair_segments(&dir, history.open_segments(), &mut problems);
+    // The file the dead session created ahead for its next segment holds no audio and no line
+    // names it. It goes, so the numbering continues right after the last segment.
+    meeting::remove_unnamed_empty_segments(&dir, &history, &mut problems);
     for problem in problems {
         log(format_args!("previous session: {problem}"));
     }
@@ -212,6 +227,18 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
         .map_err(|e| ExitError::failed(format!("can't start the control thread: {e}")))?;
     let syncer = Syncer::start()
         .map_err(|e| ExitError::failed(format!("can't start the sync thread: {e}")))?;
+    // Each track's first segment file is created on a thread of the track's own while the devices
+    // open, and every next one while the segment before it records.
+    let mut openers = Vec::with_capacity(opts.tracks.len());
+    for (name, _) in &opts.tracks {
+        let seq = history
+            .last_seq(name)
+            .max(meeting::highest_seq_on_disk(&dir, name));
+        let mut opener = Opener::start(dir.clone(), name.clone())
+            .map_err(|e| ExitError::failed(format!("can't start the file thread: {e}")))?;
+        opener.ask(seq + 1);
+        openers.push((seq, opener));
+    }
 
     let started = Stamp::now();
     let wall = started.wall;
@@ -256,10 +283,10 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     let tracks = opts
         .tracks
         .into_iter()
-        .map(|(name, spec)| Track {
-            seq: history
-                .last_seq(&name)
-                .max(meeting::highest_seq_on_disk(&dir, &name)),
+        .zip(openers)
+        .map(|((name, spec), (seq, opener))| Track {
+            seq,
+            opener,
             name,
             spec,
             generation: 0,
@@ -303,6 +330,24 @@ pub fn record(opts: RecordOptions) -> Result<(), ExitError> {
     Ok(())
 }
 
+/// Puts the recorder above normal programs for the CPU on Windows, so a busy computer, such as
+/// one building software, never keeps the recorder thread waiting with a heartbeat or an append
+/// due (#209). The recorder needs little CPU, so it takes almost nothing from the others; its
+/// disk priority stays normal.
+#[cfg(windows)]
+fn raise_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
+    };
+    // SAFETY: the pseudo-handle of the current process is always valid and needs no closing.
+    if let Err(e) = unsafe { SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) } {
+        log(format_args!("can't raise the recorder's priority: {e}"));
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_priority() {}
+
 pub(crate) fn log(message: impl Display) {
     let _ = writeln!(io::stderr(), "rukoo-voice-recorder: {message}");
 }
@@ -324,8 +369,17 @@ impl Journal {
         if let Some(t) = line.t() {
             self.latest = self.latest.max(t);
         }
+        let started = Instant::now();
         if let Err(e) = self.writer.write(&line) {
             log(format_args!("can't write the timeline: {e}"));
+        }
+        let took = started.elapsed();
+        if took > SLOW_CALL {
+            log(format_args!(
+                "t={}: writing the timeline took {} ms",
+                self.latest,
+                took.as_millis()
+            ));
         }
     }
 
@@ -346,6 +400,8 @@ struct Track {
     device_id: Option<String>,
     /// The last segment number used.
     seq: u64,
+    /// Creates the next segment's file ahead of time.
+    opener: Opener,
     segment: Option<Segment>,
     /// Converted audio not yet appended to the segment.
     pending: Vec<i16>,
@@ -478,6 +534,14 @@ impl Recorder {
             }
             let now = Instant::now();
             if self.stop.is_none() && now >= schedule.tick {
+                let late = now - schedule.tick;
+                if late > LATE_TICK {
+                    log(format_args!(
+                        "t={}: a tick started {} ms late",
+                        self.clock.now(),
+                        late.as_millis()
+                    ));
+                }
                 self.tick(now, &mut schedule);
             }
         }
@@ -931,37 +995,99 @@ impl Recorder {
         self.flush_pending(i);
     }
 
+    /// Starts the track's next segment at meeting time `t`, in the file the opener created ahead,
+    /// and asks the opener for the file of the one after it.
     fn start_segment(&mut self, i: usize, t: u64) -> bool {
-        loop {
-            let track = &mut self.tracks[i];
-            track.seq += 1;
-            let seq = track.seq;
-            let file = meeting::segment_file(&track.name, seq);
-            let started = Instant::now();
-            let created = SegmentWriter::create(&self.dir.join(&file));
-            let took = started.elapsed();
-            if took > syncer::SLOW {
-                log(format_args!("creating {file} took {} ms", took.as_millis()));
-            }
-            match created {
-                Ok(writer) => {
-                    track.segment = Some(Segment { writer, seq, t });
-                    track.cover_from = None;
-                    self.journal.write(Line::Segment {
-                        t,
-                        track: track.name.clone(),
-                        seq,
-                        file,
-                    });
-                    return true;
+        let prepared = match self.take_prepared(i) {
+            Some(prepared) if prepared.created.is_ok() => prepared,
+            // The opener couldn't create it; this thread tries once more, from that number.
+            Some(failed) => {
+                if let Err(e) = &failed.created {
+                    log(format_args!(
+                        "t={}: can't create {} ahead: {e}",
+                        self.clock.now(),
+                        failed.file
+                    ));
                 }
-                // A file left by a session that died before naming it; never overwrite it.
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(e) => {
-                    self.write_failed(i, &e);
-                    return false;
-                }
+                self.create_here(i, failed.seq)
             }
+            None => self.create_here(i, self.tracks[i].seq + 1),
+        };
+        let Prepared {
+            seq, file, created, ..
+        } = prepared;
+        let track = &mut self.tracks[i];
+        track.seq = track.seq.max(seq);
+        match created {
+            Ok(writer) => {
+                track.segment = Some(Segment { writer, seq, t });
+                track.cover_from = None;
+                self.journal.write(Line::Segment {
+                    t,
+                    track: track.name.clone(),
+                    seq,
+                    file,
+                });
+                track.opener.ask(seq + 1);
+                true
+            }
+            Err(e) => {
+                self.write_failed(i, &e);
+                false
+            }
+        }
+    }
+
+    /// The file the track's opener created ahead. When the opener is still creating it, this
+    /// waits: a create that started that much earlier ends sooner than a new one here would.
+    fn take_prepared(&mut self, i: usize) -> Option<Prepared> {
+        let started = Instant::now();
+        let prepared = self.tracks[i].opener.take()?;
+        let waited = started.elapsed();
+        let t = self.clock.now();
+        if prepared.took > SLOW_CALL {
+            log(format_args!(
+                "t={t}: creating {} ahead took {} ms",
+                prepared.file,
+                prepared.took.as_millis()
+            ));
+        }
+        if waited > SLOW_CALL {
+            log(format_args!(
+                "t={t}: waited {} ms for {}",
+                waited.as_millis(),
+                prepared.file
+            ));
+        }
+        Some(prepared)
+    }
+
+    /// Creates a segment file of the track on this thread, as `opener::create` does.
+    fn create_here(&self, i: usize, from: u64) -> Prepared {
+        let prepared = opener::create(&self.dir, &self.tracks[i].name, from);
+        if prepared.took > SLOW_CALL {
+            log(format_args!(
+                "t={}: creating {} took {} ms",
+                self.clock.now(),
+                prepared.file,
+                prepared.took.as_millis()
+            ));
+        }
+        prepared
+    }
+
+    /// Stops the track's opener and removes the file it created ahead that no segment used, so
+    /// a finished meeting keeps no file without audio that the timeline doesn't name.
+    fn discard_prepared(&mut self, i: usize) {
+        let Some(prepared) = self.tracks[i].opener.finish() else {
+            return;
+        };
+        let Ok(writer) = prepared.created else {
+            return;
+        };
+        drop(writer);
+        if let Err(e) = fs::remove_file(self.dir.join(&prepared.file)) {
+            log(format_args!("can't remove {}: {e}", prepared.file));
         }
     }
 
@@ -979,7 +1105,19 @@ impl Recorder {
             }
             let room = (segment_samples - segment.writer.samples()) as usize;
             let n = room.min(track.pending.len());
-            if let Err(e) = segment.writer.append(&track.pending[..n]) {
+            let started = Instant::now();
+            let appended = segment.writer.append(&track.pending[..n]);
+            let took = started.elapsed();
+            if took > SLOW_CALL {
+                log(format_args!(
+                    "t={}: appending to {} segment {} took {} ms",
+                    self.clock.now(),
+                    track.name,
+                    segment.seq,
+                    took.as_millis()
+                ));
+            }
+            if let Err(e) = appended {
                 self.write_failed(i, &e);
                 return;
             }
@@ -1091,7 +1229,9 @@ impl Recorder {
         // Something held up this thread; the slow-call lines around this one say what.
         let since = t.saturating_sub(self.heartbeat.0);
         if since > LATE_HEARTBEAT_MS {
-            log(format_args!("heartbeat {since} ms after the one before"));
+            log(format_args!(
+                "t={t}: heartbeat {since} ms after the one before"
+            ));
         }
         self.heartbeat = (t, stamp);
     }
@@ -1154,6 +1294,9 @@ impl Recorder {
         // the sync of the timeline.
         for line in self.syncer.finish() {
             self.journal.write(line);
+        }
+        for i in 0..self.tracks.len() {
+            self.discard_prepared(i);
         }
         let t = t.max(self.journal.latest);
         self.journal.write(Line::Stop {

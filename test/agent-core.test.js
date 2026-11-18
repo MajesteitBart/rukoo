@@ -1898,6 +1898,58 @@ test('remote access: a Tailscale listener that comes up after dispose() is close
   }
 });
 
+// A port that something else on this computer holds while the test runs.
+async function takenPort() {
+  const server = require('http').createServer();
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { port: server.address().port, close: () => new Promise((r) => server.close(r)) };
+}
+
+// #253: main says what happened to its listeners as a code with its details, and Settings words it in the interface's
+// language. A note about the Tailscale listener goes when the next try starts.
+test('remote access: the listener note is a code with its details, which the next try replaces', async () => {
+  const env = await demo();
+  const { hub } = fakeHub(env);
+  await hub.start();
+  const taken = await takenPort();
+  const note = () => hub.config().mcp.note;
+  try {
+    // The MCP port the user chose is taken on this computer: Rukoo listens on another one and says which.
+    hub.cfg.update({ mcp: { port: taken.port } });
+    await hub.startMcp();
+    const local = hub.mcp.ports().local;
+    assert.notEqual(local, taken.port);
+    assert.deepEqual(note(), { code: 'localPortInUse', want: taken.port, used: local });
+
+    // An address this computer doesn't have (TEST-NET), so the Tailscale listener can't open.
+    await hub.updateConfig({ mcp: { remote: true, remoteHost: '192.0.2.1' } });
+    const failed = note();
+    assert.equal(typeof failed.error, 'string');
+    assert.ok(failed.error.length > 0);
+    assert.deepEqual(failed, { code: 'listenFailed', host: '192.0.2.1', port: taken.port, error: failed.error });
+    assert.equal(hub.mcp.ports().remote, null);
+
+    // Turned off, that try's note goes too, and the one about the local port applies again.
+    await hub.updateConfig({ mcp: { remote: false } });
+    assert.deepEqual(note(), { code: 'localPortInUse', want: taken.port, used: local });
+
+    // The chosen port is taken on the Tailscale address as well: the listener (on loopback here) takes another one.
+    const listen = hub.mcp.listen.bind(hub.mcp);
+    hub.mcp.listen = (opts) => listen(opts.remote ? { ...opts, host: '127.0.0.1', port: opts.port === taken.port ? taken.port : 0 } : opts);
+    await hub.updateConfig({ mcp: { remote: true, remoteHost: '100.64.0.9' } });
+    const remote = hub.mcp.ports().remote;
+    assert.ok(remote && remote !== taken.port);
+    assert.deepEqual(note(), { code: 'remotePortInUse', want: taken.port, host: '100.64.0.9', used: remote });
+    // The window gets a copy, so it can't change main's.
+    hub.config().mcp.note.used = 1;
+    assert.equal(note().used, remote);
+  } finally {
+    await hub.dispose();
+    await taken.close();
+    await env.engine.close();
+  }
+});
+
 test('status: a probe that answers late does not undo a newer one', async () => {
   const env = await demo();
   // Each Hermes probe waits until the test answers it, so the test decides which one finishes last.

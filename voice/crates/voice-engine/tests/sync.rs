@@ -418,26 +418,34 @@ fn a_meeting_uploads_while_it_records() {
 }
 
 /// Every heartbeat within 1,300 ms of the one before, no lost device or crash, each segment
-/// closed and following the one before, and a stop.
-fn assert_steady(data: &Path, id: &str) {
+/// closed and following the one before, and a stop. A failure names the bucket's fault and
+/// carries the recorder's log, whose slow-call and late-tick lines say what held it up (#209).
+fn assert_steady(data: &Path, id: &str, fault: &str) {
+    let fail = |what: String| -> ! {
+        let log_path = voice_core::paths::logs_dir(data).join(format!("recorder-{id}.log"));
+        let log = std::fs::read_to_string(&log_path)
+            .unwrap_or_else(|e| format!("(can't read {}: {e})", log_path.display()));
+        panic!("{id}, with {fault}: {what}\nrecorder log:\n{log}");
+    };
     let lines = lines(data, id);
     let mut last: Option<u64> = None;
     for line in &lines {
         match line {
             Line::Heartbeat { t, .. } => {
                 if let Some(before) = last {
-                    assert!(t - before <= 1300, "{id}: heartbeats {before} and {t}");
+                    if t - before > 1300 {
+                        fail(format!("heartbeats {before} and {t}"));
+                    }
                 }
                 last = Some(*t);
             }
-            Line::DeviceLost { .. } | Line::Crash { .. } => panic!("{id}: {line:?}"),
+            Line::DeviceLost { .. } | Line::Crash { .. } => fail(format!("{line:?}")),
             _ => {}
         }
     }
-    assert!(
-        matches!(lines.last(), Some(Line::Stop { .. })),
-        "{id} has no stop"
-    );
+    if !matches!(lines.last(), Some(Line::Stop { .. })) {
+        fail("no stop".into());
+    }
     let history = History::from_lines(&lines);
     for track in ["mic", "call"] {
         let mut segments: Vec<_> = history
@@ -446,18 +454,30 @@ fn assert_steady(data: &Path, id: &str) {
             .filter(|s| s.track == track)
             .collect();
         segments.sort_by_key(|s| s.seq);
-        assert!(segments.len() >= 20, "{id}/{track}: {}", segments.len());
-        for pair in segments.windows(2) {
-            assert_eq!(pair[1].seq, pair[0].seq + 1, "{id}/{track}");
-            let end = pair[0].t + pair[0].ended.expect("a closed segment") / 16;
-            assert!(
-                pair[1].t.abs_diff(end) <= 200,
-                "{id}/{track}: a gap between {} and {}",
-                pair[0].seq,
-                pair[1].seq
-            );
+        if segments.len() < 20 {
+            fail(format!("{track} has {} segments", segments.len()));
         }
-        assert!(segments.iter().all(|s| s.ended.is_some()), "{id}/{track}");
+        for pair in segments.windows(2) {
+            if pair[1].seq != pair[0].seq + 1 {
+                fail(format!(
+                    "{track} segment {} follows {}",
+                    pair[1].seq, pair[0].seq
+                ));
+            }
+            let Some(samples) = pair[0].ended else {
+                fail(format!("{track} segment {} never ended", pair[0].seq));
+            };
+            let end = pair[0].t + samples / 16;
+            if pair[1].t.abs_diff(end) > 200 {
+                fail(format!(
+                    "{track}: a gap between {} and {}",
+                    pair[0].seq, pair[1].seq
+                ));
+            }
+        }
+        if let Some(open) = segments.iter().find(|s| s.ended.is_none()) {
+            fail(format!("{track} segment {} never ended", open.seq));
+        }
     }
 }
 
@@ -499,7 +519,7 @@ fn a_failing_bucket_never_slows_the_recorder() {
                 .iter()
                 .any(|l| matches!(l, Line::Stop { .. }))
         });
-        assert_steady(&h.data(), &id);
+        assert_steady(&h.data(), &id, what);
         meetings.push(id);
     }
     // Healthy again: everything goes up.

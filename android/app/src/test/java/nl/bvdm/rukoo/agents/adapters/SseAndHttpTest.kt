@@ -52,6 +52,55 @@ class SseAndHttpTest {
     }
 
     @Test
+    fun aLineOrFrameOverTheLimitEndsTheStream() {
+        val out = mutableListOf<SseFrame>()
+        // A line that never ends: refused once more than the limit waits for its end, not when it ends.
+        val endless = SseParser(maxBytes = 64) { out.add(it) }
+        endless.push("data: ok\n\n")
+        endless.push("data: " + "x".repeat(50))
+        try {
+            endless.push("x".repeat(20))
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // The stream ends here.
+        }
+        // A frame whose data lines never close it.
+        val open = SseParser(maxBytes = 64) { out.add(it) }
+        open.push("data: " + "y".repeat(30) + "\n")
+        try {
+            open.push("data: " + "y".repeat(40) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
+        assertEquals(listOf("ok"), out.map { it.data })
+        // A long line that ends in the same chunk it came in, of any field.
+        try {
+            SseParser(maxBytes = 64) { out.add(it) }.push("event: " + "e".repeat(100) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
+        // The data counts in UTF-8 bytes: 22 euro signs take 66 of them, plus the \n between two lines.
+        val euros = SseParser(maxBytes = 64) { out.add(it) }
+        euros.push("data: " + "€".repeat(10) + "\n")
+        try {
+            euros.push("data: " + "€".repeat(12) + "\n")
+            fail("expected SseTooLong")
+        } catch (e: SseTooLong) {
+            // As above.
+        }
+        // At the limit is fine.
+        val fits = mutableListOf<SseFrame>()
+        SseParser(maxBytes = 64) { fits.add(it) }.apply {
+            push("data: " + "z".repeat(58) + "\n\n")
+            push("data: " + "€".repeat(10) + "\ndata: " + "€".repeat(11) + "\n\n")
+        }
+        assertEquals(listOf(58, 21), fits.map { it.data.count { c -> c != '\n' } })
+        assertEquals(4L * 1024 * 1024, SseParser.MAX_EVENT_BYTES)
+    }
+
+    @Test
     fun serverBaseKeepsAPrefixAndNormalizesTheAddress() {
         val base = ServerBase.parse("100.91.52.84:8642/p/clark/", texts)
         assertEquals("100.91.52.84:8642", base.host)

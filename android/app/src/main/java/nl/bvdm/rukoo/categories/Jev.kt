@@ -15,6 +15,10 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import nl.bvdm.rukoo.core.RukooJson
+import nl.bvdm.rukoo.core.net.ConnectionMeter
+import nl.bvdm.rukoo.core.net.FRAMING_ALLOWANCE
+import nl.bvdm.rukoo.core.net.TooMuchRead
+import nl.bvdm.rukoo.core.net.compressed
 import nl.bvdm.rukoo.mail.model.MessageSummary
 import okhttp3.Call
 import okhttp3.Callback
@@ -43,7 +47,9 @@ interface JevApi {
  * src/main/categories/jev.js, with the same request, so both apps sort alike.
  */
 class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi {
-    private val client = base.newBuilder()
+    // Every byte of an answer counts, headers and chunk framing too, while the connections stay open for the next
+    // email: one sort asks hundreds of questions, several at once, and a TLS handshake for each would slow it (#252).
+    private val client = ConnectionMeter(MAX_ANSWER + FRAMING_ALLOWANCE).client(base)
         .callTimeout(TIMEOUT_S, TimeUnit.SECONDS)
         .readTimeout(TIMEOUT_S, TimeUnit.SECONDS)
         .followRedirects(false)
@@ -59,14 +65,20 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
         val names = optionNames(categories)
         val request = Request.Builder().url(endpoint)
             .header("Authorization", "Bearer $key")
+            // As it was sent, so the limit is on what was downloaded: OkHttp would ask for gzip and unpack it first, and a
+            // gzip header can carry megabytes of padding in front of a few bytes of JSON.
+            .header("Accept-Encoding", "identity")
             .post(RukooJson.encodeToString(JsonObject.serializer(), body(m, categories, names, toMe)).toRequestBody(JSON))
             .build()
         val response = try {
             client.newCall(request).await()
+        } catch (e: TooMuchRead) {
+            throw JevError("server")
         } catch (e: IOException) {
             throw JevError("network")
         }
         val json = response.use { res ->
+            if (res.compressed()) throw JevError("server", res.code)
             val text = try {
                 val source = res.body?.source()
                 if (source == null) {
@@ -77,6 +89,8 @@ class Jev(base: OkHttpClient, private val endpoint: String = ENDPOINT) : JevApi 
                     if (source.buffer.size > MAX_ANSWER) throw JevError("server", res.code)
                     source.buffer.readUtf8()
                 }
+            } catch (e: TooMuchRead) {
+                throw JevError("server", res.code)
             } catch (e: IOException) {
                 throw JevError("network")
             }

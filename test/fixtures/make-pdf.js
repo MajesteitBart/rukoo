@@ -98,6 +98,32 @@ function streamObject(num, dict, data, deflate = false) {
   return `${num} 0 obj<<${dict}${deflate ? '/Filter/FlateDecode' : ''}/Length ${bytes.length}>>stream\n${bytes}\nendstream\nendobj\n`;
 }
 
+// Object num, an object stream that holds the given objects ({number: value}), compressed when deflate is set.
+function objectStream(num, objects, deflate = false) {
+  let head = '';
+  let body = '';
+  for (const [n, value] of Object.entries(objects)) {
+    head += `${n} ${body.length} `;
+    body += `${value}\n`;
+  }
+  return streamObject(num, `/Type/ObjStm/N ${Object.keys(objects).length}/First ${head.length}`, head + body, deflate);
+}
+
+// Two JPEGs of 16 by 16 grey pixels, as Pillow 12 writes them (quality 90), with a comment of bytes that look like
+// content: a baseline one with a restart marker after every block and a stuffed FF, and a progressive one of six
+// scans. Made with img.save(buf, 'JPEG', quality=90, comment=b' EI Q BT /F1 12 Tf 72 690 Td (lost) Tj ET EI ',
+// restart_marker_blocks=1) and progressive=True.
+const JPEGS = {
+  baseline: Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD//gAvIEVJIFEgQlQgL0YxIDEyIFRmIDcyIDY5MCBUZCAobG9zdCkgVGogRVQgRUkg/9sAQwADAgIDAgIDAwMDBAMDBAUIBQUEBAUKBwcGCAwKDAwLCgsLDQ4SEA0OEQ4LCxAWEBETFBUVFQwPFxgWFBgSFBUU/8AACwgAEAAQAQERAP/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/dAAQAAf/aAAgBAQAAPwDP1HwX4fHhSy8U6jfrqXjS6sb2VI73ULaHRLiN9RdTBcTErJD503mQiKBodxldJEtAboD/0NNvDmiC31z4a3Hhx9GudL06bWtMtNNt7y9uL6+uLeKK4uJ4t8sbKjySwKZZQzeZGGliw7t//9GrqVzoPijxf4e0zX7y+F9qka2d3oUBubzSxdy2pR9RDXcjb4At1DELxpRIBCqxh4GhY//SXxHaafd69o1r4git57rW5Efw9Fb6B/bEAf7OpSK6tRaSGaCK0cxmGRpriKRjtlijbzj/AP/Z',
+    'base64'
+  ).toString('latin1'),
+  progressive: Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD//gAvIEVJIFEgQlQgL0YxIDEyIFRmIDcyIDY5MCBUZCAobG9zdCkgVGogRVQgRUkg/9sAQwADAgIDAgIDAwMDBAMDBAUIBQUEBAUKBwcGCAwKDAwLCgsLDQ4SEA0OEQ4LCxAWEBETFBUVFQwPFxgWFBgSFBUU/8IACwgAEAAQAQERAP/EABYAAQEBAAAAAAAAAAAAAAAAAAQDBf/aAAgBAQAAAAE+iGv/xAAYEAADAQEAAAAAAAAAAAAAAAACAwQUEv/aAAgBAQABBQJkU+XOnlhIqroFZP8A/8QAIxAAAgEDBAIDAQAAAAAAAAAAAQIDERIhAAQTMSJBBSQyM//aAAgBAQAGPwJN1I/JvWRzR5FELDk6Y9ipqKCnebfLU/xrbfhaKMzRrGruzuygMxGR7IyfYyNbeOd3vlFjQC54riv9PI9eQF9a4ximoV3AUtMfrhYOYfnpltNQFxQ1YH2BnX//xAAYEAEBAQEBAAAAAAAAAAAAAAABESExAP/aAAgBAQABPyGCJYhiOXrrdA9ty0PhgSAh0dNFlWziitNZucJTfjaOdFia7dTGI9//2gAIAQEAAAAQX//EABcQAQEBAQAAAAAAAAAAAAAAAAERIQD/2gAIAQEAAT8QI/B1TmOALg7QDoemIM8bHAj7CeIORx4mCEADialXrYYy9IJrH//Z',
+    'base64'
+  ).toString('latin1')
+};
+
 const cmapOf = (body) => `/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n${body}\nendcmap end end`;
 // A ToUnicode map in which one range fills every two-byte code.
 const FULL_RANGE = cmapOf('1 beginbfrange <0000> <FFFF> <0041> endbfrange');
@@ -164,7 +190,9 @@ function hostilePdfs() {
     bigTJ: onePage(`BT /F1 12 Tf [${'(a)'.repeat(3000000)}] TJ ET`),
     escapes: onePage(`BT /F1 12 Tf (${'\\101'.repeat(4000000)}) Tj ET`),
     formAgain: onePage('/X Do '.repeat(3000000), { resources: '/XObject<</X 10 0 R>>', objects: streamObject(10, '/Type/XObject/Subtype/Form', `%${'x'.repeat(1000000)}\n`) }),
-    zeros: onePage('BT ET', { contents: 10, objects: streamObject(10, '/Filter[/FlateDecode/ASCII85Decode]', zlib.deflateSync(Buffer.from(`${'z'.repeat(16000000)}~>`)).toString('latin1')) })
+    zeros: onePage('BT ET', { contents: 10, objects: streamObject(10, '/Filter[/FlateDecode/ASCII85Decode]', zlib.deflateSync(Buffer.from(`${'z'.repeat(16000000)}~>`)).toString('latin1')) }),
+    // The review of #245: thirty thousand trailers whose ID is one string of a megabyte, which each copied.
+    trailerIds: plainPage(line('text'), { after: `11 0 obj[(${'x'.repeat(1024 * 1024)})]endobj\n${'trailer<</ID 11 0 R>>\n'.repeat(30000)}` })
   };
 }
 
@@ -266,4 +294,10 @@ function silentCaps() {
   };
 }
 
-module.exports = { makePdf, hostilePdfs, manyOpsPdf, silentCaps, onePage, plainPage };
+// The PDFs of encrypted-pdfs.json (made by encrypt-pdfs.py), by name.
+function encryptedPdfs() {
+  const all = require('./encrypted-pdfs.json');
+  return Object.fromEntries(Object.entries(all).map(([name, b64]) => [name, Buffer.from(b64, 'base64')]));
+}
+
+module.exports = { makePdf, hostilePdfs, manyOpsPdf, silentCaps, onePage, plainPage, objectStream, encryptedPdfs, JPEGS };

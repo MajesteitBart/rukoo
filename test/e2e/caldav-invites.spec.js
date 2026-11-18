@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { clearOfMidnight } = require('./midnight');
 const { caldavServer } = require('../fixtures/caldav-server');
 
 const ME = 'me@example.com';
@@ -42,6 +43,7 @@ async function launch(language = 'en') {
 }
 
 test.beforeEach(async () => {
+  await clearOfMidnight();
   // Floating times, so the meeting sits at this hour whatever the PC's time zone is.
   server = await caldavServer({
     scheduling: true,

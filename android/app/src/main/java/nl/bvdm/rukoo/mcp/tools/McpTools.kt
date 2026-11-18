@@ -25,6 +25,7 @@ import nl.bvdm.rukoo.agents.AgentHub
 import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.SkillException
 import nl.bvdm.rukoo.agents.ToolIdentity
+import nl.bvdm.rukoo.agents.UnclearChat
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ApprovalChoice
 import nl.bvdm.rukoo.agents.model.ApprovalField
@@ -84,19 +85,39 @@ class ToolDeps(
     val bookingSettings: () -> JsonObject? = { null },
 )
 
-/** One tool call: who, the CLI's `_meta`, and the chat it belongs to (set once a tool makes one). */
-class ToolCall(val identity: ToolIdentity, val meta: JsonObject, var conversation: Conversation?) {
+/**
+ * One tool call: who, the CLI's `_meta`, and the chat it belongs to (set once a tool makes one). [unclear] says why a
+ * tool that puts something in a chat must not go by the guess, [bound] that the call is tied to its chat
+ * ([nl.bvdm.rukoo.agents.ToolRoute.bound]), and [elsewhere] is what its result says when the card lands outside the
+ * chat the agent is answering in (desktop chatFor).
+ */
+class ToolCall(
+    val identity: ToolIdentity,
+    val meta: JsonObject,
+    var conversation: Conversation?,
+    val unclear: UnclearChat? = null,
+    val bound: Boolean = false,
+) {
     val agent: String get() = identity.agent
+    var elsewhere: String? = null
 }
 
 /**
- * Desktop ensureConversation, for tools that put something on screen: the call's chat (fresh from the hub), else
- * the hub's choice of the agent's recent external chat or a new external one about the open email (revealed).
+ * Desktop chatFor, for tools that put something on screen: the call's chat (fresh from the hub), else the hub's
+ * choice of the agent's recent external chat or a new external one about the open email (revealed). A guess between
+ * several working chats, or a chat of another agent, is an error the agent can act on instead (#281).
  */
 internal suspend fun ensureConversation(d: ToolDeps, lookup: MailLookup, call: ToolCall): Conversation {
-    call.conversation?.let { return d.hub.get(it.id) ?: it }
-    val c = d.hub.ensureConversation(call.identity, null, lookup.live(d.screen.current.openMessageId))
-    call.conversation = c
+    when (val unclear = call.unclear) {
+        is UnclearChat.Foreign -> throw ToolError(ChatRoute.foreign(unclear.conversationId, d.hub.agentName(call.agent)))
+        UnclearChat.Ambiguous -> throw ToolError(ChatRoute.UNCLEAR)
+        null -> Unit
+    }
+    val c = call.conversation?.let { d.hub.get(it.id) ?: it }
+        ?: d.hub.ensureConversation(call.identity, null, lookup.live(d.screen.current.openMessageId)).also { call.conversation = it }
+    // A call tied to its chat (a paired computer, a per-chat token, the caller's thread) is where it belongs; only a
+    // chat the model named or a guess can be another one than the agent is answering in.
+    if (!(call.bound && call.conversation?.id == c.id) && d.hub.workingElsewhere(call.agent, c.id)) call.elsewhere = ChatRoute.elsewhere(c.title)
     return c
 }
 
@@ -154,12 +175,13 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         } catch (e: ToolError) {
             return McpHandler.errorResult("${e.message} Check the ${tool.name} input schema and try again.")
         }
-        val conversation = d.hub.conversationForTool(identity, clean.str("conversation_id"), meta)
+        val route = d.hub.routeForTool(identity, clean.str("conversation_id"), meta)
+        val conversation = route.conversation
         // A tool call during a turn shows the agent got that turn's input.
         if (conversation != null) d.hub.toolCalled(conversation.id)
-        val call = ToolCall(identity, meta, conversation)
+        val call = ToolCall(identity, meta, conversation, route.unclear, route.bound)
         return try {
-            toResult(run(tool.name, clean, call))
+            toResult(withElsewhere(run(tool.name, clean, call), call.elsewhere))
         } catch (e: ToolError) {
             McpHandler.errorResult(e.message.orEmpty())
         } catch (e: CancellationException) {
@@ -627,6 +649,10 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         private val SAFE_URL = Regex("^(https?://|mailto:|obsidian://)", RegexOption.IGNORE_CASE)
 
         fun safeUrl(u: String?): String? = u?.trim()?.takeIf { it.isNotEmpty() && SAFE_URL.containsMatchIn(it) }
+
+        /** A result whose card landed outside the chat the agent is answering in says so last, as on desktop. */
+        fun withElsewhere(out: ToolOut, note: String?): ToolOut =
+            if (note != null && out is ToolOut.Data) ToolOut.Data(JsonObject(out.value + ("elsewhere" to JsonPrimitive(note)))) else out
 
         fun toResult(out: ToolOut): JsonObject = when (out) {
             is ToolOut.Data -> buildJsonObject {

@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.mcp
 
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -13,19 +14,27 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.AgentSettings
 import nl.bvdm.rukoo.agents.HubKit
+import nl.bvdm.rukoo.agents.PairedComputer
+import nl.bvdm.rukoo.agents.ScriptedAdapter
 import nl.bvdm.rukoo.agents.SendRequest
 import nl.bvdm.rukoo.agents.ToolIdentity
+import nl.bvdm.rukoo.agents.TurnResult
 import nl.bvdm.rukoo.agents.adapters.FakeAdapter
 import nl.bvdm.rukoo.agents.adapters.FakeTools
 import nl.bvdm.rukoo.agents.model.AgentIds
 import nl.bvdm.rukoo.agents.model.ApprovalKind
 import nl.bvdm.rukoo.agents.model.ApprovalStatus
+import nl.bvdm.rukoo.agents.model.ComputerProgram
 import nl.bvdm.rukoo.agents.model.Item
 import nl.bvdm.rukoo.agents.model.MessageRef
+import nl.bvdm.rukoo.agents.model.Origin
 import nl.bvdm.rukoo.agents.model.TaskStatus
 import nl.bvdm.rukoo.agents.model.Tone
 import nl.bvdm.rukoo.mail.model.MailView
@@ -36,6 +45,7 @@ import nl.bvdm.rukoo.mcp.tools.ToolDeps
 import nl.bvdm.rukoo.ui.ComposerState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -217,6 +227,116 @@ class HubToolsSeamTest {
         }
         val ids = k.hub.get(c.id)!!.items.filterIsInstance<Item.Plan>().map { it.planId }
         assertEquals(11, ids.toSet().size)
+    }
+
+    private fun JsonObject.error(): String {
+        assertEquals("expected an error: $this", "true", this["isError"].toString())
+        return this["content"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content
+    }
+
+    // #281, as on desktop (test/agent-tools-calendar.test.js): OpenClaw has one token for every chat. With two of its
+    // chats working, a card without conversation_id went to a chat of its own while the agent said it was ready.
+    @Test
+    fun aCardWithoutAClearChatIsRefusedInsteadOfGoingToAChatOfItsOwn() = runTest {
+        val s = seam()
+        val openclaw = ToolIdentity(AgentIds.OPENCLAW)
+        val gate = CompletableDeferred<Unit>()
+        s.k.openclaw.script = { gate.await(); TurnResult.DONE }
+        val stuck = s.k.hub.create(AgentIds.OPENCLAW, null)
+        val chat = s.k.hub.create(AgentIds.OPENCLAW, null)
+        s.k.hub.send(stuck.id, SendRequest("Plan my week"))
+        s.k.hub.send(chat.id, SendRequest("maak meetings aan voor maandag 11:30u"))
+        runCurrent()
+        val refused =
+            "Rukoo showed nothing: more than one of your chats is working right now, so Rukoo can't tell which one this is for. Call again with the conversation_id from the message you are answering."
+        for ((name, args) in listOf(
+            "propose_action" to """{"title":"Add a task"}""",
+            "show_plan" to """{"tasks":[{"title":"Book the room"}]}""",
+            "show_sources" to """{"sources":[{"title":"Agenda"}]}""",
+            "write_draft" to """{"mode":"new","body":"Hi"}""",
+            "mail_action" to """{"action":"archive","message_ids":["$contract"]}""",
+            // A conversation_id the phone doesn't know is no better.
+            "propose_action" to """{"conversation_id":"c_gone","title":"Add a task"}""",
+        )) {
+            assertEquals(name, refused, s.call(name, args, openclaw).error())
+        }
+        assertTrue("no chat of its own", s.k.hub.conversations.value.none { it.origin == Origin.EXTERNAL })
+        assertEquals(0, s.k.mail.archives)
+        // Read-only tools still work, and the chat the call names gets its card.
+        s.call("search_mail", """{"query":"thursday"}""", openclaw).data()
+        val r = s.call("propose_action", """{"conversation_id":"${chat.id}","title":"Add a task"}""", openclaw).data()
+        assertEquals(chat.id, r["conversation_id"]!!.jsonPrimitive.content)
+        assertNull(r["elsewhere"])
+        assertEquals(listOf(0, 1), listOf(stuck, chat).map { c -> s.items(c.id).count { it is Item.Approval } })
+        gate.complete(Unit)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun anotherAgentsChatSaysTheTokenIsTheWrongOne() = runTest {
+        val s = seam()
+        val mine = s.k.hub.create("clark", null)
+        assertEquals(
+            "Rukoo showed nothing: conversation ${mine.id} belongs to another agent, and this call comes with the token Rukoo gave OpenClaw. If the user is talking to you in that chat, your Rukoo setup has the wrong token: tell the user to copy your setup from Rukoo's settings again.",
+            s.call("propose_action", """{"conversation_id":"${mine.id}","title":"Add a task"}""", ToolIdentity(AgentIds.OPENCLAW)).error(),
+        )
+        assertTrue(s.items(mine.id).isEmpty())
+        assertTrue(s.k.hub.conversations.value.none { it.origin == Origin.EXTERNAL })
+    }
+
+    @Test
+    fun aCardInAnotherChatThanTheOneTheAgentAnswersInSaysSo() = runTest {
+        val s = seam()
+        val earlier = s.k.hub.create("clark", null)
+        s.k.hub.send(earlier.id, SendRequest("Plan the offsite"))
+        advanceUntilIdle()
+        val gate = CompletableDeferred<Unit>()
+        s.k.clark.script = { gate.await(); TurnResult.DONE }
+        val now = s.k.hub.create("clark", null)
+        s.k.hub.send(now.id, SendRequest("Add a task"))
+        runCurrent()
+        val r = s.call("propose_action", """{"conversation_id":"${earlier.id}","title":"Add a task"}""").data()
+        assertEquals(earlier.id, r["conversation_id"]!!.jsonPrimitive.content)
+        assertEquals(
+            "Rukoo showed this in another chat, <unsafe_content source=\"chat title\">Plan the offsite</unsafe_content>, not in the one you are answering in now, so the user may not see it. Tell the user which chat it is in.",
+            r["elsewhere"]!!.jsonPrimitive.content,
+        )
+        assertNull(s.call("propose_action", """{"conversation_id":"${now.id}","title":"Add a task"}""").data()["elsewhere"])
+        gate.complete(Unit)
+        advanceUntilIdle()
+        // With no turn running, there is no chat the user is in to compare with.
+        assertNull(s.call("propose_action", """{"conversation_id":"${earlier.id}","title":"Add a task"}""").data()["elsewhere"])
+    }
+
+    // A call whose thread the hub mapped to a chat (Hub.routeForTool) comes from that chat: its card lands there and
+    // says nothing of another chat, also while another chat of that agent is working (desktop: resolveCall's bound).
+    @Test
+    fun aCallFromAMappedThreadIsTiedToItsChat() = runTest {
+        val pairing = "ph_abcdefghij"
+        val codexId = AgentIds.computer(pairing, ComputerProgram.CODEX)
+        val adapter = ScriptedAdapter(codexId)
+        val kit = HubKit(this, settings = AgentSettings(computers = listOf(PairedComputer(pairing, "office-pc", "100.64.0.2", mcpToken = "tok"))))
+        kit.adapters[codexId] = adapter
+        val s = seam(kit)
+        val mapped = kit.hub.create(codexId, null)
+        adapter.script = { it.setProvider(mapOf("threadId" to "th-mapped")); TurnResult.DONE }
+        kit.hub.send(mapped.id, SendRequest("Plan the week"))
+        advanceUntilIdle()
+        val gate = CompletableDeferred<Unit>()
+        adapter.script = { gate.await(); TurnResult.DONE }
+        val other = kit.hub.create(codexId, null)
+        kit.hub.send(other.id, SendRequest("Go"))
+        runCurrent()
+        val caller = ToolIdentity(codexId)
+        val meta = buildJsonObject { put("threadId", "th-mapped") }
+        val route = kit.hub.routeForTool(caller, null, meta)
+        assertEquals(listOf<Any?>(mapped.id, null, true), listOf(route.conversation?.id, route.unclear, route.bound))
+        val r = s.tools.callTool(caller, "propose_action", Json.parseToJsonElement("""{"title":"Add a task"}""").jsonObject, meta).data()
+        assertEquals(mapped.id, r["conversation_id"]!!.jsonPrimitive.content)
+        assertNull(r["elsewhere"])
+        assertEquals(1, s.items(mapped.id).count { it is Item.Approval })
+        gate.complete(Unit)
+        advanceUntilIdle()
     }
 
     // After boot the socket can be up before conversations.json is read: hello still knows the stored chat.

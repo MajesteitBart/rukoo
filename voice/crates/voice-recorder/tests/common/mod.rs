@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use std::fs::{self, File};
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,19 +58,20 @@ impl TempMeeting {
     }
 
     /// Starts the recorder with `args` after the program name.
-    pub fn spawn(&self, args: &[&str]) -> Child {
+    pub fn spawn(&self, args: &[&str]) -> Proc {
         let n = fs::read_dir(&self.root).map(|d| d.count()).unwrap_or(0);
         let log = File::create(self.root.join(format!("stderr-{n}.log"))).unwrap();
-        Command::new(BIN)
+        let child = Command::new(BIN)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
-            .expect("start rukoo-voice-recorder")
+            .expect("start rukoo-voice-recorder");
+        Proc(child)
     }
 
-    pub fn record(&self, tracks: &[&str], extra: &[&str]) -> Child {
+    pub fn record(&self, tracks: &[&str], extra: &[&str]) -> Proc {
         let dir = self.arg();
         let mut args = vec!["record", "--meeting", dir.as_str()];
         for track in tracks {
@@ -166,6 +168,33 @@ impl TempMeeting {
                 .any(|l| l["kind"] == "heartbeat" && t(l) >= min_t);
             reached.then_some(lines)
         })
+    }
+}
+
+/// A recorder that is killed and reaped when the test ends, whatever happened. A test that fails
+/// before it stops its recorder would otherwise leave it recording for 8 hours, and on Windows
+/// the recorder holds the test's output pipe, so cargo waits for it.
+pub struct Proc(pub Child);
+
+impl Deref for Proc {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl DerefMut for Proc {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 }
 

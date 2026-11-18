@@ -527,13 +527,36 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     return `<label>${esc(t(k.label))}<span class="pw"><input type="password" data-agent-key="${id}" autocomplete="off" spellcheck="false" placeholder="${esc(t(k.placeholder))}"/><button class="icon-btn sm" data-a="agent-key-reveal:${id}" title="${esc(t(k.show))}">${icons.eye}</button></span></label>
       <div class="agent-key-actions"><button class="btn sm" data-a="agent-key-save:${id}">${esc(t(k.save))}</button>${saved ? `<button class="link-btn" data-a="agent-key-cancel:${id}">${esc(t('common.actions.cancel'))}</button>` : ''}</div>`;
   };
+  // Main's note about its listeners, such as a port it couldn't get, comes as a code with its details (noteText() in
+  // hub.js), worded here in the interface's language. Main's noTailscale has no wording: without a Tailscale address
+  // the row itself says so (settings.agents.noAddress).
+  const NOTE_KEYS = {
+    mcpFailed: 'settings.agents.note.mcpFailed',
+    localPortInUse: 'settings.agents.note.localPortInUse',
+    listenFailed: 'settings.agents.note.listenFailed',
+    listenFailedHost: 'settings.agents.note.listenFailedHost',
+    remotePortInUse: 'settings.agents.note.remotePortInUse'
+  };
+  const remoteNote = (mcp) => {
+    const key = mcp.note && NOTE_KEYS[mcp.note.code];
+    return key ? t(key, mcp.note) : '';
+  };
+  const withNote = (url, note) => (note ? `${url}<span class="agent-note">${esc(note)}</span>` : url);
+  // The address a remote agent or the phone uses, once Rukoo listens there. With an address but no listener (it
+  // couldn't open, or is still opening), the row says so, and main's note under it says why.
+  const listenerLine = (path) => {
+    const { mcp = {} } = agentState.config;
+    if (!mcp.address) return esc(t('settings.agents.noAddress'));
+    if (!mcp.remotePort) return esc(t('settings.agents.notListening', { address: mcp.address }));
+    return esc(`http://${mcp.address}:${mcp.remotePort}${path}`);
+  };
+
   // The port the remote listener really got (it moves when the chosen one is taken), the same as in the
   // copied Hermes setup, with main's note about the move. Clark signs in with the API key, so without one it can't.
   const remoteDesc = () => {
     const { mcp = {}, clark = {} } = agentState.config;
     const url = mcp.address ? esc(`http://${mcp.address}:${mcp.remotePort || mcp.port || mcp.localPort}/mcp`) : esc(t('settings.agents.noAddress'));
-    const note = mcp.remote && !clark.hasKey ? t('settings.agents.remoteNeedsKey', { name: agentName(agentState.config, 'clark') }) : mcp.note;
-    return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
+    return withNote(url, mcp.remote && !clark.hasKey ? t('settings.agents.remoteNeedsKey', { name: agentName(agentState.config, 'clark') }) : remoteNote(mcp));
   };
 
   // The OpenClaw card's remote row: off, what it is for; on, the address a remote gateway uses (the Tailscale
@@ -541,17 +564,14 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const openclawRemoteDesc = () => {
     const { mcp = {}, openclaw = {} } = agentState.config;
     if (!openclaw.remote) return esc(t('settings.agents.openclawRemoteHelp'));
-    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
-    const note = !openclaw.hasKey ? t('settings.agents.openclawRemoteNeedsToken') : mcp.note;
-    return note ? `${url}<span class="agent-note">${esc(note)}</span>` : url;
+    return withNote(listenerLine('/mcp'), !openclaw.hasKey ? t('settings.agents.openclawRemoteNeedsToken') : remoteNote(mcp));
   };
   // A custom agent's remote row, as OpenClaw's: off, what it is for; on, the address the agent uses.
   const customRemoteDesc = (id) => {
     const { mcp = {} } = agentState.config;
     const x = customOf(agentState.config, id) || {};
     if (!x.remote) return esc(t('settings.agents.customRemoteHelp', { name: x.name || '' }));
-    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}/mcp`) : esc(t('settings.agents.noAddress'));
-    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+    return withNote(listenerLine('/mcp'), remoteNote(mcp));
   };
   // Which setup the copy row puts on the clipboard (a token line and a command): for this computer, or for the
   // gateway's computer.
@@ -573,8 +593,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   const phoneDesc = () => {
     const { mcp = {}, phone = {} } = agentState.config;
     if (!phone.enabled) return esc(t('settings.phone.hostHelp'));
-    const url = mcp.address && mcp.remotePort ? esc(`http://${mcp.address}:${mcp.remotePort}`) : esc(t('settings.agents.noAddress'));
-    return mcp.note ? `${url}<span class="agent-note">${esc(mcp.note)}</span>` : url;
+    return withNote(listenerLine(''), remoteNote(mcp));
   };
   const phoneSeen = (p) =>
     [p.lastSeenAt ? t('settings.phone.lastSeen', { date: numericDate(p.lastSeenAt), time: hhmm(p.lastSeenAt) }) : t('settings.phone.neverSeen'), p.exportOpen ? t('settings.phone.exportPending') : '']

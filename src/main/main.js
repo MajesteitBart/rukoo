@@ -35,7 +35,7 @@ const { TrayIcon } = require('./tray');
 const mailto = require('./mailto');
 const { MailClient, SETTINGS_URL } = require('./mailclient');
 const { LinuxMailClient, DESKTOP } = require('./linux-mailclient');
-const { windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice } = require('./desktop');
+const { titleBar, windowChrome, MailtoQueue, FileQueue, icsFromArgs, MacMailClient, macMenu, testNotice } = require('./desktop');
 const { Invitations } = require('./calendar/invitations');
 const invite = require('./calendar/invite');
 // ---- agents ----
@@ -44,6 +44,7 @@ const { AgentHub } = require('./agents');
 const { AccountService } = require('./account');
 const { Categories } = require('./categories');
 const { MailNotices } = require('./categories/notices');
+const { DiagLog } = require('./diaglog');
 const { rukoo: PACKAGE_RUKOO = {} } = require('../../package.json');
 const { UpdateChecker, channelFor } = require('./updates');
 const { UpdateInstaller, installKind } = require('./installer');
@@ -64,8 +65,6 @@ const { isMeetingId, SCREENS: MEETING_SCREENS } = require('./voice/protocol');
 // or its shortcut (named Electron, pointing at the checkout) takes over the installed app's icon.
 const APP_ID = app.isPackaged ? 'nl.bvdm.rukoo-mail' : 'nl.bvdm.rukoo-mail.dev';
 const ICON = path.join(__dirname, '..', '..', 'build', 'icon.png');
-const DARK_BAR = { color: '#141519', symbolColor: '#e6e8ee', height: 40 };
-const LIGHT_BAR = { color: '#f4f5f7', symbolColor: '#1a1c22', height: 40 };
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const WEB_PREFERENCES = {
   preload: path.join(__dirname, 'preload.js'),
@@ -109,6 +108,8 @@ let video = null;
 let account = null;
 let categories = null;
 let mailNotices = null;
+// The log in the profile, data/logs/rukoo.log (diaglog.js): each sync, and what goes wrong in the windows.
+let diag = null;
 let updates = null;
 let installer = null;
 // The user chose Restart to update: the quit installs the new version and starts it.
@@ -217,18 +218,23 @@ function updatesState() {
   return { ...updates.state(), install: installer ? installer.state() : null };
 }
 
-function themeColors() {
-  const dark = nativeTheme.shouldUseDarkColors;
-  return { bar: dark ? DARK_BAR : LIGHT_BAR, background: dark ? DARK_BAR.color : LIGHT_BAR.color };
+// The window's background and its native window buttons, for the theme and the zoom (titleBar in desktop.js).
+function themeColors({ compose = false } = {}) {
+  const bar = titleBar(nativeTheme.shouldUseDarkColors, engine.settings.zoomLevel, { compose });
+  return { bar, background: bar.color };
+}
+
+// Every window but the main one is a compose window (windows()).
+function applyBars() {
+  if (process.platform === 'darwin') return;
+  for (const w of windows()) w.setTitleBarOverlay(themeColors({ compose: w !== win }).bar);
 }
 
 function applyTheme() {
   nativeTheme.themeSource = engine.settings.theme === 'light' ? 'light' : engine.settings.theme === 'dark' ? 'dark' : 'system';
-  const { bar, background } = themeColors();
-  for (const w of windows()) {
-    if (process.platform !== 'darwin') w.setTitleBarOverlay(bar);
-    w.setBackgroundColor(background);
-  }
+  const { background } = themeColors();
+  applyBars();
+  for (const w of windows()) w.setBackgroundColor(background);
 }
 
 function scheduleSync() {
@@ -241,6 +247,15 @@ function scheduleSync() {
       calendars.syncAll().catch(() => {});
     }, minutes * 60000);
   }
+}
+
+// The main window coming forward (shown, restored or focused) syncs each account whose last sync started over a
+// minute ago, in the background. With only the timer, the inbox could be a whole interval behind right when the user
+// looks. Not with manual sync (interval 0).
+const RETURN_SYNC_AFTER = 60000;
+function syncOnReturn() {
+  if (!engine || !(Number(engine.settings.syncInterval) > 0)) return;
+  engine.syncStale(RETURN_SYNC_AFTER);
 }
 
 function badgeCount() {
@@ -523,11 +538,13 @@ function forwardEditMenu(w) {
 }
 
 // One zoom level for the main window and every compose window. Settings follows it through the 'zoom' event;
-// nothing else in the windows depends on it, so it is saved without the 'updated' redraw.
+// nothing else in the windows depends on it, so it is saved without the 'updated' redraw. The native window buttons
+// grow and shrink with the title bar.
 function setZoom(level) {
   if (level === engine.settings.zoomLevel) return level;
   const { zoomLevel } = engine.updateSettings({ zoomLevel: level }, { quiet: true });
   for (const w of windows()) w.webContents.setZoomFactor(zoomLevel / 100);
+  applyBars();
   broadcast('zoom', zoomLevel);
   return zoomLevel;
 }
@@ -713,7 +730,7 @@ function openComposeWindow(input, { heldId = null } = {}) {
   const others = windows().filter((w) => w !== win);
   const last = others[others.length - 1];
   const pos = last ? { x: last.getBounds().x + 28, y: last.getBounds().y + 28 } : Number.isFinite(b.x) ? { x: b.x, y: b.y } : {};
-  const { bar, background } = themeColors();
+  const { bar, background } = themeColors({ compose: true });
   const w = new BrowserWindow({
     width: b.width,
     height: b.height,
@@ -1829,6 +1846,9 @@ const windowApi = {
     if (c) c.draftId = draftId ? String(draftId) : null;
     if (draftId) heldSettled(sender);
   },
+  // What went wrong in a window, for the log in the profile: an error nothing caught, or what app.js reports itself,
+  // such as a refresh of the list that failed (src/renderer/diag.js). diag.fromWindow() takes only known fields, capped.
+  logRenderer: (sender, entry) => Boolean(diag && diag.fromWindow(fromMainWindow(sender) ? 'main' : 'compose', plainObject(entry))),
   // What the question about unsaved changes after a close or quit came to: true once the editor has closed.
   unloadAnswer: (sender, closed) => answered(sender.id, closed === true),
   // Closes without asking again; the compose window has already handled unsaved changes. answered: its editor closes
@@ -1916,7 +1936,10 @@ function createWindow({ hidden = false } = {}) {
   win.on('focus', () => {
     newSinceFocus.clear();
     refreshBadge();
+    syncOnReturn();
   });
+  win.on('show', syncOnReturn);
+  win.on('restore', syncOnReturn);
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
   // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
   win.on('close', (event) => {
@@ -2011,7 +2034,10 @@ app.whenReady().then(() => {
     configPath: path.join(app.getPath('userData'), 'google-oauth.json'),
     openBrowser: (url) => shell.openExternal(url)
   });
-  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google }).init();
+  diag = new DiagLog(path.join(app.getPath('userData'), 'data', 'logs'));
+  diag.info('app', `start ${app.getVersion()} ${process.platform} ${process.arch}`);
+  if (process.env.SEM_HIDDEN) global.__semDiag = diag;
+  engine = new Engine({ dataDir: path.join(app.getPath('userData'), 'data'), secrets, google, log: (level, target, message) => diag.write(level, target, message) }).init();
   // Test mode only: lets end-to-end tests simulate server conditions.
   if (process.env.SEM_HIDDEN) global.__semEngine = engine;
   // What the last run still held, read before anything can be queued and write held.json anew.

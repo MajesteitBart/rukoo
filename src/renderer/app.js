@@ -48,6 +48,7 @@ import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
 import { splitNewMail, addToToast, newMailToastFor } from './new-mail.js';
+import { report, reportError, handled } from './diag.js';
 
 // Sidebar entries. `drop` marks a folder role that accepts dragged messages.
 const VIEWS = [
@@ -104,8 +105,12 @@ export const S = {
   keptId: null,
   checked: new Set(),
   anchorId: null,
-  // The keyboard position while Shift+arrows grow a selection. selectedId stays the message on screen.
+  // The keyboard position, shown as a focus ring: where Shift+arrows grow a selection from, the email the select key
+  // adds or removes, and where Ctrl+arrows move to without opening anything. selectedId stays the message on screen.
   cursorId: null,
+  // The selection was made with the select key (keymap.js toggleSelect). Until it is cleared, the step keys move the
+  // focus ring and keep it, as in Gmail.
+  picking: false,
   message: null,
   loading: false,
   expanded: false,
@@ -157,27 +162,66 @@ let renderedLanguage = null;
 let refreshTimer = null;
 let pending = null;
 let again = false;
+// Passes that failed in a row, and the try that follows one. A failed pass is tried again after RETRY_MS[failures - 1],
+// and then every 10 seconds: a failure that passes, such as main being busy, heals by itself, and one that comes back
+// every time costs a list from main every 10 seconds. The log gets the first failure, one that says something else,
+// and every REPORT_EVERY-th after that.
+let failures = 0;
+let lastFailure = '';
+let retryTimer = null;
+const RETRY_MS = [1000, 2000, 5000, 10000];
+const REPORT_EVERY = 30;
 
 export function scheduleRefresh(ms = 60) {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, ms);
+  // The pass reports its own failure (refreshFailed); the timer has no one to hand it to.
+  refreshTimer = setTimeout(() => refresh().catch(() => {}), ms);
 }
 
-// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass.
+// Coalesces overlapping refreshes: a call during a running refresh triggers exactly one more pass. That pass also
+// runs when the one before it failed, since it was asked for with newer data in mind. The promise rejects with the
+// last pass's error, which is in the log already.
 export function refresh() {
   if (pending) {
     again = true;
     return pending;
   }
+  clearTimeout(retryTimer);
   pending = (async () => {
+    let error = null;
     do {
       again = false;
-      await refreshOnce();
+      try {
+        await refreshOnce();
+        error = null;
+      } catch (err) {
+        error = err;
+        refreshFailed(err);
+      }
     } while (again);
+    if (error) throw error;
+    if (failures) {
+      report('refresh', { reason: 'recovered', failures });
+      failures = 0;
+      lastFailure = '';
+    }
   })().finally(() => {
     pending = null;
   });
   return pending;
+}
+
+// A pass that failed left the list as it was: it goes in the log, and is tried again in a moment.
+function refreshFailed(err) {
+  failures++;
+  const message = String((err && err.message) || err);
+  if (failures === 1 || message !== lastFailure || failures % REPORT_EVERY === 0) {
+    console.error('Refreshing the window failed:', err);
+    reportError('refresh', err, { failures });
+  } else handled(err);
+  lastFailure = message;
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => refresh().catch(() => {}), RETRY_MS[Math.min(failures, RETRY_MS.length) - 1]);
 }
 
 function searchingAll() {
@@ -554,7 +598,9 @@ function renderShell() {
   const collapsed = sidebarCollapsed();
   shell.classList.toggle('collapsed', collapsed);
   shell.classList.toggle('expanded', S.expanded);
-  shell.classList.toggle('has-message', Boolean(S.selectedId) || S.checked.size > 1 || Boolean(S.composer));
+  // In a narrow window the reading pane takes the list's place. A selection made with the select key keeps the list,
+  // so the focus ring stays in view while it grows.
+  shell.classList.toggle('has-message', Boolean(S.selectedId) || (S.checked.size > 1 && !S.picking) || Boolean(S.composer));
   shell.classList.toggle('compact', S.data?.settings.density === 'compact');
   shell.classList.toggle('selecting', S.checked.size > 0);
   shell.classList.toggle('agent-open', Boolean(prefs.agentOpen));
@@ -1121,6 +1167,7 @@ function changeView() {
   S.filter = 'all';
   S.keptId = null;
   S.checked.clear();
+  S.picking = false;
   newRows.clear();
   S.autoOpen = true;
   // A message from the previous folder would look like it belongs to this one.
@@ -1248,18 +1295,25 @@ function renderListTools() {
   }).join('')}</div>`);
 }
 
-// Rows folding out of the list (see letGo). Each renders the list once it is gone.
+// Rows folding out of the list (see letGo). Each renders the list once it is gone. leavingSince: when the newest of
+// them started; past LEAVE_STUCK_MS the list stops waiting for them, so a timer that never ran can't hold it.
 const leaving = new Set();
 const LEAVE_MS = 320;
+const LEAVE_STUCK_MS = 3 * LEAVE_MS;
+let leavingSince = 0;
 
 function renderList() {
-  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends.
-  if (swipeState.el) {
-    swipeState.renderPending = true;
+  // Re-rendering mid-drag would detach the row being swiped; render once the gesture ends, or once it is clear that
+  // its end isn't coming (swipeHeld).
+  if (swipeHeld()) {
+    holdRender();
     return;
   }
   // Likewise for a row that is folding away.
-  if (leaving.size) return;
+  if (leaving.size) {
+    if (Date.now() - leavingSince < LEAVE_STUCK_MS) return;
+    leaving.clear();
+  }
   renderShell();
   renderListHead();
   // A selection only holds emails the tab shows; one moved to another category leaves it.
@@ -1271,6 +1325,7 @@ function renderList() {
   renderListTools();
   const scroll = $('.list-scroll');
   scroll.innerHTML = listHtml();
+  syncActiveRow(scroll);
   renderShell();
   updateNewPill();
   // The reader showed the selection; it follows what is left of it, as after a move or delete.
@@ -1439,9 +1494,9 @@ function itemHtml(m, { multi, showFolder, stack, stacked }) {
       : `<button class="stack-btn" data-stack="${esc(stack.id)}" tabindex="-1" title="${esc(`${stackLabel} (→)`)}" aria-label="${esc(stackLabel)}" aria-expanded="false">${icons.stack}<span>+${stack.count - 1}</span></button>`
     : '';
   return `<div class="item-wrap ${stacked ? 'stacked' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}">${swipe}
-    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" data-id="${esc(m.id)}" role="option" aria-selected="${selected || checked}" draggable="true">
+    <div class="item ${m.unread ? 'unread' : ''} ${selected ? 'selected' : ''} ${checked ? 'checked' : ''} ${atCursor ? 'cursor' : ''} ${stack && !stack.open ? 'folded' : ''}" id="mail-row-${encodeURIComponent(m.id)}" data-id="${esc(m.id)}" role="option" aria-selected="${S.checked.size ? checked : selected}" draggable="true">
       <span class="unread-dot" aria-hidden="true"></span>
-      <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" tabindex="-1">${icons.check}</button></div>
+      <div class="lead">${senderAvatar(who)}${accDot}<button class="check ${checked ? 'on' : ''}" data-check role="checkbox" aria-checked="${checked}" data-i18n-aria-label="mailbox.message.select" aria-label="${esc(t('mailbox.message.select'))}" title="${esc(tip(t('mailbox.message.select'), 'toggleSelect'))}" tabindex="-1">${icons.check}</button></div>
       <div class="body">
         <div class="line1">
           <span class="sender">${draft ? `<span class="draft-tag" data-i18n="composer.titles.draft">${esc(t('composer.titles.draft'))}</span>` : ''}${esc(senderLine(m))}</span>
@@ -1506,10 +1561,17 @@ function fetchLogos() {
   }
 }
 
+function syncActiveRow(scroll) {
+  if (!scroll) return;
+  const active = scroll.querySelector('.item.cursor');
+  if (active) scroll.setAttribute('aria-activedescendant', active.id);
+  else scroll.removeAttribute('aria-activedescendant');
+}
+
 function syncRowClasses() {
+  const scroll = $('.list-scroll');
   // A selection inside a folded stack unfolds it.
   if (S.selectedId && !$(`.list-scroll .item[data-id="${CSS.escape(S.selectedId)}"]`) && rows().some((m) => m.id === S.selectedId)) {
-    const scroll = $('.list-scroll');
     const top = scroll ? scroll.scrollTop : 0;
     scroll.innerHTML = listHtml();
     scroll.scrollTop = top;
@@ -1522,11 +1584,12 @@ function syncRowClasses() {
     el.classList.toggle('selected', selected);
     el.classList.toggle('checked', checked);
     el.classList.toggle('cursor', id === at);
-    el.setAttribute('aria-selected', String(selected || checked));
+    el.setAttribute('aria-selected', String(S.checked.size ? checked : selected));
     const box = el.querySelector('.check');
     box?.classList.toggle('on', checked);
     box?.setAttribute('aria-checked', String(checked));
   }
+  syncActiveRow(scroll);
 }
 
 function revealRow(id) {
@@ -1547,6 +1610,8 @@ function letGo(id) {
   const head = wrap.previousElementSibling;
   const next = wrap.nextElementSibling;
   if (head?.classList.contains('group-head') && (!next || next.classList.contains('group-head'))) els.push(head);
+  // From the newest row's start: rows opened one after another each get their whole fold.
+  leavingSince = Date.now();
   leaving.add(id);
   for (const el of els) {
     const { paddingTop, paddingBottom } = getComputedStyle(el);
@@ -1599,7 +1664,52 @@ function checkRange(toId) {
   selectionChanged();
 }
 
+// The select key: adds or removes the email at the focus ring, and only that one, also when another email is open.
+// An email in a group keeps the group open, also once it leaves the selection, so the ring doesn't fold away with it.
+function toggleAtCursor() {
+  const visible = visibleRows();
+  const at = cursor() || visible[0]?.id;
+  if (!at || !visible.some((m) => m.id === at)) return false;
+  const layout = stackLayout();
+  const head = layout.headOf.get(at);
+  if (head) S.openStacks.add(layout.heads.get(head).id);
+  if (S.checked.has(at)) S.checked.delete(at);
+  else S.checked.add(at);
+  S.anchorId = at;
+  S.cursorId = at;
+  S.picking = true;
+  selectionChanged();
+  revealRow(at);
+  return true;
+}
+
+// The focus ring shows while the keyboard works the list, until the pointer comes back. take: the list takes the
+// focus from wherever it is, so the ring can show.
+function keyboardInList(take = false) {
+  const list = $('.list-scroll');
+  if (!list) return false;
+  if (take && !list.getClientRects().length) {
+    if (S.composer) return false;
+    if (S.expanded) {
+      S.expanded = false;
+      renderShell();
+      renderReader();
+    }
+    // A narrow window shows one pane at a time. Return to the list at the same message.
+    if (!list.getClientRects().length) {
+      S.cursorId = cursor();
+      S.picking = true;
+      closeReader();
+    }
+    if (!list.getClientRects().length) return false;
+  }
+  list.classList.add('kbd');
+  if (document.activeElement === document.body || (take && !list.contains(document.activeElement))) list.focus({ preventScroll: true });
+  return true;
+}
+
 function clearChecks() {
+  S.picking = false;
   if (!S.checked.size) return false;
   S.checked.clear();
   S.cursorId = S.selectedId;
@@ -1640,10 +1750,7 @@ function bindList() {
     if (btn && btn.hasAttribute('data-check')) return toggleCheck(id);
     if (e.ctrlKey || e.metaKey) return toggleCheck(id);
     if (e.shiftKey) return checkRange(id);
-    if (S.checked.size) {
-      S.checked.clear();
-      selectionChanged();
-    }
+    clearChecks();
     S.anchorId = id;
     openMessage(id);
   });
@@ -1792,20 +1899,88 @@ async function emptyCurrent() {
 
 // ---------- swipe (touch and pen only; a mouse drags messages to folders) ----------
 
-const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null };
+// The touch or pen swipe on a row: the row, where it started, how far it went, and when its pointer last went down or
+// moved (at). A list update waits for the swipe to end (renderPending, since heldSince), so the row under the finger
+// stays where it is. The end doesn't always come: a pointerup the window never got, a row that left the page. So the
+// swipe also lets go when another pointer goes down, the window loses focus, the row loses its pointer capture or
+// leaves the page, when its pointer moves with no button down or did nothing for SWIPE_STALE_MS, and when a list update
+// has waited SWIPE_HOLD_MAX_MS for it however much the pointer moves; the list then draws what it held back.
+const swipeState = { el: null, startX: 0, startY: 0, dx: 0, moved: false, id: null, pointer: null, at: 0, renderPending: false, heldSince: 0, timer: null };
 const SWIPE_TRIGGER = 110;
+const SWIPE_STALE_MS = 3000;
+const SWIPE_HOLD_MAX_MS = 10000;
+// A list update held back this long goes in the log, with how the swipe ended (diag.js).
+const SWIPE_LOG_MS = 3000;
+
+// Whether a swipe holds the list now. One whose end isn't coming lets go here, and the caller draws.
+function swipeHeld() {
+  const st = swipeState;
+  if (!st.el) return false;
+  const now = Date.now();
+  const how = !st.el.isConnected ? 'detached' : now - st.at >= SWIPE_STALE_MS ? 'stale' : st.renderPending && now - st.heldSince >= SWIPE_HOLD_MAX_MS ? 'held' : null;
+  if (!how) return true;
+  dropSwipe(how, false);
+  return false;
+}
+
+// A list update waits for the swipe, and looks again when the swipe would go stale or the wait would be too long.
+function holdRender() {
+  const st = swipeState;
+  if (!st.renderPending) {
+    st.renderPending = true;
+    st.heldSince = Date.now();
+  }
+  clearTimeout(st.timer);
+  const due = Math.min(st.at + SWIPE_STALE_MS, st.heldSince + SWIPE_HOLD_MAX_MS);
+  st.timer = setTimeout(() => st.renderPending && renderList(), Math.max(0, due - Date.now()) + 20);
+}
+
+// The swipe is over. What it held back draws now, unless the caller draws it. how: 'end' for its pointerup or
+// pointercancel; anything else is a swipe that was let go (dropSwipe), which the log hears of.
+function endSwipe(how, draw = true) {
+  const st = swipeState;
+  st.el = null;
+  clearTimeout(st.timer);
+  if (!st.renderPending) return;
+  st.renderPending = false;
+  const held = Date.now() - st.heldSince;
+  if (how !== 'end' || held >= SWIPE_LOG_MS) report('list', { reason: `swipe-${how}`, ms: held });
+  if (draw) renderList();
+}
+
+// Lets go of a swipe whose end didn't come: its row goes back in place.
+function dropSwipe(how, draw = true) {
+  const el = swipeState.el;
+  if (!el) return;
+  el.style.transition = '';
+  el.style.transform = '';
+  el.parentElement?.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
+  swipeState.moved = false;
+  endSwipe(how, draw);
+}
 
 function bindSwipe(pane) {
+  // Before the row's own pointerdown below: a pointer going down means the last swipe's pointer isn't anymore.
+  window.addEventListener('pointerdown', () => dropSwipe('pointer'), true);
+  window.addEventListener('blur', () => dropSwipe('blur'));
+  // Only the row's own capture, which it takes once the swipe moves: a touch starts with the capture on the element
+  // under the finger (the sender, the subject), and moving it to the row fires lostpointercapture there.
+  pane.addEventListener('lostpointercapture', (e) => {
+    if (swipeState.el && e.pointerId === swipeState.pointer && e.target === swipeState.el) dropSwipe('capture');
+  });
   pane.addEventListener('pointerdown', (e) => {
     if (!S.data?.settings.swipeActions || e.pointerType === 'mouse' || e.button !== 0) return;
     if (S.data.settings.swipeLeft === 'none' && S.data.settings.swipeRight === 'none') return;
     const item = e.target.closest('.item');
     if (!item || e.target.closest('button')) return;
-    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId });
+    Object.assign(swipeState, { el: item, startX: e.clientX, startY: e.clientY, dx: 0, moved: false, id: item.dataset.id, pointer: e.pointerId, at: Date.now() });
   });
   pane.addEventListener('pointermove', (e) => {
     const st = swipeState;
     if (!st.el || e.pointerId !== st.pointer) return;
+    // No button down: the pointer came up where the window didn't hear it, such as a pen that went back to hovering.
+    if (e.buttons === 0) return dropSwipe('released');
+    st.at = Date.now();
     const dx = e.clientX - st.startX;
     const dy = e.clientY - st.startY;
     if (!st.moved) {
@@ -1832,13 +2007,7 @@ function bindSwipe(pane) {
     if (!st.el || e.pointerId !== st.pointer) return;
     const { el, dx, id, moved } = st;
     st.el = null;
-    const flush = () => {
-      if (st.renderPending) {
-        st.renderPending = false;
-        renderList();
-      }
-    };
-    if (!moved) return flush();
+    if (!moved) return endSwipe('end');
     el.style.transition = 'transform 200ms cubic-bezier(0.2,0.8,0.2,1)';
     const m = byId(id);
     // The action behind the row on the side it went to, if it went far enough (Settings > Swipe and quick actions).
@@ -1852,7 +2021,7 @@ function bindSwipe(pane) {
       el.parentElement.querySelectorAll('.swipe-bg').forEach((b) => (b.style.opacity = 0));
       if (action) rowAction(action, m);
     }
-    flush();
+    endSwipe('end');
     // Swallow the click that follows a drag.
     setTimeout(() => (st.moved = false), 0);
   };
@@ -3081,15 +3250,23 @@ function bindReader() {
   });
 }
 
-function step(dir, extend = false) {
+// extend: Shift grows or shrinks the selection. keep: only the focus ring moves; nothing opens and the selection stays.
+function step(dir, { extend = false, keep = false } = {}) {
   const list = visibleRows();
   if (!list.length) return;
   const from = cursor();
   const i = list.findIndex((x) => x.id === from);
   const target = list[i < 0 ? 0 : Math.max(0, Math.min(list.length - 1, i + dir))];
   if (!target) return;
+  if (keep) {
+    S.cursorId = target.id;
+    syncRowClasses();
+    revealRow(target.id);
+    return;
+  }
   if (extend) {
     // Grow or shrink the selection from its anchor; the message on screen does not change.
+    S.picking = false;
     if (!S.checked.size && S.selectedId) S.checked.add(S.selectedId);
     const anchor = list.some((x) => x.id === S.anchorId) ? S.anchorId : from || target.id;
     S.anchorId = anchor;
@@ -3101,10 +3278,7 @@ function step(dir, extend = false) {
     revealRow(target.id);
     return;
   }
-  if (S.checked.size) {
-    S.checked.clear();
-    selectionChanged();
-  }
+  clearChecks();
   if (target.id === S.selectedId) {
     S.cursorId = target.id;
     return syncRowClasses();
@@ -3195,6 +3369,17 @@ document.addEventListener('keydown', (e) => {
     if (S.query) return clearSearch();
     return;
   }
+  // Enter opens the email at the focus ring, as a click on it would, when the ring shows on another email than the
+  // open one. Without the ring (.kbd, gone with the pointer) Enter does what it always did.
+  if (e.key === 'Enter' && !ctrl && !e.altKey && !e.shiftKey && e.target.matches?.('.list-scroll.kbd')) {
+    const at = cursor();
+    if (at && (at !== S.selectedId || S.checked.size) && visibleRows().some((x) => x.id === at)) {
+      e.preventDefault();
+      clearChecks();
+      S.anchorId = at;
+      return openMessage(at);
+    }
+  }
   if (e.key === 'Enter' && m && m.role === 'drafts' && !e.target.closest?.('button')) {
     e.preventDefault();
     return compose({ mode: 'draft', id: m.id });
@@ -3227,14 +3412,22 @@ function shortcutAction(action, list, m, e) {
       return m ? printMessage(m.id) : false;
     case 'selectAll':
       S.checked = new Set(rows().map((x) => x.id));
+      S.picking = false;
       return selectionChanged();
     case 'next':
     case 'previous':
       // Arrow keys in the open email scroll it.
       if (e.target.closest?.('.reader-scroll, .divider')) return false;
-      $('.list-scroll')?.classList.add('kbd');
-      if (document.activeElement === document.body) $('.list-scroll')?.focus();
-      return step(action === 'next' ? 1 : -1, e.shiftKey);
+      keyboardInList();
+      // After the select key, they move the focus ring and keep the selection.
+      return step(action === 'next' ? 1 : -1, { extend: e.shiftKey, keep: !e.shiftKey && S.picking && S.checked.size > 0 });
+    case 'focusNext':
+    case 'focusPrevious':
+      if (e.target.closest?.('.reader-scroll, .divider')) return false;
+      if (!keyboardInList(true)) return false;
+      return step(action === 'focusNext' ? 1 : -1, { keep: true });
+    case 'toggleSelect':
+      return keyboardInList(true) && toggleAtCursor();
   }
   if (!list.length) return false;
   switch (action) {
@@ -3392,7 +3585,8 @@ async function onNewMail(p) {
   if (!mails.length) return;
   if (p.sound) playCoo();
   if (!S.data || !S.data.accounts.length) return;
-  await refresh();
+  // A refresh that failed is tried again by itself (refreshFailed); the toast still says what came in meanwhile.
+  await refresh().catch(() => {});
   const { here, elsewhere } = splitNewMail(mails, listOnScreen() ? new Set(rows().map((m) => m.id)) : new Set());
   if (here.length) {
     for (const m of here) newRows.add(m.id);
@@ -3506,6 +3700,7 @@ async function openSorted(id, category) {
   S.query = '';
   S.filter = 'all';
   S.checked.clear();
+  S.picking = false;
   await refresh();
   if (S.list.some((m) => m.id === id)) openMessage(id);
 }
@@ -3537,6 +3732,8 @@ export const ctx = {
     if (S.message) renderReader();
     S.composer?.retheme(S.data);
   },
+  // In calendar mode the chat panel leaves out the email that stays open behind the calendar.
+  calendarMode: () => calendarMode(),
   // Rukoo Voice's meetings (meeting.js): the chat panel follows the one on screen in meeting mode, and a calendar
   // card records an event.
   meetingMode: () => meetingMode(),

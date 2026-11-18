@@ -14,9 +14,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.RukooJson
+import nl.bvdm.rukoo.core.net.FRAMING_ALLOWANCE
+import nl.bvdm.rukoo.core.net.MeteredSocketFactory
+import nl.bvdm.rukoo.core.net.compressed
+import nl.bvdm.rukoo.core.net.ownConnection
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -122,11 +125,8 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         // The answer counts as it comes off the connection, so a server can't hide megabytes in a chunk extension or a
         // header in front of a small body. OkHttp reads a chunk extension of any length.
         val sockets = MeteredSocketFactory(RAW_LIMIT)
-        val own = client.newBuilder()
-            .socketFactory(sockets)
-            // A pool of its own, empty, so no other call's connection is used and this one isn't kept.
-            .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
-            .build()
+        // A pool of its own, empty, so no other call's connection is used and this one isn't kept.
+        val own = ownConnection(client, sockets)
         var body = 0L
         try {
             val response = try {
@@ -135,9 +135,7 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
                 throw failed(sockets, e)
             }
             response.use { res ->
-                // An answer compressed anyway can't be read, so it isn't downloaded either.
-                val encodings = res.headers("Content-Encoding").flatMap { it.split(',') }.map { it.trim() }
-                if (encodings.any { it.isNotEmpty() && !it.equals("identity", ignoreCase = true) }) throw AccountError("server", res.code)
+                if (res.compressed()) throw AccountError("server", res.code)
                 val text = try {
                     val source = res.body?.source()
                     if (source == null) {
@@ -192,11 +190,8 @@ class OkHttpAccountHttp(base: OkHttpClient) : AccountHttp {
         private const val TIMEOUT_S = 20L
         const val MAX_BYTES = 32L * 1024 * 1024
 
-        /**
-         * The most read off the connection for one answer: a body of [MAX_BYTES] with room for headers (OkHttp takes up
-         * to 256 KiB of them) and, under TLS, the handshake and the encryption's few bytes per record.
-         */
-        const val RAW_LIMIT = MAX_BYTES + 512L * 1024
+        /** The most read off the connection for one answer: a body of [MAX_BYTES] with room for its headers and TLS. */
+        const val RAW_LIMIT = MAX_BYTES + FRAMING_ALLOWANCE
         private const val TAG = "Account"
         private val JSON = "application/json".toMediaType()
         private val bypassNoted = AtomicBoolean(false)

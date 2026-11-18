@@ -9,6 +9,7 @@ pub mod control;
 pub mod devices;
 pub mod disk;
 pub mod meeting;
+mod opener;
 pub mod record;
 pub mod source;
 mod syncer;
@@ -119,6 +120,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
     let mut limit_ms = DEFAULT_LIMIT_MS;
     let mut segment_ms = DEFAULT_SEGMENT_MS;
     let mut sync_delay_ms = 0;
+    let mut create_delay_ms = 0;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -166,6 +168,13 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
                     .parse()
                     .map_err(|_| ExitError::usage("--test-sync-delay-ms needs milliseconds"))?;
             }
+            // For tests: every segment file create waits this long first, as under a virus
+            // scanner that checks every new file.
+            "--test-create-delay-ms" => {
+                create_delay_ms = value()?
+                    .parse()
+                    .map_err(|_| ExitError::usage("--test-create-delay-ms needs milliseconds"))?;
+            }
             _ => {
                 return Err(ExitError::usage(format!(
                     "unknown argument {arg:?}\n{USAGE}"
@@ -189,6 +198,7 @@ fn parse_record(args: &[String]) -> Result<RecordOptions, ExitError> {
         limit_ms,
         segment_ms,
         sync_delay_ms,
+        create_delay_ms,
     })
 }
 
@@ -244,14 +254,18 @@ mod tests {
             "1500",
             "--test-sync-delay-ms",
             "700",
+            "--test-create-delay-ms",
+            "300",
         ]))
         .unwrap();
         assert_eq!(opts.meeting, PathBuf::from("m"));
         assert!(opts.resume);
         assert_eq!(opts.limit_ms, 1500);
         assert_eq!(opts.sync_delay_ms, 700);
-        let plain = parse_record(&args(&["--meeting", "m", "--track", "mic=synthetic:idle"]));
-        assert_eq!(plain.unwrap().sync_delay_ms, 0);
+        assert_eq!(opts.create_delay_ms, 300);
+        let plain =
+            parse_record(&args(&["--meeting", "m", "--track", "mic=synthetic:idle"])).unwrap();
+        assert_eq!((plain.sync_delay_ms, plain.create_delay_ms), (0, 0));
         let names: Vec<_> = opts.tracks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["mic", "call"]);
     }
@@ -280,6 +294,13 @@ mod tests {
                 "mic=synthetic:idle",
                 "--test-sync-delay-ms",
                 "slow",
+            ],
+            vec![
+                "--meeting",
+                "m",
+                "--track",
+                "mic=synthetic:idle",
+                "--test-create-delay-ms",
             ],
         ] {
             let err = parse_record(&args(&bad)).unwrap_err();

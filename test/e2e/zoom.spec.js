@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
+const { titlebar, clearance } = require('./titlebar');
 
 let app;
 let win;
@@ -227,6 +228,37 @@ test('compose windows share the zoom with the main window, both ways', async () 
   await expect(popped.locator('.compose .editor')).toHaveText('');
 });
 
+// The native window buttons on Windows and Linux (the window controls overlay) are as tall as the title bar, which is
+// 40 CSS px at every zoom. In a compose window they stop above the bar's 1px bottom border, which stays visible under
+// them (#248). The overlay reports its height in CSS pixels at the page's zoom.
+const NO_OVERLAY = 'macOS has traffic lights, without a window controls overlay';
+const buttonsHeight = (page) => titlebar(page).then((g) => g.area.height);
+
+test('the window buttons grow and shrink with the title bar, in the main window and in compose windows', async () => {
+  test.skip(MAC, NO_OVERLAY);
+  for (const level of [80, 100, 150]) {
+    await win.evaluate((l) => window.mail.call('setZoom', l), level);
+    await expect.poll(mainZoom).toBe(level);
+    await expect.poll(() => buttonsHeight(win), `main window at ${level}%`).toBeGreaterThanOrEqual(39);
+    expect(await buttonsHeight(win), `main window at ${level}%`).toBeLessThanOrEqual(41);
+  }
+  // A compose window opened at 150% starts with buttons of that size and follows later zoom changes.
+  const [editor] = await Promise.all([app.waitForEvent('window'), win.evaluate(() => window.mail.call('openCompose', { mode: 'new' }))]);
+  editor.on('dialog', () => {});
+  await editor.waitForSelector('.compose .editor');
+  for (const level of [150, 80, 100]) {
+    await win.evaluate((l) => window.mail.call('setZoom', l), level);
+    await expect.poll(() => buttonsHeight(editor), `compose window at ${level}%`).toBeLessThanOrEqual(39.01);
+    expect(await buttonsHeight(editor), `compose window at ${level}%`).toBeGreaterThanOrEqual(37.5);
+    await expect.poll(() => buttonsHeight(win), `main window at ${level}%`).toBeGreaterThanOrEqual(39);
+    expect(await buttonsHeight(win)).toBeLessThanOrEqual(41);
+    // The buttons keep their width in screen pixels, so at 80% they take more of the bar: the actions still end 12px
+    // before them. Linux can put the buttons on the left; linux.spec.js covers that layout.
+    const g = await titlebar(win);
+    if (g.area.left === 0) await expect.poll(() => clearance(win), `main window actions at ${level}%`).toEqual({ icon: 22, actions: 12 });
+  }
+});
+
 test('Settings shows the zoom, follows the keys while open and resets to 100%', async () => {
   await win.click('[data-action="settings"]');
   const value = win.locator('.settings [data-zoom-value]');
@@ -281,4 +313,11 @@ test('the zoom survives a restart and applies to compose windows opened after it
     BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('index.html')).getContentBounds().width
   );
   expect(contentWidth / (await win.evaluate(() => window.innerWidth))).toBeCloseTo(1.25, 1);
+  // Both windows open with window buttons the height of their title bar at 125% (#248).
+  if (!MAC) {
+    await expect.poll(() => buttonsHeight(win)).toBeGreaterThanOrEqual(39);
+    expect(await buttonsHeight(win)).toBeLessThanOrEqual(41);
+    await expect.poll(() => buttonsHeight(compose)).toBeLessThanOrEqual(39.01);
+    expect(await buttonsHeight(compose)).toBeGreaterThanOrEqual(37.5);
+  }
 });

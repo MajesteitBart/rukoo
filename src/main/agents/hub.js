@@ -151,6 +151,23 @@ function emptyView() {
   return { openMessageId: null, checkedIds: [], scope: 'all', view: 'inbox', folder: null, composer: null };
 }
 
+// Main's note about its MCP listeners, shown under the remote rows in Settings > Agents: a code and its details, which
+// the window words in the interface's language (remoteNote() in settings.js). noteText() is the English for the log.
+// The remote notes belong to one try at the Tailscale listener and go when the next one starts (openRemote()).
+const REMOTE_NOTES = new Set(['noTailscale', 'listenFailed', 'listenFailedHost', 'remotePortInUse']);
+function noteText(note) {
+  if (!note) return '';
+  switch (note.code) {
+    case 'mcpFailed': return `MCP server did not start: ${note.error}`;
+    case 'localPortInUse': return `Port ${note.want} is in use; Rukoo uses ${note.used} for local agents.`;
+    case 'noTailscale': return 'No Tailscale address found on this PC.';
+    case 'listenFailed': return `Could not listen on ${note.host}:${note.port}: ${note.error}`;
+    case 'listenFailedHost': return `Could not listen on ${note.host}: ${note.error}`;
+    case 'remotePortInUse': return `Port ${note.want} is in use on ${note.host}; Rukoo uses ${note.used}.`;
+    default: return String(note.code || '');
+  }
+}
+
 class AgentHub extends EventEmitter {
   // listen: false skips the MCP listeners (unit tests that call tools directly).
   constructor({ engine, dataDir, secrets, deps = {}, adapters = null, listen = true } = {}) {
@@ -254,8 +271,8 @@ class AgentHub extends EventEmitter {
     try {
       if (this.listen) await this.startMcp();
     } catch (err) {
-      this.cfg.runtime.note = `MCP server did not start: ${err.message}`;
-      this.log('hub', this.cfg.runtime.note);
+      this.cfg.runtime.note = { code: 'mcpFailed', error: err.message };
+      this.log('hub', noteText(this.cfg.runtime.note));
     }
     this.refreshStatus().catch(() => {});
   }
@@ -360,15 +377,16 @@ class AgentHub extends EventEmitter {
   async startMcp() {
     this.mcp = new McpServer({ hub: this, version: this.deps.appVersion || '0.0.0', log: (...a) => this.log('mcp', ...a) });
     const want = this.cfg.data.mcp.port;
-    let note = '';
+    let note = null;
     try {
       await this.mcp.listen({ host: '127.0.0.1', port: want, remote: false });
     } catch (err) {
       if (err.code !== 'EADDRINUSE' && err.code !== 'EACCES') throw err;
       await this.mcp.listen({ host: '127.0.0.1', port: 0, remote: false });
-      note = `Port ${want} is in use; Rukoo uses ${this.mcp.ports().local} for local agents.`;
+      note = { code: 'localPortInUse', want, used: this.mcp.ports().local };
     }
     this.cfg.runtime.localPort = this.mcp.ports().local;
+    this.localNote = note;
     this.cfg.runtime.note = note;
     await this.startRemote();
     // Tailscale often comes up after Rukoo (login items); keep trying while the user wants remote access.
@@ -411,13 +429,16 @@ class AgentHub extends EventEmitter {
     if (!mcp || mcp.closed) return;
     await mcp.closeRemote();
     this.cfg.runtime.remotePort = null;
+    // A note from the last try goes with it: Tailscale may have come up since, or nothing wants the listener now. The
+    // local listener's note, which that one replaced, applies again.
+    if (REMOTE_NOTES.has(this.cfg.runtime.note && this.cfg.runtime.note.code)) this.cfg.runtime.note = this.localNote || null;
     const { remoteHost, port } = this.cfg.data.mcp;
     if (!this.wantsRemote()) return;
     const detected = tailscaleAddress(this.cfg.interfaces);
     const literal = /^\d+\.\d+\.\d+\.\d+$/.test(remoteHost);
     const host = literal ? remoteHost : detected || remoteHost;
     if (!host) {
-      this.cfg.runtime.note = 'No Tailscale address found on this PC.';
+      this.cfg.runtime.note = { code: 'noTailscale' };
       return;
     }
     const names = remoteHost && remoteHost !== host ? [remoteHost] : [];
@@ -427,18 +448,18 @@ class AgentHub extends EventEmitter {
       // dispose() or a port change closed this server meanwhile; the note belongs to the server that replaced it.
       if (mcp.closed) return;
       if (err.code !== 'EADDRINUSE') {
-        this.cfg.runtime.note = `Could not listen on ${host}:${port}: ${err.code || err.message}`;
+        this.cfg.runtime.note = { code: 'listenFailed', host, port, error: err.code || err.message };
         return;
       }
       try {
         await mcp.listen({ host, port: mcp.ports().local || 0, remote: true, hosts: names });
       } catch (err2) {
-        if (!mcp.closed) this.cfg.runtime.note = `Could not listen on ${host}: ${err2.code || err2.message}`;
+        if (!mcp.closed) this.cfg.runtime.note = { code: 'listenFailedHost', host, error: err2.code || err2.message };
         return;
       }
     }
     this.cfg.runtime.remotePort = mcp.ports().remote;
-    if (this.cfg.runtime.remotePort !== port) this.cfg.runtime.note = `Port ${port} is in use on ${host}; Rukoo uses ${this.cfg.runtime.remotePort}.`;
+    if (this.cfg.runtime.remotePort !== port) this.cfg.runtime.note = { code: 'remotePortInUse', want: port, host, used: this.cfg.runtime.remotePort };
   }
 
   async dispose() {
@@ -1100,8 +1121,11 @@ class AgentHub extends EventEmitter {
     return this.files.refuse(name, size);
   }
 
+  // The email on screen. The calendar and the meeting view hide the one that stays open in Mail, as get_context does,
+  // so a chat that starts there isn't about it.
   openMessageId() {
-    const id = this.viewState.openMessageId;
+    const { mode, openMessageId: id } = this.viewState;
+    if (mode && mode !== 'mail') return null;
     return id && this.liveMessage(id) ? id : null;
   }
 
@@ -2642,9 +2666,11 @@ class AgentHub extends EventEmitter {
   }
 
   // The chat a tool call is for, and whether the call is bound to it: tied to it by something the model doesn't
-  // pick, so that the chat's own level counts (permissionFor()).
+  // pick, so that the chat's own level counts (permissionFor()). unclear says why a tool that puts something in a chat
+  // must not go by the guess (tools.chatFor): conversation_id names another agent's chat ('foreign', so the token is
+  // the wrong one), or no usable conversation_id while more than one of the agent's chats is working ('ambiguous').
   resolveCall(identity, args = {}, meta = {}) {
-    const none = { conversation: null, bound: false };
+    const none = { conversation: null, bound: false, unclear: null };
     if (!identity) return none;
     const own = (id) => {
       const c = typeof id === 'string' && id ? this.conversations.get(id) : null;
@@ -2654,19 +2680,32 @@ class AgentHub extends EventEmitter {
     // calls into another chat of the same agent; only tokens without a chat (Codex, Clark) are routed by it.
     if (identity.conversationId) {
       const c = own(identity.conversationId);
-      return c ? { conversation: c, bound: true } : none;
+      return c ? { conversation: c, bound: true, unclear: null } : none;
     }
     // Codex's token is shared, but its thread id comes from Codex in _meta, not from the model, so it counts before
     // conversation_id, as in phonehost.route().
     const codex = meta && isObj(meta['x-codex-turn-metadata']) ? meta['x-codex-turn-metadata'].thread_id : null;
     const threadId = (meta && meta.threadId) || codex;
     const mapped = threadId ? own(this.threads.get(String(threadId))) : null;
-    if (mapped) return { conversation: mapped, bound: !identity.remote };
+    if (mapped) return { conversation: mapped, bound: !identity.remote, unclear: null };
     // The model writes conversation_id, and the one running turn is only a guess.
-    const byArg = own(args && args.conversation_id);
-    if (byArg) return { conversation: byArg, bound: false };
-    const running = [...this.turns.keys()].map((id) => this.conversations.get(id)).filter((c) => c && c.agent === identity.agent);
-    return { conversation: running.length === 1 ? running[0] : null, bound: false };
+    const id = args && typeof args.conversation_id === 'string' ? args.conversation_id : '';
+    const byArg = own(id);
+    if (byArg) return { conversation: byArg, bound: false, unclear: null };
+    const running = [...this.turns.keys()].map((cid) => this.conversations.get(cid)).filter((c) => c && c.agent === identity.agent);
+    const named = id ? this.conversations.get(id) : null;
+    const unclear = named ? { reason: 'foreign', id: named.id } : running.length > 1 ? { reason: 'ambiguous' } : null;
+    return { conversation: running.length === 1 ? running[0] : null, bound: false, unclear };
+  }
+
+  // Whether agent has a turn running in another chat and none in cid: the user talks to it elsewhere.
+  workingElsewhere(agent, cid) {
+    if (this.turns.has(cid)) return false;
+    for (const id of this.turns.keys()) {
+      const c = id !== cid && this.conversations.get(id);
+      if (c && c.agent === agent) return true;
+    }
+    return false;
   }
 
   // The level a tool call goes by, once it has its chat (ensureConversation()). A chat's own level, a looser one
@@ -2818,7 +2857,7 @@ class AgentHub extends EventEmitter {
       if (this.cfg.data.mcp.port !== JSON.parse(before).port) {
         await this.mcp.close();
         await this.startMcp().catch((err) => {
-          this.cfg.runtime.note = `MCP server did not start: ${err.message}`;
+          this.cfg.runtime.note = { code: 'mcpFailed', error: err.message };
         });
       } else {
         await this.startRemote();

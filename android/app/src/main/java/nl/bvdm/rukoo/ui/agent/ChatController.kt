@@ -324,6 +324,8 @@ class ChatController(
         snapshot.conversation?.let { return it }
         val l = local.value
         val ref = if (detached()) null else snapshot.email
+        // From here the chat is the user's: the two-pane follow leaves it where it is.
+        app.chatStarting()
         val created = hub.create(snapshot.agent, ref, l.model, l.effort)
         local.value = local.value.copy(model = null, effort = null)
         app.chatCreated(created.id)
