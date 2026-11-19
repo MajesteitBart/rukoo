@@ -170,7 +170,7 @@ class FeedApplier(
 
     // The open room's inline events: appended only when they follow the cached range at once, or fill an uncached
     // room up to its head. Anything else leaves the room behind, and the room loader catches it up. The open room
-    // isn't cut back to ROOM_CACHE_MAX while it is open: the loader does that when it closes.
+    // isn't cut back to ROOM_CACHE_MAX while it is open: the loader does that when it leaves the screen.
     private fun WorkspaceStore.StoreTx.appendInline(ws: String, active: String?, events: List<WireEvent>, out: Collect) {
         if (active == null || events.isEmpty()) return
         val room = getRoom(ws, active) ?: return

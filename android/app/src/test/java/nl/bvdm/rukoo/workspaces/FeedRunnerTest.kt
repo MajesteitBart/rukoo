@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.workspaces
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -91,6 +92,41 @@ class FeedRunnerTest {
         assertTrue(outcome.ok)
         assertEquals(2, feed.times.size)
         assertEquals("the outcome is the second run's", "page2", h.ws().cursor)
+    }
+
+    /**
+     * A run held in flight that then answers [ending], which stops the feed, and a now() asked while it ran. Fails
+     * instead of hanging when now() is still waiting once the run is over. Returns what now() heard.
+     */
+    private suspend fun TestScope.nowDuringAnEndingRun(ending: () -> WorkspaceError): RunOutcome {
+        val h = SyncHarness(this, db).start()
+        val feed = Feed(h)
+        feed.gate = CompletableDeferred()
+        feed.fail = ending
+        h.sync.request()
+        runCurrent()
+        val waiting = async { h.sync.now() }
+        runCurrent()
+        feed.gate!!.complete(Unit)
+        advanceTimeBy(10_000)
+        assertTrue("now() still waits for a run that never comes", waiting.isCompleted)
+        assertEquals("no run followed", 1, feed.times.size)
+        return waiting.await()
+    }
+
+    @Test
+    fun `now during a run that quarantines the workspace hears quarantined`() = runTest {
+        assertTrue(nowDuringAnEndingRun { refusal(409, "history_regressed") }.quarantined)
+    }
+
+    @Test
+    fun `now during a run that parks the workspace hears upgrade`() = runTest {
+        assertTrue(nowDuringAnEndingRun { refusal(426, "upgrade_required") }.upgrade)
+    }
+
+    @Test
+    fun `now during a run that ends with the session hears signed_out`() = runTest {
+        assertEquals("signed_out", nowDuringAnEndingRun { WorkspaceError("signed_out") }.error?.code)
     }
 
     @Test

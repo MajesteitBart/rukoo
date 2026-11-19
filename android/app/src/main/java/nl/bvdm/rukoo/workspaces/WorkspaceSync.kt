@@ -133,7 +133,11 @@ class FeedRunner(
         }
     }
 
-    /** Asks for a run and waits for the first run that starts after this call, for pull-to-refresh and the worker. */
+    /**
+     * Asks for a run and waits for the first run that starts after this call, for pull-to-refresh and the worker. When
+     * the run in progress ends the feed (quarantine, upgrade, a skip, an ending error), no run follows and this returns
+     * that run's outcome.
+     */
     suspend fun now(reset: Boolean = true): RunOutcome {
         val waiter = CompletableDeferred<RunOutcome>()
         synchronized(lock) {
@@ -201,15 +205,20 @@ class FeedRunner(
         val outcome = try {
             work()
         } catch (e: CancellationException) {
-            synchronized(lock) { running = false }
+            // Only the scope's end cancels a run, and no run starts after it: every waiter hears skipped.
+            val late = synchronized(lock) {
+                running = false
+                waiters.toList().also { waiters.clear() }
+            }
             _state.update { it.copy(running = false) }
-            for (w in taken) w.complete(RunOutcome(skipped = true))
+            for (w in taken + late) w.complete(RunOutcome(skipped = true))
             throw e
         } catch (e: WorkspaceError) {
             RunOutcome(error = e)
         } catch (e: Exception) {
             RunOutcome(error = WorkspaceError("server", message = e.message, cause = e))
         }
+        val late: List<CompletableDeferred<RunOutcome>>
         synchronized(lock) {
             running = false
             val e = outcome.error
@@ -226,7 +235,12 @@ class FeedRunner(
             }
             _state.value = RunnerState(running = false, error = e?.let { if (it.internal) "server" else it.code }, failures = failures)
             val halt = stopped || outcome.skipped || outcome.quarantined || outcome.gone || outcome.upgrade || (e != null && ends(e))
-            if (!halt) {
+            if (halt) {
+                // No run follows for the now() calls that came during this one: they hear why.
+                late = waiters.toList()
+                waiters.clear()
+            } else {
+                late = emptyList()
                 when {
                     again -> schedule(0)
                     outcome.more -> schedule(timing.moreAfterMs)
@@ -234,7 +248,7 @@ class FeedRunner(
                 }
             }
         }
-        for (w in taken) w.complete(outcome)
+        for (w in taken + late) w.complete(outcome)
     }
 
     // Failures no timer fixes: the session ended, the workspace went or waits for a newer Rukoo.
@@ -272,6 +286,9 @@ class WorkspaceSync(
     val reads = ReadFlusher(this)
 
     @Volatile private var detailsDue = false
+
+    // Whether this sync cut every room but the open one back to ROOM_CACHE_MAX: once, at its first run.
+    @Volatile private var trimmed = false
 
     @Volatile var closed = false
         private set
@@ -339,7 +356,10 @@ class WorkspaceSync(
 
     private suspend fun runInner(): RunOutcome {
         var row = store.read { getWs(ws) } ?: return RunOutcome(skipped = true)
-        if (closed || row.state != FeedApplier.STATE_OK) return RunOutcome(skipped = true)
+        if (closed) return RunOutcome(skipped = true)
+        // Before any request, so a start without a network trims too.
+        if (!trimmed) trimmed = loader.trimIdle()
+        if (row.state != FeedApplier.STATE_OK) return RunOutcome(skipped = true)
         if (row.generation == null || detailsDue) {
             detailsDue = false
             try {
@@ -547,8 +567,10 @@ data class ThreadLoad(val loading: Boolean = false, val complete: Boolean = true
  * - [ensureThread] and [loadThread]: back towards a thread's root, `BACKFILL_PAGES` at a time.
  *
  * Every page goes through [FeedApplier.applyHistory], which discards a page whose request started under another grant
- * and keeps a removed message removed. The open room's range only grows while it is open; [close] cuts it back to
- * `ROOM_CACHE_MAX`. One load runs at a time per workspace.
+ * and keeps a removed message removed. The open room's range only grows while it is open. It goes back to
+ * `ROOM_CACHE_MAX` when the room leaves the screen: on [close], when [open] switches to another room, and, for a room
+ * that was open when the process died, at the first run of the next sync ([trimIdle]). One load runs at a time per
+ * workspace.
  */
 class RoomLoader internal constructor(private val sync: WorkspaceSync) {
     private val ws get() = sync.ws
@@ -580,17 +602,20 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
      * Opens [room]: the cache answers at once (the UI reads it), and this catches the range up to `head`. With [at],
      * it then pages back until the range reaches that seq; after `BACKFILL_PAGES` pages without it, [RoomLoad.complete]
      * is false and the room shows from its oldest loaded event. A failed load is kept in [RoomLoad.error]: the
-     * cache still answers, and the next run catches up.
+     * cache still answers, and the next run catches up. Opening another room than the open one closes that one.
      */
     suspend fun open(room: String, at: Long? = null) {
         val row = store.read { getRoom(ws, room) } ?: return
-        val again = openRoom == room
+        val previous = openRoom
+        val again = previous == room
         openRoom = room
         _rooms.update { m ->
             val before = m[room]
             m + (room to ((if (again && before != null) before else RoomLoad(readAtOpen = row.readLocal)).copy(loading = true, error = null)))
         }
         try {
+            // The UI may switch rooms without closing the last one.
+            if (previous != null && !again) close(previous)
             if (!sync.usable()) return
             mutex.withLock {
                 catchUp(room)
@@ -615,6 +640,26 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
                 // The cache is closed or the disk is full; the next close or append cuts it.
             }
         }
+    }
+
+    /**
+     * Cuts every room but the open one back to `ROOM_CACHE_MAX`, in one transaction. A process Android ended never ran
+     * [close], so the room open then may still hold more. Returns false when the cache refused, for another try.
+     */
+    internal suspend fun trimIdle(): Boolean {
+        val cut = try {
+            mutex.withLock {
+                store.tx {
+                    val open = openRoom
+                    listRooms(ws).filter { it.id != open && trimRoom(ws, it.id, timing.roomCacheMax) > 0 }.map { it.id }
+                }
+            }
+        } catch (e: WorkspaceError) {
+            return false
+        }
+        // A cut range may have more above the floor again.
+        if (cut.isNotEmpty()) _rooms.update { m -> m.mapValues { (id, load) -> if (id in cut) load.copy(olderDone = false) else load } }
+        return true
     }
 
     /**

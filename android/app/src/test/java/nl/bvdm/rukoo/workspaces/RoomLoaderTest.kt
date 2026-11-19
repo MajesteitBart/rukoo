@@ -278,6 +278,44 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `opening another room cuts the last one back to ROOM_CACHE_MAX`() = runTest {
+        val h = SyncHarness(this, db, SyncTiming(roomCacheMax = 50)).start()
+        h.withRoom(head = 200)
+        h.sync.applier.apply(ws, feed(room(id = Ids.RANDOM, name = "random", head = 0, floor = 0), next = "cursor2"), "cursor1")
+        h.sync.loader.open(general)
+        h.sync.loader.older(general)
+        h.sync.loader.older(general)
+        assertEquals(150, h.events().size)
+        // No close: the UI went straight to another room.
+        h.sync.loader.open(Ids.RANDOM)
+        assertEquals(151L to 200L, h.range())
+        assertEquals(50, h.events().size)
+        assertEquals(Ids.RANDOM, h.sync.loader.openRoom)
+        assertNull(h.sync.loader.rooms.value[general])
+        h.http.verify()
+    }
+
+    @Test
+    fun `a room still open when the process died is cut back at the next sync's first run, also offline`() = runTest {
+        val h = SyncHarness(this, db, SyncTiming(roomCacheMax = 50)).start()
+        h.sync.applier.apply(ws, feed(room(head = 150), room(id = Ids.RANDOM, name = "random", head = 120), next = "cursor1"), "cursor0")
+        // What open rooms gathered; neither was closed.
+        h.store.tx {
+            appendEvents(ws, general, (1L..150L).map { msg(it) }, Int.MAX_VALUE)
+            appendEvents(ws, Ids.RANDOM, (1L..120L).map { msg(it, room = 2) }, Int.MAX_VALUE)
+        }
+        h.restart()
+        // The new sync opens one of them before its first run, which finds no network.
+        h.sync.loader.open(Ids.RANDOM)
+        h.http.on("GET", h.route("/changes")) { throw WorkspaceError("network") }
+        assertEquals("network", h.sync.now().error?.code)
+        assertEquals(101L to 150L, h.range())
+        assertEquals(50, h.events().size)
+        assertEquals("the open room keeps its range", 120, h.events(Ids.RANDOM).size)
+        h.http.verify()
+    }
+
+    @Test
     fun `a room that went asks the feed for its eviction`() = runTest {
         val h = SyncHarness(this, db).start()
         h.sync.applier.apply(ws, feed(room(head = 10), next = "cursor1"), "cursor0")
