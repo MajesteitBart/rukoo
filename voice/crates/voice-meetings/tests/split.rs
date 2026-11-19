@@ -66,9 +66,12 @@ fn transcribe(rec: &Recording, log: &EventLog, opts: PipelineOptions) {
     handle.shutdown();
 }
 
+/// A microphone made of `(seconds, voice)` pieces, and the dictation over it in `(start, end)` ms.
+type Microphone = (Vec<(f64, Option<usize>)>, Vec<(u64, u64)>);
+
 /// The user (0) dictates, a second voice (1) and a third (2) share the microphone, and the
 /// second voice speaks during a short dictation too.
-fn three_at_the_microphone() -> (Vec<(f64, Option<usize>)>, Vec<(u64, u64)>) {
+fn three_at_the_microphone() -> Microphone {
     let pieces = vec![
         (0.5, None),
         (3.0, Some(0)), // 0.5-3.5 s, dictated

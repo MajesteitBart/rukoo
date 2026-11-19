@@ -817,9 +817,12 @@ fn record_microphone(
     dir.id().to_string()
 }
 
+/// A microphone made of `(seconds, voice)` pieces, and the dictation over it in `(start, end)` ms.
+type Microphone = (Vec<(f64, Option<usize>)>, Vec<(u64, u64)>);
+
 /// The user (0) dictates, a second voice (1) talks longest and also speaks, briefly, while the
 /// user dictates.
-fn two_at_the_microphone() -> (Vec<(f64, Option<usize>)>, Vec<(u64, u64)>) {
+fn two_at_the_microphone() -> Microphone {
     let pieces = vec![
         (0.5, None),
         (3.0, Some(0)), // 0.5-3.5 s, dictated
