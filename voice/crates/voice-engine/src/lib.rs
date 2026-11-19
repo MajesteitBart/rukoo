@@ -257,6 +257,11 @@ pub fn start_with(
         discovery,
         &options.version,
         Arc::clone(&media),
+        {
+            // Nemotron on this computer, for `speakers.split`, whoever transcribes the meeting.
+            let speech = Arc::clone(&services.speech);
+            Arc::new(move || speech.diarizer())
+        },
     );
     let core = Arc::new(Core::new(
         options,

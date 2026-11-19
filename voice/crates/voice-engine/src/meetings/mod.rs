@@ -4,6 +4,7 @@
 pub mod bridge;
 pub mod controller;
 pub mod screen;
+pub mod split;
 pub mod tap;
 
 use std::path::PathBuf;
@@ -30,6 +31,7 @@ pub(crate) fn now_ms() -> u64 {
 use self::bridge::{Bridge, Control};
 use self::controller::Controller;
 use self::screen::ScreenSupervisor;
+use self::split::{Diarizers, SplitService};
 use crate::media::MediaService;
 use crate::services::{AudioSink, MicStream};
 
@@ -55,6 +57,7 @@ impl Meetings {
         discovery_path: Option<PathBuf>,
         version: &str,
         media: Arc<MediaService>,
+        diarizers: Diarizers,
     ) -> Meetings {
         let dictating = Arc::new(AtomicBool::new(false));
         let control = log.as_ref().map(|log| {
@@ -64,6 +67,7 @@ impl Meetings {
                 log.clone(),
                 Arc::clone(&dictating),
                 media,
+                SplitService::new(Arc::clone(&controller), log.clone(), diarizers),
             ))
         });
         if let Some(control) = &control {
@@ -273,6 +277,9 @@ impl Meetings {
     /// Stops transcribing, the watchdogs and the bridge. A recorder or screen process that
     /// records goes on.
     pub fn shutdown(&self) {
+        if let Some(control) = &self.control {
+            control.split.shutdown();
+        }
         shutdown_all(std::mem::take(&mut *self.lock()));
         self.controller.shutdown();
         self.screen.shutdown();

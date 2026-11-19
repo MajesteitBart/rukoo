@@ -980,7 +980,11 @@ fn remove(core: &Arc<Core>, model: Model) -> Result<(), ApiError> {
         };
         return Err(ApiError::new("not_removable", message));
     }
-    if model == Model::Nemotron && labelling_with_nemotron(&core.meetings.labels()) {
+    let splitting = core
+        .meetings
+        .control()
+        .is_some_and(|control| control.split.running());
+    if model == Model::Nemotron && (labelling_with_nemotron(&core.meetings.labels()) || splitting) {
         return Err(ApiError::new(
             "busy",
             "A meeting is labelling speakers with this model.",

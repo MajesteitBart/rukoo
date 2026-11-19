@@ -13,13 +13,14 @@ use serde_json::Value;
 use voice_bridge::{
     BridgeServer, Clients, ControlError, EventLog, Handle, MediaOpenArgs, MeetingControl, Refused,
 };
-use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status};
+use voice_protocol::{MeetingId, MeetingSummary, Refusal, StartArgs, StartedBy, Status, Track};
 use voice_screen_files::frames::FrameIndex;
 use voice_screen_files::media::{self, ClipCheck, MediaError};
 use voice_screen_files::{paths, policy};
 
 use super::controller::Controller;
 use super::screen::ScreenSupervisor;
+use super::split::SplitService;
 use crate::media::MediaService;
 
 /// What Rukoo's commands do.
@@ -32,6 +33,8 @@ pub struct Control {
     frames: Mutex<HashMap<String, (u64, Arc<FrameIndex>)>>,
     /// `media.open` and `media.read`.
     pub media: Arc<MediaService>,
+    /// `speakers.split`.
+    pub split: Arc<SplitService>,
     deleting: Mutex<()>,
 }
 
@@ -42,6 +45,7 @@ impl Control {
         log: EventLog,
         dictating: Arc<AtomicBool>,
         media: Arc<MediaService>,
+        split: Arc<SplitService>,
     ) -> Control {
         Control {
             controller,
@@ -50,6 +54,7 @@ impl Control {
             screen,
             frames: Mutex::new(HashMap::new()),
             media,
+            split,
             deleting: Mutex::new(()),
         }
     }
@@ -307,6 +312,10 @@ impl MeetingControl for Control {
 
     fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {
         self.media.read(media, offset, length)
+    }
+
+    fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
+        self.split.split(id, track)
     }
 }
 
