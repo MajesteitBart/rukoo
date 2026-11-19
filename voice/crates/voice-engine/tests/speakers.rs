@@ -986,6 +986,65 @@ fn a_split_runs_then_is_done_and_stays_done_after_a_restart() {
     engine.shutdown();
 }
 
+/// Voice quit right after it stored a split, before it sent the split's events. The next start
+/// sends them before the bridge serves, without a diarizer, so a Rukoo that never asks about the
+/// meeting again still gets them; asked, `speakers.split` answers `done` with nothing left to
+/// send.
+#[test]
+fn a_split_whose_events_never_went_out_reaches_rukoo_at_the_next_start() {
+    let h = Harness::new("split-owed");
+    h.config(json!({}));
+    let speech = labelling(&h);
+    let loud = speech.loud();
+    let (pieces, dictation) = two_at_the_microphone();
+    let id = record_microphone(&h.data(), &pieces, &dictation);
+    let engine = start(&h, &speech);
+    let before = wait_done(&h.data(), &id);
+    engine.shutdown();
+    drop(engine);
+
+    // The split is stored, and its events went to another log.
+    let dir = Library::open(&h.data()).unwrap().dir(&id).unwrap();
+    let lost = EventLog::open(&h.dir.join("lost")).unwrap();
+    let voices = voice_meetings::split_microphone(
+        &dir,
+        &lost,
+        &loud,
+        &voice_meetings::FollowerTiming::default(),
+        &AtomicBool::new(false),
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(voices, 2);
+    assert_eq!(events(&h.data(), &id).len(), before.len());
+
+    let engine = start(&h, &speech);
+    let after = events(&h.data(), &id);
+    let new = &after[before.len()..];
+    assert!(!new.is_empty(), "nothing was sent at the start");
+    assert_eq!(
+        new[0].data,
+        json!({"id": "mic-2", "track": "mic", "label": "Microphone 2"})
+    );
+    assert!(new[1..]
+        .iter()
+        .all(|e| e.event == "passage" && e.data["revision"] == 2));
+    let heard = microphone(&after, &pieces);
+    assert_eq!(
+        heard.iter().filter(|h| h.1 == "mic-2").count(),
+        2,
+        "{heard:?}"
+    );
+    let control = control_of(&engine);
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap(),
+        json!({"state": "done", "voices": 2})
+    );
+    assert_eq!(events(&h.data(), &id).len(), after.len());
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 1, "split once");
+    engine.shutdown();
+}
+
 #[test]
 fn a_split_that_finds_one_voice_sends_nothing() {
     let h = Harness::new("split-one");

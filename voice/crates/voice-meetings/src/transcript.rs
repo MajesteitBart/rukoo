@@ -992,6 +992,30 @@ pub fn stored_outcome(meeting_dir: &Path) -> Option<Outcome> {
     read_outcome(&conn).ok().flatten()
 }
 
+/// The voices a microphone split left ([`SPLIT_KEY`]), read without creating the file: `None`
+/// before a split, and for a meeting without a readable `transcript.db`.
+pub fn stored_split_voices(meeting_dir: &Path) -> Option<u64> {
+    let path = meeting_dir.join(FILE_NAME);
+    if !path.is_file() {
+        return None;
+    }
+    let conn = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.busy_timeout(Duration::from_secs(2)).ok()?;
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            [SPLIT_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()??;
+    value.parse().ok()
+}
+
 fn read_outcome(conn: &Connection) -> rusqlite::Result<Option<Outcome>> {
     let has_meta: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",

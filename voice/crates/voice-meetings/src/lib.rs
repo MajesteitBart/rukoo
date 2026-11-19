@@ -47,7 +47,9 @@ pub use retention::{
 };
 pub use screen::{derived_key, ScreenDerived, ScreenFollower};
 pub use speakers::follower::FollowerTiming;
-pub use speakers::split::{microphone_end, send_split, split_microphone, split_voices, SplitError};
+pub use speakers::split::{
+    catch_up_split, microphone_end, send_split, split_microphone, split_voices, SplitError,
+};
 pub use speakers::turns::Turn;
 pub use speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 pub use stt::{TimedSpeechToText, TimedText};

@@ -1032,6 +1032,68 @@ fn a_split_reaches_the_meeting_control_and_replies_as_the_vectors_do() {
     );
 }
 
+/// A split's events and its `done` are ready at the same moment: a protection request holds the
+/// connection's loop while the split appends them and answers. Rukoo must read every one of
+/// them before `done`, which tells it the split's speakers and passages are all there.
+#[test]
+fn a_split_s_events_reach_rukoo_before_its_done() {
+    const EVENTS: u64 = 200;
+    let bridge = Bridge::start("server-split-events");
+    let (mut client, _) = bridge.client(None, 0);
+    let split = json!({ "meeting": DONE_MEETING, "track": "mic" });
+    client.command("c-1", "speakers.split", split.clone());
+    assert_eq!(client.read_reply("c-1")["result"]["state"], "running");
+
+    let (go, gate) = std::sync::mpsc::channel();
+    *bridge.control.split_events.lock().unwrap() = Some(common::SplitEvents {
+        log: bridge.log.clone(),
+        count: EVENTS,
+        go: gate,
+    });
+    let (release, hold) = std::sync::mpsc::channel();
+    *bridge.control.hold_protection.lock().unwrap() = Some(hold);
+    // The split runs before the protection holds the loop: a task the loop woke last could
+    // otherwise wait on the loop's own worker thread.
+    client.command("c-2", "speakers.split", split);
+    bridge.control.wait_for_calls("speakers.split", 2);
+    client.command(
+        "c-3",
+        "meeting.protected",
+        json!({ "meeting": DONE_MEETING }),
+    );
+    bridge.control.wait_for_calls("protected", 1);
+    go.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while bridge.log.head() < EVENTS {
+        assert!(Instant::now() < deadline, "the split appended nothing");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The split's answer waits next to its events once the command returned.
+    thread::sleep(Duration::from_millis(200));
+    release.send(()).unwrap();
+
+    let mut events = Vec::new();
+    loop {
+        let message = client.read();
+        match message["type"].as_str() {
+            Some("event") => events.push(message["seq"].as_u64().unwrap()),
+            Some("reply") if message["id"] == "c-3" => assert_eq!(message["ok"], true),
+            Some("reply") => {
+                assert_eq!(message["id"], "c-2", "{message}");
+                assert_eq!(message["result"]["state"], "done", "{message}");
+                break;
+            }
+            _ => panic!("{message}"),
+        }
+    }
+    assert_eq!(
+        events,
+        (1..=EVENTS).collect::<Vec<_>>(),
+        "the split's events before its done"
+    );
+    assert!(read_until_status_reply(&mut client, "c-4").is_empty());
+}
+
 #[test]
 fn a_voice_that_doesn_t_split_answers_not_available() {
     let bridge = Bridge::start_plain("server-split-default");
