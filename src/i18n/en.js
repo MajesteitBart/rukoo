@@ -9528,6 +9528,10 @@
     "message": "Clips play after Stop. Until then Rukoo Voice would record them as call audio.",
     "description": "Meeting view voice player while the meeting records: why it shows the clip's words without sound. src/renderer/meeting.js (playerHtml)"
   },
+  "meeting.clip.recordingOther": {
+    "message": "Clips play when no meeting records. Until then Rukoo Voice would record them as call audio.",
+    "description": "Meeting view voice player of a finished meeting while another meeting records: why it shows the clip's words without sound. src/renderer/meeting.js (playerHtml)"
+  },
   "meeting.clip.offline": {
     "message": "Clips play while Rukoo Voice runs.",
     "description": "Meeting view voice player when Rukoo Voice isn't connected: the audio comes from Voice. src/renderer/meeting.js (playerHtml)"

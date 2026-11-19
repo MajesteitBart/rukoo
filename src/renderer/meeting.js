@@ -412,6 +412,8 @@ function setVoice(state) {
   const before = M.voice;
   M.voice = { ...M.voice, ...state };
   const started = M.voice.recording && M.voice.recording !== before.recording;
+  // Voice records everything this computer plays: a clip stops the moment a meeting records.
+  if (started && (P.playing || P.loading)) stopClip();
   if (started && !summaryOf(M.voice.recording)) reloadList().then(() => redrawSide());
   // A recording that starts while the view is open shows at once, unless the user is writing in this one.
   if (started && M.open && M.voice.recording !== M.id && !busyHere()) open(M.voice.recording);
@@ -422,12 +424,10 @@ function setVoice(state) {
       renderHead();
       renderNotice();
       renderLive();
-      // Frame images come from Voice: rows that waited for it load now, and the others say why they can't. Clips and
-      // the split come from Voice too.
-      if (before.status !== M.voice.status) {
-        redrawFrames();
-        renderPeople();
-      }
+      // Frame images come from Voice: rows that waited for it load now, and the others say why they can't.
+      if (before.status !== M.voice.status) redrawFrames();
+      // Clips and the split come from Voice too, and no clip plays while a meeting records.
+      if (before.status !== M.voice.status || before.recording !== M.voice.recording) renderPeople();
     } else renderView();
   }
 }
@@ -1426,28 +1426,69 @@ const P = { open: null, clip: 0, playing: false, loading: false, error: null, ke
 
 const nameable = (s) => Boolean(s) && !s.you;
 // Which voices have something to hear: the People card is drawn again when that changes.
-const hearableSig = () => (M.data ? M.data.speakers.filter((s) => clipsOf(s).length).map((s) => s.id).join(' ') : '');
+const hearableSig = () => {
+  if (!M.data) return '';
+  const voices = new Set(M.data.passages.filter((p) => !p.dictation && p.end > p.start && p.text.trim()).map((p) => voiceOf(p).id));
+  return M.data.speakers
+    .filter((s) => voices.has(s.id))
+    .map((s) => s.id)
+    .join(' ');
+};
 
-// The stretches where this voice speaks, for its player: its passages with words, not dictation.
+// The longest part of [start, end) that none of the busy stretches covers: Voice mixes both tracks into a clip, so
+// another voice talking over this one would be heard too.
+function freeStretch(start, end, busy) {
+  let best = null;
+  let at = start;
+  for (const [a, b] of busy) {
+    // busy is in order of start.
+    if (a >= end) break;
+    if (b <= at) continue;
+    if (a > at && (!best || a - at > best[1] - best[0])) best = [at, a];
+    at = Math.max(at, b);
+  }
+  if (at < end && (!best || end - at > best[1] - best[0])) best = [at, end];
+  return best;
+}
+
+// The stretches where this voice speaks, for its player: its passages with words, not dictation, each cut to where
+// nobody else speaks. Clean stretches of at least 1.5 s come first, shorter ones next, and passages someone talks
+// over all the way only last.
+// The People card asks for a voice's clips several times per drawing: kept per meeting revision.
+const clipMemo = { data: null, rev: null, byVoice: new Map() };
 function clipsOf(s) {
   const d = M.data;
   if (!d || !s) return [];
+  if (clipMemo.data !== d || clipMemo.rev !== d.rev) Object.assign(clipMemo, { data: d, rev: d.rev, byVoice: new Map() });
+  if (!clipMemo.byVoice.has(s.id)) clipMemo.byVoice.set(s.id, findClips(d, s));
+  return clipMemo.byVoice.get(s.id);
+}
+function findClips(d, s) {
   const own = d.passages.filter((p) => !p.dictation && p.end > p.start && p.text.trim() && voiceOf(p).id === s.id);
-  const long = own.filter((p) => p.end - p.start >= CLIP_MIN_MS);
-  const list = long.length ? [...long, ...own.filter((p) => p.end - p.start < CLIP_MIN_MS)] : own;
-  return list.map((p) => ({ passage: p.id, start: p.start, end: Math.min(p.end, p.start + CLIP_MAX_MS), text: p.text }));
+  const others = d.passages
+    .filter((p) => p.end > p.start && voiceOf(p).id !== s.id)
+    .map((p) => [p.start, p.end])
+    .sort((a, b) => a[0] - b[0]);
+  const clips = own.map((p) => {
+    const free = freeStretch(p.start, p.end, others);
+    const [start, end] = free || [p.start, p.end];
+    return { passage: p.id, start, end: Math.min(end, start + CLIP_MAX_MS), text: p.text, rank: !free ? 2 : end - start >= CLIP_MIN_MS ? 0 : 1 };
+  });
+  return clips.sort((a, b) => a.rank - b.rank || a.start - b.start).map(({ rank, ...c }) => c);
 }
 const clipKey = (c) => `${M.data.meeting.id}|${c.start}|${c.end}`;
 
-// Why the player can't play now: while Voice records, a clip would be recorded as call audio and heard on the call;
-// the audio comes from Voice, so it has to run.
+// Why the player can't play now: while Voice records any meeting, a clip would be recorded as call audio and heard on
+// the call; the audio comes from Voice, so it has to run.
 function playBlock() {
   const s = M.data && M.data.meeting;
   if (!s) return 'offline';
   if (live(s)) return 'recording';
+  if (M.voice.recording) return 'recordingOther';
   if (M.voice.status !== 'connected') return 'offline';
   return null;
 }
+const BLOCK_NOTES = { recording: 'meeting.clip.recording', recordingOther: 'meeting.clip.recordingOther', offline: 'meeting.clip.offline' };
 
 function renderPeople() {
   const box = $('.meeting .mt-people');
@@ -1532,7 +1573,7 @@ function playerHtml(s, clips) {
   const busy = P.loading ? ' aria-busy="true"' : '';
   const toggle = P.playing || P.loading ? t('meeting.clip.pause') : t('meeting.clip.play');
   let status;
-  if (why) status = `<p class="mt-pnote">${icons.info}<span>${esc(t(why === 'recording' ? 'meeting.clip.recording' : 'meeting.clip.offline'))}</span></p>`;
+  if (why) status = `<p class="mt-pnote">${icons.info}<span>${esc(t(BLOCK_NOTES[why]))}</span></p>`;
   else if (P.error) status = `<p class="mt-pnote is-error" role="alert">${icons.warning}<span>${esc(P.error)}</span></p>`;
   else status = `<div class="mt-prog"><span class="mt-track"><span class="mt-fill"></span></span><span class="mt-ptime">${esc(clock(0))} / ${esc(clock(span))}</span></div>`;
   const assign = nameable(s) ? `<button class="btn sm secondary mt-assign" data-mt="assign" data-speaker="${esc(s.id)}" aria-haspopup="menu">${esc(t('meeting.clip.assign'))}${icons.chevronDown}</button>` : '';
@@ -1726,6 +1767,11 @@ async function playClip() {
     }
     P.urls.set(key, url);
     while (P.urls.size > CLIP_CACHE) P.urls.delete(P.urls.keys().next().value);
+  }
+  // A recording can have started while the clip loaded.
+  if (playBlock()) {
+    P.loading = false;
+    return renderPeople();
   }
   if (P.key !== key) {
     a.src = url;

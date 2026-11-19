@@ -2970,14 +2970,14 @@ async function nameMeetingSpeaker(hub, args, call) {
   const want = String(args.speaker || '').trim();
   const s = m.speakers.find((x) => x.id === want);
   if (!s) {
-    const ids = m.speakers.filter((x) => !x.you).map((x) => x.id);
+    // Speaker ids come from Voice, so they go out tagged like the rest of a meeting.
+    const ids = m.speakers.filter((x) => !x.you).map((x) => unsafeFrom('meeting', x.id));
     throw new ToolError(`Meeting ${id} has no voice ${unsafeValue(want)}.${ids.length ? ` Its voices besides the user's are ${ids.join(', ')}.` : ''} read_meeting_transcript lists them under speakers.`);
   }
-  if (s.you) throw new ToolError(`${want} is the user's own voice, which has no name to give.`);
+  if (s.you) throw new ToolError(`${unsafeValue(want)} is the user's own voice, which has no name to give.`);
   const name = typeof args.name === 'string' ? args.name.trim() : '';
   const address = name && typeof args.address === 'string' ? args.address.trim() : '';
   voice.setSpeaker(id, want, name ? { name, address } : null, 'agent');
-  const label = speakerLabel(s) || want;
   return {
     meeting_id: id,
     speaker: want,
@@ -2985,7 +2985,7 @@ async function nameMeetingSpeaker(hub, args, call) {
     address: address || null,
     note: name
       ? 'Rukoo shows the name in the meeting view and the transcript now. The user can change it or take it away under People.'
-      : `The voice has no name now and shows as ${label} again.`
+      : 'The voice has no name now; the meeting view and the transcript show its label again.'
   };
 }
 

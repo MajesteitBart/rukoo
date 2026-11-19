@@ -1091,11 +1091,12 @@ test('name_meeting_speaker names a voice as the People card does, takes the name
   assert.equal(read.speakers.find((x) => x.id === 'call-1').named_by, 'agent');
   // The user's own voice and a voice the meeting doesn't have are refused, with the ids there are.
   assert.match(failure(await call('name_meeting_speaker', { meeting_id: M, speaker: 'mic', name: 'Bart' })), /the user's own voice/);
-  assert.match(failure(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-9', name: 'Joris' })), /besides the user's are call-1, call-2/);
+  assert.match(failure(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-9', name: 'Joris' })), /besides the user's are <unsafe_content source="meeting">call-1<\/unsafe_content>, <unsafe_content source="meeting">call-2<\/unsafe_content>/);
   // Without a name the voice shows as its label again.
   const cleared = data(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-1' }));
   assert.equal(cleared.name, null);
-  assert.match(cleared.note, /shows as Speaker 1 again/);
+  assert.match(cleared.note, /show its label again/);
+  assert.ok(!cleared.note.includes('Speaker 1'), 'no label from Voice in plain text');
   assert.equal(voice.speakers(M).find((x) => x.id === 'call-1').name, null);
 });
 

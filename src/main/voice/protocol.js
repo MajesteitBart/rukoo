@@ -292,6 +292,8 @@ function reply(m) {
     check(isObj(m.error), 'error');
     check(typeof m.error.code === 'string' && m.error.code !== '' && typeof m.error.message === 'string', 'error');
     check(!given(m.error, 'meeting') || (typeof m.error.meeting === 'string' && MEETING_ID.test(m.error.meeting)), 'error');
+    // Why Voice can't, for speakers.split's not_available: text when present.
+    check(!given(m.error, 'reason') || typeof m.error.reason === 'string', 'error');
   }
 }
 

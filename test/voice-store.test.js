@@ -622,3 +622,36 @@ test('with three voices on the call, a guest one of them already has is marked f
   const oneOnOne = { ...standup, attendees: [standup.attendees[0], standup.attendees[2]] };
   assert.deepEqual(suggest(speakers.map((x) => ({ ...x, name: null, address: null })), oneOnOne).auto, {}, 'three voices: the user picks');
 });
+
+test('after a split, dictation follows the voice that is the user, and a corrected passage the split cuts stays whole', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(ev('meeting.started', M, { title: 'Planning', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null }));
+  s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+  s.apply(passage('mic', 1000, 'Note to self: send the deck.', 1, { dictation: true }));
+  s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+  // The user fixes the second passage before anyone splits the microphone.
+  assert.equal(s.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!'), true);
+  // The split cuts it: Pieter said the first half, the user the rest.
+  s.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+  s.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+  s.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  s.setSplit(M, 2);
+  let m = s.meeting(M);
+  // The correction covers both pieces: it stays whole on the first, and the second doesn't show its words again.
+  assert.deepEqual(
+    m.passages.map((p) => [p.id, p.speaker, p.text, p.end]),
+    [
+      ['mic-000001000', 'mic', 'Note to self: send the deck.', 2500],
+      ['mic-000005000', 'mic-2', 'I can do that. Thanks, Pieter!', 9000]
+    ]
+  );
+  // "This is me" on mic-2: the dictation goes with the user.
+  s.setYou(M, 'mic-2');
+  m = s.meeting(M);
+  assert.equal(m.passages[0].speaker, 'mic-2');
+  // Going back to Voice's text shows the pieces again.
+  s.correct(M, 'mic-000005000', null);
+  assert.deepEqual(s.meeting(M).passages.map((p) => p.id), ['mic-000001000', 'mic-000005000', 'mic-000006500']);
+  s.close();
+});

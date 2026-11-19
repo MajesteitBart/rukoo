@@ -460,6 +460,7 @@ class VoiceService extends EventEmitter {
   get(id) {
     const full = this.store.meeting(id);
     if (!full) return null;
+    this.finishSplit(id, full);
     return {
       meeting: summary(full.meeting, this.now()),
       // Each with the guests of the linked event the meeting view offers as names.
@@ -850,6 +851,18 @@ class VoiceService extends EventEmitter {
       this.splitChanged(id, { state: 'error', code, reason });
     });
     return this.micState(id);
+  }
+
+  // A microphone that shows voices of a split Rukoo never heard finish: Voice stopped, or Rukoo quit, between the
+  // split's events and its done. Asking again makes Voice send what is missing and answer done (voice/PROTOCOL.md).
+  finishSplit(id, full) {
+    if (!full.mic.split || full.mic.voices !== null || this.splits.has(id) || !this.connected) return;
+    if (!['done', 'failed'].includes(full.meeting.state) || full.meeting.removed) return;
+    try {
+      this.splitMic(id);
+    } catch (_) {
+      // Voice went away meanwhile; the next time the meeting opens, Rukoo asks again.
+    }
   }
 
   // Which voice at the microphone is the user, after a split.

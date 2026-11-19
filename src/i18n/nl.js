@@ -2463,6 +2463,7 @@
   "meeting.clip.countLong": "Fragment {i} van {n}",
   "meeting.clip.assign": "Toewijzen",
   "meeting.clip.recording": "Fragmenten spelen na Stop. Tot dan zou Rukoo Voice ze opnemen als gespreksgeluid.",
+  "meeting.clip.recordingOther": "Fragmenten spelen als er geen meeting opneemt. Tot dan zou Rukoo Voice ze opnemen als gespreksgeluid.",
   "meeting.clip.offline": "Fragmenten spelen zolang Rukoo Voice draait.",
   "meeting.clip.failed": "Rukoo kon dit fragment niet afspelen.",
   "meeting.split.action": "Opsplitsen in stemmen",

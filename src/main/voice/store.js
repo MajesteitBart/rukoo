@@ -68,7 +68,7 @@ function emptyMic() {
 }
 
 function emptyMeeting(id) {
-  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {}, mic: emptyMic() };
+  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {}, correctedEnds: {}, mic: emptyMic() };
 }
 
 const MIC_VOICE = /^mic(?:-[1-9]\d{0,2})?$/;
@@ -141,6 +141,8 @@ function normalizeMeeting(id, raw) {
   m.names = map(raw.names, (v) => typeof v.name === 'string');
   m.notes = isObj(raw.notes) && typeof raw.notes.text === 'string' ? { text: raw.notes.text, rev: int(raw.notes.rev, 0), updatedAt: int(raw.notes.updatedAt, 0) } : null;
   if (isObj(raw.corrections)) for (const [k, v] of Object.entries(raw.corrections)) if (typeof v === 'string') m.corrections[k] = v;
+  // Where a corrected passage ended when the user corrected it (meeting(): a split that cuts it).
+  if (isObj(raw.correctedEnds)) for (const [k, v] of Object.entries(raw.correctedEnds)) if (Object.hasOwn(m.corrections, k) && Number.isInteger(v)) m.correctedEnds[k] = v;
   m.mic = normalizeMic(raw.mic);
   return m;
 }
@@ -486,6 +488,7 @@ class VoiceStore {
     if (!m || !m.passages[passageId]) return null;
     delete m.passages[passageId];
     delete m.corrections[passageId];
+    delete m.correctedEnds[passageId];
     this.meetingChanged(id);
     return { meeting: id, kind: 'passage.removed', id: passageId };
   }
@@ -576,6 +579,7 @@ class VoiceStore {
       if (!keep.has(pid) && !fresh.has(`passage:${pid}`)) {
         delete m.passages[pid];
         delete m.corrections[pid];
+        delete m.correctedEnds[pid];
         touched = true;
       }
     }
@@ -723,8 +727,13 @@ class VoiceStore {
   correct(id, passageId, value) {
     const m = this.data(id);
     if (!m || !m.passages[passageId]) return false;
-    if (value === null || value === undefined) delete m.corrections[passageId];
-    else m.corrections[passageId] = text(value, CORRECTION_MAX);
+    if (value === null || value === undefined) {
+      delete m.corrections[passageId];
+      delete m.correctedEnds[passageId];
+    } else {
+      m.corrections[passageId] = text(value, CORRECTION_MAX);
+      m.correctedEnds[passageId] = m.passages[passageId].end;
+    }
     const tick = this.nextTick();
     m.passages[passageId].changed = tick;
     this.meetingChanged(id, tick);
@@ -772,10 +781,24 @@ class VoiceStore {
         const own = you ? null : m.names[s.id];
         return { ...s, you, letter: mic.letters[s.id] || null, name: own ? own.name : null, address: own ? own.address || null : null, from: own ? own.from : null };
       });
+    // A split can cut a passage the user corrected into pieces: the correction stays whole on the first piece, which
+    // keeps the passage's id, and the later pieces it covers don't show, so no words show twice.
+    const covered = new Set();
+    const coveredEnd = {};
+    for (const [pid, end] of Object.entries(m.correctedEnds)) {
+      const first = m.passages[pid];
+      if (!first || !Object.hasOwn(m.corrections, pid) || end <= first.end) continue;
+      coveredEnd[pid] = end;
+      for (const p of Object.values(m.passages)) if (p.id !== pid && p.track === first.track && p.start >= first.end && p.start < end) covered.add(p.id);
+    }
     const passages = Object.values(m.passages)
+      .filter((p) => !covered.has(p.id))
       .map((p) => {
-        const v = p.track === 'mic' && mic.joined && p.speaker !== null ? { ...p, speaker: mic.you } : p;
-        return Object.prototype.hasOwnProperty.call(m.corrections, p.id) ? { ...v, text: m.corrections[p.id], original: p.text, corrected: true } : { ...v, corrected: false };
+        // What the user dictated is theirs, whichever voice at the microphone they said is them.
+        const theirs = p.track === 'mic' && p.speaker !== null && (mic.joined || (p.dictation && p.speaker === 'mic'));
+        const v = theirs ? { ...p, speaker: mic.you } : p;
+        if (!Object.prototype.hasOwnProperty.call(m.corrections, p.id)) return { ...v, corrected: false };
+        return { ...v, ...(coveredEnd[p.id] ? { end: coveredEnd[p.id] } : {}), text: m.corrections[p.id], original: p.text, corrected: true };
       })
       .sort((a, b) => a.start - b.start || (a.track < b.track ? -1 : 1));
     const marks = Object.values(m.marks).sort((a, b) => a.at - b.at);

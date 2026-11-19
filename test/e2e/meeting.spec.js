@@ -1300,6 +1300,21 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
   await view().locator('[data-mt="hear-each"]').click();
   await expect(player()).toHaveAttribute('data-player', 'call-2');
   await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  // Another meeting starts recording: the clip stops, because Voice records everything this computer plays, and the
+  // finished meeting's player says why it waits.
+  const other = voice.meetingId();
+  voice.append('meeting.started', other, { title: 'Next call', startedAt: Date.now(), tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+  voice.append('meeting.state', other, { state: 'recording', at: 0 });
+  voice.append('status', null, { recording: other, dictating: false });
+  await expect(view().locator('.mt-title')).toHaveText('Next call', { timeout: 10000 });
+  expect(await win.evaluate(() => [...document.querySelectorAll('audio')].every((a) => a.paused))).toBe(true);
+  await win.locator(`.sidebar [data-mt-open="${id}"]`).click();
+  await hear('call-2').click();
+  await expect(player().locator('.mt-pnote')).toContainText('Clips play when no meeting records.');
+  await expect(playButton()).toBeDisabled();
+  voice.append('meeting.state', other, { state: 'done', at: 3000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(playButton()).toBeEnabled({ timeout: 10000 });
   // Without Voice, the player says the clips need it.
   await voice.close();
   await expect(player().locator('.mt-pnote')).toContainText('Clips play while Rukoo Voice runs.', { timeout: 15000 });
