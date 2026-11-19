@@ -163,14 +163,17 @@ function bindable(key, value) {
 
 const isSqliteError = (err) => err && typeof err === 'object' && (err.code === 'ERR_SQLITE_ERROR' || typeof err.errcode === 'number');
 
+// Deletes the file with its -wal and -shm files. Returns true when none of the three is left: on Windows a virus
+// scanner or the indexer can hold a handle past rmSync's retries, and the file then stays.
 function removeFiles(file) {
   for (const f of sidecars(file)) {
     try {
       fs.rmSync(f, { force: true, maxRetries: 5, retryDelay: 50 });
     } catch (_) {
-      // A file another process still holds stays; the next open replaces it.
+      // Checked below.
     }
   }
+  return sidecars(file).every((f) => !fs.existsSync(f));
 }
 
 class Store {
@@ -209,9 +212,10 @@ class Store {
     return this.q(sql).run(...args);
   }
 
-  // fn() inside BEGIN IMMEDIATE and COMMIT, rolled back when it throws. A transaction inside another joins it. A
-  // write SQLite refuses (a full disk, a constraint) surfaces as ChatError('not_saved'); other errors keep their own.
-  // fn must be synchronous: a transaction never spans an await.
+  // fn() inside BEGIN IMMEDIATE and COMMIT, rolled back when it throws. A transaction inside another runs in a
+  // SAVEPOINT: when it throws, its own writes are rolled back and the outer transaction can catch the error and go on.
+  // At every level a write SQLite refuses (a full disk, a constraint) surfaces as ChatError('not_saved'); other errors
+  // keep their own. fn must be synchronous: a transaction never spans an await.
   tx(fn) {
     if (this.depth > 0) return this.inner(fn);
     try {
@@ -238,11 +242,26 @@ class Store {
   }
 
   inner(fn) {
+    const name = `s${this.depth}`;
+    try {
+      this.db.exec(`SAVEPOINT ${name}`);
+    } catch (err) {
+      throw isSqliteError(err) ? new ChatError('not_saved', { cause: err }) : err;
+    }
     this.depth += 1;
     try {
       const result = fn();
       if (result && typeof result.then === 'function') throw new TypeError('A store transaction must not be asynchronous');
+      this.db.exec(`RELEASE ${name}`);
       return result;
+    } catch (err) {
+      try {
+        this.db.exec(`ROLLBACK TO ${name}`);
+        this.db.exec(`RELEASE ${name}`);
+      } catch (_) {
+        // SQLite rolled the whole transaction back already; the outer COMMIT then fails as not_saved.
+      }
+      throw isSqliteError(err) ? new ChatError('not_saved', { cause: err }) : err;
     } finally {
       this.depth -= 1;
     }
@@ -259,10 +278,33 @@ class Store {
     }
   }
 
-  // Closes the database and deletes the file with its -wal and -shm files.
+  // Ends the cache of a session (contract 3.4). The rows of every table go first, while the database is still open:
+  // secure_delete zeroes their pages, and the checkpoint moves those pages into the file and empties the WAL. Then the
+  // database closes and the file goes with its -wal and -shm files. Returns true when no file is left. False means a
+  // file stayed, held by another process: its content is erased, meta.schema included, so openStore treats it as
+  // broken and tries to replace it again, but the caller must not take it for an empty cache of the new session.
   wipe() {
+    if (!this.closed) {
+      try {
+        this.erase();
+      } catch (_) {
+        // A database this broken may still go with its file; the return value says whether it did.
+      }
+    }
     this.close();
-    removeFiles(this.file);
+    return removeFiles(this.file);
+  }
+
+  erase() {
+    const tables = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+      .all()
+      .map((r) => r.name);
+    // The cascades take each child row with its parent, so the order doesn't matter.
+    this.tx(() => {
+      for (const table of tables) this.db.exec(`DELETE FROM "${table.replaceAll('"', '""')}"`);
+    });
+    this.checkpoint();
   }
 
   quickCheck() {
@@ -403,12 +445,13 @@ class Store {
   }
 
   // The room and its events, queued sends, drafts and notices. Returns how many unsent messages went with it, for the
-  // evicted event, or -1 when there was no such room.
+  // evicted event's droppedSends: 0 when there was no such room, so the count is never negative. A caller that needs
+  // to know whether the room was cached asks getRoom first.
   deleteRoom(ws, id) {
     return this.tx(() => {
       const sends = this.get('SELECT COUNT(*) AS n FROM outbox WHERE ws = ? AND room = ?', ws, id).n;
-      const gone = Number(this.run('DELETE FROM room WHERE ws = ? AND id = ?', ws, id).changes);
-      return gone ? sends : -1;
+      this.run('DELETE FROM room WHERE ws = ? AND id = ?', ws, id);
+      return sends;
     });
   }
 
@@ -746,13 +789,14 @@ class Store {
     return this.tx(() => Number(this.run('DELETE FROM outbox WHERE local = ?', local).changes) > 0);
   }
 
-  // The room's unsent messages, oldest first.
+  // The room's unsent messages, oldest first. Two written in the same millisecond keep the order they were written in:
+  // outbox is a rowid table, and a new row's rowid is above every rowid in the table.
   outboxForRoom(ws, room) {
-    return this.all('SELECT * FROM outbox WHERE ws = ? AND room = ? ORDER BY createdAt, local', ws, room);
+    return this.all('SELECT * FROM outbox WHERE ws = ? AND room = ? ORDER BY createdAt, rowid', ws, room);
   }
 
   outboxForWs(ws) {
-    return this.all('SELECT * FROM outbox WHERE ws = ? ORDER BY createdAt, local', ws);
+    return this.all('SELECT * FROM outbox WHERE ws = ? ORDER BY createdAt, rowid', ws);
   }
 
   // The sends whose turn it is, oldest first, at most limit: per room only its oldest row, and only when that row is
@@ -763,8 +807,8 @@ class Store {
       `SELECT o.* FROM outbox o JOIN ws w ON w.id = o.ws
        WHERE w.state = 'ok' AND o.state = 'queued' AND o.nextAt <= ?
          AND NOT EXISTS (SELECT 1 FROM outbox p WHERE p.ws = o.ws AND p.room = o.room
-                         AND (p.createdAt < o.createdAt OR (p.createdAt = o.createdAt AND p.local < o.local)))
-       ORDER BY o.createdAt, o.local LIMIT ?`,
+                         AND (p.createdAt < o.createdAt OR (p.createdAt = o.createdAt AND p.rowid < o.rowid)))
+       ORDER BY o.createdAt, o.rowid LIMIT ?`,
       now,
       limit
     );
@@ -880,8 +924,8 @@ function inspect(db) {
 
 // Opens the cache at file, or makes it. A file that fails PRAGMA quick_check, isn't a database, or has another
 // meta.schema (a newer Rukoo's) is deleted and made again; how many unsent messages it still held is in
-// store.lostUnsent (contract 3.4). Throws when node:sqlite itself can't open a database here, and the service then
-// shows the storage state.
+// store.lostUnsent (contract 3.4). Throws when node:sqlite itself can't open a database here, and ChatError('not_saved')
+// when a file to replace can't be deleted; the service then shows the storage state.
 function openStore(file, { now = Date.now } = {}) {
   const { DatabaseSync } = require('node:sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -904,7 +948,7 @@ function openStore(file, { now = Date.now } = {}) {
         // Closed already.
       }
     }
-    removeFiles(file);
+    if (!removeFiles(file)) throw new ChatError('not_saved');
     db = connect(DatabaseSync, file);
     state = 'empty';
   }

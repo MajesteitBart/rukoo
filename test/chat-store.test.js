@@ -236,7 +236,7 @@ test('deleting a room takes its events, sends, drafts and notices, and counts th
   for (const table of ['event', 'outbox', 'draft', 'notice']) assert.equal(count(table, C), 0, table);
   assert.equal(count('event', C2), 1);
   assert.equal(count('outbox', C2), 1);
-  assert.equal(store.deleteRoom(W, C), -1, 'no such room');
+  assert.equal(store.deleteRoom(W, C), 0, 'no such room: nothing went, and never a negative count');
 });
 
 test('deleting a workspace takes everything under it and leaves the other workspace alone', (t) => {
@@ -452,6 +452,26 @@ test('the outbox hands out one due send per room, oldest first, and a held row h
   assert.throws(() => store.updateOutbox(local('c2'), { state: 'lost' }), (err) => err instanceof ChatError && err.code === 'not_saved');
 });
 
+test('sends written in the same millisecond go out and list in the order they were written', (t) => {
+  const store = fresh(t);
+  withRoom(store);
+  withRoom(store, W, feedRoom({ conversation: C2, name: 'plans' }));
+  // Written in the reverse order of their random handles, so ordering by local would turn them around.
+  const labels = ['m1', 'm2', 'm3', 'm4'].sort((a, b) => (local(a) < local(b) ? 1 : -1));
+  for (const label of labels) store.insertOutbox(outboxRow(label, { createdAt: 50 }));
+  store.insertOutbox(outboxRow('other', { room: C2, createdAt: 50 }));
+  const written = labels.map(local);
+  assert.deepEqual(store.outboxForRoom(W, C).map((r) => r.local), written);
+  assert.deepEqual(store.outboxForWs(W).map((r) => r.local), [...written, local('other')]);
+  assert.deepEqual(store.nextDue(100, 10).map((r) => r.local), [written[0], local('other')]);
+  store.deleteOutbox(written[0]);
+  assert.deepEqual(store.nextDue(100, 10).map((r) => r.local), [written[1], local('other')]);
+  // A row written after the newest one was deleted still comes last.
+  store.deleteOutbox(written[3]);
+  store.insertOutbox(outboxRow('m5', { createdAt: 50 }));
+  assert.deepEqual(store.outboxForRoom(W, C).map((r) => r.local), [written[1], written[2], local('m5')]);
+});
+
 test('markLookup sends unconfirmed rows to a lookup, for one generation or all', (t) => {
   const store = fresh(t);
   withRoom(store);
@@ -529,6 +549,44 @@ test('a transaction commits as a whole, rolls back on a throw and refuses to spa
   assert.equal(store.countUnsent(), 1, 'the store still writes after a failed transaction');
 });
 
+test('a nested transaction that fails rolls back only its own writes, as not_saved, and the outer one goes on', (t) => {
+  const store = fresh(t);
+  withRoom(store);
+  const result = store.tx(() => {
+    store.setMeta('outer', '1');
+    assert.throws(
+      () =>
+        store.tx(() => {
+          store.setMeta('inner', '1');
+          store.insertOutbox(outboxRow('bad', { state: 'pending' }));
+        }),
+      (err) => err instanceof ChatError && err.code === 'not_saved',
+      'the inner level converts SQLite errors too'
+    );
+    // A named query is a nested transaction of its own.
+    assert.throws(() => store.insertOutbox(outboxRow('bad2', { state: 'pending' })), (err) => err instanceof ChatError && err.code === 'not_saved');
+    assert.throws(() => store.tx(() => {
+      store.setMeta('thrown', '1');
+      throw new ChatError('invalid', { field: 'text' });
+    }), (err) => err.code === 'invalid');
+    store.insertOutbox(outboxRow('good'));
+    return 'done';
+  });
+  assert.equal(result, 'done');
+  assert.equal(store.getMeta('outer'), '1');
+  assert.equal(store.getMeta('inner'), null, 'the failed inner block left nothing behind');
+  assert.equal(store.getMeta('thrown'), null);
+  assert.deepEqual(store.outboxForWs(W).map((r) => r.local), [local('good')]);
+  // Nested levels that succeed commit with the outer one, and a throw at the top still takes them all back.
+  assert.throws(() => store.tx(() => {
+    store.tx(() => store.tx(() => store.setMeta('deep', '1')));
+    throw new Error('outer fails');
+  }), /outer fails/);
+  assert.equal(store.getMeta('deep'), null);
+  store.tx(() => store.tx(() => store.tx(() => store.setMeta('deep', '2'))));
+  assert.equal(store.getMeta('deep'), '2');
+});
+
 // ---- lifetime ----
 
 test('wipe closes the database and leaves no file behind', (t) => {
@@ -539,10 +597,10 @@ test('wipe closes the database and leaves no file behind', (t) => {
   store.appendEvents(W, C, [posted(1)]);
   assert.ok(fs.existsSync(file));
   assert.ok(fs.existsSync(`${file}-wal`));
-  store.wipe();
+  assert.equal(store.wipe(), true);
   for (const f of [file, `${file}-wal`, `${file}-shm`]) assert.ok(!fs.existsSync(f), f);
   assert.ok(fs.existsSync(path.dirname(file)), 'the data folder stays');
-  store.wipe();
+  assert.equal(store.wipe(), true, 'a second wipe has nothing left to do');
   // A new store on the same path starts empty.
   const again = openStore(file);
   t.after(() => again.close());
@@ -608,6 +666,48 @@ test('a deleted workspace\'s text is gone from the file bytes too', (t) => {
   const after = filesBytes(file);
   assert.ok(!after.includes(Buffer.from('Werkruimte-geheim-41c7')));
   assert.ok(!after.includes(Buffer.from('Naam-uit-lijst-55e2')));
+});
+
+test('a wipe whose file can\'t be deleted says so, and leaves no text of the session in the file', (t) => {
+  const file = path.join(tempDir('rukoo-chat-store-'), 'chat.db');
+  const store = openStore(file);
+  const session = 'SessieLabel-6d0e2a';
+  store.setMeta('session', session);
+  withRoom(store);
+  const secrets = { event: 'Oude-sessie-bericht-3a7f', outbox: 'Oude-sessie-onverstuurd-81c2', draft: 'Oude-sessie-concept-c94d', member: 'Oude-sessie-naam-5be0' };
+  store.appendEvents(W, C, Array.from({ length: 120 }, (_, i) => posted(i + 1, { text: `${secrets.event} ${i} ${'q'.repeat(200)}` })));
+  store.insertOutbox(outboxRow('old', { text: secrets.outbox }));
+  store.putDraft(W, C, null, { text: secrets.draft, mentions: [] });
+  store.replaceMembers(W, [{ id: ME, kind: 'human', name: secrets.member, role: 'owner', state: 'active', joinedAt: 1 }]);
+  store.checkpoint();
+  // Some in the file, the latest in the WAL.
+  store.putDraft(W, C, posted(1).id, { text: `${secrets.draft} thread`, mentions: [] });
+  const before = filesBytes(file);
+  for (const text of [session, ...Object.values(secrets)]) assert.ok(before.includes(Buffer.from(text)), `${text} is on disk before`);
+
+  // A virus scanner holds the files past rmSync's retries.
+  const rm = t.mock.method(fs, 'rmSync', () => {
+    throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+  });
+  assert.equal(store.wipe(), false);
+  assert.ok(rm.mock.callCount() >= 1);
+  assert.ok(fs.existsSync(file), 'the file stayed');
+  const after = filesBytes(file);
+  for (const text of [session, ...Object.values(secrets)]) assert.ok(!after.includes(Buffer.from(text)), `${text} is gone from the bytes`);
+  assert.ok(fs.existsSync(file));
+
+  // The next open can't replace it either, and refuses it instead of making a cache on top.
+  assert.throws(() => openStore(file), (err) => err instanceof ChatError && err.code === 'not_saved');
+
+  // Once the handle is gone the file is replaced by a new, empty cache.
+  rm.mock.restore();
+  const next = openStore(file);
+  t.after(() => next.close());
+  assert.equal(next.getMeta('schema'), '1');
+  assert.equal(next.getMeta('session'), null);
+  assert.deepEqual(next.listWs(), []);
+  assert.equal(next.countUnsent(), 0);
+  assert.equal(next.lostUnsent, 0);
 });
 
 // A cache with two unsent messages, closed so everything is in the file.
