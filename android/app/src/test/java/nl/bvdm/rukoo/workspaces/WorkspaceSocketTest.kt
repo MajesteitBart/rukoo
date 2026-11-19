@@ -276,6 +276,35 @@ class WorkspaceSocketTest {
     }
 
     @Test
+    fun `an upgrade 401 after another failure gets its new ticket at once again`() {
+        val side = ServerSide()
+        val no = MockResponse().setResponseCode(401).setHeader("Content-Type", "application/json").setBody("""{"error":"unauthorized"}""")
+        // 401, then a ticket 503 between, then another 401: the two refusals aren't in a row.
+        server.answer("ticket")
+        server.answerWith(no)
+        server.answerWith(MockResponse().setResponseCode(503))
+        server.answer("ticket")
+        server.answerWith(no)
+        server.answer("ticket")
+        upgrade(side)
+        val s = socket()
+        val delays = CopyOnWriteArrayList<Long>()
+        s.start()
+        val until = System.currentTimeMillis() + 5_000
+        while (opened.get() < 1 && System.currentTimeMillis() < until) {
+            s.lastDelay?.let { if (delays.lastOrNull() != it) delays += it }
+            Thread.sleep(2)
+        }
+        await("open") { opened.get() == 1 && s.state.value == SocketState.OPEN }
+        // Only the 503 waited, the first backoff step; the later 401 got its new ticket without the second step.
+        assertEquals(listOf(20L), delays.toList())
+        assertEquals(4, tickets())
+        assertEquals(3, upgrades().size)
+        assertTrue(parked.isEmpty())
+        server.verify()
+    }
+
+    @Test
     fun `a ticket 429 waits Retry-After, and a 401, 404 or 426 parks the socket`() {
         val side = ServerSide()
         server.answerWith(refusal("start dm too fast", retryAfter = "1"))

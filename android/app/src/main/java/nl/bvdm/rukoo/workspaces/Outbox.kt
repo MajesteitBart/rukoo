@@ -168,10 +168,18 @@ class Outbox(
         kick(row.ws)
     }
 
-    /** Deletes the row: the message won't be sent. A row that is gone already is fine. */
+    /**
+     * Deletes the row: the message won't be sent. A row that is gone already is fine. A held or failed row held back
+     * the later rows of its room, so the queue runs for them now.
+     */
     suspend fun discard(local: String) {
-        store.tx { deleteOutbox(local) }
+        val ws = store.tx {
+            val r = getOutbox(local)
+            deleteOutbox(local)
+            r?.ws
+        }
         synchronized(lock) { limitedUntil.remove(local) }
+        if (ws != null) kick(ws)
     }
 
     /**
@@ -290,8 +298,10 @@ class Outbox(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        // A cache that closed or failed under the attempt; the row stays as it was on disk.
+                        // A cache that failed under the attempt, or a hook that threw. A row left `sending` would
+                        // block its room until the next start, so it goes back to the queue with the next backoff.
                         AppLog.w(TAG, "A send stopped", e)
+                        unstick(row.local)
                     } finally {
                         synchronized(lock) { inFlight -= key }
                         busy.update { it - 1 }
@@ -301,6 +311,27 @@ class Outbox(
             }
         }
         scheduleWake()
+    }
+
+    /**
+     * After an attempt stopped on something other than an answer: a row it left `sending` becomes `queued` with the
+     * next backoff step, keeping its operation ID and bytes. The attempt still holds the room, so nothing else sends
+     * this row meanwhile. When the cache can't take even this, [start] repairs it at the next process start.
+     */
+    private suspend fun unstick(local: String) {
+        if (closed) return
+        try {
+            store.tx {
+                val r = getOutbox(local) ?: return@tx
+                if (r.state == SENDING) {
+                    updateOutbox(local, mapOf("state" to QUEUED, "attempts" to r.attempts + 1, "nextAt" to now() + backoff(r.attempts + 1)))
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.w(TAG, "A stopped send stays as it was until the next start", e)
+        }
     }
 
     /** One timer for the earliest row that waits out a backoff or a `Retry-After`. */
@@ -412,9 +443,17 @@ class Outbox(
                 }
                 else -> settle(row, FAILED, "invalid")
             }
-            else -> waitOrPark(row, e, reason = null)
+            // A 4xx the table doesn't list won't change by sending the same bytes again, and a row that waits for it
+            // forever blocks its room without offering Discard. §3.8 retries only network failures, timeouts and 5xx.
+            else -> if (permanent(e)) settle(row, FAILED, if (e.status == 403) "no_access" else "invalid") else waitOrPark(row, e, reason = null)
         }
     }
+
+    /**
+     * A refusal that sending again can't change: a 4xx other than the ones [waitOrPark] handles (`401`, `404`, `426`,
+     * `429`) and a proxy's `408` timeout.
+     */
+    private fun permanent(e: WorkspaceError): Boolean = e.status in 400..499 && e.status !in RETRIED_4XX
 
     /**
      * What any call of an attempt does for the answers that aren't about the message: the removal path, the upgrade
@@ -462,7 +501,13 @@ class Outbox(
             client.operation(row.ws, row.room, op)
         } catch (e: WorkspaceError) {
             if (closed) return
-            if (e.code == "not_found" && e.scope == "conversation") settle(row, FAILED, "no_access") else waitOrPark(row, e, LOOKUP)
+            when {
+                e.code == "not_found" && e.scope == "conversation" -> settle(row, FAILED, "no_access")
+                e.status == 403 -> settle(row, FAILED, "no_access")
+                // The lookup can't tell, now or later: the person decides, as for an operation the server doesn't know.
+                permanent(e) -> settle(row, HELD, "unknown")
+                else -> waitOrPark(row, e, LOOKUP)
+            }
             return
         }
         if (closed) return
@@ -615,6 +660,9 @@ class Outbox(
         const val CLOCK_MAX_AGE = 6L * 60 * 60 * 1000
 
         private const val DUE_LIMIT = 64
+
+        /** The 4xx answers an attempt waits out instead of settling: signed out, gone, timeout, update, rate limit. */
+        private val RETRIED_4XX = setOf(401, 404, 408, 426, 429)
 
         private val random = SecureRandom()
 

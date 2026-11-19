@@ -195,6 +195,8 @@ class WorkspaceSocket(
     private fun ticketFailed(mine: Int, e: WorkspaceError) {
         val park = synchronized(lock) {
             if (mine != token || !wanted) return
+            // A ticket failure sits between two upgrade 401s, so they aren't in a row.
+            refusedOnce = false
             when (e.code) {
                 "signed_out", "not_found", "forbidden", "upgrade_required" -> {
                     parkLocked()
@@ -278,7 +280,7 @@ class WorkspaceSocket(
                             refusedOnce = true
                             connectLocked()
                         } else {
-                            backoffLocked()
+                            backoffLocked(afterRefusal = true)
                         }
                         null
                     }
@@ -379,7 +381,9 @@ class WorkspaceSocket(
 
     // ---- waiting ----
 
-    private fun backoffLocked() {
+    /** The next backoff step. Any failure but a repeated upgrade `401` ends a run of 401s, so the next gets its quick retry. */
+    private fun backoffLocked(afterRefusal: Boolean = false) {
+        if (!afterRefusal) refusedOnce = false
         val delayMs = backoffDelay(attempt, random(), timing.backoff)
         attempt++
         laterLocked(delayMs)

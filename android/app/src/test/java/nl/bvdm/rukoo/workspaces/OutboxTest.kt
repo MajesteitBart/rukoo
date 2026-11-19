@@ -64,6 +64,10 @@ class OutboxTest {
 
     private val ok = OkHttpWorkspaceHttp(OkHttpClient())
 
+    /** Makes the restore hook throw, as a restore transaction that failed would. */
+    @Volatile
+    private var failRestore = false
+
     /** Whatever the test puts here runs before each request goes out, with the request's method and path. */
     @Volatile
     private var beforeRequest: (String, String) -> Unit = { _, _ -> }
@@ -81,6 +85,7 @@ class OutboxTest {
         store, client, scope,
         hooks = object : Outbox.Hooks {
             override suspend fun restored(ws: String, details: WorkspaceDetails) {
+                if (failRestore) throw IllegalStateException("the restore path failed")
                 restored += details.workspace.generation
                 // What the service's restore path does with the outbox (§3.6 "Restore").
                 store.tx {
@@ -280,6 +285,121 @@ class OutboxTest {
         assertEquals("Later", field(next, "text"))
         assertTrue(rows().isEmpty())
         assertNull(store.read { getOutbox(later) })
+    }
+
+    @Test
+    fun `discarding a held row sends the rows behind it without another nudge`() = runBlocking {
+        val oldGrant = str("post stale grant", "grant")
+        seed(roomGrant = oldGrant)
+        val box = outbox()
+        ids += op("post stale grant")
+        server.answer("post stale grant")
+        box.synced(w)
+        val held = box.enqueue(w, general, null, text, mentions)
+        assertTrue(box.flush(10_000))
+        val later = box.enqueue(w, general, null, "Later", emptyList())
+        box.flush(10_000)
+        assertEquals(1, posts().size)
+        assertEquals(listOf(PendingState.HELD, PendingState.WAITING), Outbox.pending(rows()).map { it.state })
+
+        val fresh = "01a1f5ec-a6e1-7000-8000-000000000004"
+        ids += fresh
+        server.answerWith(created(fresh, 8))
+        box.discard(held)
+        // No flush, kick, wake or new send: the discard itself runs the queue for the row behind.
+        val until = System.currentTimeMillis() + 5_000
+        while (store.read { getOutbox(later) } != null && System.currentTimeMillis() < until) delay(10)
+        assertNull(store.read { getOutbox(later) })
+        server.verify()
+        assertEquals(2, posts().size)
+        assertEquals("Later", field(posts().last(), "text"))
+        assertEquals(fresh, field(posts().last(), "operationId"))
+        assertTrue(rows().isEmpty())
+    }
+
+    @Test
+    fun `a 4xx the table doesn't list fails the row instead of retrying it, and a 403 of any code means no access`() = runBlocking {
+        seed()
+        val box = outbox()
+        box.synced(w)
+        fun answer(status: Int, body: String?) = MockResponse().setResponseCode(status).apply {
+            if (body != null) setHeader("Content-Type", "application/json").setBody(body)
+        }
+        for ((refusal, reason) in listOf(
+            answer(403, """{"error":"cosign_required","message":"An owner has to agree."}""") to "no_access",
+            answer(403, """{"error":"workspace_account_scope"}""") to "no_access",
+            answer(409, """{"error":"blocked"}""") to "invalid",
+            answer(409, """{"error":"something_new"}""") to "invalid",
+            answer(400, """{"error":"something_new"}""") to "invalid",
+            answer(413, """{"error":"something_new"}""") to "invalid",
+        )) {
+            server.answerWith(refusal)
+            val local = box.enqueue(w, general, null, text, mentions)
+            assertTrue("a failed row waits for the person", box.flush(10_000))
+            val r = row(local)
+            assertEquals("failed" to reason, r.state to r.reason)
+            assertEquals(0, r.attempts)
+            box.discard(local)
+        }
+        assertEquals(6, posts().size)
+
+        // A proxy's 408 is a timeout: it waits out the backoff with the same ID, as a 5xx does.
+        server.answerWith(answer(408, null))
+        val timedOut = box.enqueue(w, general, null, text, mentions)
+        assertFalse(box.flush(10_000))
+        assertEquals("queued", row(timedOut).state)
+        assertEquals(1, row(timedOut).attempts)
+        assertEquals(clock + 2_000, row(timedOut).nextAt)
+        box.discard(timedOut)
+
+        // A lookup refused for good: a 403 means no access, another 4xx leaves the person to decide.
+        server.answerWith(reply("post expired"))
+        server.answerWith(answer(403, """{"error":"cosign_required"}"""))
+        val noAccess = box.enqueue(w, general, null, text, mentions)
+        assertTrue(box.flush(10_000))
+        assertEquals("failed" to "no_access", row(noAccess).let { it.state to it.reason })
+        box.discard(noAccess)
+
+        server.answerWith(reply("post expired"))
+        server.answerWith(answer(400, """{"error":"something_new"}"""))
+        val unsure = box.enqueue(w, general, null, text, mentions)
+        assertTrue(box.flush(10_000))
+        assertEquals("held" to "unknown", row(unsure).let { it.state to it.reason })
+        server.verify()
+    }
+
+    @Test
+    fun `a send that stops on a failing hook goes back to the queue instead of staying sending`() = runBlocking {
+        val oldGeneration = str("post stale generation", "generation")
+        seed(gen = oldGeneration)
+        val box = outbox()
+        ids += op("post stale generation")
+        server.answer("post stale generation")
+        server.answer("workspace")
+        failRestore = true
+        box.synced(w)
+        val local = box.enqueue(w, general, null, text, mentions)
+        assertFalse(box.flush(10_000))
+        server.verify()
+
+        val r = row(local)
+        assertEquals("queued", r.state)
+        assertEquals(op("post stale generation"), r.operationId)
+        assertEquals(1, r.attempts)
+        assertEquals(clock + 2_000, r.nextAt)
+        assertEquals(listOf(PendingState.QUEUED), Outbox.pending(rows()).map { it.state })
+
+        // The room isn't blocked: after the backoff the same ID goes out again, and this time the restore runs.
+        failRestore = false
+        clock += 2_000
+        server.answer("post stale generation")
+        server.answer("workspace")
+        server.answerWith(reply("operation unknown"))
+        assertTrue(box.flush(10_000))
+        server.verify()
+        assertEquals(1, idTimes.size)
+        assertEquals(listOf(generation), restored.toList())
+        assertEquals("held" to "unknown", row(local).let { it.state to it.reason })
     }
 
     @Test
