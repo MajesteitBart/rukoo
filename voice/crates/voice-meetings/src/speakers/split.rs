@@ -19,12 +19,14 @@
 //! transaction, and the events follow through the event log the way the pipeline sends them: a
 //! `speaker` for each voice that kept passages, then the passages. A split that fails or is
 //! stopped before that transaction leaves the meeting as it was, and the next one starts over;
-//! one that stopped after it sends the events it still owes ([`send_split`]).
+//! one that stopped after it sends the events it still owes at Voice's next start
+//! ([`catch_up_split`]) and before the next `done` ([`send_split`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use voice_bridge::{EventLog, LogError};
 use voice_core::speakers::{DiarError, DiarStream, Diarizer};
@@ -36,7 +38,9 @@ use crate::reader::{TrackReader, PER_MS};
 use crate::segmentation::{draft, seconds_to_ms, words, Draft, Token};
 use crate::speakers::follower::{pad_with, FollowerTiming, Labeller};
 use crate::speakers::turns::{passage_speaker, word_speakers, Turn};
-use crate::transcript::{mic_number, LabelBatch, SplitWrite, StoredPassage, Transcript};
+use crate::transcript::{
+    mic_number, stored_split_voices, LabelBatch, SplitWrite, StoredPassage, Transcript,
+};
 use crate::watcher::{Stretch, TimelineWatcher};
 
 /// The labeller's own ids for the voices it hears, before they get theirs.
@@ -290,6 +294,31 @@ pub fn split_microphone(
 /// the track. Run after the split and again whenever a split meeting is asked about, so a Voice
 /// that quit between the two still sends everything before it answers `done`.
 pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
+    Ok(send_owed(dir, log, false)?.map_or(0, |(voices, _)| voices))
+}
+
+/// At Voice's start: sends what a split stored by an earlier run still owes Rukoo
+/// ([`send_split`]), as when Voice quit between storing the split and sending its events.
+/// Returns how many events went out. A meeting that wasn't split costs one read of its
+/// `transcript.db`, and none is created; a meeting the log has no events of is left alone, since
+/// Rukoo doesn't know it from this log. No diarizer runs.
+pub fn catch_up_split(dir: &MeetingDir, log: &EventLog) -> Result<usize, SplitError> {
+    if stored_split_voices(dir.path()).is_none() {
+        return Ok(0);
+    }
+    Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent))
+}
+
+/// [`send_split`]'s work: the voices on the track and how many events went out. `None` when
+/// `known_only` and the log has no events of the meeting.
+fn send_owed(
+    dir: &MeetingDir,
+    log: &EventLog,
+    known_only: bool,
+) -> Result<Option<(u64, usize)>, SplitError> {
+    // One sender at a time: two that read the log before either appends would both send.
+    static SENDING: Mutex<()> = Mutex::new(());
+    let _one = SENDING.lock().unwrap_or_else(PoisonError::into_inner);
     if !dir.path().is_dir() {
         return Err(SplitError::Stopped);
     }
@@ -303,7 +332,11 @@ pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
     let Some(keys) = logged_keys(log, meeting)? else {
         return Err(SplitError::Stopped);
     };
+    if known_only && keys.is_empty() {
+        return Ok(None);
+    }
     let mut emitted: HashSet<String> = keys.into_keys().collect();
+    let known = emitted.len();
     let microphone: Vec<Passage> = transcript
         .passages()?
         .into_iter()
@@ -345,7 +378,7 @@ pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
             to_data(passage),
         )?;
     }
-    Ok(voices)
+    Ok(Some((voices, emitted.len() - known)))
 }
 
 fn to_data(value: &impl serde::Serialize) -> serde_json::Value {

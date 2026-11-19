@@ -8,7 +8,9 @@
 //! below normal priority as the follower's does; Rukoo asks again until it is done. A finished
 //! split is stored in the meeting's `transcript.db`, so the same command answers `done` after a
 //! restart too and never splits again. A failure is answered once and the next command starts
-//! over, as is a split a quit cut off, which stored nothing.
+//! over, as is a split a quit cut off, which stored nothing. A quit between storing a split and
+//! sending its events is caught up at the next start ([`SplitService::catch_up`]), and again
+//! before the next `done`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -189,6 +191,26 @@ impl SplitService {
             ));
         }
         Ok(SplitResult::Running { at: 0, end }.to_value())
+    }
+
+    /// At start, before the bridge serves and before any pipeline runs: sends what the splits an
+    /// earlier run stored still owe Rukoo, as when Voice quit between storing a split and sending
+    /// its events. A Rukoo that never asks about that meeting again still gets them. Each meeting
+    /// costs one read of its `transcript.db`; no diarizer runs.
+    pub fn catch_up(&self) {
+        for dir in self.controller.library().dirs() {
+            match voice_meetings::catch_up_split(&dir, &self.log) {
+                Ok(0) => {}
+                Ok(sent) => log::info!(
+                    "speakers: {}: sent {sent} events of the microphone split",
+                    dir.id()
+                ),
+                Err(e) => log::warn!(
+                    "speakers: {}: couldn't send the microphone split's events: {e}",
+                    dir.id()
+                ),
+            }
+        }
     }
 
     /// Whether a split runs now, so the speaker model stays.

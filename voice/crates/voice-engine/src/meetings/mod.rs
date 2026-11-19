@@ -72,6 +72,7 @@ impl Meetings {
         });
         if let Some(control) = &control {
             control.recover_deletions();
+            control.split.catch_up();
         }
         let bridge = match (&log, &control, discovery_path) {
             (Some(log), Some(control), Some(path)) => Some(Arc::new(Bridge::start(

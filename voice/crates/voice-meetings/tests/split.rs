@@ -18,8 +18,8 @@ use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::Diarizer;
 use voice_meetings::{
-    microphone_end, split_microphone, split_voices, FollowerTiming, Library, MeetingDir, Pipeline,
-    PipelineOptions, PipelineState, SplitError, Timing, Transcript,
+    catch_up_split, microphone_end, split_microphone, split_voices, FollowerTiming, Library,
+    MeetingDir, Pipeline, PipelineOptions, PipelineState, SplitError, Timing, Transcript,
 };
 use voice_protocol::Track;
 
@@ -320,6 +320,94 @@ fn one_voice_at_the_microphone_sends_nothing_and_stays_split() {
     assert_eq!(events(&log, &rec.id()).len(), before, "nothing was sent");
     assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 1);
     assert_eq!(d.script().opens, 1, "split once");
+}
+
+/// Who has what after [`three_at_the_microphone`] is split.
+fn three_split() -> Vec<(Option<usize>, String, bool)> {
+    vec![
+        (Some(0), "mic".into(), true),
+        (Some(1), "mic-2".into(), false),
+        (Some(0), "mic".into(), false),
+        (Some(2), "mic-3".into(), false),
+        (Some(1), "mic".into(), true),
+        (Some(0), "mic".into(), false),
+    ]
+}
+
+/// Splits as a Voice that quit right after storing the split would have: `transcript.db` has
+/// the split, and its events went to `lost` instead of Rukoo's `log`. Returns `log`'s events.
+fn split_without_its_events(
+    rec: &Recording,
+    log: &EventLog,
+    lost: &EventLog,
+    d: &ScriptedDiarizer,
+) -> Vec<Stored> {
+    let before = events(log, &rec.id());
+    assert_eq!(split(&rec.dir, lost, d, &no_stop()).unwrap(), 3);
+    assert_eq!(split_voices(&rec.dir).unwrap(), Some(3));
+    assert_eq!(events(log, &rec.id()).len(), before.len(), "{before:?}");
+    before
+}
+
+/// The split's events in Rukoo's log after `before`: the voices first, then the passages that
+/// moved, each once.
+fn assert_split_sent(
+    log: &EventLog,
+    rec: &Recording,
+    before: &[Stored],
+    pieces: &[(f64, Option<usize>)],
+) {
+    let after = events(log, &rec.id());
+    let kinds: Vec<&str> = after[before.len()..]
+        .iter()
+        .map(|e| e.event.as_str())
+        .collect();
+    assert_eq!(kinds, ["speaker", "speaker", "passage", "passage"]);
+    assert_eq!(who_has_what(&after, pieces), three_split());
+    assert_no_repeats(&after);
+}
+
+#[test]
+fn a_split_whose_events_never_went_out_sends_them_at_the_next_start_or_before_done() {
+    let tmp = TempDir::new("split-owed");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let lost = EventLog::open(&tmp.path().join("lost")).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let d = ScriptedDiarizer::new();
+
+    // Voice's next start sends them, once.
+    let rec = recorded(&lib, &pieces, &dictation);
+    transcribe(&rec, &log, timed());
+    let before = split_without_its_events(&rec, &log, &lost, &d);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 4);
+    assert_split_sent(&log, &rec, &before, &pieces);
+    let sent = events(&log, &rec.id()).len();
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+    assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 3);
+    assert_eq!(events(&log, &rec.id()).len(), sent);
+
+    // Or speakers.split asks again first: it sends them before it answers done, without
+    // splitting again.
+    let other = recorded(&lib, &pieces, &dictation);
+    transcribe(&other, &log, timed());
+    let before = split_without_its_events(&other, &log, &lost, &d);
+    let opens = d.script().opens;
+    assert_eq!(split(&other.dir, &log, &d, &no_stop()).unwrap(), 3);
+    assert_eq!(d.script().opens, opens, "split once");
+    assert_split_sent(&log, &other, &before, &pieces);
+    assert_eq!(catch_up_split(&other.dir, &log).unwrap(), 0);
+
+    // A meeting this log has no events of stays out of it, and the start reads a meeting that
+    // was never transcribed without creating its transcript.db.
+    let elsewhere = recorded(&lib, &pieces, &dictation);
+    transcribe(&elsewhere, &lost, timed());
+    assert_eq!(split(&elsewhere.dir, &lost, &d, &no_stop()).unwrap(), 3);
+    assert_eq!(catch_up_split(&elsewhere.dir, &log).unwrap(), 0);
+    assert!(events(&log, &elsewhere.id()).is_empty());
+    let untouched = recorded(&lib, &pieces, &[]);
+    assert_eq!(catch_up_split(&untouched.dir, &log).unwrap(), 0);
+    assert!(!untouched.dir.path().join("transcript.db").exists());
 }
 
 /// Nothing a split wrote: no voices, no microphone turns, no epoch, passages as they were.
