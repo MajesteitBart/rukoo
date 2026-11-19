@@ -162,11 +162,19 @@ impl Diarizer for LoudDiarizer {
             return Err(DiarError::new(kind, "The fake runtime refused."));
         }
         self.0.opens.fetch_add(1, Ordering::SeqCst);
-        let crash = self
-            .0
-            .crashes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok();
+        // Takes one planned crash when one is left. A compare-exchange loop rather than
+        // fetch_update, which Rust 1.100 deprecates and older toolchains still need.
+        let crashes = &self.0.crashes;
+        let mut left = crashes.load(Ordering::SeqCst);
+        let crash = loop {
+            if left == 0 {
+                break false;
+            }
+            match crashes.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break true,
+                Err(now) => left = now,
+            }
+        };
         Ok(Box::new(LoudStream {
             loud: Arc::clone(&self.0),
             crash,

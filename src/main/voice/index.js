@@ -370,6 +370,9 @@ class VoiceService extends EventEmitter {
     // The meeting's state takes over the initial start hold. A live screen change still needs
     // its own hold until capture starts, even if another client pauses or resumes the audio.
     if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting, !ENDED_STATES.includes(ev.data.state));
+    // Voice refused a split because the meeting still recorded or processed: once its state moves on, the user can ask
+    // again, and the People card shows Split into voices.
+    if (ev.event === 'meeting.state' && this.splits.get(ev.meeting)?.code === 'busy') this.splitChanged(ev.meeting, null);
     const screenChange = ev.event === 'mark' && (ev.data.kind === 'screen_mode' || (ev.data.track === 'screen' && ['dropped', 'video_dropped'].includes(ev.data.kind)));
     if (screenChange && live) {
       this.screenGeneration += 1;

@@ -1115,3 +1115,28 @@ test('a split Rukoo never heard finish is asked for again when the meeting opens
   assert.deepEqual([bytes.start, bytes.end], [1000, 3000]);
   await assert.rejects(s.audioClip(id, 0, 31000), (err) => err.code === 'bad_request');
 });
+
+test('a split Voice refused as busy can be asked for again once the meeting finished processing', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  const id = voice.meetingId();
+  voice.append('meeting.started', id, started('Planning'));
+  voice.append('speaker', id, { id: 'mic', track: 'mic', label: 'You' });
+  voice.append('passage', id, passage('mic', 1000, 'Shall we start?'));
+  // Rukoo has the meeting as done while Voice still processes it, as with a stale snapshot.
+  voice.append('meeting.state', id, { state: 'done', at: 8000, endedAt: Date.now() });
+  let busy = true;
+  voice.handlers['speakers.split'] = (args) => (busy ? { error: { code: 'busy', message: 'The meeting is still processing.', meeting: args.meeting } } : { state: 'done', voices: 1 });
+  voice.writeDiscovery();
+  const s = service(t, dir, file).init();
+  await until(() => s.connected && s.store.entry(id), 'the meeting');
+  s.splitMic(id);
+  await until(() => s.micState(id).state === 'error', 'the busy answer');
+  assert.equal(s.micState(id).code, 'busy');
+  // The meeting's state moves on: the busy answer is forgotten, and the next split goes through.
+  busy = false;
+  voice.append('meeting.state', id, { state: 'done', at: 9000, endedAt: Date.now() });
+  await until(() => s.micState(id).state === 'none', 'the busy answer cleared');
+  s.splitMic(id);
+  await until(() => s.micState(id).voices === 1, 'the split');
+  assert.equal(s.micState(id).state, 'done');
+});
