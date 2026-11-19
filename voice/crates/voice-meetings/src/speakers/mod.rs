@@ -1,11 +1,13 @@
 //! Speaker labels for a meeting's call track: who the pipeline asks (Nemotron on this computer or
 //! Mistral's realtime stream), and what Settings reads back about it. The public types here are
-//! frozen; the follower, the binarizer and the matching are private modules of this one.
+//! frozen; the follower, the binarizer and the matching are private modules of this one. `split`
+//! tells apart the voices at the microphone of a stopped meeting, on request.
 
 pub(crate) mod binarizer;
 pub(crate) mod clock;
 pub(crate) mod follower;
 pub(crate) mod matching;
+pub(crate) mod split;
 pub(crate) mod stream;
 pub(crate) mod turns;
 
