@@ -467,6 +467,7 @@
     { "name": "split without a track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a" } } },
     { "name": "split of the call track", "from": "rukoo", "reason": "track", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "meeting": "m-20261030-171203-4f2a", "track": "call" } } },
     { "name": "split without a meeting", "from": "rukoo", "reason": "meeting", "message": { "type": "command", "id": "c-60", "command": "speakers.split", "args": { "track": "mic" } } },
+    { "name": "a refusal with a reason that isn't text", "from": "voice", "reason": "error", "message": { "type": "reply", "id": "c-60", "ok": false, "error": { "code": "not_available", "message": "x", "reason": 5 } } },
     {
       "name": "screen set rejects an invalid mode",
       "from": "rukoo",
