@@ -265,7 +265,7 @@ Rukoo sends commands; Voice answers each with one reply.
 { "type": "reply", "id": "c-18", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-20261030-171203-4f2a" } }
 ```
 
-`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply.
+`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply, and every event Voice stored before it finished a command arrives before that command's reply.
 
 | Command | `args` | `result` | Errors |
 |---|---|---|---|
