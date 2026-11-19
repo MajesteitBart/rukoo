@@ -315,6 +315,42 @@ class WorkspaceClientTest {
         server.verify()
     }
 
+    /**
+     * OkHttp resends a request on its own when a pooled connection drops after the request went out. For a create
+     * that would make a second channel or invite, or a 409 for the one the first request made, so the client sends
+     * every write once and leaves the retry to the caller. Each write here goes out on the connection a GET used.
+     */
+    @Test
+    fun `a lost answer on a pooled connection is not sent again`() = runBlocking {
+        val writes = listOf<Pair<String, suspend WorkspaceClient.() -> Unit>>(
+            "create channel" to { createChannel(w, "project", "private") },
+            "leave channel" to { leaveChannel(w, v.id("random")) },
+            "join channel" to { joinChannel(w, v.id("random")) },
+        )
+        for ((name, write) in writes) {
+            recorded("members") { members(w) }
+            val before = server.requests.size
+            server.answer(name, lost = true)
+            try {
+                client.write()
+                fail("$name: expected network")
+            } catch (e: WorkspaceError) {
+                assertEquals(name, "network", e.code)
+            }
+            val sent = server.requests.drop(before)
+            assertEquals("$name is sent once", 1, sent.size)
+            assertTrue("$name reused the GET's connection", sent.single().sequenceNumber > 0)
+        }
+        // A read is safe to repeat, so OkHttp still sends it again on a fresh connection.
+        recorded("members") { members(w) }
+        val before = server.requests.size
+        server.answer("channels", lost = true)
+        server.answer("channels")
+        assertEquals(listOf("general"), client.channels(w).map { it.name })
+        assertEquals(2, server.requests.size - before)
+        server.verify()
+    }
+
     @Test
     fun `a redirect is not followed, so the token stays with the server`() = runBlocking {
         MockWebServer().use { elsewhere ->

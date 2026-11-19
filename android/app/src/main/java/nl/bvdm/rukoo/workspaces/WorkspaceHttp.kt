@@ -13,11 +13,13 @@ import nl.bvdm.rukoo.core.RukooJson
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
 import okhttp3.Response
+import okio.BufferedSink
 
 /** A workspace route's answer: its status, 2xx only, and its JSON body, or null when it had none (a 204). */
 class WorkspaceAnswer(val status: Int, val body: JsonElement?)
@@ -56,9 +58,11 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
 
     private suspend fun send(server: String, method: String, path: String, body: JsonElement?, token: String): WorkspaceAnswer {
         val url = (server + path).toHttpUrlOrNull() ?: throw WorkspaceError("server", message = "not an address")
-        // OkHttp wants a body on every POST; routes without one (join a channel, redact, leave a DM) send none.
-        val payload = body?.let { RukooJson.encodeToString(JsonElement.serializer(), it).toRequestBody(JSON) }
-            ?: if (method == "POST") ByteArray(0).toRequestBody(JSON) else null
+        // Every write goes out once. OkHttp resends a request whose pooled connection dropped after it was sent,
+        // without telling the caller, unless its body is one-shot. A create sent twice makes a second invite or
+        // workspace, or a 409 for the channel the first one made; the caller decides what to retry. A DELETE gets an
+        // empty body for the same reason. GETs keep OkHttp's retries.
+        val payload = if (method == "GET") null else OneShotBody(body?.let { RukooJson.encodeToString(JsonElement.serializer(), it).encodeToByteArray() })
         val request = Request.Builder().url(url)
             .header("Accept", "application/json")
             .header("Authorization", "Bearer $token")
@@ -105,6 +109,19 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
             },
         )
         cont.invokeOnCancellation { runCatching { cancel() } }
+    }
+
+    /** A request body OkHttp sends at most once; JSON when there is one, empty otherwise. */
+    private class OneShotBody(private val bytes: ByteArray?) : RequestBody() {
+        override fun contentType(): MediaType? = if (bytes != null) JSON else null
+
+        override fun contentLength(): Long = bytes?.size?.toLong() ?: 0L
+
+        override fun writeTo(sink: BufferedSink) {
+            bytes?.let { sink.write(it) }
+        }
+
+        override fun isOneShot(): Boolean = true
     }
 
     companion object {

@@ -696,6 +696,10 @@ class AccountServiceTest {
         assertFalse(again.status().signedIn)
         assertEquals("signed_out", again.status().error)
         assertEquals("its records stay", cat("Updates"), again.value("category", "updates"))
+        // Found while loading, before anything collects sessionEnded: the workspace service reads status() at start.
+        val ended = ends(again)
+        assertNull(again.borrowSession())
+        settles(ended, 0)
     }
 
     /**

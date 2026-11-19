@@ -90,11 +90,13 @@ kotlin {
 }
 
 // The live tests (AccountLiveTest, WorkspaceLiveTest) run against the server RUKOO_ACCOUNT_TEST_SERVER names and skip
-// without it. Gradle doesn't see environment variables, so they are inputs here: a test task that ran without the
-// server isn't UP-TO-DATE once it is set (docs/development.md, "Team chat tests").
+// without it; RUKOO_ACCOUNT_TEST_INVITE and RUKOO_ACCOUNT_TEST_NODE turn on more of their cases. Gradle doesn't see
+// environment variables, so they are inputs here: a test task that ran without one isn't UP-TO-DATE once it is set
+// (docs/development.md, "Team chat tests").
 tasks.withType<Test>().configureEach {
     inputs.property("rukooAccountTestServer", System.getenv("RUKOO_ACCOUNT_TEST_SERVER").orEmpty())
     inputs.property("rukooAccountTestInvite", System.getenv("RUKOO_ACCOUNT_TEST_INVITE").orEmpty())
+    inputs.property("rukooAccountTestNode", System.getenv("RUKOO_ACCOUNT_TEST_NODE").orEmpty())
 }
 
 // Rukoo's own skills (the repository's skills/ folder) ship in the APK's assets under skills/, so the phone

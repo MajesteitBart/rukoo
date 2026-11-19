@@ -169,7 +169,8 @@ class RecordedWorkspaceServer : AutoCloseable {
         // The one exchange recorded with another version can't be asked for by a phone that speaks version 1.
         val version = request.getHeader(OkHttpWorkspaceHttp.VERSION_HEADER)
         if (e.requestHeaders.isEmpty() && version != WORKSPACE_VERSION.toString()) problems += "${e.name}: ${OkHttpWorkspaceHttp.VERSION_HEADER} $version"
-        val text = request.body.readUtf8()
+        // A copy, so a test can still read the body from [requests].
+        val text = request.body.clone().readUtf8()
         val sent = text.takeIf { it.isNotEmpty() }?.let { runCatching { RukooJson.parseToJsonElement(it) }.getOrNull() ?: JsonPrimitive(it) }
         if (sent != e.requestBody) problems += "${e.name}: body $sent, recorded ${e.requestBody}"
     }

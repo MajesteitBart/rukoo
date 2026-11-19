@@ -120,8 +120,10 @@ class AccountService(
     private val _sessionEnded = MutableSharedFlow<Unit>(extraBufferCapacity = Int.MAX_VALUE)
 
     /**
-     * Emits once each time a session ends: signing out, a 401 from any account or workspace route, deleting the
-     * account, or keys that no longer open. The workspace service collects it to delete the chat cache (contract 3.4).
+     * Emits once each time a session ends while the app runs: signing out, a 401 from any account or workspace route,
+     * or deleting the account. The workspace service collects it to delete the chat cache (contract 3.4). An end found
+     * while loading at start-up, such as keys that no longer open, isn't announced: nothing could collect it yet. The
+     * workspace service applies the start rule instead, from [status]: signed out at start means the cache goes.
      */
     val sessionEnded: SharedFlow<Unit> = _sessionEnded
 
@@ -149,7 +151,7 @@ class AccountService(
             } else {
                 // Stored under a Keystore key this phone no longer has: the keys don't open here, so it signs in again.
                 state = state.copy(error = "signed_out")
-                forget()
+                forget(announce = false)
             }
         }
         _status.value = statusNow()
@@ -586,8 +588,8 @@ class AccountService(
         changedStatus()
     }
 
-    /** Under the lock. */
-    private fun forget() {
+    /** Under the lock. [announce] is false only while loading, before anyone can collect [sessionEnded]. */
+    private fun forget(announce: Boolean = true) {
         val had = session != null || state.token != null
         session = null
         pushJob?.cancel()
@@ -609,7 +611,7 @@ class AccountService(
             AccountState(server = state.server, info = state.info, error = state.error)
         }
         saveState()
-        if (had) _sessionEnded.tryEmit(Unit)
+        if (had && announce) _sessionEnded.tryEmit(Unit)
     }
 
     // ---- records ----
