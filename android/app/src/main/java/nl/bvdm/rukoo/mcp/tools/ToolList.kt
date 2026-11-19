@@ -8,7 +8,7 @@ import kotlinx.serialization.json.put
 import nl.bvdm.rukoo.agents.RukooSkills
 
 /**
- * Rukoo's twenty-two MCP tools as desktop lists them (tools.js TOOLS): names, titles, descriptions, input schemas
+ * Rukoo's twenty-three MCP tools as desktop lists them (tools.js TOOLS): names, titles, descriptions, input schemas
  * and annotations are identical, because Clark's bridge caches one tool list for every device it finds.
  * Only the behavior behind them adapts to the phone: the calendar tools answer that the phone has no calendar
  * yet, except get_booking_link, and the meeting tools that the phone has no meetings (McpTools).
@@ -544,6 +544,31 @@ object ToolList {
                 required = listOf("kind"),
             ),
             READ,
+        ),
+        ToolSpec(
+            "name_meeting_speaker",
+            "Name a voice in a meeting",
+            "Gives a voice in a meeting recorded with Rukoo Voice a name, as the user can under People in the meeting view, or takes the name away. speaker is a voice's id from the speakers read_meeting_transcript lists, such as call-2, or mic-2 for someone who shared the user's microphone. Name a voice when the user tells you who it is. When the transcript suggests a name, for example someone says \"thanks, Anna\", ask the user first. Rukoo shows the name in the meeting view and the transcript straight away, and the user can change it there. The user's own voice has no name to give. Without meeting_id: this chat's meeting, else the one recording now, else the newest.",
+            schema(
+                "meeting_id" to str(untag = true) {
+                    description("The meeting, e.g. \"m-20261030-171203-4f2a\", from search_meetings or this chat.")
+                    maxLength(100)
+                },
+                "speaker" to str(untag = true) {
+                    description("The voice's id from read_meeting_transcript's speakers, e.g. \"call-2\".")
+                    maxLength(100)
+                },
+                "name" to str(untag = true) {
+                    description("Who the voice is, e.g. \"Anna de Vries\". Leave it out to take the name away.")
+                    maxLength(200)
+                },
+                "address" to str(untag = true) {
+                    description("The person's email address, when you know it.")
+                    maxLength(320)
+                },
+                required = listOf("speaker"),
+            ),
+            WRITE,
         ),
     )
 

@@ -1387,6 +1387,14 @@
     "message": "Getting a link to the meeting's audio or screen...",
     "description": "Chat transcript tool chip while it runs: the agent asks for a link to a meeting's audio or screen. Present tense; the done form is agent.tools.get_meeting_media_link."
   },
+  "agent.tools.name_meeting_speaker": {
+    "message": "Named a voice in the meeting",
+    "description": "Chat transcript tool chip: the agent gave a voice in a meeting a name, or took the name away, as the People card in the meeting view does (name_meeting_speaker)."
+  },
+  "agent.tools.running.name_meeting_speaker": {
+    "message": "Naming a voice in the meeting...",
+    "description": "Chat transcript tool chip while it runs: the agent names a voice in a meeting. Present tense; the done form is agent.tools.name_meeting_speaker."
+  },
   "agent.approval.calendarTitle": {
     "message": "{name} wants to add an event to your calendar",
     "description": "Chat transcript approval card title when an agent asks to add an event (create_event). name: agent name. src/renderer/agent/panel.js (localizeEvent)."
@@ -9447,6 +9455,146 @@
   "meeting.speakers.none": {
     "message": "Voices show here once someone speaks.",
     "description": "Meeting view people list before Rukoo Voice reported any voice. src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.atMic": {
+    "message": "At your microphone",
+    "description": "Meeting view people list: small heading over the voices that came through the user's own microphone (the user, and anyone next to them). src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.onCall": {
+    "message": "On the call",
+    "description": "Meeting view people list: small heading over the voices on the call audio (the other people in a call). src/renderer/meeting.js (renderPeople)"
+  },
+  "meeting.speakers.everyoneAtMic": {
+    "message": "Everyone at your microphone",
+    "description": "Meeting view people list: second line under You before the microphone is split into voices, because people next to the user speak into the same microphone. src/renderer/meeting.js (personHtml)"
+  },
+  "meeting.speakers.lettered": {
+    "message": "Speaker {letter}",
+    "description": "Meeting view: name of an unnamed voice at the user's microphone after a split, such as Speaker A. Letters keep them apart from the call's numbered speakers. letter: A, B, C. src/renderer/meeting.js (speakerLabel)"
+  },
+  "meeting.speakers.someoneHere": {
+    "message": "Someone at your microphone",
+    "description": "Meeting view: speaker of a microphone passage Rukoo Voice couldn't place after splitting the microphone into voices. src/renderer/meeting.js (speakerLabel)"
+  },
+  "meeting.speakers.byAgent": {
+    "message": "Named by your agent",
+    "description": "Meeting view people list: second line under a voice the user's agent named (name_meeting_speaker) without an email address. src/renderer/meeting.js (personHtml)"
+  },
+  "meeting.speakers.youMenu": {
+    "message": "Your microphone's voices",
+    "description": "Meeting view people list: tooltip on the user's row after a split, which opens a menu to show the microphone as one voice again. src/renderer/meeting.js (personHtml)"
+  },
+  "meeting.clip.hearEach": {
+    "message": "Hear each voice",
+    "description": "Meeting view people card header: button that opens the player on the first voice without a name and plays a clip of it. src/renderer/meeting.js (hearEachHtml)"
+  },
+  "meeting.clip.hear": {
+    "message": "Hear {name}",
+    "description": "Meeting view people list: label of the play button on a voice's row, which opens a player with clips of that voice. name: the voice, such as Speaker 2 or a person's name. src/renderer/meeting.js (personHtml)"
+  },
+  "meeting.clip.label": {
+    "message": "Clips of {name}",
+    "description": "Meeting view: accessible name of the player under a voice. name: the voice. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.play": {
+    "message": "Play",
+    "description": "Meeting view voice player: play button. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.pause": {
+    "message": "Pause",
+    "description": "Meeting view voice player: pause button while a clip plays. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.prev": {
+    "message": "Previous clip",
+    "description": "Meeting view voice player: button for the voice's previous clip. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.next": {
+    "message": "Next clip",
+    "description": "Meeting view voice player: button for the voice's next clip, for when this one isn't clear. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.count": {
+    "message": "{i} of {n}",
+    "description": "Meeting view voice player: which clip plays, kept short to fit beside the buttons. i: this clip's number, n: how many clips the voice has. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.countLong": {
+    "message": "Clip {i} of {n}",
+    "description": "Meeting view voice player: tooltip of the clip counter. i: this clip's number, n: how many clips. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.assign": {
+    "message": "Assign",
+    "description": "Meeting view voice player: button that opens the names to give this voice (the event's guests, Someone else). Afterwards the player moves to the next voice without a name. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.recording": {
+    "message": "Clips play after Stop. Until then Rukoo Voice would record them as call audio.",
+    "description": "Meeting view voice player while the meeting records: why it shows the clip's words without sound. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.offline": {
+    "message": "Clips play while Rukoo Voice runs.",
+    "description": "Meeting view voice player when Rukoo Voice isn't connected: the audio comes from Voice. src/renderer/meeting.js (playerHtml)"
+  },
+  "meeting.clip.failed": {
+    "message": "Rukoo couldn't play this clip.",
+    "description": "Meeting view voice player: a clip that came back unusable or didn't play. src/renderer/meeting.js (playClip)"
+  },
+  "meeting.split.action": {
+    "message": "Split into voices",
+    "description": "Meeting view people list, under the user's row: button that asks Rukoo Voice to tell apart the people who shared the user's microphone in a finished meeting. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.hint": {
+    "message": "When someone next to you spoke too",
+    "description": "Meeting view people list: second line of Split into voices, saying when to use it. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.later": {
+    "message": "Once the meeting has ended",
+    "description": "Meeting view people list: second line of Split into voices while the meeting still records or Voice still transcribes it. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.starting": {
+    "message": "Telling the voices apart…",
+    "description": "Meeting view people list: Rukoo Voice started splitting the microphone into voices. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.running": {
+    "message": "Telling the voices apart… {percent}%",
+    "description": "Meeting view people list: progress of splitting the microphone into voices. percent: how much of the microphone audio Voice has labelled. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.one": {
+    "message": "Rukoo Voice heard only you at your microphone.",
+    "description": "Meeting view people list: a split found a single voice on the user's microphone, so nothing changed. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.join": {
+    "message": "Show as one voice",
+    "description": "Meeting view people list: menu item on the user's row after a split; shows everything said at the microphone as the user's again. src/renderer/meeting.js (youMenu)"
+  },
+  "meeting.split.unjoin": {
+    "message": "Show the voices at your microphone",
+    "description": "Meeting view people list: button under the user's row after the user chose Show as one voice; shows the split voices again. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.thisIsMe": {
+    "message": "This is me",
+    "description": "Meeting view people list: menu item on another voice at the user's microphone; makes that voice the user's (You). src/renderer/meeting.js (speakerMenu)"
+  },
+  "meeting.split.again": {
+    "message": "Try again",
+    "description": "Meeting view people list: button after a split of the microphone failed. src/renderer/meeting.js (splitHtml)"
+  },
+  "meeting.split.update": {
+    "message": "Update Rukoo Voice to split your microphone into voices.",
+    "description": "Meeting view people list: this Rukoo Voice doesn't know how to split the microphone. src/renderer/meeting.js (splitError)"
+  },
+  "meeting.split.cantRun": {
+    "message": "Speaker labels can't run on this computer, so Rukoo Voice can't split your microphone.",
+    "description": "Meeting view people list: Voice's speaker model, runtime or processor support is missing. Voice's Settings, Speaker labels, says which. src/renderer/meeting.js (splitError)"
+  },
+  "meeting.split.noAudio": {
+    "message": "The audio of your microphone is no longer on this computer.",
+    "description": "Meeting view people list: Voice can't split the microphone because the meeting's audio was removed. src/renderer/meeting.js (splitError)"
+  },
+  "meeting.split.offline": {
+    "message": "Rukoo lost Rukoo Voice while it split your microphone.",
+    "description": "Meeting view people list: the connection to Voice dropped or timed out during a split. src/renderer/meeting.js (splitError)"
+  },
+  "meeting.split.failed": {
+    "message": "Rukoo Voice couldn't split your microphone.",
+    "description": "Meeting view people list: Voice's speaker worker failed during a split. src/renderer/meeting.js (splitError)"
   },
   "meeting.frame.visibility": {"message":"Screen","description":"Meeting transcript toggle in meeting.js. Shows or hides screen frames; remembered on this device."},
   "meeting.frame.group": {"message":"Show {count} more screen frames","description":"Meeting transcript button opening the folded frame strip; count is the number of additional frames."},

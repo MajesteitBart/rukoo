@@ -186,6 +186,7 @@ export function show() {
 
 export function hide() {
   M.open = false;
+  stopClip();
   flushNotes();
   closeEditor(false);
 }
@@ -225,6 +226,8 @@ export function open(id) {
   flushNotes();
   M.renaming = null;
   closeEditor(false);
+  stopClip();
+  P.open = null;
   M.id = id;
   M.data = null;
   M.fetched = null;
@@ -419,8 +422,12 @@ function setVoice(state) {
       renderHead();
       renderNotice();
       renderLive();
-      // Frame images come from Voice: rows that waited for it load now, and the others say why they can't.
-      if (before.status !== M.voice.status) redrawFrames();
+      // Frame images come from Voice: rows that waited for it load now, and the others say why they can't. Clips and
+      // the split come from Voice too.
+      if (before.status !== M.voice.status) {
+        redrawFrames();
+        renderPeople();
+      }
     } else renderView();
   }
 }
@@ -445,6 +452,8 @@ function applyDelta(p) {
   const d = M.data;
   const eventChanged = (p.meeting && p.meeting.eventId) !== d.meeting.eventId;
   if (p.refetch || d.rev !== p.from || eventChanged) return fetchMeeting(M.id);
+  // A meeting that stops recording can play its clips and split its microphone.
+  const stateChanged = Boolean(p.meeting) && p.meeting.state !== d.meeting.state;
   d.meeting = p.meeting;
   d.rev = p.rev;
   const changed = [];
@@ -478,6 +487,7 @@ function applyDelta(p) {
     d.frames.sort((a, b) => a.at - b.at);
   }
   if (Array.isArray(p.speakers)) d.speakers = p.speakers;
+  if (p.mic) d.mic = p.mic;
   if (p.notes) notesArrived(p.notes);
   if (!M.open) return;
   renderHead();
@@ -485,7 +495,12 @@ function applyDelta(p) {
   if (Array.isArray(p.speakers)) {
     renderPeople();
     renderTranscript(true);
-  } else updateRows(changed, removed.map((id) => `p:${id}`));
+  } else {
+    updateRows(changed, removed.map((id) => `p:${id}`));
+    // A split's progress shows under the user's row; new passages can give a voice its first clip, or the open
+    // player another one.
+    if (p.mic || P.open || stateChanged || (changed.some((k) => k.startsWith('p:')) && hearableSig() !== P.sig)) renderPeople();
+  }
   renderLive();
   if (listChanged) ctx.agentSync?.();
 }
@@ -606,7 +621,7 @@ function shellHtml() {
           <div class="mt-event-box"></div>
         </section>
         <section class="mt-card mt-people-card" data-pane="people">
-          <h2 class="mt-card-title">${esc(t('meeting.speakers.title'))}</h2>
+          <div class="mt-card-head mt-people-top"><h2 class="mt-card-title">${esc(t('meeting.speakers.title'))}</h2><span class="mt-people-head"></span></div>
           <div class="mt-people"></div>
         </section>
         <section class="mt-card mt-notes-card" data-pane="notes">
@@ -869,11 +884,14 @@ function renderLive() {
 function speakerOf(id) {
   return (M.data && M.data.speakers.find((s) => s.id === id)) || null;
 }
-// A passage's voice: its speaker, or the user for the microphone when Voice hasn't said whose it is.
+// Whether Voice split the microphone into voices and the view shows them (main's micView).
+const micSplit = () => Boolean(M.data && M.data.mic && M.data.mic.split && !M.data.mic.joined);
+// A passage's voice: its speaker, or for the microphone the user, until a split says the microphone held others too.
 function voiceOf(p) {
   const s = speakerOf(p.speaker);
   if (s) return s;
-  return p.track === 'mic' ? { id: 'mic', track: 'mic', you: true, label: null, name: null } : { id: null, track: p.track, label: null, name: null };
+  if (p.track === 'mic') return micSplit() ? { id: null, track: 'mic', label: null, name: null } : { id: 'mic', track: 'mic', you: true, label: null, name: null };
+  return { id: null, track: p.track, label: null, name: null };
 }
 // The N of a call voice Voice labelled "Speaker N" under the id call-N, else null.
 function speakerNumber(s) {
@@ -882,24 +900,35 @@ function speakerNumber(s) {
 }
 // What Voice calls a voice, in the interface's language: Voice labels call-N "Speaker N" in English, so that label
 // becomes "Spreker N" in Dutch. Any other label shows as Voice sent it.
+// Someone else at the user's microphone, after a split, is Speaker A, B, … (letter from main): letters keep them apart
+// from the call's numbers.
 function speakerLabel(s) {
+  if (s.letter) return t('meeting.speakers.lettered', { letter: s.letter });
+  if (s.track === 'mic' && !s.you) return t('meeting.speakers.someoneHere');
   const n = speakerNumber(s);
   return n ? t('meeting.speakers.numbered', { n }) : s.label || t('meeting.speakers.unknown');
 }
 function speakerName(s) {
+  if (s.you) return t('meeting.speakers.you');
   if (s.name) return s.name;
-  if (s.you || s.track === 'mic') return t('meeting.speakers.you');
   return speakerLabel(s);
+}
+// The hue of a voice's monogram and of its clip's progress.
+function voiceHue(s) {
+  const n = s.name ? null : speakerNumber(s);
+  if (n) return (Number(n) * 137 + 83) % 360;
+  if (!s.name && s.letter) return (s.letter.charCodeAt(0) * 97 + 31) % 360;
+  return hue(s.address || speakerName(s));
 }
 // An unnamed voice on the call shows its number, so Speaker 1 and Speaker 10 don't both read "S1". Its color follows
 // the number around the color wheel by the golden angle (Speaker 1 blue, 2 rose, 3 green, ...): hashing the label would
-// give Speaker 1 and Speaker 2 nearly the same color, and change it with the language.
+// give Speaker 1 and Speaker 2 nearly the same color, and change it with the language. Someone at the microphone shows
+// their letter the same way.
 function avatarHtml(s) {
-  if (s.you || s.track === 'mic') return `<span class="mt-av is-you" aria-hidden="true">${icons.mic}</span>`;
+  if (s.you) return `<span class="mt-av is-you" aria-hidden="true">${icons.mic}</span>`;
   const name = speakerName(s);
-  const n = s.name ? null : speakerNumber(s);
-  const h = n ? (Number(n) * 137 + 83) % 360 : hue(s.address || name);
-  return `<span class="mt-av" style="--h:${h}" aria-hidden="true">${esc(n || initials({ name }))}</span>`;
+  const mark = s.name ? initials({ name }) : speakerNumber(s) || s.letter || initials({ name });
+  return `<span class="mt-av" style="--h:${voiceHue(s)}" aria-hidden="true">${esc(mark)}</span>`;
 }
 
 const TRACK_KEYS = { mic: 'meeting.track.mic', call: 'meeting.track.call', screen: 'meeting.track.screen' };
@@ -1062,6 +1091,8 @@ function renderTranscript(full, { bottom = false } = {}) {
     if (stick) sc.scrollTop = sc.scrollHeight;
     else sc.scrollTop = top;
   }
+  P.shown = P.shown && list.querySelector(`[data-key="p:${CSS.escape(P.shown)}"]`) ? P.shown : null;
+  markClip();
 }
 
 // Rows that changed or arrived go in their place by time; the rest stay, so focus and selection survive.
@@ -1111,6 +1142,7 @@ function updateRows(keys, removedKeys) {
   fillFrames();
   if (sc && stick) sc.scrollTop = sc.scrollHeight;
   else if (added) $('.meeting .mt-jump')?.removeAttribute('hidden');
+  markClip();
 }
 
 // A passage by the same voice soon after the one before it doesn't repeat the name.
@@ -1379,41 +1411,363 @@ function onContextMenu(e) {
 
 // ---------- people ----------
 
+// The People card: the voices at the user's microphone, then the voices on the call. Before a split the microphone is
+// one voice, You, though anyone next to the user spoke into it too; once the meeting ended Voice can tell those people
+// apart (Split into voices: voice/PROTOCOL.md speakers.split). Each voice has a player for a few seconds where only it
+// speaks, so the user can hear who it is and assign a name, and the player moves on to the next voice without one.
+
+// A clip is one passage of the voice, at most 12 s of it; passages of at least 1.5 s come first.
+const CLIP_MIN_MS = 1500;
+const CLIP_MAX_MS = 12000;
+const CLIP_CACHE = 24;
+// open: the voice whose player is open; clip: which of its clips; key: the clip in the audio element; urls: clips
+// fetched before, by meeting and stretch; token: makes an answer that comes after the user moved on harmless.
+const P = { open: null, clip: 0, playing: false, loading: false, error: null, key: null, token: 0, urls: new Map(), audio: null, raf: 0, shown: null, sig: '' };
+
+const nameable = (s) => Boolean(s) && !s.you;
+// Which voices have something to hear: the People card is drawn again when that changes.
+const hearableSig = () => (M.data ? M.data.speakers.filter((s) => clipsOf(s).length).map((s) => s.id).join(' ') : '');
+
+// The stretches where this voice speaks, for its player: its passages with words, not dictation.
+function clipsOf(s) {
+  const d = M.data;
+  if (!d || !s) return [];
+  const own = d.passages.filter((p) => !p.dictation && p.end > p.start && p.text.trim() && voiceOf(p).id === s.id);
+  const long = own.filter((p) => p.end - p.start >= CLIP_MIN_MS);
+  const list = long.length ? [...long, ...own.filter((p) => p.end - p.start < CLIP_MIN_MS)] : own;
+  return list.map((p) => ({ passage: p.id, start: p.start, end: Math.min(p.end, p.start + CLIP_MAX_MS), text: p.text }));
+}
+const clipKey = (c) => `${M.data.meeting.id}|${c.start}|${c.end}`;
+
+// Why the player can't play now: while Voice records, a clip would be recorded as call audio and heard on the call;
+// the audio comes from Voice, so it has to run.
+function playBlock() {
+  const s = M.data && M.data.meeting;
+  if (!s) return 'offline';
+  if (live(s)) return 'recording';
+  if (M.voice.status !== 'connected') return 'offline';
+  return null;
+}
+
 function renderPeople() {
   const box = $('.meeting .mt-people');
+  const head = $('.meeting .mt-people-head');
   const d = M.data;
   if (!box || !d) return;
-  // Main sends them in order (call-2 before call-10); the microphone goes first whatever happens.
-  const speakers = [...d.speakers].sort((a, b) => Number(b.you || b.track === 'mic') - Number(a.you || a.track === 'mic'));
+  // Main sends them in order: the user, the others at the microphone, the call by number (call-2 before call-10).
+  const speakers = d.speakers;
+  if (P.open && !speakers.some((s) => s.id === P.open)) {
+    stopClip();
+    P.open = null;
+  }
+  if (head) head.innerHTML = hearEachHtml();
   if (!speakers.length) {
     box.innerHTML = d.meeting.removed ? '' : `<p class="mt-quiet">${esc(t('meeting.speakers.none'))}</p>`;
     return;
   }
-  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.speaker : null;
-  box.innerHTML = speakers
-    .map((s) => {
-      const name = speakerName(s);
-      if (s.you || s.track === 'mic') {
-        return `<div class="mt-person is-you">${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub">${esc(t('meeting.speakers.microphone'))}</span></span></div>`;
-      }
-      // A name Rukoo guessed for a 1:1 asks to be checked once a second voice is on the call.
-      const check = Boolean(s.name && s.autoCheck);
-      const sub = check
-        ? t('meeting.speakers.autoCheck')
-        : s.name
-          ? s.address || (s.label ? t('meeting.speakers.was', { label: speakerLabel(s) }) : '')
-          : (s.suggestions || []).length
-            ? t('meeting.speakers.pick')
-            : t('meeting.speakers.nameIt');
-      const subClass = check ? 'is-check' : s.name ? '' : 'is-ask';
-      const disabled = d.meeting.removed ? 'disabled' : '';
-      return `<button class="mt-person" data-mt="speaker" data-speaker="${esc(s.id)}" aria-haspopup="menu" ${disabled} title="${esc(t('meeting.speakers.choose', { name }))}">${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub ${subClass}">${esc(sub)}</span></span>${icons.chevronDown}</button>`;
-    })
-    .join('');
-  if (focused) box.querySelector(`[data-speaker="${CSS.escape(focused)}"]`)?.focus();
+  const active = box.contains(document.activeElement) ? document.activeElement : null;
+  const focus = active ? ['data-mt', 'data-speaker'].map((a) => active.getAttribute(a)) : null;
+  P.sig = hearableSig();
+  const mic = speakers.filter((s) => s.track === 'mic');
+  const call = speakers.filter((s) => s.track !== 'mic');
+  const group = (key) => `<div class="mt-group">${esc(t(key))}</div>`;
+  box.innerHTML = [mic.length ? group('meeting.speakers.atMic') : '', ...mic.map(personHtml), splitHtml(), call.length ? group('meeting.speakers.onCall') : '', ...call.map(personHtml)].join('');
+  if (focus && focus[0]) {
+    const sel = `[data-mt="${CSS.escape(focus[0])}"]${focus[1] ? `[data-speaker="${CSS.escape(focus[1])}"]` : ''}`;
+    (box.querySelector(sel) || (focus[1] && box.querySelector(`[data-speaker="${CSS.escape(focus[1])}"]`)))?.focus({ preventScroll: true });
+  }
+  clipProgress();
+  markClip();
 }
 
-function speakerMenu(btn) {
+// "Hear each voice" in the card's header: the player on the first voice without a name.
+function hearEachHtml() {
+  const d = M.data;
+  if (!d || d.meeting.removed || playBlock()) return '';
+  if (!d.speakers.some((s) => nameable(s) && !s.name && clipsOf(s).length)) return '';
+  return `<button class="mt-quiet-btn" data-mt="hear-each">${icons.play}<span>${esc(t('meeting.clip.hearEach'))}</span></button>`;
+}
+
+function personHtml(s) {
+  const d = M.data;
+  const name = speakerName(s);
+  const removed = d.meeting.removed;
+  const open = P.open === s.id;
+  const clips = removed ? [] : clipsOf(s);
+  let sub;
+  let subClass = '';
+  if (s.you) sub = micSplit() ? t('meeting.speakers.microphone') : t('meeting.speakers.everyoneAtMic');
+  else {
+    // A name Rukoo guessed for a 1:1 asks to be checked once a second voice is there.
+    const check = Boolean(s.name && s.autoCheck);
+    sub = check
+      ? t('meeting.speakers.autoCheck')
+      : s.name
+        ? s.address || (s.from === 'agent' ? t('meeting.speakers.byAgent') : s.label || s.letter ? t('meeting.speakers.was', { label: speakerLabel({ ...s, name: null }) }) : '')
+        : (s.suggestions || []).length
+          ? t('meeting.speakers.pick')
+          : t('meeting.speakers.nameIt');
+    subClass = check ? 'is-check' : s.name ? '' : 'is-ask';
+  }
+  // The user's row has a menu once the microphone is split: show it as one voice again.
+  const menu = s.you ? (micSplit() ? 'you-menu' : null) : 'speaker';
+  const text = `${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub ${subClass}">${esc(sub)}</span></span>`;
+  const main = menu
+    ? `<button class="mt-person" data-mt="${menu}" data-speaker="${esc(s.id)}" aria-haspopup="menu" ${removed ? 'disabled' : ''} title="${esc(s.you ? t('meeting.speakers.youMenu') : t('meeting.speakers.choose', { name }))}">${text}${icons.chevronDown}</button>`
+    : `<div class="mt-person" data-speaker="${esc(s.id)}">${text}</div>`;
+  const hear = t('meeting.clip.hear', { name });
+  const play = clips.length
+    ? `<button class="icon-btn sm mt-play ${open ? 'on' : ''}" data-mt="hear" data-speaker="${esc(s.id)}" aria-pressed="${open}" aria-expanded="${open}" aria-label="${esc(hear)}" title="${esc(hear)}">${open && (P.playing || P.loading) ? icons.pause : icons.play}</button>`
+    : '';
+  return `<div class="mt-prow ${play ? 'has-play' : ''} ${menu ? '' : 'no-menu'} ${open ? 'is-open' : ''}" data-row="${esc(s.id)}">${main}${play}</div>${open && clips.length ? playerHtml(s, clips) : ''}`;
+}
+
+function playerHtml(s, clips) {
+  const i = Math.min(P.clip, clips.length - 1);
+  const c = clips[i];
+  const why = playBlock();
+  const name = speakerName(s);
+  const span = c.end - c.start;
+  const busy = P.loading ? ' aria-busy="true"' : '';
+  const toggle = P.playing || P.loading ? t('meeting.clip.pause') : t('meeting.clip.play');
+  let status;
+  if (why) status = `<p class="mt-pnote">${icons.info}<span>${esc(t(why === 'recording' ? 'meeting.clip.recording' : 'meeting.clip.offline'))}</span></p>`;
+  else if (P.error) status = `<p class="mt-pnote is-error" role="alert">${icons.warning}<span>${esc(P.error)}</span></p>`;
+  else status = `<div class="mt-prog"><span class="mt-track"><span class="mt-fill"></span></span><span class="mt-ptime">${esc(clock(0))} / ${esc(clock(span))}</span></div>`;
+  const assign = nameable(s) ? `<button class="btn sm secondary mt-assign" data-mt="assign" data-speaker="${esc(s.id)}" aria-haspopup="menu">${esc(t('meeting.clip.assign'))}${icons.chevronDown}</button>` : '';
+  return `<div class="mt-player" data-player="${esc(s.id)}" role="group" aria-label="${esc(t('meeting.clip.label', { name }))}" style="--h:${s.you ? 220 : voiceHue(s)}">
+    <p class="mt-clip sel"><span class="mt-clip-at">${esc(clock(c.start))}</span>${esc(c.text)}</p>
+    ${status}
+    <div class="mt-pbar">
+      <button class="icon-btn sm" data-mt="clip-prev" aria-label="${esc(t('meeting.clip.prev'))}" title="${esc(t('meeting.clip.prev'))}" ${i <= 0 ? 'disabled' : ''}>${icons.skipBack}</button>
+      <button class="mt-pp" data-mt="clip-play" aria-label="${esc(toggle)}" title="${esc(toggle)}" ${why ? 'disabled' : ''}${busy}>${P.loading ? '<span class="spinner"></span>' : P.playing ? icons.pause : icons.play}</button>
+      <button class="icon-btn sm" data-mt="clip-next" aria-label="${esc(t('meeting.clip.next'))}" title="${esc(t('meeting.clip.next'))}" ${i >= clips.length - 1 ? 'disabled' : ''}>${icons.skipForward}</button>
+      <span class="mt-pcount" title="${esc(t('meeting.clip.countLong', { i: i + 1, n: clips.length }))}">${esc(t('meeting.clip.count', { i: i + 1, n: clips.length }))}</span>
+      ${assign}
+    </div>
+  </div>`;
+}
+
+// Under the user's row: Split into voices once the meeting ended, how a split goes, or why it can't.
+function splitHtml() {
+  const d = M.data;
+  const m = d.mic || {};
+  if (d.meeting.removed || !d.speakers.some((s) => s.track === 'mic')) return '';
+  const row = (ic, label, hint = '', extra = '', cls = '') =>
+    `<div class="mt-split ${cls}"><span class="mt-split-ic" aria-hidden="true">${ic}</span><span class="mt-split-text"><span class="mt-split-label">${label}</span>${hint ? `<span class="mt-split-hint">${hint}</span>` : ''}</span>${extra}</div>`;
+  if (m.state === 'running') {
+    const pct = m.end > 0 ? Math.min(99, Math.floor((m.at / m.end) * 100)) : null;
+    return row('<span class="spinner"></span>', `<span aria-live="polite">${esc(pct === null ? t('meeting.split.starting') : t('meeting.split.running', { percent: pct }))}</span>`, '', '', 'is-busy');
+  }
+  if (m.state === 'error') {
+    // After an update of Voice, a fixed connection or a failed worker, the user can ask again.
+    const again = m.code !== 'busy' ? `<button class="link-btn" data-mt="split">${esc(t('meeting.split.again'))}</button>` : '';
+    return row(icons.warning, esc(splitError(m)), '', again, 'is-error');
+  }
+  if (m.split && m.joined) return `<div class="mt-split"><button class="mt-split-btn" data-mt="unjoin"><span class="mt-split-ic" aria-hidden="true">${icons.people}</span><span class="mt-split-text"><span class="mt-split-label">${esc(t('meeting.split.unjoin'))}</span></span></button></div>`;
+  if (m.split) return '';
+  if (m.voices === 1) return row(icons.mic, esc(t('meeting.split.one')), '', '', 'is-quiet');
+  if (!['done', 'failed'].includes(d.meeting.state)) return row(icons.people, esc(t('meeting.split.action')), esc(t('meeting.split.later')), '', 'is-off');
+  const off = M.voice.status !== 'connected' ? `disabled title="${esc(notReadyText() || '')}"` : '';
+  return `<div class="mt-split"><button class="mt-split-btn" data-mt="split" ${off}><span class="mt-split-ic" aria-hidden="true">${icons.people}</span><span class="mt-split-text"><span class="mt-split-label">${esc(t('meeting.split.action'))}</span><span class="mt-split-hint">${esc(t('meeting.split.hint'))}</span></span></button></div>`;
+}
+
+function splitError(m) {
+  if (m.code === 'unknown_command') return t('meeting.split.update');
+  if (m.code === 'busy') return t('meeting.split.later');
+  if (m.code === 'not_available') return m.reason === 'audio' ? t('meeting.split.noAudio') : t('meeting.split.cantRun');
+  if (m.code === 'offline' || m.code === 'timeout') return t('meeting.split.offline');
+  return t('meeting.split.failed');
+}
+
+// ---------- the player ----------
+
+// The passage being heard is marked in the transcript, and comes into view when the clip changes.
+function markClip() {
+  const list = $('.meeting .mt-transcript');
+  if (!list) return;
+  const s = P.open && speakerOf(P.open);
+  const c = s ? clipsOf(s)[P.clip] : null;
+  for (const row of list.querySelectorAll('.mt-passage.is-clip')) if (!c || row.dataset.id !== c.passage) row.classList.remove('is-clip', 'is-playing');
+  if (!c) {
+    P.shown = null;
+    return;
+  }
+  const row = list.querySelector(`[data-key="p:${CSS.escape(c.passage)}"]`);
+  if (!row) return;
+  row.classList.add('is-clip');
+  row.classList.toggle('is-playing', P.playing);
+  if (P.shown !== c.passage) {
+    P.shown = c.passage;
+    const sc = scroller();
+    if (sc) {
+      const top = row.offsetTop - sc.offsetTop;
+      if (top < sc.scrollTop || top + row.offsetHeight > sc.scrollTop + sc.clientHeight) sc.scrollTop = Math.max(0, top - sc.clientHeight / 3);
+    }
+  }
+}
+
+// The progress bar and time of the open clip, from the audio element.
+function clipProgress() {
+  const el = $('.meeting .mt-player');
+  const s = P.open && speakerOf(P.open);
+  const c = s ? clipsOf(s)[P.clip] : null;
+  if (!el || !c) return;
+  const span = (c.end - c.start) / 1000;
+  const a = P.audio;
+  const here = a && P.key === clipKey(c);
+  const pos = here ? (a.ended ? span : Math.min(span, a.currentTime || 0)) : 0;
+  const fill = el.querySelector('.mt-fill');
+  const time = el.querySelector('.mt-ptime');
+  if (fill) fill.style.width = `${span ? (pos / span) * 100 : 0}%`;
+  if (time) time.textContent = `${clock(pos * 1000)} / ${clock(span * 1000)}`;
+}
+
+function followClip() {
+  cancelAnimationFrame(P.raf);
+  const step = () => {
+    clipProgress();
+    if (P.playing) P.raf = requestAnimationFrame(step);
+  };
+  P.raf = requestAnimationFrame(step);
+}
+
+function audioElement() {
+  if (P.audio) return P.audio;
+  const a = new Audio();
+  a.preload = 'auto';
+  a.addEventListener('ended', () => {
+    P.playing = false;
+    cancelAnimationFrame(P.raf);
+    renderPeople();
+  });
+  P.audio = a;
+  return a;
+}
+
+// Stops what plays and forgets an answer still on its way; the clip stays where it is.
+function stopClip() {
+  P.token += 1;
+  if (P.audio) P.audio.pause();
+  P.playing = false;
+  P.loading = false;
+  cancelAnimationFrame(P.raf);
+}
+
+function openPlayer(id, play = false) {
+  stopClip();
+  P.open = id;
+  P.clip = 0;
+  P.error = null;
+  P.key = null;
+  renderPeople();
+  if (play) playClip();
+}
+
+function closePlayer() {
+  stopClip();
+  P.open = null;
+  P.error = null;
+  renderPeople();
+}
+
+function stepClip(delta) {
+  const s = P.open && speakerOf(P.open);
+  const clips = s ? clipsOf(s) : [];
+  const next = Math.max(0, Math.min(clips.length - 1, P.clip + delta));
+  if (next === P.clip) return;
+  const going = P.playing || P.loading;
+  stopClip();
+  P.clip = next;
+  P.error = null;
+  renderPeople();
+  if (going) playClip();
+}
+
+function toggleClip() {
+  if (P.playing || P.loading) {
+    stopClip();
+    return renderPeople();
+  }
+  return playClip();
+}
+
+// Plays the open clip: Voice cuts a WAV of the meeting's audio for its stretch (meetingClip in main.js), which plays
+// in the window. A clip played before plays from memory; a paused one goes on where it stopped.
+async function playClip() {
+  const d = M.data;
+  const s = P.open && speakerOf(P.open);
+  if (!d || !s || playBlock()) return;
+  const c = clipsOf(s)[P.clip];
+  if (!c) return;
+  const key = clipKey(c);
+  const token = (P.token += 1);
+  P.error = null;
+  const a = audioElement();
+  let url = P.urls.get(key);
+  if (!url) {
+    P.loading = true;
+    renderPeople();
+    try {
+      const r = await api('meetingClip', d.meeting.id, c.start, c.end);
+      url = r && typeof r.url === 'string' && r.url.startsWith('data:audio/wav;base64,') ? r.url : null;
+    } catch (err) {
+      if (token !== P.token) return;
+      P.loading = false;
+      P.error = voiceError(err);
+      return renderPeople();
+    }
+    if (token !== P.token) return;
+    if (!url) {
+      P.loading = false;
+      P.error = t('meeting.clip.failed');
+      return renderPeople();
+    }
+    P.urls.set(key, url);
+    while (P.urls.size > CLIP_CACHE) P.urls.delete(P.urls.keys().next().value);
+  }
+  if (P.key !== key) {
+    a.src = url;
+    P.key = key;
+  } else if (a.ended) a.currentTime = 0;
+  try {
+    await a.play();
+  } catch (_) {
+    if (token !== P.token) return;
+    P.loading = false;
+    P.error = t('meeting.clip.failed');
+    return renderPeople();
+  }
+  if (token !== P.token) {
+    a.pause();
+    return;
+  }
+  P.loading = false;
+  P.playing = true;
+  renderPeople();
+  followClip();
+}
+
+// After Assign: the player moves to the next voice without a name that has something to hear.
+function nextUnnamed(after) {
+  const list = (M.data ? M.data.speakers : []).filter((s) => nameable(s) && clipsOf(s).length);
+  const i = list.findIndex((s) => s.id === after);
+  return [...list.slice(i + 1), ...list.slice(0, Math.max(0, i))].find((s) => !s.name && s.id !== after) || null;
+}
+
+function hearEach() {
+  const first = (M.data ? M.data.speakers : []).find((s) => nameable(s) && !s.name && clipsOf(s).length);
+  if (first) openPlayer(first.id, true);
+}
+
+// ---------- naming ----------
+
+// The user's row, after a split: show the microphone as one voice again.
+function youMenu(btn) {
+  showMenu(btn, [{ label: t('meeting.split.join'), icon: 'mic', action: () => joinMic(true) }], { align: 'left' });
+}
+
+function speakerMenu(btn, { advance = false } = {}) {
   const d = M.data;
   const s = d && d.speakers.find((x) => x.id === btn.dataset.speaker);
   if (!s) return;
@@ -1425,40 +1779,83 @@ function speakerMenu(btn) {
     label: c.name || c.address,
     sub: taker(c) ? t('meeting.speakers.taken', { name: speakerName(taker(c)) }) : c.name && c.address ? c.address : '',
     checked: Boolean(s.name) && s.name === (c.name || c.address) && (s.address || '') === (c.address || ''),
-    action: () => setSpeaker(s.id, { name: c.name || c.address, address: c.address || '' })
+    action: () => setSpeaker(s.id, { name: c.name || c.address, address: c.address || '' }, { advance })
   }));
+  // Someone else at the microphone can turn out to be the user: Voice took the voice that spoke longest.
+  const me = s.track === 'mic' ? [{ label: t('meeting.split.thisIsMe'), icon: 'mic', action: () => setYou(s.id) }, { separator: true }] : [];
   showMenu(
     btn,
     [
+      ...me,
       options.length ? { heading: event ? t('meeting.speakers.fromEvent', { title: event.title || t('calendar.event.noTitle') }) : t('meeting.speakers.guests') } : null,
       ...options,
       options.length ? { separator: true } : null,
-      { label: t('meeting.speakers.someoneElse'), icon: 'edit', action: () => nameSpeaker(s) },
-      s.name ? { label: t('meeting.speakers.clear', { label: speakerLabel(s) }), icon: 'undo', action: () => setSpeaker(s.id, null) } : null
+      { label: t('meeting.speakers.someoneElse'), icon: 'edit', action: () => nameSpeaker(s, { advance }) },
+      s.name ? { label: t('meeting.speakers.clear', { label: speakerLabel({ ...s, name: null }) }), icon: 'undo', action: () => setSpeaker(s.id, null) } : null
     ],
-    { align: 'left' }
+    { align: advance ? 'right' : 'left' }
   );
 }
 
-async function nameSpeaker(s) {
-  const value = await promptDialog(t('meeting.speakers.nameTitle', { label: speakerLabel(s) }), s.name || '', { placeholder: t('meeting.speakers.namePlaceholder') });
+async function nameSpeaker(s, opts = {}) {
+  const value = await promptDialog(t('meeting.speakers.nameTitle', { label: speakerLabel({ ...s, name: null }) }), s.name || '', { placeholder: t('meeting.speakers.namePlaceholder') });
   if (typeof value !== 'string' || !value.trim()) return;
-  setSpeaker(s.id, { name: value.trim(), address: '' });
+  setSpeaker(s.id, { name: value.trim(), address: '' }, opts);
 }
 
-async function setSpeaker(speakerId, value) {
+// advance: the name came from the player's Assign, which then moves on to the next voice without a name.
+async function setSpeaker(speakerId, value, { advance = false } = {}) {
   if (!M.data) return;
   const id = M.data.meeting.id;
   try {
     const speakers = await api('meetingSetSpeaker', id, speakerId, value);
     if (!M.data || M.data.meeting.id !== id || !Array.isArray(speakers)) return;
     M.data.speakers = speakers;
+    if (advance && value && P.open === speakerId) {
+      const next = nextUnnamed(speakerId);
+      stopClip();
+      P.open = next ? next.id : null;
+      P.clip = 0;
+      P.error = null;
+      P.key = null;
+    }
     renderPeople();
     renderTranscript(true);
+    if (advance && P.open) $(`.meeting .mt-player[data-player="${CSS.escape(P.open)}"] [data-mt="clip-play"]`)?.focus({ preventScroll: true });
   } catch (err) {
     toast(voiceError(err), 5000);
   }
 }
+
+// ---------- the microphone's voices ----------
+
+async function splitMic() {
+  if (!M.data) return;
+  const id = M.data.meeting.id;
+  try {
+    const mic = await api('meetingSplitMic', id);
+    if (mic && M.data && M.data.meeting.id === id) {
+      M.data.mic = mic;
+      renderPeople();
+    }
+  } catch (err) {
+    toast(voiceError(err), 6000);
+  }
+}
+
+// Main answers with the microphone's state; the meeting comes again with its voices and passages (micView).
+async function micCall(method, ...args) {
+  if (!M.data) return;
+  const id = M.data.meeting.id;
+  try {
+    await api(method, id, ...args);
+    if (M.data && M.data.meeting.id === id) await fetchMeeting(id);
+  } catch (err) {
+    toast(voiceError(err), 5000);
+  }
+}
+const setYou = (speakerId) => micCall('meetingSetYou', speakerId);
+const joinMic = (joined) => micCall('meetingJoinMic', joined);
 
 // ---------- the calendar event ----------
 
@@ -1683,6 +2080,24 @@ async function onClick(e) {
     }
     case 'speaker':
       return speakerMenu(b);
+    case 'you-menu':
+      return youMenu(b);
+    case 'hear':
+      return P.open === b.dataset.speaker ? closePlayer() : openPlayer(b.dataset.speaker, !playBlock());
+    case 'hear-each':
+      return hearEach();
+    case 'clip-play':
+      return toggleClip();
+    case 'clip-prev':
+      return stepClip(-1);
+    case 'clip-next':
+      return stepClip(1);
+    case 'assign':
+      return speakerMenu(b, { advance: true });
+    case 'split':
+      return splitMic();
+    case 'unjoin':
+      return joinMic(false);
     case 'event':
       return eventMenu(b);
     case 'open-event':
@@ -1735,6 +2150,27 @@ function onViewKey(e) {
       finishRename(e.key === 'Enter');
     }
     return;
+  }
+  // In a voice's player: Space plays and pauses, Left and Right pick the clip, Escape closes it. On the play button
+  // itself Space presses it, as on any button.
+  if (P.open && e.target.closest && e.target.closest('.mt-player, .mt-play')) {
+    const own = e.target.matches('[data-mt="clip-play"], [data-mt="hear"]');
+    if (e.key === ' ' && !own) {
+      e.preventDefault();
+      return toggleClip();
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      return stepClip(e.key === 'ArrowLeft' ? -1 : 1);
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = P.open;
+      closePlayer();
+      $(`.meeting [data-mt="hear"][data-speaker="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+      return;
+    }
   }
   if (e.target.closest('button')) return;
   if (e.target.matches && e.target.matches('.mt-edit')) {

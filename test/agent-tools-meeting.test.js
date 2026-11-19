@@ -1070,3 +1070,65 @@ test("a media link turns each of Voice's answers into what the agent can do", as
     assert.equal(failure(await call('get_meeting_media_link', { meeting_id: M, kind: 'audio', from_seconds: 12, to_seconds: 20 })), text, code);
   }
 });
+
+test('name_meeting_speaker names a voice as the People card does, takes the name away, and leaves the user unnamed', async (t) => {
+  const { voice, feed, call } = await setup(t);
+  feed([
+    startedEv(),
+    ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }),
+    ev('speaker', M, { id: 'call-1', track: 'call', label: 'Speaker 1' }),
+    ev('speaker', M, { id: 'call-2', track: 'call', label: 'Speaker 2' }),
+    passage('call', 1000, 'Thanks, Anna, the numbers are in.'),
+    passage('call', 4000, 'Good.', { speaker: 'call-2' })
+  ]);
+  const named = data(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-1', name: 'Anna de Vries', address: 'anna@example.com' }));
+  assert.equal(named.name, 'Anna de Vries');
+  assert.match(named.note, /under People/);
+  const s = voice.speakers(M).find((x) => x.id === 'call-1');
+  assert.deepEqual([s.name, s.address, s.from], ['Anna de Vries', 'anna@example.com', 'agent']);
+  const read = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.ok(read.transcript.includes('Anna de Vries: Thanks, Anna'));
+  assert.equal(read.speakers.find((x) => x.id === 'call-1').named_by, 'agent');
+  // The user's own voice and a voice the meeting doesn't have are refused, with the ids there are.
+  assert.match(failure(await call('name_meeting_speaker', { meeting_id: M, speaker: 'mic', name: 'Bart' })), /the user's own voice/);
+  assert.match(failure(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-9', name: 'Joris' })), /besides the user's are call-1, call-2/);
+  // Without a name the voice shows as its label again.
+  const cleared = data(await call('name_meeting_speaker', { meeting_id: M, speaker: 'call-1' }));
+  assert.equal(cleared.name, null);
+  assert.match(cleared.note, /shows as Speaker 1 again/);
+  assert.equal(voice.speakers(M).find((x) => x.id === 'call-1').name, null);
+});
+
+test('after a split of the microphone the tools tell the user apart from the people next to them', async (t) => {
+  const { voice, feed, call } = await setup(t);
+  feed([
+    startedEv(),
+    ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }),
+    passage('mic', 1000, 'Shall we start?'),
+    passage('mic', 4000, 'I have the export open.'),
+    ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }),
+    passage('mic', 4000, 'I have the export open.', { revision: 2 })
+  ]);
+  // The second revision moves the passage to mic-2, as Voice does after a split.
+  feed([ev('passage', M, { id: 'mic-000004000', track: 'mic', speaker: 'mic-2', start: 4000, end: 6000, text: 'I have the export open.', revision: 3, dictation: false, language: 'en' })]);
+  voice.store.setSplit(M, 2);
+  let read = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.ok(read.transcript.includes('You: Shall we start?'));
+  assert.ok(read.transcript.includes("Speaker A (at the user's microphone): I have the export open."));
+  assert.deepEqual(
+    read.speakers.map((s) => [s.id, s.you]),
+    [
+      ['mic', true],
+      ['mic-2', false]
+    ]
+  );
+  data(await call('name_meeting_speaker', { meeting_id: M, speaker: 'mic-2', name: 'Pieter Smit' }));
+  read = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.ok(read.transcript.includes('Pieter Smit: I have the export open.'));
+  const found = data(await call('search_meetings', { query: 'export' }));
+  assert.equal(untag(found.results[0].speaker), 'Pieter Smit');
+  // Shown as one voice again, everything at the microphone is the user's.
+  voice.joinMic(M, true);
+  read = data(await call('read_meeting_transcript', { meeting_id: M }));
+  assert.ok(read.transcript.includes('You: I have the export open.'));
+});

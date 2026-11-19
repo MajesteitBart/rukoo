@@ -371,6 +371,7 @@ object AgentText {
         "get_meeting_frame" to R.string.agentui_tools_get_meeting_frame,
         "get_meeting_clip" to R.string.agentui_tools_get_meeting_clip,
         "get_meeting_media_link" to R.string.agentui_tools_get_meeting_media_link,
+        "name_meeting_speaker" to R.string.agentui_tools_name_meeting_speaker,
     )
 
     private val RUKOO_RUNNING = mapOf(
@@ -396,6 +397,7 @@ object AgentText {
         "get_meeting_frame" to R.string.agentui_tools_running_get_meeting_frame,
         "get_meeting_clip" to R.string.agentui_tools_running_get_meeting_clip,
         "get_meeting_media_link" to R.string.agentui_tools_running_get_meeting_media_link,
+        "name_meeting_speaker" to R.string.agentui_tools_running_name_meeting_speaker,
     )
 
     private val GENERIC_DONE = mapOf(

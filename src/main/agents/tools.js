@@ -441,6 +441,23 @@ const TOOLS = [
     ),
     annotations: READ,
     run: getMeetingMediaLink
+  },
+  {
+    name: 'name_meeting_speaker',
+    title: 'Name a voice in a meeting',
+    description:
+      "Gives a voice in a meeting recorded with Rukoo Voice a name, as the user can under People in the meeting view, or takes the name away. speaker is a voice's id from the speakers read_meeting_transcript lists, such as call-2, or mic-2 for someone who shared the user's microphone. Name a voice when the user tells you who it is. When the transcript suggests a name, for example someone says \"thanks, Anna\", ask the user first. Rukoo shows the name in the meeting view and the transcript straight away, and the user can change it there. The user's own voice has no name to give. Without meeting_id: this chat's meeting, else the one recording now, else the newest.",
+    inputSchema: schema(
+      {
+        meeting_id: copied({ type: 'string', description: 'The meeting, e.g. "m-20261030-171203-4f2a", from search_meetings or this chat.', maxLength: 100 }),
+        speaker: copied({ type: 'string', description: 'The voice\'s id from read_meeting_transcript\'s speakers, e.g. "call-2".', maxLength: 100 }),
+        name: copied({ type: 'string', description: 'Who the voice is, e.g. "Anna de Vries". Leave it out to take the name away.', maxLength: 200 }),
+        address: copied({ type: 'string', description: "The person's email address, when you know it.", maxLength: 320 })
+      },
+      ['speaker']
+    ),
+    annotations: WRITE,
+    run: nameMeetingSpeaker
   }
 ];
 
@@ -2336,11 +2353,25 @@ function meetingClock(ms) {
   return `${pad2(Math.floor(s / 3600))}:${pad2(Math.floor(s / 60) % 60)}:${pad2(s % 60)}`;
 }
 
-// Who a speaker id is: the user for the microphone, else the name the user or the calendar gave, else Voice's label.
-function speakerName(m, id, track) {
-  if (track === 'mic') return 'You';
+// What a voice is called when nobody named it: Voice's label, or "Speaker A" for someone else at the user's
+// microphone after a split (store.js micView), as the meeting view shows it.
+const speakerLabel = (s) => (s.letter ? `Speaker ${s.letter} (at the user's microphone)` : s.label || '');
+
+const micSplit = (m) => Boolean(m.mic && m.mic.split && !m.mic.joined);
+
+// Whether a passage's voice is the user's: its speaker says so; a microphone passage without one is the user's until
+// the microphone is split.
+function userVoice(m, id, track) {
   const s = m.speakers.find((x) => x.id === id);
-  return line((s && (s.name || s.label)) || '') || 'Someone on the call';
+  return s ? Boolean(s.you) : track === 'mic' && !micSplit(m);
+}
+
+// Who a speaker id is: the user, else the name the user, the agent or the calendar gave, else the label.
+function speakerName(m, id, track) {
+  if (userVoice(m, id, track)) return 'You';
+  const s = m.speakers.find((x) => x.id === id);
+  if (!s && track === 'mic') return "Someone at the user's microphone";
+  return line((s && (s.name || speakerLabel(s))) || '') || 'Someone on the call';
 }
 
 // The tag source of a speaker's name: a name taken from the calendar event came from its organizer, not the meeting.
@@ -2534,9 +2565,9 @@ async function readMeetingTranscript(hub, args, call) {
     speakers: m.speakers.map((s) => ({
       id: s.id,
       track: s.track,
-      name: s.track === 'mic' ? 'You' : unsafeFrom(speakerSource(s), s.name || s.label),
-      you: s.track === 'mic',
-      named_by: s.track === 'mic' ? null : s.from || null
+      name: s.you ? 'You' : unsafeFrom(speakerSource(s), s.name || speakerLabel(s)),
+      you: Boolean(s.you),
+      named_by: s.you ? null : s.from || null
     })),
     since,
     from_seq: after,
@@ -2598,7 +2629,7 @@ async function searchMeetings(hub, args) {
         title: unsafeFrom('meeting', m.meeting.title),
         started_at: iso(m.meeting.startedAt),
         at_seconds: Math.floor(p.start / 1000),
-        speaker: p.track === 'mic' ? 'You' : unsafeFrom(speakerSource(m.speakers.find((s) => s.id === p.speaker)), who),
+        speaker: userVoice(m, p.speaker, p.track) ? 'You' : unsafeFrom(speakerSource(m.speakers.find((s) => s.id === p.speaker)), who),
         snippet: unsafeFrom('meeting', line(p.text).slice(0, SNIPPET_MAX))
       });
     }
@@ -2928,6 +2959,33 @@ async function getMeetingMediaLink(hub, args, call) {
     expires_at: iso(link.expiresAt),
     expires_in_seconds: Math.round(hub.mediaLinks.ttlMs / 1000),
     note
+  };
+}
+
+// Names a voice, or takes its name away, as the People card does. Only Rukoo's own data changes, and the user can
+// change it back there, so no card asks first; the tool's description tells the agent when to ask the user.
+async function nameMeetingSpeaker(hub, args, call) {
+  const voice = meetingSource(hub);
+  const { id, m } = whichMeeting(voice, args, call);
+  const want = String(args.speaker || '').trim();
+  const s = m.speakers.find((x) => x.id === want);
+  if (!s) {
+    const ids = m.speakers.filter((x) => !x.you).map((x) => x.id);
+    throw new ToolError(`Meeting ${id} has no voice ${unsafeValue(want)}.${ids.length ? ` Its voices besides the user's are ${ids.join(', ')}.` : ''} read_meeting_transcript lists them under speakers.`);
+  }
+  if (s.you) throw new ToolError(`${want} is the user's own voice, which has no name to give.`);
+  const name = typeof args.name === 'string' ? args.name.trim() : '';
+  const address = name && typeof args.address === 'string' ? args.address.trim() : '';
+  voice.setSpeaker(id, want, name ? { name, address } : null, 'agent');
+  const label = speakerLabel(s) || want;
+  return {
+    meeting_id: id,
+    speaker: want,
+    name: name || null,
+    address: address || null,
+    note: name
+      ? 'Rukoo shows the name in the meeting view and the transcript now. The user can change it or take it away under People.'
+      : `The voice has no name now and shows as ${label} again.`
   };
 }
 

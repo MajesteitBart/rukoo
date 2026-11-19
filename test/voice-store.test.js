@@ -185,7 +185,7 @@ test('names, notes and corrections are Rukoo\'s and survive a restart; notes ref
   s.close();
   const again = store(dir);
   const m = again.meeting(M);
-  assert.deepEqual(m.speakers.find((x) => x.id === 'call-1'), { id: 'call-1', track: 'call', label: 'Speaker 1', name: 'Anna de Vries', address: 'anna@example.com', from: 'calendar' });
+  assert.deepEqual(m.speakers.find((x) => x.id === 'call-1'), { id: 'call-1', track: 'call', label: 'Speaker 1', you: false, letter: null, name: 'Anna de Vries', address: 'anna@example.com', from: 'calendar' });
   assert.equal(m.notes.text, 'Second');
   assert.equal(m.passages[0].text, 'Move it to Thursday.');
   assert.equal(again.cursor().after, events.at(-1).seq);
@@ -550,7 +550,54 @@ test('the order of speakers: the microphone, then the call by number, so call-2 
   assert.deepEqual([...list].sort(compareSpeakers).map((x) => x.id), ['mic', 'call-1', 'call-2', 'call-10', 'call-x']);
   assert.equal(speakerOrder('call-10'), 10);
   assert.equal(speakerOrder('call-01'), Infinity, 'not a number Voice gives');
-  assert.equal(speakerOrder('mic'), Infinity);
+  // After a split the microphone's voices are mic, mic-2, mic-3: the user first, then the people next to them.
+  assert.equal(speakerOrder('mic'), 1);
+  assert.equal(speakerOrder('mic-3'), 3);
+  const split = [{ id: 'call-1', track: 'call' }, { id: 'mic-3', track: 'mic' }, { id: 'mic', track: 'mic' }, { id: 'mic-2', track: 'mic', you: true }];
+  assert.deepEqual([...split].sort(compareSpeakers).map((x) => x.id), ['mic-2', 'mic', 'mic-3', 'call-1']);
+});
+
+test('a split microphone: the user is mic until they pick another voice, the others get letters, and joining shows one voice again', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  const at = (_n, event, data) => ev(event, M, data);
+  s.apply(at(1, 'meeting.started', { title: 'Planning', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null }));
+  s.apply(at(2, 'speaker', { id: 'mic', track: 'mic', label: 'You' }));
+  s.apply(at(3, 'passage', { id: 'mic-000001000', track: 'mic', speaker: 'mic', start: 1000, end: 2000, text: 'Shall we start?', revision: 1, dictation: false, language: 'en' }));
+  s.apply(at(4, 'passage', { id: 'mic-000003000', track: 'mic', speaker: 'mic', start: 3000, end: 4000, text: 'I have the export open.', revision: 1, dictation: false, language: 'en' }));
+  // Before the split the microphone is one voice, the user's.
+  let m = s.meeting(M);
+  assert.deepEqual(m.mic, { you: 'mic', joined: false, split: false, voices: null });
+  assert.deepEqual(m.speakers.map((x) => [x.id, x.you, x.letter]), [['mic', true, null]]);
+  // Voice splits it: Pieter's words move to mic-2.
+  s.apply(at(5, 'speaker', { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+  s.apply(at(6, 'passage', { id: 'mic-000003000', track: 'mic', speaker: 'mic-2', start: 3000, end: 4000, text: 'I have the export open.', revision: 2, dictation: false, language: 'en' }));
+  assert.equal(s.setSplit(M, 2), true);
+  m = s.meeting(M);
+  assert.deepEqual(m.mic, { you: 'mic', joined: false, split: true, voices: 2 });
+  assert.deepEqual(m.speakers.map((x) => [x.id, x.you, x.letter]), [['mic', true, null], ['mic-2', false, 'A']]);
+  assert.deepEqual(m.passages.map((p) => p.speaker), ['mic', 'mic-2']);
+  // The other voice can have a name; the user's can't keep one.
+  assert.equal(s.setName(M, 'mic-2', { name: 'Pieter Smit', address: 'pieter@example.com', from: 'user' }), true);
+  // "This is me": mic-2 becomes the user, and mic gets the letter.
+  assert.equal(s.setYou(M, 'mic-2'), true);
+  m = s.meeting(M);
+  assert.deepEqual(m.speakers.map((x) => [x.id, x.you, x.letter, x.name]), [['mic', false, 'A', null], ['mic-2', true, null, null]]);
+  assert.equal(s.setYou(M, 'call-1'), false, 'only a voice at the microphone');
+  assert.equal(s.setYou(M, 'mic'), true);
+  // Joined, the microphone is one voice again, and its passages are the user's; the split stays known.
+  assert.equal(s.setJoined(M, true), true);
+  m = s.meeting(M);
+  assert.deepEqual(m.mic, { you: 'mic', joined: true, split: true, voices: 2 });
+  assert.deepEqual(m.speakers.map((x) => x.id), ['mic']);
+  assert.deepEqual(m.passages.map((p) => p.speaker), ['mic', 'mic']);
+  s.close();
+  // All of it survives a restart, and splitting again shows the voices.
+  const again = store(dir);
+  assert.deepEqual(again.meeting(M).mic, { you: 'mic', joined: true, split: true, voices: 2 });
+  assert.equal(again.setSplit(M, 2), true);
+  assert.deepEqual(again.meeting(M).passages.map((p) => p.speaker), ['mic', 'mic-2']);
+  again.close();
 });
 
 test('with three voices on the call, a guest one of them already has is marked for the others and offered last', () => {

@@ -3227,7 +3227,8 @@ const RUKOO_LABELS = {
   read_meeting_notes: 'Read the meeting notes',
   get_meeting_frame: 'Looked at the screen',
   get_meeting_clip: 'Looked at the screen over a stretch',
-  get_meeting_media_link: 'Got a link to meeting media'
+  get_meeting_media_link: 'Got a link to meeting media',
+  name_meeting_speaker: 'Named a voice in the meeting'
 };
 const COMMANDS = /^(bash|terminal|shell|powershell|command|commandexecution|exec(_command)?|run_command|local_shell|execute_code)$/i;
 const BUILTINS = [

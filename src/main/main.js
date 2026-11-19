@@ -1754,7 +1754,19 @@ Object.assign(api, {
     if (typeof monitor !== 'string' || !monitor || Array.from(monitor).length > 64) throw new Error('invalid');
     return voiceService().selectMonitor(meetingId(id), monitor);
   },
-  meetingEvents: (id) => voiceService().events(meetingId(id))
+  meetingEvents: (id) => voiceService().events(meetingId(id)),
+  // A few seconds of one voice for the People card's player, as a data URL the renderer's CSP takes (media-src data:).
+  // start and end are meeting ms, at most 30 s apart.
+  meetingClip: async (id, start, end) => {
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start) throw new Error('invalid');
+    const clip = await voiceService().audioClip(meetingId(id), start, end);
+    return { url: `data:audio/wav;base64,${clip.data}`, start: clip.start, end: clip.end };
+  },
+  // Asks Voice to tell apart the people who shared the microphone; returns the microphone's state at once.
+  meetingSplitMic: (id) => voiceService().splitMic(meetingId(id)),
+  // After a split: which voice at the microphone is the user, and whether it shows as one voice again.
+  meetingSetYou: (id, speakerId) => voiceService().setYou(meetingId(id), meetingText(speakerId, 100)),
+  meetingJoinMic: (id, joined) => voiceService().joinMic(meetingId(id), joined === true)
 });
 // ---- /voice ----
 

@@ -27,10 +27,12 @@ const HEARTBEAT_MS = 30000;
 const POLL_MS = 5000;
 
 class VoiceError extends Error {
-  constructor(code, message, meeting = null) {
+  // reason: why Voice can't, when it says so (speakers.split's not_available: cpu, runtime, model or audio).
+  constructor(code, message, meeting = null, reason = null) {
     super(message || code);
     this.code = code;
     if (meeting) this.meeting = meeting;
+    if (reason) this.reason = reason;
   }
 }
 
@@ -293,7 +295,7 @@ class VoiceBridge extends EventEmitter {
     this.pending.delete(msg.id);
     clearTimeout(p.timer);
     if (msg.ok) p.resolve(msg.result);
-    else p.reject(new VoiceError(msg.error.code, msg.error.message, typeof msg.error.meeting === 'string' ? msg.error.meeting : null));
+    else p.reject(new VoiceError(msg.error.code, msg.error.message, typeof msg.error.meeting === 'string' ? msg.error.meeting : null, typeof msg.error.reason === 'string' ? msg.error.reason.slice(0, 40) : null));
   }
 
   onClose(code, d) {
