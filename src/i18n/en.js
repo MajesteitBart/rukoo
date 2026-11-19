@@ -421,6 +421,14 @@
     "message": "Ask {name} about your mail",
     "description": "Chat panel empty state heading without an open email; name is the agent."
   },
+  "agent.empty.titleChat": {
+    "message": "{name} doesn't see team chat",
+    "description": "Agent panel: empty-state title in Chat mode, where the agent can't read team chat. {name}: the agent's name. src/renderer/agent/panel.js"
+  },
+  "agent.empty.bodyChat": {
+    "message": "Rukoo keeps workspace messages away from your personal agents. Paste what you want help with, or ask anything else.",
+    "description": "Agent panel: empty-state text in Chat mode, under agent.empty.titleChat. src/renderer/agent/panel.js"
+  },
   "agent.effort.button": {
     "message": "Effort: {effort}",
     "description": "Chat panel input: tooltip and accessible name of the effort button beside the model button; effort is the chosen level or Default (refreshPickers in agent/panel.js)."
@@ -5448,6 +5456,14 @@
     "message": "Play a short coo when new emails arrive. It stays quiet while Rukoo Voice records a meeting.",
     "description": "settings > general. Settings > General: explanation below Sound for new mail. The coo is the pigeon sound from the Rukoo website; Rukoo Voice is the meeting recorder. src/renderer/settings.js (render)"
   },
+  "settings.general.chatNotifications": {
+    "message": "Team chat notifications",
+    "description": "settings > general. Settings > General: title of the switch for team chat notifications, after Sound for new mail. Shown while team chat is available; on by default. src/renderer/settings.js (render)"
+  },
+  "settings.general.chatNotificationsHelp": {
+    "message": "Direct messages and mentions in your workspaces.",
+    "description": "settings > general. Settings > General: explanation below Team chat notifications. src/renderer/settings.js (render)"
+  },
   "settings.general.notificationsUnavailable": {
     "message": "This computer doesn't offer notifications to Rukoo.",
     "description": "settings > general. Settings > General: below Send a test notification when the system has no notifications for Rukoo, such as a Linux desktop without a notification service. src/renderer/settings.js (noticesDesc)"
@@ -7840,6 +7856,10 @@
     "message": "Invite code",
     "description": "Settings > Rukoo account: label of the invite code field on the sign-up form, shown when the server is invite-only. src/renderer/settings.js."
   },
+  "settings.rukoo.inviteChatHelp": {
+    "message": "An invitation link to a team chat workspace works as an invite code too.",
+    "description": "Settings > Rukoo account: hint under the invite code field of the sign-up form, while team chat is available and the server accepts sign-ups with an invitation. src/renderer/rukoo-account.js"
+  },
   "settings.rukoo.understand": {
     "message": "I understand that if I forget my password, only my recovery key gets me back in.",
     "description": "Settings > Rukoo account: checkbox on the sign-up form. src/renderer/settings.js."
@@ -8036,6 +8056,10 @@
     "message": "This computer stops syncing and keeps its own copy of your categories.",
     "description": "Settings > Rukoo account: description of the sign out row. src/renderer/settings.js."
   },
+  "settings.rukoo.unsentChat": {
+    "message": { "one": "{count} chat message hasn't been sent yet and is lost when you sign out.", "other": "{count} chat messages haven't been sent yet and are lost when you sign out." },
+    "description": "Settings > Rukoo account: line added to the sign-out confirmation while team chat messages wait to be sent. {count}: those messages. src/renderer/rukoo-account.js"
+  },
   "settings.rukoo.signedOut": {
     "message": "Signed out",
     "description": "Settings > Rukoo account: toast after signing out. src/renderer/settings.js."
@@ -8047,6 +8071,10 @@
   "settings.rukoo.deleteHelp": {
     "message": "Deletes your account and everything in it from the server. Your devices keep their own copies and stop syncing. This cannot be undone.",
     "description": "Settings > Rukoo account: description of the delete row and text of its confirmation. src/renderer/settings.js."
+  },
+  "settings.rukoo.deleteChatNote": {
+    "message": "Messages you wrote in team chat stay in their workspaces under a deleted member, until each workspace's retention removes them.",
+    "description": "Settings > Rukoo account: note in the delete-account dialog while team chat is available. src/renderer/rukoo-account.js"
   },
   "settings.rukoo.deleted": {
     "message": "Account deleted",
@@ -10130,6 +10158,1334 @@
   "settings.agents.customRemoved": {
     "message": "{name} removed",
     "description": "Settings > Agents: toast after removing a custom agent."
+  },
+  "chat.mode.label": {
+    "message": "Chat",
+    "description": "Sidebar mode switch: label of the fourth segment, which opens team chat. The segment shows only while team chat is available. src/renderer/app.js (renderModeSwitch)"
+  },
+  "chat.mode.shortcut": {
+    "message": "Chat (Ctrl+4)",
+    "description": "Sidebar mode switch: tooltip of the Chat segment, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+  },
+  "chat.mode.switchLabel": {
+    "message": "Mail, calendar, meetings or chat",
+    "description": "Sidebar mode switch: accessible name of the whole switch while it has the Chat segment. Without team chat the switch keeps calendar.mode.label. src/renderer/app.js (renderModeSwitch)"
+  },
+  "chat.mode.badgeCount": {
+    "message": { "one": "Chat, {count} message for you", "other": "Chat, {count} messages for you" },
+    "description": "Sidebar mode switch: accessible name of the Chat segment while its pill counts direct messages and mentions for the user. {count}: that number. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeSwitch)"
+  },
+  "chat.mode.badgeUnread": {
+    "message": "Chat, unread messages",
+    "description": "Sidebar mode switch: accessible name of the Chat segment when it shows a dot: unread messages, none of them addressed to the user. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeSwitch)"
+  },
+  "chat.view.label": {
+    "message": "Team chat",
+    "description": "Chat view: accessible name of the team chat section that replaces the mail panes in Chat mode. src/renderer/app.js, src/renderer/chat.js"
+  },
+  "chat.sidebar.label": {
+    "message": "Channels and direct messages",
+    "description": "Chat sidebar: accessible name of the sidebar while Chat mode is open. src/renderer/app.js, src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.channels": {
+    "message": "Channels",
+    "description": "Chat sidebar: heading over the channels the user joined. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.direct": {
+    "message": "Direct messages",
+    "description": "Chat sidebar: heading over the direct messages. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.addChannel": {
+    "message": "Add a channel",
+    "description": "Chat sidebar: tooltip and accessible name of the + button beside the Channels heading. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.makeChannel": {
+    "message": "Make a channel",
+    "description": "Chat sidebar: menu item under the + beside Channels that opens the Make a channel dialog. src/renderer/chat.js (sidebarClick)"
+  },
+  "chat.sidebar.browse": {
+    "message": "Browse channels",
+    "description": "Chat sidebar: row and menu item that opens the list of the workspace's channels. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.newMessage": {
+    "message": "New message",
+    "description": "Chat sidebar: button that starts a direct message; full members only. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.newMessageShortcut": {
+    "message": "New message (Ctrl+N)",
+    "description": "Chat sidebar: tooltip of the New message button, with its keyboard shortcut. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.rowUnread": {
+    "message": { "one": "{name}, {count} unread message", "other": "{name}, {count} unread messages" },
+    "description": "Chat sidebar: accessible name of a channel or direct message row with unread messages. {name}: the channel or the people in the conversation; {count}: unread messages. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.rowMentions": {
+    "message": { "one": "{name}, {count} mention", "other": "{name}, {count} mentions" },
+    "description": "Chat sidebar: accessible name of a channel row where someone mentioned the user. {name}: the channel; {count}: mentions. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.rowMuted": {
+    "message": "{name}, muted",
+    "description": "Chat sidebar: accessible name of a row the user muted on this computer; muted rows are dimmed and show no badge. {name}: the channel or the people in the conversation. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.rowClosed": {
+    "message": "{name}, closed",
+    "description": "Chat sidebar: accessible name of a closed direct message, which is dimmed and sorted last. {name}: the people in the conversation. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.noChannels": {
+    "message": "No channels yet",
+    "description": "Chat sidebar: line under Channels when the user is in no channel. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.sidebar.noDirect": {
+    "message": "No direct messages yet",
+    "description": "Chat sidebar: line under Direct messages when the user has none. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.workspace.switch": {
+    "message": "Switch workspace",
+    "description": "Chat sidebar: tooltip of the workspace switcher at the top. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.workspace.sub": {
+    "message": "{role} · {host}",
+    "description": "Chat sidebar: second line of the workspace switcher. {role}: the user's role in the workspace (chat.roles.*); {host}: the server's host name. src/renderer/chat.js (sidebarHtml)"
+  },
+  "chat.workspace.menuHeading": {
+    "message": "Workspaces",
+    "description": "Workspace menu under the switcher: heading over the list of workspaces. src/renderer/chat.js"
+  },
+  "chat.workspace.make": {
+    "message": "Make a workspace",
+    "description": "Workspace menu item, sidebar row and button on the No workspace empty state that opens Make a workspace. src/renderer/chat.js"
+  },
+  "chat.workspace.join": {
+    "message": "Join with an invitation link",
+    "description": "Workspace menu item, sidebar row and button on the No workspace empty state that opens Join a workspace. src/renderer/chat.js"
+  },
+  "chat.workspace.invite": {
+    "message": "Invite people",
+    "description": "Workspace menu item and button in a channel's intro that opens Invite people. src/renderer/chat.js, src/renderer/chat-view.js"
+  },
+  "chat.workspace.members": {
+    "message": "Members",
+    "description": "Workspace menu item that opens the list of the workspace's members. src/renderer/chat.js"
+  },
+  "chat.workspace.yourName": {
+    "message": "Change your name",
+    "description": "Workspace menu item that opens the dialog for the user's name in this workspace. src/renderer/chat.js"
+  },
+  "chat.workspace.settings": {
+    "message": "Workspace settings",
+    "description": "Workspace menu item that opens Workspace settings, and that dialog's title. src/renderer/chat.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.workspace.leave": {
+    "message": "Leave workspace",
+    "description": "Workspace menu item that asks to leave the workspace. src/renderer/chat.js"
+  },
+  "chat.workspace.delete": {
+    "message": "Delete workspace",
+    "description": "Workspace menu item for owners, under Leave workspace, and the button in Workspace settings. It asks with chat.delete.title. src/renderer/chat.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.owner": {
+    "message": "Owner",
+    "description": "Workspace role in the switcher's second line, member lists and Workspace settings. src/renderer/chat.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.admin": {
+    "message": "Admin",
+    "description": "Workspace role in the switcher's second line, member lists and Workspace settings. src/renderer/chat.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.member": {
+    "message": "Member",
+    "description": "Workspace role in the switcher's second line, member lists, Invite people and Workspace settings. src/renderer/chat.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.guest": {
+    "message": "Guest",
+    "description": "Workspace role in the switcher's second line, member lists and Invite people; also the tag beside a guest's name in the message list. src/renderer/chat.js, src/renderer/chat-view.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.manager": {
+    "message": "Manager",
+    "description": "Channel role: pill beside a channel manager in the channel's member list. src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.owners": {
+    "message": "Owners",
+    "description": "Workspace members dialog: group heading over the owners. src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.admins": {
+    "message": "Admins",
+    "description": "Workspace members dialog: group heading over the admins. src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.members": {
+    "message": "Members",
+    "description": "Workspace members dialog: group heading over the members. src/renderer/chat-dialogs.js"
+  },
+  "chat.roles.guests": {
+    "message": "Guests",
+    "description": "Workspace members dialog: group heading over the guests. src/renderer/chat-dialogs.js"
+  },
+  "chat.status.connected": {
+    "message": "Connected",
+    "description": "Chat sidebar foot: status while the workspace's live connection is up. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.connectedTitle": {
+    "message": "Connected to {host}",
+    "description": "Chat sidebar foot: tooltip of the Connected status. {host}: the server's host name. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.connecting": {
+    "message": "Connecting…",
+    "description": "Chat sidebar foot: status while Rukoo connects to the workspace. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.reconnecting": {
+    "message": "Reconnecting…",
+    "description": "Chat sidebar foot: status after the connection dropped, while Rukoo tries again. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.catchingUp": {
+    "message": "Catching up…",
+    "description": "Chat sidebar foot: status while Rukoo loads the whole workspace from the server again. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.offline": {
+    "message": "Offline",
+    "description": "Chat sidebar foot: status while this computer can't reach the server. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.signedOut": {
+    "message": "Signed out",
+    "description": "Chat sidebar foot: status without a Rukoo account session; a click opens Settings on the Rukoo account page. src/renderer/chat.js (footStatus)"
+  },
+  "chat.empty.loading": {
+    "message": "Loading team chat",
+    "description": "Chat view: accessible name of the spinner while team chat loads. src/renderer/chat.js"
+  },
+  "chat.empty.signedOutTitle": {
+    "message": "Sign in to use team chat",
+    "description": "Chat view, signed out: title of the empty state when there is no Rukoo account session. src/renderer/chat.js"
+  },
+  "chat.empty.signedOutBody": {
+    "message": "Team chat runs on your Rukoo account at {host}. Sign in, or create an account to make or join a workspace.",
+    "description": "Chat view, signed out: text under the title. {host}: the host name of the Rukoo account server. src/renderer/chat.js"
+  },
+  "chat.empty.signUpAction": {
+    "message": "Create an account",
+    "description": "Chat view, signed out: button that opens Settings on the Rukoo account sign-up form. src/renderer/chat.js"
+  },
+  "chat.empty.signInAction": {
+    "message": "Sign in",
+    "description": "Chat view, signed out: button that opens Settings on the Rukoo account sign-in form. src/renderer/chat.js"
+  },
+  "chat.empty.inviteHint": {
+    "message": "Got an invitation link? Paste it where Rukoo asks for an invite code.",
+    "description": "Chat view, signed out: hint under the buttons when the server accepts sign-ups with an invitation. src/renderer/chat.js"
+  },
+  "chat.empty.storageTitle": {
+    "message": "Team chat can't start",
+    "description": "Chat view: title of the empty state when Rukoo can't open the chat cache on disk. src/renderer/chat.js"
+  },
+  "chat.empty.storageBody": {
+    "message": "Rukoo couldn't open its chat storage on this computer. Restart Rukoo to try again.",
+    "description": "Chat view: text of the empty state when Rukoo can't open the chat cache on disk. src/renderer/chat.js"
+  },
+  "chat.empty.upgradeTitle": {
+    "message": "Update Rukoo to use team chat",
+    "description": "Chat view: title of the empty state when the server needs a newer Rukoo. src/renderer/chat.js"
+  },
+  "chat.empty.upgradeBody": {
+    "message": "{host} uses a newer version of team chat than this Rukoo knows.",
+    "description": "Chat view: text of the empty state when the server needs a newer Rukoo. {host}: the server's host name. src/renderer/chat.js"
+  },
+  "chat.empty.upgradeAction": {
+    "message": "Check for updates",
+    "description": "Chat view: button on the newer-Rukoo empty state that checks for an update. src/renderer/chat.js"
+  },
+  "chat.empty.noWorkspaceTitle": {
+    "message": "No workspace yet",
+    "description": "Chat view: title of the empty state before the user is in any workspace. src/renderer/chat.js"
+  },
+  "chat.empty.noWorkspaceBody": {
+    "message": "Make a workspace for your team, or join one with an invitation link.",
+    "description": "Chat view: text of the empty state before the user is in any workspace. src/renderer/chat.js"
+  },
+  "chat.empty.pickTitle": {
+    "message": "Nothing open",
+    "description": "Chat view: title of the empty state in a workspace when no conversation is open. src/renderer/chat.js"
+  },
+  "chat.empty.pickBody": {
+    "message": "Pick a channel or a conversation on the left.",
+    "description": "Chat view: text of the empty state in a workspace when no conversation is open. src/renderer/chat.js"
+  },
+  "chat.banner.offline": {
+    "message": "You're offline. Messages you send wait until Rukoo reconnects.",
+    "description": "Conversation pane: banner above the messages while Rukoo is offline. src/renderer/chat-view.js"
+  },
+  "chat.banner.reconnecting": {
+    "message": "Reconnecting to {host}…",
+    "description": "Conversation pane: banner after 10 seconds of reconnecting. {host}: the server's host name. src/renderer/chat-view.js"
+  },
+  "chat.banner.tryNow": {
+    "message": "Try now",
+    "description": "Conversation pane: button on the offline and reconnecting banners that syncs at once. src/renderer/chat-view.js"
+  },
+  "chat.banner.paused": {
+    "message": "Rukoo stopped syncing {workspace} because its server is behind what this computer saw. Start over to load it again from the server.",
+    "description": "Conversation pane: banner while Rukoo stopped a workspace because the server's history is older than what this computer cached. {workspace}: the workspace name. src/renderer/chat-view.js"
+  },
+  "chat.banner.startOver": {
+    "message": "Start over",
+    "description": "Conversation pane: button on the paused banner that drops the workspace's cache and loads it from the server again. src/renderer/chat-view.js"
+  },
+  "chat.gone.conversationTitle": {
+    "message": "You're no longer in {name}",
+    "description": "Conversation pane: title after the user lost access to the open conversation. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.gone.conversationBody": {
+    "message": "You were taken out of this conversation, or it no longer exists. Rukoo removed its messages from this computer.",
+    "description": "Conversation pane: text under the title after the user lost access to the open conversation. src/renderer/chat-view.js"
+  },
+  "chat.gone.workspaceTitle": {
+    "message": "You're no longer in {workspace}",
+    "description": "Chat view: title after the user lost access to the open workspace. {workspace}: the workspace name. src/renderer/chat.js"
+  },
+  "chat.gone.workspaceBody": {
+    "message": "Rukoo removed its messages from this computer.",
+    "description": "Chat view: text under the title after the user lost access to the open workspace. src/renderer/chat.js"
+  },
+  "chat.head.members": {
+    "message": { "one": "{count} member", "other": "{count} members" },
+    "description": "Conversation header: member count; also in the channel rows of Browse channels. {count}: members. src/renderer/chat-view.js, src/renderer/chat-dialogs.js"
+  },
+  "chat.head.private": {
+    "message": "Private",
+    "description": "Conversation header: marker after the member count of a private channel. src/renderer/chat-view.js"
+  },
+  "chat.head.direct": {
+    "message": "Direct message · hosted by {host}",
+    "description": "Conversation header: line under the title of a direct message. {host}: the server's host name. src/renderer/chat-view.js"
+  },
+  "chat.head.membersButton": {
+    "message": "Members",
+    "description": "Conversation header: accessible name of the Members button. src/renderer/chat-view.js"
+  },
+  "chat.head.more": {
+    "message": "More actions",
+    "description": "Conversation header: tooltip and accessible name of the More actions button. src/renderer/chat-view.js"
+  },
+  "chat.head.addPeople": {
+    "message": "Add people",
+    "description": "Conversation header More menu: item that adds people to the channel. src/renderer/chat-view.js"
+  },
+  "chat.head.rename": {
+    "message": "Rename channel",
+    "description": "Conversation header More menu: item that renames the channel. src/renderer/chat-view.js"
+  },
+  "chat.head.markRead": {
+    "message": "Mark as read",
+    "description": "Conversation header More menu: item that marks the conversation as read. src/renderer/chat-view.js"
+  },
+  "chat.head.mute": {
+    "message": "Mute",
+    "description": "Conversation header More menu: item that mutes the conversation on this computer, which stops its badges and notifications. src/renderer/chat-view.js"
+  },
+  "chat.head.unmute": {
+    "message": "Unmute",
+    "description": "Conversation header More menu: item that ends the mute of a muted conversation. src/renderer/chat-view.js"
+  },
+  "chat.head.leave": {
+    "message": "Leave channel",
+    "description": "Conversation header More menu: item that asks to leave the channel. src/renderer/chat-view.js"
+  },
+  "chat.head.leaveDm": {
+    "message": "Leave conversation",
+    "description": "Conversation header More menu: item in an open direct message that asks to leave it. src/renderer/chat-view.js"
+  },
+  "chat.head.block": {
+    "message": "Block {name}",
+    "description": "Conversation header More menu: item in a one-to-one direct message that asks to block the other person. {name}: that person. src/renderer/chat-view.js"
+  },
+  "chat.head.archive": {
+    "message": "Archive channel",
+    "description": "Conversation header More menu: item that asks to archive the channel. src/renderer/chat-view.js"
+  },
+  "chat.log.label": {
+    "message": "Messages in {name}",
+    "description": "Conversation pane: accessible name of the message list. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.log.new": {
+    "message": "New",
+    "description": "Message list: divider before the first unread message. src/renderer/chat-view.js"
+  },
+  "chat.log.newLabel": {
+    "message": "New messages",
+    "description": "Message list: accessible name of the New divider. src/renderer/chat-view.js"
+  },
+  "chat.log.jumpUnread": {
+    "message": { "one": "{count} new message", "other": "{count} new messages" },
+    "description": "Message list: pill that scrolls up to the first unread message. {count}: unread messages above. src/renderer/chat-view.js"
+  },
+  "chat.log.latest": {
+    "message": "Latest",
+    "description": "Message list: pill that scrolls down to the newest message. src/renderer/chat-view.js"
+  },
+  "chat.log.latestCount": {
+    "message": { "one": "{count} new", "other": "{count} new" },
+    "description": "Message list: the Latest pill when new messages came in below. {count}: how many. src/renderer/chat-view.js"
+  },
+  "chat.log.loadingOlder": {
+    "message": "Loading older messages…",
+    "description": "Message list: row at the top while older messages load. src/renderer/chat-view.js"
+  },
+  "chat.log.olderFailed": {
+    "message": "Couldn't load older messages.",
+    "description": "Message list: row at the top when older messages failed to load. src/renderer/chat-view.js"
+  },
+  "chat.log.startChannel": {
+    "message": "This is the start of #{name}",
+    "description": "Message list: intro at the top of a channel. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.log.startChannelBy": {
+    "message": "{name} made it on {date}.",
+    "description": "Message list: line under the channel intro. {name}: who made the channel; {date}: when. src/renderer/chat-view.js"
+  },
+  "chat.log.startPublic": {
+    "message": "Everyone in {workspace} can see and join it.",
+    "description": "Message list: intro line of a channel the whole workspace can see. {workspace}: the workspace name. src/renderer/chat-view.js"
+  },
+  "chat.log.startPrivate": {
+    "message": "Only people who are added can see it.",
+    "description": "Message list: intro line of a private channel. src/renderer/chat-view.js"
+  },
+  "chat.log.startDirect": {
+    "message": "This is the start of your conversation with {names}.",
+    "description": "Message list: intro of a direct message. {names}: the other people, joined with the locale's list format. src/renderer/chat-view.js"
+  },
+  "chat.log.hostNote": {
+    "message": "{host} hosts this conversation and can read it.",
+    "description": "Message list: host disclosure in the intro of a direct message. {host}: the server's host name. src/renderer/chat-view.js"
+  },
+  "chat.log.retentionFloor": {
+    "message": { "one": "Messages older than {count} day were removed.", "other": "Messages older than {count} days were removed." },
+    "description": "Message list: row at the top of a conversation whose oldest messages passed the workspace's retention. {count}: the retention in days. src/renderer/chat-view.js"
+  },
+  "chat.log.removed": {
+    "message": "Message removed",
+    "description": "Message list and thread panel: text of a removed message, which keeps its author and time. src/renderer/chat-view.js"
+  },
+  "chat.log.formerMember": {
+    "message": "Former member",
+    "description": "Message list: tag beside the name of an author who left the workspace. src/renderer/chat-view.js"
+  },
+  "chat.log.deletedMember": {
+    "message": "Deleted member",
+    "description": "Message list: name and tag of an author whose account was deleted; also in direct message titles. src/renderer/chat-view.js, src/renderer/chat-model.js"
+  },
+  "chat.log.replies": {
+    "message": { "one": "{count} reply", "other": "{count} replies" },
+    "description": "Message list: reply summary under a message with a thread, and the divider in the thread panel. {count}: replies. src/renderer/chat-view.js"
+  },
+  "chat.log.repliesUnread": {
+    "message": { "one": "{count} reply, new", "other": "{count} replies, some new" },
+    "description": "Message list: accessible name of the reply summary when some replies are new. {count}: replies. src/renderer/chat-view.js"
+  },
+  "chat.log.lastReply": {
+    "message": "Last reply {time}",
+    "description": "Message list: text beside the reply count. {time}: when the newest reply came. src/renderer/chat-view.js"
+  },
+  "chat.log.replyTo": {
+    "message": "replied to {name}: {text}",
+    "description": "Message list: context line above a reply in the main timeline; a click opens its thread. {name}: the author of the thread's first message; {text}: the start of that message. src/renderer/chat-view.js"
+  },
+  "chat.log.replyToRemoved": {
+    "message": "replied to a removed message",
+    "description": "Message list: context line above a reply whose thread's first message was removed. src/renderer/chat-view.js"
+  },
+  "chat.log.replyInThread": {
+    "message": "replied in a thread",
+    "description": "Message list: context line above a reply whose thread's first message isn't on this computer. src/renderer/chat-view.js"
+  },
+  "chat.sys.created": {
+    "message": "{actor} made #{name}",
+    "description": "Message list: system row when a channel was made. {actor}: who made it; {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.sys.renamed": {
+    "message": "{actor} renamed the channel to #{name}",
+    "description": "Message list: system row when a channel was renamed. {actor}: who renamed it; {name}: the new name, after #. src/renderer/chat-view.js"
+  },
+  "chat.sys.archived": {
+    "message": "{actor} archived this channel",
+    "description": "Message list: system row when a channel was archived. {actor}: who archived it. src/renderer/chat-view.js"
+  },
+  "chat.sys.joined": {
+    "message": "{name} joined",
+    "description": "Message list: system row when someone joined the channel. {name}: who joined. src/renderer/chat-view.js"
+  },
+  "chat.sys.added": {
+    "message": "{actor} added {name}",
+    "description": "Message list: system row when someone added another person. {actor}: who added; {name}: who was added. src/renderer/chat-view.js"
+  },
+  "chat.sys.left": {
+    "message": "{name} left",
+    "description": "Message list: system row when someone left the conversation. {name}: who left. src/renderer/chat-view.js"
+  },
+  "chat.sys.removedBy": {
+    "message": "{actor} removed {name}",
+    "description": "Message list: system row when someone took another person out of the channel. {actor}: who removed; {name}: who was removed. src/renderer/chat-view.js"
+  },
+  "chat.sys.dmStarted": {
+    "message": "{actor} started this conversation",
+    "description": "Message list: system row at the start of a direct message. {actor}: who started it. src/renderer/chat-view.js"
+  },
+  "chat.msg.actions": {
+    "message": "Message actions",
+    "description": "Message list: accessible name of the toolbar on a hovered or focused message. src/renderer/chat-view.js"
+  },
+  "chat.msg.reply": {
+    "message": "Reply in thread",
+    "description": "Message toolbar and message menu: item that opens the message's thread. src/renderer/chat-view.js"
+  },
+  "chat.msg.copy": {
+    "message": "Copy text",
+    "description": "Message toolbar and message menu: item that copies the message's text. src/renderer/chat-view.js"
+  },
+  "chat.msg.copied": {
+    "message": "Copied",
+    "description": "Message list: toast after Copy text. src/renderer/chat-view.js"
+  },
+  "chat.msg.more": {
+    "message": "More actions for this message",
+    "description": "Message toolbar: tooltip and accessible name of the button that opens the message menu. src/renderer/chat-view.js"
+  },
+  "chat.msg.remove": {
+    "message": "Remove message",
+    "description": "Message menu: item that asks to remove the message. src/renderer/chat-view.js"
+  },
+  "chat.msg.sender": {
+    "message": "{name}, {time}",
+    "description": "Message list: hidden label of a grouped message without its own name line. {name}: the author; {time}: when it was sent. src/renderer/chat-view.js"
+  },
+  "chat.msg.announce": {
+    "message": "{name}: {text}",
+    "description": "Message list: screen reader announcement of an incoming message. {name}: the author; {text}: the message. src/renderer/chat-view.js"
+  },
+  "chat.msg.mentionsYou": {
+    "message": "Mentions you",
+    "description": "Message list: hidden text on a message that mentions the user. src/renderer/chat-view.js"
+  },
+  "chat.msg.sending": {
+    "message": "Sending…",
+    "description": "Message list: line under a message on its way, after one second. src/renderer/chat-view.js"
+  },
+  "chat.msg.waiting": {
+    "message": "Waits for a connection",
+    "description": "Message list: line under a message written while offline, which Rukoo sends when it reconnects. src/renderer/chat-view.js"
+  },
+  "chat.msg.waitingTurn": {
+    "message": "Waits for the message above",
+    "description": "Message list: line under an unsent message that waits until the one before it in this conversation is sent. src/renderer/chat-view.js"
+  },
+  "chat.msg.failed": {
+    "message": "Not sent: {reason}",
+    "description": "Message list: line under a message the server refused. {reason}: the error text (chat.errors.*). src/renderer/chat-view.js"
+  },
+  "chat.msg.retry": {
+    "message": "Try again",
+    "description": "Message list: button under a refused message that sends it again. src/renderer/chat-view.js"
+  },
+  "chat.msg.discard": {
+    "message": "Discard",
+    "description": "Message list: button under an unsent message that throws it away. src/renderer/chat-view.js"
+  },
+  "chat.msg.unknown": {
+    "message": "Rukoo can't tell whether this was sent.",
+    "description": "Message list: line under a message when Rukoo can't tell whether the server got it. src/renderer/chat-view.js"
+  },
+  "chat.msg.sendAgain": {
+    "message": "Send again",
+    "description": "Message list: button under an unsent or uncertain message that sends a copy. src/renderer/chat-view.js"
+  },
+  "chat.msg.staleGrant": {
+    "message": "You left or were taken out of this conversation before this was sent.",
+    "description": "Message list: line under a message written while the user was in the conversation, who left or was taken out before it was sent. src/renderer/chat-view.js"
+  },
+  "chat.msg.sendAgainTitle": {
+    "message": "Send this message again?",
+    "description": "Message list: title of the confirmation before Send again on a message that may have arrived. src/renderer/chat-view.js"
+  },
+  "chat.msg.sendAgainBody": {
+    "message": "If the first one did arrive, people see it twice.",
+    "description": "Message list: text of the confirmation before Send again on a message that may have arrived. src/renderer/chat-view.js"
+  },
+  "chat.msg.sendWithoutMentions": {
+    "message": "Send without mentions",
+    "description": "Message list: button under a message refused because someone it mentions left the conversation; sends it without the mentions. src/renderer/chat-view.js"
+  },
+  "chat.remove.title": {
+    "message": "Remove this message?",
+    "description": "Remove a message: confirmation title. src/renderer/chat-view.js"
+  },
+  "chat.remove.body": {
+    "message": "It's removed for everyone in {name}. You can't undo this.",
+    "description": "Remove a message: confirmation text for the user's own message. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.remove.bodyOther": {
+    "message": "It's removed for everyone in {name}, and {author} sees that it was removed.",
+    "description": "Remove a message: confirmation text when a channel manager removes someone else's message. {name}: the channel; {author}: who wrote it. src/renderer/chat-view.js"
+  },
+  "chat.remove.confirm": {
+    "message": "Remove",
+    "description": "Remove a message: confirmation button. src/renderer/chat-view.js"
+  },
+  "chat.input.placeholderChannel": {
+    "message": "Message #{name}",
+    "description": "Chat composer: placeholder and accessible name in a channel. {name}: the channel name, after #. src/renderer/chat-input.js"
+  },
+  "chat.input.placeholderDirect": {
+    "message": "Message {name}",
+    "description": "Chat composer: placeholder and accessible name in a direct message. {name}: the other people. src/renderer/chat-input.js"
+  },
+  "chat.input.placeholderThread": {
+    "message": "Reply…",
+    "description": "Chat composer: placeholder in the thread panel. src/renderer/chat-input.js"
+  },
+  "chat.input.send": {
+    "message": "Send (Enter)",
+    "description": "Chat composer: tooltip and accessible name of the Send button, with its key. src/renderer/chat-input.js"
+  },
+  "chat.input.tooLong": {
+    "message": "This message is too long to send. Split it in two.",
+    "description": "Chat composer: note while the message is over 16 KB, when Send is disabled. src/renderer/chat-input.js"
+  },
+  "chat.input.tooManyMentions": {
+    "message": "A message can mention 32 people at most.",
+    "description": "Chat composer: note while the message mentions more than 32 people, when Send is disabled. src/renderer/chat-input.js"
+  },
+  "chat.input.notJoined": {
+    "message": "You're not in #{name} yet.",
+    "description": "Conversation pane: bar instead of the composer in a channel opened from Browse channels that the user hasn't joined. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.input.join": {
+    "message": "Join #{name}",
+    "description": "Conversation pane: button on the not-joined bar that joins the channel. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.input.archived": {
+    "message": "#{name} is archived. You can still read it.",
+    "description": "Conversation pane: bar instead of the composer in an archived channel. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.input.closedLeft": {
+    "message": "Someone left, so this conversation is closed. You can still read it.",
+    "description": "Conversation pane: bar instead of the composer in a direct message that closed because someone left. src/renderer/chat-view.js"
+  },
+  "chat.input.closedIneligible": {
+    "message": "This conversation closed when someone became a guest. You can still read it.",
+    "description": "Conversation pane: bar instead of the composer in a direct message that closed because someone became a guest. src/renderer/chat-view.js"
+  },
+  "chat.input.closedBlocked": {
+    "message": "This conversation is closed. You can still read it.",
+    "description": "Conversation pane: bar instead of the composer in a direct message closed for another reason, such as a block. src/renderer/chat-view.js"
+  },
+  "chat.input.newConversation": {
+    "message": "Start a new conversation",
+    "description": "Conversation pane: button on the closed-conversation bar that starts a new direct message with the same people. src/renderer/chat-view.js"
+  },
+  "chat.input.removeFromList": {
+    "message": "Remove from list",
+    "description": "Conversation pane: button on the closed-conversation bar that leaves it, so it goes from the sidebar. src/renderer/chat-view.js"
+  },
+  "chat.input.paused": {
+    "message": "Sending is stopped while {workspace} is paused.",
+    "description": "Conversation pane: bar instead of the composer while Rukoo stopped the workspace (see chat.banner.paused). {workspace}: the workspace name. src/renderer/chat-view.js"
+  },
+  "chat.mentions.label": {
+    "message": "People to mention",
+    "description": "Chat composer: accessible name of the list of people to mention, after typing @. src/renderer/chat-input.js"
+  },
+  "chat.mentions.none": {
+    "message": "Nobody here by that name",
+    "description": "Chat composer: line in the mention list when no member matches. src/renderer/chat-input.js"
+  },
+  "chat.thread.label": {
+    "message": "Thread",
+    "description": "Thread panel: title and accessible name. src/renderer/chat-view.js"
+  },
+  "chat.thread.inChannel": {
+    "message": "in #{name}",
+    "description": "Thread panel: line under the title in a channel. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
+  "chat.thread.inDirect": {
+    "message": "with {names}",
+    "description": "Thread panel: line under the title in a direct message. {names}: the other people. src/renderer/chat-view.js"
+  },
+  "chat.thread.close": {
+    "message": "Close thread (Esc)",
+    "description": "Thread panel: tooltip and accessible name of the Close button, with its key. src/renderer/chat-view.js"
+  },
+  "chat.thread.back": {
+    "message": "Back to {name}",
+    "description": "Thread panel: Back button when the thread covers the messages in a narrow window. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.thread.loading": {
+    "message": "Loading replies…",
+    "description": "Thread panel: line while the replies load. src/renderer/chat-view.js"
+  },
+  "chat.thread.failed": {
+    "message": "Couldn't load the replies.",
+    "description": "Thread panel: line when the replies failed to load. src/renderer/chat-view.js"
+  },
+  "chat.thread.partial": {
+    "message": "Older replies aren't on this computer yet.",
+    "description": "Thread panel: line above a thread Rukoo could only partly load. src/renderer/chat-view.js"
+  },
+  "chat.thread.loadEarlier": {
+    "message": "Load earlier replies",
+    "description": "Thread panel: link under the partial-thread line that loads earlier replies. src/renderer/chat-view.js"
+  },
+  "chat.thread.rootRemoved": {
+    "message": "This message was removed, so nobody can reply to it.",
+    "description": "Thread panel: note instead of the composer when the thread's first message was removed. src/renderer/chat-view.js"
+  },
+  "chat.thread.rootExpired": {
+    "message": { "one": "The first message is older than {count} day and was removed.", "other": "The first message is older than {count} days and was removed." },
+    "description": "Thread panel: line above the replies when the thread's first message passed the workspace's retention. {count}: the retention in days. src/renderer/chat-view.js"
+  },
+  "chat.host.line": {
+    "message": "Hosted by {operator} on {host}. Data stored in {location}.",
+    "description": "Make a workspace, Join and Workspace settings: who hosts the workspace. {operator}: who runs the server; {host}: its host name; {location}: where data is stored. src/renderer/chat-dialogs.js"
+  },
+  "chat.host.lineNoLocation": {
+    "message": "Hosted by {operator} on {host}.",
+    "description": "Make a workspace, Join and Workspace settings: who hosts the workspace, when the storage location is unknown. {operator}: who runs the server; {host}: its host name. src/renderer/chat-dialogs.js"
+  },
+  "chat.host.retention": {
+    "message": { "one": "Messages are kept for {count} day.", "other": "Messages are kept for {count} days." },
+    "description": "Make a workspace, Join and Workspace settings: how long messages are kept. {count}: days. src/renderer/chat-dialogs.js"
+  },
+  "chat.host.reads": {
+    "message": "The host can read messages in this workspace.",
+    "description": "Make a workspace, Join and Workspace settings: line saying the host can read the messages. src/renderer/chat-dialogs.js"
+  },
+  "chat.make.title": {
+    "message": "Make a workspace",
+    "description": "Make a workspace dialog: title. src/renderer/chat-dialogs.js"
+  },
+  "chat.make.name": {
+    "message": "Workspace name",
+    "description": "Make a workspace dialog: label of the workspace name field. src/renderer/chat-dialogs.js"
+  },
+  "chat.make.namePlaceholder": {
+    "message": "For example, your team or company",
+    "description": "Make a workspace dialog: placeholder of the workspace name field. src/renderer/chat-dialogs.js"
+  },
+  "chat.make.yourName": {
+    "message": "Your name in this workspace",
+    "description": "Make a workspace and Join dialogs: label of the field for the user's name in the workspace. src/renderer/chat-dialogs.js"
+  },
+  "chat.make.submit": {
+    "message": "Make workspace",
+    "description": "Make a workspace dialog: button that makes it. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.title": {
+    "message": "Join a workspace",
+    "description": "Join a workspace dialog: title. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.link": {
+    "message": "Invitation link",
+    "description": "Join a workspace dialog: label of the invitation link field. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.check": {
+    "message": "Continue",
+    "description": "Join a workspace dialog: button that checks the invitation link. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.checking": {
+    "message": "Checking the invitation…",
+    "description": "Join a workspace dialog: line while Rukoo checks the invitation. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.invitedBy": {
+    "message": "{name} invited you as a member.",
+    "description": "Join a workspace dialog: invitation card for a member invitation. {name}: who made the invitation. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.invitedByGuest": {
+    "message": "{name} invited you as a guest.",
+    "description": "Join a workspace dialog: invitation card for a guest invitation. {name}: who made the invitation. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.channels": {
+    "message": { "one": "You'll be in {count} channel.", "other": "You'll be in {count} channels." },
+    "description": "Join a workspace dialog: invitation card line. {count}: the channels the invitation adds the user to. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.expires": {
+    "message": "This invitation works until {date}.",
+    "description": "Join a workspace dialog: invitation card line. {date}: when the invitation expires. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.history": {
+    "message": "Joining a channel lets you read its earlier messages.",
+    "description": "Join a workspace dialog: invitation card line about earlier messages. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.submit": {
+    "message": "Join {name}",
+    "description": "Join a workspace dialog: button that joins. {name}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.otherHost": {
+    "message": "This invitation is for {host}. Rukoo joins workspaces on {own}, the server of your Rukoo account.",
+    "description": "Join a workspace dialog: message for an invitation to a workspace on another server, shown with Close only. {host}: the invitation's server; {own}: the server of the user's Rukoo account. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.already": {
+    "message": "You're already in {name}.",
+    "description": "Join a workspace dialog: message when the user is already in the workspace, shown with an Open button. {name}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.open": {
+    "message": "Open",
+    "description": "Join a workspace dialog: button that opens the workspace the user is already in. src/renderer/chat-dialogs.js"
+  },
+  "chat.join.badLink": {
+    "message": "This isn't a Rukoo invitation link.",
+    "description": "Join a workspace dialog: error under the field when the text isn't a Rukoo invitation link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.title": {
+    "message": "Invite people to {workspace}",
+    "description": "Invite people dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.role": {
+    "message": "Invite as",
+    "description": "Invite people dialog: label of the role choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.memberHint": {
+    "message": "Members see every channel the workspace can see, and can join them.",
+    "description": "Invite people dialog: hint under the Member choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.guestHint": {
+    "message": "Guests see only the channels you pick.",
+    "description": "Invite people dialog: hint under the Guest choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.channels": {
+    "message": "Add to channels",
+    "description": "Invite people dialog: label of the list of channels to add the invited person to. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.channelsNone": {
+    "message": "You don't manage any channels yet.",
+    "description": "Invite people dialog: line instead of the channel list when the user manages no channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.guestNeedsChannel": {
+    "message": "Pick at least one channel for a guest.",
+    "description": "Invite people dialog: hint while a guest invitation has no channel picked. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.expires": {
+    "message": "Link works for",
+    "description": "Invite people dialog: label of the expiry choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.days": {
+    "message": { "one": "{count} day", "other": "{count} days" },
+    "description": "Invite people dialog: an expiry choice. {count}: days. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.make": {
+    "message": "Make link",
+    "description": "Invite people dialog: button that makes the invitation link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.ready": {
+    "message": "Anyone with this link can join until {date}. It works once.",
+    "description": "Invite people dialog: line under the finished link. {date}: when it expires. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.copy": {
+    "message": "Copy link",
+    "description": "Invite people dialog: button that copies the link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.copied": {
+    "message": "Link copied",
+    "description": "Invite people dialog: toast after copying the link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.done": {
+    "message": "Done",
+    "description": "Invite people dialog: button that closes the dialog. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.open": {
+    "message": "Open invitations",
+    "description": "Invite people dialog and Workspace settings: heading over the open invitations. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.channelCount": {
+    "message": { "one": "{count} channel", "other": "{count} channels" },
+    "description": "Open invitations list: how many channels an invitation adds. {count}: channels. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.until": {
+    "message": "Until {date}",
+    "description": "Open invitations list: when an invitation expires. {date}: the date. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.by": {
+    "message": "By {name}",
+    "description": "Open invitations list: who made an invitation. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.withdraw": {
+    "message": "Withdraw",
+    "description": "Open invitations list: button that withdraws an invitation. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.none": {
+    "message": "No open invitations",
+    "description": "Open invitations list: line when there are none. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.makeTitle": {
+    "message": "Make a channel",
+    "description": "Make a channel dialog: title. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.name": {
+    "message": "Name",
+    "description": "Make a channel and Rename dialogs: label of the name field. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.who": {
+    "message": "Who can see it",
+    "description": "Make a channel dialog: label of the visibility choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.public": {
+    "message": "Everyone in {workspace}",
+    "description": "Make a channel dialog: choice for a channel the whole workspace can see. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.publicHint": {
+    "message": "Members can find it and join.",
+    "description": "Make a channel dialog: hint under the workspace-wide choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.private": {
+    "message": "Only people you add",
+    "description": "Make a channel dialog: choice for a private channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.privateHint": {
+    "message": "Everyone else can't see its name.",
+    "description": "Make a channel dialog: hint under the private choice. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.fixed": {
+    "message": "You can't change this later.",
+    "description": "Make a channel dialog: note under the visibility choices. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.make": {
+    "message": "Make channel",
+    "description": "Make a channel dialog: button that makes the channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.renameTitle": {
+    "message": "Rename #{name}",
+    "description": "Rename a channel dialog: title. {name}: the current channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.archiveTitle": {
+    "message": "Archive #{name}?",
+    "description": "Archive a channel: confirmation title. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.archiveBody": {
+    "message": "Nobody can post in it anymore. Its members can read its history until the workspace's retention removes it. You can't undo this.",
+    "description": "Archive a channel: confirmation text. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.archive": {
+    "message": "Archive",
+    "description": "Archive a channel: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.leaveTitle": {
+    "message": "Leave #{name}?",
+    "description": "Leave a channel: confirmation title. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.leaveBodyPublic": {
+    "message": "You can join again from Browse channels.",
+    "description": "Leave a channel: confirmation text for a channel the whole workspace can see. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.leaveBodyPrivate": {
+    "message": "Someone has to add you again before you can read it.",
+    "description": "Leave a channel: confirmation text for a private channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.leaveBodyLast": {
+    "message": "You're the last one here, so leaving archives #{name}.",
+    "description": "Leave a channel: confirmation text when the user is its last member. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.leave": {
+    "message": "Leave",
+    "description": "Leave a channel: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.successorTitle": {
+    "message": "Choose a new manager for #{name}",
+    "description": "Leave a channel, as its only manager: title of the dialog that picks a new channel manager. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.successorBody": {
+    "message": "You're its only manager. Pick someone to take over before you leave.",
+    "description": "Leave a channel, as its only manager: text of the dialog that picks a new channel manager. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.successorSubmit": {
+    "message": "Hand over and leave",
+    "description": "Leave a channel, as its only manager: button that hands the channel over and leaves. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.browseTitle": {
+    "message": "Channels in {workspace}",
+    "description": "Browse channels dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.search": {
+    "message": "Find a channel",
+    "description": "Browse channels dialog: placeholder of the search field. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.join": {
+    "message": "Join",
+    "description": "Browse channels dialog: row button that joins a channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.joined": {
+    "message": "Joined",
+    "description": "Browse channels dialog: pill on a channel the user is in. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.archivedSection": {
+    "message": { "one": "Archived ({count})", "other": "Archived ({count})" },
+    "description": "Browse channels dialog: collapsible section of archived channels. {count}: how many. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.noneFound": {
+    "message": "No channels match.",
+    "description": "Browse channels dialog: line when the search matches no channel. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.membersTitle": {
+    "message": "Members of #{name}",
+    "description": "Channel members dialog: title. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.makeManager": {
+    "message": "Make manager",
+    "description": "Channel members dialog: row menu item that makes someone a channel manager. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.makeMember": {
+    "message": "Make member",
+    "description": "Channel members dialog: row menu item that turns a channel manager back into a member. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.removeMember": {
+    "message": "Remove from #{name}",
+    "description": "Channel members dialog: row menu item that takes someone out of the channel. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.removeTitle": {
+    "message": "Remove {member} from #{name}?",
+    "description": "Channel members dialog: confirmation title before taking someone out. {member}: that person; {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.addTitle": {
+    "message": "Add people to #{name}",
+    "description": "Channel members dialog: button and title of the picker that adds people to the channel. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.addGuestNeedsAdmin": {
+    "message": "Only an owner or admin can add a guest.",
+    "description": "Channel members dialog: note on a guest the user can't add, and the error when the server asks for an owner or admin. src/renderer/chat-dialogs.js, src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.channel.addFailed": {
+    "message": "Couldn't add {names}.",
+    "description": "Channel members dialog: error after some people couldn't be added. {names}: those people. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.title": {
+    "message": "Members of {workspace}",
+    "description": "Workspace members dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.search": {
+    "message": "Find a member",
+    "description": "Workspace members dialog: placeholder of the search field. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.you": {
+    "message": "{name} (you)",
+    "description": "Workspace members dialog: the user's own row. {name}: the user's name in the workspace. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.message": {
+    "message": "Message",
+    "description": "Workspace members dialog: row menu item that starts a direct message; full members only. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.changeRole": {
+    "message": "Change role",
+    "description": "Workspace members dialog: row menu heading over the role choices. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.remove": {
+    "message": "Remove from workspace",
+    "description": "Workspace members dialog: row menu item that asks to take someone out of the workspace. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.removeTitle": {
+    "message": "Remove {name} from {workspace}?",
+    "description": "Workspace members dialog: confirmation title before taking someone out. {name}: that person; {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.removeBody": {
+    "message": "{name} loses access to every channel and direct message here. What they wrote stays.",
+    "description": "Workspace members dialog: confirmation text before taking someone out. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.removeConfirm": {
+    "message": "Remove",
+    "description": "Workspace members dialog: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.title": {
+    "message": "New message",
+    "description": "New message dialog: title. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.to": {
+    "message": "To",
+    "description": "New message dialog: label of the field with the picked people. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.search": {
+    "message": "Find people in {workspace}",
+    "description": "New message dialog: placeholder of the search field. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.removePerson": {
+    "message": "Remove {name}",
+    "description": "New message dialog: accessible name of the x on a picked person. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.limit": {
+    "message": "A conversation can have 8 people, you included.",
+    "description": "New message dialog: note when eight people are picked. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.none": {
+    "message": "Nobody found",
+    "description": "New message dialog: line when the search finds nobody. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.start": {
+    "message": "Start conversation",
+    "description": "New message dialog: button that starts the conversation. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.open": {
+    "message": "Open conversation",
+    "description": "New message dialog: button when a conversation with exactly these people is open already. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.hostNote": {
+    "message": "Everyone you add can read and post right away. {host} can read direct messages, like everything in this workspace.",
+    "description": "New message dialog: line under the list of people about what they and the host can read. {host}: the server's host name. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.title": {
+    "message": "Block {name}?",
+    "description": "Block a person: confirmation title. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.body": {
+    "message": "{name} can't start direct messages with you, and your direct messages with {name} close. Mentions from {name} stop notifying you. You still see each other's posts in shared channels. {name} isn't told, but may notice that your conversation closed.",
+    "description": "Block a person: confirmation text with what a block does. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.confirm": {
+    "message": "Block",
+    "description": "Block a person: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.done": {
+    "message": "Blocked {name}",
+    "description": "Block a person: toast after the block. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.unblock": {
+    "message": "Unblock",
+    "description": "Workspace settings and member menus: button that ends a block. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.unblocked": {
+    "message": "Unblocked {name}. Start a new conversation to talk again.",
+    "description": "Workspace settings and member menus: toast after a block ends. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.list": {
+    "message": "Blocked people",
+    "description": "Workspace settings dialog: section heading over the people the user blocked. src/renderer/chat-dialogs.js"
+  },
+  "chat.block.none": {
+    "message": "You haven't blocked anyone.",
+    "description": "Workspace settings dialog: line when the user blocked nobody. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.title": {
+    "message": "Leave this conversation?",
+    "description": "Leave a direct message: confirmation title. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.body": {
+    "message": "It closes for everyone in it. They can still read it.",
+    "description": "Leave a direct message: confirmation text for an open conversation. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.bodyClosed": {
+    "message": "It disappears from your list.",
+    "description": "Leave a direct message: confirmation text for a closed conversation, from Remove from list. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.submit": {
+    "message": "Leave",
+    "description": "Leave a direct message: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.mute.done": {
+    "message": "Muted {name}",
+    "description": "Conversation pane: toast after Mute in the header's More menu. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.mute.undone": {
+    "message": "Unmuted {name}",
+    "description": "Conversation pane: toast after Unmute in the header's More menu. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+  },
+  "chat.leave.title": {
+    "message": "Leave {workspace}?",
+    "description": "Leave a workspace: confirmation title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.body": {
+    "message": "You lose access to its channels and direct messages. Messages you wrote stay.",
+    "description": "Leave a workspace: confirmation text. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.submit": {
+    "message": "Leave",
+    "description": "Leave a workspace: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.managerFirst": {
+    "message": "You're the only manager of these channels. Hand each one over before you leave.",
+    "description": "Leave a workspace: dialog when the user is the only manager of some channels, which it lists. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.lastOwner": {
+    "message": "You're the only owner. Make someone else an owner first.",
+    "description": "Leave a workspace: dialog when the user is its only owner. src/renderer/chat-dialogs.js"
+  },
+  "chat.delete.title": {
+    "message": "Delete {workspace}?",
+    "description": "Delete a workspace: confirmation title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.delete.body": {
+    "message": "This deletes every channel and message in it. You can't undo this.",
+    "description": "Delete a workspace: confirmation text. src/renderer/chat-dialogs.js"
+  },
+  "chat.delete.submit": {
+    "message": "Delete workspace",
+    "description": "Delete a workspace: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.delete.onlyYou": {
+    "message": "You can delete a workspace when you're its only member. Remove everyone else first.",
+    "description": "Workspace settings dialog: note under the disabled Delete workspace button while other members are left. src/renderer/chat-dialogs.js"
+  },
+  "chat.delete.done": {
+    "message": "Deleted {workspace}",
+    "description": "Delete a workspace: toast after the workspace was deleted. {workspace}: its name. src/renderer/chat-dialogs.js"
+  },
+  "chat.name.title": {
+    "message": "Your name in {workspace}",
+    "description": "Your name dialog: title, also the row in Workspace settings. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.name.hint": {
+    "message": "People in this workspace see this name. It doesn't change your mail or account name.",
+    "description": "Your name dialog: hint under the field. src/renderer/chat-dialogs.js"
+  },
+  "chat.settings.you": {
+    "message": "You",
+    "description": "Workspace settings dialog: section heading about the user. src/renderer/chat-dialogs.js"
+  },
+  "chat.settings.role": {
+    "message": "Your role",
+    "description": "Workspace settings dialog: row with the user's role. src/renderer/chat-dialogs.js"
+  },
+  "chat.settings.host": {
+    "message": "Host",
+    "description": "Workspace settings dialog: section heading about the server. src/renderer/chat-dialogs.js"
+  },
+  "chat.settings.limits": {
+    "message": "Up to {members} members per workspace on this server.",
+    "description": "Workspace settings dialog: row with the server's member limit. {members}: the most members a workspace can have. src/renderer/chat-dialogs.js"
+  },
+  "chat.settings.invitations": {
+    "message": "Invitations",
+    "description": "Workspace settings dialog: section heading over the invitations. src/renderer/chat-dialogs.js"
+  },
+  "chat.notify.body": {
+    "message": "{name}: {text}",
+    "description": "Team chat notification: body line. {name}: the author; {text}: the first 120 characters of the message, with mentions as @Name. src/main/workspaces/notify.js"
+  },
+  "chat.notify.summaryTitle": {
+    "message": "Team chat",
+    "description": "Team chat notification: title of the summary when more than three conversations have new messages. src/main/workspaces/notify.js"
+  },
+  "chat.notify.summaryBody": {
+    "message": { "one": "New messages in {count} conversation", "other": "New messages in {count} conversations" },
+    "description": "Team chat notification: body of the summary when more than three conversations have new messages. {count}: the conversations. src/main/workspaces/notify.js"
+  },
+  "chat.errors.invalid": {
+    "message": "The server didn't accept this. Check what you entered.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server refused the input (400 invalid). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.invalidName": {
+    "message": "Use 1 to 80 characters.",
+    "description": "Team chat error, shown under a workspace, channel or display name field that the server refused (400 invalid). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.forbidden": {
+    "message": "You're not allowed to do that here.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user's role doesn't allow the action (403 forbidden). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.workspaceLimit": {
+    "message": "You're in as many workspaces as {host} allows.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user is in the most workspaces the server allows (403 workspace_limit). {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.workspacesFull": {
+    "message": "{host} can't hold more workspaces right now.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server holds no more workspaces (403 workspaces_full). {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.accountScope": {
+    "message": "This account can only be used for team chat.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the account was made for team chat only (403 workspace_account_scope). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.goneWorkspace": {
+    "message": "You're not in this workspace anymore.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user lost access to the workspace (404 with scope workspace). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.goneConversation": {
+    "message": "You're not in this conversation anymore.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user lost access to the conversation (404 with scope conversation). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.notFound": {
+    "message": "That no longer exists.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: what the action was about no longer exists (404 without a scope). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.inviteGone": {
+    "message": "This invitation was used, withdrawn or has expired. Ask for a new one.",
+    "description": "Team chat error, shown in the Join a workspace dialog: the invitation was used, withdrawn or expired (410 invite_gone). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.operationConflict": {
+    "message": "This message clashes with one Rukoo sent before. Discard it and write it again.",
+    "description": "Team chat error, shown under an unsent message: it clashes with one Rukoo sent before (409 operation_conflict). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.archived": {
+    "message": "This channel is archived.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the channel is archived (409 archived). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.nameTaken": {
+    "message": "There's already a channel with that name.",
+    "description": "Team chat error, shown under the channel name field: another open channel has that name (409 name_taken). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.lastOwner": {
+    "message": "You're the only owner. Make someone else an owner first.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user is the workspace's only owner (409 last_owner). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.lastManager": {
+    "message": "Choose a new manager first.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user is the channel's only manager (409 last_manager). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.membersRemain": {
+    "message": "Remove everyone else first.",
+    "description": "Team chat error, shown in Workspace settings when deleting a workspace that still has other members (409 members_remain). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.blocked": {
+    "message": "You blocked {name}. Unblock them to start a conversation.",
+    "description": "Team chat error, shown in the New message dialog: the user blocked one of the people (409 blocked), shown with an Unblock action. {name}: that person. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.dmUnavailable": {
+    "message": "You can't start a conversation with these people.",
+    "description": "Team chat error, shown in the New message dialog: the server refused a direct message with these people (403 dm_unavailable). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.dailyDms": {
+    "message": "You started 20 conversations today. Try again later.",
+    "description": "Team chat error, shown in the New message dialog: the user started the most direct messages allowed per day (429 with limit dailyDms). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.quota": {
+    "message": "{workspace} is full.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the workspace reached a limit the server didn't name (413 quota). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.quotaMembers": {
+    "message": "{workspace} has as many members as it can hold.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the workspace reached its member limit (413 quota, limit members). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.quotaConversations": {
+    "message": "{workspace} can't hold more channels or conversations.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the workspace reached its limit of channels and conversations (413 quota, limit conversations). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.quotaInvites": {
+    "message": "{workspace} has too many open invitations. Withdraw some first.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the workspace reached its limit of open invitations (413 quota, limit invites). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.quotaBytes": {
+    "message": "{workspace} is out of space for messages.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the workspace reached its limit of stored messages (413 quota, limit bytes). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.upgrade": {
+    "message": "Update Rukoo to keep using team chat on {host}.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server needs a newer Rukoo (426). {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.rateLimited": {
+    "message": { "one": "Too many requests. Rukoo tries again in {count} second.", "other": "Too many requests. Rukoo tries again in {count} seconds." },
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server asked Rukoo to slow down (429). {count}: seconds until Rukoo tries again. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.network": {
+    "message": "Rukoo can't reach {host}.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: no connection to the server. {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.signedOut": {
+    "message": "You're signed out. Sign in to keep using team chat.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action: there is no Rukoo account session, or it ended (401). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.notSaved": {
+    "message": "Rukoo couldn't save this message on this computer, so it wasn't sent. Free up disk space and try again.",
+    "description": "Team chat error, shown under an unsent message: Rukoo couldn't store it on disk, so it didn't send it. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.paused": {
+    "message": "{workspace} is paused. Start over to use it again.",
+    "description": "Team chat error, shown in the dialog or toast of an action in a workspace Rukoo stopped (see chat.banner.paused). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.mentions": {
+    "message": "Someone you mentioned isn't in this conversation any more.",
+    "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.failed": {
+    "message": "Something went wrong. Try again.",
+    "description": "Team chat error, shown in the dialog, message row or toast of the failed action, for anything the other chat.errors keys don't cover. src/renderer/chat.js (chatErrorText)"
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;
