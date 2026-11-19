@@ -271,7 +271,10 @@ describe('deleting an account', () => {
     const socket = await openSocket(mila.person, ws.id);
 
     expect((await remove(mila.person)).status).toBe(204);
-    // The workspace has heard: the member is gone, without a name, and their socket is closed.
+    // The deletion's answer doesn't wait for the workspace, which hears a moment later: the member is gone, without a
+    // name, and their socket is closed.
+    const state = async () => (await workspaceSql(ws.id, 'SELECT state FROM member WHERE id = ?', mila.me.id))[0].state;
+    expect(await until(async () => (await state()) === 'deleted')).toBe(true);
     const members = (await api('GET', `/v1/workspaces/${ws.id}/members`, { token: ws.person.token })).body.members;
     expect(members.find((m) => m.id === mila.me.id)).toMatchObject({ state: 'deleted', name: '' });
     expect(await until(() => socket.closed !== null)).toBe(true);
@@ -284,7 +287,7 @@ describe('deleting an account', () => {
     expect(log.at(-1)).toMatchObject({ kind: 'member.left', member: mila.me.id });
 
     // Nothing is left of the account, as after any deletion.
-    expect(await tables(mila.person.email)).toEqual([]);
+    expect(await until(async () => (await tables(mila.person.email)).length === 0)).toBe(true);
     expect(await runInDurableObject(await accountStub(mila.person.email), (instance, state) => state.storage.getAlarm())).toBeNull();
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: mila.person.token })).status).toBe(401);
 
@@ -317,6 +320,7 @@ describe('deleting an account', () => {
     await api('PATCH', `/v1/workspaces/${ws.id}/members/${second.me.id}`, { token: ws.person.token, body: { role: 'owner' } });
     const open = await invite(ws.person, ws.id);
     expect((await remove(ws.person)).status).toBe(204);
+    expect(await until(async () => (await workspaceSql(ws.id, 'SELECT COUNT(*) AS n FROM retired'))[0].n === 1)).toBe(true);
     const late = await api('POST', `/v1/workspaces/${ws.id}/join`, { token: (await signup()).token, body: { invite: open.secret, name: 'P' } });
     expect(late.status).toBe(410);
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: second.person.token })).body.me.role).toBe('owner');
@@ -333,7 +337,9 @@ describe('deleting an account', () => {
     await runInDurableObject(stub, async (instance, state) => {
       const sql = state.storage.sql;
       for (const table of ['account', 'sessions', 'records', 'meta', 'booking', 'identity', 'workspaces']) sql.exec(`DROP TABLE IF EXISTS ${table}`);
-      sql.exec('CREATE TABLE cleanup (workspace TEXT PRIMARY KEY, incarnation TEXT NOT NULL, createdAt INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)');
+      sql.exec(
+        'CREATE TABLE cleanup (workspace TEXT NOT NULL, incarnation TEXT NOT NULL, createdAt INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (workspace, incarnation))'
+      );
       sql.exec('INSERT INTO cleanup VALUES (?, ?, ?, 0)', ws.id, incarnation, Date.now());
       instance.present = false;
       await state.storage.setAlarm(Date.now() + 60 * 1000);

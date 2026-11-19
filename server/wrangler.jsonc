@@ -68,9 +68,10 @@
     // The one address workspaces on this server are known by, such as "https://rukoo.example". "" for the address
     // each request came in on.
     "WORKSPACE_ORIGIN": "",
-    // The most workspaces this server holds, and how many one account may make.
+    // The most workspaces this server holds, how many one account may make, and how many it may be in at once.
     "MAX_WORKSPACES": 100,
     "MAX_WORKSPACES_PER_ACCOUNT": 3,
+    "MAX_WORKSPACE_MEMBERSHIPS": 50,
     // Per workspace: members, open connections, channels, bytes of message text kept, and days a message is kept.
     // A workspace is one Durable Object, which holds 10 GB on Workers Paid and 1 GB on Workers Free, and a message
     // takes about 100 bytes on top of its text: lower WORKSPACE_BYTES to 268435456 on Workers Free.
@@ -147,6 +148,7 @@
         "WORKSPACE_ORIGIN": "https://rukoo.io",
         "MAX_WORKSPACES": 100,
         "MAX_WORKSPACES_PER_ACCOUNT": 3,
+        "MAX_WORKSPACE_MEMBERSHIPS": 50,
         "WORKSPACE_MEMBERS": 100,
         "WORKSPACE_SOCKETS": 200,
         "WORKSPACE_CONVERSATIONS": 8192,

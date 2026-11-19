@@ -56,11 +56,37 @@ export async function channels(person, id) {
   return (await api('GET', `/v1/workspaces/${id}/channels`, { token: person.token })).body.channels;
 }
 
-export function post(person, id, conversation, text, extra = {}) {
+// What a device knows when it writes a message: the grant it holds in the conversation and the workspace's
+// generation, both of which it got from the feed. Read straight from the workspace here, so a test's sends don't
+// spend the member's read allowance. Someone without a grant gets one that doesn't exist.
+const incarnations = new Map();
+export async function access(person, id, conversation) {
+  if (!incarnations.has(person.token)) {
+    incarnations.set(person.token, (await call('GET', '/v1/account', { token: person.token })).body?.incarnation ?? null);
+  }
+  const incarnation = incarnations.get(person.token);
+  const [grant] = await workspaceSql(
+    id,
+    `SELECT g.id FROM grants g JOIN member m ON m.n = g.member JOIN conversation c ON c.n = g.conversation
+     WHERE m.incarnation = ? AND c.id = ?`,
+    incarnation,
+    conversation
+  ).catch(() => []);
+  const [ws] = await workspaceSql(id, 'SELECT generation FROM workspace').catch(() => []);
+  return { grant: grant?.id ?? 'g_AAAAAAAAAAAAAAAAAAAAAA', generation: ws?.generation ?? 'AAAAAAAAAAAAAAAAAAAAAA' };
+}
+
+// Sends a message. body may leave out grant and generation, which then are the sender's current ones.
+export async function send(person, id, conversation, body) {
+  const known = body.grant !== undefined && body.generation !== undefined ? {} : await access(person, id, conversation);
   return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/messages`, {
     token: person.token,
-    body: { operationId: uuidv7(), text, ...extra }
+    body: { ...known, ...body }
   });
+}
+
+export function post(person, id, conversation, text, extra = {}) {
+  return send(person, id, conversation, { operationId: uuidv7(), text, ...extra });
 }
 
 export function events(person, id, conversation, query = '') {
@@ -129,12 +155,12 @@ export async function openSocket(person, id, { via = 'header', ticket = null } =
   return state;
 }
 
-// Waits until check() is true, for what arrives on a socket a moment after the request that caused it.
+// Waits until check() is true, for what arrives a moment after the request that caused it. check may be async.
 export async function until(check, ms = 2000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
-    if (check()) return true;
+    if (await check()) return true;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return check();
+  return Boolean(await check());
 }

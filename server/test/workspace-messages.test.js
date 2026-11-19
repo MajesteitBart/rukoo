@@ -14,6 +14,7 @@ import {
   newMember,
   newWorkspace,
   post,
+  send,
   sync,
   uuidv7,
   workspaceSql,
@@ -22,10 +23,6 @@ import {
 
 const DAY = 24 * 60 * 60 * 1000;
 const bytes = (text) => new TextEncoder().encode(text).length;
-
-function send(person, id, conversation, body) {
-  return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/messages`, { token: person.token, body });
-}
 
 describe('sending', () => {
   it('orders messages and answers a retry with the first result', async () => {

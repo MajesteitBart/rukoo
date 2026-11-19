@@ -222,6 +222,7 @@ The settings in `vars`:
 | `WORKSPACE_ORIGIN` | The one address workspaces on this server are known by, such as `https://accounts.example.org`. Empty means the address each request came in on. Set it when your server answers on more than one address. |
 | `MAX_WORKSPACES` | The most workspaces the server holds. Default 100. |
 | `MAX_WORKSPACES_PER_ACCOUNT` | How many workspaces one account may make. Default 3. |
+| `MAX_WORKSPACE_MEMBERSHIPS` | How many workspaces one account may be in at once. Default 50. |
 | `WORKSPACE_MEMBERS` | Members per workspace. Default 100. |
 | `WORKSPACE_SOCKETS` | Open connections per workspace, which devices wait on for new messages. Default 200. |
 | `WORKSPACE_CONVERSATIONS` | Channels per workspace, archived ones included until their history is gone. Default 8192. |

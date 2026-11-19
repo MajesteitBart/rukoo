@@ -30,13 +30,14 @@ const CONVERSATION_ID = ID('c');
 const MEMBER_ID = ID('u');
 const EVENT_ID = ID('e');
 const INVITE_ID = ID('i');
+const GRANT_ID = ID('g');
+const GENERATION = /^[A-Za-z0-9_-]{22}$/;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const NAME_LENGTH = 80;
 const TEXT_BYTES = 16384;
 const MENTIONS = 32;
 const INVITE_CHANNELS = 20;
-const LIST_MAX = 50;
 
 const encoder = new TextEncoder();
 
@@ -56,6 +57,7 @@ export async function workspaceInfo(env, url) {
     recovery: 'basic',
     limits: {
       workspacesPerAccount: limits.perAccount,
+      membershipsPerAccount: limits.memberships,
       members: limits.members,
       sockets: limits.sockets,
       conversations: limits.conversations,
@@ -171,7 +173,7 @@ export async function workspaces(request, env, url) {
       return ask('operation', { conversation, operationId: c, op: operation(c).bytes });
     }
     if (rest.length === 5 && b === 'messages' && d === 'redact' && method === 'POST') {
-      return ask('redact', { conversation, message: match(c, EVENT_ID) });
+      return ask('redact', { conversation, message: event(c) });
     }
   }
   throw notFound();
@@ -179,31 +181,40 @@ export async function workspaces(request, env, url) {
 
 // ---- Routes that span objects ----
 
-// The workspaces an account is in. The account knows which it may be in; each workspace says whether it is. A
-// reference whose workspace doesn't know the account, left by a join that failed or a removal, is given back here.
+// An account object's answer, with the scope a device reads when its session has ended.
+function scoped(result) {
+  return result.status === 401 ? { ...result, body: { ...result.body, scope: 'account' } } : result;
+}
+
+// The workspaces an account is in. The account knows which it may be in, at most MAX_WORKSPACE_MEMBERSHIPS; each
+// workspace says whether it is. A reference old enough to be settled is put right here: one whose workspace doesn't
+// know the account, left by a join that failed, is given back, and one whose workspace knows it as a former member
+// is marked as left. Both name the version they saw, so a join that recorded the reference again meanwhile keeps it.
 async function list(request, env) {
   const { stub, token } = session(request, env);
   const mine = await stub.workspaces(token);
-  if (mine.status !== 200) return send(mine);
+  if (mine.status !== 200) return send(scoped(mine));
   const found = await Promise.all(
-    mine.workspaces.slice(0, LIST_MAX).map(async (ref) => {
-      const membership = await workspaceObject(env, ref.id).membership(mine.incarnation);
-      if (!membership && ref.stale) await stub.dropWorkspace(mine.incarnation, ref.id);
-      return membership;
+    mine.workspaces.map(async (ref) => {
+      const here = await workspaceObject(env, ref.id).membership(mine.incarnation);
+      if (here.state === 'active') return { id: here.id, name: here.name, role: here.role };
+      if (ref.stale && here.state === 'former') await stub.leftWorkspace(mine.incarnation, ref.id, ref.version);
+      if (ref.stale && here.state === 'none') await stub.dropWorkspace(mine.incarnation, ref.id, ref.version);
+      return null;
     })
   );
   return json(200, { workspaces: found.filter(Boolean) });
 }
 
-// Makes a workspace. Its place under MAX_WORKSPACES and the account's reference come first and are given back when
-// making it fails.
+// Makes a workspace. Its place under MAX_WORKSPACES and the account's reference come first. They are given back
+// when the workspace says it wasn't made, and only then.
 async function create(request, env) {
   const { stub, token } = session(request, env);
   await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const fields = { id: `w_${toBase64url(randomBytes(16))}`, name: name(body.name, 'name'), displayName: name(body.displayName, 'displayName') };
   const who = await stub.principal(token);
-  if (who.status !== 200) return send(who);
+  if (who.status !== 200) return send(scoped(who));
   if (who.class !== 'full') {
     throw new HttpError(403, 'workspace_account_scope', 'This account cannot make workspaces on this server.');
   }
@@ -212,20 +223,39 @@ async function create(request, env) {
   if (registry && (await registry.reserveWorkspace(limits.max)) === 'full') {
     throw new HttpError(403, 'workspaces_full', 'This server has no room for another workspace.');
   }
-  let result;
-  let referenced = false;
+  let ref;
   try {
-    const ref = await stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount });
-    if (ref.status !== 200) return send((result = ref));
-    referenced = true;
-    result = await workspaceObject(env, fields.id).create(who, fields);
-    return send(result);
-  } finally {
-    if (!result || result.status !== 201) {
-      if (registry) await registry.releaseWorkspace();
-      if (referenced) await stub.dropWorkspace(who.incarnation, fields.id);
-    }
+    ref = await stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
+  } catch (err) {
+    if (registry) await registry.releaseWorkspace();
+    throw err;
   }
+  const undo = async () => {
+    if (registry) await registry.releaseWorkspace();
+    if (ref.status === 200) await stub.dropWorkspace(who.incarnation, fields.id, ref.ref);
+  };
+  if (ref.status !== 200) {
+    await undo();
+    return send(scoped(ref));
+  }
+  const workspace = workspaceObject(env, fields.id);
+  let result;
+  try {
+    result = await workspace.create({ ...who, ref: ref.ref }, fields);
+  } catch (err) {
+    // The answer got lost, which says nothing about whether the workspace was made. The workspace knows. If it can't
+    // be asked either, the place and the reference stay: an unused reference is given back the next time the account
+    // lists its workspaces, and a made workspace without them would be lost to its owner.
+    const made = await workspace.membership(who.incarnation);
+    if (made.state !== 'active') {
+      await undo();
+      throw err;
+    }
+    const got = await workspace.request(token, 'workspace.get');
+    return got.status === 200 ? json(201, got.body) : send(got);
+  }
+  if (result.status !== 201) await undo();
+  return send(result);
 }
 
 // ---- Sockets ----
@@ -298,6 +328,16 @@ function match(value, pattern, field) {
   return value;
 }
 
+// An event id in its one spelling: the 16 bytes behind it, in canonical base64url.
+function event(value, field) {
+  const bytes = typeof value === 'string' && EVENT_ID.test(value) ? fromBase64url(value.slice(2)) : null;
+  if (!bytes || bytes.length !== 16) {
+    if (field) throw invalid(`${field} is not an id of the right kind.`, field);
+    throw notFound();
+  }
+  return value;
+}
+
 function oneOf(value, options, field) {
   if (!options.includes(value)) throw invalid(`${field} must be one of: ${options.join(', ')}.`, field);
   return value;
@@ -354,9 +394,14 @@ function operation(value) {
   return { bytes, time: parseInt(hex.slice(0, 12), 16) };
 }
 
-// A message as the workspace stores it: the text exactly as sent, and mentions as byte ranges in that text.
+// A message as the workspace stores it: the text exactly as sent, and mentions as byte ranges in that text. grant
+// and generation say under which access, and in which life of the workspace, the device wrote it.
 function message(conversation, body) {
   const { bytes: op, time: opTime } = operation(body.operationId);
+  const grant = match(body.grant, GRANT_ID, 'grant');
+  if (typeof body.generation !== 'string' || !GENERATION.test(body.generation)) {
+    throw invalid('generation must be the generation the workspace answered with.', 'generation');
+  }
   if (typeof body.text !== 'string') throw invalid('text must be a string.', 'text');
   const utf8Text = encoder.encode(body.text);
   if (utf8Text.length === 0 || utf8Text.length > TEXT_BYTES || !body.text.isWellFormed()) {
@@ -384,8 +429,19 @@ function message(conversation, body) {
     from = item.end;
     return { actor: item.actor, start: item.start, end: item.end };
   });
-  const root = body.root === undefined || body.root === null ? null : match(body.root, EVENT_ID, 'root');
-  return { conversation, operationId: body.operationId, op, opTime, text: body.text, size: utf8Text.length, mentions, root };
+  const root = body.root === undefined || body.root === null ? null : event(body.root, 'root');
+  return {
+    conversation,
+    operationId: body.operationId,
+    op,
+    opTime,
+    grant,
+    generation: body.generation,
+    text: body.text,
+    size: utf8Text.length,
+    mentions,
+    root
+  };
 }
 
 function number(url, key, fallback, max) {

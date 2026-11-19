@@ -41,7 +41,10 @@ const BOOKING_TABLE = `
 // What an account needs once it uses a workspace, made on first use (WORKSPACES.md, Accounts and external workspaces).
 // identity: the incarnation, a random id for this one lifetime of the account. A workspace knows its members by it, so
 // an account made again at the same address is nobody there. class says what the account may do: every account today
-// is 'full'. workspaces: the workspaces this account may be a member of, which is what tells them when it is deleted.
+// is 'full'. workspaces: the workspaces this account is or was a member of, which is what tells them when it is
+// deleted. version is new each time a reference is recorded, so giving one back never takes a newer one with it.
+// former marks a workspace the account left: it no longer shows in the account's list, and still hears of a deletion,
+// so the name the account had there goes too.
 const WORKSPACE_TABLES = `
   CREATE TABLE IF NOT EXISTS identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -51,17 +54,21 @@ const WORKSPACE_TABLES = `
   CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     created INTEGER NOT NULL DEFAULT 0,
+    former INTEGER NOT NULL DEFAULT 0,
+    version TEXT NOT NULL,
     addedAt INTEGER NOT NULL
   );
 `;
 // What is left of a deleted account that was in workspaces: which ones still have to hear that its incarnation is
-// gone. No address, no credentials and no records.
+// gone. No address, no credentials and no records. An address can be deleted, made again and deleted again before a
+// workspace answers, so the list is kept per incarnation and outlives every one of those accounts.
 const CLEANUP_TABLE = `
   CREATE TABLE IF NOT EXISTS cleanup (
-    workspace TEXT PRIMARY KEY,
+    workspace TEXT NOT NULL,
     incarnation TEXT NOT NULL,
     createdAt INTEGER NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0
+    attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace, incarnation)
   );
 `;
 // Every table a living account can have. Deleting an account that was in workspaces drops these and keeps cleanup.
@@ -141,6 +148,7 @@ export class Account extends DurableObject {
     this.present =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
     this.identity = null;
+    this.cleaning = false;
     if (this.present) this.migrate();
   }
 
@@ -229,44 +237,65 @@ export class Account extends DurableObject {
     }));
   }
 
-  // Records that this account may be a member of a workspace, before the workspace makes it one. created: the account
-  // is making the workspace, of which it may make max.
-  async addWorkspace(token, id, { created = false, max = 0 } = {}) {
+  // Records that this account may be a member of a workspace, before the workspace makes it one, and answers with the
+  // reference's version. created: the account is making the workspace, of which it may make max. most: how many
+  // workspaces an account may be in at once.
+  async addWorkspace(token, id, { created = false, max = 0, most = 0 } = {}) {
     return this.#signedIn(token, (session, now) => {
       const identity = this.#identity();
       if (created && max > 0 && this.sql.exec('SELECT COUNT(*) AS n FROM workspaces WHERE created = 1').one().n >= max) {
         return failure(403, 'workspace_limit', `One account can make ${max} workspaces on this server.`);
       }
+      const others = this.sql.exec('SELECT COUNT(*) AS n FROM workspaces WHERE former = 0 AND id != ?', id).one().n;
+      if (most > 0 && others >= most) {
+        return failure(403, 'workspace_limit', `One account can be in ${most} workspaces on this server.`);
+      }
+      const version = toBase64url(randomBytes(9));
       this.sql.exec(
-        'INSERT INTO workspaces (id, created, addedAt) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET created = MAX(created, excluded.created)',
+        `INSERT INTO workspaces (id, created, former, version, addedAt) VALUES (?, ?, 0, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET created = MAX(created, excluded.created), former = 0,
+           version = excluded.version, addedAt = excluded.addedAt`,
         id,
         created ? 1 : 0,
+        version,
         now
       );
-      return { status: 200, body: null, ...identity };
+      return { status: 200, body: null, ...identity, ref: version };
     });
   }
 
-  // The workspaces this account has a reference to. stale says which are old enough to drop when their workspace
-  // doesn't know the account.
+  // The workspaces this account has a reference to and hasn't left. stale says which are old enough to give back when
+  // their workspace doesn't know the account.
   async workspaces(token) {
     return this.#signedIn(token, (session, now) => {
       const identity = this.#identity();
       const list = this.sql
-        .exec('SELECT id, addedAt FROM workspaces ORDER BY addedAt, id')
+        .exec('SELECT id, version, addedAt FROM workspaces WHERE former = 0 ORDER BY addedAt, id')
         .toArray()
-        .map((row) => ({ id: row.id, stale: now - row.addedAt > REFERENCE_GRACE }));
+        .map((row) => ({ id: row.id, version: row.version, stale: now - row.addedAt > REFERENCE_GRACE }));
       return { status: 200, body: null, ...identity, workspaces: list };
     });
   }
 
-  // Gives a reference back: the member left or was removed, or the workspace never made it one. Called by the
-  // workspace and by the Worker, never by a client. The incarnation must be this account's, so a reference of an
-  // account made again at the same address is left alone.
-  async dropWorkspace(incarnation, id) {
-    if (!this.present || !this.#has('workspaces')) return;
-    if (this.#identity().incarnation !== incarnation) return;
-    this.sql.exec('DELETE FROM workspaces WHERE id = ?', id);
+  // Gives a reference back: the workspace never made the account a member. Called by the Worker, never by a client.
+  // Only the reference with this version goes, so one recorded since, by a join that did succeed, stays. The
+  // incarnation must be this account's, so a reference of an account made again at the same address is left alone.
+  async dropWorkspace(incarnation, id, version) {
+    if (this.#knownIdentity()?.incarnation !== incarnation) return;
+    this.sql.exec('DELETE FROM workspaces WHERE id = ? AND version = ?', id, version);
+  }
+
+  // The member left the workspace or was removed from it. The reference stays, out of the account's list, so the
+  // workspace still hears when the account is deleted.
+  async leftWorkspace(incarnation, id, version) {
+    if (this.#knownIdentity()?.incarnation !== incarnation) return;
+    this.sql.exec('UPDATE workspaces SET former = 1 WHERE id = ? AND version = ?', id, version);
+  }
+
+  // Whether a session of this incarnation still exists, for a workspace about to open a socket for it.
+  async session(incarnation, id) {
+    if (this.#knownIdentity()?.incarnation !== incarnation) return false;
+    return this.sql.exec('SELECT 1 FROM sessions WHERE id = ?', id).toArray().length > 0;
   }
 
   // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer.
@@ -433,16 +462,19 @@ export class Account extends DurableObject {
       this.#withPassword(session, hash, now, () => {
         const { handle } = this.#booking();
         const references = this.#has('workspaces') ? this.sql.exec('SELECT id FROM workspaces').toArray() : [];
-        if (references.length > 0) {
+        // Workspaces an earlier account at this address was in, which haven't all answered yet.
+        const waiting = this.#has('cleanup') && this.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n > 0;
+        const cleanup = references.length > 0 || waiting;
+        if (cleanup) {
           // An account that was in workspaces can't vanish in one step: each workspace still has to hear that its
           // incarnation is gone. Everything of the account goes now, in one transaction with the list of who to tell.
-          const { incarnation } = this.#identity();
+          const incarnation = this.#knownIdentity()?.incarnation;
           this.ctx.storage.transactionSync(() => {
             for (const table of LIVE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
             this.sql.exec(CLEANUP_TABLE);
             for (const { id } of references) {
               this.sql.exec(
-                'INSERT OR REPLACE INTO cleanup (workspace, incarnation, createdAt) VALUES (?, ?, ?)',
+                'INSERT OR IGNORE INTO cleanup (workspace, incarnation, createdAt) VALUES (?, ?, ?)',
                 id,
                 incarnation,
                 now
@@ -452,14 +484,16 @@ export class Account extends DurableObject {
         }
         this.present = false;
         this.identity = null;
-        return { ...reply(204), handle, cleanup: references.length > 0 };
+        return { ...reply(204), handle, cleanup };
       })
     );
     if (result.status !== 204) return result;
     if (result.cleanup) {
-      // The workspaces hear it now when they can. The alarm is set first, so one that doesn't answer hears it later.
+      // The workspaces are told right away, without this answer waiting for them: the Worker still has the booking
+      // page to wipe and the account's place to give back. The alarm is set first, so a workspace that doesn't answer
+      // now hears it later.
       await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
-      await this.#cleanup();
+      this.ctx.waitUntil(this.#cleanup());
       return result;
     }
     try {
@@ -477,28 +511,40 @@ export class Account extends DurableObject {
   // the list is empty, what is left of the deleted account is wiped, unless the address has a new account by then:
   // that one keeps everything but the list.
   async #cleanup() {
-    if (!this.#has('cleanup')) return;
-    const now = Date.now();
-    for (const row of this.sql.exec('SELECT workspace, incarnation, createdAt FROM cleanup').toArray()) {
-      try {
-        await workspaceObject(this.env, row.workspace).retire(row.incarnation);
-        this.sql.exec('DELETE FROM cleanup WHERE workspace = ? AND incarnation = ?', row.workspace, row.incarnation);
-      } catch (err) {
-        this.sql.exec('UPDATE cleanup SET attempts = attempts + 1 WHERE workspace = ?', row.workspace);
-        const late = now - row.createdAt > CLEANUP_LATE ? ' It has been waiting for more than a day.' : '';
-        console.error(`A workspace has not heard that a deleted account is gone.${late}`, err?.message || err);
+    // One run at a time: the alarm can come due while the run a deletion started is still waiting for a workspace.
+    if (this.cleaning || !this.#has('cleanup')) return;
+    this.cleaning = true;
+    try {
+      const now = Date.now();
+      for (const row of this.sql.exec('SELECT workspace, incarnation, createdAt FROM cleanup').toArray()) {
+        try {
+          await workspaceObject(this.env, row.workspace).retire(row.incarnation);
+          this.sql.exec('DELETE FROM cleanup WHERE workspace = ? AND incarnation = ?', row.workspace, row.incarnation);
+        } catch (err) {
+          this.sql.exec(
+            'UPDATE cleanup SET attempts = attempts + 1 WHERE workspace = ? AND incarnation = ?',
+            row.workspace,
+            row.incarnation
+          );
+          const late = now - row.createdAt > CLEANUP_LATE ? ' It has been waiting for more than a day.' : '';
+          console.error(`A workspace has not heard that a deleted account is gone.${late}`, err?.message || err);
+        }
       }
+      // A deletion that came in while this waited may have added to the list, so it is read again.
+      const left = this.sql.exec('SELECT COUNT(*) AS n, MIN(attempts) AS attempts FROM cleanup').one();
+      if (left.n > 0) {
+        const wait = Math.min(CLEANUP_RETRY * 2 ** Math.min(left.attempts, 10), CLEANUP_RETRY_MAX);
+        await this.ctx.storage.setAlarm(Date.now() + wait);
+        return;
+      }
+      await this.ctx.storage.deleteAlarm();
+      if (this.present) this.sql.exec('DROP TABLE cleanup');
+      else await this.ctx.storage.deleteAll();
+    } catch (err) {
+      console.error('Telling workspaces about a deleted account failed:', err?.stack || err);
+    } finally {
+      this.cleaning = false;
     }
-    if (!this.#has('cleanup')) return;
-    const left = this.sql.exec('SELECT COUNT(*) AS n, MIN(attempts) AS attempts FROM cleanup').one();
-    if (left.n > 0) {
-      const wait = Math.min(CLEANUP_RETRY * 2 ** Math.min(left.attempts, 10), CLEANUP_RETRY_MAX);
-      await this.ctx.storage.setAlarm(Date.now() + wait);
-      return;
-    }
-    await this.ctx.storage.deleteAlarm();
-    if (this.present) this.sql.exec('DROP TABLE cleanup');
-    else await this.ctx.storage.deleteAll();
   }
 
   async pull(token, since, limit) {
@@ -699,6 +745,12 @@ export class Account extends DurableObject {
 
   #has(table) {
     return this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).toArray().length > 0;
+  }
+
+  // The incarnation and class of an account that has them, without making them.
+  #knownIdentity() {
+    if (!this.present || !this.#has('identity')) return null;
+    return this.sql.exec('SELECT incarnation, class FROM identity WHERE id = 1').toArray()[0] ?? null;
   }
 
   // The account's incarnation and class, made the first time a workspace route asks. Every workspace request comes

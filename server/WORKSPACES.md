@@ -202,7 +202,7 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
   "home": { "origin": "https://rukoo.example", "installation": "…" },
   "capabilities": [],
   "recovery": "basic",
-  "limits": { "workspacesPerAccount": 3, "members": 100, "sockets": 200, "conversations": 8192, "textBytes": 16384 },
+  "limits": { "workspacesPerAccount": 3, "membershipsPerAccount": 50, "members": 100, "sockets": 200, "conversations": 8192, "textBytes": 16384 },
   "retention": { "contentDays": 90, "feedDays": 14, "platformHistoryDays": 30 }
 }
 ```
@@ -217,7 +217,7 @@ An error is `{ "error", "message" }`, with `field` for a refused input, `minVers
 | 401 | `unauthorized` | The session ended (`scope: account`), or a socket ticket was refused. |
 | 403 | `forbidden`, `cosign_required`, `workspace_limit`, `workspaces_full`, `workspace_account_scope` | The caller's role, or the server's capacity, doesn't allow it. |
 | 404 | `not_found` | With `scope: workspace`: the caller isn't a member, or there is no such workspace. With `scope: conversation`: the caller isn't in it, or there is no such conversation. Each pair gets the same answer. |
-| 409 | `operation_conflict`, `submission_expired`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. |
+| 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. |
 | 410 | `reset_required`, `invite_gone` | The cursor or the invitation can no longer be used. |
 | 413 | `quota` | The workspace is full: members, channels, open invitations or stored text. |
 | 426 | `upgrade_required` | The server doesn't speak this version of the protocol. `minVersion` says which it does. |
@@ -229,15 +229,15 @@ Paths below `/v1/workspaces/{id}` are written from there.
 
 | Route | Request and answer |
 | --- | --- |
-| `GET /v1/workspaces` | → `{ workspaces: [{ id, name, role }] }`: the workspaces this account is a member of. |
+| `GET /v1/workspaces` | → `{ workspaces: [{ id, name, role }] }`: the workspaces this account is a member of, 50 at most (`membershipsPerAccount`). |
 | `POST /v1/workspaces` | `{ name, displayName }` → `201 { workspace, me }`. The maker is its owner and manages a first channel, `general`. |
 | `GET /` | → `{ workspace: { id, name, createdAt, generation, keyId, time, limits, retention }, me }`. `time` is the server's clock, which a device reads before it makes an operation ID. |
-| `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }] }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone, also who left. A guest gets the active members of the channels they are in. |
+| `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }], more }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest gets the active members of the channels they are in. |
 | `PATCH /members/me` | `{ name }` → `{ me }`. |
 | `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. |
-| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued. |
-| `POST /invites` | `{ role, channels?, expiresIn? }` → `201 { invite: { id, role, channels, issuer, createdAt, expiresAt }, secret }`. `role` is `member` or `guest`, `channels` are channels the issuer manages, `expiresIn` is in seconds: 24 hours unless given, seven days at most. The secret is shown once; the server keeps its hash. |
-| `GET /invites`, `DELETE /invites/{i}` | The open invitations, and withdrawing one. |
+| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued. The account keeps a note that it was a member, so the workspace still hears when that account is deleted and takes the name off what it wrote. |
+| `POST /invites` | `{ role, channels?, expiresIn? }` → `201 { invite: { id, role, channels, channelCount, issuer, createdAt, expiresAt }, secret }`. `role` is `member` or `guest`, `channels` are channels the issuer manages, `expiresIn` is in seconds: 24 hours unless given, seven days at most. The secret is shown once; the server keeps its hash. A channel its issuer stops managing drops out of the invitation, and managing it again doesn't bring it back. |
+| `GET /invites`, `DELETE /invites/{i}` | The open invitations, and withdrawing one. `channels` lists the channels the caller can see and `channelCount` says how many the invitation leads into, so an admin outside a private channel learns that there is one, not which. |
 | `POST /invites/preview` | `{ invite }` → `{ workspace: { id, name }, role, channels, issuer: { name }, expiresAt }`, for any signed-in account, to show before joining. `channels` is a count. |
 | `POST /join` | `{ invite, name }` → `201 { workspace, me }`, or `200` for someone who already is a member. An invitation works once. |
 
@@ -260,13 +260,13 @@ An invitation link carries the host, the workspace ID and the secret, the last t
 
 | Route | Request and answer |
 | --- | --- |
-| `POST /conversations/{c}/messages` | `{ operationId, text, mentions?, root? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. |
+| `POST /conversations/{c}/messages` | `{ operationId, grant, generation, text, mentions?, root? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. |
 | `GET /conversations/{c}/operations/{operationId}` | → `{ messageId, seq, visible }`, or 404 when no message of the caller came from that operation. |
 | `GET /conversations/{c}/events` | `?after=<seq>&limit=<n>` pages forward. `?before=<seq>&limit=<n>` gives the newest events before a sequence. → `{ events, head, floor, more }`, oldest first, 50 unless `limit` says otherwise, 100 at most. |
 | `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager. |
 | `POST /conversations/{c}/read` | `{ seq }` → `{ read }`. |
 
-`operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent. A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
+`operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent. A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
 
 Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 
@@ -283,7 +283,7 @@ A grant starts at its `member.joined` event, which is also where its read positi
 
 ### The feed
 
-`GET /changes?after=<cursor>&limit=<n>&active=<c>&roomAfter=<seq>` → 
+`GET /changes?after=<cursor>&limit=<n>&active=<c>&roomAfter=<seq>` answers:
 
 ```json
 {
@@ -301,13 +301,15 @@ A grant starts at its `member.joined` event, which is also where its read positi
 }
 ```
 
-Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members` and `GET /channels` again; `channels` is always false for a guest. A cursor is sealed: it opens only for its member, in its restore generation.
+Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members` and `GET /channels` again. For a guest `channels` is always false, and `members` is true only when someone they share a room with changed, came or went. A cursor is sealed: it opens only for its member, in its restore generation, and its length says nothing.
+
+A pass can take several pages, and a room can change again while a device is paging. The cursor therefore remembers where its pass began as well as where its scan is, and `removed` lists what was redacted since the pass began. A device may see the same ID on two pages of one pass.
 
 `410 reset_required` means start a pass without a cursor: the cursor isn't this member's, is from another generation, or is older than the 14 days the feed remembers redactions and evictions. `409 history_regressed` means the cursor is ahead of the workspace, which happens when its database was rolled back.
 
 ### Wake socket
 
-`POST /socket-ticket` → `{ ticket, expiresAt, protocol }`. The ticket works once, for 30 seconds, for the session that asked. `GET /socket` upgrades with `Authorization: Ticket <ticket>`. A client that can't set that header offers the subprotocols `rukoo.workspace.v1` and `rukoo.ticket.<ticket>`, and the server answers with the first. A ticket in the address is never read.
+`POST /socket-ticket` → `{ ticket, expiresAt, protocol }`. The ticket works once, for 30 seconds, for the session that asked, and only while that session is still signed in. `GET /socket` upgrades with `Authorization: Ticket <ticket>`. A client that can't set that header offers the subprotocols `rukoo.workspace.v1` and `rukoo.ticket.<ticket>`, and the server answers with the first. A ticket in the address is never read.
 
 The server sends one frame, `{"t":"wake"}`, when something changed for this member, at most twice a second. The device then fetches `/changes`. The server answers a `ping` frame with `pong`. A socket stays authorized for 15 minutes after its session's last request to the workspace: a request renews it, a ping doesn't, and a socket whose time ran out is closed with code 4001 at the next wake. Code 4003 means the member was removed.
 

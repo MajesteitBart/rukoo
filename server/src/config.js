@@ -77,6 +77,7 @@ export function workspaceLimits(env) {
   return {
     max: positive(env.MAX_WORKSPACES, 100),
     perAccount: positive(env.MAX_WORKSPACES_PER_ACCOUNT, 3),
+    memberships: positive(env.MAX_WORKSPACE_MEMBERSHIPS, 50),
     members: positive(env.WORKSPACE_MEMBERS, 100),
     sockets: positive(env.WORKSPACE_SOCKETS, 200),
     conversations: positive(env.WORKSPACE_CONVERSATIONS, 8192),
