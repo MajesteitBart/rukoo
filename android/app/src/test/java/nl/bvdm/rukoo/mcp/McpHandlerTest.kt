@@ -87,7 +87,7 @@ class McpHandlerTest {
     fun answersPingListAndUnknownMethods() {
         assertEquals("{}", result("""{"jsonrpc":"2.0","id":1,"method":"ping"}""").toString())
         // The desktop's twenty-three, the meeting tools included, though the phone has no meetings (McpTools).
-        assertEquals(22, result("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["tools"]!!.jsonArray.size)
+        assertEquals(23, result("""{"jsonrpc":"2.0","id":1,"method":"tools/list"}""")["tools"]!!.jsonArray.size)
         assertEquals(
             """{"jsonrpc":"2.0","id":4,"error":{"code":-32601,"message":"Method not found: server/discover"}}""",
             send("""{"jsonrpc":"2.0","id":4,"method":"server/discover"}""").toString(),
