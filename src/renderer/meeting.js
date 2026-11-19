@@ -1678,6 +1678,10 @@ function audioElement() {
   if (P.audio) return P.audio;
   const a = new Audio();
   a.preload = 'auto';
+  // In the page, hidden and without controls, so the window's audio is one element anyone can find.
+  a.hidden = true;
+  a.className = 'mt-clip-audio';
+  document.body.append(a);
   a.addEventListener('ended', () => {
     P.playing = false;
     cancelAnimationFrame(P.raf);
@@ -1777,6 +1781,8 @@ async function playClip() {
     a.src = url;
     P.key = key;
   } else if (a.ended) a.currentTime = 0;
+  // Loading until play() settles, also from memory: a recording that starts meanwhile stops it (setVoice).
+  P.loading = true;
   try {
     await a.play();
   } catch (_) {
@@ -1785,8 +1791,12 @@ async function playClip() {
     P.error = t('meeting.clip.failed');
     return renderPeople();
   }
-  if (token !== P.token) {
+  if (token !== P.token || playBlock()) {
     a.pause();
+    if (token === P.token) {
+      P.loading = false;
+      renderPeople();
+    }
     return;
   }
   P.loading = false;

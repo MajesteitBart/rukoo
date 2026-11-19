@@ -1250,6 +1250,9 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
   await playButton().click();
   await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
   expect(audioAsked()).toContainEqual([12000, 15000]);
+  // The window really plays the WAV Voice cut.
+  const playing = () => win.evaluate(() => [...document.querySelectorAll('audio.mt-clip-audio')].map((a) => ({ paused: a.paused, wav: a.src.startsWith('data:audio/wav;base64,') })));
+  await expect.poll(playing).toEqual([{ paused: false, wav: true }]);
   await expect(rows().nth(3)).toHaveClass(/is-playing/);
   await expect(hear('call-1')).toHaveAttribute('aria-pressed', 'true');
 
@@ -1307,7 +1310,7 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
   voice.append('meeting.state', other, { state: 'recording', at: 0 });
   voice.append('status', null, { recording: other, dictating: false });
   await expect(view().locator('.mt-title')).toHaveText('Next call', { timeout: 10000 });
-  expect(await win.evaluate(() => [...document.querySelectorAll('audio')].every((a) => a.paused))).toBe(true);
+  await expect.poll(() => win.evaluate(() => [...document.querySelectorAll('audio.mt-clip-audio')].map((a) => a.paused))).toEqual([true]);
   await win.locator(`.sidebar [data-mt-open="${id}"]`).click();
   await hear('call-2').click();
   await expect(player().locator('.mt-pnote')).toContainText('Clips play when no meeting records.');

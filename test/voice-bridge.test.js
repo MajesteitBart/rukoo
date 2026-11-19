@@ -1086,20 +1086,27 @@ test('a split Rukoo never heard finish is asked for again when the meeting opens
   const asked = [];
   voice.handlers['speakers.split'] = (args) => {
     asked.push(args);
-    return { state: 'done', voices: 2 };
+    // The first try fails, as when the speaker worker dies; Rukoo tries again the next time the meeting opens.
+    return asked.length === 1 ? { error: { code: 'failed', message: 'The speaker worker stopped.' } } : { state: 'done', voices: 2 };
   };
   voice.writeDiscovery();
   const s = service(t, dir, file).init();
   await until(() => s.connected && s.store.meeting(id) && s.store.meeting(id).speakers.some((x) => x.id === 'mic-2'), 'the replayed split');
   assert.equal(s.micState(id).voices, null);
+  // The user shows the microphone as one voice before Rukoo has the split's result.
+  s.joinMic(id, true);
+  s.get(id);
+  await until(() => s.micState(id).state === 'error', 'the failed try');
+  assert.equal(s.micState(id).code, 'failed');
   s.get(id);
   await until(() => s.micState(id).voices === 2, 'the split confirmed');
-  assert.deepEqual(asked, [{ meeting: id, track: 'mic' }]);
+  assert.deepEqual(asked, [{ meeting: id, track: 'mic' }, { meeting: id, track: 'mic' }]);
   assert.equal(s.micState(id).state, 'done');
+  assert.equal(s.micState(id).joined, true, "confirming a split keeps the user's join");
   // Once it is known, opening the meeting doesn't ask again.
   s.get(id);
   await new Promise((r) => setTimeout(r, 50));
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2);
 
   // A clip is media.open until ready, then media.read, at most 30 s.
   const bytes = await s.audioClip(id, 1000, 3000);

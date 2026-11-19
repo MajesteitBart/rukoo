@@ -777,7 +777,10 @@ class VoiceService extends EventEmitter {
   }
 
   correct(id, passageId, text) {
+    // A correction over pieces a split cut changes which rows show: the renderer fetches the meeting again.
+    const hid = this.store.hidesPieces(id, passageId);
     if (!this.change(id, 'passage', () => this.store.correct(id, passageId, text))) throw new VoiceError('not_found', 'No such meeting or passage.');
+    if (hid || this.store.hidesPieces(id, passageId)) this.note({ meeting: id, kind: 'micView' }, this.revOf(id));
     // The delta names the passage.
     const d = this.deltas.get(id);
     if (d) d.passages.add(passageId);
@@ -824,7 +827,8 @@ class VoiceService extends EventEmitter {
   // Asks Voice to tell apart the people who shared the microphone in a stopped meeting, and follows the split until
   // it is done. Returns the microphone's state at once; the People card hears the rest through deltas. Voice sends
   // the new voices and the passages that moved as events before it answers done.
-  splitMic(id) {
+  // confirm: Rukoo only asks for the result of a split it saw, so the user's "Show as one voice" stays.
+  splitMic(id, { confirm = false } = {}) {
     const e = this.store.entry(id);
     if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
     const running = this.splits.get(id);
@@ -836,7 +840,7 @@ class VoiceService extends EventEmitter {
         const r = checkSplit(await this.bridge.command('speakers.split', { meeting: id, track: 'mic' }));
         if (this.closed) return;
         if (r.state === 'done') {
-          this.change(id, 'micView', () => this.store.setSplit(id, r.voices));
+          this.change(id, 'micView', () => this.store.setSplit(id, r.voices, { keepJoined: confirm }));
           return this.splitChanged(id, null);
         }
         this.splitChanged(id, { state: 'running', at: r.at, end: r.end });
@@ -855,11 +859,13 @@ class VoiceService extends EventEmitter {
 
   // A microphone that shows voices of a split Rukoo never heard finish: Voice stopped, or Rukoo quit, between the
   // split's events and its done. Asking again makes Voice send what is missing and answer done (voice/PROTOCOL.md).
+  // A failed try, such as Voice going away, is tried again the next time the meeting opens.
   finishSplit(id, full) {
-    if (!full.mic.split || full.mic.voices !== null || this.splits.has(id) || !this.connected) return;
+    const job = this.splits.get(id);
+    if (!full.mic.split || full.mic.voices !== null || (job && job.state === 'running') || !this.connected) return;
     if (!['done', 'failed'].includes(full.meeting.state) || full.meeting.removed) return;
     try {
-      this.splitMic(id);
+      this.splitMic(id, { confirm: true });
     } catch (_) {
       // Voice went away meanwhile; the next time the meeting opens, Rukoo asks again.
     }

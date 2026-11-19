@@ -642,16 +642,46 @@ test('after a split, dictation follows the voice that is the user, and a correct
   assert.deepEqual(
     m.passages.map((p) => [p.id, p.speaker, p.text, p.end]),
     [
+      // The first piece keeps its own end: the player plays what that voice said.
       ['mic-000001000', 'mic', 'Note to self: send the deck.', 2500],
-      ['mic-000005000', 'mic-2', 'I can do that. Thanks, Pieter!', 9000]
+      ['mic-000005000', 'mic-2', 'I can do that. Thanks, Pieter!', 6500]
     ]
   );
+  assert.equal(s.hidesPieces(M, 'mic-000005000'), true);
+  // Editing the correction again keeps what it covered.
+  s.correct(M, 'mic-000005000', 'I can do that. Thanks a lot, Pieter!');
+  assert.deepEqual(s.meeting(M).passages.map((p) => p.id), ['mic-000001000', 'mic-000005000']);
   // "This is me" on mic-2: the dictation goes with the user.
   s.setYou(M, 'mic-2');
   m = s.meeting(M);
   assert.equal(m.passages[0].speaker, 'mic-2');
   // Going back to Voice's text shows the pieces again.
   s.correct(M, 'mic-000005000', null);
+  assert.equal(s.hidesPieces(M, 'mic-000005000'), false);
   assert.deepEqual(s.meeting(M).passages.map((p) => p.id), ['mic-000001000', 'mic-000005000', 'mic-000006500']);
   s.close();
+});
+
+test('a correction hides only the pieces a later split cut from it, also one made before Rukoo kept its span', () => {
+  const dir = tempDir('rukoo-voice-store-');
+  const s = store(dir);
+  s.apply(ev('meeting.started', M, { title: 'Planning', startedAt: 1793000000000, tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null }));
+  s.apply(ev('speaker', M, { id: 'mic', track: 'mic', label: 'You' }));
+  s.apply(passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+  // A passage that overlaps it from the start, as the protocol allows: not a piece of a cut.
+  s.apply(passage('mic', 7000, 'Right.', 1, { end: 7600 }));
+  s.correct(M, 'mic-000005000', 'I can do that. Thanks, Pieter!');
+  s.close();
+  // A profile from before Rukoo kept where a correction ended: the file has the correction only.
+  const file = path.join(dir, 'meetings', `${M}.json`);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete raw.correctedEnds;
+  fs.writeFileSync(file, JSON.stringify(raw));
+  const again = store(dir);
+  again.apply(ev('speaker', M, { id: 'mic-2', track: 'mic', label: 'Microphone 2' }));
+  again.apply(ev('passage', M, { id: 'mic-000005000', track: 'mic', speaker: 'mic-2', start: 5000, end: 6500, text: 'I can do that.', revision: 2, dictation: false, language: 'en' }));
+  again.apply(ev('passage', M, { id: 'mic-000006500', track: 'mic', speaker: 'mic', start: 6500, end: 9000, text: 'Thanks, Pieter.', revision: 1, dictation: false, language: 'en' }));
+  // The piece hides; the passage that was there before stays.
+  assert.deepEqual(again.meeting(M).passages.map((p) => p.id), ['mic-000005000', 'mic-000007000']);
+  again.close();
 });
