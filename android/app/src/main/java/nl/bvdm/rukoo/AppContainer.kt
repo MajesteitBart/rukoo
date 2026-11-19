@@ -51,6 +51,7 @@ import nl.bvdm.rukoo.settings.SettingsStore
 import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
 import nl.bvdm.rukoo.ui.composer.DraftStore
+import nl.bvdm.rukoo.workspaces.Workspaces
 import okhttp3.OkHttpClient
 
 /** What the UI reaches through AppViewModel. AppContainer implements it; tests pass fakes. */
@@ -73,6 +74,9 @@ interface AppServices {
 
     /** Inbox categories (categories/); null in fakes, which then show no categories. */
     val categories: Categories? get() = null
+
+    /** Team chat (workspaces/); null in fakes, which then show no Chat mode. */
+    val workspaces: Workspaces? get() = null
 }
 
 /**

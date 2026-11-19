@@ -131,6 +131,10 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.window)
+    // The team chat cache (workspaces/ChatDb.kt): the driver API, opened on the platform's SQLite in the app and on
+    // the bundled SQLite in JVM unit tests, so the store's tests run real SQL transactions.
+    implementation(libs.androidx.sqlite)
+    implementation(libs.androidx.sqlite.framework)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -157,6 +161,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.androidx.sqlite.bundled.jvm)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.junit)
