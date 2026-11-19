@@ -68,6 +68,10 @@
     // The one address workspaces on this server are known by, such as "https://rukoo.example". "" for the address
     // each request came in on.
     "WORKSPACE_ORIGIN": "",
+    // "on" or "off". With SIGNUPS on "invite" and team chat on, "on" lets an invitation into a workspace stand in for
+    // an invite code at sign-up, once per invitation. That lets every workspace owner and admin bring new accounts
+    // onto this server, within MAX_ACCOUNTS. "off" keeps sign-ups to the codes in INVITE_CODES.
+    "WORKSPACE_SIGNUPS": "on",
     // The most workspaces this server holds, how many one account may make, and how many it may be in at once.
     "MAX_WORKSPACES": 100,
     "MAX_WORKSPACES_PER_ACCOUNT": 3,
@@ -146,6 +150,9 @@
         // Team chat stays off here until the apps have it.
         "WORKSPACE_MODE": "off",
         "WORKSPACE_ORIGIN": "https://rukoo.io",
+        // Lets every workspace owner and admin bring new accounts onto this server with an invitation, within
+        // MAX_ACCOUNTS, once team chat is on. Decide before turning WORKSPACE_MODE on (docs/workspace-architecture.md).
+        "WORKSPACE_SIGNUPS": "on",
         "MAX_WORKSPACES": 100,
         "MAX_WORKSPACES_PER_ACCOUNT": 3,
         "MAX_WORKSPACE_MEMBERSHIPS": 50,

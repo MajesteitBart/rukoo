@@ -227,31 +227,33 @@ describe('a message and the access it was written under', () => {
 describe('invitations and the channels they lead into', () => {
   it('drops a channel its issuer stopped managing, also when they manage it again', async () => {
     const ws = await newWorkspace();
-    const ada = await newMember(ws, 'Ada', { channels: [ws.general] });
+    // Not general: every member gets that one on joining, whatever the invitation says.
+    const project = await channel(ws, 'project');
+    const ada = await newMember(ws, 'Ada', { channels: [project] });
     await api('PATCH', `/v1/workspaces/${ws.id}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'admin' } });
-    const role = (value) => api('PATCH', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/${ada.me.id}`, { token: ws.person.token, body: { role: value } });
+    const role = (value) => api('PATCH', `/v1/workspaces/${ws.id}/channels/${project}/members/${ada.me.id}`, { token: ws.person.token, body: { role: value } });
     await role('manager');
-    const demoted = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
-    const left = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
+    const demoted = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
+    const left = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
     const join = async (secret) => {
       const person = await signup();
       const res = await api('POST', `/v1/workspaces/${ws.id}/join`, { token: person.token, body: { invite: secret, name: 'P' } });
       expect(res.status).toBe(201);
-      return (await channels(person, ws.id)).map((c) => c.joined);
+      return (await channels(person, ws.id)).map((c) => [c.name, c.joined]);
     };
 
     // Demoted and promoted again.
     await role('member');
     await role('manager');
-    expect(await join(demoted.secret)).toEqual([false]);
+    expect(await join(demoted.secret)).toEqual([['general', true], ['project', false]]);
     // Out of the channel and back in as its manager, under a new grant.
-    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: ada.person.token });
-    await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: ada.person.token });
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${project}/members/me`, { token: ada.person.token });
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${project}/join`, { token: ada.person.token });
     await role('manager');
-    expect(await join(left.secret)).toEqual([false]);
+    expect(await join(left.secret)).toEqual([['general', true], ['project', false]]);
     // One issued now does lead in.
-    const fresh = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
-    expect(await join(fresh.secret)).toEqual([true]);
+    const fresh = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
+    expect(await join(fresh.secret)).toEqual([['general', true], ['project', true]]);
   });
 
   it('shows an admin outside a private channel that an invitation leads into one, not which', async () => {
@@ -831,5 +833,31 @@ describe('direct messages, in an awkward order', () => {
     expect(statuses.filter((status) => status === 201)).toHaveLength(20);
     expect(statuses.filter((status) => status === 429)).toHaveLength(2);
     expect(await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM conversation WHERE kind = 'dm'")).toEqual([{ n: 20 }]);
+  });
+});
+
+describe('deleting a workspace, in an awkward order', () => {
+  it('lets a delete and a join at once end one way or the other, never both', async () => {
+    for (let round = 0; round < 3; round++) {
+      const ws = await newWorkspace();
+      const { secret } = await invite(ws.person, ws.id);
+      const joiner = await signup();
+      const [deleted, joined] = await Promise.all([
+        api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token }),
+        api('POST', `/v1/workspaces/${ws.id}/join`, { token: joiner.token, body: { invite: secret, name: 'P' } })
+      ]);
+      const mine = (await api('GET', '/v1/workspaces', { token: joiner.token })).body.workspaces;
+      if (joined.status === 201) {
+        // The join won: the workspace stays, with its new member.
+        expect(deleted.status).toBe(409);
+        expect(deleted.body.error).toBe('members_remain');
+        expect(mine.map((w) => w.id)).toEqual([ws.id]);
+      } else {
+        expect(deleted.status).toBe(204);
+        expect(joined.status).toBe(404);
+        expect(joined.body.scope).toBe('workspace');
+        expect(mine).toEqual([]);
+      }
+    }
   });
 });

@@ -3,15 +3,17 @@
 // do what. Making a workspace and listing an account's workspaces happen here, because they span the account, the
 // registry and the workspace.
 
-import { fromBase64url, hmac, randomBytes, sameBytes, toBase64url, utf8 } from './bytes.js';
+import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import {
   ACCOUNT_NAME,
   accountObject,
   limitRate,
   registryObject,
+  signups,
   workspaceLimits,
   workspaceObject,
   workspaceOrigin,
+  workspaceSignups,
   workspacesOn
 } from './config.js';
 import { json, send } from './http.js';
@@ -57,6 +59,8 @@ export async function workspaceInfo(env, url) {
     // files, runner, mcp, protected-recovery and push-wake are named here once this server has them.
     capabilities: [],
     recovery: 'basic',
+    // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite).
+    inviteSignups: inviteSignups(env),
     limits: {
       workspacesPerAccount: limits.perAccount,
       membershipsPerAccount: limits.memberships,
@@ -70,6 +74,26 @@ export async function workspaceInfo(env, url) {
     // which includes messages that were removed since.
     retention: { contentDays: limits.retentionDays, feedDays: 14, platformHistoryDays: 30 }
   };
+}
+
+// A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
+// code, with team chat on and WORKSPACE_SIGNUPS not off. Without the registry nothing would hold an invitation to one
+// account, so none counts.
+export function inviteSignups(env) {
+  return workspacesOn(env) && signups(env) === 'invite' && workspaceSignups(env) && Boolean(env.REGISTRY);
+}
+
+// For POST /v1/signup without a good invite code: the code under which the registry counts a sign-up with this
+// workspace invitation, or null when it can't be used. The registry lets each such code make one account. Any shape
+// that isn't { workspace, invite } is null too, so a sign-up learns only what a wrong invite code tells it.
+export async function signupInvite(env, value) {
+  if (!inviteSignups(env) || typeof value !== 'object' || value === null) return null;
+  const { workspace, invite } = value;
+  if (typeof workspace !== 'string' || !WORKSPACE_ID.test(workspace) || typeof invite !== 'string') return null;
+  const bytes = fromBase64url(invite);
+  if (!bytes || bytes.length !== 32) return null;
+  if (!(await workspaceObject(env, workspace).inviteOpen(invite))) return null;
+  return `workspace:${toBase64url(await sha256(utf8(invite)))}`;
 }
 
 export async function workspaces(request, env, url) {
@@ -101,6 +125,8 @@ export async function workspaces(request, env, url) {
   switch (route) {
     case 'GET /':
       return ask('workspace.get');
+    case 'DELETE /':
+      return remove(env, id, await stub.request(token, 'workspace.delete'));
     case 'POST /join': {
       await limitRate(request, env.RATE_LIMITER);
       const b = await body();
@@ -282,6 +308,26 @@ async function create(request, env) {
   }
   if (result.status === 201) await confirm();
   else await undo();
+  return send(result);
+}
+
+// A workspace its owner deleted: the owner's account gives its reference back, which frees the slot the account's
+// limit on making workspaces counts, and the registry frees its place under MAX_WORKSPACES. Either can fail without
+// undoing the delete: the account's list settles the reference the next time it asks, and the place stays taken.
+async function remove(env, id, result) {
+  if (result.status === 204) {
+    try {
+      await accountObject(env, result.account).dropWorkspace(result.incarnation, id, result.ref);
+    } catch (err) {
+      console.error('Could not give back the reference of a deleted workspace:', err?.message || err);
+    }
+    const registry = registryObject(env);
+    try {
+      if (registry) await registry.forgetWorkspace(id);
+    } catch (err) {
+      console.error('Could not free the place of a deleted workspace:', err?.message || err);
+    }
+  }
   return send(result);
 }
 

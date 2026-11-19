@@ -153,6 +153,8 @@ describe('mentions and threads', () => {
     const ws = await newWorkspace('Acme', 'Olga');
     const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
     const outsider = await newMember(ws, 'Tess');
+    // Tess got general on joining the workspace. Out of it again, she is an outsider there.
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: outsider.person.token });
     const text = 'Héé @Mila, kijk 👀 @Olga';
     const at = (needle) => ({ start: bytes(text.slice(0, text.indexOf(needle))), end: bytes(text.slice(0, text.indexOf(needle) + needle.length)) });
     const mentions = [

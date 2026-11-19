@@ -51,6 +51,11 @@ export class Registry extends DurableObject {
     this.sql.exec('DELETE FROM workspace WHERE id = ? AND made = 0', id);
   }
 
+  // The workspace was deleted: its place is free again, confirmed or not.
+  async forgetWorkspace(id) {
+    this.sql.exec('DELETE FROM workspace WHERE id = ?', id);
+  }
+
   // When the answer to making a workspace got lost, nobody confirmed or gave back its place. The workspace itself
   // knows whether it exists, so it is asked, a few at a time, before the next place is handed out.
   async #settle() {

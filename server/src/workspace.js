@@ -237,7 +237,8 @@ const OPERATIONS = {
   'channel.remove': 'control',
   'dm.leave': 'control',
   block: 'control',
-  redact: 'control'
+  redact: 'control',
+  'workspace.delete': 'control'
 };
 
 // A refusal thrown inside a transaction: the transaction rolls back and the caller gets this answer.
@@ -307,6 +308,9 @@ export class Workspace extends DurableObject {
     // Tables are made when the workspace is: a request for an id nobody made leaves its object empty.
     this.present =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace'").toArray().length > 0;
+    // The workspace's id, kept in memory too: a join still waiting on its account when the workspace is deleted needs
+    // it to give the account's reference back, and by then the database is empty.
+    this.wid = this.present ? this.#ws().wid : null;
     // The accounts of the people in this workspace, so a request can be given its own bucket before any query runs.
     this.accounts = new Set();
     if (this.present) {
@@ -350,6 +354,7 @@ export class Workspace extends DurableObject {
       this.#newChannel(me, { name: 'general', visibility: 'workspace' }, now);
     });
     this.present = true;
+    this.wid = input.id;
     this.accounts.add(who.name);
     await this.ctx.storage.setAlarm(now + DAY);
     return reply(201, { workspace: await this.#workspaceOut(), me: memberOut(me) });
@@ -385,6 +390,20 @@ export class Workspace extends DurableObject {
   // Whether this workspace was made. The Worker and the registry ask when an answer to making it got lost.
   async exists() {
     return this.present;
+  }
+
+  // Whether an invitation secret can still be used, for a sign-up that offers it in place of an invite code. false
+  // when the workspace isn't there, or the invitation is unknown, used, withdrawn or expired, or its issuer can no
+  // longer invite (#usable).
+  async inviteOpen(secret) {
+    if (!this.present || typeof secret !== 'string') return false;
+    try {
+      this.#usable(await sha256(utf8(secret)), Date.now());
+      return this.present;
+    } catch (err) {
+      if (err instanceof Refusal) return false;
+      throw err;
+    }
   }
 
   // What an account incarnation is here, for GET /v1/workspaces: an active member with what the list shows, a
@@ -550,7 +569,11 @@ export class Workspace extends DurableObject {
   // it has committed.
   #write(fn) {
     this.wakes = new Set();
-    const result = this.ctx.storage.transactionSync(fn);
+    // A request that was waiting when the workspace was deleted finds nothing to write to.
+    const result = this.ctx.storage.transactionSync(() => {
+      if (!this.present) throw NO_WORKSPACE();
+      return fn();
+    });
     const wakes = this.wakes;
     this.wakes = new Set();
     this.#wake(wakes);
@@ -817,6 +840,8 @@ export class Workspace extends DurableObject {
         return this.#changes(me, a);
       case 'ticket':
         return this.#ticket(me, who.session);
+      case 'workspace.delete':
+        return this.#deleteWorkspace(me, who);
     }
     throw new Refusal(404, 'not_found', 'There is nothing here.');
   }
@@ -1088,10 +1113,16 @@ export class Workspace extends DurableObject {
     if (already) return reply(200, { workspace: await this.#workspaceOut(), me: memberOut(already) });
     this.#usable(hash, Date.now());
     const most = workspaceLimits(this.env).memberships;
-    const ref = await accountObject(this.env, who.name).addWorkspace(token, this.#ws().wid, { most });
+    const ref = await accountObject(this.env, who.name).addWorkspace(token, this.wid, { most });
     if (ref.status !== 200) return reply(ref.status, { ...ref.body, scope: ref.status === 401 ? 'account' : undefined });
-    if (ref.incarnation !== who.incarnation) throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
     who = { ...who, ref: ref.ref };
+    // The workspace was deleted while the account recorded its reference: the reference goes back, and the join finds
+    // what anyone finds at a workspace that isn't there.
+    if (!this.present) {
+      await this.#giveBack(who);
+      throw NO_WORKSPACE();
+    }
+    if (ref.incarnation !== who.incarnation) throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
     const now = Date.now();
     let joined;
     try {
@@ -1107,13 +1138,14 @@ export class Workspace extends DurableObject {
   }
 
   // The reference of a join that was refused. Someone who was a member before keeps it as a workspace they left, so
-  // their name can still be taken off it later. Anyone else gets it back.
+  // their name can still be taken off it later. Anyone else gets it back, and so does everyone once the workspace is
+  // deleted.
   async #giveBack(who) {
-    const known = this.sql.exec('SELECT 1 FROM member WHERE incarnation = ?', who.incarnation).toArray().length > 0;
+    const known = this.present && this.sql.exec('SELECT 1 FROM member WHERE incarnation = ?', who.incarnation).toArray().length > 0;
     const account = accountObject(this.env, who.name);
     try {
-      if (known) await account.leftWorkspace(who.incarnation, this.#ws().wid, who.ref);
-      else await account.dropWorkspace(who.incarnation, this.#ws().wid, who.ref);
+      if (known) await account.leftWorkspace(who.incarnation, this.wid, who.ref);
+      else await account.dropWorkspace(who.incarnation, this.wid, who.ref);
     } catch (err) {
       console.error('Could not settle a workspace reference after a refused join:', err?.message || err);
     }
@@ -1154,8 +1186,51 @@ export class Workspace extends DurableObject {
       this.sql.exec('UPDATE invite SET redeemedBy = ?, redeemedAt = ? WHERE id = ?', member.n, now, invite.id);
       // A channel the issuer stopped managing since, or that was archived, is left out; the rest still holds.
       for (const c of this.#invited(invite, issuer)) this.#grantTo(member, c, 'member', issuer, now);
+      // A member also gets the workspace's default channel, its oldest open one that everyone can see (normally
+      // general), so nobody joins a team and finds themselves in no room. They let themselves in, as with a join of
+      // their own. A guest gets only what the invitation names.
+      if (invite.role === 'member') {
+        const first = this.sql
+          .exec("SELECT * FROM conversation WHERE kind = 'channel' AND visibility = 'workspace' AND archivedAt IS NULL ORDER BY n LIMIT 1")
+          .toArray()[0];
+        if (first && !this.#grant(member, first)) this.#grantTo(member, first, 'member', member, now);
+      }
       return { member, made: true };
     });
+  }
+
+  // ---- Deleting the workspace ----
+
+  // An owner who is the workspace's only member deletes it. One transaction checks that and withdraws the open
+  // invitations; then the sockets close and the database goes. The answer carries the caller's account reference,
+  // which the Worker gives back, as #ticket's answer carries a ticket for the Worker to sign.
+  async #deleteWorkspace(me, who) {
+    const now = Date.now();
+    const owner = this.#write(() => {
+      const self = this.#member(me.id);
+      if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
+      const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
+      if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
+      this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
+      return self;
+    });
+    // From here every request, and every join still waiting on its account, finds no workspace.
+    this.present = false;
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(4003, 'deleted');
+      } catch {
+        // Already closed.
+      }
+    }
+    for (const timer of this.trailing.values()) clearTimeout(timer);
+    this.trailing.clear();
+    this.accounts.clear();
+    this.buckets.clear();
+    this.key = null;
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    return { status: 204, body: null, account: who.name, incarnation: who.incarnation, ref: owner.ref };
   }
 
   // ---- Channels ----

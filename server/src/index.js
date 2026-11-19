@@ -19,16 +19,18 @@ import {
   config,
   limitRate,
   positive,
-  registryObject
+  registryObject,
+  workspacesOn
 } from './config.js';
-import { READ_CORS, html, json, redirect, send } from './http.js';
+import { NOINDEX, READ_CORS, html, json, redirect, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
+import { joinPage } from './join.js';
 import { meet } from './meet.js';
 import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
-import { workspaceInfo, workspaces } from './workspaces.js';
+import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
 export { Booking } from './booking.js';
@@ -67,6 +69,16 @@ async function handle(request, env) {
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
     return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
+  }
+  // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
+  // root never redirects it; the link's fragment stays in the browser either way.
+  if (path === '/join' && reading) {
+    if (!workspacesOn(env)) throw notFound();
+    const cfg = { ...config(env, url), host: url.host, inviteSignups: inviteSignups(env) };
+    const response = html(joinPage(cfg, privacyLanguage(url, request.headers.get('accept-language'))), method);
+    response.headers.set('referrer-policy', 'no-referrer');
+    for (const [name, value] of Object.entries(NOINDEX)) response.headers.set(name, value);
+    return response;
   }
   if (path === '/v1/info' && method === 'GET') return json(200, await info(env, url));
   const account = path === '/v1' || path.startsWith('/v1/');
@@ -162,7 +174,14 @@ async function signup(request, env) {
   const body = await input.readJson(request);
   const mode = config(env, new URL(request.url)).signups;
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
-  const invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
+  let invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
+  let uses = inviteUses(env);
+  // Without a good invite code, an open invitation into a workspace on this server does as well, for one account
+  // (WORKSPACES.md, Signing up with an invitation).
+  if (mode === 'invite' && !invite) {
+    invite = await signupInvite(env, body.workspaceInvite);
+    uses = 1;
+  }
   if (mode === 'invite' && !invite) {
     throw new HttpError(
       403,
@@ -184,7 +203,7 @@ async function signup(request, env) {
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryObject(env);
   if (registry) {
-    const place = await registry.reserve(maxAccounts(env), invite, inviteUses(env));
+    const place = await registry.reserve(maxAccounts(env), invite, uses);
     if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
     if (place === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
   }

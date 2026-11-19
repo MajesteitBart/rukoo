@@ -101,6 +101,12 @@ export function signups(env) {
   return SIGNUP_MODES.includes(mode) ? mode : 'closed';
 }
 
+// Whether a workspace invitation may stand in for an invite code when someone signs up (WORKSPACE_SIGNUPS). Only
+// "off" turns it off: it counts only with SIGNUPS on invite and team chat on, and each invitation makes one account.
+export function workspaceSignups(env) {
+  return String(env.WORKSPACE_SIGNUPS ?? '').trim().toLowerCase() !== 'off';
+}
+
 function text(value) {
   const s = typeof value === 'string' ? value.trim() : '';
   return s || null;

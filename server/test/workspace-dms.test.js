@@ -363,6 +363,9 @@ describe('messages in a direct message', () => {
     const newest = async (conversation) => (await events(ws.person, ws.id, conversation)).body.events.at(-1).at;
     const room = async (conversation) => (await sync(ws.person, ws.id)).rooms.get(conversation);
 
+    // Mila got general on joining the workspace.
+    expect(await room(ws.general)).toMatchObject({ members: 2, lastAt: await newest(ws.general) });
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: mila.person.token });
     expect(await room(ws.general)).toMatchObject({ members: 1, lastAt: await newest(ws.general) });
     await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: mila.person.token });
     expect(await room(ws.general)).toMatchObject({ members: 2, lastAt: await newest(ws.general) });

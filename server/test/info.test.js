@@ -169,6 +169,19 @@ describe('GET /v1/info', () => {
     expect(res.body.limits).toEqual({ records: 10, bytes: 2048, recordBytes: 16384, batch: 500 });
   });
 
+  it('says whether a workspace invitation works as an invite code', async () => {
+    const signups = async (vars) => (await call('GET', '/v1/info', { vars: { WORKSPACE_MODE: 'on', ...vars } })).body.workspace.inviteSignups;
+    expect(await signups({})).toBe(true);
+    expect(await signups({ WORKSPACE_SIGNUPS: 'off' })).toBe(false);
+    expect(await signups({ WORKSPACE_SIGNUPS: ' OFF ' })).toBe(false);
+    expect(await signups({ SIGNUPS: 'open' })).toBe(false);
+    expect(await signups({ SIGNUPS: 'closed' })).toBe(false);
+    // Missing means on, as in wrangler.jsonc.
+    expect(await signups({ WORKSPACE_SIGNUPS: undefined })).toBe(true);
+    // With team chat off there is no workspace object to say it in.
+    expect((await call('GET', '/v1/info')).body.workspace).toBeUndefined();
+  });
+
   it('treats an unknown sign-up mode as closed', async () => {
     const res = await call('GET', '/v1/info', { vars: { SIGNUPS: 'opne' } });
     expect(res.body.signups).toBe('closed');

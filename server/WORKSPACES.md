@@ -1,6 +1,6 @@
 # Workspace protocol proposal
 
-**Status.** The server has the text slice of Gate 1, with direct messages and blocks: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
+**Status.** The server has the text slice of Gate 1, with direct messages, blocks, signing up with an invitation and deleting a workspace: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
 
 Contract for the workspace server, desktop, Android and agent runner. [Architecture](../docs/workspace-architecture.md) · [Existing account and Book protocol](PROTOCOL.md) · [Optional recovery](WORKSPACE-RECOVERY.md)
 
@@ -57,13 +57,15 @@ Updated clients omit the collection from exports, open it transiently only to tr
 | Admit someone to a private channel | An admitted channel manager. For an external guest, the manager requests and a workspace admin co-signs. The same person may hold both roles. A nonparticipant admin sees the manager and “one private channel”; the restricted audit uses opaque IDs. |
 | Start a DM | Eligible consenting human participants only. A manager may authorize contact between a guest and a named consenting peer in a shared channel. Cap a group at eight and check eligibility for each pair. *Superseded for the first release:* full members open a DM at once, without consent, and guests are in no DM ([Direct messages](#direct-messages)). |
 | Install an agent | An admin approves the installation, one sponsor who is a full workspace member, and eligible channels. Each private manager also approves. The agent's effective scope is its installation scope intersected with the sponsor's current workspace/channel rights and its own grant. V1 agents participate in channels. |
-| Moderate and leave | Authors redact their posts. Channel managers can remove posts there. Admins can ban a principal. People may block peers, leave, or report content to the operator. Only owners transfer ownership or close the workspace. |
+| Moderate and leave | Authors redact their posts. Channel managers can remove posts there. Admins can ban a principal. People may block peers, leave, or report content to the operator. Only owners transfer ownership or close the workspace. *First release:* an owner who is the workspace's only member deletes it, and closing a workspace with other people in it waits ([Workspaces, members and invitations](#workspaces-members-and-invitations)). |
 
 Each person sets their own non-unique display name within the workspace. Names may change. Show the current name and a stable disambiguator within the viewer's permitted directory. Render guest and agent badges from the server-derived actor kind. A departed author appears as a former member and an erased author as a deleted member. Actor IDs keep history and mentions attached to the original incarnation. An agent's sponsor sets its display name within the approved installation.
 
 A block controls direct contact. It closes the affected DM and prevents new DM invitations between the pair. Shared-channel posts and ordinary room updates still reach both participants. Suppress targeted mention notifications and badges from the blocked actor for the blocker. *Superseded for the first release:* a block removes the blocked person's mentions of the blocker, and their posts still count as unread ([Blocks](#blocks)). [The first release is lighter](#where-the-first-release-is-lighter) explains both changes.
 
 Invites are hashed-at-rest, revocable, high-entropy, single-use bearer capabilities, normally valid 24 hours. Put secrets in the fragment, reveal the real host before redemption, then use a POST to the verified home. A bearer link can be forwarded. A named invite binds a principal ID supplied by the intended recipient. A display name, handle or typed email grants nothing. Show who redeemed an invite; restrict directory/profile search to eligible peers. Distinguish agents and guests; keep sign-in locators private. Joining a channel grants access to its retained history. Show that before admitting a person or agent.
+
+*Superseded for the first release:* there are no vouchers. On an invite-only host a sign-up may offer an open workspace invitation in place of the operator's invite code, and each invitation makes one full account ([Signing up with an invitation](#signing-up-with-an-invitation)). The proposal follows.
 
 On an invite-only host, Registry lets authorized admins issue one additional signup voucher within delegated workspace and host budgets. Supply both capabilities in the same link. An existing account skips signup. Closed hosts may require pre-provisioned accounts. Issuance consumes workspace voucher allowance. Reservation atomically holds one global account slot and binds attempt + locator. Account writes the attempt/incarnation alongside signup. On timeout Registry asks Account to **close-or-confirm**: in one transaction Account returns a committed incarnation or persists a terminal fence preventing that attempt from ever committing late. Only confirmed cancellation releases a reserved slot. Refund a never-used voucher once on expiry. A spent voucher cannot be reused even after account deletion.
 
@@ -212,7 +214,7 @@ Desktop, Android and runner enforce their own limits on redirects, response byte
 
 ## Gate 1 routes
 
-This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js` and `test/workspace-live.test.js` are the runnable vectors for these routes.
+This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js` and `test/workspace-signup.test.js` are the runnable vectors for these routes.
 
 Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API. A client may send `Rukoo-Workspace-Version: 1`. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant and `i_` an invitation. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
 
@@ -224,10 +226,13 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
   "home": { "origin": "https://rukoo.example", "installation": "…" },
   "capabilities": [],
   "recovery": "basic",
+  "inviteSignups": true,
   "limits": { "workspacesPerAccount": 3, "membershipsPerAccount": 50, "members": 100, "sockets": 200, "conversations": 8192, "textBytes": 16384 },
   "retention": { "contentDays": 90, "feedDays": 14, "platformHistoryDays": 30 }
 }
 ```
+
+`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)).
 
 ### Errors
 
@@ -241,6 +246,7 @@ An error is `{ "error", "message" }`, with `field` for a refused input, `minVers
 | 403 | `dm_unavailable` | With `field: members`: a DM can't be started with these people. One answer for every reason the caller mustn't tell apart ([Direct messages](#direct-messages)). |
 | 404 | `not_found` | With `scope: workspace`: the caller isn't a member, or there is no such workspace. With `scope: conversation`: the caller isn't in it, or there is no such conversation. Each pair gets the same answer. |
 | 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. `archived` is also the answer to a post in a closed DM. |
+| 409 | `members_remain` | An owner tried to delete a workspace that has other active members: "Remove everyone else first." |
 | 409 | `blocked` | The caller blocked someone in the DM they tried to start. `member` names the first of them. |
 | 410 | `reset_required`, `invite_gone` | The cursor or the invitation can no longer be used. |
 | 413 | `quota` | The workspace is full. `limit` says what ran out: `members` when joining, `conversations` for a new channel or DM, `invites` for open invitations, `bytes` for stored text. |
@@ -256,6 +262,7 @@ Paths below `/v1/workspaces/{id}` are written from there.
 | `GET /v1/workspaces` | → `{ workspaces: [{ id, name, role }] }`: the workspaces this account is a member of, 50 at most (`membershipsPerAccount`). |
 | `POST /v1/workspaces` | `{ name, displayName }` → `201 { workspace, me }`. The maker is its owner and manages a first channel, `general`. When the answer gets lost on the way, the server finds out from the workspace itself whether it was made, so its place under the server's limit is never counted twice or left taken. |
 | `GET /` | → `{ workspace: { id, name, createdAt, generation, keyId, time, limits, retention }, me }`. `time` is the server's clock, which a device reads before it makes an operation ID. |
+| `DELETE /` | → `204`. Deletes the workspace, for an owner who is its only active member: `403 forbidden` for anyone else, `409 members_remain` while someone else is in it. Its open invitations stop working, every socket closes with code 4003, and everything it held goes at once. The owner's account forgets it, so it no longer counts against `workspacesPerAccount`, and its place under the server's limit is free. Afterwards every route answers the 404 of a workspace that doesn't exist, and so does a join that was under way when it went. |
 | `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }], more }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest gets the active members of the channels they are in. |
 | `PATCH /members/me` | `{ name }` → `{ me }`. |
 | `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. |
@@ -263,9 +270,17 @@ Paths below `/v1/workspaces/{id}` are written from there.
 | `POST /invites` | `{ role, channels?, expiresIn? }` → `201 { invite: { id, role, channels, channelCount, issuer, createdAt, expiresAt }, secret }`. `role` is `member` or `guest`, `channels` are channels the issuer manages, `expiresIn` is in seconds: 24 hours unless given, seven days at most. The secret is shown once; the server keeps its hash. A channel its issuer stops managing drops out of the invitation, and managing it again doesn't bring it back. |
 | `GET /invites`, `DELETE /invites/{i}` | The open invitations, and withdrawing one. `channels` lists the channels the caller can see and `channelCount` says how many the invitation leads into right now, without the ones that were archived since. An admin outside a private channel so learns that there is one, not which. |
 | `POST /invites/preview` | `{ invite }` → `{ workspace: { id, name }, role, channels, issuer: { name }, expiresAt }`, for any signed-in account, to show before joining. `channels` is a count. |
-| `POST /join` | `{ invite, name }` → `201 { workspace, me }`, or `200` for someone who already is a member. An invitation works once. |
+| `POST /join` | `{ invite, name }` → `201 { workspace, me }`, or `200` for someone who already is a member. An invitation works once. A `member` invitation also lets the new member into the workspace's default channel: its oldest channel that is open and that the workspace can see, normally `general`. The `member.joined` there names the member as actor, as a join of their own does. A `guest` invitation leads only into the channels it names. |
 
 An invitation link carries the host, the workspace ID and the secret, the last two in the fragment. A wrong secret gets the 404 of a workspace that doesn't exist. A used, withdrawn or expired one gets `410 invite_gone`, and so does one whose issuer left or is no longer an owner or admin.
+
+#### Invitation links and the join page
+
+An invitation link is `<credential URL>/join#w=<workspace>&i=<secret>`, where the credential URL is the address of the server the account signs in at. The fragment never leaves the browser. Opened in a browser, `GET /join` answers a page in English or Dutch that says the link is an invitation to a workspace on this server, names the operator and gives the steps: install Rukoo, then paste the page's address into Chat's Join dialog, or, for someone without an account, into the invite code field of the sign-up form ([PROTOCOL.md](PROTOCOL.md#get-join)). The page runs no script and sends no referrer. The apps don't open these links themselves yet.
+
+#### Signing up with an invitation
+
+On a server whose sign-ups need an invite code, an open invitation stands in for one: `POST /v1/signup` takes `workspaceInvite: { workspace, invite }` when `invite` is missing or wrong ([PROTOCOL.md](PROTOCOL.md#post-v1signup)). Each invitation makes one full account, counted by the registry like an invite code with one use, within `MAX_ACCOUNTS`. Signing up doesn't use the invitation; the new account joins with it as anyone does. An invitation that is used, withdrawn or expired, or whose issuer can no longer invite, gets `403 invite_required`, as a wrong code does. The operator turns this off with `WORKSPACE_SIGNUPS=off`, which keeps sign-ups to their own codes, and `inviteSignups` in `GET /v1/info` says which applies.
 
 ### Channels
 
@@ -393,15 +408,15 @@ A pass can take several pages, and a room can change again while a device is pag
 
 `POST /socket-ticket` → `{ ticket, expiresAt, protocol }`. The ticket works once, for 30 seconds, for the session that asked, and only while that session is still signed in. `GET /socket` upgrades with `Authorization: Ticket <ticket>`. A client that can't set that header offers the subprotocols `rukoo.workspace.v1` and `rukoo.ticket.<ticket>`, and the server answers with the first. A ticket in the address is never read.
 
-The server sends one frame, `{"t":"wake"}`, when something changed for this member, at most twice a second. The device then fetches `/changes`. The server answers a `ping` frame with `pong`. A socket stays authorized for 15 minutes after its session's last request to the workspace: a request renews it, a ping doesn't, and a socket whose time ran out is closed with code 4001 at the next wake. Code 4003 means the member was removed.
+The server sends one frame, `{"t":"wake"}`, when something changed for this member, at most twice a second. The device then fetches `/changes`. The server answers a `ping` frame with `pong`. A socket stays authorized for 15 minutes after its session's last request to the workspace: a request renews it, a ping doesn't, and a socket whose time ran out is closed with code 4001 at the next wake. Code 4003 means the member was removed, or the workspace was deleted.
 
 ### Limits on requests
 
-The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks is a read and unblocking a write. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation and blocking someone draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
+The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks is a read and unblocking a write. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation, blocking someone and deleting the workspace draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
 
 ### Not built yet
 
-DMs with guests, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
+DMs with guests, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace that still has other members, renaming a workspace, opening invitation links in the apps, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
 
 ## Fixture index
 

@@ -4,8 +4,21 @@
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { call, signup } from './helpers.js';
-import { api, channels, events, invite, newMember, newWorkspace, post, workspaceSql, workspaceStub } from './workspace-helpers.js';
+import { accountStub, call, signup } from './helpers.js';
+import {
+  api,
+  channels,
+  events,
+  invite,
+  newMember,
+  newWorkspace,
+  openSocket,
+  post,
+  sync,
+  until,
+  workspaceSql,
+  workspaceStub
+} from './workspace-helpers.js';
 
 describe('turning team chat on', () => {
   it('is off unless the operator turns it on', async () => {
@@ -260,6 +273,182 @@ describe('invitations', () => {
   });
 });
 
+describe('the default channel', () => {
+  it('comes with a member invitation, and not with a guest one', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    expect((await channels(mila.person, ws.id)).map((c) => [c.name, c.joined, c.role])).toEqual([['general', true, 'member']]);
+    // The member let themselves in, as with a join of their own.
+    const log = (await events(mila.person, ws.id, ws.general)).body.events;
+    expect(log.at(-1)).toMatchObject({ kind: 'member.joined', member: mila.me.id, actor: mila.me.id });
+
+    const project = (await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name: 'project', visibility: 'workspace' } }))
+      .body.channel.id;
+    const gus = await newMember(ws, 'Gus', { role: 'guest', channels: [project] });
+    expect((await channels(gus.person, ws.id)).map((c) => c.name)).toEqual(['project']);
+    expect((await events(gus.person, ws.id, ws.general)).status).toBe(404);
+  });
+
+  it('is granted once when the invitation names it too', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const joins = (await events(ws.person, ws.id, ws.general)).body.events.filter((e) => e.kind === 'member.joined' && e.member === mila.me.id);
+    // The invitation's grant came first, from its issuer.
+    expect(joins).toEqual([expect.objectContaining({ actor: ws.me.id })]);
+  });
+
+  it('is the oldest open channel everyone can see when general is archived', async () => {
+    const ws = await newWorkspace();
+    const make = async (name, visibility) =>
+      (await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name, visibility } })).body.channel.id;
+    await make('board', 'private');
+    const zeta = await make('zeta', 'workspace');
+    await make('alpha', 'workspace');
+    await api('PATCH', `/v1/workspaces/${ws.id}/channels/${ws.general}`, { token: ws.person.token, body: { archived: true } });
+    const mila = await newMember(ws, 'Mila');
+    expect((await channels(mila.person, ws.id)).filter((c) => c.joined).map((c) => c.id)).toEqual([zeta]);
+  });
+
+  it('is in the member’s first feed pass', async () => {
+    const ws = await newWorkspace();
+    await post(ws.person, ws.id, ws.general, 'welcome');
+    const mila = await newMember(ws, 'Mila');
+    const { rooms } = await sync(mila.person, ws.id);
+    expect([...rooms.keys()]).toEqual([ws.general]);
+    expect(rooms.get(ws.general)).toMatchObject({ kind: 'channel', name: 'general', members: 2 });
+  });
+
+  it('is nothing to a workspace whose visible channels are all archived', async () => {
+    const ws = await newWorkspace();
+    await api('PATCH', `/v1/workspaces/${ws.id}/channels/${ws.general}`, { token: ws.person.token, body: { archived: true } });
+    const mila = await newMember(ws, 'Mila');
+    expect((await channels(mila.person, ws.id)).filter((c) => c.joined)).toEqual([]);
+  });
+});
+
+describe('deleting a workspace', () => {
+  const remove = (person, id) => api('DELETE', `/v1/workspaces/${id}`, { token: person.token });
+
+  it('lets its only member, an owner, delete it, and frees the places it took', async () => {
+    const ws = await newWorkspace();
+    const registry = env.REGISTRY.get(env.REGISTRY.idFromName('registry'));
+    const held = () => runInDurableObject(registry, (i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM workspace WHERE id = ?', ws.id).one().n);
+    expect(await held()).toBe(1);
+    const open = await invite(ws.person, ws.id);
+
+    const deleted = await remove(ws.person, ws.id);
+    expect(deleted.status).toBe(204);
+    expect(deleted.text).toBe('');
+    // Nothing of the workspace answers any more, and the object holds nothing.
+    const gone = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(gone.status).toBe(404);
+    expect(gone.body).toMatchObject({ error: 'not_found', scope: 'workspace' });
+    expect((await api('GET', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token })).status).toBe(404);
+    expect((await remove(ws.person, ws.id)).status).toBe(404);
+    expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces).toEqual([]);
+    expect(await held()).toBe(0);
+    const left = await runInDurableObject(workspaceStub(ws.id), async (instance, state) => ({
+      tables: state.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'").toArray().length,
+      alarm: await state.storage.getAlarm()
+    }));
+    expect(left).toEqual({ tables: 0, alarm: null });
+    // Its invitations went with it.
+    const joiner = await signup();
+    expect((await api('POST', `/v1/workspaces/${ws.id}/join`, { token: joiner.token, body: { invite: open.secret, name: 'P' } })).status).toBe(404);
+    expect((await api('GET', '/v1/workspaces', { token: joiner.token })).body.workspaces).toEqual([]);
+  });
+
+  it('gives the maker back a workspace to make at the per-account limit', async () => {
+    const ws = await newWorkspace();
+    const make = () => api('POST', '/v1/workspaces', { token: ws.person.token, body: { name: 'Team', displayName: 'P' } });
+    expect((await make()).status).toBe(201);
+    expect((await make()).status).toBe(201);
+    expect((await make()).body.error).toBe('workspace_limit');
+    expect((await remove(ws.person, ws.id)).status).toBe(204);
+    expect((await make()).status).toBe(201);
+    expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces).toHaveLength(3);
+  });
+
+  it('is for an owner, once everyone else is gone', async () => {
+    const ws = await newWorkspace();
+    const ada = await newMember(ws, 'Ada');
+    await api('PATCH', `/v1/workspaces/${ws.id}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'admin' } });
+    const admin = await remove(ada.person, ws.id);
+    expect(admin.status).toBe(403);
+    expect(admin.body.error).toBe('forbidden');
+
+    const crowded = await remove(ws.person, ws.id);
+    expect(crowded.status).toBe(409);
+    expect(crowded.body).toMatchObject({ error: 'members_remain', message: 'Remove everyone else first.' });
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ada.person.token })).status).toBe(200);
+
+    // A second owner counts as someone else too; once Ada has left, the owner can.
+    await api('PATCH', `/v1/workspaces/${ws.id}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'owner' } });
+    expect((await remove(ada.person, ws.id)).status).toBe(409);
+    await api('DELETE', `/v1/workspaces/${ws.id}/members/${ada.me.id}`, { token: ws.person.token });
+    expect((await remove(ws.person, ws.id)).status).toBe(204);
+    expect((await api('GET', '/v1/workspaces', { token: ada.person.token })).body.workspaces).toEqual([]);
+  });
+
+  it('closes every socket with 4003', async () => {
+    const ws = await newWorkspace();
+    const socket = await openSocket(ws.person, ws.id);
+    expect(socket.status).toBe(101);
+    expect((await remove(ws.person, ws.id)).status).toBe(204);
+    expect(await until(() => socket.closed !== null)).toBe(true);
+    expect(socket.closed.code).toBe(4003);
+  });
+
+  it('lets a join that was waiting on its account find the workspace gone, and gives its reference back', async () => {
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const joiner = await signup();
+    // The join waits inside the workspace while the account records its reference; the delete runs then.
+    let reached;
+    const arrived = new Promise((resolve) => {
+      reached = resolve;
+    });
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    await runInDurableObject(workspaceStub(ws.id), (instance) => {
+      const accounts = instance.env.ACCOUNTS;
+      const slow = {
+        idFromName: (name) => accounts.idFromName(name),
+        get: (id) => {
+          const real = accounts.get(id);
+          return new Proxy(real, {
+            get(target, prop) {
+              if (prop !== 'addWorkspace') return target[prop];
+              return async (...args) => {
+                const answer = await target.addWorkspace(...args);
+                reached();
+                await gate;
+                return answer;
+              };
+            }
+          });
+        }
+      };
+      instance.env = { ...instance.env, ACCOUNTS: slow };
+    });
+    const join = api('POST', `/v1/workspaces/${ws.id}/join`, { token: joiner.token, body: { invite: secret, name: 'P' } });
+    await arrived;
+    expect((await remove(ws.person, ws.id)).status).toBe(204);
+    release();
+    const joined = await join;
+    expect(joined.status).toBe(404);
+    expect(joined.body).toMatchObject({ error: 'not_found', scope: 'workspace' });
+    // The reference it recorded is gone straight away, not only once the list settles it.
+    const refs = await runInDurableObject(await accountStub(joiner.email), (i, state) =>
+      state.storage.sql.exec('SELECT COUNT(*) AS n FROM workspaces').one().n
+    );
+    expect(refs).toBe(0);
+    expect((await api('GET', '/v1/workspaces', { token: joiner.token })).body.workspaces).toEqual([]);
+  });
+});
+
 describe('members', () => {
   it('lets owners appoint, admins manage members and guests, and nobody orphan the workspace', async () => {
     const ws = await newWorkspace();
@@ -294,7 +483,9 @@ describe('members', () => {
       (await api('GET', `/v1/workspaces/${ws.id}/members`, { token: person.token })).body.members.map((m) => m.name).sort();
     expect(await names(ws.person)).toEqual(['Gus', 'Mila', 'Olga']);
     expect(await names(member.person)).toEqual(['Gus', 'Mila', 'Olga']);
-    // Mila hasn't joined general, so the guest doesn't see her.
+    // Mila got general on joining and the guest sees her there. Once she left it, the guest doesn't.
+    expect(await names(guest.person)).toEqual(['Gus', 'Mila', 'Olga']);
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: member.person.token });
     expect(await names(guest.person)).toEqual(['Gus', 'Olga']);
 
     const renamed = await api('PATCH', `/v1/workspaces/${ws.id}/members/me`, { token: guest.person.token, body: { name: 'Gus G.' } });
@@ -328,12 +519,16 @@ describe('members', () => {
     expect(log.at(-1)).toMatchObject({ kind: 'member.left', member: member.me.id, actor: ws.me.id });
     expect(log.find((e) => e.kind === 'message.posted')).toMatchObject({ text: 'hello', actor: member.me.id });
 
-    // Invited again, they are the same member, and start without channels.
+    // Invited again, they are the same member, and start in the default channel only, like anyone who joins.
+    await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name: 'side', visibility: 'workspace' } });
     const { secret } = await invite(ws.person, ws.id);
     const back = await api('POST', `/v1/workspaces/${ws.id}/join`, { token: member.person.token, body: { invite: secret, name: 'Mila again' } });
     expect(back.status).toBe(201);
     expect(back.body.me).toMatchObject({ id: member.me.id, name: 'Mila again', state: 'active' });
-    expect((await channels(member.person, ws.id)).map((c) => [c.name, c.joined])).toEqual([['general', false]]);
+    expect((await channels(member.person, ws.id)).map((c) => [c.name, c.joined])).toEqual([
+      ['general', true],
+      ['side', false]
+    ]);
   });
 
   it('lets a member leave on their own', async () => {
@@ -349,21 +544,26 @@ describe('members', () => {
 describe('channels', () => {
   it('lets full members find and join a channel the workspace can see', async () => {
     const ws = await newWorkspace();
+    const project = (await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name: 'project', visibility: 'workspace' } }))
+      .body.channel.id;
     const member = await newMember(ws, 'Mila');
-    expect((await channels(member.person, ws.id)).map((c) => [c.name, c.joined, c.role])).toEqual([['general', false, null]]);
+    expect((await channels(member.person, ws.id)).map((c) => [c.name, c.joined, c.role])).toEqual([
+      ['general', true, 'member'],
+      ['project', false, null]
+    ]);
     // Not in it yet: no reading, no posting.
-    expect((await events(member.person, ws.id, ws.general)).status).toBe(404);
-    expect((await post(member.person, ws.id, ws.general, 'hi')).status).toBe(404);
+    expect((await events(member.person, ws.id, project)).status).toBe(404);
+    expect((await post(member.person, ws.id, project, 'hi')).status).toBe(404);
 
-    const joined = await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: member.person.token });
-    expect(joined.body.channel).toMatchObject({ name: 'general', joined: true, role: 'member', members: 2 });
+    const joined = await api('POST', `/v1/workspaces/${ws.id}/channels/${project}/join`, { token: member.person.token });
+    expect(joined.body.channel).toMatchObject({ name: 'project', joined: true, role: 'member', members: 2 });
     // Asking twice changes nothing.
-    await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: member.person.token });
-    const log = (await events(member.person, ws.id, ws.general)).body.events;
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${project}/join`, { token: member.person.token });
+    const log = (await events(member.person, ws.id, project)).body.events;
     expect(log.map((e) => e.kind)).toEqual(['channel.created', 'member.joined', 'member.joined']);
     // Joining gives the channel's earlier history, and the join is an event in its order.
     expect(log[2]).toMatchObject({ seq: 3, member: member.me.id, actor: member.me.id });
-    expect((await post(member.person, ws.id, ws.general, 'hi')).status).toBe(201);
+    expect((await post(member.person, ws.id, project, 'hi')).status).toBe(201);
   });
 
   it('hides a private channel from everyone who is not in it', async () => {

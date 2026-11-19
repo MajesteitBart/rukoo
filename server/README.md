@@ -206,7 +206,7 @@ Then try it: paste a page into an assistant and ask for the open times, and fetc
 
 ## Team chat
 
-Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels is here, and the Rukoo apps have no Chat or Channels yet, so turning it on today is for trying the API. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
+Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels and direct messages is here, and the Rukoo apps have no Chat or Channels yet, so turning it on today is for trying the API. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
 
 **You can read it.** A workspace's messages are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. Say so in your privacy statement before you turn it on.
 
@@ -220,6 +220,7 @@ The settings in `vars`:
 |---|---|
 | `WORKSPACE_MODE` | `on` or `off`. Off by default: the routes answer 404 and `GET /v1/info` doesn't mention workspaces. |
 | `WORKSPACE_ORIGIN` | The one address workspaces on this server are known by, such as `https://accounts.example.org`. Empty means the address each request came in on. Set it when your server answers on more than one address. |
+| `WORKSPACE_SIGNUPS` | `on` or `off`. With `SIGNUPS` on `invite`, `on` lets an open workspace invitation stand in for an invite code when someone signs up, once per invitation. That lets every workspace owner and admin bring new accounts onto your server, within `MAX_ACCOUNTS`. `off` keeps sign-ups to your own codes. On by default. |
 | `MAX_WORKSPACES` | The most workspaces the server holds. Default 100. |
 | `MAX_WORKSPACES_PER_ACCOUNT` | How many workspaces one account may make. Default 3. |
 | `MAX_WORKSPACE_MEMBERSHIPS` | How many workspaces one account may be in at once. Default 50. |
@@ -229,7 +230,9 @@ The settings in `vars`:
 | `WORKSPACE_BYTES` | Bytes of message text a workspace keeps. Past it, posting answers "This workspace is full". Default 1 GiB. A workspace is one Durable Object, which holds 10 GB on Workers Paid and 1 GB on Workers Free, and each message takes about 100 bytes on top of its text, so set this to `268435456` on Workers Free. |
 | `WORKSPACE_RETENTION_DAYS` | Days a message is kept before the server deletes it. Default 90. |
 
-Anyone with an account on your server can make a workspace, within those limits, so invite codes for sign-up are also what decides who can. A workspace's owner invites the others, who need an account on your server too.
+Anyone with an account on your server can make a workspace, within those limits, so invite codes for sign-up are also what decides who can. A workspace's owners and admins invite the others, who need an account on your server too. A new member also gets the workspace's first open channel, normally `general`. An owner who is the only one left in a workspace can delete it.
+
+**Invitation links.** An invitation link is `https://<your address>/join#w=…&i=…`. Opened in a browser, `/join` is a page in English or Dutch that says how to use the link in Rukoo: paste it into Chat's Join dialog, or, without an account, into the invite code field of the sign-up form. The part after `#` holds the invitation and never reaches your server. The page names the operator from `OPERATOR_NAME`, runs no script and sends no referrer, and answers 404 while `WORKSPACE_MODE` is `off`. With `WORKSPACE_SIGNUPS` on, such a link makes one account on your server even when sign-ups need an invite code ([PROTOCOL.md](PROTOCOL.md#post-v1signup)).
 
 **Turn it on in two deploys.** Deploy this version with `WORKSPACE_MODE` still `off` and wait until every address of your server runs it. Then set it to `on` and deploy again. The order matters when you roll back as well: a version from before team chat deletes an account without telling the workspaces it was in, and its messages there would then keep its name. Once a workspace exists, don't go back to such a version.
 
@@ -249,6 +252,8 @@ rukoo.io serves Rukoo's website and this server's account API; the booking pages
 2. `rukoo-account`, this folder, deployed with `--env bvdm`. It has the custom domain `meet.rukoo.io`, which is its `BOOKING_ORIGIN`, so booking pages are `https://meet.rukoo.io/<handle>` and MCP is `https://meet.rukoo.io/mcp`. The account API is `https://rukoo.io/v1/...`, through the site Worker. A booking's calendar UID ends in `@meet.rukoo.io`, or `@rukoo.io` for one made before the move.
 
 The pages lived at the root of rukoo.io at first. `BOOKING_FORMER_ROOTS` is `https://rukoo.io`, so a page link there that reaches this server redirects to the same path on meet.rukoo.io, and MCP takes rukoo.io links as the same pages. Posts, MCP calls, reads with a manage key and guests' manage pages are still answered on rukoo.io, for pages and clients from before the move.
+
+`/join` reaches this server the same way, because the website has no such file.
 
 The website's paths (`/`, `/index.html`, `/404.html`, `/app.js`, `/styles.css`, `/assets/*`, `/img/*`, `/media/*`, and its redirects `/download/*`, `/releases` and `/github`) always win on rukoo.io, because the site Worker answers them before anything reaches this server. The server keeps those names and likely future ones reserved as handles, from when the pages shared rukoo.io with the website. `/` on rukoo.io is the website; on meet.rukoo.io it is this server's own page.
 

@@ -195,7 +195,7 @@ export const RESERVED_HANDLES = new Set(
     'api assets v1 meet mcp llms admin help privacy rukoo www mail support account settings login signup book booking',
     'bookings cal calendar openapi well-known static abuse security status operator bvdm',
     'img media download downloads github releases styles app film video docs blog about pricing features terms legal',
-    'press contact changelog android windows mac linux robots sitemap favicon index booker 404 500'
+    'press contact changelog android windows mac linux robots sitemap favicon index booker 404 500 join'
   ]
     .join(' ')
     .split(' ')
