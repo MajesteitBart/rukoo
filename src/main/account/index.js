@@ -188,11 +188,12 @@ class AccountService extends EventEmitter {
 
   // session: the one a signed-in call is made for. Its answer may come after this device signed out or into
   // another account; a 401 then says nothing about the session there is now. meter: { bytes } the answer's size is
-  // added to.
-  async call(method, route, body, { auth = false, server = this.server, session = this.session, meter } = {}) {
+  // added to. raw: the server's own error comes back as it is, with its code and details, instead of one of ERRORS;
+  // a 401 still ends the session. headers: extra request headers (client.js lets only a few through).
+  async call(method, route, body, { auth = false, server = this.server, session = this.session, meter, raw = false, headers } = {}) {
     if (!server) throw fail('no_server');
     try {
-      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined, meter });
+      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined, meter, headers });
     } catch (err) {
       // The session ended elsewhere: this device was removed or the password changed on another one.
       if (auth && err instanceof AccountError && err.status === 401) {
@@ -203,11 +204,26 @@ class AccountService extends EventEmitter {
         }
         throw fail('signed_out', 401);
       }
-      throw translated(err);
+      throw raw ? err : translated(err);
     }
   }
 
-  // Who runs the server and where it keeps data; shown before anyone signs up. The current server's is kept.
+  // The workspace routes (server/WORKSPACES.md) with this session, in version 1 of their protocol. Unlike call(),
+  // the server's own error code and details survive, because the team chat service acts on them (stale_grant,
+  // reset_required, scope). A 401 from any of them ends the session, as from every other route.
+  async workspaceCall(method, route, body, { session = this.session } = {}) {
+    if (!this.signedIn || !session) throw fail('signed_out');
+    return this.call(method, route, body, { auth: true, session, raw: true, headers: { 'rukoo-workspace-version': '1' } });
+  }
+
+  // A short, stable tag of the session: the first 22 characters of base64url SHA-256 of its token. The team chat cache
+  // keeps it, so a cache is only ever shown to the session that built it (contract 3.4). null while signed out.
+  get sessionTag() {
+    return this.session ? crypto.createHash('sha256').update(String(this.session.token), 'utf8').digest('base64url').slice(0, 22) : null;
+  }
+
+  // Who runs the server and where it keeps data; shown before anyone signs up. The current server's is kept, and
+  // 'info' tells the services that read it (team chat's availability) that it may have changed.
   async serverInfo(url = this.server) {
     const server = serverUrl(url);
     if (!server) throw fail('no_server');
@@ -216,6 +232,7 @@ class AccountService extends EventEmitter {
     if (server === this.server) {
       this.state.info = { server, data, at: this.now() };
       this.saveState();
+      this.emit('info', data);
     }
     return data;
   }
@@ -250,9 +267,15 @@ class AccountService extends EventEmitter {
     this.secrets.encrypt('rukoo');
   }
 
-  async signUp({ email, password, invite }) {
+  // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
+  // invite code accepts in place of one (contract 2.12). Sent instead of invite.
+  async signUp({ email, password, invite, workspaceInvite }) {
     const address = keys.normalizeEmail(email);
     this.checkNew(address, password);
+    const linked =
+      workspaceInvite && typeof workspaceInvite === 'object' && typeof workspaceInvite.workspace === 'string' && typeof workspaceInvite.invite === 'string'
+        ? { workspace: workspaceInvite.workspace.slice(0, 100), invite: workspaceInvite.invite.slice(0, 100) }
+        : null;
     await this.serverInfo();
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
@@ -262,7 +285,7 @@ class AccountService extends EventEmitter {
     const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, this.server);
     const res = await this.call('POST', '/v1/signup', {
       email: address,
-      ...(invite ? { invite: String(invite).trim() } : {}),
+      ...(linked ? { workspaceInvite: linked } : invite ? { invite: String(invite).trim() } : {}),
       kdf,
       salt: keys.b64u(salt),
       authKey: keys.b64u(authKey),

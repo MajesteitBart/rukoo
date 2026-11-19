@@ -8,7 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const k = require('../src/main/account/crypto');
 const { AccountService, PULL_PAGES, PULL_DATA } = require('../src/main/account');
-const { AccountError, serverUrl } = require('../src/main/account/client');
+const nodeHttp = require('http');
+const { AccountError, serverUrl, request } = require('../src/main/account/client');
 const { startAccountServer } = require('./fixtures/account-server');
 const vectors = require('./fixtures/account-vectors.json');
 
@@ -1130,6 +1131,133 @@ test('the export holds every record, readable', async (t) => {
   const data = desk.exportData();
   assert.equal(data.email, null);
   assert.deepEqual(data.records.map((r) => [r.collection, r.key, r.value]), [['category', 'money', { name: 'Money' }]]);
+});
+
+// ---- team chat: the workspace routes (contract 4.7) ----
+
+// A server that answers each request with the next of answers, [status, headers, body], and keeps the headers it got.
+async function scripted(t, answers) {
+  const seen = [];
+  const srv = nodeHttp.createServer((req, res) => {
+    seen.push(req.headers);
+    req.resume();
+    req.on('end', () => {
+      const [status, headers, body] = answers.shift();
+      res.writeHead(status, { 'content-type': 'application/json', ...headers });
+      res.end(JSON.stringify(body));
+    });
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => srv.close(resolve)));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen };
+}
+
+const U = `u_${'A'.repeat(22)}`;
+const C = (n) => `c_${String(n).padStart(22, 'C')}`;
+
+test('a request adds only the workspace protocol header, and an error answer keeps its details and Retry-After', async (t) => {
+  const answers = [];
+  const { url, seen } = await scripted(t, answers);
+  answers.push([200, {}, { ok: true }]);
+  await request(url, 'GET', '/v1/workspaces', {
+    token: 'the-token',
+    headers: { 'rukoo-workspace-version': '1', authorization: 'Bearer someone-else', 'accept-encoding': 'gzip', 'x-other': 'yes' }
+  });
+  assert.equal(seen[0]['rukoo-workspace-version'], '1');
+  assert.equal(seen[0].authorization, 'Bearer the-token');
+  assert.equal(seen[0]['accept-encoding'], 'identity');
+  assert.equal(seen[0]['x-other'], undefined);
+  // Without the option, the header isn't sent at all.
+  answers.push([200, {}, {}]);
+  await request(url, 'GET', '/v1/info');
+  assert.equal(seen[1]['rukoo-workspace-version'], undefined);
+
+  const fails = async (status, headers, body) => {
+    answers.push([status, headers, body]);
+    return request(url, 'POST', '/v1/workspaces/w/dms', { body: {} }).then(
+      () => assert.fail('the request should fail'),
+      (err) => err
+    );
+  };
+  let err = await fails(429, { 'retry-after': '7' }, {
+    error: 'rate_limited',
+    field: 'members',
+    scope: 'workspace',
+    limit: 'dailyDms',
+    member: U,
+    channels: [C(1), 'not-a-channel', C(2)],
+    minVersion: 2
+  });
+  assert.ok(err instanceof AccountError);
+  assert.equal(err.code, 'rate_limited');
+  assert.equal(err.status, 429);
+  assert.deepEqual(err.details, { field: 'members', scope: 'workspace', minVersion: 2, channels: [C(1), C(2)], member: U, limit: 'dailyDms', retryAfter: 7 });
+  // Retry-After from 1 to 3600 seconds, also as a date.
+  assert.equal((await fails(429, { 'retry-after': '0' }, { error: 'rate_limited' })).details.retryAfter, 1);
+  assert.equal((await fails(429, { 'retry-after': '99999' }, { error: 'rate_limited' })).details.retryAfter, 3600);
+  const dated = (await fails(503, { 'retry-after': new Date(Date.now() + 30000).toUTCString() }, { error: 'server' })).details.retryAfter;
+  assert.ok(dated >= 28 && dated <= 31, `${dated} s`);
+  assert.equal((await fails(429, { 'retry-after': 'soon' }, { error: 'rate_limited' })).details, null);
+  // At most 100 channels; values that aren't what the protocol says are left out.
+  err = await fails(409, {}, { error: 'last_manager', channels: Array.from({ length: 150 }, (_, i) => C(i)) });
+  assert.equal(err.details.channels.length, 100);
+  err = await fails(403, {}, { error: 'forbidden', scope: 'everything', member: 'nobody', limit: 'x'.repeat(41), minVersion: -1 });
+  assert.equal(err.details, null);
+});
+
+test('workspaceCall keeps the server\'s own code and details, and a 401 still ends the session', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  await assert.rejects(desk.workspaceCall('GET', '/v1/workspaces'), { code: 'signed_out' });
+  await desk.signUp({ email: 'chat@example.com', password: PASSWORD });
+  const post = 'POST /v1/workspaces/w_1/conversations/c_1/messages';
+  srv.fail = ({ route }) => (route === post ? [409, { error: 'stale_grant', message: 'Check it first.', scope: 'conversation' }] : null);
+  await assert.rejects(desk.workspaceCall('POST', '/v1/workspaces/w_1/conversations/c_1/messages', { text: 'hi' }), (err) => {
+    assert.ok(err instanceof AccountError);
+    assert.equal(err.code, 'stale_grant');
+    assert.equal(err.status, 409);
+    assert.deepEqual(err.details, { scope: 'conversation' });
+    return true;
+  });
+  // Through call() the same answer is one of the account's own codes.
+  await assert.rejects(desk.call('POST', '/v1/workspaces/w_1/conversations/c_1/messages', {}, { auth: true }), { code: 'server' });
+  assert.ok(srv.calls.some((c) => c.route === post && c.body.text === 'hi'));
+  // A 401 from a workspace route ends the session, as from every other route.
+  srv.fail = () => [401, { error: 'unauthorized', scope: 'account' }];
+  await assert.rejects(desk.workspaceCall('GET', '/v1/workspaces'), { code: 'signed_out', status: 401 });
+  assert.equal(desk.status().signedIn, false);
+  assert.equal(desk.status().error, 'signed_out');
+});
+
+test('the session tag is the start of the token\'s SHA-256 and changes with the session', async (t) => {
+  const srv = await server(t);
+  const desk = device(t, srv);
+  assert.equal(desk.sessionTag, null);
+  let infos = 0;
+  desk.on('info', () => infos++);
+  await desk.signUp({ email: 'tag@example.com', password: PASSWORD });
+  assert.ok(infos >= 1, 'a fresh GET /v1/info says so');
+  const tag = desk.sessionTag;
+  assert.match(tag, /^[A-Za-z0-9_-]{22}$/);
+  assert.equal(tag, crypto.createHash('sha256').update(desk.session.token).digest('base64url').slice(0, 22));
+  assert.equal(desk.sessionTag, tag, 'the same while the session lasts');
+  await desk.signOut();
+  assert.equal(desk.sessionTag, null);
+  await desk.signIn({ email: 'tag@example.com', password: PASSWORD });
+  assert.match(desk.sessionTag, /^[A-Za-z0-9_-]{22}$/);
+  assert.notEqual(desk.sessionTag, tag);
+});
+
+test('signing up with a workspace invitation sends it instead of an invite code', async (t) => {
+  const srv = await server(t);
+  const workspaceInvite = { workspace: `w_${'A'.repeat(22)}`, invite: 'B'.repeat(43) };
+  await device(t, srv).signUp({ email: 'joiner@example.com', password: PASSWORD, invite: 'a-code', workspaceInvite });
+  await device(t, srv).signUp({ email: 'coder@example.com', password: PASSWORD, invite: ' a-code ' });
+  const [linked, coded] = srv.calls.filter((c) => c.route === 'POST /v1/signup').map((c) => c.body);
+  assert.deepEqual(linked.workspaceInvite, workspaceInvite);
+  assert.equal('invite' in linked, false);
+  assert.equal(coded.invite, 'a-code');
+  assert.equal('workspaceInvite' in coded, false);
 });
 
 test('without a server the account says so', async (t) => {
