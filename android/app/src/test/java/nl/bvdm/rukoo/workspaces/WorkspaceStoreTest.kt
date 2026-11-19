@@ -517,8 +517,10 @@ class WorkspaceStoreTest {
         return false
     }
 
+    // This checks that SQLite keeps ChatDb.SCHEMA as written, in order, with nothing added or rewritten. It can't
+    // see drift from the contract or from desktop's store.js: no file both apps read holds the schema yet.
     @Test
-    fun `the schema matches the contract's SQL statement for statement`() = runTest {
+    fun `the file holds ChatDb's schema statements as written, in order`() = runTest {
         val store = seeded()
         val stored = store.read {
             sql.query("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid") { it.text(0) }

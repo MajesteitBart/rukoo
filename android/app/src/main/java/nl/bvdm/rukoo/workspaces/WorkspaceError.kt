@@ -71,6 +71,9 @@ class WorkspaceError(
         private const val MAX_CHANNELS = 100
         private const val MAX_TEXT = 200
 
+        /** The code a 4xx stands for when its body names none we know. */
+        private val BY_STATUS = mapOf(429 to "rate_limited", 404 to "not_found", 403 to "forbidden")
+
         /**
          * The error a server answer stands for: [status] and its JSON [body] (`{ error, message, field, scope, … }`),
          * with [retryAfter] the raw `Retry-After` header. A 401 is `signed_out` whatever the body says, a 426
@@ -84,7 +87,8 @@ class WorkspaceError(
                 status == 401 -> "signed_out"
                 status == 426 -> "upgrade_required"
                 status >= 500 -> "server"
-                else -> known(sent)
+                // A body without a code we know, such as a proxy's own HTML 429 page, still says what its status says.
+                else -> known(sent).let { if (it == "server") BY_STATUS[status] ?: it else it }
             }
             val channels = (body?.get("channels") as? JsonArray).orEmpty()
                 .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }

@@ -7,7 +7,7 @@ import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -118,7 +118,8 @@ class Row internal constructor(private val st: SQLiteStatement) {
  * (a full disk, a read-only file) throws `WorkspaceError("not_saved")`.
  *
  * The app opens the file with AndroidSQLiteDriver (the platform's SQLite, nothing added to the APK). JVM tests open
- * the same code with BundledSQLiteDriver.
+ * the same code with BundledSQLiteDriver; ChatDbDeviceTest (androidTest) runs it on the platform's SQLite, which on
+ * Android 12 and 13 is 3.32.
  */
 class ChatDb private constructor(
     val file: File,
@@ -128,27 +129,61 @@ class ChatDb private constructor(
     val lostUnsent: Int,
 ) {
     private val mutex = Mutex()
-    private val _changes = MutableSharedFlow<DbChange>(extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
-    /** What each committed transaction touched. */
+    // Unbounded: a collector that falls behind during a burst (a 50-page pass, a backfill) still hears every room
+    // that changed. A bounded buffer that drops the oldest would lose a touch without a signal, and the room's flow
+    // would keep showing a removed message. Each entry is a few small objects.
+    private val _changes = MutableSharedFlow<DbChange>(extraBufferCapacity = Channel.UNLIMITED)
+
+    /** What each committed transaction touched. No entry is ever dropped. */
     val changes: SharedFlow<DbChange> = _changes.asSharedFlow()
 
     val isOpen: Boolean get() = conn != null
 
-    /** Runs [block] in one write transaction. Its result is returned after the commit. */
-    suspend fun <T> transaction(block: Sql.() -> T): T = withContext(io) {
-        mutex.withLock {
-            val c = conn ?: throw WorkspaceError("signed_out", message = "The chat cache is closed.")
-            val sql = Sql(c)
-            run(c, "BEGIN IMMEDIATE")
-            val result = try {
-                sql.block().also { run(c, "COMMIT") }
-            } catch (e: Throwable) {
-                runCatching { run(c, "ROLLBACK") }
-                throw translate(e)
+    /**
+     * Runs [block] in one write transaction. Its result is returned after the commit.
+     *
+     * A `CancellationException` from here means nothing was written: once COMMIT succeeds, the result comes back even
+     * when the caller was cancelled meanwhile (the caller's next suspension then throws), so what the person sees as
+     * pending matches what is on disk (§3.8). Cancellation while waiting for the connection throws before BEGIN.
+     */
+    suspend fun <T> transaction(block: Sql.() -> T): T {
+        val done = Committed<T>()
+        try {
+            return withContext(io) {
+                mutex.withLock {
+                    val c = conn ?: throw WorkspaceError("signed_out", message = "The chat cache is closed.")
+                    val sql = Sql(c)
+                    run(c, "BEGIN IMMEDIATE")
+                    val result = try {
+                        sql.block().also { run(c, "COMMIT") }
+                    } catch (e: Throwable) {
+                        runCatching { run(c, "ROLLBACK") }
+                        throw translate(e)
+                    }
+                    done.set(result)
+                    for (change in sql.drained()) _changes.tryEmit(change)
+                    result
+                }
             }
-            for (change in sql.drained()) _changes.tryEmit(change)
-            result
+        } catch (e: CancellationException) {
+            // withContext hands its result back to a cancelled caller as a CancellationException; a commit stands.
+            if (done.isSet) return done.value
+            throw e
+        }
+    }
+
+    /** A transaction's result once it committed, read back when the caller was cancelled on the way out. */
+    private class Committed<T> {
+        @Volatile var isSet = false
+            private set
+        @Suppress("UNCHECKED_CAST")
+        val value: T get() = held as T
+        private var held: Any? = null
+
+        fun set(result: T) {
+            held = result
+            isSet = true
         }
     }
 
@@ -255,17 +290,31 @@ class ChatDb private constructor(
 
         /**
          * Whether an existing file can be kept: null when it can, else the number of unsent messages it held (0 when
-         * they can't be counted).
+         * they can't be counted). A file another connection holds locked (one not closed yet, a checkpoint) is kept:
+         * busy says nothing about the file, and deleting it would take its unsent messages along.
          */
-        private fun inspect(file: File, driver: SQLiteDriver): Int? {
+        internal fun inspect(file: File, driver: SQLiteDriver): Int? {
             val c = try {
                 driver.open(file.path)
-            } catch (_: Throwable) {
-                return 0
+            } catch (e: Throwable) {
+                return if (isBusy(e)) null else 0
             }
             try {
-                val sound = runCatching { quickCheck(c) }.getOrDefault(false)
-                val schema = runCatching { schemaOf(c) }.getOrNull()
+                runCatching { run(c, "PRAGMA busy_timeout = $INSPECT_BUSY_MS") }
+                var started = System.nanoTime()
+                val sound = try {
+                    quickCheck(c)
+                } catch (e: Throwable) {
+                    if (isBusy(e) || waitedOut(started)) return null
+                    false
+                }
+                started = System.nanoTime()
+                val schema = try {
+                    schemaOf(c)
+                } catch (e: Throwable) {
+                    if (isBusy(e) || waitedOut(started)) return null
+                    null
+                }
                 val keep = sound && schema == SCHEMA_VERSION
                 // An empty file (or one SQLite made but nobody wrote) has no tables yet and becomes a fresh cache.
                 val empty = sound && runCatching { tableCount(c) == 0L }.getOrDefault(false)
@@ -275,6 +324,36 @@ class ChatDb private constructor(
                 runCatching { c.close() }
             }
         }
+
+        /** How long [inspect] waits for another connection's lock before it gives up and keeps the file. */
+        private const val INSPECT_BUSY_MS = 2000
+
+        /**
+         * Whether a read that failed spent the busy timeout waiting first. SQLite only waits in its busy handler, so
+         * this tells busy apart from a broken file whatever the exception says; under JVM tests the bundled driver's
+         * exception arrives without its message.
+         */
+        private fun waitedOut(startedNs: Long): Boolean = System.nanoTime() - startedNs >= INSPECT_BUSY_MS * 900_000L
+
+        /**
+         * SQLITE_BUSY (5) or SQLITE_LOCKED (6), from either driver: BundledSQLiteDriver's `androidx.sqlite.SQLiteException`
+         * says "Error code: 5", the platform's `SQLiteDatabaseLockedException` says "(code 5 SQLITE_BUSY)".
+         */
+        internal fun isBusy(e: Throwable): Boolean {
+            var t: Throwable? = e
+            var depth = 0
+            while (t != null && depth++ < 8) {
+                if (t.javaClass.simpleName.let { it.contains("Locked") || it.contains("Busy") }) return true
+                val m = t.message.orEmpty()
+                if (BUSY_TEXT.any { m.contains(it, ignoreCase = true) }) return true
+                if (BUSY_CODE.containsMatchIn(m)) return true
+                t = t.cause
+            }
+            return false
+        }
+
+        private val BUSY_TEXT = listOf("SQLITE_BUSY", "SQLITE_LOCKED", "database is locked", "database table is locked")
+        private val BUSY_CODE = Regex("""(?i)\b(?:error )?code:? ?(5|6|261|262|517)\b""")
 
         private fun pragmas(c: SQLiteConnection) {
             for (pragma in PRAGMAS) run(c, pragma)
