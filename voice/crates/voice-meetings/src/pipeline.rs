@@ -24,7 +24,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use voice_bridge::{EventLog, LogError};
 use voice_core::{Hints, LocalEngine, ProviderError, SpeechToText};
-use voice_protocol::{events, MeetingState, MeetingStateChange, Passage, Speaker, Track};
+use voice_protocol::{
+    events, passage_id, MeetingState, MeetingStateChange, Passage, Speaker, Track,
+};
 
 use crate::library::{MeetingDir, MeetingFile};
 use crate::reader::{segment_samples, TrackReader, PER_MS};
@@ -36,7 +38,7 @@ use crate::segmentation::{
 use crate::speakers::follower::{
     Follower, FollowerHandle, FollowerShared, FollowerTiming, Snapshot,
 };
-use crate::speakers::split::mic_voice;
+use crate::speakers::split::{mic_pieces, mic_voice};
 use crate::speakers::stream::StreamFollower;
 use crate::speakers::turns::{
     passage_speaker, segment_passages, speaker_passages, turn_cuts, window_speaker, Turn,
@@ -1332,8 +1334,8 @@ impl Worker {
     }
 
     /// The microphone's stored turns around `[start_ms, end_ms]` once a split told its voices
-    /// apart, so a passage written again keeps its voice; `None` for the call, and for a
-    /// microphone that wasn't split.
+    /// apart, so the passages written afterwards are cut and get their voices as the split's
+    /// were; `None` for the call, and for a microphone that wasn't split.
     fn mic_voices(
         &self,
         track: Track,
@@ -1538,10 +1540,7 @@ impl Worker {
                 let (drafts, meta) = self.stream_drafts(track, 0, horizon / PER_MS, true)?;
                 if !meta.is_empty() {
                     let voices = self.mic_voices(track, 0, horizon / PER_MS)?;
-                    let passages = drafts
-                        .into_iter()
-                        .map(|draft| self.passage(track, draft, None, voices.as_deref()))
-                        .collect();
+                    let passages = self.passages(track, drafts, None, voices.as_deref());
                     return self.commit(track, cursor, cursor, "end", passages, &meta);
                 }
             }
@@ -1633,10 +1632,7 @@ impl Worker {
         // Read after recognition, right before the commit, so a split that finished meanwhile
         // counts.
         let voices = self.mic_voices(track, start_ms, end_ms)?;
-        let passages = drafts
-            .into_iter()
-            .map(|draft| self.passage(track, draft, language.clone(), voices.as_deref()))
-            .collect();
+        let passages = self.passages(track, drafts, language, voices.as_deref());
         self.commit(
             track,
             cursor,
@@ -1727,21 +1723,49 @@ impl Worker {
         Ok((drafts, meta))
     }
 
-    /// A window's passage as stored. `mic_turns` are the microphone's turns once a split told
-    /// its voices apart ([`Worker::mic_voices`]).
-    fn passage(
+    /// A window's passages as stored. `mic_turns` are the microphone's turns once a split told
+    /// its voices apart ([`Worker::mic_voices`]): each microphone passage is then cut where the
+    /// voice changes, as the split cuts the passages it finds.
+    fn passages(
         &self,
         track: Track,
-        draft: Draft,
+        drafts: Vec<Draft>,
         language: Option<String>,
         mic_turns: Option<&[Turn]>,
-    ) -> StoredPassage {
+    ) -> Vec<StoredPassage> {
+        let Some(turns) = mic_turns.filter(|_| track == Track::Mic) else {
+            return drafts
+                .into_iter()
+                .map(|draft| self.passage(track, draft, language.clone()))
+                .collect();
+        };
+        // An error reads as taken: no cut there. The commit moves a start that is taken anyway.
+        let taken = |start: u64| {
+            self.transcript
+                .has_passage(&passage_id(Track::Mic, start))
+                .unwrap_or(true)
+        };
+        drafts
+            .into_iter()
+            .flat_map(|draft| {
+                let dictation = self.in_dictation(track, draft.start, draft.end);
+                mic_pieces(turns, &draft, dictation, &taken)
+            })
+            .map(|piece| self.passage(track, piece, language.clone()))
+            .collect()
+    }
+
+    /// A window's passage as stored. A microphone passage has the voice a split gave it in
+    /// `draft.speaker`, else `mic`.
+    fn passage(&self, track: Track, draft: Draft, language: Option<String>) -> StoredPassage {
         let dictation = self.in_dictation(track, draft.start, draft.end);
-        let speaker = match (track, mic_turns) {
-            (Track::Mic, Some(turns)) => Some(mic_voice(turns, draft.start, draft.end, dictation)),
-            (Track::Mic, None) => Some(speaker_of(Track::Mic).id),
-            (Track::Call, _) if self.call_is_one_speaker() => Some(speaker_of(Track::Call).id),
-            (Track::Call, _) => draft.speaker.clone(),
+        let speaker = match track {
+            Track::Mic => draft
+                .speaker
+                .clone()
+                .or_else(|| Some(speaker_of(Track::Mic).id)),
+            Track::Call if self.call_is_one_speaker() => Some(speaker_of(Track::Call).id),
+            Track::Call => draft.speaker.clone(),
         };
         StoredPassage {
             passage: Passage {

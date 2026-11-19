@@ -597,8 +597,9 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
 
 /// 4: the excerpt as the microphone of a stopped meeting, as if everyone sat at one microphone:
 /// `speakers.split` hears it through the real worker as fast as the worker takes it, finds at
-/// least two voices and moves passages to them. Only `speakers.split` runs here, so the excerpt
-/// goes into the meeting folder directly instead of through the recorder.
+/// least two voices, cuts passages where the voice changes and gives at least 90 % of transcript
+/// time the right voice, as the call gets. Only `speakers.split` runs here, so the excerpt goes
+/// into the meeting folder directly instead of through the recorder.
 #[test]
 fn ami_at_one_microphone_splits_into_voices() {
     let Some(assets) = assets() else {
@@ -656,7 +657,26 @@ fn ami_at_one_microphone_splits_into_voices() {
         .iter()
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    let moved = of(new, "passage");
+    let sent = of(new, "passage");
+    // Each passage the split sent is a new revision of one from before, or a piece of one at
+    // revision 1, with an id of its own.
+    let mut revision: BTreeMap<&str, u64> = BTreeMap::new();
+    for p in of(&before, "passage") {
+        revision.insert(p["id"].as_str().unwrap(), p["revision"].as_u64().unwrap());
+    }
+    let (mut changed, mut pieces) = (0, 0);
+    for p in &sent {
+        match revision.get(p["id"].as_str().unwrap()) {
+            Some(r) => {
+                assert_eq!(p["revision"], r + 1, "{p}");
+                changed += 1;
+            }
+            None => {
+                assert_eq!(p["revision"], 1, "{p}");
+                pieces += 1;
+            }
+        }
+    }
     let mut last: BTreeMap<String, Span> = BTreeMap::new();
     for p in of(&after, "passage") {
         last.insert(
@@ -671,20 +691,15 @@ fn ami_at_one_microphone_splits_into_voices() {
     let spans: Vec<Span> = last.into_values().collect();
     let score = accuracy(&spans, &reference(&assets.ami.rttm, 0, 1));
     eprintln!(
-        "AMI at one microphone: {voices} voices ({speakers:?}), {} of {passages} passages moved, \
-         {:.1} % of transcript time to the right voice, split in {took:?}",
-        moved.len(),
+        "AMI at one microphone: {voices} voices ({speakers:?}), {changed} of {passages} passages \
+         changed and {pieces} new from cuts, {:.1} % of transcript time to the right voice, split \
+         in {took:?}",
         score * 100.0
     );
     assert!(voices >= 2, "voices: {voices}");
     assert_eq!(speakers.len() as u64, voices - 1, "{speakers:?}");
-    assert!(!moved.is_empty(), "no passage moved");
-    assert!(
-        moved
-            .iter()
-            .all(|p| p["speaker"] != "mic" && p["revision"] == 2),
-        "{moved:?}"
-    );
+    assert!(changed > 0 && pieces > 0, "{sent:?}");
+    assert!(score >= 0.90, "accuracy {score}: {spans:#?}");
     // Each new voice reached Rukoo before its passages.
     let first_passage = new.iter().position(|e| e.event == "passage").unwrap();
     assert!(new[..first_passage].iter().all(|e| e.event == "speaker"));
