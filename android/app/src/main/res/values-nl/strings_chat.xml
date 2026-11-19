@@ -460,6 +460,7 @@
     <string name="chat_mode_switch">E-mail of chat</string>
     <string name="chat_filter_all">Alles</string>
     <string name="chat_filter_unread">Ongelezen</string>
+    <string name="chat_filter_none">Geen ongelezen gesprekken</string>
     <string name="chat_join_paste">Plakken</string>
     <string name="chat_invite_share">Link delen</string>
     <string name="chat_room_details">Details</string>

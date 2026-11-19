@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,6 +75,8 @@ import nl.bvdm.rukoo.ui.agent.AgentEntryButton
 import nl.bvdm.rukoo.ui.agent.rememberAgentNews
 import nl.bvdm.rukoo.ui.components.EmptyState
 import nl.bvdm.rukoo.ui.components.Hairline
+import nl.bvdm.rukoo.ui.components.NewsDot
+import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.ui.components.QuickFilter
 import nl.bvdm.rukoo.ui.components.QuickFilterRow
 import nl.bvdm.rukoo.ui.components.RkBottomSheet
@@ -284,7 +287,13 @@ fun MailListPane(app: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
         if (!selecting && !nav.searching) {
-            FoldersButton(onClick = app::openDrawer, modifier = Modifier.align(Alignment.BottomStart).padding(16.dp))
+            // Team chat waits for the person: the folders button, where the mode switch is, says so (contract §3.10).
+            val chat by app.chatState.collectAsStateWithLifecycle()
+            FoldersButton(
+                onClick = app::openDrawer,
+                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                news = chat.available && chat.attention > 0,
+            )
             NewMessageButton(
                 expanded = !listState.lastScrolledForward || !listState.canScrollBackward,
                 onClick = { app.newMessage() },
@@ -714,30 +723,48 @@ private fun EmptyList(
 }
 
 /**
- * "New message", styled like desktop's compose button (styles.css:696-709): a raised card with the compose
- * icon in `accent` and the label at 600. It folds to the icon while the list scrolls down.
+ * The folders, in the bottom corner across from New message, in the same raised style. With [news] it wears the news
+ * dot: team chat has messages for the person (contract §3.10), and the mode switch sits in the folders.
  */
-/** The folders, in the bottom corner across from New message, in the same raised style. */
 @Composable
-private fun FoldersButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = Rk.colors
-    val shape = Rk.shapes.panel
-    val source = remember { MutableInteractionSource() }
-    Box(
-        modifier
-            .pressScale(source, 0.96f)
-            .rkShadow(Rk.elevation.raised, shape)
-            .background(c.raised, shape)
-            .rkClickable(shape, interactionSource = source, onClick = onClick)
-            .size(48.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        RkIcon(RukooIcons.Menu, stringResource(R.string.mailbox_layout_folders), size = 20.dp, tint = c.text2)
+private fun FoldersButton(onClick: () -> Unit, modifier: Modifier = Modifier, news: Boolean = false) {
+    CornerButton(onClick = onClick, modifier = modifier, news = news) {
+        RkIcon(RukooIcons.Menu, stringResource(R.string.mailbox_layout_folders), size = 20.dp, tint = Rk.colors.text2)
     }
 }
 
+/** A 48dp raised button in a bottom corner of a list, holding [content]; [news] adds the news dot at its top right. */
 @Composable
-private fun NewMessageButton(expanded: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun CornerButton(onClick: () -> Unit, modifier: Modifier = Modifier, news: Boolean = false, content: @Composable () -> Unit) {
+    val c = Rk.colors
+    val shape = Rk.shapes.panel
+    val source = remember { MutableInteractionSource() }
+    Box(modifier) {
+        Box(
+            Modifier
+                .pressScale(source, 0.96f)
+                .rkShadow(Rk.elevation.raised, shape)
+                .background(c.raised, shape)
+                .rkClickable(shape, interactionSource = source, onClick = onClick)
+                .size(48.dp),
+            contentAlignment = Alignment.Center,
+        ) { content() }
+        if (news) NewsDot(NewsTone.UNREAD, ring = c.raised, modifier = Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp))
+    }
+}
+
+/**
+ * "New message", styled like desktop's compose button (styles.css:696-709): a raised card with the compose
+ * icon in `accent` and the label at 600. It folds to the icon while the list scrolls down. Team chat's list uses it
+ * too, with its own [label].
+ */
+@Composable
+internal fun NewMessageButton(
+    expanded: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = stringResource(R.string.composer_titles_new),
+) {
     val c = Rk.colors
     val shape = Rk.shapes.panel
     val source = remember { MutableInteractionSource() }
@@ -751,11 +778,11 @@ private fun NewMessageButton(expanded: Boolean, onClick: () -> Unit, modifier: M
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RkIcon(RukooIcons.Compose, stringResource(R.string.composer_titles_new).takeIf { !expanded }, size = 20.dp, tint = c.accent)
+        RkIcon(RukooIcons.Compose, label.takeIf { !expanded }, size = 20.dp, tint = c.accent)
         AnimatedVisibility(expanded, enter = fadeIn() + expandHorizontally(), exit = fadeOut() + shrinkHorizontally()) {
             Row {
                 Spacer(Modifier.width(10.dp))
-                Text(stringResource(R.string.composer_titles_new), style = Rk.type.text13.semibold, color = c.text, maxLines = 1)
+                Text(label, style = Rk.type.text13.semibold, color = c.text, maxLines = 1)
                 Spacer(Modifier.width(2.dp))
             }
         }

@@ -67,7 +67,13 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.ui.agent.AgentToasts
 import nl.bvdm.rukoo.ui.agent.ChatListSheet
-import nl.bvdm.rukoo.ui.agent.ChatPane
+import nl.bvdm.rukoo.ui.agent.ChatPane as AgentChatPane
+import nl.bvdm.rukoo.ui.chat.ChatCompactLayout
+import nl.bvdm.rukoo.ui.chat.ChatSheetHost
+import nl.bvdm.rukoo.ui.chat.ChatTwoPaneLayout
+import nl.bvdm.rukoo.ui.chat.WorkspaceDrawerContent
+import nl.bvdm.rukoo.ui.chat.WorkspaceSheet
+import nl.bvdm.rukoo.ui.chat.paneKey
 import nl.bvdm.rukoo.ui.components.Hairline
 import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.RkToastHost
@@ -107,18 +113,26 @@ internal object PaneWidths {
     }
 }
 
-/** What fills the window in one pane: a pane, or an overlay over everything. */
+/** What fills the window in one pane: a mail pane, a Chat pane, or an overlay over everything. */
 private sealed interface Slot {
     data class OfPane(val pane: Pane) : Slot
+
+    data class OfChat(val pane: ChatPane) : Slot
 
     data class OfOverlay(val overlay: Overlay) : Slot
 }
 
-private fun NavState.compactSlot(): Slot = overlay?.let { Slot.OfOverlay(it) } ?: Slot.OfPane(top)
+/** The one-pane slot; Chat's panes only while team chat is [chatAvailable] (contract §3.1). */
+private fun NavState.compactSlot(chatAvailable: Boolean): Slot = when {
+    overlay != null -> Slot.OfOverlay(overlay)
+    mode == AppMode.CHAT && chatAvailable -> Slot.OfChat(chat.top)
+    else -> Slot.OfPane(top)
+}
 
 // The same key in both layouts, so a pane keeps its saved state (scroll position, input) across fold and unfold.
 private fun Slot.key(): String = when (this) {
     is Slot.OfPane -> pane.name
+    is Slot.OfChat -> paneKey(pane)
     is Slot.OfOverlay -> overlay.name
 }
 
@@ -132,10 +146,18 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
     val nav by app.state.collectAsStateWithLifecycle()
     val accounts by app.services.mail.accounts.collectAsStateWithLifecycle()
     val loaded by app.services.mail.loaded.collectAsStateWithLifecycle()
+    val chatState by app.chatState.collectAsStateWithLifecycle()
     val holder = rememberSaveableStateHolder()
     val context = LocalContext.current
     val resources = context.resources
-    SideEffect { app.mailUi.strings = ResourceStrings(resources) }
+    SideEffect {
+        app.mailUi.strings = ResourceStrings(resources)
+        app.chatUi.strings = ResourceStrings(resources)
+    }
+    // Chat mode shows only while the server has team chat (§3.1); the view model moves a person in Chat to Mail when
+    // it goes away, and this keeps the screen in step meanwhile.
+    val chatAvailable = chatState.available
+    val chatMode = nav.mode == AppMode.CHAT && chatAvailable
     // The presets' names follow the language until someone renames them.
     val locales = LocalConfiguration.current.locales
     LaunchedEffect(locales) { app.services.categories?.refresh() }
@@ -169,21 +191,21 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
                 snapshotFlow { drawerState.currentValue }.collect { if (it == DrawerValue.Closed && drawerShown) app.closeDrawer() }
             }
 
-            // No accounts yet: first run.
-            val setup = loaded && accounts.isEmpty() && nav.overlay != Overlay.SETTINGS
+            // No accounts yet: first run. Onboarding is about mail, so it stays out of Chat.
+            val setup = loaded && accounts.isEmpty() && nav.overlay != Overlay.SETTINGS && !chatMode
             val canBack = nav.back(twoPane) != null && !setup
             var backProgress by remember { mutableFloatStateOf(0f) }
             val scope = rememberCoroutineScope()
             // A fresh transition each time the window becomes one pane: one animated while it wasn't composed
             // (in two panes) would stay on the old slot after folding.
-            val compactState = remember(twoPane) { SeekableTransitionState(nav.compactSlot()) }
-            val target = nav.compactSlot()
+            val compactState = remember(twoPane) { SeekableTransitionState(nav.compactSlot(chatAvailable)) }
+            val target = nav.compactSlot(chatAvailable)
             if (!twoPane) LaunchedEffect(target, compactState) { compactState.animateTo(target) }
 
             PredictiveBackHandler(enabled = canBack) { events ->
                 // Back that stops at "Save draft?" doesn't preview the pane behind the composer.
                 val asks = app.backAsks()
-                val previous = if (asks) null else nav.back(twoPane)?.compactSlot()
+                val previous = if (asks) null else nav.back(twoPane)?.compactSlot(chatAvailable)
                 try {
                     events.collect { event ->
                         if (asks) return@collect
@@ -213,14 +235,15 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
                         drawerTonalElevation = 0.dp,
                         windowInsets = WindowInsets(0),
                     ) {
-                        FolderDrawerContent(app, Modifier.fillMaxSize())
+                        // The workspace drawer in Chat, the folder drawer in Mail; both start with the mode switch.
+                        if (chatMode) WorkspaceDrawerContent(app, Modifier.fillMaxSize()) else FolderDrawerContent(app, Modifier.fillMaxSize())
                     }
                 },
             ) {
                 Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                     when {
                         setup -> OnboardingScreen(app, Modifier.fillMaxSize())
-                        twoPane -> TwoPaneLayout(app, nav, holder, backProgress)
+                        twoPane -> TwoPaneLayout(app, nav, holder, backProgress, chatMode)
                         else -> CompactLayout(app, nav, holder, compactState)
                     }
                     // Toasts sit above the bottom bars and the New message button (spec 6 §5.2).
@@ -228,11 +251,15 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
                 }
             }
 
-            if (nav.drawerOpen && !twoPane && !setup) FolderSheet(app, onDismiss = app::closeDrawer)
-            if (nav.chatListOpen) ChatListSheet(app, onDismiss = app::closeChatList)
+            if (nav.drawerOpen && !twoPane && !setup) {
+                if (chatMode) WorkspaceSheet(app, onDismiss = app::closeDrawer) else FolderSheet(app, onDismiss = app::closeDrawer)
+            }
+            if (nav.chatListOpen && !chatMode) ChatListSheet(app, onDismiss = app::closeChatList)
+            if (chatMode) nav.chat.sheet?.let { ChatSheetHost(app, it, nav.chat.sheetTarget, twoPane) }
             MoveSheet(app.mailUi)
             CategorySheet(app.mailUi)
             app.mailUi.dialog?.let { MailDialog(it) }
+            app.chatUi.dialog?.let { MailDialog(it) }
         }
     }
 }
@@ -259,6 +286,7 @@ private fun CompactLayout(app: AppViewModel, nav: NavState, holder: SaveableStat
             when (slot) {
                 is Slot.OfOverlay -> OverlayContent(app, slot.overlay)
                 is Slot.OfPane -> PaneContent(app, nav, slot.pane, Modifier.fillMaxSize())
+                is Slot.OfChat -> ChatCompactLayout(app, nav, slot.pane, Modifier.fillMaxSize())
             }
         }
     }
@@ -267,19 +295,25 @@ private fun CompactLayout(app: AppViewModel, nav: NavState, holder: SaveableStat
 private fun depth(slot: Slot): Int = when (slot) {
     is Slot.OfOverlay -> 10
     is Slot.OfPane -> slot.pane.ordinal
+    is Slot.OfChat -> slot.pane.ordinal
 }
 
 private const val PREFS = "rukoo_layout"
 private const val LIST_WIDTH = "list_width"
 private const val CHAT_WIDTH = "chat_width"
 
-private fun Context.layoutPrefs() = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+/** The pane widths the user dragged to, kept across restarts; Chat keeps its own keys here too. */
+internal fun Context.layoutPrefs() = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
 @Composable
-private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float) {
+private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float, chatMode: Boolean) {
     // The same saved state as in one pane, so Settings keeps its page and scroll across fold and unfold.
     nav.overlay?.let {
         holder.SaveableStateProvider(Slot.OfOverlay(it).key()) { OverlayContent(app, it) }
+        return
+    }
+    if (chatMode) {
+        ChatTwoPaneLayout(app, nav, holder, backProgress)
         return
     }
     val context = LocalContext.current
@@ -307,7 +341,7 @@ private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStat
                     )
                 }
             }
-            Divider(
+            PaneDivider(
                 x = window - chat,
                 onDrag = { dx -> chatWidth = PaneWidths.clamp(chatWidth - with(density) { dx.toDp().value }, PaneWidths.ChatMin, PaneWidths.ChatMax, window) },
                 onDone = { prefs.edit().putFloat(CHAT_WIDTH, chatWidth).apply() },
@@ -326,7 +360,7 @@ private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStat
                     )
                 }
             }
-            Divider(
+            PaneDivider(
                 x = list,
                 onDrag = { dx -> listWidth = PaneWidths.clamp(listWidth + with(density) { dx.toDp().value }, PaneWidths.ListMin, PaneWidths.ListMax, window) },
                 onDone = { prefs.edit().putFloat(LIST_WIDTH, listWidth).apply() },
@@ -340,7 +374,7 @@ private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStat
  * that shows while dragging. Desktop resizes with the mouse; this is the touch version (spec 6 §5.7).
  */
 @Composable
-private fun Divider(x: Dp, onDrag: (Float) -> Unit, onDone: () -> Unit) {
+internal fun PaneDivider(x: Dp, onDrag: (Float) -> Unit, onDone: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     val dragging by source.collectIsDraggedAsState()
     Box(
@@ -375,7 +409,7 @@ private fun PaneContent(app: AppViewModel, nav: NavState, pane: Pane, modifier: 
     when (pane) {
         Pane.LIST -> MailListPane(app, tracked)
         Pane.READER -> ReaderPane(app, nav.openMessageId, tracked)
-        Pane.CHAT -> ChatPane(app, nav.chatConversationId, nav.chatEmailId, tracked)
+        Pane.CHAT -> AgentChatPane(app, nav.chatConversationId, nav.chatEmailId, tracked)
         Pane.COMPOSER -> ComposerPane(app, tracked)
     }
 }

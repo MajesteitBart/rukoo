@@ -484,6 +484,7 @@
     <string name="chat_mode_switch">Mail or chat</string>
     <string name="chat_filter_all">All</string>
     <string name="chat_filter_unread">Unread</string>
+    <string name="chat_filter_none">No unread conversations</string><!-- Empty conversation list under the Unread filter. -->
     <string name="chat_join_paste">Paste</string>
     <string name="chat_invite_share">Share link</string>
     <string name="chat_room_details">Details</string>
