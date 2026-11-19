@@ -816,8 +816,32 @@ impl Session {
     /// picks between the live events and the replies: `speakers.split` sends a split's events
     /// before it answers `done` (PROTOCOL.md).
     async fn flush_to(&mut self, head: u64) -> Result<(), End> {
-        if self.last < head {
-            self.catch_up().await?;
+        // Only up to `head`, the log's head when the command finished: events that keep arriving
+        // after it must not hold the reply, nor this loop's reading of the next command.
+        while self.last < head {
+            let log = self.shared.log.clone();
+            let after = self.last;
+            let page = blocking(move || log.page(after, PAGE)).await?;
+            let more = page.len() == PAGE;
+            let mut sent = false;
+            for stored in page {
+                if stored.seq > head {
+                    break;
+                }
+                self.sink
+                    .feed(Frame::text(stored.to_json()))
+                    .await
+                    .map_err(|_| End::Dropped)?;
+                self.last = stored.seq;
+                sent = true;
+            }
+            self.sink.flush().await.map_err(|_| End::Dropped)?;
+            let last = self.last;
+            self.reached(last);
+            // Numbers can skip: nothing stored up to `head` is left when a page sent nothing.
+            if !more || !sent {
+                break;
+            }
         }
         Ok(())
     }

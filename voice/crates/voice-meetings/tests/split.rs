@@ -482,9 +482,12 @@ fn labelled(d: &ScriptedDiarizer) -> PipelineOptions {
     }
 }
 
+/// A track as the scripted diarizer plays it: stretches of seconds, each silent or one voice.
+type Spans = Vec<(f64, Option<usize>)>;
+
 /// The user (0) and another voice (1) at the microphone, which also hears the call's voice (3)
 /// through the speakers while the call speaks, 9-12 s. The microphone first, then the call.
-fn the_call_at_the_microphone() -> (Vec<(f64, Option<usize>)>, Vec<(f64, Option<usize>)>) {
+fn the_call_at_the_microphone() -> (Spans, Spans) {
     let microphone = vec![
         (0.5, None),
         (3.0, Some(0)), // 0.5-3.5 s
