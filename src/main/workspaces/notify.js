@@ -20,13 +20,18 @@
 // "New messages in N conversations", N being the rooms the summary stands for.
 //
 // After an alert, notified = head and a notice row for each message shown, so a read or a removal can take it back.
-// With the main window focused the alert becomes a toast in main.js, and nothing is recorded as on screen.
+// main.js turns the alert into a toast while the main window has focus. This module records every alert the same
+// way, because only main.js knows which it became: taking back a toast closes nothing.
 //
 // Decisions where the contract is silent:
 // - A due room the person silenced (notifications off, muted, on screen) gets notified = head too, so turning
 //   notifications on or unmuting doesn't bring back alerts for messages from while it was silent.
 // - A due room whose new messages hold nothing to show (a channel with only an older mention) gets notified = head
-//   without an alert. One whose messages couldn't be loaded stays due for the next run.
+//   without an alert, but only when the cache or the loaded page saw every event after max(read, notified). That holds
+//   for the rooms beyond three too: the cache settles them when it can, and the rest go into the summary.
+// - A due room the cache can't settle and whose page of 20 holds nothing to show but doesn't reach back that far, such
+//   as a mention followed by 20 or more messages while Rukoo was closed, goes into the summary: something new may be
+//   in the part the page didn't reach. One whose messages couldn't be loaded stays due for the next run.
 // - Alert ids are stable: chat:<ws>:<room> for a room, chat:<ws>:summary for a workspace's summary.
 const wire = require('./wire');
 const { t, getLocale } = require('../../i18n');
@@ -124,12 +129,17 @@ class Notifier {
         this.mark(ws, id, room.head);
         continue;
       }
+      const after = Math.max(room.read, room.readLocal, room.notified);
+      // The cache first, also for the rooms beyond three: one it shows to hold nothing new to show isn't due.
+      let messages = this.cachedMessages(ws, room, after, ctx);
+      if (messages !== null && !messages.length) {
+        this.mark(ws, id, room.head);
+        continue;
+      }
       if (slots <= 0) {
         rest.push(room);
         continue;
       }
-      const after = Math.max(room.read, room.readLocal, room.notified);
-      let messages = this.cachedMessages(ws, room, after, ctx);
       if (messages === null) {
         if (fetches <= 0) {
           rest.push(room);
@@ -151,10 +161,15 @@ class Notifier {
           this.mark(ws, id, room.head);
           continue;
         }
-      }
-      if (!messages.length) {
-        this.mark(ws, id, room.head);
-        continue;
+        // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page.
+        if (messages === null) {
+          rest.push(room);
+          continue;
+        }
+        if (!messages.length) {
+          this.mark(ws, id, room.head);
+          continue;
+        }
       }
       this.alert(ws, room, messages, ctx);
       slots -= 1;
@@ -221,8 +236,9 @@ class Notifier {
     return Array.isArray(message.mentions) && message.mentions.some((m) => m && m.actor === ctx.me);
   }
 
-  // The messages to show from the cache: up to three of the newest after `after`, or null when the cache doesn't
-  // reach head, or doesn't reach back to `after` and holds none to show.
+  // The messages to show from the cache: up to three of the newest after `after`; [] when it holds every event after
+  // `after` that still exists and none to show; null when it can't tell, because it doesn't reach head, or doesn't
+  // reach back to after + 1 (or the floor) and holds none to show.
   cachedMessages(ws, room, after, ctx) {
     if (room.hi === null || room.hi === undefined || room.hi < room.head) return null;
     const rows = this.svc.store
@@ -238,19 +254,25 @@ class Notifier {
       .map((r) => ({ ...r, mentions: parseJson(r.mentions, []) }))
       .filter((m) => this.qualifies(m, room, ctx));
     if (rows.length) return rows.slice(-LINES);
-    return room.lo !== null && room.lo <= after + 1 ? [] : null;
+    // Events below the floor are gone, so a range that starts at the floor holds all there is.
+    return room.lo !== null && room.lo <= Math.max(after + 1, room.floor || 0) ? [] : null;
   }
 
   // The messages to show from the server's newest events, which this module doesn't keep: the history module owns the
-  // room's cached range.
+  // room's cached range. Like cachedMessages, [] only when the page saw every event after `after`: it held the oldest
+  // there are (more: false) or reached back to after + 1. A full page of other events that stops short of that gives
+  // null, because what's new may be older than the page.
   async fetchMessages(ws, room, after, ctx) {
     const svc = this.svc;
     const page = wire.checkEvents(await svc.call(ws, 'GET', `/conversations/${room.id}/events?before=${room.head + 1}&limit=${FETCH}`));
     const store = svc.store;
-    return page.events
+    const shown = page.events
       .filter((e) => e.kind === 'message.posted' && !e.redacted && e.seq > after && e.seq <= room.head && !store.hasTombstone(ws, e.id))
       .filter((e) => this.qualifies(e, room, ctx))
       .slice(-LINES);
+    if (shown.length) return shown;
+    const reached = !page.more || (page.events.length > 0 && page.events[0].seq <= after + 1);
+    return reached ? [] : null;
   }
 
   // The room's name in an alert.
@@ -277,26 +299,23 @@ class Notifier {
     this.svc.store.run('UPDATE room SET notified = MAX(notified, ?) WHERE ws = ? AND id = ?', head, ws, room);
   }
 
-  // One room's alert, which replaces the one it had.
+  // One room's alert, which replaces the one it had. It's recorded even when main.js shows it as a toast, which it
+  // decides by the window's focus at that moment: hiding a toast closes nothing.
   alert(ws, room, messages, ctx) {
     const svc = this.svc;
     const store = svc.store;
     const id = roomKey(ws, room.id);
     const newest = messages[messages.length - 1];
-    // A focused window shows a toast, which nothing can take back.
-    const record = !svc.focused;
     store.tx(() => {
       this.mark(ws, room.id, room.head);
-      if (record) {
-        store.deleteNotices(ws, room.id);
-        store.addNotices(
-          ws,
-          room.id,
-          messages.map((m) => ({ message: m.id, seq: m.seq }))
-        );
-      }
+      store.deleteNotices(ws, room.id);
+      store.addNotices(
+        ws,
+        room.id,
+        messages.map((m) => ({ message: m.id, seq: m.seq }))
+      );
     });
-    if (record) this.shown.set(id, { ws, room: room.id, messages: new Set(messages.map((m) => m.id)) });
+    this.shown.set(id, { ws, room: room.id, messages: new Set(messages.map((m) => m.id)) });
     svc.show({
       id,
       title: this.title(room, ctx),
@@ -312,19 +331,15 @@ class Notifier {
     svc.store.tx(() => {
       for (const room of rooms) this.mark(ws, room.id, room.head);
     });
-    let count = rooms.length;
-    if (!svc.focused) {
-      const before = this.shown.get(id);
-      const set = new Set(before ? before.rooms : []);
-      for (const room of rooms) set.add(room.id);
-      this.shown.set(id, { ws, rooms: set });
-      count = set.size;
-    }
+    const before = this.shown.get(id);
+    const set = new Set(before ? before.rooms : []);
+    for (const room of rooms) set.add(room.id);
+    this.shown.set(id, { ws, rooms: set });
     const title = t('chat.notify.summaryTitle');
     svc.show({
       id,
       title: ctx.suffix ? `${title} · ${ctx.suffix}` : title,
-      body: t('chat.notify.summaryBody', { count }),
+      body: t('chat.notify.summaryBody', { count: set.size }),
       open: { ws, conversation: rooms[0].id, seq: rooms[0].head }
     });
   }

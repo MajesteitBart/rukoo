@@ -137,7 +137,7 @@ test('a mention shows as @Name, and the title names a group DM and the workspace
 
 test('mute, the setting and the room on screen keep alerts away, also afterwards', async (t) => {
   if (skipWithoutServer(t)) return;
-  const { olga, ws, bartMe, svc, settings } = await scene(t);
+  const { olga, bart, ws, bartMe, svc, settings, hidden } = await scene(t);
   const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, [], 'a DM without messages asks for nothing');
@@ -169,12 +169,17 @@ test('mute, the setting and the room on screen keep alerts away, also afterwards
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, []);
 
-  // Focused on another room: main.js shows a toast, and nothing is recorded to take back.
+  // Focused on another room: main.js shows a toast when its window has focus too. The alert is recorded all the same,
+  // because main.js may find the window unfocused and show a desktop notification, which a read must take back.
   svc.setActive({ ws: ws.id, room: ws.general });
-  await server.post(olga, ws.id, dm, 'toast');
+  const toast = await server.post(olga, ws.id, dm, 'toast');
   await svc.sync(ws.id);
   assert.equal(svc.notices.length, 1);
   assert.equal(svc.notices[0].body, 'Olga: toast');
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), [{ message: toast.messageId, seq: toast.seq }]);
+  await server.read(bart, ws.id, dm, toast.seq);
+  await svc.sync(ws.id);
+  assert.deepEqual(hidden, [roomKey(ws.id, dm)], 'the read takes it back');
   assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
 
   // Away from the window: an alert that a read can take back.
@@ -183,6 +188,82 @@ test('mute, the setting and the room on screen keep alerts away, also afterwards
   await svc.sync(ws.id);
   assert.equal(svc.notices.length, 2);
   assert.equal(svc.store.noticesForRoom(ws.id, dm).length, 1);
+});
+
+test('a mention that 20 or more messages followed before the run still alerts, through the summary', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc, hidden } = await scene(t);
+  // A second author, as the server lets one member post 30 messages in a burst.
+  const mila = await server.seedAccount();
+  await server.seedMember(ws, mila, 'Mila');
+  await svc.sync(ws.id);
+  // Rukoo was closed, or the channel busy: the page of the newest 20 events doesn't reach back to the mention.
+  await server.post(olga, ws.id, ws.general, '@Bart look', mentioning('@Bart look', bartMe.id));
+  for (let i = 0; i < 25; i++) await server.post(olga, ws.id, ws.general, `chatter ${i}`);
+  await svc.sync(ws.id);
+  let general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.mentions, 1);
+  assert.deepEqual(svc.notices, [
+    {
+      id: summaryKey(ws.id),
+      title: 'Team chat',
+      body: 'New messages in 1 conversation',
+      open: { ws: ws.id, conversation: ws.general, seq: general.head }
+    }
+  ]);
+  assert.equal(general.notified, general.head);
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1, 'once');
+  await server.read(bart, ws.id, ws.general, general.head);
+  await svc.sync(ws.id);
+  assert.deepEqual(hidden, [summaryKey(ws.id)]);
+
+  // A page that reaches back to the last alert settles it: an alerted mention and 19 messages after it alert nothing.
+  await server.post(olga, ws.id, ws.general, '@Bart again', mentioning('@Bart again', bartMe.id));
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 2);
+  assert.equal(svc.notices[1].id, roomKey(ws.id, ws.general));
+  assert.equal(svc.notices[1].body, 'Olga: @Bart again');
+  for (let i = 0; i < 19; i++) await server.post(mila, ws.id, ws.general, `more ${i}`);
+  await svc.sync(ws.id);
+  general = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(general.mentions, 1);
+  assert.equal(svc.notices.length, 2);
+  assert.equal(general.notified, general.head);
+});
+
+test('a room beyond three that the cache shows holds no new mention stays out of the summary', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc } = await scene(t);
+  const api = chatApi(() => svc);
+  const busy = (await server.seedChannel(olga, ws.id, { name: 'busy', members: [bartMe.id] })).id;
+  const channels = [];
+  for (let i = 1; i <= 4; i++) channels.push((await server.seedChannel(olga, ws.id, { name: `room-${i}`, members: [bartMe.id] })).id);
+  await svc.sync(ws.id);
+  await server.post(olga, ws.id, busy, '@Bart once', mentioning('@Bart once', bartMe.id));
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1, 'the mention in busy alerted');
+  // Bart has busy open, unread, in a window without focus: the feed keeps its cache up to head.
+  await api.chatOpen(ws.id, busy, { at: 1 });
+  assert.ok(!svc.isOnScreen(ws.id, busy));
+
+  // New chatter in busy, then a mention in each of four other rooms: five rooms ask for attention, busy the oldest.
+  await server.post(olga, ws.id, busy, 'chatter');
+  for (const [i, c] of channels.entries()) {
+    const text = `@Bart, room ${i + 1}`;
+    await server.post(olga, ws.id, c, text, mentioning(text, bartMe.id));
+  }
+  await svc.sync(ws.id);
+  const room = svc.store.getRoom(ws.id, busy);
+  assert.equal(room.mentions, 1);
+  assert.equal(room.hi, room.head, 'the cache covers busy');
+  assert.equal(room.notified, room.head);
+  const fresh = svc.notices.slice(1);
+  assert.equal(fresh.filter((n) => n.id !== summaryKey(ws.id)).length, 3);
+  assert.ok(!fresh.some((n) => n.open.conversation === busy && n.id !== summaryKey(ws.id)));
+  const summary = fresh.find((n) => n.id === summaryKey(ws.id));
+  assert.equal(summary.body, 'New messages in 1 conversation', 'only the fourth mention room');
+  assert.notEqual(summary.open.conversation, busy);
 });
 
 test('the first run after a start alerts what came while Rukoo was closed, once; signing out takes it back', async (t) => {
