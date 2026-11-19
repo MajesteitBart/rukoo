@@ -285,6 +285,31 @@ describe('what an invitation and a guest are told, kept current', () => {
     expect(await count()).toEqual([1, 1, 1]);
   });
 
+  it('counts the default channel a member invitation leads into, as joining does', async () => {
+    const ws = await newWorkspace();
+    const side = await channel(ws, 'side');
+    const told = async (made) => {
+      const listed = (await api('GET', `/v1/workspaces/${ws.id}/invites`, { token: ws.person.token })).body.invites.find(
+        (i) => i.id === made.invite.id
+      );
+      const preview = await api('POST', `/v1/workspaces/${ws.id}/invites/preview`, { token: (await signup()).token, body: { invite: made.secret } });
+      return [made.invite.channelCount, listed.channelCount, listed.channels, preview.body.channels];
+    };
+    // A member invitation that names no channel still leads into general.
+    expect(await told(await invite(ws.person, ws.id, { role: 'member' }))).toEqual([1, 1, [ws.general], 1]);
+    // One that names another channel leads into both, and general isn't counted twice when it's named.
+    expect(await told(await invite(ws.person, ws.id, { role: 'member', channels: [side] }))).toEqual([2, 2, [side, ws.general], 2]);
+    expect(await told(await invite(ws.person, ws.id, { role: 'member', channels: [ws.general] }))).toEqual([1, 1, [ws.general], 1]);
+    // A guest gets only what the invitation names.
+    expect(await told(await invite(ws.person, ws.id, { role: 'guest', channels: [side] }))).toEqual([1, 1, [side], 1]);
+    // And joining puts the member where the count said.
+    const made = await invite(ws.person, ws.id, { role: 'member', channels: [side] });
+    const mila = await signup();
+    await api('POST', `/v1/workspaces/${ws.id}/join`, { token: mila.token, body: { invite: made.secret, name: 'Mila' } });
+    const rooms = (await api('GET', `/v1/workspaces/${ws.id}/channels`, { token: mila.token })).body.channels;
+    expect(rooms.filter((c) => c.joined).length).toBe(made.invite.channelCount);
+  });
+
   it('tells a guest who lost their only room that the people they could see are gone', async () => {
     const ws = await newWorkspace();
     const project = await channel(ws, 'project');
@@ -617,6 +642,30 @@ describe('sockets and sessions', () => {
     const mine = await openSocket(ws.person, ws.id);
     expect(mine.status).toBe(101);
     mine.socket.close(1000);
+  });
+
+  it('answers a socket whose workspace was deleted while its session was checked as a missing workspace', async () => {
+    const ws = await newWorkspace();
+    await api('POST', `/v1/workspaces/${ws.id}/socket-ticket`, { token: ws.person.token });
+    const status = await runInDurableObject(workspaceStub(ws.id), async (instance, state) => {
+      const nonce = state.storage.sql.exec('SELECT nonce FROM ticket').one().nonce;
+      // The account answers only once the workspace is gone.
+      let answer;
+      const held = new Promise((resolve) => (answer = resolve));
+      const real = instance.env;
+      const accounts = { idFromName: (name) => name, get: () => ({ session: () => held }) };
+      instance.env = Object.assign(Object.create(real), { ACCOUNTS: accounts });
+      try {
+        const upgrade = instance.fetch(new Request('https://accounts.example/socket', { headers: { upgrade: 'websocket', 'x-ticket': nonce } }));
+        instance.present = false;
+        await state.storage.deleteAll();
+        answer(true);
+        return (await upgrade).status;
+      } finally {
+        instance.env = real;
+      }
+    });
+    expect(status).toBe(426);
   });
 
   it('takes nothing from what members share when a stranger is over their own allowance', async () => {

@@ -158,6 +158,7 @@ describe('the join page', () => {
     expect(res.text).toContain('<a href="https://rukoo.io">rukoo.io</a>');
     expect(res.text).toContain('choose Join with an invitation link, and paste the address of this page');
     expect(res.text).toContain('paste the address of this page where it asks for an invite code. Chat then opens the invitation.');
+    expect(res.text).toContain('after one day unless the person who invited you chose another time.');
     expect(res.text).not.toMatch(/<script|<form|<img|<iframe|src=/i);
     // No language switch: a link would leave the invitation in the fragment behind.
     expect(res.text).not.toContain('?lang=');
@@ -170,13 +171,20 @@ describe('the join page', () => {
     expect(res.text).toContain('<html lang="nl">');
     expect(res.text).toContain('Uitnodiging voor teamchat in Rukoo');
     expect(res.text).toContain('kies Deelnemen met een uitnodigingslink');
+    expect(res.text).toContain('Laat deze pagina dus openstaan, of kopieer dat adres nu.');
+    expect(res.text).toContain('na één dag als degene die je uitnodigde niets anders koos.');
     expect((await call('GET', '/join?lang=nl', { vars: ON })).text).toContain('<html lang="nl">');
   });
 
   it('tells someone without an account what works on this server', async () => {
-    const text = async (vars) => (await call('GET', '/join', { vars: { ...ON, ...vars } })).text;
+    const text = async (vars, lang = 'en') => (await call('GET', '/join', { vars: { ...ON, ...vars }, headers: { 'accept-language': lang } })).text;
     expect(await text({ WORKSPACE_SIGNUPS: 'off' })).toContain('only with an invite code from whoever runs it');
-    expect(await text({ SIGNUPS: 'closed' })).toContain('only with an invite code from whoever runs it');
+    expect(await text({ WORKSPACE_SIGNUPS: 'off' }, 'nl')).toContain('alleen nieuwe accounts met een uitnodigingscode van de beheerder');
+    // A closed server makes no accounts at all, with a code or without.
+    const closed = await text({ SIGNUPS: 'closed' });
+    expect(closed).toContain('this server doesn’t take new accounts. Ask the person who invited you.');
+    expect(closed).not.toContain('invite code from whoever runs it');
+    expect(await text({ SIGNUPS: 'closed' }, 'nl')).toContain('Deze server neemt geen nieuwe accounts aan.');
     expect(await text({ SIGNUPS: 'open' })).toContain('make an account on this server. Then do step 2.');
   });
 
@@ -187,6 +195,19 @@ describe('the join page', () => {
     expect(head.headers.get('referrer-policy')).toBe('no-referrer');
     expect((await call('GET', '/join', { vars: { WORKSPACE_MODE: 'off' } })).status).toBe(404);
     expect((await call('POST', '/join', { vars: ON, body: {} })).status).toBe(404);
+  });
+
+  it('leaves /join to the booking pages while team chat is off', async () => {
+    // A former booking root still sends it on to BOOKING_ORIGIN, where a page made under the handle join before the
+    // handle was reserved would answer.
+    const vars = { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://meet.example', BOOKING_FORMER_ROOTS: 'https://accounts.example' };
+    const moved = await call('GET', '/join', { vars });
+    expect(moved.status).toBe(301);
+    expect(moved.headers.get('location')).toBe('https://meet.example/join');
+    // At BOOKING_ORIGIN's root it is a booking page's path; there is no page join here, so the booking pages say so.
+    const atRoot = await call('GET', '/join', { vars: { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://accounts.example' } });
+    expect(atRoot.status).toBe(404);
+    expect(atRoot.text).not.toContain('Invitation to team chat');
   });
 
   it('stays on the account server where booking pages used to live', async () => {

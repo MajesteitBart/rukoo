@@ -472,6 +472,8 @@ export class Workspace extends DurableObject {
     } finally {
       this.checking.delete(nonce);
     }
+    // The workspace may have been deleted while the account answered; its database is gone with it.
+    if (!this.present) return new Response(null, { status: 426 });
     if (!alive) {
       this.sql.exec('DELETE FROM ticket WHERE nonce = ?', nonce);
       return new Response(null, { status: 401 });
@@ -1006,7 +1008,7 @@ export class Workspace extends DurableObject {
     // An admin who isn't in a private channel learns that an invitation leads into one, not which.
     const out = rows.map((row) => {
       const issuer = this.sql.exec("SELECT * FROM member WHERE n = ? AND state = 'active'", row.issuer).toArray()[0];
-      const rooms = this.#invited(row, issuer);
+      const rooms = this.#leadsInto(row, issuer);
       const mine = rooms.filter((c) => c.visibility === 'workspace' || this.#grant(me, c));
       return inviteOut(row, mine.map((c) => c.id), rooms.length);
     });
@@ -1059,10 +1061,9 @@ export class Workspace extends DurableObject {
         row.createdAt,
         row.expiresAt
       );
-      return row;
+      return { row, ids: this.#leadsInto(row, issuer).map((c) => c.id) };
     });
-    const ids = JSON.parse(invite.channels).map((entry) => entry.c);
-    return reply(201, { invite: inviteOut(invite, ids, ids.length), secret });
+    return reply(201, { invite: inviteOut(invite.row, invite.ids, invite.ids.length), secret });
   }
 
   #revoke(me, id) {
@@ -1095,7 +1096,7 @@ export class Workspace extends DurableObject {
     return reply(200, {
       workspace: { id: ws.wid, name: ws.name },
       role: invite.role,
-      channels: this.#invited(invite, issuer).length,
+      channels: this.#leadsInto(invite, issuer).length,
       issuer: { name: issuer.name },
       expiresAt: invite.expiresAt
     });
@@ -1151,8 +1152,8 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // The channels an invitation leads into right now: the ones its issuer still manages under the grant they had
-  // when they invited, and that aren't archived. Joining, the preview and the list of invitations all count these.
+  // The channels an invitation names that still hold: the ones its issuer still manages under the grant they had
+  // when they invited, and that aren't archived. Joining grants these; #leadsInto adds the default channel.
   #invited(invite, issuer) {
     const rooms = [];
     for (const { c: id, g } of JSON.parse(invite.channels)) {
@@ -1160,6 +1161,23 @@ export class Workspace extends DurableObject {
       const grant = c && !c.archivedAt && issuer ? this.#grant(issuer, c) : null;
       if (grant?.role === 'manager' && grant.id === g) rooms.push(c);
     }
+    return rooms;
+  }
+
+  // The workspace's default channel: its oldest open channel that everyone can see, normally general. A member
+  // invitation leads into it as well as into the channels it names.
+  #defaultChannel() {
+    return this.sql
+      .exec("SELECT * FROM conversation WHERE kind = 'channel' AND visibility = 'workspace' AND archivedAt IS NULL ORDER BY n LIMIT 1")
+      .toArray()[0];
+  }
+
+  // Every channel a person joining with this invitation would be in right now: the invited ones and, for a member,
+  // the default channel. The preview and the list of invitations count these, so they match what joining does.
+  #leadsInto(invite, issuer) {
+    const rooms = this.#invited(invite, issuer);
+    const first = invite.role === 'member' ? this.#defaultChannel() : null;
+    if (first && !rooms.some((c) => c.id === first.id)) rooms.push(first);
     return rooms;
   }
 
@@ -1190,9 +1208,7 @@ export class Workspace extends DurableObject {
       // general), so nobody joins a team and finds themselves in no room. They let themselves in, as with a join of
       // their own. A guest gets only what the invitation names.
       if (invite.role === 'member') {
-        const first = this.sql
-          .exec("SELECT * FROM conversation WHERE kind = 'channel' AND visibility = 'workspace' AND archivedAt IS NULL ORDER BY n LIMIT 1")
-          .toArray()[0];
+        const first = this.#defaultChannel();
         if (first && !this.#grant(member, first)) this.#grantTo(member, first, 'member', member, now);
       }
       return { member, made: true };

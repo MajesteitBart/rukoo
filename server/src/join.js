@@ -24,13 +24,15 @@ const TEXT = {
     newOpen: 'If you don’t: open Settings, Rukoo account, Create account, and make an account on this server. Then do step 2.',
     newClosed:
       'If you don’t: this server makes new accounts only with an invite code from whoever runs it. Ask the person who invited you.',
-    expiry: 'An invitation works once and expires within a week, after one day unless the person who invited you chose longer. If it doesn’t work any more, ask for a new one.',
+    newNone: 'If you don’t: this server doesn’t take new accounts. Ask the person who invited you.',
+    expiry:
+      'An invitation works once and expires within a week, after one day unless the person who invited you chose another time. If it doesn’t work any more, ask for a new one.',
     privacy: 'Privacy statement'
   },
   nl: {
     title: 'Uitnodiging voor teamchat in Rukoo',
     intro: (host) =>
-      `Met deze link word je uitgenodigd voor een werkruimte met teamchat op de Rukoo-server op ${host}. De uitnodiging zit in het adres in de adresbalk van je browser. Laat deze pagina dus open staan, of kopieer dat adres nu.`,
+      `Met deze link word je uitgenodigd voor een werkruimte met teamchat op de Rukoo-server op ${host}. De uitnodiging zit in het adres in de adresbalk van je browser. Laat deze pagina dus openstaan, of kopieer dat adres nu.`,
     runBy: (op) => `Deze server wordt beheerd door ${op}.`,
     unnamed: 'De beheerder van deze server heeft geen naam ingevuld.',
     steps: 'Zo doe je mee',
@@ -42,6 +44,7 @@ const TEXT = {
     newOpen: 'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en maak een account op deze server. Doe daarna stap 2.',
     newClosed:
       'Heb je dat niet? Deze server maakt alleen nieuwe accounts met een uitnodigingscode van de beheerder. Vraag het aan degene die je uitnodigde.',
+    newNone: 'Heb je dat niet? Deze server neemt geen nieuwe accounts aan. Vraag het aan degene die je uitnodigde.',
     expiry: 'Een uitnodiging werkt één keer en verloopt binnen een week, na één dag als degene die je uitnodigde niets anders koos. Werkt hij niet meer, vraag dan om een nieuwe.',
     privacy: 'Privacyverklaring'
   }
@@ -52,7 +55,13 @@ const TEXT = {
 export function joinPage({ operator, signups, host, inviteSignups }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const runBy = operator.name ? T.runBy(link(operator.url, operator.name)) : escape(T.unnamed);
-  const newcomer = inviteSignups ? T.newWithInvite : signups === 'open' ? T.newOpen : T.newClosed;
+  const newcomer = inviteSignups
+    ? T.newWithInvite
+    : signups === 'open'
+      ? T.newOpen
+      : signups === 'closed'
+        ? T.newNone
+        : T.newClosed;
   const footer = operator.privacy ? `<p>${link(operator.privacy, T.privacy)}</p>` : '';
   return `<!doctype html>
 <html lang="${lang}">

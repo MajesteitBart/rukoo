@@ -71,9 +71,9 @@ async function handle(request, env) {
     return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
-  // root never redirects it; the link's fragment stays in the browser either way.
-  if (path === '/join' && reading) {
-    if (!workspacesOn(env)) throw notFound();
+  // root never redirects it; the link's fragment stays in the browser either way. With team chat off the path is the
+  // booking pages' as before, so a page made under the handle join before it was reserved still answers there.
+  if (path === '/join' && reading && workspacesOn(env)) {
     const cfg = { ...config(env, url), host: url.host, inviteSignups: inviteSignups(env) };
     const response = html(joinPage(cfg, privacyLanguage(url, request.headers.get('accept-language'))), method);
     response.headers.set('referrer-policy', 'no-referrer');
