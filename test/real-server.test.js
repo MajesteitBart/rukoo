@@ -1,0 +1,341 @@
+'use strict';
+
+// The real-server helper (test/fixtures/real-server.js) and its command-line wrapper: what every chat test and
+// Android's live tests rely on. Needs server/node_modules (npm ci --prefix server); skips without it, and fails
+// without it in CI or with RUKOO_REQUIRE_REAL_SERVER=1.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const net = require('net');
+const path = require('path');
+const { spawn, execFileSync } = require('child_process');
+const { tempDir, removeDir } = require('./tmp');
+const { startRealServer, connectRealServer, realServerAvailable, skipWithoutServer, uuidv7, mention, INVITE } = require('./fixtures/real-server');
+const keys = require('../src/main/account/crypto.js');
+
+const ROOT = path.resolve(__dirname, '..');
+const PASSWORD = 'a long enough password';
+const UUIDV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+let server;
+test.before(async () => {
+  if (realServerAvailable()) server = await startRealServer();
+});
+test.after(() => server?.close());
+
+// Unref'd, so a timeout that lost its race doesn't keep the test process alive.
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref());
+
+async function until(check, ms, what) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() > end) throw new Error(`Timed out after ${ms} ms waiting for ${what}`);
+    await sleep(20);
+  }
+}
+
+function portFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen({ host: '127.0.0.1', port, exclusive: true }, () => probe.close(() => resolve(true)));
+  });
+}
+
+// Every process below pid, from the system's process table.
+function descendants(pid) {
+  let rows;
+  if (process.platform === 'win32') {
+    const out = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'],
+      { encoding: 'utf8', windowsHide: true }
+    );
+    rows = out.split(/\r?\n/);
+  } else {
+    rows = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).split('\n');
+  }
+  const children = new Map();
+  for (const row of rows) {
+    const [child, parent] = row.trim().split(/\s+/).map(Number);
+    if (!Number.isInteger(child) || !Number.isInteger(parent)) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(child);
+  }
+  const found = [];
+  const queue = [pid];
+  while (queue.length) {
+    for (const child of children.get(queue.shift()) || []) {
+      if (child === pid || found.includes(child)) continue;
+      found.push(child);
+      queue.push(child);
+    }
+  }
+  return found;
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+test('the Worker binds 127.0.0.1 on a port from 38800 to 38899 and has team chat on', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const url = new URL(server.url);
+  assert.equal(url.hostname, '127.0.0.1');
+  const port = Number(url.port);
+  assert.ok(port >= 38800 && port <= 38899, `port ${port}`);
+  assert.equal(server.url, `http://127.0.0.1:${port}`);
+  assert.equal(server.inviteCode, INVITE);
+  const info = await server.call('GET', '/v1/info');
+  assert.equal(info.status, 200);
+  assert.ok(info.body.features.includes('workspaces-v1'));
+  // Nothing at the repository root: the bundle goes to the temporary folder and cf.json isn't fetched.
+  assert.equal(fs.existsSync(path.join(ROOT, '.wrangler')), false);
+});
+
+test('two seeded accounts: random keys, and a password the desktop signs in with', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  assert.match(olga.email, /^person-\d+-[0-9a-f]{8}@example\.com$/);
+  assert.equal(typeof olga.token, 'string');
+  assert.equal((await server.call('GET', '/v1/workspaces', { token: olga.token })).status, 200);
+
+  const bart = await server.seedAccount({ email: 'Bart@Example.com', password: PASSWORD });
+  assert.equal(bart.email, 'bart@example.com');
+  assert.ok(bart.recoveryKey);
+  // The steps AccountService.login takes, with the desktop's own key code: prelogin, password keys for the server's
+  // address, login, and the data key unwraps.
+  const pre = await server.call('POST', '/v1/prelogin', { body: { email: bart.email } });
+  assert.equal(pre.status, 200);
+  const { authKey, wrapKey } = await keys.passwordKeys(PASSWORD, keys.unb64u(pre.body.salt, 16), keys.checkKdf(pre.body.kdf), server.url);
+  const login = await server.call('POST', '/v1/login', { body: { email: bart.email, authKey: keys.b64u(authKey), device: { name: 'Test', platform: 'linux' } } });
+  assert.equal(login.status, 200, login.text);
+  assert.equal(keys.unwrapDataKey(wrapKey, keys.unb64u(login.body.wrappedKey)).length, 32);
+});
+
+test('a workspace, an invitation link and a member who is in general', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
+  assert.match(ws.id, /^w_[A-Za-z0-9_-]{22}$/);
+  assert.equal(ws.owner, olga);
+  assert.ok(ws.general);
+
+  const made = await server.createInvite(olga, ws.id, { role: 'member' });
+  assert.match(made.secret, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(made.link, `${server.url}/join#w=${ws.id}&i=${made.secret}`);
+  assert.ok(made.invite.id);
+
+  const me = await server.seedMember(ws, bart, 'Bart');
+  assert.equal(me.name, 'Bart');
+  const general = (await server.channels(bart, ws.id)).find((c) => c.id === ws.general);
+  assert.equal(general.joined, true);
+  const members = await server.call('GET', `/v1/workspaces/${ws.id}/members`, { token: olga.token });
+  assert.equal(members.status, 200);
+  assert.ok(members.body.members.some((m) => m.id === me.id));
+});
+
+test("a post wakes the member's socket, opened with the ticket in the Authorization header, within 2 s", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga);
+  await server.seedMember(ws, bart, 'Bart');
+  const live = await server.openSocket(bart, ws.id);
+  t.after(() => live.close());
+  assert.equal(live.socket.protocol, 'rukoo.workspace.v1');
+
+  const started = Date.now();
+  const posted = await server.post(olga, ws.id, ws.general, 'Welcome, Bart');
+  await until(() => live.frames.length > 0, 2000, 'the wake');
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(live.frames, ['{"t":"wake"}']);
+  assert.match(posted.operationId, UUIDV7);
+
+  const events = await server.call('GET', `/v1/workspaces/${ws.id}/conversations/${ws.general}/events?after=0`, { token: bart.token });
+  assert.equal(events.status, 200);
+  assert.equal(events.body.events.at(-1).text, 'Welcome, Bart');
+});
+
+test('a private channel with a member, a mention past an accent, a removal and a read position', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const zoe = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga);
+  const zoeMe = await server.seedMember(ws, zoe, 'Zoë');
+  const channel = await server.seedChannel(olga, ws.id, { name: 'plans', visibility: 'private', members: [zoeMe.id] });
+  assert.equal(channel.visibility, 'private');
+  assert.ok((await server.channels(zoe, ws.id)).some((c) => c.id === channel.id && c.joined));
+
+  const text = 'Hoi Zoë en @Zoë!';
+  const at = mention(text, '@Zoë', zoeMe.id);
+  assert.deepEqual(at, { actor: zoeMe.id, start: 12, end: 17 });
+  const posted = await server.post(olga, ws.id, channel.id, text, { mentions: [at] });
+  const page = await server.call('GET', `/v1/workspaces/${ws.id}/conversations/${channel.id}/events?after=0`, { token: zoe.token });
+  const event = page.body.events.find((e) => e.id === posted.messageId);
+  assert.deepEqual(event.mentions, [at]);
+
+  const removed = await server.redact(olga, ws.id, channel.id, posted.messageId);
+  assert.equal(removed.redacted, true);
+  const after = await server.call('GET', `/v1/workspaces/${ws.id}/conversations/${channel.id}/events?after=0`, { token: zoe.token });
+  const gone = after.body.events.find((e) => e.id === posted.messageId);
+  assert.equal(gone.redacted, true);
+  assert.equal(gone.text, undefined);
+
+  const head = after.body.head;
+  assert.deepEqual(await server.read(zoe, ws.id, channel.id, head), { read: head });
+});
+
+test('blocks and direct messages, once the server has their routes', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga);
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  if ((await server.call('GET', `/v1/workspaces/${ws.id}/blocks`, { token: olga.token })).status === 404) {
+    t.skip('this server has no DM and block routes yet');
+    return;
+  }
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  assert.ok(dm.conversation);
+  assert.equal((await server.seedDm(olga, ws.id, [bartMe.id])).conversation, dm.conversation);
+  const blocked = await server.block(olga, ws.id, bartMe.id);
+  assert.equal(blocked.member, bartMe.id);
+});
+
+test('stop() then start() keeps the address, the session and the message; an open socket closes on the stop', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga);
+  await server.post(olga, ws.id, ws.general, 'Before the restart');
+  const live = await server.openSocket(olga, ws.id);
+  const closed = new Promise((resolve) => live.socket.addEventListener('close', (e) => resolve(e.code), { once: true }));
+  const url = server.url;
+
+  await server.stop();
+  assert.ok(typeof (await Promise.race([closed, sleep(3000).then(() => 'still open')])) === 'number');
+  await assert.rejects(server.call('GET', '/v1/info'));
+
+  await server.start();
+  assert.equal(server.url, url);
+  const events = await server.call('GET', `/v1/workspaces/${ws.id}/conversations/${ws.general}/events?after=0`, { token: olga.token });
+  assert.equal(events.status, 200);
+  assert.equal(events.body.events.at(-1).text, 'Before the restart');
+});
+
+test('close() stops the server and removes its temporary folder, and can be called twice', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const own = await startRealServer();
+  assert.ok(fs.existsSync(own.dir));
+  assert.notEqual(own.url, server.url);
+  await own.close();
+  assert.equal(fs.existsSync(own.dir), false);
+  await own.close();
+  await assert.rejects(own.call('GET', '/v1/info'));
+});
+
+test('the command line writes { url, invite, pid }, connectRealServer seeds against it, and deleting the file stops it', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const dir = tempDir('rukoo-real-server-cli-');
+  t.after(() => removeDir(dir));
+  const readyFile = path.join(dir, 'ready', 'rukoo-server.json');
+  // A port from the range nobody listens on, counted down from the top so it rarely meets the helper's own picks.
+  let port = null;
+  for (let p = 38899; p >= 38800 && port === null; p--) if (await portFree(p)) port = p;
+  assert.ok(port, 'a free port from 38800 to 38899');
+
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawn(process.execPath, [path.join(__dirname, 'fixtures', 'real-server-cli.js'), '--port', String(port), '--ready-file', readyFile], {
+    cwd: dir,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true
+  });
+  let output = '';
+  child.stdout.on('data', (d) => (output += d));
+  child.stderr.on('data', (d) => (output += d));
+  const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
+  t.after(() => {
+    if (child.exitCode === null) child.kill();
+  });
+
+  await until(() => fs.existsSync(readyFile) || child.exitCode !== null, 30000, 'the ready file');
+  assert.equal(child.exitCode, null, output);
+  const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
+  assert.deepEqual(ready, { url: `http://127.0.0.1:${port}`, invite: INVITE, pid: child.pid });
+
+  const remote = connectRealServer(ready.url);
+  assert.equal(remote.stop, undefined);
+  assert.equal(remote.close, undefined);
+  const olga = await remote.seedAccount();
+  const bart = await remote.seedAccount({ password: PASSWORD });
+  const ws = await remote.seedWorkspace(olga);
+  await remote.seedMember(ws, bart, 'Bart');
+  const posted = await remote.post(olga, ws.id, ws.general, 'Through the command line');
+  assert.ok(posted.seq > 0);
+
+  const below = descendants(child.pid);
+  assert.ok(below.length > 0, 'workerd runs under the command line');
+  fs.rmSync(readyFile);
+  assert.equal(await Promise.race([exited, sleep(15000).then(() => 'still running')]), 0, output);
+  await until(() => below.every((pid) => !alive(pid)), 5000, `the processes ${below.join(', ')} to end`);
+  assert.equal(await portFree(port), true);
+});
+
+test('uuidv7 puts the time in the first 48 bits', () => {
+  const id = uuidv7(1763550000000);
+  assert.match(id, UUIDV7);
+  assert.equal(parseInt(id.replace(/-/g, '').slice(0, 12), 16), 1763550000000);
+});
+
+// A copy of the helper in a folder whose server/ has no node_modules, run as its own test process.
+test('without server/node_modules a test skips with the message, and fails in CI or with RUKOO_REQUIRE_REAL_SERVER=1', () => {
+  const root = tempDir('rukoo-real-server-missing-');
+  try {
+    for (const file of ['test/fixtures/real-server.js', 'test/tmp.js', 'src/main/account/client.js']) {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.copyFileSync(path.join(ROOT, file), path.join(root, file));
+    }
+    fs.mkdirSync(path.join(root, 'server'));
+    const probe = path.join(root, 'test', 'probe.test.js');
+    fs.writeFileSync(
+      probe,
+      [
+        "const test = require('node:test');",
+        "const { skipWithoutServer, startRealServer } = require('./fixtures/real-server');",
+        "test('needs the server', async (t) => { if (skipWithoutServer(t)) return; await startRealServer(); });"
+      ].join('\n')
+    );
+    const run = (extra) => {
+      const env = { ...process.env, ...extra };
+      for (const name of ['CI', 'RUKOO_REQUIRE_REAL_SERVER', 'NODE_TEST_CONTEXT']) if (!(name in extra)) delete env[name];
+      try {
+        return { code: 0, out: execFileSync(process.execPath, ['--test', '--test-reporter=tap', probe], { cwd: root, env, encoding: 'utf8', stdio: 'pipe' }) };
+      } catch (err) {
+        return { code: err.status, out: `${err.stdout}${err.stderr}` };
+      }
+    };
+
+    const skipped = run({});
+    assert.equal(skipped.code, 0, skipped.out);
+    assert.match(skipped.out, /# SKIP run npm ci in server\/ to test chat against the real server/);
+
+    const required = run({ RUKOO_REQUIRE_REAL_SERVER: '1' });
+    assert.notEqual(required.code, 0, required.out);
+    assert.match(required.out, /The real account server is missing: run npm ci in server\//);
+
+    const ci = run({ CI: 'true' });
+    assert.notEqual(ci.code, 0, ci.out);
+  } finally {
+    removeDir(root);
+  }
+});

@@ -61,7 +61,14 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
       - run: npm ci
+      # The chat tests run the real account server (test/fixtures/real-server.js) from server/node_modules. With CI
+      # set they fail rather than skip when it's missing.
+      - name: Install the account server for the chat tests
+        run: npm ci --prefix server
       - run: npm test
         if: runner.os == 'macOS' || matrix.shard == 2
       # Rukoo Voice's macOS scripts and the meeting tools' lines for marks only a Mac Voice sends. `npm test` leaves
@@ -195,17 +202,41 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install the account server
+        run: npm ci --prefix ../server
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
       # v6 moves Gradle caching into a proprietary component under Gradle's Terms of Use. v5 already runs on Node 24.
       - uses: gradle/actions/setup-gradle@v5
+      # The live tests (AccountLiveTest, WorkspaceLiveTest) run against the real Worker in workerd. The server writes
+      # the ready file once it answers, and stops when the file is deleted.
+      - name: Start the account server
+        run: |
+          ready="$RUNNER_TEMP/rukoo-server.json"
+          node ../test/fixtures/real-server-cli.js --port 38850 --ready-file "$ready" > "$RUNNER_TEMP/rukoo-server.log" 2>&1 &
+          for attempt in $(seq 1 150); do [ -f "$ready" ] && break; sleep 0.2; done
+          test -f "$ready" || { cat "$RUNNER_TEMP/rukoo-server.log"; exit 1; }
+          cat "$ready"
       - run: ./gradlew testDebugUnitTest assembleDebug --console=plain
+        env:
+          RUKOO_ACCOUNT_TEST_SERVER: http://127.0.0.1:38850
+          RUKOO_ACCOUNT_TEST_INVITE: test-invite
+      - name: Stop the account server
+        if: always()
+        run: rm -f "$RUNNER_TEMP/rukoo-server.json"
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: android-test-results
-          path: android/app/build/reports/tests/
+          path: |
+            android/app/build/reports/tests/
+            ${{ runner.temp }}/rukoo-server.log
           if-no-files-found: ignore
           retention-days: 7
