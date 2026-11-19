@@ -109,3 +109,37 @@ test('a mention of someone the recipients cannot see loses the address from its 
   assert.equal(withoutAddress('@Sanne de Vries', 'sanne@example.com'), '@Sanne de Vries');
   assert.equal(withoutAddress('@a+b@x.example', 'a+b@x.example'), '@a+b', 'characters with a meaning in patterns');
 });
+
+test('team chat members match without accents, recent authors first among equals, at most 8', async () => {
+  const { rankMembers } = await load();
+  const member = (id, name) => ({ id: `u_${id.padEnd(22, 'A')}`, name, role: 'member', state: 'active' });
+  const joel = member('joel', 'Joël Smit');
+  const jolien = member('jolien', 'Jolien Bakker');
+  const anna = member('anna', 'Anna Jonker');
+  const bob = member('bob', 'Bob de Vries');
+  const members = [anna, jolien, joel, bob];
+
+  assert.deepEqual(rankMembers({ query: 'joel', members }).map((m) => m.name), ['Joël Smit'], '"joel" finds "Joël"');
+  assert.deepEqual(
+    rankMembers({ query: 'jo', members }).map((m) => m.name),
+    ['Jolien Bakker', 'Joël Smit', 'Anna Jonker'],
+    'the start of the name before a later word, then the order given'
+  );
+  assert.deepEqual(
+    rankMembers({ query: 'jo', members, recent: [joel.id, anna.id] }).map((m) => m.name),
+    ['Joël Smit', 'Jolien Bakker', 'Anna Jonker'],
+    'a recent author goes first among equal matches, never above a better one'
+  );
+  assert.deepEqual(
+    rankMembers({ query: '', members, recent: [bob.id, jolien.id, bob.id] }).map((m) => m.name),
+    ['Bob de Vries', 'Jolien Bakker', 'Anna Jonker', 'Joël Smit'],
+    'a bare @ offers everyone, the latest author first'
+  );
+  assert.deepEqual(rankMembers({ query: 'x', members }), [], 'no match');
+  assert.equal(rankMembers({ query: 'vries', members: [bob, { ...bob }] }).length, 1, 'one row per member');
+
+  const many = Array.from({ length: 12 }, (_, i) => member(`m${i}`, `Member ${i}`));
+  assert.equal(rankMembers({ query: 'mem', members: many }).length, 8, 'at most 8 by default');
+  assert.equal(rankMembers({ query: 'mem', members: many, limit: 3 }).length, 3);
+  assert.equal(rankMembers({ query: 'joel', members: [joel] })[0], joel, 'the member objects come back as given');
+});
