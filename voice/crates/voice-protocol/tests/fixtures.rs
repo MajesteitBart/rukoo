@@ -7,8 +7,8 @@ use std::fs;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use voice_protocol::{
-    negotiate, paths, replay_plan, validate_discovery, validate_incoming, Discovery, EventBody,
-    Message, Platform, Replay, Side, PROTOCOL,
+    negotiate, paths, replay_plan, validate_discovery, validate_incoming, validate_split_result,
+    Discovery, EventBody, Message, Platform, Replay, Reply, Side, SplitResult, PROTOCOL,
 };
 
 fn vectors() -> Value {
@@ -123,6 +123,51 @@ fn assert_data_deserializes_alike(name: &str, message: &Message, input: &Value) 
         EventBody::Frame(v) => same(name, v, data),
         EventBody::MeetingRemoved { .. } | EventBody::Unknown { .. } => {}
     }
+}
+
+/// A reply doesn't say which command it answers: the replies with the id of a `speakers.split`
+/// command must hold split results, as Rukoo checks them.
+#[test]
+fn the_replies_to_a_split_hold_split_results() {
+    let vectors = vectors();
+    let valid = section(&vectors, &["valid"]);
+    let splits: Vec<&Value> = valid
+        .iter()
+        .filter(|v| v["message"]["command"] == "speakers.split")
+        .map(|v| &v["message"]["id"])
+        .collect();
+    assert!(!splits.is_empty(), "no split command in the vectors");
+    let mut results = Vec::new();
+    for vector in valid {
+        let message = &vector["message"];
+        if message["type"] != "reply" || !splits.contains(&&message["id"]) {
+            continue;
+        }
+        let name = text(vector, "name");
+        match validate_incoming(Side::Voice, message).unwrap() {
+            Message::Reply(Reply {
+                outcome: Ok(result),
+                ..
+            }) => results.push(
+                validate_split_result(&result)
+                    .unwrap_or_else(|e| panic!("{name}: rejected with reason {:?}", e.reason)),
+            ),
+            Message::Reply(Reply {
+                outcome: Err(error),
+                ..
+            }) => {
+                if error.code == "not_available" {
+                    assert!(error.reason.is_some(), "{name}: no reason");
+                }
+            }
+            other => panic!("{name}: not a reply: {other:?}"),
+        }
+    }
+    assert!(results.contains(&SplitResult::Running {
+        at: 412_000,
+        end: 3_605_120
+    }));
+    assert!(results.contains(&SplitResult::Done { voices: 3 }));
 }
 
 #[test]

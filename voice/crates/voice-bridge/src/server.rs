@@ -953,6 +953,9 @@ fn dispatch(
             offset,
             length,
         } => control.media_read(&media, offset, length)?,
+        CommandBody::SpeakersSplit { meeting, track } => {
+            control.split_speakers(meeting.as_str(), track)?
+        }
         CommandBody::StatusGet => json!(control.status()),
         CommandBody::ClipGet {
             meeting,
@@ -998,6 +1001,7 @@ fn reply_error(error: ControlError) -> ReplyError {
         message: error.message,
         // A malformed id would make Rukoo drop the whole reply; the code alone still helps.
         meeting: error.meeting.as_deref().and_then(MeetingId::parse),
+        reason: error.reason,
     }
 }
 
