@@ -114,6 +114,8 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 `jurisdiction` is `eu`, `us`, `fedramp` or null: where the account's storage lives and runs. `signups` is `open`, `invite` or `closed`. `features` lists the optional parts of this protocol the server offers; `booking` means [Booking pages](#booking-pages). A server without it answers 404 on those routes, and a device hides the feature. The protocol version stays 1.
 
+`workspaces-v1` in `features` means the server has team chat turned on. The answer then also has a `workspace` object, and the routes under `/v1/workspaces` work: [WORKSPACES.md](WORKSPACES.md#gate-1-routes) describes both. Unlike records, a workspace's messages aren't encrypted to the people who write them: whoever runs the server can read them.
+
 ### `POST /v1/prelogin`
 
 `{ "email" }` → `{ "kdf", "salt" }`. For an address without an account the server returns the default `kdf` and a salt made from its secret and the address, the same each time, so this call doesn't tell anyone whether an account exists.
@@ -147,12 +149,14 @@ Ends this session. → `204`.
 
 ```json
 {
-  "email": "…", "createdAt": 0, "kdf": { … },
+  "email": "…", "createdAt": 0, "class": "full", "incarnation": null, "kdf": { … },
   "usage": { "records": 0, "bytes": 0 },
   "limits": { … },
   "devices": [{ "id": "…", "name": "…", "platform": "…", "createdAt": 0, "lastSeenAt": 0, "current": true }]
 }
 ```
+
+`class` says what the account may do. Every account is `full` today. `incarnation` is a random ID for this one lifetime of the account, null until the account first uses a workspace. Recovering an account keeps it. Deleting the account and signing up again at the same address gives a new one, which is how a workspace knows the new account isn't its old member. A device keys what it stores about workspaces by it.
 
 ### `DELETE /v1/devices/:id`
 
@@ -179,6 +183,8 @@ For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and return
 ### `DELETE /v1/account`
 
 `{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't prove the address, so a new account with the same email gets the handle only with the key. A device that deletes the booking page first checks the password with `POST /v1/password/check` before it does.
+
+An account that is a member of workspaces leaves them with this call. The account and its records are gone at once. The server keeps a list of those workspaces and the account's incarnation, without the address or anything else of the account, until each workspace has ended the membership, which normally happens within the same request. A workspace that can't be reached is tried again for as long as it takes. What the account wrote in a workspace stays there, under a deleted member, until the workspace's retention removes it.
 
 ### `GET /v1/records?since=<seq>&limit=<n>`
 

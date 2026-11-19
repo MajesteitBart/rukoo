@@ -10,6 +10,8 @@ It is not a mail server. No mail, no mail passwords and no Google tokens pass th
 
 It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`, or at `/<handle>` on a booking address you set up (`BOOKING_ORIGIN`). A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
 
+It can also host team chat: workspaces with channels that people on your server make and invite others into. That is off until you turn it on, and it is the one part where your server holds readable content. [Team chat](#team-chat) below covers it.
+
 It can't reset a password either. A person who forgets their password needs their recovery key. Without both, their synced data is gone. Their mail is not affected.
 
 The server is a Cloudflare Worker with one Durable Object per account. Each object has its own small SQLite database. There is no shared table of accounts or sessions. [PROTOCOL.md](PROTOCOL.md) describes the API and the encryption.
@@ -202,6 +204,38 @@ The point of a booking page is that someone can paste it into their assistant. C
 
 Then try it: paste a page into an assistant and ask for the open times, and fetch it with `curl https://<your address>/meet/<handle>` (or `curl https://<booking address>/<handle>`). A Cloudflare challenge page instead of the booking page means one of the settings above still blocks it. `wrangler dev` skips all of this, so only a deployed address shows it.
 
+## Team chat
+
+Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels is here, and the Rukoo apps have no Chat or Channels yet, so turning it on today is for trying the API. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
+
+**You can read it.** A workspace's messages are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. Say so in your privacy statement before you turn it on.
+
+What `wrangler.jsonc` already sets up:
+
+- **`WORKSPACES`**, a Durable Object binding with one object per workspace, holding its members, channels and messages in its own SQLite database. The `v4` migration (`new_sqlite_classes: ["Workspace"]`) creates the class.
+
+The settings in `vars`:
+
+| Setting | What it does |
+|---|---|
+| `WORKSPACE_MODE` | `on` or `off`. Off by default: the routes answer 404 and `GET /v1/info` doesn't mention workspaces. |
+| `WORKSPACE_ORIGIN` | The one address workspaces on this server are known by, such as `https://accounts.example.org`. Empty means the address each request came in on. Set it when your server answers on more than one address. |
+| `MAX_WORKSPACES` | The most workspaces the server holds. Default 100. |
+| `MAX_WORKSPACES_PER_ACCOUNT` | How many workspaces one account may make. Default 3. |
+| `WORKSPACE_MEMBERS` | Members per workspace. Default 100. |
+| `WORKSPACE_SOCKETS` | Open connections per workspace, which devices wait on for new messages. Default 200. |
+| `WORKSPACE_CONVERSATIONS` | Channels per workspace, archived ones included until their history is gone. Default 8192. |
+| `WORKSPACE_BYTES` | Bytes of message text a workspace keeps. Past it, posting answers "This workspace is full". Default 1 GiB. A workspace is one Durable Object, which holds 10 GB on Workers Paid and 1 GB on Workers Free, and each message takes about 100 bytes on top of its text, so set this to `268435456` on Workers Free. |
+| `WORKSPACE_RETENTION_DAYS` | Days a message is kept before the server deletes it. Default 90. |
+
+Anyone with an account on your server can make a workspace, within those limits, so invite codes for sign-up are also what decides who can. A workspace's owner invites the others, who need an account on your server too.
+
+**Turn it on in two deploys.** Deploy this version with `WORKSPACE_MODE` still `off` and wait until every address of your server runs it. Then set it to `on` and deploy again. The order matters when you roll back as well: a version from before team chat deletes an account without telling the workspaces it was in, and its messages there would then keep its name. Once a workspace exists, don't go back to such a version.
+
+**Don't roll a workspace back.** Cloudflare can restore a Durable Object's database to any point in the last 30 days. For a workspace that would bring back every member who was removed and every message that was deleted since. A device that was up to date notices, and stops with "this workspace is behind what this device has seen"; a device that wasn't doesn't. If a workspace's data is lost or damaged, have its owner start a new one.
+
+Cloudflare keeps that 30-day history whether you use it or not, so a message someone removed can be restored by you for 30 days. `GET /v1/info` tells the apps so, as `platformHistoryDays`.
+
 ## The server Rukoo uses
 
 The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
@@ -210,7 +244,7 @@ The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by d
 
 rukoo.io serves Rukoo's website and this server's account API; the booking pages are on meet.rukoo.io. Two Workers do it:
 
-1. `rukoo-site`, from [`website/`](../website/README.md) in this repository, has the custom domains `rukoo.io` and `www.rukoo.io` (www redirects to the apex). It serves the website's static files first. A request that matches no file goes on, unchanged, through a service binding named `ACCOUNT` to the `rukoo-account` Worker: the same method, URL and headers, so this server sees `https://rukoo.io/...` addresses, the client's `cf-connecting-ip` for its rate limits, and the `Origin` and `Sec-Fetch-Site` headers its write checks read.
+1. `rukoo-site`, from [`website/`](../website/README.md) in this repository, has the custom domains `rukoo.io` and `www.rukoo.io` (www redirects to the apex). It serves the website's static files first. A request that matches no file, and every request under `/v1`, goes on, unchanged, through a service binding named `ACCOUNT` to the `rukoo-account` Worker: the same method, URL and headers, so this server sees `https://rukoo.io/...` addresses, the client's `cf-connecting-ip` for its rate limits, and the `Origin` and `Sec-Fetch-Site` headers its write checks read.
 2. `rukoo-account`, this folder, deployed with `--env bvdm`. It has the custom domain `meet.rukoo.io`, which is its `BOOKING_ORIGIN`, so booking pages are `https://meet.rukoo.io/<handle>` and MCP is `https://meet.rukoo.io/mcp`. The account API is `https://rukoo.io/v1/...`, through the site Worker. A booking's calendar UID ends in `@meet.rukoo.io`, or `@rukoo.io` for one made before the move.
 
 The pages lived at the root of rukoo.io at first. `BOOKING_FORMER_ROOTS` is `https://rukoo.io`, so a page link there that reaches this server redirects to the same path on meet.rukoo.io, and MCP takes rukoo.io links as the same pages. Posts, MCP calls, reads with a manage key and guests' manage pages are still answered on rukoo.io, for pages and clients from before the move.

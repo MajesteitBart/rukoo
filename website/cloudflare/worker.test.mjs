@@ -159,6 +159,27 @@ test('without the page script, the answer is a small page with a way back', asyn
   assert.match(html, /href="\/#early-access"/);
 });
 
+test('the account API goes to the account server without a look at the site files', async () => {
+  let looked = 0;
+  let got = null;
+  const bindings = env({
+    ASSETS: { fetch: async () => { looked++; return new Response('a site file'); } },
+    ACCOUNT: { fetch: async (req) => { got = req; return new Response('account'); } },
+  });
+  for (const path of ['/v1/info', '/v1/workspaces/w_1/changes', '/v1']) {
+    assert.equal(await (await worker.fetch(new Request(`${ORIGIN}${path}`), bindings)).text(), 'account', path);
+  }
+  assert.equal(looked, 0);
+  // A WebSocket upgrade arrives as it was sent, ticket and all.
+  const upgrade = new Request(`${ORIGIN}/v1/workspaces/w_1/socket`, { headers: { Upgrade: 'websocket', Authorization: 'Ticket abc' } });
+  await worker.fetch(upgrade, bindings);
+  assert.equal(got.headers.get('Upgrade'), 'websocket');
+  assert.equal(got.headers.get('Authorization'), 'Ticket abc');
+  // A path that only starts the same way is still the site's to answer.
+  assert.equal(await (await worker.fetch(new Request(`${ORIGIN}/v1x`), bindings)).text(), 'a site file');
+  assert.equal(looked, 1);
+});
+
 test('other methods on the form path are refused; the rest of the site is unchanged', async () => {
   const get = await worker.fetch(new Request(`${ORIGIN}/api/early-access`), env());
   assert.equal(get.status, 405);

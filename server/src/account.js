@@ -8,6 +8,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
+import { workspaceObject } from './config.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
 // A session that sends a wrong password ten times is locked the same way, on its own (PROTOCOL.md, POST /v1/password).
@@ -36,6 +37,40 @@ const BOOKING_TABLE = `
     changes TEXT NOT NULL DEFAULT '[]'
   );
 `;
+
+// What an account needs once it uses a workspace, made on first use (WORKSPACES.md, Accounts and external workspaces).
+// identity: the incarnation, a random id for this one lifetime of the account. A workspace knows its members by it, so
+// an account made again at the same address is nobody there. class says what the account may do: every account today
+// is 'full'. workspaces: the workspaces this account may be a member of, which is what tells them when it is deleted.
+const WORKSPACE_TABLES = `
+  CREATE TABLE IF NOT EXISTS identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    incarnation TEXT NOT NULL,
+    class TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    created INTEGER NOT NULL DEFAULT 0,
+    addedAt INTEGER NOT NULL
+  );
+`;
+// What is left of a deleted account that was in workspaces: which ones still have to hear that its incarnation is
+// gone. No address, no credentials and no records.
+const CLEANUP_TABLE = `
+  CREATE TABLE IF NOT EXISTS cleanup (
+    workspace TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    createdAt INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0
+  );
+`;
+// Every table a living account can have. Deleting an account that was in workspaces drops these and keeps cleanup.
+const LIVE_TABLES = ['account', 'sessions', 'records', 'meta', 'booking', 'identity', 'workspaces'];
+const CLEANUP_RETRY = 60 * 1000;
+const CLEANUP_RETRY_MAX = 60 * 60 * 1000;
+const CLEANUP_LATE = 24 * 60 * 60 * 1000;
+// A reference this young may belong to a join that hasn't committed yet, so listing doesn't drop it.
+const REFERENCE_GRACE = 5 * 60 * 1000;
 
 const SCHEMA = `
   CREATE TABLE account (
@@ -105,6 +140,7 @@ export class Account extends DurableObject {
     // account, and those objects should stay empty so they leave nothing behind.
     this.present =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
+    this.identity = null;
     if (this.present) this.migrate();
   }
 
@@ -179,6 +215,63 @@ export class Account extends DurableObject {
       );
       return reply(200, { handle, changes: changes.length });
     });
+  }
+
+  // Who a session is, for the workspace routes: the account's incarnation and class, and the session's id. The first
+  // call gives the account its incarnation. 401 for a dead session.
+  async principal(token) {
+    return this.#signedIn(token, (session) => ({
+      status: 200,
+      body: null,
+      ...this.#identity(),
+      session: session.id,
+      name: token.slice(0, token.indexOf('.'))
+    }));
+  }
+
+  // Records that this account may be a member of a workspace, before the workspace makes it one. created: the account
+  // is making the workspace, of which it may make max.
+  async addWorkspace(token, id, { created = false, max = 0 } = {}) {
+    return this.#signedIn(token, (session, now) => {
+      const identity = this.#identity();
+      if (created && max > 0 && this.sql.exec('SELECT COUNT(*) AS n FROM workspaces WHERE created = 1').one().n >= max) {
+        return failure(403, 'workspace_limit', `One account can make ${max} workspaces on this server.`);
+      }
+      this.sql.exec(
+        'INSERT INTO workspaces (id, created, addedAt) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET created = MAX(created, excluded.created)',
+        id,
+        created ? 1 : 0,
+        now
+      );
+      return { status: 200, body: null, ...identity };
+    });
+  }
+
+  // The workspaces this account has a reference to. stale says which are old enough to drop when their workspace
+  // doesn't know the account.
+  async workspaces(token) {
+    return this.#signedIn(token, (session, now) => {
+      const identity = this.#identity();
+      const list = this.sql
+        .exec('SELECT id, addedAt FROM workspaces ORDER BY addedAt, id')
+        .toArray()
+        .map((row) => ({ id: row.id, stale: now - row.addedAt > REFERENCE_GRACE }));
+      return { status: 200, body: null, ...identity, workspaces: list };
+    });
+  }
+
+  // Gives a reference back: the member left or was removed, or the workspace never made it one. Called by the
+  // workspace and by the Worker, never by a client. The incarnation must be this account's, so a reference of an
+  // account made again at the same address is left alone.
+  async dropWorkspace(incarnation, id) {
+    if (!this.present || !this.#has('workspaces')) return;
+    if (this.#identity().incarnation !== incarnation) return;
+    this.sql.exec('DELETE FROM workspaces WHERE id = ?', id);
+  }
+
+  // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer.
+  async alarm() {
+    await this.#cleanup();
   }
 
   async prelogin() {
@@ -339,11 +432,36 @@ export class Account extends DurableObject {
     const result = await this.#signedIn(token, (session, now) =>
       this.#withPassword(session, hash, now, () => {
         const { handle } = this.#booking();
+        const references = this.#has('workspaces') ? this.sql.exec('SELECT id FROM workspaces').toArray() : [];
+        if (references.length > 0) {
+          // An account that was in workspaces can't vanish in one step: each workspace still has to hear that its
+          // incarnation is gone. Everything of the account goes now, in one transaction with the list of who to tell.
+          const { incarnation } = this.#identity();
+          this.ctx.storage.transactionSync(() => {
+            for (const table of LIVE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+            this.sql.exec(CLEANUP_TABLE);
+            for (const { id } of references) {
+              this.sql.exec(
+                'INSERT OR REPLACE INTO cleanup (workspace, incarnation, createdAt) VALUES (?, ?, ?)',
+                id,
+                incarnation,
+                now
+              );
+            }
+          });
+        }
         this.present = false;
-        return { ...reply(204), handle };
+        this.identity = null;
+        return { ...reply(204), handle, cleanup: references.length > 0 };
       })
     );
     if (result.status !== 204) return result;
+    if (result.cleanup) {
+      // The workspaces hear it now when they can. The alarm is set first, so one that doesn't answer hears it later.
+      await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
+      await this.#cleanup();
+      return result;
+    }
     try {
       // deleteAll removes the whole SQLite database, so the object is as empty as one that never had an account.
       await this.ctx.storage.deleteAll();
@@ -353,6 +471,34 @@ export class Account extends DurableObject {
       throw err;
     }
     return result;
+  }
+
+  // Tells each workspace on the list that an incarnation is gone, and takes it off the list once it answered. When
+  // the list is empty, what is left of the deleted account is wiped, unless the address has a new account by then:
+  // that one keeps everything but the list.
+  async #cleanup() {
+    if (!this.#has('cleanup')) return;
+    const now = Date.now();
+    for (const row of this.sql.exec('SELECT workspace, incarnation, createdAt FROM cleanup').toArray()) {
+      try {
+        await workspaceObject(this.env, row.workspace).retire(row.incarnation);
+        this.sql.exec('DELETE FROM cleanup WHERE workspace = ? AND incarnation = ?', row.workspace, row.incarnation);
+      } catch (err) {
+        this.sql.exec('UPDATE cleanup SET attempts = attempts + 1 WHERE workspace = ?', row.workspace);
+        const late = now - row.createdAt > CLEANUP_LATE ? ' It has been waiting for more than a day.' : '';
+        console.error(`A workspace has not heard that a deleted account is gone.${late}`, err?.message || err);
+      }
+    }
+    if (!this.#has('cleanup')) return;
+    const left = this.sql.exec('SELECT COUNT(*) AS n, MIN(attempts) AS attempts FROM cleanup').one();
+    if (left.n > 0) {
+      const wait = Math.min(CLEANUP_RETRY * 2 ** Math.min(left.attempts, 10), CLEANUP_RETRY_MAX);
+      await this.ctx.storage.setAlarm(Date.now() + wait);
+      return;
+    }
+    await this.ctx.storage.deleteAlarm();
+    if (this.present) this.sql.exec('DROP TABLE cleanup');
+    else await this.ctx.storage.deleteAll();
   }
 
   async pull(token, since, limit) {
@@ -551,6 +697,25 @@ export class Account extends DurableObject {
     return this.sql.exec('SELECT handle, changes FROM booking WHERE id = 1').toArray()[0] ?? { handle: null, changes: '[]' };
   }
 
+  #has(table) {
+    return this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).toArray().length > 0;
+  }
+
+  // The account's incarnation and class, made the first time a workspace route asks. Every workspace request comes
+  // through here, so the answer is kept in memory; deleting the account forgets it.
+  #identity() {
+    if (!this.identity) {
+      this.sql.exec(WORKSPACE_TABLES);
+      this.sql.exec(
+        "INSERT OR IGNORE INTO identity (id, incarnation, class) VALUES (1, ?, 'full')",
+        toBase64url(randomBytes(16))
+      );
+      const row = this.sql.exec('SELECT incarnation, class FROM identity WHERE id = 1').one();
+      this.identity = { incarnation: row.incarnation, class: row.class };
+    }
+    return this.identity;
+  }
+
   // What GET /v1/account returns, which sign-up, sign-in and recovery return too.
   #info(currentId, limits) {
     const account = this.#account();
@@ -559,9 +724,15 @@ export class Account extends DurableObject {
       .exec('SELECT id, name, platform, createdAt, lastSeenAt FROM sessions ORDER BY createdAt, id')
       .toArray()
       .map((d) => ({ ...d, current: d.id === currentId }));
+    // An account that never used a workspace has no incarnation yet, and reading the account doesn't make one.
+    const identity = this.#has('identity')
+      ? this.sql.exec('SELECT incarnation, class FROM identity WHERE id = 1').toArray()[0]
+      : null;
     return {
       email: account.email,
       createdAt: account.createdAt,
+      class: identity?.class ?? 'full',
+      incarnation: identity?.incarnation ?? null,
       kdf: JSON.parse(account.kdf),
       usage: { records: meta.records, bytes: meta.bytes },
       limits,

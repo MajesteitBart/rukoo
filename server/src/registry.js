@@ -2,9 +2,11 @@
 // was used (INVITE_USES). With open sign-ups, the cap is what bounds the storage strangers can take: each account is
 // limited on its own, but nothing else limits how many accounts there are. With invite codes, the uses keep one code
 // from filling the cap. One object for the whole server, holding counts and hashes of invite codes, nothing about
-// anyone.
+// anyone. It also counts the server's workspaces, for MAX_WORKSPACES, and holds the installation id that tells this
+// server apart from another one answering at the same address later (WORKSPACES.md, Conventions).
 
 import { DurableObject } from 'cloudflare:workers';
+import { randomBytes, toBase64url } from './bytes.js';
 
 export class Registry extends DurableObject {
   constructor(ctx, env) {
@@ -13,6 +15,32 @@ export class Registry extends DurableObject {
     this.sql.exec('CREATE TABLE IF NOT EXISTS counts (id INTEGER PRIMARY KEY CHECK (id = 1), accounts INTEGER NOT NULL)');
     this.sql.exec('INSERT OR IGNORE INTO counts (id, accounts) VALUES (1, 0)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, used INTEGER NOT NULL)');
+    this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL, count INTEGER NOT NULL)'
+    );
+  }
+
+  // The row is made the first time workspaces are used, so a server that never turns them on keeps none.
+  #workspaces() {
+    this.sql.exec('INSERT OR IGNORE INTO workspaces (id, installation, count) VALUES (1, ?, 0)', toBase64url(randomBytes(16)));
+    return this.sql.exec('SELECT installation, count FROM workspaces WHERE id = 1').one();
+  }
+
+  // Made once and never changed.
+  async installation() {
+    return this.#workspaces().installation;
+  }
+
+  // Takes a place for a new workspace: 'ok' or 'full'.
+  async reserveWorkspace(max) {
+    if (max > 0 && this.#workspaces().count >= max) return 'full';
+    this.sql.exec('UPDATE workspaces SET count = count + 1 WHERE id = 1');
+    return 'ok';
+  }
+
+  async releaseWorkspace() {
+    this.#workspaces();
+    this.sql.exec('UPDATE workspaces SET count = MAX(0, count - 1) WHERE id = 1');
   }
 
   used(code) {
