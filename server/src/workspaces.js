@@ -38,6 +38,8 @@ const NAME_LENGTH = 80;
 const TEXT_BYTES = 16384;
 const MENTIONS = 32;
 const INVITE_CHANNELS = 20;
+// The other people in a DM: a DM holds 2 to 8, the one starting it included.
+const DM_OTHERS = 7;
 
 const encoder = new TextEncoder();
 
@@ -124,6 +126,12 @@ export async function workspaces(request, env, url) {
       return ask('changes', changesQuery(url));
     case 'POST /socket-ticket':
       return ticket(env, id, await stub.request(token, 'ticket'));
+    case 'POST /dms':
+      return ask('dm.start', { members: dmMembers((await body()).members) });
+    case 'GET /blocks':
+      return ask('blocks.list');
+    case 'POST /blocks':
+      return ask('block', { member: match((await body()).member, MEMBER_ID, 'member') });
   }
 
   const [area, a, b, c, d] = rest;
@@ -161,6 +169,12 @@ export async function workspaces(request, env, url) {
         return ask('channel.role', { conversation, member, role: oneOf((await body()).role, ['manager', 'member'], 'role') });
       }
     }
+  }
+  if (area === 'dms' && rest.length === 3 && b === 'leave' && method === 'POST') {
+    return ask('dm.leave', { conversation: match(a, CONVERSATION_ID) });
+  }
+  if (area === 'blocks' && rest.length === 2 && method === 'DELETE') {
+    return ask('unblock', { member: match(a, MEMBER_ID) });
   }
   if (area === 'conversations' && rest.length >= 3) {
     const conversation = match(a, CONVERSATION_ID);
@@ -394,6 +408,19 @@ function invite(body) {
     channels: [...new Set(channels.map((id) => match(id, CONVERSATION_ID, 'channels')))],
     expiresIn
   };
+}
+
+// The people a DM is started with, besides the caller: 1 to 7 member ids, each once. Who they are, and whether the
+// caller is among them, is the workspace's to check.
+function dmMembers(list) {
+  const ok =
+    Array.isArray(list) &&
+    list.length >= 1 &&
+    list.length <= DM_OTHERS &&
+    list.every((id) => typeof id === 'string' && MEMBER_ID.test(id)) &&
+    new Set(list).size === list.length;
+  if (!ok) throw invalid(`members must be a list of 1 to ${DM_OTHERS} member ids, each named once.`, 'members');
+  return list;
 }
 
 // The 16 bytes and the time of a UUIDv7, which a device makes once per message and sends again on every retry.

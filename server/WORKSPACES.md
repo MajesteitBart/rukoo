@@ -1,6 +1,6 @@
 # Workspace protocol proposal
 
-**Status.** The server has the text slice of Gate 1: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal.
+**Status.** The server has the text slice of Gate 1, with direct messages and blocks: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
 
 Contract for the workspace server, desktop, Android and agent runner. [Architecture](../docs/workspace-architecture.md) · [Existing account and Book protocol](PROTOCOL.md) · [Optional recovery](WORKSPACE-RECOVERY.md)
 
@@ -55,13 +55,13 @@ Updated clients omit the collection from exports, open it transiently only to tr
 | Rename or archive a channel | A channel manager renames it. A channel manager archives it, and so does a workspace admin for a channel they can see. Archiving is an ordered event: posting stops, history stays readable until retention removes it, and the conversation slot is released when the history is collected. An archived channel stays archived. |
 | Invite an owner, member or guest | Owners appoint owners. Owners/admins admit members/guests within their authority. A channel grant is separate. |
 | Admit someone to a private channel | An admitted channel manager. For an external guest, the manager requests and a workspace admin co-signs. The same person may hold both roles. A nonparticipant admin sees the manager and “one private channel”; the restricted audit uses opaque IDs. |
-| Start a DM | Eligible consenting human participants only. A manager may authorize contact between a guest and a named consenting peer in a shared channel. Cap a group at eight and check eligibility for each pair. |
+| Start a DM | Eligible consenting human participants only. A manager may authorize contact between a guest and a named consenting peer in a shared channel. Cap a group at eight and check eligibility for each pair. *Superseded for the first release:* full members open a DM at once, without consent, and guests are in no DM ([Direct messages](#direct-messages)). |
 | Install an agent | An admin approves the installation, one sponsor who is a full workspace member, and eligible channels. Each private manager also approves. The agent's effective scope is its installation scope intersected with the sponsor's current workspace/channel rights and its own grant. V1 agents participate in channels. |
 | Moderate and leave | Authors redact their posts. Channel managers can remove posts there. Admins can ban a principal. People may block peers, leave, or report content to the operator. Only owners transfer ownership or close the workspace. |
 
 Each person sets their own non-unique display name within the workspace. Names may change. Show the current name and a stable disambiguator within the viewer's permitted directory. Render guest and agent badges from the server-derived actor kind. A departed author appears as a former member and an erased author as a deleted member. Actor IDs keep history and mentions attached to the original incarnation. An agent's sponsor sets its display name within the approved installation.
 
-A block controls direct contact. It closes the affected DM and prevents new DM invitations between the pair. Shared-channel posts and ordinary room updates still reach both participants. Suppress targeted mention notifications and badges from the blocked actor for the blocker.
+A block controls direct contact. It closes the affected DM and prevents new DM invitations between the pair. Shared-channel posts and ordinary room updates still reach both participants. Suppress targeted mention notifications and badges from the blocked actor for the blocker. *Superseded for the first release:* a block removes the blocked person's mentions of the blocker, and their posts still count as unread ([Blocks](#blocks)). [The first release is lighter](#where-the-first-release-is-lighter) explains both changes.
 
 Invites are hashed-at-rest, revocable, high-entropy, single-use bearer capabilities, normally valid 24 hours. Put secrets in the fragment, reveal the real host before redemption, then use a POST to the verified home. A bearer link can be forwarded. A named invite binds a principal ID supplied by the intended recipient. A display name, handle or typed email grants nothing. Show who redeemed an invite; restrict directory/profile search to eligible peers. Distinguish agents and guests; keep sign-in locators private. Joining a channel grants access to its retained history. Show that before admitting a person or agent.
 
@@ -83,9 +83,31 @@ Channel grant activation is atomic with inserting its ordered marker. Use its se
 
 A last manager names a willing successor before voluntarily leaving. Forced departure freezes channel management, not messaging. A current participant may request succession using an opaque channel reference; a workspace owner may approve appointment of that consenting, already admitted participant through an audit receipt that reveals no private history or roster. Operators handle orphaned workspace ownership or an empty channel requiring archival. Losing a sole workspace owner freezes **owner-only actions** and permits ordinary messaging under existing grants until audited succession.
 
+*The next two paragraphs are superseded for the first release* by [Direct messages](#direct-messages) and [Blocks](#blocks): there are no proposals and no consent step, and a closed DM is the end of its generation. The table after them says what the first release does instead.
+
 DM consent is explicit. The initiator proposes the exact participant set. Show eligible invitees the list and workspace host; each must accept that set before anyone can post. Decline or expiry closes the proposal. Unblock never counts as consent. Until activation use small expiring proposal rows, not conversation slots. Cap both pending invitations and newly created rooms per initiator (starting defaults: 10 pending, 20 creations per rolling day), reserve workspace capacity at activation, and enforce server-side throttling for retries. A fixed-set invite cannot disclose a private channel name.
 
 A DM has one fixed participant set and generation; enforce uniqueness for an active set. A block, departure or loss of required guest-contact eligibility closes the affected generation atomically, or invalidates an eligibility epoch checked by every send before background closure. Unblocking never reactivates an old generation. Remaining workspace members with prior delivery entitlement (including former guest DM peers) can read/export old delivered history through closure. A workspace ban or departure ends access. Explicitly start a new DM with a new ID and eligible participants. No workspace read path puts messages into the personal MCP tools.
+
+#### Where the first release is lighter
+
+| This proposal asks for | The first release does | Why |
+| --- | --- | --- |
+| Explicit consent of every DM invitee, proposal rows, expiry | Full members open DMs at once; guests are never in DMs | Full members already see and can mention each other in channels. Blocks and leaving cover unwanted contact. This removes proposals, answers, expiry, a feed flag and request cards on two apps. |
+| A manager authorizing guest contact | No guest DMs | Nothing to authorize. Guests talk in channels a manager let them into. |
+| Proposing, accepting and activating check every participant with Account | Local member state and the retirement fence | Account pushes `retire()` and retries by alarm; one unreachable Account never blocks the others. |
+| A DM generation and eligibility epoch | The closed conversation is the generation; a new DM is a new conversation | One Durable Object serializes every change, and `#post` already refuses an archived conversation in its transaction. |
+| Caps on pending invitations and kept DMs per initiator | 20 new DMs per initiator per day, the conversation quota, and deleting a DM that closes empty or that nobody holds | Enough for 100 members. |
+| Blocks suppress the blocked actor's badges | Blocks remove mention rows; unread still counts the blocked person's posts | Mentions are what call for attention. Filtering unread would bump every grant of the blocker. |
+| A timeline activity row per thread reply, plus followed threads | Reply rows in the main timeline; no follow state | One read position per room stays honest without server changes. |
+| A shadow view of the whole cache during a pass | A shadow for room rows only (`pass_room`); a reset deletes cached bodies first | Bodies reload on demand from authorized history. |
+| Gap tracking in history | One contiguous range per room | A range that can't be extended cheaply is dropped and reloaded. |
+| A cache keyed by credential URL, home, instance and incarnation | One cache file per session, deleted when the session ends | One host in v1, sign-in is rare and a first pass is cheap. |
+| Search and preview indexes cleaned by removals | No local search in v1 | Nothing to clean. |
+| Signed checkpoints | `409 history_regressed` stops the workspace until Start over | The server issues no checkpoints yet. |
+| Workspace-only accounts and signup vouchers | Sign-up accepts a workspace invitation for a full account, once per invitation | The smallest path into a team on an invite-only server. |
+| External hosts | One host | Gate 2. |
+| Owners closing a workspace | Deleting a workspace whose only member is its owner | Covers the stuck solo owner. Closing a populated workspace waits. |
 
 Account alone owns incarnation cleanup references. Before exposing a membership, durably register the workspace reference with Account; reject registration on a retired incarnation and validate it again when committing membership. Redundant references are safe; remove them only after proving absence of active/pending membership.
 
@@ -190,7 +212,7 @@ Desktop, Android and runner enforce their own limits on redirects, response byte
 
 ## Gate 1 routes
 
-This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js` and `test/workspace-live.test.js` are the runnable vectors for these routes.
+This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js` and `test/workspace-live.test.js` are the runnable vectors for these routes.
 
 Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API. A client may send `Rukoo-Workspace-Version: 1`. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant and `i_` an invitation. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
 
@@ -209,19 +231,21 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 
 ### Errors
 
-An error is `{ "error", "message" }`, with `field` for a refused input, `minVersion` for a refused version, and `scope` when the answer tells a device what to let go of: `account` means sign in again, `workspace` and `conversation` mean that thing is gone for this member.
+An error is `{ "error", "message" }`, with `field` for a refused input, `minVersion` for a refused version, `limit` for the limit a `413` or a `429` hit, and `scope` when the answer tells a device what to let go of: `account` means sign in again, `workspace` and `conversation` mean that thing is gone for this member.
 
 | Status | `error` | Meaning |
 | --- | --- | --- |
 | 400 | `invalid` | The input named in `field` is wrong. |
 | 401 | `unauthorized` | The session ended (`scope: account`), or a socket ticket was refused. |
 | 403 | `forbidden`, `cosign_required`, `workspace_limit`, `workspaces_full`, `workspace_account_scope` | The caller's role, or the server's capacity, doesn't allow it. |
+| 403 | `dm_unavailable` | With `field: members`: a DM can't be started with these people. One answer for every reason the caller mustn't tell apart ([Direct messages](#direct-messages)). |
 | 404 | `not_found` | With `scope: workspace`: the caller isn't a member, or there is no such workspace. With `scope: conversation`: the caller isn't in it, or there is no such conversation. Each pair gets the same answer. |
-| 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. |
+| 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. `archived` is also the answer to a post in a closed DM. |
+| 409 | `blocked` | The caller blocked someone in the DM they tried to start. `member` names the first of them. |
 | 410 | `reset_required`, `invite_gone` | The cursor or the invitation can no longer be used. |
-| 413 | `quota` | The workspace is full: members, channels, open invitations or stored text. |
+| 413 | `quota` | The workspace is full. `limit` says what ran out: `members` when joining, `conversations` for a new channel or DM, `invites` for open invitations, `bytes` for stored text. |
 | 426 | `upgrade_required` | The server doesn't speak this version of the protocol. `minVersion` says which it does. |
-| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. |
+| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. `limit: dailyDms` means the caller started 20 DMs in the past day. |
 
 ### Workspaces, members and invitations
 
@@ -247,7 +271,7 @@ An invitation link carries the host, the workspace ID and the secret, the last t
 
 | Route | Request and answer |
 | --- | --- |
-| `GET /channels` | → `{ channels: [{ id, name, visibility, archived, joined, role, members }] }`. `visibility` is `workspace` or `private`; `role` is the caller's `manager` or `member`, or null. A full member gets every channel they are in and every channel the workspace can see. A guest gets the channels they are in. |
+| `GET /channels` | → `{ channels: [{ id, name, visibility, archived, joined, role, members }] }`. `visibility` is `workspace` or `private`; `role` is the caller's `manager` or `member`, or null. A full member gets every channel they are in and every channel the workspace can see. A guest gets the channels they are in. It lists channels only, never a DM. |
 | `POST /channels` | `{ name, visibility }` → `201 { channel }`. Full members only. Names are unique among the channels the workspace can see. |
 | `PATCH /channels/{c}` | `{ name }` renames, for a manager. `{ archived: true }` archives, for a manager or for an admin who can see the channel. → `{ channel }`. |
 | `POST /channels/{c}/join` | → `{ channel }`. A full member lets themselves into a channel the workspace can see. |
@@ -256,6 +280,55 @@ An invitation link carries the host, the workspace ID and the secret, the last t
 | `PATCH /channels/{c}/members/{u}` | `{ role }`, for a manager. |
 | `DELETE /channels/{c}/members/{u}`, `…/me` | → `204`. A manager takes someone out, or the caller leaves. The last manager passes the channel on with `?successor={u}`. The last person to leave archives it. |
 
+Every channel route answers a DM's ID with the 404 of a conversation that doesn't exist, also to someone in the DM: renaming, archiving, joining, the member routes, and a DM's ID in the `channels` of `POST /invites`.
+
+### Direct messages
+
+A DM is a conversation of `kind: dm` between 2 and 8 full members (owners, admins and members), the one who starts it included. Guests can't start a DM and can't be in one; they talk in channels. Messages, threads, mentions, reads, removals, the feed, sockets and retention work in a DM as in a channel.
+
+- One open DM exists per exact set of people. Starting a set that has an open DM answers that DM, whoever started it.
+- A DM opens at once, with one `dm.started` event at sequence 1. Every participant's grant, with role `member`, starts there, and so does their read position.
+- A DM closes and never opens again. The feed row says why in `closedReason`: `left` when someone's grant ended (they left the DM, left or were removed from the workspace, or their account was deleted), `ineligible` when someone became a guest, `closed` when one participant blocked another. Everyone who still holds it keeps reading it, and authors can still remove their messages. Retention collects it like an archived channel. Starting the same set again makes a new DM with a new ID.
+- A DM that closes before anyone posted a message in it, or that nobody holds any more, is deleted at once. Whoever still held it gets an eviction, and its conversation slot is free again.
+- Mentions in a DM name its participants. Only a message's author removes it, because nobody manages a DM. A post to a closed DM gets `409 archived` with the message "This conversation is closed.", after the check for a retry, so a message that committed before the close still gets its first answer.
+
+| Route | Request and answer |
+| --- | --- |
+| `POST /dms` | `{ members }`: the other people, 1 to 7 member IDs, each once. → `201 { dm }` for a new DM, `200 { dm }` for the open DM of this set, which costs nothing against the limits. `dm` is the DM's feed row as the caller sees it ([The feed](#the-feed)), with `removed: []`. A retry after a lost answer finds the same DM through its set, so the route takes no operation ID. |
+| `POST /dms/{c}/leave` | → `204`. The caller's grant ends: their devices get an eviction, the others see `member.left`, and the DM closes for them with `left`. Leaving a closed DM only ends the caller's grant, which takes it off their list. A conversation the caller isn't in, and a channel, get `404 not_found` with `scope: conversation`. |
+
+`POST /dms` checks in this order, in one transaction, because the order keeps a refusal from saying more than the caller's own blocks:
+
+| Order | Answer | When |
+| --- | --- | --- |
+| 1 | `400 invalid`, `field: members` | The list isn't 1 to 7 different member IDs, or it names the caller. |
+| 2 | `403 dm_unavailable`, `field: members` | The caller is a guest, an ID isn't an active member, or someone in the set is a guest. |
+| 3 | `200 { dm }` | The set has an open DM. |
+| 4 | `409 blocked`, `member` | The caller blocked someone in the set. `member` is the first of them, in the set's order. |
+| 5 | `403 dm_unavailable` | Someone in the set blocked the caller, or two others in it blocked one another. The same body as order 2. |
+| 6 | `429 rate_limited`, `limit: dailyDms` | The caller started 20 DMs in the past 24 hours. `Retry-After` is the seconds until the oldest of those is a day old. |
+| 7 | `413 quota`, `limit: conversations` | The workspace has no conversation slot left. DMs count against `conversations` like channels. |
+
+The Worker checks the list's shape first. Before the transaction, starting a DM then draws from its own allowance ([Limits on requests](#limits-on-requests)), which answers `429 rate_limited` with `scope: workspace`, and a caller who isn't a member gets the workspace's 404, as on every route.
+
+### Blocks
+
+| Route | Request and answer |
+| --- | --- |
+| `GET /blocks` | → `{ blocks: [{ member, at }] }`: the caller's own blocks, newest first. |
+| `POST /blocks` | `{ member }` → `201 { block: { member, at } }` for a new block, `200` with the same body when it was there already. `400 invalid` with `field: member` for a malformed ID or the caller's own. `404 not_found`, without a scope, when the ID isn't an active member the caller can see: a full member sees every active member, a guest the people they share a room with. An ID nobody has gets the same answer. |
+| `DELETE /blocks/{u}` | → `204`, also when there was no block. |
+
+A block, in the transaction that makes it:
+
+1. closes every open DM that has both people in it, with `closed`;
+2. refuses new DMs that would have both, whoever starts them ([Direct messages](#direct-messages));
+3. deletes the blocker's mentions in messages the blocked person wrote, so each room where one went comes back in the blocker's feed with its `mentions` put right;
+4. stops the blocked person's later mentions of the blocker from counting;
+5. sets `directory.blocks` in the blocker's feed, and wakes the blocker's devices. Unblocking does the same.
+
+The blocked person's posts stay visible in shared channels and still count as unread. Unblocking takes the block away and nothing else: closed DMs stay closed, and mentions that went stay gone. Nobody is told about a block. The blocked person can infer one when a one-to-one DM closes with `closed` or a start is refused, which the apps' block dialog says. When an account is deleted, every block it made or received goes with it.
+
 ### Messages
 
 | Route | Request and answer |
@@ -263,10 +336,10 @@ An invitation link carries the host, the workspace ID and the secret, the last t
 | `POST /conversations/{c}/messages` | `{ operationId, grant, generation, text, mentions?, root? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. |
 | `GET /conversations/{c}/operations/{operationId}` | → `{ messageId, seq, visible }`, or 404 when no message of the caller came from that operation. |
 | `GET /conversations/{c}/events` | `?after=<seq>&limit=<n>` pages forward. `?before=<seq>&limit=<n>` gives the newest events before a sequence. → `{ events, head, floor, more }`, oldest first, 50 unless `limit` says otherwise, 100 at most. |
-| `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager. |
+| `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager; in a DM for the author only, also once it closed. |
 | `POST /conversations/{c}/read` | `{ seq }` → `{ read }`. |
 
-`operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent. A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
+A post to an archived channel or a closed DM gets `409 archived`, unless it is the retry of a message that was already in. `operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent. A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
 
 Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 
@@ -278,8 +351,9 @@ Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 | `channel.renamed` | `name`. |
 | `channel.archived` | Nothing. |
 | `member.joined`, `member.left` | `member`. `actor` is who let them in or took them out, or the member. |
+| `dm.started` | `members`: the DM's people, as member IDs in the set's order. `actor` is who started it. |
 
-A grant starts at its `member.joined` event, which is also where its read position starts. Joining a channel gives its earlier history. Posting moves the sender's read position to their message.
+A grant starts at its `member.joined` event, which is also where its read position starts. Joining a channel gives its earlier history. Posting moves the sender's read position to their message. A DM has no `member.joined` events: every grant in it starts at `dm.started`, its first event. Someone leaving a DM is a `member.left`. A DM's close shows in its feed row (`archived` and `closedReason`) and has no event of its own, so every event has an actor.
 
 ### The feed
 
@@ -289,19 +363,27 @@ A grant starts at its `member.joined` event, which is also where its read positi
 {
   "changes": [{
     "conversation": "c_…", "kind": "channel", "name": "general", "visibility": "workspace", "archived": false,
-    "grant": "g_…", "role": "member",
-    "head": 42, "floor": 1, "read": 40, "unread": 2, "mentions": 1,
+    "grant": "g_…", "role": "member", "members": 14,
+    "head": 42, "floor": 1, "lastAt": 1763550000000, "read": 40, "unread": 2, "mentions": 1,
     "removed": ["e_…"], "removedMore": false
+  }, {
+    "conversation": "c_…", "kind": "dm", "name": null, "visibility": "dm", "archived": false,
+    "participants": ["u_…", "u_…", "u_…"], "startedBy": "u_…", "closedReason": null,
+    "grant": "g_…", "role": "member", "members": 3,
+    "head": 12, "floor": 1, "lastAt": 1763550000000, "read": 10, "unread": 2, "mentions": 0,
+    "removed": [], "removedMore": false
   }],
   "evictions": ["c_…"],
   "inlineEvents": [],
-  "directory": { "members": false, "channels": true },
+  "directory": { "members": false, "channels": true, "blocks": false },
   "next": "…",
   "more": false
 }
 ```
 
-Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members` and `GET /channels` again. For a guest `channels` is always false, and `members` is true only when someone they share a room with changed, came or went. A cursor is sealed: it opens only for its member, in its restore generation, and its length says nothing.
+`members` is how many people hold a grant in the room now. `lastAt` is the time of the event at `head`, or null once retention removed it; clients order DMs by it. A DM has `name: null` and three fields of its own: `participants`, its fixed set of people as member IDs in the order of `dm.started`, the caller included; `startedBy`; and `closedReason`, null while it is open and else `left`, `ineligible` or `closed`. `archived` is true exactly when `closedReason` isn't null, so a device can post in any room that isn't `archived`. Names, roles and states come from `GET /members`: everyone in a DM is a full member, and full members get every active member and the 1,000 most recent former ones.
+
+Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members`, `GET /channels` and `GET /blocks` again. For a guest `channels` is always false, and `members` is true only when someone they share a room with changed, came or went. `blocks` is true on a pass from the start and when the caller's own blocks changed since the cursor, and never because someone blocked them. A cursor is sealed: it opens only for its member, in its restore generation, and its length says nothing.
 
 A pass can take several pages, and a room can change again while a device is paging. The cursor therefore remembers where its pass began as well as where its scan is, and `removed` lists what was redacted since the pass began. A device may see the same ID on two pages of one pass.
 
@@ -315,11 +397,11 @@ The server sends one frame, `{"t":"wake"}`, when something changed for this memb
 
 ### Limits on requests
 
-The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, and a socket ticket every five seconds with bursts of 6. Removing a member or a message, leaving, archiving, changing a role and withdrawing an invitation draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
+The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks is a read and unblocking a write. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation and blocking someone draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
 
 ### Not built yet
 
-DMs, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans, blocks and reports, closing a workspace, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
+DMs with guests, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
 
 ## Fixture index
 

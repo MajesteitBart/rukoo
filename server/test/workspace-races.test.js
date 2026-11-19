@@ -9,15 +9,19 @@ import { accountStub, call, signup } from './helpers.js';
 import {
   access,
   api,
+  block,
   changes,
   channels,
   events,
+  fillers,
   invite,
   newMember,
   newWorkspace,
+  openDmLane,
   openSocket,
   post,
   send,
+  startDm,
   sync,
   until,
   uuidv7,
@@ -738,5 +742,94 @@ describe('account deletion, twice over', () => {
     const other = await runInDurableObject(stub, (instance) => instance.create({ ...who, incarnation: 'alive' }, { id, name: 'Fine', displayName: 'Owner' }));
     expect(other.status).toBe(201);
     await runDurableObjectAlarm(stub);
+  });
+});
+
+describe('direct messages, in an awkward order', () => {
+  // Open DMs whose people include both sides of a block. There must never be one.
+  const blockedOpen = (ws) =>
+    workspaceSql(
+      ws.id,
+      `SELECT COUNT(*) AS n FROM conversation c JOIN block b
+       WHERE c.kind = 'dm' AND c.archivedAt IS NULL
+         AND (',' || c.dmSet || ',') LIKE ('%,' || b.blocker || ',%')
+         AND (',' || c.dmSet || ',') LIKE ('%,' || b.blocked || ',%')`
+    );
+
+  // A DM with a message in it, so that closing it keeps it.
+  async function talking(ws, person, members) {
+    const dm = (await startDm(person, ws.id, members)).body.dm.conversation;
+    expect((await post(person, ws.id, dm, 'first')).status).toBe(201);
+    return dm;
+  }
+
+  it('opens one DM when both people start it at once', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const both = await Promise.all([startDm(ws.person, ws.id, [mila.me.id]), startDm(mila.person, ws.id, [ws.me.id])]);
+    expect(both.map((res) => res.status).sort()).toEqual([200, 201]);
+    expect(both[0].body.dm.conversation).toBe(both[1].body.dm.conversation);
+    expect(await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM conversation WHERE kind = 'dm'")).toEqual([{ n: 1 }]);
+  });
+
+  it('never leaves an open DM between two people when a start and a block cross', async () => {
+    const ws = await newWorkspace();
+    const people = [];
+    for (const name of ['Mila', 'Tess', 'Una']) people.push(await newMember(ws, name));
+    // Each person starts a DM with the owner while the owner blocks them, in both directions.
+    await Promise.all(
+      people.flatMap((person, i) =>
+        i % 2 === 0
+          ? [startDm(person.person, ws.id, [ws.me.id]), block(ws.person, ws.id, person.me.id)]
+          : [startDm(ws.person, ws.id, [person.me.id]), block(person.person, ws.id, ws.me.id)]
+      )
+    );
+    expect(await workspaceSql(ws.id, 'SELECT COUNT(*) AS n FROM block')).toEqual([{ n: 3 }]);
+    expect(await blockedOpen(ws)).toEqual([{ n: 0 }]);
+  });
+
+  it('puts no message in a DM after a block closed it', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const dm = await talking(ws, ws.person, [mila.me.id]);
+    const [sent] = await Promise.all([post(mila.person, ws.id, dm, 'crossing'), block(ws.person, ws.id, mila.me.id)]);
+    const [row] = await workspaceSql(ws.id, 'SELECT archivedAt, closedWhy FROM conversation WHERE id = ?', dm);
+    expect(row.closedWhy).toBe('closed');
+    if (sent.status === 201) {
+      // It committed first, so it is in the history the block closed.
+      const log = (await events(ws.person, ws.id, dm)).body.events;
+      expect(log.at(-1)).toMatchObject({ seq: sent.body.seq, text: 'crossing' });
+    } else {
+      expect(sent.status).toBe(409);
+      expect(sent.body).toMatchObject({ error: 'archived', scope: 'conversation' });
+    }
+  });
+
+  it('closes the DM when a role change to guest and a post cross', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const dm = await talking(ws, ws.person, [mila.me.id]);
+    const [, sent] = await Promise.all([
+      api('PATCH', `/v1/workspaces/${ws.id}/members/${mila.me.id}`, { token: ws.person.token, body: { role: 'guest' } }),
+      post(mila.person, ws.id, dm, 'crossing')
+    ]);
+    expect(await workspaceSql(ws.id, 'SELECT closedWhy FROM conversation WHERE id = ?', dm)).toEqual([{ closedWhy: 'ineligible' }]);
+    if (sent.status === 201) {
+      expect((await events(ws.person, ws.id, dm)).body.events.at(-1)).toMatchObject({ seq: sent.body.seq, text: 'crossing' });
+    } else {
+      expect(sent.status).toBe(409);
+      expect(sent.body.error).toBe('archived');
+    }
+  });
+
+  it('holds one initiator to twenty new DMs a day when twenty-two start at once', async () => {
+    const ws = await newWorkspace();
+    const people = await fillers(ws.id, 22);
+    await openDmLane(ws.person, ws.id);
+    const all = await Promise.all(people.map((id) => startDm(ws.person, ws.id, [id])));
+    const statuses = all.map((res) => res.status);
+    expect(statuses.filter((status) => status === 201)).toHaveLength(20);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(2);
+    expect(await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM conversation WHERE kind = 'dm'")).toEqual([{ n: 20 }]);
   });
 });

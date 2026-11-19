@@ -9,6 +9,7 @@ import {
   ON,
   ORIGIN,
   api,
+  block,
   changes,
   channels,
   events,
@@ -17,6 +18,7 @@ import {
   newWorkspace,
   openSocket,
   post,
+  startDm,
   sync,
   until,
   workspaceSql,
@@ -171,6 +173,41 @@ describe('wake sockets', () => {
     expect(await until(() => kept.closed !== null)).toBe(true);
     expect(kept.closed.code).toBe(4001);
     expect(kept.frames).toEqual([]);
+  });
+
+  it('wakes both people of a DM about a message in it, and no one else', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const tess = await newMember(ws, 'Tess', { channels: [ws.general] });
+    const dm = (await startDm(ws.person, ws.id, [mila.me.id])).body.dm.conversation;
+    const sockets = await Promise.all([ws.person, mila.person, tess.person].map((person) => openSocket(person, ws.id)));
+    await pause(600);
+    for (const socket of sockets) socket.frames.length = 0;
+
+    await post(ws.person, ws.id, dm, 'just us');
+    const [mine, hers, theirs] = sockets;
+    expect(await until(() => hers.frames.length > 0)).toBe(true);
+    expect(await until(() => mine.frames.length > 0)).toBe(true);
+    expect(hers.frames[0]).toBe('{"t":"wake"}');
+    await pause(700);
+    expect(theirs.frames).toEqual([]);
+    for (const socket of sockets) socket.socket.close(1000);
+  });
+
+  it('wakes only the blocker for a block that closes no DM', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const [mine, hers] = await Promise.all([openSocket(ws.person, ws.id), openSocket(mila.person, ws.id)]);
+    await pause(600);
+    mine.frames.length = 0;
+    hers.frames.length = 0;
+
+    expect((await block(ws.person, ws.id, mila.me.id)).status).toBe(201);
+    expect(await until(() => mine.frames.length > 0)).toBe(true);
+    await pause(700);
+    expect(hers.frames).toEqual([]);
+    mine.socket.close(1000);
+    hers.socket.close(1000);
   });
 
   it('holds a workspace to its number of open sockets', async () => {

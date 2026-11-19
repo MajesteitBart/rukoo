@@ -263,8 +263,10 @@ describe('the feed', () => {
         archived: false,
         grant: expect.stringMatching(/^g_/),
         role: 'member',
+        members: 2,
         head: 3,
         floor: 1,
+        lastAt: expect.any(Number),
         read: 3,
         unread: 0,
         mentions: 0,
@@ -272,7 +274,7 @@ describe('the feed', () => {
         removedMore: false
       }
     ]);
-    expect(start.last.directory).toEqual({ members: true, channels: true });
+    expect(start.last.directory).toEqual({ members: true, channels: true, blocks: true });
     expect(start.cursor).toMatch(/^[A-Za-z0-9_-]{40,}$/);
 
     // Nothing happened: nothing to tell, and the cursor still works.
@@ -291,7 +293,7 @@ describe('the feed', () => {
     await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name: 'new', visibility: 'workspace' } });
     const flagged = await sync(mila.person, ws.id, next.cursor);
     expect(flagged.rooms.size).toBe(0);
-    expect(flagged.last.directory).toEqual({ members: false, channels: true });
+    expect(flagged.last.directory).toEqual({ members: false, channels: true, blocks: false });
   });
 
   it('brings the open conversation its new events with the same answer', async () => {
