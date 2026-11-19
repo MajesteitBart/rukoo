@@ -220,41 +220,54 @@ async function create(request, env) {
   }
   const limits = workspaceLimits(env);
   const registry = registryObject(env);
-  if (registry && (await registry.reserveWorkspace(limits.max)) === 'full') {
+  if (registry && (await registry.reserveWorkspace(fields.id, limits.max)) === 'full') {
     throw new HttpError(403, 'workspaces_full', 'This server has no room for another workspace.');
   }
+  const release = async () => {
+    if (registry) await registry.releaseWorkspace(fields.id);
+  };
   let ref;
   try {
     ref = await stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
   } catch (err) {
-    if (registry) await registry.releaseWorkspace();
+    await release();
     throw err;
   }
   const undo = async () => {
-    if (registry) await registry.releaseWorkspace();
+    await release();
     if (ref.status === 200) await stub.dropWorkspace(who.incarnation, fields.id, ref.ref);
+  };
+  // A confirmation that fails is made up for later: the registry asks the workspace about a place nobody settled.
+  const confirm = async () => {
+    if (registry) await registry.confirmWorkspace(fields.id).catch(() => {});
   };
   if (ref.status !== 200) {
     await undo();
     return send(scoped(ref));
   }
-  const workspace = workspaceObject(env, fields.id);
   let result;
   try {
-    result = await workspace.create({ ...who, ref: ref.ref }, fields);
+    result = await workspaceObject(env, fields.id).create({ ...who, ref: ref.ref }, fields);
   } catch (err) {
-    // The answer got lost, which says nothing about whether the workspace was made. The workspace knows. If it can't
-    // be asked either, the place and the reference stay: an unused reference is given back the next time the account
-    // lists its workspaces, and a made workspace without them would be lost to its owner.
-    const made = await workspace.membership(who.incarnation);
-    if (made.state !== 'active') {
+    // The answer got lost, which says nothing about whether the workspace was made. The workspace knows, and is asked
+    // through a new stub, since the failure may have broken the first. If it can't be asked either, nothing is undone:
+    // the registry settles the place later and the account's list settles the reference, both by asking again.
+    let made;
+    try {
+      made = await workspaceObject(env, fields.id).exists();
+    } catch {
+      throw err;
+    }
+    if (!made) {
       await undo();
       throw err;
     }
-    const got = await workspace.request(token, 'workspace.get');
+    await confirm();
+    const got = await workspaceObject(env, fields.id).request(token, 'workspace.get');
     return got.status === 200 ? json(201, got.body) : send(got);
   }
-  if (result.status !== 201) await undo();
+  if (result.status === 201) await confirm();
+  else await undo();
   return send(result);
 }
 

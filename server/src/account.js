@@ -42,20 +42,21 @@ const BOOKING_TABLE = `
 // identity: the incarnation, a random id for this one lifetime of the account. A workspace knows its members by it, so
 // an account made again at the same address is nobody there. class says what the account may do: every account today
 // is 'full'. workspaces: the workspaces this account is or was a member of, which is what tells them when it is
-// deleted. version is new each time a reference is recorded, so giving one back never takes a newer one with it.
+// deleted. version goes up each time a reference is recorded, so giving one back never takes a newer one with it.
 // former marks a workspace the account left: it no longer shows in the account's list, and still hears of a deletion,
 // so the name the account had there goes too.
 const WORKSPACE_TABLES = `
   CREATE TABLE IF NOT EXISTS identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     incarnation TEXT NOT NULL,
-    class TEXT NOT NULL
+    class TEXT NOT NULL,
+    versions INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     created INTEGER NOT NULL DEFAULT 0,
     former INTEGER NOT NULL DEFAULT 0,
-    version TEXT NOT NULL,
+    version INTEGER NOT NULL,
     addedAt INTEGER NOT NULL
   );
 `;
@@ -250,7 +251,7 @@ export class Account extends DurableObject {
       if (most > 0 && others >= most) {
         return failure(403, 'workspace_limit', `One account can be in ${most} workspaces on this server.`);
       }
-      const version = toBase64url(randomBytes(9));
+      const version = this.sql.exec('UPDATE identity SET versions = versions + 1 WHERE id = 1 RETURNING versions').one().versions;
       this.sql.exec(
         `INSERT INTO workspaces (id, created, former, version, addedAt) VALUES (?, ?, 0, ?, ?)
          ON CONFLICT (id) DO UPDATE SET created = MAX(created, excluded.created), former = 0,
@@ -493,7 +494,9 @@ export class Account extends DurableObject {
       // page to wipe and the account's place to give back. The alarm is set first, so a workspace that doesn't answer
       // now hears it later.
       await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
-      this.ctx.waitUntil(this.#cleanup());
+      this.ctx.waitUntil(
+        this.#cleanup().catch((err) => console.error('Telling workspaces about a deleted account failed:', err?.stack || err))
+      );
       return result;
     }
     try {
@@ -509,7 +512,8 @@ export class Account extends DurableObject {
 
   // Tells each workspace on the list that an incarnation is gone, and takes it off the list once it answered. When
   // the list is empty, what is left of the deleted account is wiped, unless the address has a new account by then:
-  // that one keeps everything but the list.
+  // that one keeps everything but the list. A failure outside the calls to workspaces, such as an alarm that can't
+  // be set, is thrown: from alarm() that makes the platform run the alarm again.
   async #cleanup() {
     // One run at a time: the alarm can come due while the run a deletion started is still waiting for a workspace.
     if (this.cleaning || !this.#has('cleanup')) return;
@@ -540,8 +544,6 @@ export class Account extends DurableObject {
       await this.ctx.storage.deleteAlarm();
       if (this.present) this.sql.exec('DROP TABLE cleanup');
       else await this.ctx.storage.deleteAll();
-    } catch (err) {
-      console.error('Telling workspaces about a deleted account failed:', err?.stack || err);
     } finally {
       this.cleaning = false;
     }

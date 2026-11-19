@@ -99,7 +99,7 @@ describe('making a workspace', () => {
     expect((await api('GET', '/v1/workspaces', { token: person.token })).body.workspaces).toHaveLength(3);
 
     const registry = env.REGISTRY.get(env.REGISTRY.idFromName('registry'));
-    const count = () => runInDurableObject(registry, (i, state) => state.storage.sql.exec('SELECT count FROM workspaces').one().count);
+    const count = () => runInDurableObject(registry, (i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM workspace').one().n);
     const held = await count();
     const full = await api('POST', '/v1/workspaces', {
       token: (await signup()).token,

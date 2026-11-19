@@ -49,7 +49,8 @@ const ADMIN = new Set(['owner', 'admin']);
 
 // Conversations and members have small integer keys inside the database and random ids outside it: a message row
 // names its channel and its author, and at 16 KiB of text or less the keys are a real share of what a workspace
-// stores. Event and operation ids are 16 random bytes for the same reason.
+// stores. Event and operation ids are 16 random bytes for the same reason. A conversation's key is never used again
+// after the conversation is collected, because receipts outlive it.
 const SCHEMA = `
   CREATE TABLE workspace (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -68,7 +69,7 @@ const SCHEMA = `
     id TEXT NOT NULL UNIQUE,
     incarnation TEXT UNIQUE,
     account TEXT,
-    ref TEXT,
+    ref INTEGER,
     role TEXT NOT NULL,
     state TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -78,7 +79,7 @@ const SCHEMA = `
   );
   CREATE TABLE IF NOT EXISTS retired (incarnation TEXT PRIMARY KEY, at INTEGER NOT NULL);
   CREATE TABLE conversation (
-    n INTEGER PRIMARY KEY,
+    n INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL,
     visibility TEXT NOT NULL,
@@ -289,6 +290,7 @@ export class Workspace extends DurableObject {
     this.trailing = new Map();
     this.wakes = new Set();
     this.key = null;
+    this.checking = new Set();
     // A device's keepalive is answered without waking this object, and renews nothing.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -350,6 +352,11 @@ export class Workspace extends DurableObject {
     }
   }
 
+  // Whether this workspace was made. The Worker and the registry ask when an answer to making it got lost.
+  async exists() {
+    return this.present;
+  }
+
   // What an account incarnation is here, for GET /v1/workspaces: an active member with what the list shows, a
   // former member, or nobody this workspace knows.
   async membership(incarnation) {
@@ -401,9 +408,17 @@ export class Workspace extends DurableObject {
     const active = (n) => this.sql.exec("SELECT incarnation, account FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
     const asked = this.sql.exec('SELECT member, session, expiresAt FROM ticket WHERE nonce = ?', nonce).toArray()[0];
     const holder = asked && asked.expiresAt > now ? active(asked.member) : null;
-    if (!holder) return new Response(null, { status: 401 });
+    // A ticket that is being checked right now is in use: a second upgrade with it gets no check of its own.
+    if (!holder || this.checking.has(nonce)) return new Response(null, { status: 401 });
     // The ticket's session may have been signed out since it asked. Only its account knows.
-    if (!(await accountObject(this.env, holder.account).session(holder.incarnation, asked.session))) {
+    this.checking.add(nonce);
+    let alive;
+    try {
+      alive = await accountObject(this.env, holder.account).session(holder.incarnation, asked.session);
+    } finally {
+      this.checking.delete(nonce);
+    }
+    if (!alive) {
       this.sql.exec('DELETE FROM ticket WHERE nonce = ?', nonce);
       return new Response(null, { status: 401 });
     }
@@ -538,9 +553,11 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // Someone left or was removed: their bucket and their sockets go.
+  // Someone left or was removed: their sockets go, and their bucket too, unless the same account is an active member
+  // again under a newer incarnation.
   #forget(member) {
-    if (member.account) {
+    const again = member.account && this.sql.exec("SELECT 1 FROM member WHERE account = ? AND state = 'active'", member.account).toArray().length > 0;
+    if (member.account && !again) {
       this.accounts.delete(member.account);
       this.buckets.delete(member.account);
     }
@@ -879,11 +896,13 @@ export class Workspace extends DurableObject {
       )
       .toArray();
     // An admin who isn't in a private channel learns that an invitation leads into one, not which.
-    const mine = (id) => {
-      const c = this.#conversation(id);
-      return Boolean(c && (c.visibility === 'workspace' || this.#grant(me, c)));
-    };
-    return reply(200, { invites: rows.map((row) => inviteOut(row, mine)) });
+    const out = rows.map((row) => {
+      const issuer = this.sql.exec("SELECT * FROM member WHERE n = ? AND state = 'active'", row.issuer).toArray()[0];
+      const rooms = this.#invited(row, issuer);
+      const mine = rooms.filter((c) => c.visibility === 'workspace' || this.#grant(me, c));
+      return inviteOut(row, mine.map((c) => c.id), rooms.length);
+    });
+    return reply(200, { invites: out });
   }
 
   // An invitation is a secret that works once. Only its hash is stored. The channels it names are ones its issuer
@@ -931,7 +950,8 @@ export class Workspace extends DurableObject {
       );
       return row;
     });
-    return reply(201, { invite: inviteOut(invite, () => true), secret });
+    const ids = JSON.parse(invite.channels).map((entry) => entry.c);
+    return reply(201, { invite: inviteOut(invite, ids, ids.length), secret });
   }
 
   #revoke(me, id) {
@@ -964,7 +984,7 @@ export class Workspace extends DurableObject {
     return reply(200, {
       workspace: { id: ws.wid, name: ws.name },
       role: invite.role,
-      channels: JSON.parse(invite.channels).length,
+      channels: this.#invited(invite, issuer).length,
       issuer: { name: issuer.name },
       expiresAt: invite.expiresAt
     });
@@ -987,12 +1007,58 @@ export class Workspace extends DurableObject {
     if (ref.incarnation !== who.incarnation) throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
     who = { ...who, ref: ref.ref };
     const now = Date.now();
-    const me = this.#write(() => {
+    let joined;
+    try {
+      joined = this.#redeem(who, hash, a, now);
+    } catch (err) {
+      // Refused after the account recorded its reference: the reference is settled now, so it doesn't count against
+      // how many workspaces the account may be in.
+      if (err instanceof Refusal) await this.#giveBack(who);
+      throw err;
+    }
+    this.accounts.add(who.name);
+    return reply(joined.made ? 201 : 200, { workspace: await this.#workspaceOut(), me: memberOut(joined.member) });
+  }
+
+  // The reference of a join that was refused. Someone who was a member before keeps it as a workspace they left, so
+  // their name can still be taken off it later. Anyone else gets it back.
+  async #giveBack(who) {
+    const known = this.sql.exec('SELECT 1 FROM member WHERE incarnation = ?', who.incarnation).toArray().length > 0;
+    const account = accountObject(this.env, who.name);
+    try {
+      if (known) await account.leftWorkspace(who.incarnation, this.#ws().wid, who.ref);
+      else await account.dropWorkspace(who.incarnation, this.#ws().wid, who.ref);
+    } catch (err) {
+      console.error('Could not settle a workspace reference after a refused join:', err?.message || err);
+    }
+  }
+
+  // The channels an invitation leads into right now: the ones its issuer still manages under the grant they had
+  // when they invited, and that aren't archived. Joining, the preview and the list of invitations all count these.
+  #invited(invite, issuer) {
+    const rooms = [];
+    for (const { c: id, g } of JSON.parse(invite.channels)) {
+      const c = this.#conversation(id);
+      const grant = c && !c.archivedAt && issuer ? this.#grant(issuer, c) : null;
+      if (grant?.role === 'manager' && grant.id === g) rooms.push(c);
+    }
+    return rooms;
+  }
+
+  // The transaction that makes a member of someone holding an invitation: { member, made }, where made is false for
+  // someone who turned out to be a member already.
+  #redeem(who, hash, a, now) {
+    return this.#write(() => {
       if (this.sql.exec('SELECT 1 FROM retired WHERE incarnation = ?', who.incarnation).toArray().length > 0) {
         throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
       }
       const again = this.#actor(who);
-      if (again) return again;
+      if (again) {
+        // Two joins of one account at once: both recorded a reference and the account kept the later one. The member
+        // keeps that one too, whichever join got here first.
+        this.sql.exec('UPDATE member SET ref = MAX(COALESCE(ref, 0), ?) WHERE n = ?', who.ref, again.n);
+        return { member: again, made: false };
+      }
       const { invite, issuer } = this.#usable(hash, now);
       const members = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active'").one().n;
       if (members >= workspaceLimits(this.env).members) {
@@ -1001,15 +1067,9 @@ export class Workspace extends DurableObject {
       const member = this.#addMember(who, invite.role, a.name, now);
       this.sql.exec('UPDATE invite SET redeemedBy = ?, redeemedAt = ? WHERE id = ?', member.n, now, invite.id);
       // A channel the issuer stopped managing since, or that was archived, is left out; the rest still holds.
-      for (const { c: id, g } of JSON.parse(invite.channels)) {
-        const c = this.#conversation(id);
-        const grant = c && !c.archivedAt && this.#grant(issuer, c);
-        if (grant?.role === 'manager' && grant.id === g) this.#grantTo(member, c, 'member', issuer, now);
-      }
-      return member;
+      for (const c of this.#invited(invite, issuer)) this.#grantTo(member, c, 'member', issuer, now);
+      return { member, made: true };
     });
-    this.accounts.add(who.name);
-    return reply(201, { workspace: await this.#workspaceOut(), me: memberOut(me) });
   }
 
   // ---- Channels ----
@@ -1497,22 +1557,28 @@ export class Workspace extends DurableObject {
     return reply(200, body);
   }
 
-  // Whether the people a guest can see changed since a revision: someone came into or left one of their rooms, or
-  // someone in one of them changed their name or role.
+  // Whether the people a guest can see changed since a revision: someone came into or left one of their rooms,
+  // someone in one of them changed their name or role, the guest lost a room and the people in it, or the guest's
+  // own name or role changed on another device.
   #peersChanged(me, since) {
     return (
       this.sql
         .exec(
           `SELECT 1 FROM grants g JOIN conversation c ON c.n = g.conversation WHERE g.member = ? AND c.roster > ?
            UNION ALL
-           SELECT 1 FROM member m WHERE m.rev > ? AND m.n IN (
+           SELECT 1 FROM member m WHERE m.rev > ? AND (m.n = ? OR m.n IN (
              SELECT member FROM grants WHERE conversation IN (SELECT conversation FROM grants WHERE member = ?)
-           )
+           ))
+           UNION ALL
+           SELECT 1 FROM evicted WHERE member = ? AND rev > ?
            LIMIT 1`,
           me.n,
           since,
           since,
-          me.n
+          me.n,
+          me.n,
+          me.n,
+          since
         )
         .toArray().length > 0
     );
@@ -1634,15 +1700,14 @@ export class Workspace extends DurableObject {
   }
 }
 
-// An invitation as an owner or admin sees it. channels are the ones visible lets the viewer see; channelCount is how
-// many the invitation leads into.
-function inviteOut(row, visible) {
-  const channels = JSON.parse(row.channels).map((entry) => entry.c);
+// An invitation as an owner or admin sees it. channels are the ones the viewer may know of; channelCount is how many
+// the invitation leads into.
+function inviteOut(row, channels, channelCount) {
   return {
     id: row.id,
     role: row.role,
-    channels: channels.filter(visible),
-    channelCount: channels.length,
+    channels,
+    channelCount,
     issuer: row.issuerId,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt

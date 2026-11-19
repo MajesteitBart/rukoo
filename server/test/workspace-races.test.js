@@ -264,6 +264,37 @@ describe('invitations and the channels they lead into', () => {
   });
 });
 
+describe('what an invitation and a guest are told, kept current', () => {
+  it('counts only the channels an invitation still leads into', async () => {
+    const ws = await newWorkspace();
+    const side = await channel(ws, 'side');
+    const made = await invite(ws.person, ws.id, { role: 'member', channels: [ws.general, side] });
+    const count = async () => {
+      const listed = (await api('GET', `/v1/workspaces/${ws.id}/invites`, { token: ws.person.token })).body.invites[0];
+      const preview = await api('POST', `/v1/workspaces/${ws.id}/invites/preview`, { token: (await signup()).token, body: { invite: made.secret } });
+      return [listed.channelCount, listed.channels.length, preview.body.channels];
+    };
+    expect(await count()).toEqual([2, 2, 2]);
+    await api('PATCH', `/v1/workspaces/${ws.id}/channels/${side}`, { token: ws.person.token, body: { archived: true } });
+    expect(await count()).toEqual([1, 1, 1]);
+  });
+
+  it('tells a guest who lost their only room that the people they could see are gone', async () => {
+    const ws = await newWorkspace();
+    const project = await channel(ws, 'project');
+    const guest = await newMember(ws, 'Gus', { role: 'guest', channels: [project] });
+    const start = await sync(guest.person, ws.id);
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${project}/members/${guest.me.id}`, { token: ws.person.token });
+    const after = await sync(guest.person, ws.id, start.cursor);
+    expect(after.evictions).toEqual([project]);
+    expect(after.last.directory.members).toBe(true);
+    // In no room at all, the guest still hears of their own name changing on another device.
+    await api('PATCH', `/v1/workspaces/${ws.id}/members/me`, { token: guest.person.token, body: { name: 'Gus G.' } });
+    expect((await sync(guest.person, ws.id, after.cursor)).last.directory.members).toBe(true);
+    expect((await sync(guest.person, ws.id, after.cursor)).last.directory.members).toBe(true);
+  });
+});
+
 describe('what an id tells someone who should not know it', () => {
   it('answers a member the same for an id that exists and one that does not', async () => {
     const ws = await newWorkspace();
@@ -317,6 +348,147 @@ describe('limits on what one account is in', () => {
     expect(free.status).toBe(201);
     const info = await api('GET', '/v1/info');
     expect(info.body.workspace.limits.membershipsPerAccount).toBe(50);
+  });
+
+  it('gives a place back at once when a join is refused', async () => {
+    const full = await newWorkspace('Full');
+    const open = await newWorkspace('Open');
+    const person = await signup();
+    // The first workspace has no room: the account's reference to it is recorded, then the join is refused.
+    await runInDurableObject(workspaceStub(full.id), (instance, state) => {
+      for (let i = 0; i < 99; i++) {
+        state.storage.sql.exec(
+          "INSERT INTO member (id, incarnation, account, role, state, name, joinedAt) VALUES (?, ?, ?, 'member', 'active', 'Filler', 0)",
+          `u_filler${i}`,
+          `filler-${i}`,
+          `filler-${i}`
+        );
+      }
+    });
+    const refused = await api('POST', `/v1/workspaces/${full.id}/join`, { token: person.token, body: { invite: (await invite(full.person, full.id)).secret, name: 'P' } });
+    expect(refused.status).toBe(413);
+    const kept = await runInDurableObject(await accountStub(person.email), (instance, state) => state.storage.sql.exec('SELECT id FROM workspaces').toArray());
+    expect(kept).toEqual([]);
+    // So with room for one membership, the next join still fits.
+    await runInDurableObject(workspaceStub(open.id), (instance) => {
+      const settings = {};
+      for (const name of Object.keys(env)) settings[name] = env[name];
+      instance.env = { ...settings, MAX_WORKSPACE_MEMBERSHIPS: '1' };
+    });
+    const joined = await api('POST', `/v1/workspaces/${open.id}/join`, { token: person.token, body: { invite: (await invite(open.person, open.id)).secret, name: 'P' } });
+    expect(joined.status).toBe(201);
+  });
+
+  it('keeps the note of a workspace someone left when their way back in is refused', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    await api('DELETE', `/v1/workspaces/${ws.id}/members/me`, { token: mila.person.token });
+    const back = await invite(ws.person, ws.id);
+    // The workspace fills up, so her join gets as far as the account's reference and is then refused.
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      for (let i = 0; i < 100; i++) {
+        state.storage.sql.exec(
+          "INSERT INTO member (id, incarnation, account, role, state, name, joinedAt) VALUES (?, ?, ?, 'member', 'active', 'Filler', 0)",
+          `u_filler${i}`,
+          `filler-${i}`,
+          `filler-${i}`
+        );
+      }
+    });
+    const refused = await api('POST', `/v1/workspaces/${ws.id}/join`, { token: mila.person.token, body: { invite: back.secret, name: 'Mila' } });
+    expect(refused.status).toBe(413);
+    const kept = await runInDurableObject(await accountStub(mila.person.email), (instance, state) => state.storage.sql.exec('SELECT id, former FROM workspaces').toArray());
+    expect(kept).toEqual([{ id: ws.id, former: 1 }]);
+  });
+
+  it('keeps the newest reference on a member when one account joins twice at once', async () => {
+    const ws = await newWorkspace();
+    const person = await signup();
+    const { secret } = await invite(ws.person, ws.id);
+    const join = () => api('POST', `/v1/workspaces/${ws.id}/join`, { token: person.token, body: { invite: secret, name: 'Twice' } });
+    const both = await Promise.all([join(), join()]);
+    expect(both.map((res) => res.status).sort()).toEqual([200, 201]);
+    const [account] = await runInDurableObject(await accountStub(person.email), (instance, state) => state.storage.sql.exec('SELECT version, former FROM workspaces').toArray());
+    const [member] = await workspaceSql(ws.id, "SELECT ref FROM member WHERE name = 'Twice'");
+    expect(member.ref).toBe(account.version);
+    // So leaving marks the reference the account actually holds.
+    await api('DELETE', `/v1/workspaces/${ws.id}/members/me`, { token: person.token });
+    const after = await runInDurableObject(await accountStub(person.email), (instance, state) => state.storage.sql.exec('SELECT former FROM workspaces').one().former);
+    expect(after).toBe(1);
+  });
+});
+
+describe('a place under the server limit', () => {
+  const registry = () => env.REGISTRY.get(env.REGISTRY.idFromName('registry'));
+  const places = (id) => runInDurableObject(registry(), (instance, state) => state.storage.sql.exec('SELECT made FROM workspace WHERE id = ?', id).toArray());
+
+  it('is confirmed when the workspace is made, and can be taken or given back twice without counting twice', async () => {
+    const ws = await newWorkspace();
+    expect(await places(ws.id)).toEqual([{ made: 1 }]);
+    await runInDurableObject(registry(), async (instance) => {
+      await instance.reserveWorkspace(ws.id, 0);
+      await instance.releaseWorkspace(ws.id);
+    });
+    expect(await places(ws.id)).toEqual([{ made: 1 }]);
+  });
+
+  it('is settled by asking the workspace when nobody confirmed it or gave it back', async () => {
+    const real = await newWorkspace();
+    const never = 'w_neverMadeNeverMadeAAAA';
+    // Two places from ten minutes ago that were left open: one whose workspace exists, one whose doesn't.
+    await runInDurableObject(registry(), (instance, state) => {
+      const old = Date.now() - 10 * 60 * 1000;
+      state.storage.sql.exec('UPDATE workspace SET made = 0, at = ? WHERE id = ?', old, real.id);
+      state.storage.sql.exec('INSERT INTO workspace (id, at, made) VALUES (?, ?, 0)', never, old);
+    });
+    // The next workspace anyone makes settles them first.
+    await newWorkspace('Next');
+    expect(await places(real.id)).toEqual([{ made: 1 }]);
+    expect(await places(never)).toEqual([]);
+  });
+});
+
+describe('small things that go wrong late', () => {
+  it('never gives a new channel the inner number of one that was collected', async () => {
+    const ws = await newWorkspace();
+    const done = await channel(ws, 'done');
+    const [{ n: old }] = await workspaceSql(ws.id, 'SELECT n FROM conversation WHERE id = ?', done);
+    await api('PATCH', `/v1/workspaces/${ws.id}/channels/${done}`, { token: ws.person.token, body: { archived: true } });
+    await workspaceSql(ws.id, 'UPDATE event SET at = ? WHERE conversation = ?', Date.now() - 91 * DAY, old);
+    await runInDurableObject(workspaceStub(ws.id), (instance) => instance.alarm());
+    expect(await workspaceSql(ws.id, 'SELECT n FROM conversation WHERE id = ?', done)).toEqual([]);
+    const next = await channel(ws, 'next');
+    const [{ n: fresh }] = await workspaceSql(ws.id, 'SELECT n FROM conversation WHERE id = ?', next);
+    expect(fresh).toBeGreaterThan(old);
+  });
+
+  it('keeps a member in their own request allowance when an older self of the same account is retired', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const first = (await call('GET', '/v1/account', { token: mila.person.token })).body.incarnation;
+    // The same account is a member twice over: once from before, as someone who left, and once now.
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const sql = state.storage.sql;
+      const row = sql.exec('SELECT account FROM member WHERE incarnation = ?', first).one();
+      sql.exec(
+        "INSERT INTO member (id, incarnation, account, role, state, name, joinedAt, endedAt) VALUES ('u_olderSelfOlderSelfAAAA', 'older-incarnation', ?, 'member', 'left', 'Older', 0, 1)",
+        row.account
+      );
+    });
+    await runInDurableObject(workspaceStub(ws.id), (instance) => instance.retire('older-incarnation'));
+    const inside = await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const account = state.storage.sql.exec('SELECT account FROM member WHERE incarnation = ?', first).one().account;
+      return instance.accounts.has(account);
+    });
+    expect(inside).toBe(true);
+  });
+
+  it('opens one socket when the same ticket arrives twice at once', async () => {
+    const ws = await newWorkspace();
+    const issued = (await api('POST', `/v1/workspaces/${ws.id}/socket-ticket`, { token: ws.person.token })).body.ticket;
+    const both = await Promise.all([openSocket(ws.person, ws.id, { ticket: issued }), openSocket(ws.person, ws.id, { ticket: issued })]);
+    expect(both.map((socket) => socket.status).sort()).toEqual([101, 401]);
+    both.find((socket) => socket.status === 101).socket.close(1000);
   });
 });
 
