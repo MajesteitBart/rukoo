@@ -55,6 +55,7 @@
     <string name="settings_rukoo_repeat">Repeat password</string>
     <string name="settings_rukoo_mismatch">The passwords don\'t match.</string>
     <string name="settings_rukoo_invite">Invite code</string>
+    <string name="settings_rukoo_invite_chat_help">An invitation link to a team chat workspace works as an invite code too.</string><!-- settings.rukoo.inviteChatHelp -->
     <string name="settings_rukoo_understand">I understand that if I forget my password, only my recovery key gets me back in.</string>
     <string name="settings_rukoo_need_understand">Tick the box to confirm.</string>
     <string name="settings_rukoo_create">Create account</string>
@@ -111,9 +112,15 @@
     <string name="settings_rukoo_exported">Data exported</string>
     <string name="settings_rukoo_sign_out">Sign out</string>
     <string name="settings_rukoo_sign_out_help">This phone stops syncing and keeps its own copy of your categories.</string>
+    <!-- settings.rukoo.unsentChat: under Sign out while the chat outbox holds messages. -->
+    <plurals name="settings_rukoo_unsent_chat">
+        <item quantity="one">%d chat message hasn\'t been sent yet and is lost when you sign out.</item>
+        <item quantity="other">%d chat messages haven\'t been sent yet and are lost when you sign out.</item>
+    </plurals>
     <string name="settings_rukoo_signed_out">Signed out</string>
     <string name="settings_rukoo_delete">Delete account</string>
     <string name="settings_rukoo_delete_help">Deletes your account and everything in it from the server. Your devices keep their own copies and stop syncing. This cannot be undone.</string>
+    <string name="settings_rukoo_delete_chat_note">Messages you wrote in team chat stay in their workspaces under a deleted member, until each workspace\'s retention removes them.</string><!-- settings.rukoo.deleteChatNote -->
     <string name="settings_rukoo_deleted">Account deleted</string>
 
     <!-- What's stored and shared -->

@@ -25,6 +25,8 @@
     <string name="notification_channel_mail_description">Nieuwe e-mails in je postvakken</string>
     <string name="notification_channel_agents">Agents</string>
     <string name="notification_channel_agents_description">Antwoorden, concepten en akkoordverzoeken van je agents terwijl hun chat niet open is</string>
+    <string name="notification_channel_chat">Teamchat</string>
+    <string name="notification_channel_chat_description">Directe berichten en vermeldingen in je werkruimtes</string>
     <string name="notification_channel_service">Toegang voor agents</string>
     <string name="notification_channel_service_description">Zichtbaar zolang agents Rukoo op deze telefoon kunnen gebruiken</string>
 
