@@ -1,7 +1,8 @@
 //! Speaker labels on the 60-second AMI meeting excerpt, with the real recorder, the real
 //! `rukoo-voice-speakers` worker and NeMo-Speech.cpp: three voices before the recording stops,
 //! at least 90 % of transcript time to the right speaker, and the same ids after the worker is
-//! killed.
+//! killed. With the excerpt as the microphone of a stopped meeting, `speakers.split` finds its
+//! voices.
 //!
 //! Windows and macOS. It skips unless these are set (`voice/scripts/speaker-assets.ps1` fetches
 //! them, `speaker-assets.mjs` on macOS):
@@ -592,6 +593,105 @@ fn ami_three_speakers_live_and_ninety_percent_right() {
         score * 100.0
     );
     assert!(score >= 0.90, "accuracy {score}: {passages:#?}");
+}
+
+/// 4: the excerpt as the microphone of a stopped meeting, as if everyone sat at one microphone:
+/// `speakers.split` hears it through the real worker as fast as the worker takes it, finds at
+/// least two voices and moves passages to them. Only `speakers.split` runs here, so the excerpt
+/// goes into the meeting folder directly instead of through the recorder.
+#[test]
+fn ami_at_one_microphone_splits_into_voices() {
+    let Some(assets) = assets() else {
+        return;
+    };
+    let _one = one_at_a_time();
+    let tmp = TempDir::new("ami-split");
+    let data = tmp.path().join("data");
+    let library = Library::open(&data).unwrap();
+    let log = EventLog::open(&data).unwrap();
+    let rec = Recording::new(&library, &[Track::Mic]);
+    rec.session(0, 1);
+    let pcm = read_wav(&assets.ami.wav);
+    let length = pcm.len() as u64 / 16;
+    rec.segment("mic", 1, 0, &pcm);
+    rec.stop(length);
+    let pipeline = Pipeline::start(
+        rec.dir.clone(),
+        log.clone(),
+        PipelineOptions {
+            timed: Some(Arc::new(AmiOracle::new(&assets.ami))),
+            timing: Timing {
+                poll: Duration::from_millis(50),
+                ..Timing::default()
+            },
+            ..PipelineOptions::new(Arc::new(Offline))
+        },
+    );
+    wait_until("done", WAIT, || {
+        (pipeline.state() == PipelineState::Done).then_some(())
+    });
+    pipeline.shutdown();
+    let before = events(&log, &rec.id());
+    let passages = of(&before, "passage").len();
+    assert!(passages >= 10, "the oracle heard {passages} passages");
+
+    let Labels::Local { diarizer } = nemotron(&assets, &data, tmp.path().join("exe")) else {
+        panic!("no diarizer");
+    };
+    let started = std::time::Instant::now();
+    let voices = voice_meetings::split_microphone(
+        &rec.dir,
+        &log,
+        diarizer.as_ref(),
+        &voice_meetings::FollowerTiming::default(),
+        &std::sync::atomic::AtomicBool::new(false),
+        &|_, _| {},
+    )
+    .unwrap();
+    let took = started.elapsed();
+
+    let after = events(&log, &rec.id());
+    let new = &after[before.len()..];
+    let speakers: Vec<&str> = of(new, "speaker")
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    let moved = of(new, "passage");
+    let mut last: BTreeMap<String, Span> = BTreeMap::new();
+    for p in of(&after, "passage") {
+        last.insert(
+            p["id"].as_str().unwrap().to_owned(),
+            Span {
+                start: p["start"].as_u64().unwrap(),
+                end: p["end"].as_u64().unwrap(),
+                speaker: p["speaker"].as_str().map(str::to_owned),
+            },
+        );
+    }
+    let spans: Vec<Span> = last.into_values().collect();
+    let score = accuracy(&spans, &reference(&assets.ami.rttm, 0, 1));
+    eprintln!(
+        "AMI at one microphone: {voices} voices ({speakers:?}), {} of {passages} passages moved, \
+         {:.1} % of transcript time to the right voice, split in {took:?}",
+        moved.len(),
+        score * 100.0
+    );
+    assert!(voices >= 2, "voices: {voices}");
+    assert_eq!(speakers.len() as u64, voices - 1, "{speakers:?}");
+    assert!(!moved.is_empty(), "no passage moved");
+    assert!(
+        moved
+            .iter()
+            .all(|p| p["speaker"] != "mic" && p["revision"] == 2),
+        "{moved:?}"
+    );
+    // Each new voice reached Rukoo before its passages.
+    let first_passage = new.iter().position(|e| e.event == "passage").unwrap();
+    assert!(new[..first_passage].iter().all(|e| e.event == "speaker"));
+    assert_eq!(
+        voice_meetings::split_voices(&rec.dir).unwrap(),
+        Some(voices)
+    );
 }
 
 /// 3: the worker is killed 30 s into the excerpt's second loop; the main speakers keep their

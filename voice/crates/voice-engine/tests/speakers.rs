@@ -17,12 +17,13 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use support::{lock, wait_for, Harness, SpeechHandle};
 use voice_audio::SegmentWriter;
-use voice_bridge::{EventLog, Stored};
+use voice_bridge::{EventLog, MeetingControl, Stored};
 use voice_core::local::{LocalStatus, Located, ModelError, ModelRegistry, ModelSpec, Progress};
 use voice_core::providers::stream::{SpeechStream, StreamSession, StreamingSpeech};
 use voice_core::providers::{Activity, ProviderConfig};
 use voice_core::speakers::{
-    DiarError, DiarErrorKind, DiarStream, Diarizer, RuntimeInfo, RuntimeLocation, Unavailable,
+    DiarError, DiarErrorKind, DiarStream, Diarizer, Probs, RuntimeInfo, RuntimeLocation,
+    StreamGeometry, Unavailable,
 };
 use voice_core::{ProviderError, Rewriter, SpeechToText};
 use voice_engine::meetings::PipelineOptions;
@@ -102,6 +103,135 @@ impl StreamingSpeech for FakeStream {
     }
 }
 
+/// Samples per frame of the [`LoudDiarizer`]: 10 ms.
+const FRAME: usize = 160;
+const LOUD_SPEAKERS: usize = 4;
+
+/// The amplitude of hidden voice `k`: 2000, 3000, ...; quiet is ±50.
+fn amplitude(k: usize) -> i16 {
+    2000 + 1000 * k as i16
+}
+
+/// The microphone made of `(seconds, voice)` pieces: voice `k` is a 296 Hz square wave of
+/// [`amplitude`]`(k)`, `None` is quiet.
+fn voices(pieces: &[(f64, Option<usize>)]) -> Vec<i16> {
+    let mut out = Vec::new();
+    for &(seconds, voice) in pieces {
+        let n = (seconds * 16_000.0).round() as usize;
+        let level = voice.map_or(50, amplitude);
+        out.extend((0..n).map(|i| if (i / 27) % 2 == 0 { level } else { -level }));
+    }
+    out
+}
+
+/// The hidden voice who talks most inside `[start, end)` ms of `pieces`.
+fn who(pieces: &[(f64, Option<usize>)], start: u64, end: u64) -> Option<usize> {
+    let mut at = 0.0;
+    let mut best: Option<(u64, usize)> = None;
+    for &(seconds, voice) in pieces {
+        let (a, b) = (at as u64, (at + seconds * 1000.0) as u64);
+        at += seconds * 1000.0;
+        let Some(k) = voice else { continue };
+        let shared = b.min(end).saturating_sub(a.max(start));
+        if shared > 0 && best.is_none_or(|(s, _)| shared > s) {
+            best = Some((shared, k));
+        }
+    }
+    best.map(|(_, k)| k)
+}
+
+/// What a [`LoudDiarizer`] did, and how its streams fail.
+#[derive(Default)]
+struct Loud {
+    opens: AtomicUsize,
+    finishes: AtomicUsize,
+    /// This many streams crash at their first push.
+    crashes: AtomicUsize,
+    /// `open` refuses with this kind.
+    refuse: Mutex<Option<DiarErrorKind>>,
+}
+
+/// A diarizer that needs no model: each 10 ms frame's voice comes from its loudness, as in
+/// voice-meetings' scripted diarizer, and every frame is committed at once.
+#[derive(Clone, Default)]
+struct LoudDiarizer(Arc<Loud>);
+
+impl Diarizer for LoudDiarizer {
+    fn open(&self) -> Result<Box<dyn DiarStream>, DiarError> {
+        if let Some(kind) = *lock(&self.0.refuse) {
+            return Err(DiarError::new(kind, "The fake runtime refused."));
+        }
+        self.0.opens.fetch_add(1, Ordering::SeqCst);
+        let crash = self
+            .0
+            .crashes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        Ok(Box::new(LoudStream {
+            loud: Arc::clone(&self.0),
+            crash,
+            buffer: Vec::new(),
+            frames: 0,
+        }))
+    }
+}
+
+struct LoudStream {
+    loud: Arc<Loud>,
+    crash: bool,
+    buffer: Vec<i16>,
+    frames: u64,
+}
+
+impl LoudStream {
+    fn commit(&mut self, frames: Vec<Vec<i16>>) -> Probs {
+        let first = self.frames;
+        let mut values = Vec::with_capacity(frames.len() * LOUD_SPEAKERS);
+        for frame in &frames {
+            let loudest = frame.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+            let voice = (loudest >= 1000).then(|| (loudest as usize).saturating_sub(1500) / 1000);
+            for s in 0..LOUD_SPEAKERS {
+                values.push(if voice == Some(s) { 0.95 } else { 0.02 });
+            }
+        }
+        self.frames += frames.len() as u64;
+        Probs {
+            first_frame: first,
+            frames: frames.len(),
+            speakers: LOUD_SPEAKERS,
+            values,
+        }
+    }
+}
+
+impl DiarStream for LoudStream {
+    fn geometry(&self) -> StreamGeometry {
+        StreamGeometry {
+            speakers: LOUD_SPEAKERS,
+            seconds_per_frame: 0.01,
+        }
+    }
+
+    fn push(&mut self, pcm: &[i16]) -> Result<Probs, DiarError> {
+        if self.crash {
+            return Err(DiarError::new(
+                DiarErrorKind::Crashed,
+                "The fake worker crashed.",
+            ));
+        }
+        self.buffer.extend_from_slice(pcm);
+        let whole = self.buffer.len() / FRAME * FRAME;
+        let frames = self.buffer.drain(..whole).collect::<Vec<i16>>();
+        Ok(self.commit(frames.chunks(FRAME).map(<[i16]>::to_vec).collect()))
+    }
+
+    fn finish(&mut self) -> Result<Probs, DiarError> {
+        self.loud.finishes.fetch_add(1, Ordering::SeqCst);
+        let rest = std::mem::take(&mut self.buffer);
+        Ok(self.commit(if rest.is_empty() { vec![] } else { vec![rest] }))
+    }
+}
+
 /// The harness's speech, plus Nemotron and Mistral's stream as each test sets them up.
 struct Labelling {
     base: SpeechHandle,
@@ -113,6 +243,8 @@ struct Labelling {
     opens: Arc<AtomicUsize>,
     streams: AtomicUsize,
     connects: Arc<AtomicUsize>,
+    /// When set, the diarizer handed out instead of the one whose streams never open.
+    loud: Mutex<Option<LoudDiarizer>>,
 }
 
 impl Labelling {
@@ -128,7 +260,16 @@ impl Labelling {
             opens: Arc::new(AtomicUsize::new(0)),
             streams: AtomicUsize::new(0),
             connects: Arc::new(AtomicUsize::new(0)),
+            loud: Mutex::new(None),
         }
+    }
+
+    /// Nemotron can run, and its diarizer hears voices by their loudness.
+    fn loud(&self) -> LoudDiarizer {
+        self.ready();
+        let loud = LoudDiarizer::default();
+        *lock(&self.loud) = Some(loud.clone());
+        loud
     }
 
     /// Nemotron can't run here, for this reason, both for Settings and for meetings.
@@ -205,6 +346,12 @@ impl Speech for Labelling {
 
     fn diarizer(&self) -> Result<Arc<dyn Diarizer>, Unavailable> {
         self.diarizers.fetch_add(1, Ordering::SeqCst);
+        if let Some(loud) = lock(&self.loud)
+            .clone()
+            .filter(|_| lock(&self.refuse).is_none())
+        {
+            return Ok(Arc::new(loud));
+        }
         match lock(&self.refuse).clone() {
             Some(why) => Err(why),
             None => Ok(Arc::new(FakeDiarizer {
@@ -617,5 +764,397 @@ fn removing_nemotron_waits_while_a_meeting_labels() {
         engine.settings_model("nemotron", "remove").is_ok()
     });
     assert!(!file.exists());
+    engine.shutdown();
+}
+
+// Splitting the microphone ---------------------------------------------------------------------
+
+/// A stopped microphone-only meeting of `pieces`, dictated over each `(start, end)` ms.
+fn record_microphone(
+    data: &Path,
+    pieces: &[(f64, Option<usize>)],
+    dictation: &[(u64, u64)],
+) -> String {
+    let library = Library::open(data).unwrap();
+    let dir = library
+        .create(&CreateMeeting {
+            title: "At one microphone".into(),
+            tracks: vec![Track::Mic],
+            sources: Default::default(),
+            screen: ScreenMode::Off,
+            started_by: StartedBy::Voice,
+            context: None,
+        })
+        .unwrap();
+    let mut timeline = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.path().join("timeline.jsonl"))
+        .unwrap();
+    let mut line = |value: Value| {
+        timeline.write_all(format!("{value}\n").as_bytes()).unwrap();
+    };
+    line(
+        json!({"kind": "session", "t": 0, "wall": 1_793_000_000_000u64, "session": 1, "pid": 1, "resumed": false, "version": 1}),
+    );
+    let file = "audio/mic/000001.wav";
+    let path = dir.path().join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut writer = SegmentWriter::create(&path).unwrap();
+    line(json!({"kind": "segment", "t": 0, "track": "mic", "seq": 1, "file": file}));
+    writer.append(&voices(pieces)).unwrap();
+    let samples = writer.close().unwrap();
+    line(
+        json!({"kind": "segment_end", "t": samples / 16, "track": "mic", "seq": 1, "samples": samples}),
+    );
+    for &(start, end) in dictation {
+        line(json!({"kind": "dictation", "t": start, "state": "start"}));
+        line(json!({"kind": "dictation", "t": end, "state": "end"}));
+    }
+    line(
+        json!({"kind": "stop", "t": samples / 16, "wall": 1_793_000_000_000u64 + samples / 16, "reason": "user"}),
+    );
+    dir.id().to_string()
+}
+
+/// A microphone made of `(seconds, voice)` pieces, and the dictation over it in `(start, end)` ms.
+type Microphone = (Vec<(f64, Option<usize>)>, Vec<(u64, u64)>);
+
+/// The user (0) dictates, a second voice (1) talks longest and also speaks, briefly, while the
+/// user dictates.
+fn two_at_the_microphone() -> Microphone {
+    let pieces = vec![
+        (0.5, None),
+        (3.0, Some(0)), // 0.5-3.5 s, dictated
+        (1.0, None),
+        (4.0, Some(1)), // 4.5-8.5 s
+        (1.0, None),
+        (3.0, Some(0)), // 9.5-12.5 s
+        (1.0, None),
+        (4.0, Some(1)), // 13.5-17.5 s
+        (1.0, None),
+        (2.0, Some(1)), // 18.5-20.5 s, dictated
+        (1.0, None),
+    ];
+    (pieces, vec![(700, 3_300), (18_700, 20_300)])
+}
+
+fn control_of(engine: &voice_engine::Engine) -> Arc<dyn MeetingControl> {
+    engine.meeting_control().expect("the bridge runs")
+}
+
+/// Sends `speakers.split` until the split is done; returns `voices`.
+fn split_until_done(control: &dyn MeetingControl, id: &str) -> u64 {
+    let mut voices = None;
+    wait_for("the split", || {
+        let result = control
+            .split_speakers(id, Track::Mic)
+            .unwrap_or_else(|e| panic!("the split failed: {e}"));
+        match result["state"].as_str() {
+            Some("done") => {
+                voices = result["voices"].as_u64();
+                true
+            }
+            Some("running") => {
+                assert!(result["at"].as_u64().unwrap() <= result["end"].as_u64().unwrap());
+                false
+            }
+            other => panic!("a split is running or done, not {other:?}"),
+        }
+    });
+    voices.expect("voices")
+}
+
+/// Sends `speakers.split` until it fails, and returns the error.
+fn split_until_it_fails(control: &dyn MeetingControl, id: &str) -> voice_bridge::ControlError {
+    let mut failure = None;
+    wait_for("the split to fail", || {
+        match control.split_speakers(id, Track::Mic) {
+            Ok(result) => {
+                assert_eq!(result["state"], "running", "{result}");
+                false
+            }
+            Err(e) => {
+                failure = Some(e);
+                true
+            }
+        }
+    });
+    failure.expect("a failure")
+}
+
+/// The last revision of each microphone passage: (who spoke most of it, its speaker, dictated).
+fn microphone(
+    events: &[Stored],
+    pieces: &[(f64, Option<usize>)],
+) -> Vec<(Option<usize>, String, bool)> {
+    let mut last: std::collections::BTreeMap<u64, &Value> = Default::default();
+    for e in events
+        .iter()
+        .filter(|e| e.event == "passage" && e.data["track"] == "mic")
+    {
+        last.insert(e.data["start"].as_u64().unwrap(), &e.data);
+    }
+    last.values()
+        .map(|p| {
+            let (start, end) = (p["start"].as_u64().unwrap(), p["end"].as_u64().unwrap());
+            (
+                who(pieces, start, end),
+                p["speaker"].as_str().unwrap().to_owned(),
+                p["dictation"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_split_runs_then_is_done_and_stays_done_after_a_restart() {
+    let h = Harness::new("split-done");
+    h.config(json!({}));
+    let speech = labelling(&h);
+    let loud = speech.loud();
+    let (pieces, dictation) = two_at_the_microphone();
+    let id = record_microphone(&h.data(), &pieces, &dictation);
+    let engine = start(&h, &speech);
+    let before = wait_done(&h.data(), &id);
+    let control = control_of(&engine);
+
+    // The first command starts the split and answers at once.
+    let first = control.split_speakers(&id, Track::Mic).unwrap();
+    assert_eq!(first["state"], "running", "{first}");
+    assert_eq!(first["end"], 21_500);
+    assert_eq!(split_until_done(control.as_ref(), &id), 2);
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 1);
+
+    // The other voice's passages moved; the user's and every dictated one stayed on `mic`. The
+    // user is the voice heard while dictating, though the other one talked longer.
+    let after = events(&h.data(), &id);
+    let heard = microphone(&after, &pieces);
+    assert!(heard.len() >= 5, "{heard:?}");
+    for (voice, speaker, dictated) in &heard {
+        let expected = if *dictated || *voice == Some(0) {
+            "mic"
+        } else {
+            "mic-2"
+        };
+        assert_eq!(speaker, expected, "{heard:?}");
+    }
+    assert!(
+        heard.iter().any(|(v, _, d)| *v == Some(1) && *d),
+        "a dictated passage of voice 1: {heard:?}"
+    );
+    assert_eq!(
+        heard.iter().filter(|h| h.1 == "mic-2").count(),
+        2,
+        "{heard:?}"
+    );
+    let new: Vec<&Stored> = after[before.len()..].iter().collect();
+    assert_eq!(new[0].event, "speaker");
+    assert_eq!(
+        new[0].data,
+        json!({"id": "mic-2", "track": "mic", "label": "Microphone 2"})
+    );
+    assert!(new[1..]
+        .iter()
+        .all(|e| e.event == "passage" && e.data["revision"] == 2));
+    // meeting.get has the voice.
+    let snapshot = control.get(&id).unwrap();
+    assert!(snapshot["speakers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == "mic-2"));
+
+    // Asked again: done with the same voices, without a second split.
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap(),
+        json!({"state": "done", "voices": 2})
+    );
+    engine.shutdown();
+    drop(control);
+    drop(engine);
+
+    // After a restart the split is still done, at once, and nothing is sent twice.
+    let engine = start(&h, &speech);
+    let control = control_of(&engine);
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap(),
+        json!({"state": "done", "voices": 2})
+    );
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 1, "split once");
+    assert_eq!(events(&h.data(), &id).len(), after.len());
+    engine.shutdown();
+}
+
+#[test]
+fn a_split_that_finds_one_voice_sends_nothing() {
+    let h = Harness::new("split-one");
+    h.config(json!({}));
+    let speech = labelling(&h);
+    speech.loud();
+    let pieces = vec![
+        (0.5, None),
+        (3.0, Some(0)),
+        (1.0, None),
+        (3.0, Some(0)),
+        (1.0, None),
+    ];
+    let id = record_microphone(&h.data(), &pieces, &[]);
+    let engine = start(&h, &speech);
+    let before = wait_done(&h.data(), &id).len();
+    let control = control_of(&engine);
+    assert_eq!(split_until_done(control.as_ref(), &id), 1);
+    assert_eq!(events(&h.data(), &id).len(), before, "nothing was sent");
+    engine.shutdown();
+}
+
+#[test]
+fn a_failed_split_is_answered_once_and_the_next_command_starts_over() {
+    let h = Harness::new("split-retry");
+    h.config(json!({}));
+    let speech = labelling(&h);
+    let loud = speech.loud();
+    loud.0.crashes.store(1, Ordering::SeqCst);
+    let (pieces, dictation) = two_at_the_microphone();
+    let id = record_microphone(&h.data(), &pieces, &dictation);
+    let engine = start(&h, &speech);
+    let before = wait_done(&h.data(), &id).len();
+    let control = control_of(&engine);
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap()["state"],
+        "running"
+    );
+    let failure = split_until_it_fails(control.as_ref(), &id);
+    assert_eq!(failure.code, voice_protocol::ErrorCode::Failed, "{failure}");
+    assert!(failure.message.contains("crashed"), "{failure}");
+    assert_eq!(
+        events(&h.data(), &id).len(),
+        before,
+        "the failure sent nothing"
+    );
+    // The next command starts over, and this stream works.
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap()["state"],
+        "running"
+    );
+    assert_eq!(split_until_done(control.as_ref(), &id), 2);
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 2);
+    engine.shutdown();
+}
+
+#[test]
+fn a_split_says_why_it_can_t_run_on_this_computer() {
+    let h = Harness::new("split-unavailable");
+    h.config(json!({}));
+    let speech = labelling(&h);
+    let (pieces, dictation) = two_at_the_microphone();
+    let id = record_microphone(&h.data(), &pieces, &dictation);
+    speech.unavailable(Unavailable::Runtime);
+    let engine = start(&h, &speech);
+    wait_done(&h.data(), &id);
+    let control = control_of(&engine);
+    let reason = |why: Unavailable| {
+        speech.unavailable(why);
+        let error = control.split_speakers(&id, Track::Mic).unwrap_err();
+        assert_eq!(
+            error.code,
+            voice_protocol::ErrorCode::NotAvailable,
+            "{error}"
+        );
+        error.reason.expect("a reason")
+    };
+    let cpu = Unavailable::Cpu {
+        missing: vec!["bmi2".into()],
+    };
+    assert_eq!(reason(cpu), "cpu");
+    assert_eq!(reason(Unavailable::Platform), "cpu");
+    assert_eq!(reason(Unavailable::Runtime), "runtime");
+    let failed = Unavailable::RuntimeFailed {
+        detail: "nemo_speech_asr_c.dll couldn't be loaded.".into(),
+    };
+    assert_eq!(reason(failed), "runtime");
+    assert_eq!(reason(Unavailable::Model), "model");
+    let damaged = Unavailable::ModelDamaged {
+        detail: "The hash doesn't match.".into(),
+    };
+    assert_eq!(reason(damaged), "model");
+
+    // A worker that refuses the model when it starts says so too.
+    let loud = speech.loud();
+    *lock(&loud.0.refuse) = Some(DiarErrorKind::Model);
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap()["state"],
+        "running"
+    );
+    let refused = split_until_it_fails(control.as_ref(), &id);
+    assert_eq!(
+        (refused.code, refused.reason.as_deref()),
+        (voice_protocol::ErrorCode::NotAvailable, Some("model"))
+    );
+
+    // Retention removed the microphone's audio.
+    *lock(&loud.0.refuse) = None;
+    let library = Library::open(&h.data()).unwrap();
+    fs::remove_dir_all(library.dir(&id).unwrap().audio_dir()).unwrap();
+    let gone = control.split_speakers(&id, Track::Mic).unwrap_err();
+    assert_eq!(
+        (gone.code, gone.reason.as_deref()),
+        (voice_protocol::ErrorCode::NotAvailable, Some("audio"))
+    );
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 0);
+    let unknown = control
+        .split_speakers("m-20000101-000000-0000", Track::Mic)
+        .unwrap_err();
+    assert_eq!(unknown.code, voice_protocol::ErrorCode::NotFound);
+    engine.shutdown();
+}
+
+#[test]
+fn a_meeting_mistral_transcribes_splits_with_nemotron_once_it_is_done() {
+    let h = Harness::new("split-mistral");
+    h.config(json!({
+        "meetings_audio_provider": "mistral",
+        "meetings_audio_api_key": SECRET,
+        "meetings_audio_endpoint": "https://api.mistral.ai/v1/audio/transcriptions",
+        "meetings_audio_model": REALTIME,
+    }));
+    let speech = labelling(&h);
+    let loud = speech.loud();
+    let (pieces, dictation) = two_at_the_microphone();
+    let id = record_microphone(&h.data(), &pieces, &dictation);
+    let engine = start(&h, &speech);
+    // Its transcription waits for consent to stream: the meeting is processing.
+    wait_for("the meeting to process", || {
+        events(&h.data(), &id)
+            .iter()
+            .any(|e| e.event == "meeting.state" && e.data["state"] == "processing")
+    });
+    let control = control_of(&engine);
+    let busy = control.split_speakers(&id, Track::Mic).unwrap_err();
+    assert_eq!(busy.code, voice_protocol::ErrorCode::Busy);
+    assert_eq!(busy.meeting.as_deref(), Some(id.as_str()));
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 0);
+
+    // Once it is done, Nemotron splits its microphone on this computer; nothing streams.
+    EventLog::open(&h.data())
+        .unwrap()
+        .append(
+            "meeting.state",
+            Some(&id),
+            json!({"state": "done", "at": 21_500, "endedAt": 1_793_000_021_500u64}),
+        )
+        .unwrap();
+    assert_eq!(
+        split_until_done(control.as_ref(), &id),
+        1,
+        "no passage to move yet"
+    );
+    assert_eq!(loud.0.opens.load(Ordering::SeqCst), 1);
+    assert_eq!(loud.0.finishes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        speech.connects.load(Ordering::SeqCst),
+        0,
+        "nothing streamed"
+    );
     engine.shutdown();
 }

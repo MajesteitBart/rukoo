@@ -59,7 +59,8 @@ During a call, Voice tells the voices on the call apart: Speaker 1, Speaker 2 an
 
 - By default the labels come from NVIDIA Nemotron 3 Diarization, which runs on this computer in its own process, `rukoo-voice-speakers`, so the call audio stays here. It runs on Windows on x86-64 and on Apple Silicon Macs. Windows needs a processor with AVX2, FMA, F16C and BMI2; every Mac that runs Voice has what the Mac build needs. It needs the speaker model (107 MB, shared with Ownkey when Ownkey has it) and the runtime that comes with Voice.
 - When you transcribe meetings with Mistral's realtime model, Voxtral Mini Transcribe Realtime 3, Mistral labels the voices in the same stream. That happens only after you agreed to stream meeting audio to Mistral at that server. After a dropped connection Voice sends Mistral a short clip of each voice it already knows, so the numbers stay; Mistral bills those clips as audio. Nemotron never hands its work to Mistral: when Nemotron can't run, the call stays one speaker.
-- Your microphone is always you. Voice doesn't tell apart people who share your microphone.
+- During the meeting your microphone is you. When other people shared it, for instance around a laptop in a meeting room, Rukoo can ask Voice to tell their voices apart after Stop. Voice then runs Nemotron on this computer over the recorded microphone, as fast as the computer allows, also for a meeting Mistral transcribed. The voice heard most while you dictated stays you, or without dictation the voice heard longest; the others become Microphone 2, Microphone 3 and so on, in the order Voice first heard them. Each passage goes to the voice that holds a clear majority of it, and a passage without one stays yours, as does everything you dictated. Voice doesn't cut a passage in two, so a passage where two people talk goes to one of them or stays yours. Voice splits a meeting's microphone once and keeps the result, also for passages it transcribes later. It needs the speaker model and the meeting's audio: once Keep audio removed the audio, the microphone can't be split.
+- Without headphones your microphone also hears the call, so a split can count the call's voices as people at your microphone. Voice doesn't remove that echo.
 - A voice keeps its number for the whole meeting, also when labelling restarts after a crash: Voice plays the new process a few seconds of every voice it already knows and matches them.
 - Without labels, or on a computer that can't run them, meetings record and transcribe with the whole call as one speaker. Settings › Meetings › Speaker labels says why.
 
@@ -115,6 +116,7 @@ Meeting transcription runs on this computer with Orukeet unless you pick a cloud
 - Recording a single app's audio through process loopback; Voice records everything the computer plays.
 - Linux capture. The recorder, the bridge and the transcript pipeline are tested on Linux, but the app runs on Windows and macOS.
 - A signed installer and automatic updates. The opt-in update check tells you a new version exists.
+- Echo cancellation. Without headphones the microphone records the call too, and splitting the microphone into voices can turn the call's voices into microphone voices.
 
 ## Open decisions
 

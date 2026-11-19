@@ -21,7 +21,7 @@ pub use ids::{
 };
 pub use message::*;
 pub use paths::Platform;
-pub use validate::{validate_discovery, validate_incoming, Invalid};
+pub use validate::{validate_discovery, validate_incoming, validate_split_result, Invalid};
 
 /// The newest protocol version this crate speaks.
 pub const PROTOCOL: u32 = 2;

@@ -36,6 +36,7 @@ use crate::segmentation::{
 use crate::speakers::follower::{
     Follower, FollowerHandle, FollowerShared, FollowerTiming, Snapshot,
 };
+use crate::speakers::split::mic_voice;
 use crate::speakers::stream::StreamFollower;
 use crate::speakers::turns::{
     passage_speaker, segment_passages, speaker_passages, turn_cuts, window_speaker, Turn,
@@ -43,8 +44,8 @@ use crate::speakers::turns::{
 use crate::speakers::{LabelState, LabelStatus, Labels, StreamOptions};
 use crate::stt::{Heard, Recognizer, TimedSpeechToText};
 use crate::transcript::{
-    call_number, taken_key, Outcome, StoredPassage, StoredSegment, Transcript, BACKFILL_KEY,
-    DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
+    call_number, mic_number, taken_key, Outcome, StoredPassage, StoredSegment, Transcript,
+    BACKFILL_KEY, DIARIZE_KEY, LABELLED_KEY, MODE_KEY, REASON_KEY, SETTLED_KEY,
 };
 use crate::watcher::{
     mark_key, state_key, tracks_of, Derived, Mapper, Stop, Stretch, TimelineWatcher,
@@ -653,8 +654,66 @@ fn call_speaker(id: &str) -> Speaker {
     }
 }
 
-fn passage_key(id: &str, revision: u64) -> String {
+/// Another voice at the user's microphone after a split: `mic-N` is "Microphone N".
+pub(crate) fn mic_speaker(id: &str) -> Speaker {
+    Speaker {
+        id: id.to_owned(),
+        track: Track::Mic,
+        label: format!("Microphone {}", mic_number(id).unwrap_or(2)),
+    }
+}
+
+pub(crate) fn passage_key(id: &str, revision: u64) -> String {
     format!("passage:{id}:{revision}")
+}
+
+/// The keys of the meeting's events in the log, as the pipeline gives them, with their sequence
+/// numbers; `None` when the meeting was removed. The log is the record of what Rukoo can get.
+pub(crate) fn logged_keys(
+    log: &EventLog,
+    meeting: &str,
+) -> Result<Option<HashMap<String, u64>>, LogError> {
+    let (_, stored) = log.meeting_events(meeting)?;
+    if stored.iter().any(|e| e.event == events::MEETING_REMOVED) {
+        return Ok(None);
+    }
+    Ok(Some(
+        stored
+            .iter()
+            .filter_map(|e| Some((event_key(&e.event, &e.data)?, e.seq)))
+            .collect(),
+    ))
+}
+
+/// Sends a meeting event unless `emitted` says the log has it, and notes its key in
+/// `transcript.db`. The pipeline and the microphone split both send this way.
+pub(crate) fn emit_once<E: From<LogError> + From<rusqlite::Error>>(
+    log: &EventLog,
+    transcript: &Transcript,
+    emitted: &mut HashSet<String>,
+    meeting: &str,
+    key: String,
+    event: &str,
+    data: Value,
+) -> Result<(), E> {
+    if emitted.contains(&key) {
+        return Ok(());
+    }
+    match log.append(event, Some(meeting), data) {
+        Ok(seq) => {
+            // The log has it now, which is what counts (see `Worker::open`): when the store's
+            // note fails, the step that tries again mustn't send it a second time.
+            emitted.insert(key.clone());
+            transcript.record_emitted(&key, seq)?;
+        }
+        // A bug built an event Rukoo would drop; sending it again can't help.
+        Err(e @ (LogError::Invalid(_) | LogError::TooLarge { .. })) => {
+            eprintln!("voice-meetings: {meeting}: dropped a {event} event: {e}");
+        }
+        Err(e) => return Err(e.into()),
+    }
+    emitted.insert(key);
+    Ok(())
 }
 
 /// The key of an event already in the log, as the pipeline would have made it.
@@ -745,17 +804,12 @@ impl Worker {
         let file = dir.meeting()?;
         let mut transcript = Transcript::open(dir.path())?;
         let id = dir.id().to_string();
-        let (_, stored) = log.meeting_events(&id)?;
-        if stored.iter().any(|e| e.event == events::MEETING_REMOVED) {
-            return Ok(None);
-        }
         // The log is the record of what Rukoo can get. A key the store remembers but the log
         // lacks (a power cut lost it) is sent again; one the log has but the store doesn't (Voice
         // died between the two writes) isn't.
-        let keys: HashMap<String, u64> = stored
-            .iter()
-            .filter_map(|e| Some((event_key(&e.event, &e.data)?, e.seq)))
-            .collect();
+        let Some(keys) = logged_keys(&log, &id)? else {
+            return Ok(None);
+        };
         if transcript.emitted()? != keys {
             transcript.set_emitted(&keys)?;
         }
@@ -796,24 +850,15 @@ impl Worker {
 
     /// Sends an event unless the log has it already.
     fn emit(&mut self, key: String, event: &str, data: Value) -> Result<(), Error> {
-        if self.emitted.contains(&key) {
-            return Ok(());
-        }
-        match self.log.append(event, Some(&self.id), data) {
-            Ok(seq) => {
-                // The log has it now, which is what counts (see `open`): when the store's note
-                // fails, the step that tries again mustn't send it a second time.
-                self.emitted.insert(key.clone());
-                self.transcript.record_emitted(&key, seq)?;
-            }
-            // A bug built an event Rukoo would drop; sending it again can't help.
-            Err(e @ (LogError::Invalid(_) | LogError::TooLarge { .. })) => {
-                eprintln!("voice-meetings: {}: dropped a {event} event: {e}", self.id);
-            }
-            Err(e) => return Err(e.into()),
-        }
-        self.emitted.insert(key);
-        Ok(())
+        emit_once(
+            &self.log,
+            &self.transcript,
+            &mut self.emitted,
+            &self.id,
+            key,
+            event,
+            data,
+        )
     }
 
     /// Sends a passage, after the speaker it names when that speaker is new to Rukoo.
@@ -821,6 +866,13 @@ impl Worker {
         if let Some(id) = passage.speaker.as_deref() {
             if passage.track == Track::Call && call_number(id).is_some() {
                 self.emit_speaker_id(id)?;
+            }
+            // Another voice at the microphone, from a split.
+            if passage.track == Track::Mic
+                && mic_number(id).is_some()
+                && !self.emitted.contains(&format!("speaker:{id}"))
+            {
+                self.send_speaker(mic_speaker(id))?;
             }
         }
         self.emit(
@@ -1267,11 +1319,35 @@ impl Worker {
             if dictation != passage.dictation {
                 passage.dictation = dictation;
                 passage.revision += 1;
+                // In a split microphone, dictation is the user's and the rest goes by the turns.
+                if let Some(turns) = self.mic_voices(passage.track, passage.start, passage.end)? {
+                    passage.speaker =
+                        Some(mic_voice(&turns, passage.start, passage.end, dictation));
+                }
                 self.transcript.update_passage(&passage)?;
                 self.emit_passage(&passage)?;
             }
         }
         Ok(())
+    }
+
+    /// The microphone's stored turns around `[start_ms, end_ms]` once a split told its voices
+    /// apart, so a passage written again keeps its voice; `None` for the call, and for a
+    /// microphone that wasn't split.
+    fn mic_voices(
+        &self,
+        track: Track,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<Option<Vec<Turn>>, Error> {
+        if track != Track::Mic || self.transcript.split_voices()?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.transcript.turns(
+            Track::Mic,
+            start_ms.saturating_sub(TURN_MARGIN_MS),
+            end_ms + TURN_MARGIN_MS,
+        )?))
     }
 
     /// A Nemotron meeting whose labeller failed before any call speaker reached Rukoo goes on
@@ -1461,9 +1537,10 @@ impl Worker {
             if self.recognizer.is_stream() {
                 let (drafts, meta) = self.stream_drafts(track, 0, horizon / PER_MS, true)?;
                 if !meta.is_empty() {
+                    let voices = self.mic_voices(track, 0, horizon / PER_MS)?;
                     let passages = drafts
                         .into_iter()
-                        .map(|draft| self.passage(track, draft, None))
+                        .map(|draft| self.passage(track, draft, None, voices.as_deref()))
                         .collect();
                     return self.commit(track, cursor, cursor, "end", passages, &meta);
                 }
@@ -1553,9 +1630,12 @@ impl Worker {
             }
             self.failure = None;
         }
+        // Read after recognition, right before the commit, so a split that finished meanwhile
+        // counts.
+        let voices = self.mic_voices(track, start_ms, end_ms)?;
         let passages = drafts
             .into_iter()
-            .map(|draft| self.passage(track, draft, language.clone()))
+            .map(|draft| self.passage(track, draft, language.clone(), voices.as_deref()))
             .collect();
         self.commit(
             track,
@@ -1647,11 +1727,21 @@ impl Worker {
         Ok((drafts, meta))
     }
 
-    fn passage(&self, track: Track, draft: Draft, language: Option<String>) -> StoredPassage {
-        let speaker = match track {
-            Track::Mic => Some(speaker_of(Track::Mic).id),
-            Track::Call if self.call_is_one_speaker() => Some(speaker_of(Track::Call).id),
-            Track::Call => draft.speaker.clone(),
+    /// A window's passage as stored. `mic_turns` are the microphone's turns once a split told
+    /// its voices apart ([`Worker::mic_voices`]).
+    fn passage(
+        &self,
+        track: Track,
+        draft: Draft,
+        language: Option<String>,
+        mic_turns: Option<&[Turn]>,
+    ) -> StoredPassage {
+        let dictation = self.in_dictation(track, draft.start, draft.end);
+        let speaker = match (track, mic_turns) {
+            (Track::Mic, Some(turns)) => Some(mic_voice(turns, draft.start, draft.end, dictation)),
+            (Track::Mic, None) => Some(speaker_of(Track::Mic).id),
+            (Track::Call, _) if self.call_is_one_speaker() => Some(speaker_of(Track::Call).id),
+            (Track::Call, _) => draft.speaker.clone(),
         };
         StoredPassage {
             passage: Passage {
@@ -1661,7 +1751,7 @@ impl Worker {
                 speaker,
                 start: draft.start,
                 end: draft.end,
-                dictation: self.in_dictation(track, draft.start, draft.end),
+                dictation,
                 text: draft.text,
                 revision: 1,
                 language,

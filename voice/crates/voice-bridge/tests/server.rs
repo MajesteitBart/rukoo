@@ -940,6 +940,114 @@ fn a_voice_without_media_answers_with_the_defaults() {
     assert_eq!(calls, [format!("get {DONE_MEETING}")]);
 }
 
+/// The message of a valid vector in `voice/fixtures/protocol-vectors.json`, which Rukoo's tests
+/// read too.
+fn vector(name: &str) -> Value {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol-vectors.json"
+    );
+    let vectors: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    vectors["valid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == name)
+        .unwrap_or_else(|| panic!("no vector {name:?}"))["message"]
+        .clone()
+}
+
+#[test]
+fn a_split_reaches_the_meeting_control_and_replies_as_the_vectors_do() {
+    let bridge = Bridge::start("server-split");
+    let (mut client, _) = bridge.client(None, 0);
+    let split = vector("split the microphone into voices");
+    assert_eq!(split["args"]["meeting"], A);
+
+    // The fake records the vector's meeting once it starts one.
+    client.command("c-1", "meeting.start", json!({}));
+    assert_eq!(client.read_reply("c-1")["result"]["meeting"], A);
+    client.send(split.clone());
+    assert_eq!(
+        client.read_reply("c-60"),
+        vector("a split of a meeting that still records")
+    );
+    client.command("c-2", "meeting.stop", json!({ "meeting": A }));
+    assert_eq!(client.read_reply("c-2")["ok"], true);
+
+    // A stopped meeting: the split runs, then it is done.
+    for name in ["a split under way", "a finished split"] {
+        client.command(
+            "c-60",
+            "speakers.split",
+            json!({ "meeting": DONE_MEETING, "track": "mic" }),
+        );
+        assert_eq!(client.read_reply("c-60"), vector(name), "{name}");
+    }
+    // A reason reaches Rukoo with the error.
+    *bridge.control.split_refusal.lock().unwrap() = Some(
+        voice_bridge::ControlError::not_available(
+            "Speaker labels need a processor with AVX2, FMA, F16C and BMI2.",
+        )
+        .with_reason("cpu"),
+    );
+    client.send(split.clone());
+    assert_eq!(
+        client.read_reply("c-60"),
+        vector("a split that can't run on this computer")
+    );
+    client.send(split);
+    assert_eq!(client.read_reply("c-60")["error"]["code"], "not_found");
+
+    // The call track and a missing meeting never reach the control.
+    client.command(
+        "c-61",
+        "speakers.split",
+        json!({ "meeting": DONE_MEETING, "track": "call" }),
+    );
+    let reply = client.read_reply("c-61");
+    assert_eq!(reply["error"]["code"], "bad_request");
+    assert_eq!(
+        reply["error"]["message"],
+        "The command's `track` is missing or invalid."
+    );
+    client.command("c-62", "speakers.split", json!({ "track": "mic" }));
+    assert_eq!(client.read_reply("c-62")["error"]["code"], "bad_request");
+
+    let calls = bridge.control.calls.lock().unwrap().clone();
+    let splits: Vec<&str> = calls
+        .iter()
+        .map(String::as_str)
+        .filter(|call| call.starts_with("speakers."))
+        .collect();
+    assert_eq!(
+        splits,
+        [
+            format!("speakers.split {A} mic"),
+            format!("speakers.split {DONE_MEETING} mic"),
+            format!("speakers.split {DONE_MEETING} mic"),
+            format!("speakers.split {A} mic"),
+            format!("speakers.split {A} mic"),
+        ]
+    );
+}
+
+#[test]
+fn a_voice_that_doesn_t_split_answers_not_available() {
+    let bridge = Bridge::start_plain("server-split-default");
+    let (mut client, _) = bridge.client(None, 0);
+    client.command(
+        "c-1",
+        "speakers.split",
+        json!({ "meeting": DONE_MEETING, "track": "mic" }),
+    );
+    let reply = client.read_reply("c-1");
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"]["code"], "not_available");
+    assert!(reply["error"].get("reason").is_none(), "{reply}");
+    assert!(bridge.control.calls.lock().unwrap().is_empty());
+}
+
 #[test]
 fn bad_and_unknown_commands_get_error_replies() {
     let bridge = Bridge::start("server-bad-commands");

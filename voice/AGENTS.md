@@ -139,13 +139,13 @@ The installed Ownkey runs every day on the maintainer's Windows PC as `Ownkey.ex
   - `voice-screen`: the screen process, `rukoo-voice-screen`, and its crash tests. It records one monitor into the meeting's `screen/` folder: frames with their text, and video. It records on Windows and macOS: `record` and `video` are the orchestration and build everywhere, `platform` holds the traits they use, `platform/windows.rs` is the Windows backend and `platform/macos.rs` the macOS one, with ScreenCaptureKit in `capture/sck.rs`. The tests that capture the real screen on a Mac are `#[ignore]` and need a Screen Recording grant for the test binary, which prompts whoever sits at the Mac: run them there with `cargo test -p voice-screen --lib -- --ignored sck`.
   - `voice-screen-files`: the `screen/` folder's format, shared by the screen process, the app and the tests: the journal, the meeting clock, the frame and drop rules, MP4 fragments and the clips `clip.get` cuts. It builds on every platform.
   - `voice-audio`: resampling to 16 kHz and the crash-safe WAV segments.
-  - `voice-meetings`: the meeting library, transcript.db and the live transcription that follows the recorded files.
+  - `voice-meetings`: the meeting library, transcript.db and the live transcription that follows the recorded files. `speakers/split.rs` tells apart the voices at the microphone of a stopped meeting for `speakers.split`, with the follower's labeller over the recorded track.
   - `voice-protocol` and `voice-bridge`: the bridge's messages and checks, the event log, the discovery file and the WebSocket server.
   - `voice-core`: Settings, the Ownkey import, text cleanup, providers, the local model client and the update check.
   - `voice-local`: the local speech worker, `rukoo-voice-local`, which runs Orukeet in its own process.
   - `voice-speakers`: the speaker worker, `rukoo-voice-speakers`, which loads NeMo-Speech.cpp and turns call audio into speaker probabilities. The labels themselves are made in `voice-meetings`.
   - `voice-input`: hotkeys, text insertion and selection capture, with a Windows side (`win.rs`) and a macOS side (`mac/`). The macOS side polls key state: no hook and no Input Monitoring.
-  - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API, and the media Rukoo's links serve (`media.rs`).
+  - `voice-engine`: dictation, the pill's state, Settings and the meeting controller behind one API, the media Rukoo's links serve (`media.rs`), and the microphone splits Rukoo asks for (`meetings/split.rs`).
   - `voice-sync`: bucket sync: the encryption format, the keys, the upload queue and restore. `voice-s3-fake`: the fake S3 server its tests use.
   - `voice-app`: the Tauri app, `rukoo-voice`: windows, tray and the native stop button.
 - `voice/nemo-runtime/`: the pinned NeMo-Speech.cpp runtime: `manifest.json` for Windows and `manifest-macos.json` for macOS, the Windows and macOS build scripts, the macOS patch, and the Windows and macOS pack scripts. `.github/workflows/voice-nemo-runtime.yml` builds the Windows runtime and `voice-nemo-runtime-macos.yml` the macOS one.

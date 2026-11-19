@@ -16,7 +16,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as Frame, WebSocket};
 use voice_bridge::{
     BridgeServer, ControlError, EventLog, Handle, MediaKind, MediaOpenArgs, MeetingControl,
-    MeetingSummary, Options, StartArgs, Status,
+    MeetingSummary, Options, SplitResult, StartArgs, Status, Track,
 };
 use voice_protocol::{
     media_read_result, validate_discovery, validate_incoming, MeetingId, MeetingState, Message,
@@ -88,6 +88,10 @@ pub struct FakeControl {
     pub screen: Mutex<Option<Value>>,
     /// The deadline of every `screen.get` and `screen.select`, in the order they ran.
     pub screen_deadlines: Mutex<Vec<Instant>>,
+    /// What the next `speakers.split` answers instead of splitting.
+    pub split_refusal: Mutex<Option<ControlError>>,
+    /// `speakers.split`s that reached the fake: the first is running, later ones are done.
+    pub splits: AtomicUsize,
 }
 
 impl FakeControl {
@@ -297,6 +301,27 @@ impl MeetingControl for FakeControl {
             "start": args.start,
             "end": args.end.unwrap_or(args.start),
         }))
+    }
+
+    /// A meeting that records is busy; otherwise the first split runs and the next ones are done,
+    /// with the numbers of the shared vectors.
+    fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
+        self.call(format!("speakers.split {id} {track}"));
+        if let Some(refusal) = self.split_refusal.lock().unwrap().take() {
+            return Err(refusal);
+        }
+        self.known(id)?;
+        if self.recording.lock().unwrap().as_deref() == Some(id) {
+            return Err(ControlError::busy(id, "The meeting is still recording."));
+        }
+        Ok(match self.splits.fetch_add(1, Ordering::SeqCst) {
+            0 => SplitResult::Running {
+                at: 412_000,
+                end: 3_605_120,
+            },
+            _ => SplitResult::Done { voices: 3 },
+        }
+        .to_value())
     }
 
     fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {
