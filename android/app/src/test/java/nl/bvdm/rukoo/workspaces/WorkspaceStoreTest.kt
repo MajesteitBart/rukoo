@@ -319,9 +319,12 @@ class WorkspaceStoreTest {
             )
             redact(ws, listOf(eid(6)))
             assertEquals(Badges(unread = 3, mentions = 2), countBadges(ws, c1, 1, me, emptyList()))
+            // A message that names someone else isn't a mention of me.
+            appendEvents(ws, c1, listOf(msg(7, actor = olga, mentions = listOf(Mention(sam, 0, 3)))))
+            assertEquals(Badges(unread = 4, mentions = 2), countBadges(ws, c1, 1, me, emptyList()))
             replaceBlocks(ws, listOf(Block(sam, 1)))
-            assertEquals(Badges(unread = 3, mentions = 1), countBadges(ws, c1, 1, me))
-            appendEvents(ws, c1, (7L..120L).map { msg(it) })
+            assertEquals(Badges(unread = 4, mentions = 1), countBadges(ws, c1, 1, me))
+            appendEvents(ws, c1, (8L..120L).map { msg(it) })
             assertEquals(WorkspaceStore.BADGE_CAP, countBadges(ws, c1, 0, me).unread)
         }
     }

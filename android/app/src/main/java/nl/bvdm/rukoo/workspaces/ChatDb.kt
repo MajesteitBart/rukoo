@@ -388,8 +388,13 @@ class ChatDb private constructor(
         private fun countUnsent(c: SQLiteConnection): Int =
             c.prepare("SELECT COUNT(*) FROM outbox").use { st -> st.step(); st.getLong(0).toInt() }
 
+        /**
+         * Runs a PRAGMA or a transaction statement. One step does all of it. A second step would break on
+         * AndroidSQLiteDriver: its `PRAGMA journal_mode` statement reads the mode again after every step, also past
+         * the only row, and throws.
+         */
         private fun run(c: SQLiteConnection, sql: String) {
-            c.prepare(sql).use { st -> while (st.step()) Unit }
+            c.prepare(sql).use { st -> st.step() }
         }
 
         private fun translate(e: Throwable): Throwable = when (e) {

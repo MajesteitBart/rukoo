@@ -420,22 +420,29 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
          * The badges of the cached messages after [after] (§3.9): unread counts messages that aren't the person's own
          * and aren't removed; mentions counts the ones of those that name [me], from authors not in [blocked] (the
          * workspace's block rows when null). Each is capped at 100. The caller checks that the cache covers the range.
+         *
+         * The mention check runs here in Kotlin: Android 12 and 13 ship SQLite 3.32 without the JSON functions, so
+         * `json_each` fails there (ChatDbDeviceTest). SQL only narrows the rows to those whose mentions name [me].
          */
         fun countBadges(ws: String, room: String, after: Long, me: String, blocked: Collection<String>? = null): Badges {
-            val list = blocked ?: listBlocks(ws).map { it.member }
+            val skip = (blocked ?: listBlocks(ws).map { it.member }).toHashSet()
             val unread = sql.long(
                 """SELECT COUNT(*) FROM (SELECT 1 FROM event WHERE ws = ? AND room = ? AND seq > ? AND kind = 'message.posted'
                      AND actor != ? AND redacted = 0 LIMIT $BADGE_CAP)""",
                 ws, room, after, me,
             ).toInt()
-            val mentions = sql.long(
-                """SELECT COUNT(*) FROM (SELECT 1 FROM event e WHERE e.ws = ? AND e.room = ? AND e.seq > ? AND e.kind = 'message.posted'
-                     AND e.actor != ? AND e.redacted = 0
-                     AND e.actor NOT IN (SELECT value FROM json_each(?))
-                     AND EXISTS (SELECT 1 FROM json_each(e.mentions) m WHERE json_extract(m.value, '$.actor') = ?)
-                     LIMIT $BADGE_CAP)""",
-                ws, room, after, me, RukooJson.encodeToString(STRINGS, list.toList()), me,
-            ).toInt()
+            val named = sql.query(
+                """SELECT actor, mentions FROM event WHERE ws = ? AND room = ? AND seq > ? AND kind = 'message.posted'
+                     AND actor != ? AND redacted = 0 AND mentions IS NOT NULL AND instr(mentions, ?) > 0 ORDER BY seq""",
+                ws, room, after, me, me,
+            ) { it.text(0) to it.text(1) }
+            var mentions = 0
+            for ((actor, json) in named) {
+                if (mentions >= BADGE_CAP) break
+                if (actor in skip) continue
+                val list = runCatching { RukooJson.decodeFromString(MENTIONS, json) }.getOrNull() ?: continue
+                if (list.any { it.actor == me }) mentions++
+            }
             return Badges(unread, mentions)
         }
 
