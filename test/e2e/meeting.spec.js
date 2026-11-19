@@ -1239,7 +1239,7 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
   await expect(player()).toContainText('Can someone pull the churn figures?');
   await expect(rows().nth(3)).toHaveClass(/is-clip/);
   await expect(rows().nth(0)).not.toHaveClass(/is-clip/);
-  await shot('voices-recording-dark-en');
+  await shot('voices-recording-en');
   expect(audioAsked()).toEqual([]);
 
   // The meeting ends: the same player plays, from a WAV Voice cuts for the passage.
@@ -1329,7 +1329,7 @@ test('the microphone splits into the voices of the people next to you, who can b
   await expect(player().locator('.mt-pcount')).toHaveText('1 of 3');
   await expect(player().locator('[data-mt="assign"]')).toHaveCount(0);
   await win.keyboard.press('Escape');
-  await shot('split-before-dark-en');
+  await shot('split-before-en');
 
   // A Voice that doesn't know the command: Rukoo says to update it, and can ask again.
   await split().locator('[data-mt="split"]').click();
@@ -1351,7 +1351,7 @@ test('the microphone splits into the voices of the people next to you, who can b
   };
   await split().locator('[data-mt="split"]').click();
   await expect(split()).toContainText(/Telling the voices apart… \d+%/);
-  await shot('split-running-dark-en');
+  await shot('split-running-en');
   await expect(peopleNames()).toHaveText(['You', 'Speaker A', 'Speaker 1'], { timeout: 15000 });
   await expect(split()).toHaveCount(0);
   await expect(rows().nth(1).locator('.mt-name')).toHaveText('Speaker A');
