@@ -448,6 +448,108 @@ describe('a place under the server limit', () => {
   });
 });
 
+describe('leaving a workspace and the channels left behind', () => {
+  const state = async (ws, id) => (await workspaceSql(ws.id, 'SELECT archivedAt, (SELECT COUNT(*) FROM grants WHERE conversation = c.n) AS people FROM conversation c WHERE id = ?', id))[0];
+
+  it('archives a channel whose only member leaves the workspace, so its place comes free', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const made = await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: mila.person.token, body: { name: 'notes', visibility: 'private' } });
+    const notes = made.body.channel.id;
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}/members/me`, { token: mila.person.token })).status).toBe(204);
+    const left = await state(ws, notes);
+    expect(left.people).toBe(0);
+    expect(left.archivedAt).toBeGreaterThan(0);
+    // Retention collects it like any archived channel.
+    await workspaceSql(ws.id, 'UPDATE event SET at = ? WHERE conversation = (SELECT n FROM conversation WHERE id = ?)', Date.now() - 91 * DAY, notes);
+    await runInDurableObject(workspaceStub(ws.id), (instance) => instance.alarm());
+    expect(await workspaceSql(ws.id, 'SELECT id FROM conversation WHERE id = ?', notes)).toEqual([]);
+  });
+
+  it('asks someone who is the only manager of a shared channel to hand it over before they leave', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const tess = await newMember(ws, 'Tess');
+    const made = await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: mila.person.token, body: { name: 'project', visibility: 'workspace' } });
+    const project = made.body.channel.id;
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${project}/join`, { token: tess.person.token });
+    const leave = () => api('DELETE', `/v1/workspaces/${ws.id}/members/me`, { token: mila.person.token });
+
+    const refused = await leave();
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: 'last_manager', channels: [project] });
+    // Still a member, still in the channel.
+    expect((await channels(mila.person, ws.id)).find((c) => c.id === project)).toMatchObject({ joined: true, role: 'manager' });
+    await api('PATCH', `/v1/workspaces/${ws.id}/channels/${project}/members/${tess.me.id}`, { token: mila.person.token, body: { role: 'manager' } });
+    expect((await leave()).status).toBe(204);
+    expect(await state(ws, project)).toMatchObject({ archivedAt: null, people: 1 });
+  });
+
+  it('lets a manager be removed without waiting for them, and archives what they leave empty', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const tess = await newMember(ws, 'Tess');
+    const make = async (name) => (await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: mila.person.token, body: { name, visibility: 'workspace' } })).body.channel.id;
+    const shared = await make('shared');
+    const alone = await make('alone');
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${shared}/join`, { token: tess.person.token });
+
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}/members/${mila.me.id}`, { token: ws.person.token })).status).toBe(204);
+    // The shared channel goes on without a manager; the other one had nobody else.
+    expect(await state(ws, shared)).toMatchObject({ archivedAt: null, people: 1 });
+    expect((await post(tess.person, ws.id, shared, 'still here')).status).toBe(201);
+    expect((await state(ws, alone)).archivedAt).toBeGreaterThan(0);
+    // The last one out of a channel without a manager archives it too.
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}/channels/${shared}/members/me`, { token: tess.person.token })).status).toBe(204);
+    expect((await state(ws, shared)).archivedAt).toBeGreaterThan(0);
+    const log = (await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM event WHERE kind = 'channel.archived' AND conversation = (SELECT n FROM conversation WHERE id = ?)", shared))[0];
+    expect(log.n).toBe(1);
+  });
+
+  it('archives the channels a deleted account leaves empty', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const made = await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: mila.person.token, body: { name: 'mine', visibility: 'private' } });
+    const res = await call('DELETE', '/v1/account', { token: mila.person.token, body: { authKey: mila.person.authKey } });
+    expect(res.status).toBe(204);
+    expect(await until(async () => (await state(ws, made.body.channel.id)).archivedAt > 0)).toBe(true);
+  });
+});
+
+describe('the alarm behind an account deletion', () => {
+  it('fails the deletion when its alarm cannot be set, and has one again whenever the object starts with a list', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const stub = await accountStub(mila.person.email);
+    // The alarm can't be stored.
+    await runInDurableObject(stub, (instance, state) => {
+      state.storage.setAlarm = () => Promise.reject(new Error('storage is unavailable'));
+    });
+    const failed = await call('DELETE', '/v1/account', { token: mila.person.token, body: { authKey: mila.person.authKey } });
+    expect(failed.status).toBe(500);
+    await runInDurableObject(stub, (instance, state) => {
+      delete state.storage.setAlarm;
+    });
+    // On the platform the account's tables and the alarm are one write, so a failure keeps both. Here only the alarm
+    // was made to fail, which leaves what the safeguard is for: a list of workspaces to tell and no alarm.
+    const waiting = await runInDurableObject(stub, async (instance, state) => ({
+      rows: state.storage.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n,
+      alarm: await state.storage.getAlarm()
+    }));
+    expect(waiting).toEqual({ rows: 1, alarm: null });
+
+    // The object starts again on the same storage, as after any restart.
+    const alarm = await runInDurableObject(stub, async (instance, state) => {
+      const again = new instance.constructor(state, instance.env);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return state.storage.getAlarm();
+    });
+    expect(alarm).toBeGreaterThan(Date.now());
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await until(async () => (await workspaceSql(ws.id, 'SELECT state FROM member WHERE id = ?', mila.me.id))[0].state === 'deleted')).toBe(true);
+  });
+});
+
 describe('small things that go wrong late', () => {
   it('never gives a new channel the inner number of one that was collected', async () => {
     const ws = await newWorkspace();

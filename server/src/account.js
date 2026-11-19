@@ -151,6 +151,17 @@ export class Account extends DurableObject {
     this.identity = null;
     this.cleaning = false;
     if (this.present) this.migrate();
+    // A list of workspaces to tell with no alarm to work through it would wait forever. That can happen when an alarm
+    // failed so often that the platform gave up on it. An object that starts with such a list has an alarm again
+    // before it answers anything.
+    if (this.#has('cleanup')) ctx.blockConcurrencyWhile(() => this.#rearm());
+  }
+
+  async #rearm() {
+    const waiting = this.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n;
+    if (waiting > 0 && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
+    }
   }
 
   // Brings an account made by an older version of the server up to the current tables. Each step checks for itself
@@ -459,6 +470,7 @@ export class Account extends DurableObject {
     // arriving meanwhile finds no account (401) instead of deleting it again, so the Worker gives its place under
     // MAX_ACCOUNTS back once. The booking handle is read in the same stretch and handed to the Worker, which wipes
     // the page afterwards (send() leaves the extra property out of the answer).
+    let armed = null;
     const result = await this.#signedIn(token, (session, now) =>
       this.#withPassword(session, hash, now, () => {
         const { handle } = this.#booking();
@@ -469,6 +481,10 @@ export class Account extends DurableObject {
         if (cleanup) {
           // An account that was in workspaces can't vanish in one step: each workspace still has to hear that its
           // incarnation is gone. Everything of the account goes now, in one transaction with the list of who to tell.
+          // The alarm that works through the list is set in the same stretch, with nothing awaited in between, so
+          // the account is never gone while its list has no alarm.
+          armed = this.ctx.storage.setAlarm(now + CLEANUP_RETRY);
+          armed.catch(() => {});
           const incarnation = this.#knownIdentity()?.incarnation;
           this.ctx.storage.transactionSync(() => {
             for (const table of LIVE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
@@ -491,9 +507,9 @@ export class Account extends DurableObject {
     if (result.status !== 204) return result;
     if (result.cleanup) {
       // The workspaces are told right away, without this answer waiting for them: the Worker still has the booking
-      // page to wipe and the account's place to give back. The alarm is set first, so a workspace that doesn't answer
-      // now hears it later.
-      await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
+      // page to wipe and the account's place to give back. A workspace that doesn't answer now hears it from the
+      // alarm.
+      await armed;
       this.ctx.waitUntil(
         this.#cleanup().catch((err) => console.error('Telling workspaces about a deleted account failed:', err?.stack || err))
       );

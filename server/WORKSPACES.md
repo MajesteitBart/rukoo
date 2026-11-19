@@ -235,7 +235,7 @@ Paths below `/v1/workspaces/{id}` are written from there.
 | `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }], more }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest gets the active members of the channels they are in. |
 | `PATCH /members/me` | `{ name }` → `{ me }`. |
 | `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. |
-| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued. The account keeps a note that it was a member, so the workspace still hears when that account is deleted and takes the name off what it wrote. |
+| `DELETE /members/{u}`, `DELETE /members/me` | → `204`. Removing someone, or leaving. Every grant ends, and so do the invitations they issued. Someone who is the only manager of channels other people are in appoints a manager in each before leaving: `409 last_manager` lists them as `channels`. A channel whose last member goes is archived. The account keeps a note that it was a member, so the workspace still hears when that account is deleted and takes the name off what it wrote. |
 | `POST /invites` | `{ role, channels?, expiresIn? }` → `201 { invite: { id, role, channels, channelCount, issuer, createdAt, expiresAt }, secret }`. `role` is `member` or `guest`, `channels` are channels the issuer manages, `expiresIn` is in seconds: 24 hours unless given, seven days at most. The secret is shown once; the server keeps its hash. A channel its issuer stops managing drops out of the invitation, and managing it again doesn't bring it back. |
 | `GET /invites`, `DELETE /invites/{i}` | The open invitations, and withdrawing one. `channels` lists the channels the caller can see and `channelCount` says how many the invitation leads into right now, without the ones that were archived since. An admin outside a private channel so learns that there is one, not which. |
 | `POST /invites/preview` | `{ invite }` → `{ workspace: { id, name }, role, channels, issuer: { name }, expiresAt }`, for any signed-in account, to show before joining. `channels` is a count. |
@@ -319,7 +319,7 @@ The workspace counts requests in memory, per account: about 8 reads a second wit
 
 ### Not built yet
 
-DMs, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans, blocks and reports, closing a workspace, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
+DMs, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans, blocks and reports, closing a workspace, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
 
 ## Fixture index
 

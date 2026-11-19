@@ -859,6 +859,25 @@ export class Workspace extends DurableObject {
       if (target.role === 'owner' && this.#owners() <= 1) {
         throw new Refusal(409, 'last_owner', 'A workspace needs an owner. Appoint another one first.');
       }
+      if (self) {
+        // Leaving a workspace is leaving each of its channels, and a channel's only manager hands it over first.
+        // Being removed is different: nobody waits for a removed member to appoint anyone.
+        const mine = this.sql
+          .exec(
+            `SELECT c.id FROM grants g JOIN conversation c ON c.n = g.conversation
+             WHERE g.member = ? AND g.role = 'manager' AND c.archivedAt IS NULL
+               AND (SELECT COUNT(*) FROM grants WHERE conversation = c.n AND role = 'manager') = 1
+               AND (SELECT COUNT(*) FROM grants WHERE conversation = c.n) > 1
+             ORDER BY c.n`,
+            target.n
+          )
+          .toArray();
+        if (mine.length > 0) {
+          throw new Refusal(409, 'last_manager', 'You are the only manager of channels other people are in. Appoint a manager in each first.', {
+            channels: mine.map((row) => row.id)
+          });
+        }
+      }
       this.#endMembership(target, me, now);
       this.sql.exec('UPDATE member SET state = ?, endedAt = ? WHERE n = ?', self ? 'left' : 'removed', now, target.n);
       this.#memberChanged(target);
@@ -1172,6 +1191,7 @@ export class Workspace extends DurableObject {
 
   #archiveChannel(c, by, now) {
     this.sql.exec('UPDATE conversation SET archivedAt = ? WHERE n = ?', now, c.n);
+    c.archivedAt = now;
     this.#append(c, 'channel.archived', by, now, {});
     this.#wakeRoom(c);
     if (c.visibility === 'workspace') this.#channelsChanged();
@@ -1309,6 +1329,11 @@ export class Workspace extends DurableObject {
     this.sql.exec('UPDATE conversation SET roster = ? WHERE n = ?', this.#rev(), c.n);
     this.#wakeRoom(c);
     this.wakes.add(member.n);
+    // A channel nobody is in can't be reached by anyone, so it is archived, whichever way its last member went.
+    // Retention then collects it and its place is free again.
+    if (!c.archivedAt && this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n === 0) {
+      this.#archiveChannel(c, by, now);
+    }
   }
 
   // ---- Messages ----
