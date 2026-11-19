@@ -40,6 +40,11 @@ async function cacheRoom(svc, ws, room) {
 }
 
 const ofKind = (svc, kind) => svc.events.filter((e) => e.kind === kind);
+
+// The outbox sends nothing: for the tests about what the sync engine marks in rows they wrote themselves.
+const holdOutbox = (svc) => {
+  svc.outbox.pump = () => {};
+};
 const route = (ws, rest = '') => `/v1/workspaces/${ws}${rest}`;
 
 // Holds the next /changes answer, which the server already gave, until held.release(). held.waiting turns true once
@@ -325,6 +330,7 @@ test('removedMore drops the room cache as a whole', async (t) => {
 test('409 history_regressed stops the workspace, and Start over brings it back', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, ws, bartMe, svc } = await setup(t);
+  holdOutbox(svc);
   await server.post(olga, ws.id, ws.general, 'cached');
   await svc.sync(ws.id);
   await cacheRoom(svc, ws.id, ws.general);
@@ -379,6 +385,7 @@ for (const [what, reset] of [
   test(`${what} while a page is on its way drops that page and keeps every room`, async (t) => {
     if (skipWithoutServer(t)) return;
     const { olga, ws, bartMe, svc } = await setup(t);
+    holdOutbox(svc);
     await server.seedChannel(olga, ws.id, { name: 'second', members: [bartMe.id] });
     await svc.sync(ws.id);
     const before = svc.store.listRooms(ws.id).map((r) => r.id);
@@ -444,6 +451,7 @@ test('a restore or a new key that GET / finds outside a run starts the pass at o
 test('a new generation from GET / marks unsent messages of the old one for a lookup', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, ws, bartMe, svc } = await setup(t);
+  holdOutbox(svc);
   await server.post(olga, ws.id, ws.general, 'cached');
   await svc.sync(ws.id);
   await cacheRoom(svc, ws.id, ws.general);

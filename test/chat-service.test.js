@@ -431,7 +431,8 @@ test('chatTiming turns the test knobs on only in test mode', () => {
 test('the modules other packages fill in start as hooks that do nothing', () => {
   const svc = {};
   for (const Module of [History, Outbox, Manage, Notifier]) {
-    assert.deepEqual(Module.METHODS, {});
+    // A module that its package filled in answers its chat* methods; the others still answer none.
+    for (const fn of Object.values(Module.METHODS)) assert.equal(typeof fn, 'function');
     assert.equal(new Module(svc).svc, svc);
   }
   const history = new History(svc);
@@ -446,8 +447,9 @@ test('the modules other packages fill in start as hooks that do nothing', () => 
   for (const hook of ['rememberJoin', 'onSignedIn']) assert.equal(typeof manage[hook], 'function');
   const notifier = new Notifier(svc);
   for (const hook of ['afterRun', 'onRead', 'onRemoved', 'onEvicted', 'onWorkspaceGone', 'clear']) assert.equal(typeof notifier[hook], 'function');
-  // Only the core methods are in the table until the modules add theirs.
-  assert.deepEqual(Object.keys(chatApi(() => null)).sort(), ['chatReload', 'chatSelect', 'chatState', 'chatSync', 'chatView']);
+  // The core methods, and those the modules add.
+  const modules = [History, Outbox, Manage].flatMap((Module) => Object.keys(Module.METHODS));
+  assert.deepEqual(Object.keys(chatApi(() => null)).sort(), ['chatReload', 'chatSelect', 'chatState', 'chatSync', 'chatView', ...modules].sort());
 });
 
 test('close() is synchronous and leaves the cache for the next start', async (t) => {
