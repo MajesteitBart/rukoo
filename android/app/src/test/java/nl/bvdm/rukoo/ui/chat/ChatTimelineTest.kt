@@ -4,6 +4,8 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.Locale
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.saveable.SaverScope
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Context
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Message
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Row
@@ -273,6 +275,21 @@ class ChatTimelineTest {
         assertEquals("a b c", ChatTimeline.snippet(" a\n b\t c "))
         val emoji = "😀".repeat(121)
         assertEquals("😀".repeat(120) + "…", ChatTimeline.snippet(emoji))
+    }
+
+    @Test
+    fun `a saved scroll position comes back for the same opening only, so another starts at the bottom`() {
+        // The room's pane keeps its saved state after Back; reopening (or another room in that pane) is a new opening.
+        val scope = SaverScope { true }
+        val saved = with(timelineSaver(opening = 7)) { scope.save(LazyListState(42, 18)) }!!
+        val again = timelineSaver(opening = 7).restore(saved)!!
+        assertEquals(42, again.firstVisibleItemIndex)
+        assertEquals(18, again.firstVisibleItemScrollOffset)
+        val next = timelineSaver(opening = 8).restore(saved)!!
+        assertEquals(0, next.firstVisibleItemIndex)
+        assertEquals(0, next.firstVisibleItemScrollOffset)
+        // A plain index and offset, as LazyListState.Saver keeps them, carry no opening and don't come back either.
+        assertEquals(0, timelineSaver(opening = 7).restore(listOf(42, 18))!!.firstVisibleItemIndex)
     }
 
     // ---- helpers ----

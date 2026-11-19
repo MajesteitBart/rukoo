@@ -83,6 +83,13 @@ sealed interface ChatFollow {
 }
 
 /**
+ * One opening of a team chat room: each time a room comes on screen the view model calls `open()`, which freezes its
+ * read position for the New divider (§3.18), and [count] goes up. RoomPane ties its divider placement and scroll
+ * position to it. Folding and a thread opened over the room keep the opening; Back to the list or Mail ends it.
+ */
+data class RoomOpening(val ws: String, val room: String, val count: Long)
+
+/**
  * Navigation state for both layouts, above the layout so folding keeps everything (spec 6 §5.6), and
  * the way panes reach the app's services ([services]). Intents are plain calls; the state machine is
  * [NavState]. Saved in the SavedStateHandle so a recreated activity comes back where it was. Mail
@@ -209,8 +216,10 @@ class AppViewModel(
     /** Called by RukooRoot whenever the window crosses 600dp. */
     fun onLayout(twoPane: Boolean) {
         val was = twoPaneFlow.value
+        // The panes fold before the layout changes, so a room that stays in front never looks closed in between and
+        // keeps its opening (§3.18).
+        if (was && !twoPane) set { it.shown(chatState.value.available).folded(services.composer.current()?.dirty == true, chatFocused, chatComposerFocused) }
         twoPaneFlow.value = twoPane
-        if (was && !twoPane) set { it.folded(services.composer.current()?.dirty == true, chatFocused, chatComposerFocused) }
     }
 
     fun interacted(pane: Pane) = set { it.interacted(pane) }
@@ -468,6 +477,18 @@ class AppViewModel(
     // divider (§3.18), so it opens again only after it left the screen.
     private var openedRoom: Pair<String, String>? = null
 
+    // Openings so far, kept in the saved state: an opening after the process was gone gets a count no pane's saved
+    // scroll position carries.
+    private var openings: Long = saved.get<Long>(OPENINGS) ?: 0L
+
+    private val _roomOpening = MutableStateFlow<RoomOpening?>(null)
+
+    /** The room on screen and which opening of it this is; null while no room is on screen. */
+    val roomOpening: StateFlow<RoomOpening?> = _roomOpening.asStateFlow()
+
+    // Whether the last ChatState had team chat: only losing it sends a person in Chat to Mail.
+    private var chatWasAvailable = false
+
     init {
         services.workspaces?.let { workspaces ->
             viewModelScope.launch { chatState.collect(::onChatState) }
@@ -483,15 +504,23 @@ class AppViewModel(
                     .distinctUntilChanged()
                     .collect { s -> workspaces.onScreen(s?.ws, s?.room, s?.thread) }
             }
+            // A room that comes on screen opens, once per opening; nothing opens while team chat isn't available (§3.1).
             viewModelScope.launch {
-                combine(_state, twoPaneFlow) { nav, two -> roomShown(nav, two) }.distinctUntilChanged().collect { shown ->
-                    if (shown == null) {
-                        openedRoom = null
-                    } else if (shown != openedRoom) {
-                        openedRoom = shown
-                        launch { quietly { workspaces.open(shown.first, shown.second) } }
+                combine(
+                    _state,
+                    twoPaneFlow,
+                    chatState.map { it.available }.distinctUntilChanged(),
+                ) { nav, two, available -> if (available) roomShown(nav, two) else null }
+                    .distinctUntilChanged()
+                    .collect { shown ->
+                        if (shown == null) {
+                            openedRoom = null
+                            _roomOpening.value = null
+                        } else if (shown != openedRoom) {
+                            opened(shown.first, shown.second)
+                            launch { quietly { workspaces.open(shown.first, shown.second) } }
+                        }
                     }
-                }
             }
         }
     }
@@ -524,9 +553,19 @@ class AppViewModel(
         return if (two || nav.chat.top != ChatPane.HOME) ws to room else null
     }
 
+    /** A new opening of [room]: the next count, saved, for RoomPane to place the New divider again. */
+    private fun opened(ws: String, room: String) {
+        openedRoom = ws to room
+        openings += 1
+        saved[OPENINGS] = openings
+        _roomOpening.value = RoomOpening(ws, room, openings)
+    }
+
     private fun onChatState(s: ChatState) {
-        // A person in Chat when it goes away lands in Mail (§3.1).
-        if (!s.available && _state.value.mode == AppMode.CHAT) set { it.setMode(AppMode.MAIL) }
+        // A person in Chat when it goes away lands in Mail (§3.1). Only losing it counts: the service's first state may
+        // come before it read the server's answer, and a Chat mode restored meanwhile waits (RukooRoot shows Mail).
+        if (chatWasAvailable && !s.available && _state.value.mode == AppMode.CHAT) set { it.setMode(AppMode.MAIL) }
+        chatWasAvailable = s.available
         val ids = s.workspaces.associate { it.id to it.name }
         val current = _state.value.chat.workspaceId
         // Only a list the service vouches for says a workspace went: not one emptied by signing out, a broken cache or
@@ -605,7 +644,7 @@ class AppViewModel(
         val ws = _state.value.chat.workspaceId
         val workspaces = services.workspaces
         if (at != null && ws != null && workspaces != null) {
-            openedRoom = ws to id
+            opened(ws, id)
             set { it.openRoom(id) }
             viewModelScope.launch { quietly { workspaces.open(ws, id, at) } }
         } else {
@@ -1116,18 +1155,21 @@ class AppViewModel(
 
     fun closeChatList() = set { it.copy(chatListOpen = false) }
 
-    fun canGoBack(): Boolean = _state.value.back(twoPane) != null
+    fun canGoBack(): Boolean = shownState().back(twoPane) != null
 
     /** Whether Back would stop at the composer's "Save draft?" instead of moving. */
     fun backAsks(): Boolean {
-        val now = _state.value
+        val now = shownState()
         val next = now.back(twoPane) ?: return false
         return now.composerOpen && !next.composerOpen && composerAsks()
     }
 
+    // The state the screen shows: Back acts on Mail while a Chat mode waits for team chat (NavState.shown).
+    private fun shownState(): NavState = _state.value.shown(chatState.value.available)
+
     /** One step back; false when there was nothing to close. Closing the composer goes through [closeComposer]. */
     fun back(): Boolean {
-        val now = _state.value
+        val now = shownState()
         val next = now.back(twoPane) ?: return false
         if (now.composerOpen && !next.composerOpen) {
             closeComposer()
@@ -1140,6 +1182,7 @@ class AppViewModel(
     companion object {
         private const val KEY = "nav"
         private const val POSITIONS = "list_positions"
+        private const val OPENINGS = "room_openings"
         private const val MAX_POSITIONS = 40
         private val POSITIONS_SERIALIZER = MapSerializer(String.serializer(), ListSerializer(Int.serializer()))
 

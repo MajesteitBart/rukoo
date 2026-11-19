@@ -109,8 +109,10 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
         Comparator<String> { a, b -> collator.compare(a, b) }
     }
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
-    val sections = remember(view, nav.chat.filter, nav.chat.roomId, names, compare) {
-        view?.let { ChatListModel.sections(it.rooms, nav.chat.filter, it.me, members, names, open = nav.chat.roomId, compare = compare) }
+    // Only two panes show a room beside the list; on one pane the room read last mustn't stay under Unread.
+    val beside = nav.chatRoomBesideList(app.twoPane)
+    val sections = remember(view, nav.chat.filter, beside, names, compare) {
+        view?.let { ChatListModel.sections(it.rooms, nav.chat.filter, it.me, members, names, open = beside, compare = compare) }
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -165,7 +167,7 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
                         app = app,
                         sections = sections,
                         filter = nav.chat.filter,
-                        selected = nav.chat.roomId.takeIf { app.twoPane },
+                        selected = beside,
                         members = members,
                         me = view.me,
                         dates = dates,

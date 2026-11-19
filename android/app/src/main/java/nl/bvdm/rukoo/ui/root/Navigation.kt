@@ -240,6 +240,20 @@ data class NavState(
         else copy(mode = next, drawerOpen = false, chatListOpen = false, chat = chat.copy(sheet = null, sheetTarget = null))
 
     /**
+     * The state as the screen shows it: Chat mode reads as Mail while team chat isn't available (§3.1), such as a Chat
+     * mode restored before the workspace service has answered. Back and folding start from this, so they act on the
+     * Mail the person sees, and settle the mode to Mail when they do.
+     */
+    fun shown(chatAvailable: Boolean): NavState = if (mode == AppMode.CHAT && !chatAvailable) copy(mode = AppMode.MAIL) else this
+
+    /**
+     * The room open beside the conversation list, which the list marks as selected and keeps listing under the Unread
+     * filter and among Channels while archived. Only two panes have one: on one pane the room stays selected after
+     * Back (for unfolding) but the list stands alone.
+     */
+    fun chatRoomBesideList(twoPane: Boolean): String? = chat.roomId.takeIf { twoPane }
+
+    /**
      * Another workspace: its conversation list, with nothing open and the filter back to All. Picking the one that is
      * selected only closes the drawer.
      */

@@ -154,8 +154,9 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
         app.mailUi.strings = ResourceStrings(resources)
         app.chatUi.strings = ResourceStrings(resources)
     }
-    // Chat mode shows only while the server has team chat (§3.1); the view model moves a person in Chat to Mail when
-    // it goes away, and this keeps the screen in step meanwhile.
+    // Chat mode shows only while the server has team chat (§3.1). The view model moves a person in Chat to Mail when
+    // it goes away; until the workspace service first says it's there, a Chat mode restored from saved state shows
+    // Mail here and waits.
     val chatAvailable = chatState.available
     val chatMode = nav.mode == AppMode.CHAT && chatAvailable
     // The presets' names follow the language until someone renames them.
@@ -193,7 +194,9 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
 
             // No accounts yet: first run. Onboarding is about mail, so it stays out of Chat.
             val setup = loaded && accounts.isEmpty() && nav.overlay != Overlay.SETTINGS && !chatMode
-            val canBack = nav.back(twoPane) != null && !setup
+            // Back starts from what the screen shows, as the view model's back() does.
+            val shown = nav.shown(chatAvailable)
+            val canBack = shown.back(twoPane) != null && !setup
             var backProgress by remember { mutableFloatStateOf(0f) }
             val scope = rememberCoroutineScope()
             // A fresh transition each time the window becomes one pane: one animated while it wasn't composed
@@ -205,7 +208,7 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
             PredictiveBackHandler(enabled = canBack) { events ->
                 // Back that stops at "Save draft?" doesn't preview the pane behind the composer.
                 val asks = app.backAsks()
-                val previous = if (asks) null else nav.back(twoPane)?.compactSlot(chatAvailable)
+                val previous = if (asks) null else shown.back(twoPane)?.compactSlot(chatAvailable)
                 try {
                     events.collect { event ->
                         if (asks) return@collect

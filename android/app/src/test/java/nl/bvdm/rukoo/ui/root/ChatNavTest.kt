@@ -35,6 +35,7 @@ import nl.bvdm.rukoo.settings.SettingsStore
 import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
 import nl.bvdm.rukoo.ui.chat.ChatFilter
+import nl.bvdm.rukoo.ui.chat.ChatListModel
 import nl.bvdm.rukoo.ui.composer.DraftStore
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
@@ -233,6 +234,31 @@ class ChatNavTest {
     }
 
     @Test
+    fun `shown reads Chat as Mail while team chat isn't there, and Back from it moves through Mail`() {
+        val s = start.openMessage("m1").setMode(AppMode.CHAT).selectWorkspace("w1").openRoom("c1")
+        assertSame(s, s.shown(chatAvailable = true))
+        assertSame(start, start.shown(chatAvailable = false))
+        val shown = s.shown(chatAvailable = false)
+        assertEquals(AppMode.MAIL, shown.mode)
+        assertEquals("c1", shown.chat.roomId)
+        val back = shown.back(twoPane = false)!!
+        assertEquals(AppMode.MAIL, back.mode)
+        assertEquals(Pane.LIST, back.top)
+    }
+
+    @Test
+    fun `only two panes have a room beside the list, so one pane's Unread drops the room read last`() {
+        // Read on one pane and back to the list: the room stays selected for unfolding.
+        val read = inChat.openRoom("c1").back(twoPane = false)!!
+        assertEquals("c1", read.chat.roomId)
+        assertNull(read.chatRoomBesideList(twoPane = false))
+        assertEquals("c1", read.chatRoomBesideList(twoPane = true))
+        val wasRead = room("c1")
+        assertFalse(ChatListModel.matches(wasRead, ChatFilter.UNREAD, read.chatRoomBesideList(twoPane = false)))
+        assertTrue(ChatListModel.matches(wasRead, ChatFilter.UNREAD, read.chatRoomBesideList(twoPane = true)))
+    }
+
+    @Test
     fun `mail navigation is unchanged in Mail mode`() {
         val s = start.openMessage("m1").openChat("c_1", "m1")
         assertEquals(PaneLayout(Pane.READER, Pane.CHAT), s.twoPanes())
@@ -352,6 +378,89 @@ class ChatNavTest {
         w.state.value = ready(listOf(summary("w2")))
         assertTrue(vm.state.value.drawerOpen)
         assertEquals("w2", vm.state.value.chat.workspaceId)
+    }
+
+    @Test
+    fun `a Chat mode restored before the service answers waits for it, and Back meanwhile moves through Mail`() = runTest(main) {
+        val saved = androidx.lifecycle.SavedStateHandle()
+        saved["nav"] = RukooJson.encodeToString(NavState.serializer(), start.setMode(AppMode.CHAT).selectWorkspace("w1").openRoom("c1"))
+        // The service starts from ChatState() and reads the saved server answer after that.
+        val w = FakeWorkspaces()
+        val (_, vm) = vm(w, saved)
+        assertEquals("the service's first state isn't team chat going away", AppMode.CHAT, vm.state.value.mode)
+        assertTrue("nothing opens while team chat isn't there", w.opened.isEmpty())
+        assertNull(vm.roomOpening.value)
+        w.state.value = ready(listOf(summary("w1")))
+        assertEquals(AppMode.CHAT, vm.state.value.mode)
+        assertEquals(listOf("w1/c1/null"), w.opened)
+        // Losing it after that lands in Mail.
+        w.state.value = w.state.value.copy(available = false, workspaces = emptyList())
+        assertEquals(AppMode.MAIL, vm.state.value.mode)
+        assertNull(vm.roomOpening.value)
+
+        // Restored once more, with a server that no longer has team chat: the screen shows Mail, and Back acts on it.
+        val again = androidx.lifecycle.SavedStateHandle()
+        again["nav"] = RukooJson.encodeToString(NavState.serializer(), start.openMessage("m1").setMode(AppMode.CHAT).selectWorkspace("w1").openRoom("c1"))
+        val (_, stale) = vm(FakeWorkspaces(), again)
+        assertEquals(AppMode.CHAT, stale.state.value.mode)
+        assertTrue(stale.canGoBack())
+        assertTrue(stale.back())
+        assertEquals(AppMode.MAIL, stale.state.value.mode)
+        assertEquals(Pane.LIST, stale.state.value.top)
+    }
+
+    @Test
+    fun `each opening of a room has its own count, kept by threads and folding, and new after the process went`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        w.views["w1"] = MutableStateFlow(view("w1", room("c1"), room("c2")))
+        val saved = androidx.lifecycle.SavedStateHandle()
+        val (_, vm) = vm(w, saved)
+        vm.onLayout(twoPane = false)
+        vm.setMode(AppMode.CHAT)
+        assertNull(vm.roomOpening.value)
+        vm.openRoom("c1")
+        val first = vm.roomOpening.value!!
+        assertEquals("w1" to "c1", first.ws to first.room)
+        // A thread over the room and back to it is the same opening.
+        vm.openThread("e1")
+        vm.back()
+        assertEquals(first, vm.roomOpening.value)
+        // So is unfolding and folding with the room in front.
+        vm.onLayout(twoPane = true)
+        vm.chatInteracted(ChatPane.ROOM)
+        vm.onLayout(twoPane = false)
+        assertEquals(first, vm.roomOpening.value)
+        // Back to the list ends it, and the room's next opening counts up, as does Mail and back.
+        vm.back()
+        assertNull(vm.roomOpening.value)
+        vm.openRoom("c1")
+        val second = vm.roomOpening.value!!
+        assertTrue(second.count > first.count)
+        vm.setMode(AppMode.MAIL)
+        assertNull(vm.roomOpening.value)
+        vm.setMode(AppMode.CHAT)
+        val third = vm.roomOpening.value!!
+        assertTrue(third.count > second.count)
+        assertEquals(List(3) { "w1/c1/null" }, w.opened)
+        // On the list with the room still selected, unfolding puts the room beside it: an opening that folding keeps
+        // when the room was touched last, without a moment where the room looks closed.
+        vm.back()
+        vm.onLayout(twoPane = true)
+        val beside = vm.roomOpening.value!!
+        assertTrue(beside.count > third.count)
+        vm.chatInteracted(ChatPane.ROOM)
+        vm.onLayout(twoPane = false)
+        assertEquals(ChatPane.ROOM, vm.state.value.chat.top)
+        assertEquals(beside, vm.roomOpening.value)
+        assertEquals(4, w.opened.size)
+        // A notification for the room on screen opens it again at its seq.
+        vm.openRoom("c1", at = 9)
+        val notified = vm.roomOpening.value!!
+        assertTrue(notified.count > beside.count)
+        // After the process went, the restored room opens with a count no saved pane state carries.
+        val (_, after) = vm(w, saved)
+        assertTrue(after.roomOpening.value!!.count > notified.count)
     }
 
     @Test

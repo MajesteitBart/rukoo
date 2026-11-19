@@ -29,6 +29,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -111,9 +113,16 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
     val chat by app.chatState.collectAsStateWithLifecycle()
     val screen by app.services.screen.state.collectAsStateWithLifecycle()
     val viewNow by app.chatView.collectAsStateWithLifecycle()
+    val openingNow by app.roomOpening.collectAsStateWithLifecycle()
     val view = viewNow?.takeIf { it.ws.id == ws }
     val flow = remember(ws, room) { workspaces.timeline(ws, room).catch { } }
-    val timeline by flow.collectAsStateWithLifecycle(initialValue = null)
+    // The collected value outlives a change of room for a frame; only this room's timeline counts.
+    val timelineNow by flow.collectAsStateWithLifecycle(initialValue = null)
+    val timeline = timelineNow?.takeIf { it.room.id == room }
+    // Which opening of the room this is (§3.18). It comes with the view model's open(), and the pane keeps it while it
+    // slides away after Back, when the view model's has already ended.
+    val memo = remember(ws, room) { OpeningMemo() }
+    val opening = openingNow?.takeIf { it.ws == ws && it.room == room }?.count?.also { memo.count = it } ?: memo.count
     val summary = chat.workspaces.firstOrNull { it.id == ws }
     val roomModel = timeline?.room ?: view?.rooms?.firstOrNull { it.id == room }
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
@@ -144,12 +153,13 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
             val t = timeline
             when {
                 roomModel == null && view != null -> EmptyState(stringResource(R.string.chat_errors_gone_conversation), icon = ChatIcons.Bubble)
-                t == null || (t.loading && t.events.isEmpty() && t.pending.isEmpty()) ->
+                t == null || opening == null || (t.loading && t.events.isEmpty() && t.pending.isEmpty()) ->
                     ChatLoading(stringResource(R.string.chat_empty_loading), Modifier.fillMaxSize())
                 else -> RoomLog(
                     app = app,
                     ws = ws,
                     room = room,
+                    opening = opening,
                     t = t,
                     members = members,
                     blocked = view?.blocks.orEmpty().mapTo(HashSet()) { it.member },
@@ -165,6 +175,22 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
         if (paused) FooterBar(stringResource(R.string.chat_input_paused, summary.name))
     }
 }
+
+/** The last opening of one room a pane saw. */
+private class OpeningMemo {
+    var count: Long? = null
+}
+
+/**
+ * The timeline's scroll position, saved with the [opening] it belongs to. The pane's saved state outlives an opening
+ * (RukooRoot's holder keeps the slot's state after Back, and every room's pane saves under the same key), so another
+ * opening starts at the bottom, from where the New divider is placed again (§3.18). Folding and a thread over the room
+ * keep the opening, and with it the position.
+ */
+internal fun timelineSaver(opening: Long): Saver<LazyListState, Any> = listSaver(
+    save = { listOf(opening, it.firstVisibleItemIndex.toLong(), it.firstVisibleItemScrollOffset.toLong()) },
+    restore = { saved -> if (saved.size == 3 && saved[0] == opening) LazyListState(saved[1].toInt(), saved[2].toInt()) else LazyListState() },
+)
 
 @Composable
 private fun roomSubtitle(room: Room, host: String): String =
@@ -219,6 +245,7 @@ private fun RoomLog(
     app: AppViewModel,
     ws: String,
     room: String,
+    opening: Long,
     t: RoomTimeline,
     members: Map<String, Member>,
     blocked: Set<String>,
@@ -235,15 +262,17 @@ private fun RoomLog(
     }
     // Bottom up: the newest row is item 0.
     val items = remember(rows) { rows.asReversed() }
-    val listState = rememberSaveable("$ws/$room", saver = LazyListState.Saver) { LazyListState() }
+    // Both belong to this opening: a new one starts at the bottom with the New divider still to place.
+    val listState = rememberSaveable(opening, saver = timelineSaver(opening)) { LazyListState() }
+    var placed by rememberSaveable(opening) { mutableStateOf<Long?>(null) }
+    val positioned = placed == opening
     val scope = rememberCoroutineScope()
     var older by remember(ws, room) { mutableStateOf(Older.IDLE) }
     var lastReported by remember(ws, room) { mutableLongStateOf(0L) }
-    var seen by remember(ws, room) { mutableLongStateOf(t.readAtOpen) }
+    var seen by remember(opening) { mutableLongStateOf(t.readAtOpen) }
     // At the bottom, following new messages; a scroll position kept across a fold may be elsewhere.
-    var pinned by remember(ws, room) { mutableStateOf(listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < STICK_PX) }
-    var positioned by rememberSaveable("$ws/$room/placed") { mutableStateOf(false) }
-    var viewport by remember { mutableStateOf(0) }
+    var pinned by remember(listState) { mutableStateOf(listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < STICK_PX) }
+    var viewport by remember(listState) { mutableStateOf(0) }
     val locale = LocalConfiguration.current.locales[0]
     val dates = rememberMailDates()
     val today = stringResource(R.string.common_dates_today)
@@ -322,12 +351,13 @@ private fun RoomLog(
     // The viewport's height, for placing the New divider a third of the way down.
     LaunchedEffect(listState) { snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { viewport = it } }
 
-    // Opening a room with unread messages places the New divider a third of the way down, once per opening.
-    LaunchedEffect(rows, viewport) {
-        if (positioned || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
-        positioned = true
+    // Opening a room with unread messages places the New divider a third of the way down, once per opening. Reading
+    // waits for it, so nothing counts as read from a position the opening didn't choose.
+    LaunchedEffect(rows, viewport, listState) {
+        if (placed == opening || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
         val i = items.indexOfFirst { it is ChatTimeline.New }
         if (i > 0 && i > (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0)) showDivider(listState, i, viewport, animate = false)
+        placed = opening
     }
 
     // Follow the user's own scrolling: near the bottom the timeline sticks to new messages, else the Latest pill shows.
@@ -350,8 +380,9 @@ private fun RoomLog(
     }
 
     // Older messages load when the top comes within 10 rows (android.md "Conversation"), again after each page while
-    // the top is still that close.
-    LaunchedEffect(listState, t.hasOlder, items.size) {
+    // the top is still that close: [older] back to IDLE restarts this, also after a page that added no rows (only
+    // removals or kinds without a row).
+    LaunchedEffect(listState, t.hasOlder, items.size, older) {
         if (!t.hasOlder) return@LaunchedEffect
         snapshotFlow { (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= listState.layoutInfo.totalItemsCount - OLDER_AHEAD }
             .distinctUntilChanged()
@@ -359,9 +390,9 @@ private fun RoomLog(
     }
 
     // Reading (§3.9): the newest message fully in view, 1 second after the last change, when higher than the last
-    // report, while the room may report.
-    LaunchedEffect(listState, rows, canRead) {
-        if (!canRead) return@LaunchedEffect
+    // report, while the room may report and once this opening placed its New divider.
+    LaunchedEffect(listState, rows, canRead, positioned) {
+        if (!canRead || !positioned) return@LaunchedEffect
         snapshotFlow {
             val info = listState.layoutInfo
             info.visibleItemsInfo
