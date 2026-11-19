@@ -139,9 +139,11 @@ test('a root carries the summary of its cached replies, with newest against the 
     msg(ME, T0 + 5 * MIN, { root: root.id, redacted: true, text: null })
   ];
   const counts = replyCounts([root, ...replies].reverse());
-  assert.deepEqual(counts.get(root.id), { count: 5, lastAt: T0 + 5 * MIN, newest: 6, actors: [SANNE, MILA, ROB] }, 'the latest three distinct authors, the latest first, without removed replies');
-  const head = timeline([root, ...replies], { ...base, readAtOpen: 5 }).find((r) => r.seq === 1);
-  assert.deepEqual(head.replies, { count: 5, lastAt: T0 + 5 * MIN, newest: 6, actors: [SANNE, MILA, ROB], hasNew: true });
+  assert.deepEqual(counts.get(root.id), { count: 5, lastAt: T0 + 5 * MIN, newest: 6, newestOther: 6, actors: [SANNE, MILA, ROB] }, 'the latest three distinct authors, the latest first, without removed replies');
+  assert.equal(replyCounts(replies, { me: ME }).get(root.id).newestOther, 5, 'newestOther skips your own replies');
+  const head = timeline([root, ...replies], { ...base, readAtOpen: 4 }).find((r) => r.seq === 1);
+  assert.deepEqual(head.replies, { count: 5, lastAt: T0 + 5 * MIN, newest: 6, newestOther: 5, actors: [SANNE, MILA, ROB], hasNew: true });
+  assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 5 }).find((r) => r.seq === 1).replies.hasNew, false, 'your own reply after the read position is not new to you');
   assert.equal(timeline([root, ...replies], { ...base, readAtOpen: 6 }).find((r) => r.seq === 1).replies.hasNew, false);
   assert.equal(timeline([root], base).find((r) => r.seq === 1).replies, null, 'no replies, no summary');
   const removed = timeline([{ ...root, redacted: true, text: null }, ...replies], base).find((r) => r.seq === 1);
@@ -181,6 +183,12 @@ test('pending sends come after the sent rows in the order they were written, and
   assert.deepEqual(shape(rows), ['day', 'msg+1', 'msg+2', 'msg+local:L1', 'msg-local:L2', 'reply+local:L3']);
   const l1 = rows.find((r) => r.key === 'local:L1');
   assert.deepEqual([l1.actor, l1.pending, l1.reason, l1.seq, l1.local, l1.text], [ME, 'failed', 'quota', null, 'L1', 'first']);
+  const l2 = rows.find((r) => r.key === 'local:L2');
+  const retried = timeline([b, a], { ...base, pending: pending.map((p) => (p.local === 'L2' ? { ...p, nextAt: T0 + 10 * MIN } : p)) });
+  const l2b = retried.find((r) => r.key === 'local:L2');
+  assert.equal(l2b.nextAt, T0 + 10 * MIN);
+  assert.notEqual(l2b.sig, l2.sig, 'a queued send whose retry time moved redraws');
+  assert.equal(retried.find((r) => r.key === 'local:L1').sig, l1.sig, 'and nothing else');
 
   // L1 commits with a seq below a message that arrived meanwhile: its row is placed by seq and keeps its key.
   const c = msg(SANNE, T0 + 2 * MIN + 30 * 1000, { seq: 3 });
@@ -193,6 +201,43 @@ test('pending sends come after the sent rows in the order they were written, and
   assert.equal(after.filter((r) => r.local === 'L1').length, 1, 'and its pending row is gone');
   assert.deepEqual([row.seq, row.id, row.pending, row.local], [4, sent.id, null, 'L1']);
   assert.notEqual(row.sig, l1.sig, 'the sent row redraws');
+});
+
+test('a removal or an unknown kind on a later day leaves no day divider with nothing under it', async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const mon = new Date(2026, 10, 16, 10, 0).getTime();
+  const tue = new Date(2026, 10, 17, 10, 0).getTime();
+  const wed = new Date(2026, 10, 18, 10, 0).getTime();
+  const a = msg(SANNE, mon);
+  const b = msg(MILA, mon + MIN);
+  const redaction = sys('message.redacted', SANNE, tue, { target: a.id, targetSeq: a.seq });
+  const c = msg(SANNE, wed);
+  const keys = (rows) => rows.map((r) => (r.type === 'day' ? r.key : r.type));
+  assert.deepEqual(keys(timeline([{ ...a, redacted: true, text: null }, b, redaction, c], base)), ['day:2026-11-16', 'msg', 'msg', 'day:2026-11-18', 'msg']);
+  const unknown = sys('agent.something', SANNE, tue);
+  assert.deepEqual(keys(timeline([a, b, unknown, c], base)), ['day:2026-11-16', 'msg', 'msg', 'day:2026-11-18', 'msg']);
+  const today = sys('message.redacted', SANNE, NOW - MIN, { target: a.id, targetSeq: a.seq });
+  assert.deepEqual(keys(timeline([a, b, today], base)), ['day:2026-11-16', 'msg', 'msg'], 'the log does not end on an empty Today');
+});
+
+test('a pending row never runs the day dividers backwards or repeats a day key', async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const late = msg(SANNE, new Date(2026, 10, 17, 23, 58).getTime());
+  const early = msg(SANNE, new Date(2026, 10, 18, 0, 1).getTime());
+  const behind = { local: 'L', root: null, text: 'x', mentions: [], state: 'sending', reason: null, nextAt: 0, createdAt: new Date(2026, 10, 17, 23, 59).getTime() };
+  const rows = timeline([late, early], { ...base, pending: [behind] });
+  const keys = rows.map((r) => r.key);
+  assert.deepEqual(keys, ['day:2026-11-17', late.id, 'day:2026-11-18', early.id, 'local:L'], 'under the latest day shown');
+  assert.equal(new Set(keys).size, keys.length, 'every key once');
+
+  const held = { ...behind, local: 'H', state: 'held', reason: 'stale_grant', createdAt: T0 - 86400000 };
+  const two = timeline([msg(SANNE, T0, { seq: 10 })], { ...base, pending: [held, { ...behind, local: 'Q', createdAt: T0 + MIN }] });
+  assert.deepEqual(two.map((r) => r.type), ['day', 'msg', 'msg', 'msg'], "a held send from yesterday sits under today's divider");
+
+  const alone = timeline([], { ...base, pending: [held] });
+  assert.deepEqual(alone.map((r) => r.type), ['day', 'msg'], 'with nothing sent, a pending row has its own day');
 });
 
 test('the intro and the retention floor show only when nothing older can load', async () => {

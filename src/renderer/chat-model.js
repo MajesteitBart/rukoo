@@ -64,18 +64,20 @@ function snippet(text) {
   return chars.length > CONTEXT_CHARS ? `${chars.slice(0, CONTEXT_CHARS).join('')}…` : chars.join('');
 }
 
-// The replies to each thread among events: Map rootId -> { count, lastAt, newest, actors }. newest is the seq of the
-// latest reply, lastAt its time, actors the latest three distinct authors of replies that weren't removed, the
+// The replies to each thread among events: Map rootId -> { count, lastAt, newest, newestOther, actors }. newest is
+// the seq of the latest reply, newestOther that of the latest reply by someone other than me (0 when there is none),
+// lastAt the latest reply's time, actors the latest three distinct authors of replies that weren't removed, the
 // latest first. Counts cover the cached replies; an open room's cache reaches its head, so they are complete for
 // every root shown.
-export function replyCounts(events) {
+export function replyCounts(events, { me = null } = {}) {
   const out = new Map();
   for (const e of bySeq(events)) {
     if (!isMessage(e) || !e.root) continue;
     let s = out.get(e.root);
-    if (!s) out.set(e.root, (s = { count: 0, lastAt: null, newest: 0, actors: [] }));
+    if (!s) out.set(e.root, (s = { count: 0, lastAt: null, newest: 0, newestOther: 0, actors: [] }));
     s.count++;
     s.newest = e.seq;
+    if (e.actor !== me) s.newestOther = e.seq;
     s.lastAt = e.at;
     if (!e.redacted) s.actors = [e.actor, ...s.actors.filter((a) => a !== e.actor)].slice(0, 3);
   }
@@ -114,7 +116,7 @@ export function timeline(events, opts = {}) {
   const members = asMap(opts.members);
   const list = bySeq(events);
   const messages = new Map(list.filter(isMessage).map((e) => [e.id, e]));
-  const counts = replyCounts(list);
+  const counts = replyCounts(list, { me });
   const shown = root ? list.filter((e) => isMessage(e) && (e.id === root || e.root === root)) : list;
   const committed = new Set(sentLocal ? [...sentLocal].filter(([id]) => messages.has(id)).map(([, local]) => local) : []);
   const waiting = (pending || [])
@@ -129,6 +131,8 @@ export function timeline(events, opts = {}) {
   }
 
   let lastDay = null;
+  let lastAt = -Infinity; // the time of the last row shown, for the day of a pending row
+  const days = new Set(); // day keys already shown: a key never shows twice
   let prev = null; // the last message row, while a group can continue
   let newPlaced = false;
   const mentionNames = (text, mentions) =>
@@ -136,18 +140,27 @@ export function timeline(events, opts = {}) {
       .map((m) => members.get(m.actor)?.name ?? '')
       .join('\u0002');
 
+  // A day divider before the first row of a local day. Only called for an item that shows a row, so a removal or an
+  // unknown kind on a later day leaves no divider with nothing under it.
+  const dayBefore = (at) => {
+    const day = dayKey(at);
+    if (day === lastDay || days.has(day)) return;
+    const ago = daysAgo(at, now);
+    rows.push({ type: 'day', key: `day:${day}`, at: startOfDay(at), sig: `day\u0001${ago >= 0 && ago < 7 ? ago : 'date'}` });
+    days.add(day);
+    lastDay = day;
+    prev = null;
+  };
+
   const add = (item, isPending) => {
     const at = isPending ? item.createdAt || 0 : item.at;
-    const day = dayKey(at);
-    if (day !== lastDay) {
-      const ago = daysAgo(at, now);
-      rows.push({ type: 'day', key: `day:${day}`, at: startOfDay(at), sig: `day\u0001${ago >= 0 && ago < 7 ? ago : 'date'}` });
-      lastDay = day;
-      prev = null;
-    }
-    if (!isPending && !isMessage(item)) {
-      const sys = sysKind(item);
-      if (!sys) return;
+    const sys = !isPending && !isMessage(item) ? sysKind(item) : null;
+    if (!isPending && !isMessage(item) && !sys) return;
+    // Pending rows come after every sent row, so one written before the last sent row (a held send from yesterday,
+    // or a local clock behind the server's) takes that row's day instead of a divider that runs backwards.
+    dayBefore(isPending ? Math.max(at, lastAt) : at);
+    if (Number.isFinite(at)) lastAt = Math.max(lastAt, at);
+    if (sys) {
       const data = item.data || {};
       const subject = data.member || null;
       rows.push({
@@ -213,7 +226,8 @@ export function timeline(events, opts = {}) {
     };
     if (!threadOf && !isPending) {
       const s = counts.get(item.id);
-      if (s) row.replies = { ...s, hasNew: readAtOpen != null && s.newest > readAtOpen };
+      // Like the New divider, your own replies are never new to you.
+      if (s) row.replies = { ...s, hasNew: readAtOpen != null && s.newestOther > readAtOpen };
     }
     if (row.type === 'reply') {
       const top = messages.get(threadOf);
@@ -232,6 +246,7 @@ export function timeline(events, opts = {}) {
       isBlocked ? 1 : 0,
       row.pending ?? '',
       row.reason ?? '',
+      row.nextAt ?? '',
       memberSig(author),
       removed ? '' : mentionNames(text, mentions),
       r ? [r.count, r.hasNew ? 1 : 0, r.lastAt ?? '', r.actors.map((a) => `${a}=${members.get(a)?.name ?? ''}`).join(' ')].join(',') : '',
