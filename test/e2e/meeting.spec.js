@@ -1343,9 +1343,10 @@ test('the microphone splits into the voices of the people next to you, who can b
     if (asked < 3) return { state: 'running', at: asked * 6000, end: 17000 };
     if (asked === 3) {
       this.append('speaker', args.meeting, { id: 'mic-2', track: 'mic', label: 'Microphone 2' });
-      for (const [start, text] of [[4500, 'I can do that, I have the export open already.'], [13000, 'One of the two labels is mine.']]) {
-        this.append('passage', args.meeting, { id: pid('mic', start), track: 'mic', speaker: 'mic-2', start, end: start + 3000, text, revision: 2, dictation: false, language: 'en' });
-      }
+      this.append('passage', args.meeting, { id: pid('mic', 4500), track: 'mic', speaker: 'mic-2', start: 4500, end: 7500, text: 'I can do that, I have the export open already.', revision: 2, dictation: false, language: 'en' });
+      // A passage two voices shared is cut where the voice changes: its first piece keeps the id, the rest is new.
+      this.append('passage', args.meeting, { id: pid('mic', 13000), track: 'mic', speaker: 'mic-2', start: 13000, end: 15000, text: 'One of the two labels is mine.', revision: 2, dictation: false, language: 'en' });
+      this.append('passage', args.meeting, { id: pid('mic', 15000), track: 'mic', speaker: 'mic', start: 15000, end: 16000, text: 'Good, thanks.', revision: 1, dictation: false, language: 'en' });
     }
     return { state: 'done', voices: 2 };
   };
@@ -1357,6 +1358,10 @@ test('the microphone splits into the voices of the people next to you, who can b
   await expect(rows().nth(1).locator('.mt-name')).toHaveText('Speaker A');
   await expect(rows().nth(2).locator('.mt-name')).toHaveText('You');
   await expect(rows().nth(3).locator('.mt-name')).toHaveText('Speaker A');
+  await expect(rows()).toHaveCount(5);
+  await expect(rows().nth(3).locator('.mt-text')).toHaveText('One of the two labels is mine.');
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('You');
+  await expect(rows().nth(4).locator('.mt-text')).toHaveText('Good, thanks.');
   await expect(person('mic').locator('.mt-person-sub')).toHaveCount(0);
   expect(voice.commands.filter((c) => c.command === 'speakers.split').every((c) => c.args.track === 'mic' && c.args.meeting === id)).toBe(true);
 
