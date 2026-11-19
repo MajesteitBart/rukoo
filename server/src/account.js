@@ -481,8 +481,9 @@ export class Account extends DurableObject {
         if (cleanup) {
           // An account that was in workspaces can't vanish in one step: each workspace still has to hear that its
           // incarnation is gone. Everything of the account goes now, in one transaction with the list of who to tell.
-          // The alarm that works through the list is set in the same stretch, with nothing awaited in between, so
-          // the account is never gone while its list has no alarm.
+          // The alarm that works through the list is set in the same stretch, with nothing awaited in between, which
+          // is how the platform stores a series of writes as one. Its documentation doesn't name alarms there, so
+          // the constructor is the second safeguard: a list without an alarm gets one when the object next starts.
           armed = this.ctx.storage.setAlarm(now + CLEANUP_RETRY);
           armed.catch(() => {});
           const incarnation = this.#knownIdentity()?.incarnation;
