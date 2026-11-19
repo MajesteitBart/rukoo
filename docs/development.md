@@ -53,7 +53,7 @@ node --test test/real-server.test.js test/chat-*.test.js   # Node tests of the h
 npx playwright test test/e2e/chat*.spec.js                 # the chat specs in the Electron app
 ```
 
-Each test file starts its own server with its own storage in a temporary folder, and stops it when the file ends; nothing has to run first. A server starts in about a second and binds 127.0.0.1 on a port from 38800 to 38899: the first free one from 38800 plus the process ID modulo 100, so test processes side by side don't collide. Team chat is on, sign-ups take the invite code `test-invite` any number of times, and the rate limiters are off unless a test asks for them. A developer's `server/.dev.vars` isn't read, and no `.wrangler` folder appears in the checkout.
+Each test file starts its own server with its own storage in a temporary folder, and stops it when the file ends; nothing has to run first. A server starts in about a second and binds 127.0.0.1 on a port from 38800 to 38899, trying them from a random place in the range. Before it binds, it takes a lock on the port: a file named `rukoo-real-server-<port>.lock` in the system's temporary folder that holds its process ID. A test process skips a port whose lock belongs to a living process, takes over a lock whose process has ended, and removes its own on `close()` or when it exits. A fixed port that another test server holds fails with an error naming the lock file. Team chat is on, sign-ups take the invite code `test-invite` any number of times, and the rate limiters are off unless a test asks for them. A developer's `server/.dev.vars` isn't read, and no `.wrangler` folder appears in the checkout.
 
 The rest of that range has fixed uses: Android's live tests and the emulator use 38850, and `wrangler dev` by hand uses 38811.
 
@@ -73,15 +73,9 @@ RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:38850 RUKOO_ACCOUNT_TEST_INVITE=test-
 
 The emulator reaches the same server at `http://10.0.2.2:38850`. A script that seeds people or workspaces into a running server uses `connectRealServer(url)` from the helper. CI's `android` job starts the server this way before the Gradle step.
 
-### On ClarkBox
+### On another machine
 
-The maintainer's Electron runs go to a Linux machine, ClarkBox, through `~/.agents/scripts/rukoo-e2e-clarkbox.sh`, which syncs a clone at `~/Development/rukoo-e2e`. That script installs only the root's dependencies, so the chat specs skip there until the server's are installed too:
-
-```bash
-ssh bartadmin@clarkbox 'cd ~/Development/rukoo-e2e && npm ci --prefix server --no-audit --no-fund'
-```
-
-Run it again after a change to `server/package-lock.json`. A chat spec run counts only when its log shows no skipped chat tests. Any other machine that runs the specs from its own checkout needs the same `npm ci --prefix server`.
+A remote or CI clone that runs the chat specs needs `npm ci --prefix server` too, and again after every change to `server/package-lock.json`. A chat spec run counts only when its log shows no skipped chat tests.
 
 ## Screenshots
 

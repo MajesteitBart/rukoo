@@ -2,8 +2,8 @@
 
 // The real Rukoo account server (server/src/index.js) in the local Workers runtime, for tests that need the team chat
 // routes. It runs under wrangler's unstable_startWorker from server/node_modules, so `npm ci --prefix server` must have
-// run; this file never installs anything. Each server binds 127.0.0.1 on a port from 38800 to 38899 and keeps its
-// storage in a temporary folder that close() removes.
+// run; this file never installs anything. Each server binds 127.0.0.1 on a port from 38800 to 38899, which a lock file
+// keeps from other test processes, and keeps its storage in a temporary folder that close() removes.
 //
 //   const server = await startRealServer();                      // { url, inviteCode, call, seed..., stop, start, close }
 //   const olga = await server.seedAccount();                     // random keys: a person the app never signs in as
@@ -22,6 +22,7 @@
 // forgotten install step can't turn the chat tests green by skipping them.
 const fs = require('fs');
 const net = require('net');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { createRequire } = require('module');
@@ -42,7 +43,7 @@ const PROTOCOL = 'rukoo.workspace.v1';
 const UNAVAILABLE = 'run npm ci in server/ to test chat against the real server';
 
 // The range every fixed port of the chat tests comes from. 38850 is Android's live server and 38811 a hand-run
-// `wrangler dev`, so the helper may pick them too: it probes before it binds.
+// `wrangler dev`, so the helper may pick them too: it locks and probes before it binds.
 const PORT_FIRST = 38800;
 const PORT_COUNT = 100;
 const PORT_TRIES = 10;
@@ -109,8 +110,8 @@ function parseJsonc(text) {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
 }
 
-// Whether nothing listens on 127.0.0.1:port right now. Another process can still take it before the Worker binds,
-// which startRealServer handles by trying the next one.
+// Whether nothing listens on 127.0.0.1:port right now. A probe alone can't keep two helpers apart: workerd binds a
+// port another workerd took a moment earlier without an error, so both would start on it. The port lock below does.
 function portFree(port) {
   return new Promise((resolve) => {
     const probe = net.createServer();
@@ -120,12 +121,102 @@ function portFree(port) {
   });
 }
 
-// The ports to try, from 38800 + (pid % 100) and wrapping within the range, so test processes running side by side
-// start at different places.
+// The ports to try, from a random place in the range and wrapping within it. A start from the process ID would bunch
+// up: Windows process IDs are multiples of 4, and node --test starts its files with consecutive IDs elsewhere.
 function candidatePorts() {
-  const start = process.pid % PORT_COUNT;
+  const start = crypto.randomInt(PORT_COUNT);
   return Array.from({ length: PORT_COUNT }, (_, i) => PORT_FIRST + ((start + i) % PORT_COUNT));
 }
+
+// A port lock across processes: a file in the system's temporary folder holding the process ID of the helper that
+// owns the port, made with 'wx' so only one process can create it. The owner keeps it through stop() and start(),
+// and close() or the process's exit removes it. A lock whose process is gone is taken over.
+const lockFile = (port) => path.join(os.tmpdir(), `rukoo-real-server-${port}.lock`);
+const heldLocks = new Set();
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
+// The process ID in a lock file, or null when it has none: just made and not yet written, or damaged.
+function lockOwner(file) {
+  try {
+    const pid = Number(fs.readFileSync(file, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// A lock without a living owner. An empty file counts only after a few seconds: its maker may be writing it now.
+function lockStale(file) {
+  const pid = lockOwner(file);
+  if (pid !== null) return pid !== process.pid && !alive(pid);
+  try {
+    return Date.now() - fs.statSync(file).mtimeMs > 5000;
+  } catch (_) {
+    return false;
+  }
+}
+
+// True when this process now owns port's lock. False when another living process, or this one for another server,
+// owns it.
+function claimPort(port) {
+  const file = lockFile(port);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(file, 'wx');
+      try {
+        fs.writeSync(fd, String(process.pid));
+      } finally {
+        fs.closeSync(fd);
+      }
+      heldLocks.add(port);
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+    if (attempt > 0 || !lockStale(file)) return false;
+    // Two processes can both find the lock stale. Only one rename of it succeeds; the other gets ENOENT and tries
+    // 'wx' again, which fails once the first has made its own. A lock that turns out live after the rename (it was
+    // made fresh between the check and the rename) is put back with link, which doesn't replace a newer one.
+    const aside = `${file}.${process.pid}.stale`;
+    try {
+      fs.renameSync(file, aside);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+      continue;
+    }
+    const pid = lockOwner(aside);
+    if (pid !== null && (pid === process.pid || alive(pid))) {
+      try {
+        fs.linkSync(aside, file);
+      } catch (_) {
+        // A third process made a lock meanwhile; it owns the port now.
+      }
+      fs.rmSync(aside, { force: true });
+      return false;
+    }
+    fs.rmSync(aside, { force: true });
+  }
+  return false;
+}
+
+function releasePort(port) {
+  if (!heldLocks.delete(port)) return;
+  const file = lockFile(port);
+  if (lockOwner(file) === process.pid) fs.rmSync(file, { force: true });
+}
+
+// A test file that never calls close() still frees its ports when it ends.
+process.on('exit', () => {
+  for (const port of [...heldLocks]) releasePort(port);
+});
 
 // The worker config, in the temporary folder: wrangler bundles into the config's folder, so server/.wrangler stays
 // untouched. env and $schema go; ratelimits go unless limiters, as one spec makes more than 30 sign-ups, logins and
@@ -193,24 +284,43 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
 
   let worker = null;
   let url = null;
+  // Starts the Worker on at, holding at's lock, which is released again when the start fails. workerd binds a port
+  // another server already listens on without an error, and the two would share requests, so each helper takes the
+  // lock first and then probes for anything else on the port, such as a hand-run wrangler dev.
+  async function startOn(at) {
+    try {
+      ({ worker, url } = await startWorker(unstable_startWorker, { ...settings, port: at }));
+    } catch (err) {
+      releasePort(at);
+      throw err;
+    }
+  }
   try {
     if (port !== null) {
-      // workerd binds a port another server already listens on without an error on Windows, and the two would share
-      // requests, so the port is probed first.
-      if (!(await portFree(Number(port)))) throw new Error(`Port ${port} on 127.0.0.1 is in use`);
-      ({ worker, url } = await startWorker(unstable_startWorker, { ...settings, port: Number(port) }));
+      const at = Number(port);
+      if (!claimPort(at)) throw new Error(`Port ${at} on 127.0.0.1 is in use by another test server (${lockFile(at)})`);
+      if (!(await portFree(at))) {
+        releasePort(at);
+        throw new Error(`Port ${at} on 127.0.0.1 is in use`);
+      }
+      await startOn(at);
     } else {
       let tries = 0;
       let last = null;
       for (const at of candidatePorts()) {
         if (tries >= PORT_TRIES) break;
-        if (!(await portFree(at))) continue;
+        if (!claimPort(at)) continue;
+        if (!(await portFree(at))) {
+          releasePort(at);
+          continue;
+        }
         tries++;
         try {
-          ({ worker, url } = await startWorker(unstable_startWorker, { ...settings, port: at }));
+          await startOn(at);
           break;
         } catch (err) {
-          // Only a port someone took after the probe is worth another try; a bundle that doesn't build fails at once.
+          // Only a port something else took after the probe is worth another try; a bundle that doesn't build fails
+          // at once.
           if (await portFree(at)) throw err;
           last = err;
         }
@@ -249,11 +359,12 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
     try {
       await stop();
     } finally {
+      releasePort(boundPort);
       removeDir(dir);
     }
   }
 
-  return { ...seeding(url), dir, stop, start, close };
+  return { ...seeding(url), dir, lockFile: lockFile(boundPort), stop, start, close };
 }
 
 // The seeding API against a server that already runs, such as one real-server-cli.js started for an emulator check.
@@ -488,4 +599,14 @@ function mention(text, needle, actor, from = 0) {
   return { actor, start: Buffer.byteLength(text.slice(0, i)), end: Buffer.byteLength(text.slice(0, i + needle.length)) };
 }
 
-module.exports = { startRealServer, connectRealServer, realServerAvailable, skipWithoutServer, uuidv7, mention, INVITE, PEPPER };
+module.exports = {
+  startRealServer,
+  connectRealServer,
+  realServerAvailable,
+  skipWithoutServer,
+  uuidv7,
+  mention,
+  portLockFile: lockFile,
+  INVITE,
+  PEPPER
+};
