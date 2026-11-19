@@ -8,6 +8,13 @@
 //! keeps `mic`: the one heard most while the user dictated, else the one heard most. Every other
 //! voice gets `mic-2`, `mic-3` and so on, in the order of its first turn.
 //!
+//! Without headphones the microphone hears the call too. Before the stream hears the track, the
+//! bleed gate silences it wherever the call has speech, [`BLEED_MARGIN_MS`] wider on each side:
+//! the call's turns where Nemotron labelled the call, its passages elsewhere ([`call_speech`]).
+//! A call voice heard through the speakers then never becomes a voice at the microphone. Room
+//! speech under call speech is silenced with it, so words there get no clear voice and stay the
+//! user's.
+//!
 //! A microphone passage with word timings is cut where the voice changes, as the pipeline cuts a
 //! labelled call window ([`mic_pieces`]): its first piece keeps the passage's id at a new
 //! revision, and each later piece is a new passage. A passage without word timings takes the
@@ -40,11 +47,16 @@ use crate::speakers::follower::{pad_with, FollowerTiming, Labeller};
 use crate::speakers::turns::{passage_speaker, word_speakers, Turn};
 use crate::transcript::{
     mic_number, stored_split_voices, LabelBatch, SplitWrite, StoredPassage, Transcript,
+    LABELLED_KEY, SETTLED_KEY,
 };
 use crate::watcher::{Stretch, TimelineWatcher};
 
 /// The labeller's own ids for the voices it hears, before they get theirs.
 const LABEL_PREFIX: &str = "voice-";
+
+/// How far the bleed gate reaches past each stretch of call speech, in ms: the call's turns and
+/// passages start and end a little off the sound, and the room's echo trails it.
+pub(crate) const BLEED_MARGIN_MS: u64 = 200;
 
 /// Why a split didn't finish.
 #[derive(Debug)]
@@ -275,12 +287,21 @@ pub fn split_microphone(
         return Err(SplitError::NoAudio);
     }
     let stretches = mapper.stretches();
-    let heard = listen(dir, &reader, diarizer, timing, stop, progress)?;
+    let mut transcript = Transcript::open(dir.path())?;
+    let gate = call_speech(&transcript)?;
+    let heard = listen(dir, &reader, &gate, diarizer, timing, stop, progress)?;
+    if heard.gated > 0 {
+        eprintln!(
+            "voice-meetings: {}: the bleed gate silenced {} ms of the microphone's {} ms",
+            dir.id(),
+            heard.gated / PER_MS,
+            reader.end().div_ceil(PER_MS)
+        );
+    }
     let write = assign(&heard, &stretches);
     if stop.load(Ordering::SeqCst) || !dir.path().is_dir() {
         return Err(SplitError::Stopped);
     }
-    let mut transcript = Transcript::open(dir.path())?;
     let turns = write.turns.clone();
     transcript.record_split(&write, |stored, taken| {
         mic_pieces(&turns, &whole_of(stored), stored.passage.dictation, taken)
@@ -385,11 +406,74 @@ fn to_data(value: &impl serde::Serialize) -> serde_json::Value {
     serde_json::to_value(value).expect("protocol types serialize")
 }
 
+/// Where the call has speech, in meeting ms: the stretches the bleed gate silences at the
+/// microphone. The call's turns count where they are final: everywhere once Nemotron heard the
+/// whole call, up to the settled position while it hadn't. Its passages count past that, so a
+/// meeting without labels, or whose labels stopped, is gated by its passages.
+fn call_speech(transcript: &Transcript) -> rusqlite::Result<Vec<(u64, u64)>> {
+    let turns = transcript.turns(Track::Call, 0, u64::MAX)?;
+    let until = if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
+        u64::MAX
+    } else if turns.is_empty() {
+        0
+    } else {
+        transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0)
+    };
+    let passages: Vec<(u64, u64)> = transcript
+        .passages()?
+        .into_iter()
+        .filter(|p| p.passage.track == Track::Call)
+        .map(|p| (p.passage.start, p.passage.end))
+        .collect();
+    Ok(gate_spans(&turns, &passages, until, BLEED_MARGIN_MS))
+}
+
+/// The gate's stretches: each turn, and each passage's part after `until`, `margin` wider on
+/// both sides, merged where they touch, by start.
+fn gate_spans(turns: &[Turn], passages: &[(u64, u64)], until: u64, margin: u64) -> Vec<(u64, u64)> {
+    let mut spans: Vec<(u64, u64)> = turns
+        .iter()
+        .map(|t| (t.start, t.end))
+        .chain(passages.iter().map(|&(start, end)| (start.max(until), end)))
+        .filter(|&(start, end)| end > start)
+        .map(|(start, end)| (start.saturating_sub(margin), end.saturating_add(margin)))
+        .collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+/// Silences the samples of `pcm`, which starts at meeting sample `at`, inside the gate's
+/// stretches (meeting ms, by start, apart). Returns how many samples it silenced.
+fn mute(pcm: &mut [i16], at: u64, gate: &[(u64, u64)]) -> u64 {
+    let end = at + pcm.len() as u64;
+    let first = gate.partition_point(|&(_, stop)| stop.saturating_mul(PER_MS) <= at);
+    let mut muted = 0;
+    for &(start, stop) in &gate[first..] {
+        let from = start.saturating_mul(PER_MS).max(at);
+        if from >= end {
+            break;
+        }
+        let to = stop.saturating_mul(PER_MS).min(end);
+        pcm[(from - at) as usize..(to - at) as usize].fill(0);
+        muted += to - from;
+    }
+    muted
+}
+
 /// What the stream heard: each turn under the labeller's id, and the stream's label for each id.
 #[derive(Debug, Default, PartialEq)]
 struct Heard {
     turns: Vec<Turn>,
     labels: HashMap<String, String>,
+    /// Samples of recorded microphone the bleed gate silenced.
+    gated: u64,
 }
 
 impl Heard {
@@ -417,10 +501,12 @@ impl Heard {
     }
 }
 
-/// Feeds the whole recorded track to one diarizer stream, as fast as it takes it.
+/// Feeds the whole recorded track to one diarizer stream, as fast as it takes it, silent inside
+/// the bleed gate's stretches.
 fn listen(
     dir: &MeetingDir,
     reader: &TrackReader,
+    gate: &[(u64, u64)],
     diarizer: &dyn Diarizer,
     timing: &FollowerTiming,
     stop: &AtomicBool,
@@ -446,11 +532,13 @@ fn listen(
     };
     progress(0, end_ms);
     let mut fed = 0;
+    let mut gated = 0;
     loop {
         if reader.covered(fed) {
             let span_end = reader.span_end(fed, 0).unwrap_or(fed);
             let len = (span_end - fed).min(push_max);
-            let pcm = reader.read(fed, fed + len)?;
+            let mut pcm = reader.read(fed, fed + len)?;
+            gated += mute(&mut pcm, fed, gate);
             labeller.clock.append(fed, len);
             push(stream.as_mut(), &mut labeller, &pcm)?;
             fed += len;
@@ -483,6 +571,7 @@ fn listen(
     let mut batch = labeller.take(probs)?;
     labeller.close(&mut batch);
     heard.take(batch, &mut open);
+    heard.gated = gated;
     // The labeller closes every turn; one it somehow didn't ends with the track.
     for (speaker, start) in open {
         heard.turns.push(Turn {
@@ -605,7 +694,11 @@ mod tests {
                 )
             })
             .collect();
-        Heard { turns, labels }
+        Heard {
+            turns,
+            labels,
+            gated: 0,
+        }
     }
 
     fn ids(write: &SplitWrite) -> Vec<(String, String)> {
@@ -835,5 +928,38 @@ mod tests {
             "half and half"
         );
         assert_eq!(mic_voice(&turns, 20_000, 21_000, false), "mic", "nobody");
+    }
+
+    #[test]
+    fn the_gate_takes_the_final_call_turns_and_the_passages_past_them() {
+        let turns = vec![turn("call-1", 1_000, 2_000), turn("call-2", 2_300, 3_000)];
+        let passages = [(500, 2_900), (2_500, 4_000), (6_000, 7_000), (8_000, 8_000)];
+        // Turns final up to 3 s: a passage counts only past that, and an empty one not at all.
+        assert_eq!(
+            gate_spans(&turns, &passages, 3_000, 200),
+            [(800, 4_200), (5_800, 7_200)]
+        );
+        // Nemotron heard the whole call: its turns alone.
+        assert_eq!(gate_spans(&turns, &passages, u64::MAX, 200), [(800, 3_200)]);
+        // Without turns, every passage; the margin stops at the meeting's start.
+        assert_eq!(
+            gate_spans(&[], &[(100, 900), (1_000, 1_500)], 0, 200),
+            [(0, 1_700)]
+        );
+        assert!(gate_spans(&[], &[], 0, 200).is_empty());
+    }
+
+    #[test]
+    fn the_gate_silences_the_samples_inside_its_stretches() {
+        // 10 ms from meeting ms 5: samples 80 to 240.
+        let mut pcm = vec![7i16; 160];
+        let gate = [(0, 2), (6, 8), (14, 20)];
+        assert_eq!(mute(&mut pcm, 80, &gate), 32 + 16);
+        let silent: Vec<usize> = (0..pcm.len()).filter(|&i| pcm[i] == 0).collect();
+        // 6-8 ms are samples 96 to 128, and 14-15 ms samples 224 to 240.
+        assert_eq!(silent, (16..48).chain(144..160).collect::<Vec<_>>());
+        let mut open = vec![7i16; 16];
+        assert_eq!(mute(&mut open, 0, &[]), 0);
+        assert_eq!(open, [7; 16]);
     }
 }
