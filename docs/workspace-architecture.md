@@ -1,0 +1,90 @@
+# Rukoo workspaces
+
+**Status: proposal, partly built.** The server has the text slice of Gate 1 behind a setting that is off by default: workspaces, invitations, channels, messages, the sync feed and wake sockets. [What the server does today](../server/WORKSPACES.md#gate-1-routes). The apps have no Chat or Channels yet, and everything else on this page is a plan.
+
+**Recommendation.** Extend the existing Rukoo Server with optional team Chat and Channels. Deploy the same server for a Rukoo-hosted team or an operator's own team. Each workspace has one home server. A device can join several homes and switch between them without signing out of its primary Rukoo account. No federation service sits between the client and an external team. In the first release an agent acts when someone mentions it or replies in a thread it follows, also while every human device is offline. It posts nothing on its own schedule.
+
+**V1 privacy promise. The host can read or alter team messages and files. Personal account sync keeps its existing encryption.** Show the actual operator, storage location, attachment provider, retention and recovery profile before joining. Repeat the host disclosure when opening a DM. An agent installation names its sponsor, operator and declared downstream model providers. The host cannot enforce another operator's declarations after it shares content.
+
+| Surface | Where its data lives |
+| --- | --- |
+| Email and Calendar | With their existing providers and on the device. |
+| Book, Meet and Voice | In their existing services. Sharing a local file or Voice clip up to 25 MiB is an explicit copy into a named workspace. |
+| Chat | Human one-to-one and group DMs in the selected workspace. |
+| Channels | Workspace-visible and private named conversations with human members and explicitly admitted agents. |
+| Personal agent panel | Its existing connections and permissions. Rukoo offers no workspace tools through this panel in v1. An agent operator remains responsible for other tools and filesystem access they grant. |
+
+## What using it feels like
+
+Acme invites Bart into its private project channel. He sees Acme's host and chooses Join. His sidebar now contains both Acme and his own workspace. A workspace-only account can chat with invited peers. It cannot claim a booking page or read personal sync records through a custom client.
+
+Acme's admin, a full member and manager of the project channel, sponsors Clark there. Bart attaches a PDF, mentions Clark and closes his laptop. A runner on Clark's machine opens the attachment, starts a dedicated Booper profile and publishes one reply under Clark's own identity. This profile can read its triggering thread and file within its budget. It has no personal email tools, unrestricted network access or cross-channel memory. On Android, Bart signs in to the same host and the missed reply appears when he opens Rukoo. His normal inbox and booking sync keep their original account. The phone asks the host which workspaces the account belongs to. Users transfer a connection to an external host with a password manager. Encrypted kit sync follows after the first release.
+
+Removing Clark denies new reads, sends and download grants. An issued file URL can continue to work for up to 60 seconds. A private-channel outsider cannot see its name, search its members, read the conversation or fetch its files. Software cannot recall bytes that have already been downloaded.
+
+## One server, one database per workspace
+
+Keep account, booking and workspace code as separate modules in the existing server package. On Cloudflare retain Account, Registry and Booking. Add **one SQLite-backed Workspace Durable Object per workspace**. Within it, Conversation is a code module and a set of tables keyed by conversation ID. Membership, messages, attachment metadata, read state and agent checkpoints share a transaction boundary. There is no object or distributed commit per DM. Chat and Channels use the same send and history functions. [Existing server](../server/README.md) · [Durable Object design](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)
+
+| Component | Owns |
+| --- | --- |
+| Account | Existing origin- and path-bound identity, device sessions, immutable account incarnation, server-enforced account class and eventual cleanup references. |
+| Registry | Host capacity and signup voucher reservations, operator command receipts, workspace locators and capacity assignments. |
+| Workspace | Membership and directory, each conversation's sequence and events, transactional send dedupe, member read positions, socket subscriptions, upload reservations, agent installs and terminal trigger checkpoints. |
+| Client | Host-specific protected credentials, transactional local cache and pending sends. |
+| Optional infrastructure | A private bucket holds workspace files. Independently protected backups use a distinct recovery destination. |
+
+A message has one authoritative write: authorize against current membership, append the message, assign its conversation sequence, update the change feed and wake intent, then commit. Dispatch eligible socket wakes after commit. A fresh authorized fetch returns what changed and up to 20 events for the open conversation. Lost wakes cost latency; clients recover from their cursor. Offline send, retry, and agent processing use the same stable IDs. [Wire contract and fixtures](../server/WORKSPACES.md)
+
+This layout scales across independent workspaces. Inside one busy team, all writes share a single SQLite writer. The first release has a measured-capacity gate for that reason. A hot enterprise tenant could need separate storage or notification services later; stable conversation IDs, opaque cursors and the same black-box fixtures preserve the option. Split only when measurements identify the bottleneck.
+
+On a VPS, first qualify single-host workerd with persistent storage. If it fails, the reference fallback is a Node service plus PostgreSQL using workspace-scoped transactions, unique keys and durable events. Only start a PostgreSQL implementation after a failed workerd spike and an explicit project decision to fund that port. The fallback must supply equivalent Account, Registry and Workspace behavior. Port and qualify Booking before advertising that separate capability. Both use TLS and support socket upgrades. Advertise Book on a VPS only when its existing protocol also passes there.
+
+## Delivery budget
+
+Show the author's pending message immediately. Wake peers immediately after the first commit in a quiet room. Under sustained load, batch trailing wakes for up to 500 ms and limit foreground fetches to two/s per device, with one in flight. A server acknowledgement means the message has committed. Native caches open recent history before fetching; a pending or failed send remains visibly distinct from a committed one.
+
+| Qualification case | Proposed budget and evidence |
+| --- | --- |
+| One active channel, 100 readers, 10 sends/s | Up to 200 combined change/history fetches, 10 sends and 20 read flushes/s (100 readers, once every five seconds). Roughly 230 workspace transactions or reads/s before operational work. Exercise at least 400 workspace admissions/s to measure headroom. Count Account calls separately, plus SQL rows, bytes, CPU time, object storage, wake cost and p95 latency. |
+| Eight-person group DM | Account checks every participant's incarnation when the DM is proposed, accepted and activated. A post checks its sender at ingress and the workspace's own retirement fence in the same transaction, so one unreachable participant account cannot hold up the others. A deleted account tells its workspaces at once and retries by alarm. Measure the time from deletion to closure. |
+| Whole workspace | Test 100 members, 200 sockets, one hot channel, a large quiet directory and a guest whose allowed room changes rarely. Measure work per permitted change during sustained private traffic. Test the actual conversation ceiling with seeded history. |
+| Many teams | Run 1,000 active clients across 50 workspaces for 30 minutes. Include a noisy member hitting per-principal limits while honest peers continue sending and a manager removes its access. Measure quiet DMs separately and report the resulting cost per active member for the measured workload. Target p95 send acknowledgement below 300 ms and committed messages visible to online peers within one second on healthy same-region connections. |
+
+Store one indexed event/change record per change, plus targeted mention and read rows. Compute capped unread and mention counts on demand for the changed page. A normal channel post needs no per-recipient change or badge rows. Protected qualification adds the cost of backup deltas, segment publication and restriction-journal writes to the benchmark.
+
+Ten sends a second is a burst target. A local SQLite check stored 131,072 messages of 256 bytes with their indexes in about 358 bytes each. Ten a second for 90 days would need roughly 26 GiB for those rows, and a SQLite-backed Durable Object holds 10 GB on Workers Paid and 1 GB on Workers Free. Each host's sustained capacity follows from its storage ceiling and its retention. No performance target here is a measurement. If a profile misses its budget, lower its advertised capacity or improve it before launch. [Platform limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
+
+## Agents and files
+
+The runner is an independently installed CLI or container. It owns an outbound workspace connection, a journal, a scoped file reader and access to a dedicated Booper/Hermes profile. A mention starts a turn while every human device is offline. The runner limits each read to the triggering channel/thread; it alone posts the final reply. The workspace commits that reply and the trigger checkpoint together. Replacing the runner, losing an acknowledgement or restarting with an empty local journal cannot publish twice. Generic MCP clients can use a separate, read-only-by-default installation; an admin must enable writes explicitly. [Runner contract](../server/WORKSPACES.md#agents) · [Current Rukoo agent integrations](agents.md)
+
+Workspace files get a dedicated bucket on every provider. **R2 is the first qualified file store**, because the Cloudflare release writes through an R2 binding. An operator whose Voice bucket is with another S3-compatible provider can reuse that provider once its signed upload, download and cleanup pass the same tests, which ships with the VPS distribution. A shared bucket is the exception, allowed only when the provider's access policy enforces separate prefixes for Voice and workspace credentials. Rukoo owns each attachment's identity and permissions. A message stores an attachment ID. Opening it checks both current access and that it belongs to a visible, unredacted post. The uploader and Voice can be offline. Voice keeps its own encrypted meeting archive, desktop bridge and recovery keys. [File contract](../server/WORKSPACES.md#files) · [Voice storage](../voice/README.md#storage)
+
+## Hosting and ownership
+
+- **Basic Cloudflare is the first shippable release.** The minimum is the existing server Worker and its Durable Object bindings. A bucket is optional for files. No external recovery service is required. A basic workspace can restart and recover live state. Losing authoritative state requires a new workspace. Rolling the Workspace database back with Cloudflare's point-in-time recovery counts as an import: it would undo every removal, ban and redaction since that point, so the workspace starts fenced under a new restore generation and the basic profile offers its owner an export followed by a new workspace.
+- **Protected recovery is an optional follow-on.** An independent destination holds workspace checkpoints and a restriction journal. A verified restore replays completed guest removals and erasures. It never imports passwords, ends personal sessions, pauses personal sync, or changes Book. The journal stays off the personal account request path. [Recovery contract and drill](../server/WORKSPACE-RECOVERY.md)
+- **VPS/Coolify is a separately qualified distribution.** Ship a documented Compose deployment after persistent storage, alarms, rate limits, sockets, upgrades and restore pass on a clean host. The Cloudflare release can ship first.
+
+Use host-assigned, finite capacity budgets. Proposed small-host defaults: up to 100 members, 200 connected sockets, **8,192 retained conversations** including DMs and closed histories, 1 GiB of files, and a separate limit on database bytes safely below the hosting plan's per-object ceiling (10 GB on Workers Paid, 1 GB on Workers Free).
+
+Apply both a soft content threshold and an emergency reserve in basic and protected profiles. Near the threshold alert admins and refuse new posts/uploads with a quota error before committing. Reserve space for bans, redactions, dedupe outcomes, bounded retention sweeps and repair; if restrictive writes cannot be guaranteed, fence access rather than serving stale visibility. Track actual storage usage and page reuse under sustained churn. A future archive can use sealed history segments once measured usage calls for it. Operator configuration can lower these values. Independently qualify each higher limit.
+
+Default content retention is 90 days, change-feed retention 14 days, incomplete-upload retention 24 hours, protected backups 30 days. Disclose provider-retained history separately on join. On Cloudflare the operator can recover the Workspace SQLite database from a point in the preceding 30 days, including content that has since been redacted. File-provider lifecycle and backup retention have their own disclosed periods. [Cloudflare SQLite recovery](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)
+
+Publish effective limits and retention on join, with the DO jurisdiction, file-bucket region and recovery-destination region shown separately where applicable. The qualified protected profile has the same kind of workspace-level cut regardless of how many DMs are idle.
+
+The operator configures the domain, jurisdiction, signup mode and initial trusted admin keys using Wrangler or Compose. A separate operator CLI signs short-lived commands bound to the instance, body, target and idempotency key. Registry enforces scope and replay protection. Operators allocate guest and workspace budgets, suspend workspaces, inspect a specifically reported post, record reasoned takedowns and recover orphaned ownership after an out-of-band check. Audit actor, target, action and result without message bodies, tokens or filenames. Default audit retention is 180 days. Offline backup keys have separate custody.
+
+## Delivery and acceptance
+
+| Gate | Evidence needed |
+| --- | --- |
+| 1. Basic text slice | Freeze the routes and error vectors this gate exercises before building them. Drain pre-workspace account routes before enabling the capability. Two existing accounts, one workspace-visible channel, one private channel and a mention. Verify that full members can join a visible channel and that a guest sees only their admitted channels. Verify authorization, isolation, send/retry, grants and crash-after-commit on the real Worker. Check site Worker API routing before assets, real socket upgrades, packaged Electron SQLite and record the workerd reboot/alarm/socket spike result. A failed VPS spike triggers a decision on funding the fallback. Cloudflare can ship on its own results. |
+| 2. Two devices and two hosts | Desktop and Android join hosted and external workspaces, cold-start, catch up, sign out and reopen. Exercise guest onboarding, group DMs, finding a workspace from a second device, alias URLs, retention reset, private access and Android foreground/background behavior. |
+| 3. First release | Run the PDF journey with a real dedicated Booper/Hermes profile and test bucket. Restart between posting and acknowledgement. Lose the runner journal. Pause cleanup after sponsor deletion. Test file redaction, offline sends and quota races. Exercise bans, blocks and reports, audited operator takedown and authorized member export. Qualify generic MCP discovery, per-installation scopes and retry-safe posts if enabled. Pass the basic-profile load tests, including the reconnect storm a deploy causes and a 90-day seeded storage footprint, before advertising capacity. Report how long a removal takes to commit while the workspace is overloaded as its own number. |
+| 4. Protected recovery | Exercise the independent writer, pending/completed restriction receipts, rollback and historical restore. Take a checkpoint in the full-workspace load test with 30 days of seeded dedupe rows. Restore after primary database and bucket loss. Prove Book and personal account recovery stay available throughout. This profile promises recovery from workspace loss with a surviving or independently recoverable trusted account authority. For whole-host loss with no identity continuity, verify that historical DMs stay sealed and only an empty workspace is offered. |
+| 5. VPS | Clean-host install, prior-schema upgrade, both client journeys and agent run; repeat load and recovery qualification for each advertised profile. |
+
+Capacity, cross-provider storage behavior, packaged SQLite, workerd and agent runtime isolation remain empirical gates. V1 defers message editing, reactions, typing, presence, cross-workspace federation, global server search, agent DMs, unprompted reference-runner posts, cross-channel agent memory, personal tools for channel agents, encrypted kit sync and guaranteed push on suspended Android devices. `GET /v1/info` reserves the capability name `push-wake` for a later push relay, which can carry the same content-free wake frames.
