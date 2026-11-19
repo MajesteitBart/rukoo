@@ -15,10 +15,30 @@
 // removed: per room, the message IDs whose alerts go (removed, removedMore, floors); pass: a pass installed; partial: a
 // page of a pass in progress; droppedSends: per evicted room, the unsent messages that went with it; redacted: per
 // room, cached messages that lost their text.
+//
+// Given expect (position() of the ws row the request was built from), each returns null instead and changes nothing
+// when the row no longer has that position: a Start over, restore or new key outside the run reset it while the page
+// was on its way, and the page belongs to the feed position before that reset.
 const wire = require('./wire');
 const { ChatError } = wire;
 
 const DAY = 24 * 60 * 60 * 1000;
+
+// The fields of a ws row that say where its feed stands.
+const POSITION = ['cursor', 'passing', 'generation', 'keyId'];
+
+function position(row) {
+  const out = {};
+  for (const key of POSITION) out[key] = row[key] ?? null;
+  return out;
+}
+
+// Whether the ws row is still at expect, or there is no expect.
+function atPosition(store, ws, expect) {
+  if (!expect) return true;
+  const row = store.getWs(ws);
+  return Boolean(row) && POSITION.every((key) => (row[key] ?? null) === expect[key]);
+}
 
 function emptyResult() {
   return { changed: [], evicted: [], appended: null, removed: {}, pass: false, partial: false, droppedSends: {}, redacted: {} };
@@ -120,9 +140,10 @@ function appendInline(store, ws, active, events, result) {
 }
 
 // A page outside a pass (passing = 0), in one transaction with its cursor.
-function applyPage(svc, ws, page, { active = null } = {}) {
+function applyPage(svc, ws, page, { active = null, expect = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
+    if (!atPosition(store, ws, expect)) return null;
     const result = emptyResult();
     const listed = new Set();
     for (const room of page.changes) {
@@ -143,9 +164,10 @@ function applyPage(svc, ws, page, { active = null } = {}) {
 
 // A page of a pass that says more: true. Its rooms wait in pass_room; what it removed and the floors already apply
 // to cached events, and evictions wait for the install, which deletes every room the pass didn't list.
-function applyPassPage(svc, ws, page) {
+function applyPassPage(svc, ws, page, { expect = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
+    if (!atPosition(store, ws, expect)) return null;
     const result = emptyResult();
     result.partial = true;
     for (const room of page.changes) {
@@ -165,9 +187,10 @@ function applyPassPage(svc, ws, page) {
 // The page of a pass that says more: false: the pass's rooms replace the workspace's in one transaction. A room the
 // pass didn't list is deleted; the others are upserted with the rules of an incremental page, keeping notified and
 // muted. The pass that first fills a workspace alerts nothing, so every room counts as notified up to its head.
-function installPass(svc, ws, page) {
+function installPass(svc, ws, page, { expect = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
+    if (!atPosition(store, ws, expect)) return null;
     const result = emptyResult();
     result.pass = true;
     for (const room of page.changes) store.putPassRoom(ws, room);
@@ -361,7 +384,7 @@ async function runSync(svc, ws) {
   if (!row.generation || runner.detailsDue) {
     runner.detailsDue = false;
     try {
-      await svc.details(ws);
+      await svc.details(ws, { inRun: true });
     } catch (err) {
       if (!svc.isStale(err)) runner.detailsDue = true;
       throw err;
@@ -404,7 +427,7 @@ async function runSync(svc, ws) {
         resets += 1;
         reset(svc, ws);
         await hook(svc, () => svc.history.onReset(ws));
-        await svc.details(ws);
+        await svc.details(ws, { inRun: true });
         svc.guard(epoch);
         continue;
       }
@@ -420,11 +443,15 @@ async function runSync(svc, ws) {
     }
     svc.guard(epoch);
     if (!store.getWs(ws)) return { gone: true };
+    // Only while the row is where the request started from; see atPosition().
+    const expect = position(row);
     let result;
-    if (!row.passing) result = applyPage(svc, ws, page, { active });
-    else if (page.more) result = applyPassPage(svc, ws, page);
-    else result = installPass(svc, ws, page);
+    if (!row.passing) result = applyPage(svc, ws, page, { active, expect });
+    else if (page.more) result = applyPassPage(svc, ws, page, { expect });
+    else result = installPass(svc, ws, page, { expect });
     pages += 1;
+    // Reset meanwhile: the page is dropped, and the loop goes on from where the row stands now, a pass from the start.
+    if (!result) continue;
     for (const id of result.changed) changed.add(id);
     if (result.pass) installed = true;
     await afterPage(svc, ws, result);

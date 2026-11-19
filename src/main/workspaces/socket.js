@@ -56,6 +56,9 @@ class WakeSocket {
     this.wanted = false;
     // Failed attempts in a row, for the backoff; an open socket resets it.
     this.attempt = 0;
+    // tryAgain() calls in a row, which climb a backoff of their own: each of those sockets opened before its 4003.
+    // start() resets it.
+    this.retries = 0;
     // Each connect gets a number; what an older socket or ticket answers is ignored.
     this.token = 0;
     this.socket = null;
@@ -79,7 +82,20 @@ class WakeSocket {
   start() {
     if (this.wanted && this.state !== 'off') return;
     this.wanted = true;
+    this.retries = 0;
     this.connect();
+  }
+
+  // After a 4003, the service's GET / failed for a reason that may pass (network, 5xx, 429): wanted again, with the
+  // next attempt after the backoff (1, 2, 4 s and on per retry in a row, jittered), or atLeast ms. Focus and resume
+  // (nudge) try at once.
+  tryAgain(atLeast = 0) {
+    if (this.wanted) return;
+    const table = this.timing.socketBackoff;
+    const base = table[Math.min(this.retries, table.length - 1)];
+    this.retries += 1;
+    this.wanted = true;
+    this.later(Math.max(Math.round(base * (0.5 + 0.5 * this.random())), atLeast));
   }
 
   // Parked: closed with code, and no further attempts until start().

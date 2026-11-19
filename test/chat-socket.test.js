@@ -12,6 +12,7 @@ const { attach, chatService, settled, watchCalls, twoPeople, until, sleep, fakeC
 const { WakeSocket, PROTOCOL } = require('../src/main/workspaces/socket');
 const { TIMING } = require('../src/main/workspaces');
 const { ChatError } = require('../src/main/workspaces/wire');
+const { AccountError } = require('../src/main/account/client');
 
 // Room for nine workspaces of one owner, for the cap on sockets.
 let server;
@@ -305,7 +306,90 @@ test('resume tries a socket that waits at once, from the first step of the backo
   socket.stop();
 });
 
+test('after a 4003 whose GET / failed, tryAgain() waits a backoff that climbs, and resume skips it', async () => {
+  const { clock, WS, socket, seen } = wakeSocket();
+  WS.auto = (s) => s.open();
+  socket.start();
+  await clock.tick();
+  // Each socket opens before its 4003, which resets attempt: the retries climb on their own count.
+  const delays = [];
+  for (let n = 1; n <= 3; n++) {
+    WS.made.at(-1).drop(4003);
+    assert.equal(socket.state, 'off');
+    assert.equal(seen.removed, n);
+    socket.tryAgain();
+    assert.equal(socket.state, 'down');
+    delays.push(socket.lastDelay);
+    const made = WS.made.length;
+    await clock.advance(socket.lastDelay - 1);
+    assert.equal(WS.made.length, made);
+    await clock.advance(1);
+    assert.equal(socket.state, 'open');
+  }
+  assert.deepEqual(delays, [1000, 2000, 4000]);
+  // Retry-After, when the GET / got 429, is the least it waits.
+  WS.made.at(-1).drop(4003);
+  socket.tryAgain(30000);
+  assert.equal(socket.lastDelay, 30000);
+  // Focus or resume tries at once.
+  const made = WS.made.length;
+  socket.nudge();
+  await clock.tick();
+  assert.equal(WS.made.length, made + 1);
+  assert.equal(socket.state, 'open');
+  // A GET / that answered starts it the normal way, and the climb starts over.
+  WS.made.at(-1).drop(4003);
+  socket.start();
+  await clock.tick();
+  WS.made.at(-1).drop(4003);
+  socket.tryAgain();
+  assert.equal(socket.lastDelay, 1000);
+  // A wanted socket ignores tryAgain().
+  await clock.advance(1000);
+  socket.tryAgain();
+  assert.equal(socket.state, 'open');
+  socket.stop();
+});
+
 // ---- the service's sockets ----
+
+test('a 4003 whose GET / fails for a reason that passes connects again, without a restart', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const WS = fakeWebSocket();
+  WS.auto = (s) => s.open();
+  const made = await twoPeople(server, { timing: FAST, WebSocket: WS });
+  const { ws, svc, account } = made;
+  t.after(() => {
+    svc.close();
+    account.close();
+  });
+  await settled(svc, ws.id);
+  await until(() => svc.socketState(ws.id) === 'open', 10000, 'the socket to open');
+  let fail = true;
+  const calls = watchCalls(account, async (method, url) => {
+    if (fail && method === 'GET' && url === route(ws.id)) {
+      fail = false;
+      throw new AccountError('network', 0, 'The server could not be reached.');
+    }
+    return undefined;
+  });
+  const before = WS.made.length;
+  WS.live()[0].drop(4003);
+  // The GET / the 4003 asked failed, and the socket waits for its next attempt instead of staying parked.
+  await until(() => !fail && svc.socketState(ws.id) === 'down', 2000, 'the socket to wait for its next attempt');
+  await until(() => svc.socketState(ws.id) === 'open' && WS.made.length > before, 5000, 'the socket to open again');
+  assert.ok(calls.some((c) => c.route === route(ws.id, '/socket-ticket')), 'a new ticket');
+  assert.ok(svc.store.getWs(ws.id), 'the workspace stays');
+  // When the GET / then says the person was removed, the workspace goes and the socket stays parked.
+  const removed = await server.call('DELETE', route(ws.id, `/members/${made.bartMe.id}`), { token: made.olga.token });
+  assert.equal(removed.status, 204);
+  WS.live()[0].drop(4003);
+  await until(() => svc.events.some((e) => e.kind === 'removed' && e.ws === ws.id), 5000, 'the removal');
+  const after = WS.made.length;
+  await sleep(500);
+  assert.equal(WS.made.length, after, 'no new socket for the workspace');
+  assert.equal(svc.socketState(ws.id), 'off');
+});
 
 test('at most eight sockets: the selected workspace and the seven most recently active', async (t) => {
   if (skipWithoutServer(t)) return;

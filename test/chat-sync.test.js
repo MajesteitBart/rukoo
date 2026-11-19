@@ -42,6 +42,23 @@ async function cacheRoom(svc, ws, room) {
 const ofKind = (svc, kind) => svc.events.filter((e) => e.kind === kind);
 const route = (ws, rest = '') => `/v1/workspaces/${ws}${rest}`;
 
+// Holds the next /changes answer, which the server already gave, until held.release(). held.waiting turns true once
+// the answer is in.
+function holdNextPage(svc, ws) {
+  const held = { waiting: false };
+  const gate = new Promise((resolve) => (held.release = resolve));
+  let hold = true;
+  watchCalls(svc.account, async (method, url, real) => {
+    if (!hold || !url.startsWith(route(ws, '/changes'))) return undefined;
+    hold = false;
+    const answer = await real();
+    held.waiting = true;
+    await gate;
+    return answer;
+  });
+  return held;
+}
+
 test('a first pass over several pages installs at once and survives a restart between pages', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();
@@ -344,6 +361,84 @@ test('409 history_regressed stops the workspace, and Start over brings it back',
   await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, 'the pass after Start over');
   assert.equal(svc.state().workspaces[0].status, 'ok');
   assert.ok(svc.store.getRoom(ws.id, ws.general).head > 0);
+});
+
+// A Start over, or a restore that GET / outside the run finds (the listing, a 4003, the outbox), resets the feed
+// while a page of the old position is on its way. That page is dropped: applied, it would set a cursor of the old feed
+// under passing = 1, and the next page would install a pass that lacks every room that hadn't changed.
+for (const [what, reset] of [
+  ['Start over', (svc, ws) => chatApi(() => svc).chatReload(ws)],
+  [
+    'a restore',
+    async (svc, ws) => {
+      svc.store.updateWs(ws, { generation: 'OldGenerationXXXXXXXXX' });
+      await svc.details(ws);
+    }
+  ]
+]) {
+  test(`${what} while a page is on its way drops that page and keeps every room`, async (t) => {
+    if (skipWithoutServer(t)) return;
+    const { olga, ws, bartMe, svc } = await setup(t);
+    await server.seedChannel(olga, ws.id, { name: 'second', members: [bartMe.id] });
+    await svc.sync(ws.id);
+    const before = svc.store.listRooms(ws.id).map((r) => r.id);
+    assert.equal(before.length, 2);
+    const room = svc.store.getRoom(ws.id, ws.general);
+    const local = 'GGGGGGGGGGGGGGGGGGGGGG';
+    svc.store.insertOutbox({ local, ws: ws.id, room: ws.general, actor: bartMe.id, grantId: room.grantId, generation: svc.store.getWs(ws.id).generation, text: 'waits', mentions: [], createdAt: Date.now() });
+    await server.post(olga, ws.id, ws.general, 'On its way');
+    const held = holdNextPage(svc, ws.id);
+    const running = svc.sync(ws.id);
+    await until(() => held.waiting, 5000, 'the held page');
+    await reset(svc, ws.id);
+    assert.equal(svc.store.getWs(ws.id).passing, 1);
+    assert.equal(svc.store.getWs(ws.id).cursor, null);
+    held.release();
+    // The run that held the page went on with the pass.
+    const outcome = await running;
+    assert.equal(outcome.pass, true, JSON.stringify(outcome));
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, 'the runs after the reset');
+    assert.deepEqual(svc.store.listRooms(ws.id).map((r) => r.id), before);
+    assert.deepEqual(ofKind(svc, 'evicted'), []);
+    assert.ok(svc.store.getWs(ws.id).cursor);
+    assert.equal(svc.store.listPassRooms(ws.id).length, 0);
+    // The unsent message is still there, waiting for its lookup.
+    assert.equal(svc.store.countUnsent(), 1);
+    if (what === 'Start over') assert.equal(svc.store.getOutbox(local).reason, 'lookup');
+    // The page that was dropped is in the pass: the room has the post.
+    assert.equal(svc.store.getRoom(ws.id, ws.general).head, room.head + 1);
+  });
+}
+
+test('a restore or a new key that GET / finds outside a run starts the pass at once', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc } = await setup(t);
+  const calls = watchCalls(svc.account);
+  const feed = () => calls.filter((c) => c.route.startsWith(route(ws.id, '/changes'))).length;
+  for (const [field, value] of [
+    ['generation', 'OldGenerationXXXXXXXXX'],
+    ['keyId', 'an-old-key']
+  ]) {
+    calls.length = 0;
+    svc.store.updateWs(ws.id, { [field]: value });
+    await svc.details(ws.id);
+    assert.equal(svc.store.getWs(ws.id).passing, 1, field);
+    assert.equal(svc.store.getWs(ws.id).cursor, null, field);
+    // The window isn't focused, so the catch-up timer waits five minutes: this run comes from details().
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 3000, `the pass after a new ${field}`);
+    assert.ok(feed() > 0, field);
+    assert.ok(svc.store.getWs(ws.id).cursor, field);
+  }
+  // A run that asks GET / itself goes on with the pass, and no second run follows it.
+  svc.store.updateWs(ws.id, { generation: 'OldGenerationXXXXXXXXX' });
+  svc.runner(ws.id).detailsDue = true;
+  calls.length = 0;
+  const outcome = await svc.sync(ws.id);
+  assert.equal(outcome.pass, true, JSON.stringify(outcome));
+  const pages = feed();
+  await sleep(800);
+  assert.equal(feed(), pages, 'no run after the one that did the pass');
+  assert.equal(svc.store.getWs(ws.id).passing, 0);
 });
 
 test('a new generation from GET / marks unsent messages of the old one for a lookup', async (t) => {

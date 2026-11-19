@@ -501,20 +501,24 @@ class WorkspaceService extends EventEmitter {
   }
 
   // GET / for a workspace: its name, my member row, generation, keyId, limits and retention, and the clock. A new
-  // generation runs the restore path; a new keyId starts a pass. Returns the checked answer.
-  async details(ws, { goneReason = 'removed' } = {}) {
+  // generation runs the restore path; a new keyId starts a pass. Either asks for a run, which does the pass, unless
+  // the run itself asked (inRun: sync.js), as it goes on with the pass. Returns the checked answer.
+  async details(ws, { goneReason = 'removed', inRun = false } = {}) {
     const epoch = this.epoch;
     const t0 = this.now();
     const answer = wire.checkWorkspace(await this.call(ws, 'GET', '', undefined, { goneReason }));
     const t1 = this.now();
     this.guard(epoch);
     if (!this.store.getWs(ws)) return answer;
-    const { restored } = sync.restore(this, ws, answer, { t0, t1 });
+    const { restored, keyChanged } = sync.restore(this, ws, answer, { t0, t1 });
     if (restored) {
       this.roomsChanged(ws, this.store.listRooms(ws).map((r) => r.id));
       await this.hook(() => this.history.onReset(ws));
       await this.hook(() => this.outbox.kick(ws));
     }
+    // From the listing, a 4003 or the outbox: the pass mustn't wait for the catch-up timer. During a run this only
+    // makes another run follow, for a reset that came after the run's last page.
+    if ((restored || keyChanged) && !inRun) this.sync(ws, 'restore');
     this.stateChanged();
     return answer;
   }
@@ -839,12 +843,20 @@ class WorkspaceService extends EventEmitter {
       },
       onRemoved: () => {
         if (!mine()) return;
-        // 4003: GET / says whether the person is still a member; its 404 runs the removal path.
+        // 4003: GET / says whether the person is still a member; its 404 runs the removal path and its 426 parks the
+        // workspace. Any other failure (network, 5xx, 429) may pass: the socket tries again after a backoff, and its
+        // next 4003 asks GET / again.
+        const ok = () => mine() && this.store && this.store.getWs(ws) && this.store.getWs(ws).state === 'ok';
         this.details(ws).then(
           () => {
-            if (mine() && this.store.getWs(ws) && this.store.getWs(ws).state === 'ok') socket.start();
+            if (ok()) socket.start();
           },
-          () => {}
+          (err) => {
+            if (this.isStale(err) || !ok()) return;
+            const code = err && err.code;
+            if (['signed_out', 'not_found', 'forbidden', 'upgrade_required'].includes(code)) return;
+            socket.tryAgain(code === 'rate_limited' ? (err.retryAfter || 1) * SECOND : 0);
+          }
         );
       },
       onChange: () => this.stateChanged()
