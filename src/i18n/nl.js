@@ -2447,7 +2447,7 @@
   "meeting.speakers.none": "Stemmen verschijnen hier zodra iemand praat.",
   "meeting.speakers.atMic": "Bij je microfoon",
   "meeting.speakers.onCall": "In het gesprek",
-  "meeting.speakers.everyoneAtMic": "Iedereen bij je microfoon",
+  "meeting.speakers.everyoneAtMic": "Jij en wie naast je zit",
   "meeting.speakers.lettered": "Spreker {letter}",
   "meeting.speakers.someoneHere": "Iemand bij je microfoon",
   "meeting.speakers.byAgent": "Naam gegeven door je agent",

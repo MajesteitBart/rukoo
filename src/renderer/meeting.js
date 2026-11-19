@@ -1496,7 +1496,8 @@ function personHtml(s) {
   const clips = removed ? [] : clipsOf(s);
   let sub;
   let subClass = '';
-  if (s.you) sub = micSplit() ? t('meeting.speakers.microphone') : t('meeting.speakers.everyoneAtMic');
+  // The group's heading already says "At your microphone": the user's row says who else it holds, until a split.
+  if (s.you) sub = micSplit() ? '' : t('meeting.speakers.everyoneAtMic');
   else {
     // A name Rukoo guessed for a 1:1 asks to be checked once a second voice is there.
     const check = Boolean(s.name && s.autoCheck);
@@ -1511,7 +1512,7 @@ function personHtml(s) {
   }
   // The user's row has a menu once the microphone is split: show it as one voice again.
   const menu = s.you ? (micSplit() ? 'you-menu' : null) : 'speaker';
-  const text = `${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span><span class="mt-person-sub ${subClass}">${esc(sub)}</span></span>`;
+  const text = `${avatarHtml(s)}<span class="mt-person-text"><span class="mt-person-name">${esc(name)}</span>${sub ? `<span class="mt-person-sub ${subClass}">${esc(sub)}</span>` : ''}</span>`;
   const main = menu
     ? `<button class="mt-person" data-mt="${menu}" data-speaker="${esc(s.id)}" aria-haspopup="menu" ${removed ? 'disabled' : ''} title="${esc(s.you ? t('meeting.speakers.youMenu') : t('meeting.speakers.choose', { name }))}">${text}${icons.chevronDown}</button>`
     : `<div class="mt-person" data-speaker="${esc(s.id)}">${text}</div>`;

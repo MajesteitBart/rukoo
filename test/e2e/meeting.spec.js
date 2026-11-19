@@ -1224,7 +1224,7 @@ test('each voice has a player: it plays a clip of that voice, steps through its 
 
   // Your microphone is one voice that anyone next to you speaks into, until it is split after the meeting.
   await expect(view().locator('.mt-people .mt-group')).toHaveText(['At your microphone', 'On the call']);
-  await expect(person('mic').locator('.mt-person-sub')).toHaveText('Everyone at your microphone');
+  await expect(person('mic').locator('.mt-person-sub')).toHaveText('You and anyone next to you');
   await expect(view().locator('.mt-split')).toContainText('Once the meeting has ended');
   await expect(view().locator('[data-mt="hear-each"]')).toHaveCount(0);
 
@@ -1357,7 +1357,7 @@ test('the microphone splits into the voices of the people next to you, who can b
   await expect(rows().nth(1).locator('.mt-name')).toHaveText('Speaker A');
   await expect(rows().nth(2).locator('.mt-name')).toHaveText('You');
   await expect(rows().nth(3).locator('.mt-name')).toHaveText('Speaker A');
-  await expect(person('mic').locator('.mt-person-sub')).toHaveText('Your microphone');
+  await expect(person('mic').locator('.mt-person-sub')).toHaveCount(0);
   expect(voice.commands.filter((c) => c.command === 'speakers.split').every((c) => c.args.track === 'mic' && c.args.meeting === id)).toBe(true);
 
   // Speaker A is someone at your microphone: hear them, then name them from the Stand-up's guests.

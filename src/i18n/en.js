@@ -9465,8 +9465,8 @@
     "description": "Meeting view people list: small heading over the voices on the call audio (the other people in a call). src/renderer/meeting.js (renderPeople)"
   },
   "meeting.speakers.everyoneAtMic": {
-    "message": "Everyone at your microphone",
-    "description": "Meeting view people list: second line under You before the microphone is split into voices, because people next to the user speak into the same microphone. src/renderer/meeting.js (personHtml)"
+    "message": "You and anyone next to you",
+    "description": "Meeting view people list: second line under You, under the heading At your microphone, before the microphone is split into voices: people next to the user speak into the same microphone. src/renderer/meeting.js (personHtml)"
   },
   "meeting.speakers.lettered": {
     "message": "Speaker {letter}",
