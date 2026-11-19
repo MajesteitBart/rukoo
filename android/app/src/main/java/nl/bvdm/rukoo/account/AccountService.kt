@@ -41,6 +41,17 @@ import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.core.SecretCipher
 import nl.bvdm.rukoo.core.UriComponent
+import nl.bvdm.rukoo.workspaces.InviteLink
+
+/**
+ * What a workspace call needs from the signed-in session (android.md "Session borrowing"): the [server] it signed in
+ * at, its [token], and its [tag] for the chat cache (contract 3.4). [ref] is the session itself, so a 401 can sign out
+ * only the session it was for. Internal: only code in the app module borrows the token.
+ */
+internal class BorrowedSession(val server: String, val token: String, val tag: String, internal val ref: Any) {
+    // The token signs in as the person; keep it out of logs and crash reports.
+    override fun toString(): String = "BorrowedSession($server, $tag)"
+}
 
 /**
  * A Rukoo account: Rukoo's own data (categories, the category each email got, corrections) on every device of one
@@ -104,6 +115,15 @@ class AccountService(
 
     /** Goes up whenever any record changes, for screens that show records. */
     val version: StateFlow<Long> = _version.asStateFlow()
+
+    // Unlimited, so an end is never dropped while a collector is busy; tryEmit then always succeeds.
+    private val _sessionEnded = MutableSharedFlow<Unit>(extraBufferCapacity = Int.MAX_VALUE)
+
+    /**
+     * Emits once each time a session ends: signing out, a 401 from any account or workspace route, deleting the
+     * account, or keys that no longer open. The workspace service collects it to delete the chat cache (contract 3.4).
+     */
+    val sessionEnded: SharedFlow<Unit> = _sessionEnded
 
     private val stateFile get() = File(dir, "account.json")
     private val recordsFile get() = File(dir, "account-records.json")
@@ -283,9 +303,15 @@ class AccountService(
 
     private fun recoveryKeys(key: ByteArray) = AccountKeys.recoveryKeys(key, server)
 
-    suspend fun signUp(email: String, password: String, invite: String = ""): SignUpResult {
+    /**
+     * [invite] is the operator's invite code. [workspaceInvite] is a workspace invitation for this server, which an
+     * invite-only server takes in its place (contract 2.12, 3.3): it goes as `workspaceInvite`, and [invite] doesn't
+     * go at all. One for another server is refused here, so its secret never reaches this one.
+     */
+    suspend fun signUp(email: String, password: String, invite: String = "", workspaceInvite: InviteLink? = null): SignUpResult {
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
+        if (workspaceInvite != null && workspaceInvite.server != server) throw fail("invalid")
         serverInfo()
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
@@ -298,7 +324,14 @@ class AccountService(
             "/v1/signup",
             buildJsonObject {
                 put("email", address)
-                if (invite.isNotEmpty()) put("invite", invite.trim())
+                if (workspaceInvite != null) {
+                    putJsonObject("workspaceInvite") {
+                        put("workspace", workspaceInvite.workspace)
+                        put("invite", workspaceInvite.secret)
+                    }
+                } else if (invite.isNotEmpty()) {
+                    put("invite", invite.trim())
+                }
                 put("kdf", kdf.toJson())
                 put("salt", AccountKeys.b64u(salt))
                 put("authKey", AccountKeys.b64u(keys.authKey))
@@ -408,6 +441,33 @@ class AccountService(
         state = state.copy(error = null)
         forget()
         true
+    }
+
+    // ---- lending the session to team chat ----
+
+    /**
+     * The current session for the workspace routes, or null while signed out. Its server is the address the session
+     * signed in at, so a borrowed token only ever goes there.
+     */
+    internal fun borrowSession(): BorrowedSession? = synchronized(lock) {
+        val s = session ?: return null
+        BorrowedSession(state.sessionServer ?: state.server ?: defaultServer, s.token, sessionTag(s.token), s)
+    }
+
+    /**
+     * A workspace route answered 401 for [borrowed]: this phone signs out as [call] does for an account route's 401,
+     * and only when [borrowed] is still the session it has. A late 401 for a session that ended meanwhile, or for one
+     * before a new sign-in, changes nothing. True when it signed out.
+     */
+    internal fun sessionRefused(borrowed: BorrowedSession): Boolean {
+        val ended = synchronized(lock) {
+            if (session == null || session !== borrowed.ref) return false
+            state = state.copy(error = "signed_out")
+            forget()
+            true
+        }
+        if (ended) changedStatus()
+        return ended
     }
 
     suspend fun details(): AccountDetails {
@@ -528,6 +588,7 @@ class AccountService(
 
     /** Under the lock. */
     private fun forget() {
+        val had = session != null || state.token != null
         session = null
         pushJob?.cancel()
         ids.clear()
@@ -548,6 +609,7 @@ class AccountService(
             AccountState(server = state.server, info = state.info, error = state.error)
         }
         saveState()
+        if (had) _sessionEnded.tryEmit(Unit)
     }
 
     // ---- records ----
@@ -975,6 +1037,13 @@ class AccountService(
         }
 
         fun validEmail(email: String): Boolean = EMAIL.matches(email) && email.length <= 320
+
+        /**
+         * The session tag the chat cache is labelled with (contract 3.4): the first 22 characters of base64url SHA-256
+         * of the session token, as desktop's AccountService.sessionTag. It names the session without revealing it.
+         */
+        fun sessionTag(token: String): String =
+            AccountKeys.b64u(java.security.MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))).take(22)
 
         private fun entryKey(c: String, k: String) = "$c\n$k"
 

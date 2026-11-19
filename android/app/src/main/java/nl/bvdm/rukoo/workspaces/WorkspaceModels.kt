@@ -36,9 +36,12 @@ data class WorkspaceServerLimits(
     val textBytes: Int = TEXT_BYTES,
 )
 
-/** One workspace in `GET /v1/workspaces`. */
+/**
+ * One workspace in `GET /v1/workspaces`, with the caller's [role]. An invitation preview names its workspace with
+ * only the ID and name, so [role] is empty there.
+ */
 @Serializable
-data class WorkspaceRef(val id: String, val name: String, val role: String)
+data class WorkspaceRef(val id: String, val name: String, val role: String = "")
 
 @Serializable
 data class WorkspaceList(val workspaces: List<WorkspaceRef> = emptyList())

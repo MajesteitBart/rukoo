@@ -1,0 +1,2746 @@
+{
+  "about": "Answers of the real account server (server/src) to the team chat routes, recorded by android/app/src/test/workspace-fixtures/make-fixtures.js. Do not edit by hand: run it again.",
+  "ids": {
+    "workspace": "w_aih4BLwKPeezeauOPGEHvg",
+    "olga": "u_69xoS94rD7uZWjn-6qlEDQ",
+    "general": "c_nTSJn3RWkZ7tSGre5fggrQ",
+    "invite": "i_o0upNGSWvj9081024CDV3Q",
+    "secret": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
+    "mila": "u_SeUlzGJlRl0wxLhC4YLiRg",
+    "bart": "u_XN0js20bZkcTi7HbEZp2ow",
+    "pia": "u_9kbdcfRDTeZ68TUIinuzag",
+    "tom": "u_rMxAVZVRi1IzeCJ-xoWggg",
+    "gus": "u_jd4Tb1fVINms9A7XqRIGSw",
+    "goneInvite": "i_bOvfumKpC8f-GT6tRt50iA",
+    "project": "c_CtYzeAPdosRrdWenK6RAvQ",
+    "random": "c_VFcf8dlgQYTRU5CNCMEWLw",
+    "design": "c_puUrLpkcJ2xzcSgAx6_RxQ",
+    "old": "c_3EBmRVQPRvZM9H3YjqvoFg",
+    "operation": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+    "message": "e_bDjzAslREfPV1_8CwZvHiA",
+    "reply": "e_o46bttM4IB5qcZq1HqB09A",
+    "dm": "c_ywkAxXkwVlDkI7jloVd9Fw",
+    "group": "c_eTe_MI9ecYnwJUzY-o4uyw",
+    "bartDm": "c_xbrGcT2qO3WsuNxxppRWYw",
+    "tiny": "w_R0sjEfTox4OKvsoVNgtEQA",
+    "solo": "w_DjlQ1SRasVYVhT5K1CS9pw"
+  },
+  "exchanges": [
+    {
+      "name": "info",
+      "request": {
+        "method": "GET",
+        "path": "/v1/info",
+        "auth": null,
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "protocol": 1,
+          "version": "1.0.0",
+          "operator": {
+            "name": "Test operator",
+            "url": "https://example.test",
+            "contact": "ops@example.test",
+            "privacy": "{server}/privacy"
+          },
+          "hosting": {
+            "provider": "Cloudflare",
+            "company": "Cloudflare, Inc.",
+            "country": "US",
+            "jurisdiction": null
+          },
+          "signups": "invite",
+          "limits": {
+            "records": 250000,
+            "bytes": 104857600,
+            "recordBytes": 16384,
+            "batch": 500
+          },
+          "features": [
+            "booking",
+            "workspaces-v1"
+          ],
+          "workspace": {
+            "versions": [
+              1
+            ],
+            "home": {
+              "origin": "{server}",
+              "installation": "hEFiCuKiLzmDU2cF0atnsQ"
+            },
+            "capabilities": [],
+            "recovery": "basic",
+            "inviteSignups": true,
+            "limits": {
+              "workspacesPerAccount": 3,
+              "membershipsPerAccount": 50,
+              "members": 6,
+              "sockets": 200,
+              "conversations": 12,
+              "textBytes": 16384
+            },
+            "retention": {
+              "contentDays": 90,
+              "feedDays": 14,
+              "platformHistoryDays": 30
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "account",
+      "request": {
+        "method": "GET",
+        "path": "/v1/account",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "email": "olga@example.com",
+          "createdAt": 1795127288890,
+          "class": "full",
+          "incarnation": null,
+          "kdf": {
+            "alg": "argon2id",
+            "m": 65536,
+            "t": 3,
+            "p": 1
+          },
+          "usage": {
+            "records": 0,
+            "bytes": 0
+          },
+          "limits": {
+            "records": 250000,
+            "bytes": 104857600,
+            "recordBytes": 16384,
+            "batch": 500
+          },
+          "devices": [
+            {
+              "id": "WFlwR9poCya685fSzXz-wA",
+              "name": "Seeded",
+              "platform": "linux",
+              "createdAt": 1795127288890,
+              "lastSeenAt": 1795127288890,
+              "current": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "list empty",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "workspaces": []
+        }
+      }
+    },
+    {
+      "name": "create workspace",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces",
+        "auth": "olga",
+        "body": {
+          "name": "Acme",
+          "displayName": "Olga Owner"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "workspace": {
+            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "name": "Acme",
+            "createdAt": 1795127289087,
+            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+            "keyId": "rr6B_FsOnzQ",
+            "time": 1795127289089,
+            "limits": {
+              "members": 6,
+              "conversations": 12,
+              "textBytes": 16384
+            },
+            "retention": {
+              "contentDays": 90,
+              "feedDays": 14
+            }
+          },
+          "me": {
+            "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "kind": "human",
+            "name": "Olga Owner",
+            "role": "owner",
+            "state": "active",
+            "joinedAt": 1795127289087
+          }
+        }
+      }
+    },
+    {
+      "name": "create workspace bad name",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces",
+        "auth": "olga",
+        "body": {
+          "name": " ",
+          "displayName": "Olga Owner"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "name must be one line of 1 to 80 characters.",
+          "field": "name"
+        }
+      }
+    },
+    {
+      "name": "list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "workspaces": [
+            {
+              "id": "w_aih4BLwKPeezeauOPGEHvg",
+              "name": "Acme",
+              "role": "owner"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "workspace",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "workspace": {
+            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "name": "Acme",
+            "createdAt": 1795127289087,
+            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+            "keyId": "rr6B_FsOnzQ",
+            "time": 1795127289112,
+            "limits": {
+              "members": 6,
+              "conversations": 12,
+              "textBytes": 16384
+            },
+            "retention": {
+              "contentDays": 90,
+              "feedDays": 14
+            }
+          },
+          "me": {
+            "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "kind": "human",
+            "name": "Olga Owner",
+            "role": "owner",
+            "state": "active",
+            "joinedAt": 1795127289087
+          }
+        }
+      }
+    },
+    {
+      "name": "create invite",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "auth": "olga",
+        "body": {
+          "role": "member",
+          "channels": [],
+          "expiresIn": 86400
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "invite": {
+            "id": "i_o0upNGSWvj9081024CDV3Q",
+            "role": "member",
+            "channels": [
+              "c_nTSJn3RWkZ7tSGre5fggrQ"
+            ],
+            "channelCount": 1,
+            "issuer": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "createdAt": 1795127289125,
+            "expiresAt": 1795213689125
+          },
+          "secret": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c"
+        }
+      }
+    },
+    {
+      "name": "create invite bad expiry",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "auth": "olga",
+        "body": {
+          "role": "member",
+          "channels": [],
+          "expiresIn": 30
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "expiresIn must be a number of seconds from one minute to seven days.",
+          "field": "expiresIn"
+        }
+      }
+    },
+    {
+      "name": "invites",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "invites": [
+            {
+              "id": "i_o0upNGSWvj9081024CDV3Q",
+              "role": "member",
+              "channels": [
+                "c_nTSJn3RWkZ7tSGre5fggrQ"
+              ],
+              "channelCount": 1,
+              "issuer": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "createdAt": 1795127289125,
+              "expiresAt": 1795213689125
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "preview invite",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/preview",
+        "auth": "mila",
+        "body": {
+          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "workspace": {
+            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "name": "Acme"
+          },
+          "role": "member",
+          "channels": 1,
+          "issuer": {
+            "name": "Olga Owner"
+          },
+          "expiresAt": 1795213689125
+        }
+      }
+    },
+    {
+      "name": "join",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "auth": "mila",
+        "body": {
+          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
+          "name": "Mila Member"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "workspace": {
+            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "name": "Acme",
+            "createdAt": 1795127289087,
+            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+            "keyId": "rr6B_FsOnzQ",
+            "time": 1795127289154,
+            "limits": {
+              "members": 6,
+              "conversations": 12,
+              "textBytes": 16384
+            },
+            "retention": {
+              "contentDays": 90,
+              "feedDays": 14
+            }
+          },
+          "me": {
+            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "kind": "human",
+            "name": "Mila Member",
+            "role": "member",
+            "state": "active",
+            "joinedAt": 1795127289154
+          }
+        }
+      }
+    },
+    {
+      "name": "join again",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "auth": "mila",
+        "body": {
+          "invite": "VP2E_-Klt18-6WQxo_qFOtlAjic1QoaZpEOSR_gAc_c",
+          "name": "Mila Member"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "workspace": {
+            "id": "w_aih4BLwKPeezeauOPGEHvg",
+            "name": "Acme",
+            "createdAt": 1795127289087,
+            "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+            "keyId": "rr6B_FsOnzQ",
+            "time": 1795127289163,
+            "limits": {
+              "members": 6,
+              "conversations": 12,
+              "textBytes": 16384
+            },
+            "retention": {
+              "contentDays": 90,
+              "feedDays": 14
+            }
+          },
+          "me": {
+            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "kind": "human",
+            "name": "Mila Member",
+            "role": "member",
+            "state": "active",
+            "joinedAt": 1795127289154
+          }
+        }
+      }
+    },
+    {
+      "name": "join full workspace",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/join",
+        "auth": "zoe",
+        "body": {
+          "invite": "caJV84SGLxE8MtZ4DsoNHw7T4_6pmIc6Vj15sg7Z87I",
+          "name": "Zoë"
+        }
+      },
+      "response": {
+        "status": 413,
+        "body": {
+          "error": "quota",
+          "message": "This workspace is full.",
+          "scope": "workspace",
+          "limit": "members"
+        }
+      }
+    },
+    {
+      "name": "withdraw invite",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/i_bOvfumKpC8f-GT6tRt50iA",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "preview withdrawn invite",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites/preview",
+        "auth": "zoe",
+        "body": {
+          "invite": "mNbqi8zTsE6ICHqTvo_VlTYKJifMFeYbHprAfgXzPX4"
+        }
+      },
+      "response": {
+        "status": 410,
+        "body": {
+          "error": "invite_gone",
+          "message": "This invitation was used, withdrawn or has expired. Ask for a new one."
+        }
+      }
+    },
+    {
+      "name": "create invite as member",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/invites",
+        "auth": "mila",
+        "body": {
+          "role": "member",
+          "channels": []
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only owners and admins invite people."
+        }
+      }
+    },
+    {
+      "name": "members",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "members": [
+            {
+              "id": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "kind": "human",
+              "name": "Olga Owner",
+              "role": "owner",
+              "state": "active",
+              "joinedAt": 1795127289087
+            },
+            {
+              "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "kind": "human",
+              "name": "Mila Member",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795127289154
+            },
+            {
+              "id": "u_XN0js20bZkcTi7HbEZp2ow",
+              "kind": "human",
+              "name": "Bart",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795127289180
+            },
+            {
+              "id": "u_9kbdcfRDTeZ68TUIinuzag",
+              "kind": "human",
+              "name": "Pia",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795127289206
+            },
+            {
+              "id": "u_rMxAVZVRi1IzeCJ-xoWggg",
+              "kind": "human",
+              "name": "Tom",
+              "role": "member",
+              "state": "active",
+              "joinedAt": 1795127289233
+            },
+            {
+              "id": "u_jd4Tb1fVINms9A7XqRIGSw",
+              "kind": "human",
+              "name": "Gus Guest",
+              "role": "guest",
+              "state": "active",
+              "joinedAt": 1795127289259
+            }
+          ],
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "rename me",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "auth": "mila",
+        "body": {
+          "name": "Mila M."
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "me": {
+            "id": "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "kind": "human",
+            "name": "Mila M.",
+            "role": "member",
+            "state": "active",
+            "joinedAt": 1795127289154
+          }
+        }
+      }
+    },
+    {
+      "name": "set role",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_XN0js20bZkcTi7HbEZp2ow",
+        "auth": "olga",
+        "body": {
+          "role": "admin"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "member": {
+            "id": "u_XN0js20bZkcTi7HbEZp2ow",
+            "kind": "human",
+            "name": "Bart",
+            "role": "admin",
+            "state": "active",
+            "joinedAt": 1795127289180
+          }
+        }
+      }
+    },
+    {
+      "name": "set role bad role",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_XN0js20bZkcTi7HbEZp2ow",
+        "auth": "olga",
+        "body": {
+          "role": "king"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "role must be one of: owner, admin, member, guest.",
+          "field": "role"
+        }
+      }
+    },
+    {
+      "name": "leave workspace last owner",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "last_owner",
+          "message": "A workspace needs an owner. Appoint another one first."
+        }
+      }
+    },
+    {
+      "name": "channels",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "channels": [
+            {
+              "id": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "joined": true,
+              "role": "member",
+              "members": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "create channel",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "auth": "mila",
+        "body": {
+          "name": "project",
+          "visibility": "private"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "channel": {
+            "id": "c_CtYzeAPdosRrdWenK6RAvQ",
+            "name": "project",
+            "visibility": "private",
+            "archived": false,
+            "joined": true,
+            "role": "manager",
+            "members": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "create channel name taken",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "auth": "olga",
+        "body": {
+          "name": "General",
+          "visibility": "workspace"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "name_taken",
+          "message": "There is already a channel with this name."
+        }
+      }
+    },
+    {
+      "name": "create channel bad name",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels",
+        "auth": "olga",
+        "body": {
+          "name": "two\nlines",
+          "visibility": "workspace"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "name must be one line of 1 to 80 characters.",
+          "field": "name"
+        }
+      }
+    },
+    {
+      "name": "rename channel",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ",
+        "auth": "mila",
+        "body": {
+          "name": "Project X"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "channel": {
+            "id": "c_CtYzeAPdosRrdWenK6RAvQ",
+            "name": "Project X",
+            "visibility": "private",
+            "archived": false,
+            "joined": true,
+            "role": "manager",
+            "members": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "admit",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "auth": "mila",
+        "body": {
+          "member": "u_9kbdcfRDTeZ68TUIinuzag"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "member": "u_9kbdcfRDTeZ68TUIinuzag",
+          "role": "member"
+        }
+      }
+    },
+    {
+      "name": "admit guest as manager",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "auth": "mila",
+        "body": {
+          "member": "u_jd4Tb1fVINms9A7XqRIGSw"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "cosign_required",
+          "message": "Adding a guest to a channel needs a workspace admin."
+        }
+      }
+    },
+    {
+      "name": "channel members",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "members": [
+            {
+              "member": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "role": "manager"
+            },
+            {
+              "member": "u_9kbdcfRDTeZ68TUIinuzag",
+              "role": "member"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "leave workspace last manager",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "last_manager",
+          "message": "You are the only manager of channels other people are in. Appoint a manager in each first.",
+          "channels": [
+            "c_CtYzeAPdosRrdWenK6RAvQ"
+          ]
+        }
+      }
+    },
+    {
+      "name": "leave channel last manager",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members/me",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "last_manager",
+          "message": "A channel needs a manager. Name who takes over."
+        }
+      }
+    },
+    {
+      "name": "channel role",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_CtYzeAPdosRrdWenK6RAvQ/members/u_9kbdcfRDTeZ68TUIinuzag",
+        "auth": "mila",
+        "body": {
+          "role": "manager"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "member": "u_9kbdcfRDTeZ68TUIinuzag",
+          "role": "manager"
+        }
+      }
+    },
+    {
+      "name": "join channel",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/join",
+        "auth": "tom",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "channel": {
+            "id": "c_VFcf8dlgQYTRU5CNCMEWLw",
+            "name": "random",
+            "visibility": "workspace",
+            "archived": false,
+            "joined": true,
+            "role": "member",
+            "members": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "leave channel",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/members/me",
+        "auth": "tom",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "remove from channel",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_VFcf8dlgQYTRU5CNCMEWLw/members/u_rMxAVZVRi1IzeCJ-xoWggg",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "leave channel with successor",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_puUrLpkcJ2xzcSgAx6_RxQ/members/me?successor=u_XN0js20bZkcTi7HbEZp2ow",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "archive channel",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_3EBmRVQPRvZM9H3YjqvoFg",
+        "auth": "olga",
+        "body": {
+          "archived": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "channel": {
+            "id": "c_3EBmRVQPRvZM9H3YjqvoFg",
+            "name": "old",
+            "visibility": "workspace",
+            "archived": true,
+            "joined": true,
+            "role": "manager",
+            "members": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "feed first pass",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_0sljd32asfa3rzsbHwpCew",
+              "role": "manager",
+              "members": 6,
+              "head": 7,
+              "floor": 1,
+              "lastAt": 1795127289259,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_VFcf8dlgQYTRU5CNCMEWLw",
+              "kind": "channel",
+              "name": "random",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_tPZh5FulacF_3QPlRq5Nog",
+              "role": "manager",
+              "members": 1,
+              "head": 6,
+              "floor": 1,
+              "lastAt": 1795127289484,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_3EBmRVQPRvZM9H3YjqvoFg",
+              "kind": "channel",
+              "name": "old",
+              "visibility": "workspace",
+              "archived": true,
+              "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
+              "role": "manager",
+              "members": 1,
+              "head": 3,
+              "floor": 1,
+              "lastAt": 1795127289536,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": true,
+            "channels": true,
+            "blocks": true
+          },
+          "more": false,
+          "next": "AUePEwP-ckpnPs8ui272t8k_CK3C12RTsNrUp0z33-ITUtH-nwdYkIjQEm-hrA4CTiXsxe1Tk77zfRFmDK6dEBHSAiQS7MGCzA6JRUGFYtZbB_2z7CL86eCNGiGi-baabggvQ187agAcZxee6sYWh33Moog8agiE"
+        }
+      }
+    },
+    {
+      "name": "feed small page",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?limit=2",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_0sljd32asfa3rzsbHwpCew",
+              "role": "manager",
+              "members": 6,
+              "head": 7,
+              "floor": 1,
+              "lastAt": 1795127289259,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_VFcf8dlgQYTRU5CNCMEWLw",
+              "kind": "channel",
+              "name": "random",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_tPZh5FulacF_3QPlRq5Nog",
+              "role": "manager",
+              "members": 1,
+              "head": 6,
+              "floor": 1,
+              "lastAt": 1795127289484,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": true,
+            "channels": true,
+            "blocks": true
+          },
+          "more": true,
+          "next": "ATZ6hDBCuM_DnYnjA5kAhgGD_nQQ6ypL0HAxGxJ1EolyxbDWBjM1IJrfr0BSeIrzye2tIVJHCHQn2SE6jY3RwxESBT86HsU3IrWfRJhB-djiSYsbEIVswAQpEyHM2c8Fd0xLg7NYRUKYb80zAvjo4pR2B_ZpPAEs"
+        }
+      }
+    },
+    {
+      "name": "feed next page",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}&limit=2",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_3EBmRVQPRvZM9H3YjqvoFg",
+              "kind": "channel",
+              "name": "old",
+              "visibility": "workspace",
+              "archived": true,
+              "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
+              "role": "manager",
+              "members": 1,
+              "head": 3,
+              "floor": 1,
+              "lastAt": 1795127289536,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": false,
+            "channels": false,
+            "blocks": false
+          },
+          "more": false,
+          "next": "AXAPgrK6Yo3bLfAE_s7lWjc7B-Zg4VZHj5LkeD37EBJupz8S-qzVHZsNq_hCvHwhy8vCe52Xmu7CKs0dV2kme3MNmeKfLfa_pzHD2sCdjrclVgMul_9zKRBHvP5HYXNF5scAXcqRIex5ZT-9mV518tFA0w8l-K4L"
+        }
+      }
+    },
+    {
+      "name": "member feed",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_G6LaETROG6o4y9qQZatUYg",
+              "role": "member",
+              "members": 6,
+              "head": 7,
+              "floor": 1,
+              "lastAt": 1795127289259,
+              "read": 3,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_CtYzeAPdosRrdWenK6RAvQ",
+              "kind": "channel",
+              "name": "Project X",
+              "visibility": "private",
+              "archived": false,
+              "grant": "g_r4JlVzuUPCwJJFPcpLf64A",
+              "role": "manager",
+              "members": 2,
+              "head": 4,
+              "floor": 1,
+              "lastAt": 1795127289413,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [
+            "c_puUrLpkcJ2xzcSgAx6_RxQ"
+          ],
+          "inlineEvents": [],
+          "directory": {
+            "members": true,
+            "channels": true,
+            "blocks": true
+          },
+          "more": false,
+          "next": "AXq2fM_aCMXjQ-tFmMeNBYRHM3ZT7v-b1RdJwpGx4C9kmxihisD_nT_MSCVJosoq_TqdBPPoMnHYmUPrvaWzlr8PYY3P26w78qfOvrV2_y8eer-zkB33QiaLz6RLWCCksuc_I4Mj_xDIoFGNhGdm76YwOrj537my"
+        }
+      }
+    },
+    {
+      "name": "post",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "seq": 8
+        }
+      }
+    },
+    {
+      "name": "post retry",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "seq": 8
+        }
+      }
+    },
+    {
+      "name": "post changed retry",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Joël?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "operation_conflict",
+          "message": "This operation id was used for a different message."
+        }
+      }
+    },
+    {
+      "name": "post stale grant",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7fb2-aa6c-2c3950920ea8",
+          "grant": "g_AAAAAAAAAAAAAAAAAAAAAA",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "stale_grant",
+          "message": "This message was written before you were let back into the conversation. Check it before sending it again.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "post stale generation",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-70f8-887f-ca211c1793c6",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "AAAAAAAAAAAAAAAAAAAAAA",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "stale_generation",
+          "message": "This workspace was restored since the message was written. Load it again first.",
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "post expired",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a15647-82e1-7d60-916c-d62ade286a01",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "submission_expired",
+          "message": "This message waited too long to be sent. Check whether it arrived."
+        }
+      }
+    },
+    {
+      "name": "post ahead of time",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f623-9561-7456-9b4a-a045321c1610",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 4,
+              "end": 9
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "operationId is ahead of the server's time.",
+          "field": "operationId"
+        }
+      }
+    },
+    {
+      "name": "post bad mentions",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7189-82db-d490d5a073de",
+          "grant": "g_0sljd32asfa3rzsbHwpCew",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hoi @Mila, zie je Zoë?",
+          "mentions": [
+            {
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "start": 21,
+              "end": 22
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "Each mention needs an actor and a start and end in bytes of the text.",
+          "field": "mentions"
+        }
+      }
+    },
+    {
+      "name": "post archived channel",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_3EBmRVQPRvZM9H3YjqvoFg/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7650-9400-eebabb84401c",
+          "grant": "g_E_r-35uYnx7RdJ0Q7V84bw",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Still here?",
+          "mentions": []
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "archived",
+          "message": "This channel is archived.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "post reply",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages",
+        "auth": "mila",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7909-a749-4bba7a8a4dcd",
+          "grant": "g_G6LaETROG6o4y9qQZatUYg",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Ja 👍",
+          "mentions": [],
+          "root": "e_bDjzAslREfPV1_8CwZvHiA"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7909-a749-4bba7a8a4dcd",
+          "messageId": "e_o46bttM4IB5qcZq1HqB09A",
+          "seq": 9
+        }
+      }
+    },
+    {
+      "name": "operation",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/operations/01a1f5ec-a6e1-73f3-b7b0-328031982fb9",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "seq": 8,
+          "visible": true
+        }
+      }
+    },
+    {
+      "name": "operation unknown",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/operations/01a1f5ec-a6e1-7f95-be48-d5aa8b49d865",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no message from this operation here."
+        }
+      }
+    },
+    {
+      "name": "events",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/events?after=0&limit=100",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "events": [
+            {
+              "seq": 1,
+              "id": "e_IW5h4-2aHToLEWDBx8uVBw",
+              "kind": "channel.created",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289087,
+              "name": "general",
+              "visibility": "workspace"
+            },
+            {
+              "seq": 2,
+              "id": "e_azYgq9C-wwp7wSRAK83xLg",
+              "kind": "member.joined",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289087,
+              "member": "u_69xoS94rD7uZWjn-6qlEDQ"
+            },
+            {
+              "seq": 3,
+              "id": "e_rtAeWw8eTKGGbYaxeeZEyg",
+              "kind": "member.joined",
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "at": 1795127289154,
+              "member": "u_SeUlzGJlRl0wxLhC4YLiRg"
+            },
+            {
+              "seq": 4,
+              "id": "e_auFzmCGRyAbeZubA_Dq5Lw",
+              "kind": "member.joined",
+              "actor": "u_XN0js20bZkcTi7HbEZp2ow",
+              "at": 1795127289180,
+              "member": "u_XN0js20bZkcTi7HbEZp2ow"
+            },
+            {
+              "seq": 5,
+              "id": "e_dPfp0daH1mc6tURwXJphfQ",
+              "kind": "member.joined",
+              "actor": "u_9kbdcfRDTeZ68TUIinuzag",
+              "at": 1795127289206,
+              "member": "u_9kbdcfRDTeZ68TUIinuzag"
+            },
+            {
+              "seq": 6,
+              "id": "e_XWbJHsvA3qdSCwRUlCWE3Q",
+              "kind": "member.joined",
+              "actor": "u_rMxAVZVRi1IzeCJ-xoWggg",
+              "at": 1795127289233,
+              "member": "u_rMxAVZVRi1IzeCJ-xoWggg"
+            },
+            {
+              "seq": 7,
+              "id": "e_oTun4bVyJkLteGGjR-OhTw",
+              "kind": "member.joined",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289259,
+              "member": "u_jd4Tb1fVINms9A7XqRIGSw"
+            },
+            {
+              "seq": 8,
+              "id": "e_bDjzAslREfPV1_8CwZvHiA",
+              "kind": "message.posted",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289588,
+              "text": "Hoi @Mila, zie je Zoë?",
+              "mentions": [
+                {
+                  "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+                  "start": 4,
+                  "end": 9
+                }
+              ]
+            },
+            {
+              "seq": 9,
+              "id": "e_o46bttM4IB5qcZq1HqB09A",
+              "kind": "message.posted",
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "at": 1795127289665,
+              "root": "e_bDjzAslREfPV1_8CwZvHiA",
+              "text": "Ja 👍",
+              "mentions": []
+            }
+          ],
+          "head": 9,
+          "floor": 1,
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "events before",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/events?before=10&limit=1",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "events": [
+            {
+              "seq": 9,
+              "id": "e_o46bttM4IB5qcZq1HqB09A",
+              "kind": "message.posted",
+              "actor": "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "at": 1795127289665,
+              "root": "e_bDjzAslREfPV1_8CwZvHiA",
+              "text": "Ja 👍",
+              "mentions": []
+            }
+          ],
+          "head": 9,
+          "floor": 1,
+          "more": true
+        }
+      }
+    },
+    {
+      "name": "read",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/read",
+        "auth": "mila",
+        "body": {
+          "seq": 9
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "read": 9
+        }
+      }
+    },
+    {
+      "name": "redact as someone else",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages/e_bDjzAslREfPV1_8CwZvHiA/redact",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only its author or a channel manager removes a message."
+        }
+      }
+    },
+    {
+      "name": "redact",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_nTSJn3RWkZ7tSGre5fggrQ/messages/e_bDjzAslREfPV1_8CwZvHiA/redact",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "messageId": "e_bDjzAslREfPV1_8CwZvHiA",
+          "redacted": true
+        }
+      }
+    },
+    {
+      "name": "member feed after",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_G6LaETROG6o4y9qQZatUYg",
+              "role": "member",
+              "members": 6,
+              "head": 10,
+              "floor": 1,
+              "lastAt": 1795127289709,
+              "read": 9,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [
+                "e_bDjzAslREfPV1_8CwZvHiA"
+              ],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": false,
+            "channels": false,
+            "blocks": false
+          },
+          "more": false,
+          "next": "AdkHdyv3zkZ6l_j6lJdixlcM5YG0j9N761ORJXo9Klqnyv1H8-EfFBzojLAkoo3CXTfFV32PA7Z7NnR3HEZqbRLFjDax3aQF0QiGCRjhLRsyqVjCgN_xly_dS3hZskou2iURxLosDTyL-vNb5D79PJkNRa0wPosp"
+        }
+      }
+    },
+    {
+      "name": "bad cursor",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 410,
+        "body": {
+          "error": "reset_required",
+          "message": "This device has to load the workspace again.",
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "not a member",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_AAAAAAAAAAAAAAAAAAAAAA",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no such workspace.",
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "unknown conversation",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_AAAAAAAAAAAAAAAAAAAAAA/events?after=0&limit=50",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no such conversation.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "ticket",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/socket-ticket",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "ticket": "eyJ3Ijoid19haWg0Qkx3S1BlZXplYXVPUEdFSHZnIiwibiI6ImFaS1kzd0kwSzBVLWQ2OTM3MDFiWEEiLCJlIjoxNzk1MTI3MzE5NzQ1fQ.WHWSSm7XCuHGKCcLmhpiC7fD_XSkqX8QOEB1m1ByiJ8",
+          "expiresAt": 1795127319745,
+          "protocol": "rukoo.workspace.v1"
+        }
+      }
+    },
+    {
+      "name": "upgrade required",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg",
+        "auth": "mila",
+        "headers": {
+          "rukoo-workspace-version": "2"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 426,
+        "body": {
+          "error": "upgrade_required",
+          "message": "This server does not speak that version of the workspace protocol.",
+          "minVersion": 1,
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "signed out list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces",
+        "auth": "rex",
+        "body": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": "unauthorized",
+          "message": "Sign in again.",
+          "scope": "account"
+        }
+      }
+    },
+    {
+      "name": "signed out workspace route",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "auth": "rex",
+        "body": null
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": "unauthorized",
+          "message": "Sign in again.",
+          "scope": "account"
+        }
+      }
+    },
+    {
+      "name": "start dm",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": [
+            "u_SeUlzGJlRl0wxLhC4YLiRg"
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "dm": {
+            "conversation": "c_ywkAxXkwVlDkI7jloVd9Fw",
+            "kind": "dm",
+            "name": null,
+            "visibility": "dm",
+            "archived": false,
+            "participants": [
+              "u_69xoS94rD7uZWjn-6qlEDQ",
+              "u_SeUlzGJlRl0wxLhC4YLiRg"
+            ],
+            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "closedReason": null,
+            "grant": "g_hfKUG2HaUyi_-lpcVHyRGg",
+            "role": "member",
+            "members": 2,
+            "head": 1,
+            "floor": 1,
+            "lastAt": 1795127289771,
+            "read": 1,
+            "unread": 0,
+            "mentions": 0,
+            "removed": [],
+            "removedMore": false
+          }
+        }
+      }
+    },
+    {
+      "name": "start dm again",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "mila",
+        "body": {
+          "members": [
+            "u_69xoS94rD7uZWjn-6qlEDQ"
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "dm": {
+            "conversation": "c_ywkAxXkwVlDkI7jloVd9Fw",
+            "kind": "dm",
+            "name": null,
+            "visibility": "dm",
+            "archived": false,
+            "participants": [
+              "u_69xoS94rD7uZWjn-6qlEDQ",
+              "u_SeUlzGJlRl0wxLhC4YLiRg"
+            ],
+            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "closedReason": null,
+            "grant": "g_WpIhddMKE7khAyNI0ZSSug",
+            "role": "member",
+            "members": 2,
+            "head": 1,
+            "floor": 1,
+            "lastAt": 1795127289771,
+            "read": 1,
+            "unread": 0,
+            "mentions": 0,
+            "removed": [],
+            "removedMore": false
+          }
+        }
+      }
+    },
+    {
+      "name": "start group dm",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": [
+            "u_SeUlzGJlRl0wxLhC4YLiRg",
+            "u_9kbdcfRDTeZ68TUIinuzag"
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "dm": {
+            "conversation": "c_eTe_MI9ecYnwJUzY-o4uyw",
+            "kind": "dm",
+            "name": null,
+            "visibility": "dm",
+            "archived": false,
+            "participants": [
+              "u_69xoS94rD7uZWjn-6qlEDQ",
+              "u_SeUlzGJlRl0wxLhC4YLiRg",
+              "u_9kbdcfRDTeZ68TUIinuzag"
+            ],
+            "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+            "closedReason": null,
+            "grant": "g_E7eA3AvTe4xgys6HVk9XQg",
+            "role": "member",
+            "members": 3,
+            "head": 1,
+            "floor": 1,
+            "lastAt": 1795127289786,
+            "read": 1,
+            "unread": 0,
+            "mentions": 0,
+            "removed": [],
+            "removedMore": false
+          }
+        }
+      }
+    },
+    {
+      "name": "start dm with guest",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": [
+            "u_jd4Tb1fVINms9A7XqRIGSw"
+          ]
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "dm_unavailable",
+          "message": "You can't start a conversation with these people.",
+          "field": "members"
+        }
+      }
+    },
+    {
+      "name": "start dm without members",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": []
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "members must be a list of 1 to 7 member ids, each named once.",
+          "field": "members"
+        }
+      }
+    },
+    {
+      "name": "post dm",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_ywkAxXkwVlDkI7jloVd9Fw/messages",
+        "auth": "olga",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-705c-983e-79a1c6be17b2",
+          "grant": "g_hfKUG2HaUyi_-lpcVHyRGg",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Even bellen?",
+          "mentions": []
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "operationId": "01a1f5ec-a6e1-705c-983e-79a1c6be17b2",
+          "messageId": "e_VrcETmFTggHxYrsamldhag",
+          "seq": 2
+        }
+      }
+    },
+    {
+      "name": "dm events",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_ywkAxXkwVlDkI7jloVd9Fw/events?after=0&limit=100",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "events": [
+            {
+              "seq": 1,
+              "id": "e_Ek2q-b5YxI-V5kFEt1dJJg",
+              "kind": "dm.started",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289771,
+              "members": [
+                "u_69xoS94rD7uZWjn-6qlEDQ",
+                "u_SeUlzGJlRl0wxLhC4YLiRg"
+              ]
+            },
+            {
+              "seq": 2,
+              "id": "e_VrcETmFTggHxYrsamldhag",
+              "kind": "message.posted",
+              "actor": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "at": 1795127289804,
+              "text": "Even bellen?",
+              "mentions": []
+            }
+          ],
+          "head": 2,
+          "floor": 1,
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "block",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "auth": "olga",
+        "body": {
+          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "block": {
+            "member": "u_XN0js20bZkcTi7HbEZp2ow",
+            "at": 1795127289844
+          }
+        }
+      }
+    },
+    {
+      "name": "block again",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "auth": "olga",
+        "body": {
+          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "block": {
+            "member": "u_XN0js20bZkcTi7HbEZp2ow",
+            "at": 1795127289844
+          }
+        }
+      }
+    },
+    {
+      "name": "block self",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "auth": "olga",
+        "body": {
+          "member": "u_69xoS94rD7uZWjn-6qlEDQ"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid",
+          "message": "You cannot block yourself.",
+          "field": "member"
+        }
+      }
+    },
+    {
+      "name": "block unknown",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "auth": "olga",
+        "body": {
+          "member": "u_AAAAAAAAAAAAAAAAAAAAAA"
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no member with this id."
+        }
+      }
+    },
+    {
+      "name": "blocks",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "blocks": [
+            {
+              "member": "u_XN0js20bZkcTi7HbEZp2ow",
+              "at": 1795127289844
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "feed after block",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes?after={cursor}",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_xbrGcT2qO3WsuNxxppRWYw",
+              "kind": "dm",
+              "name": null,
+              "visibility": "dm",
+              "archived": true,
+              "participants": [
+                "u_69xoS94rD7uZWjn-6qlEDQ",
+                "u_XN0js20bZkcTi7HbEZp2ow"
+              ],
+              "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "closedReason": "closed",
+              "grant": "g_uh6ptjgoHJNOShO1tsIZBQ",
+              "role": "member",
+              "members": 2,
+              "head": 2,
+              "floor": 1,
+              "lastAt": 1795127289830,
+              "read": 2,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": false,
+            "channels": false,
+            "blocks": true
+          },
+          "more": false,
+          "next": "AWKIc_cjJb9j8kPQ8b705teXG8EQoStYueq6lnLWd_ir7piMXmz2noCDFNj_lynk9ETDSfZ4yEyzu1ZEwjKYOilj_0pPqNAv6V5YXwlMBKHvtHjddC0hzI4ss4SOh_OckEjDjTek1njKluGKmtLxCsTW4I-W47th"
+        }
+      }
+    },
+    {
+      "name": "start dm blocked",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": [
+            "u_XN0js20bZkcTi7HbEZp2ow"
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "blocked",
+          "message": "You blocked someone in this conversation. Unblock them first.",
+          "member": "u_XN0js20bZkcTi7HbEZp2ow"
+        }
+      }
+    },
+    {
+      "name": "start dm blocked by",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "bart",
+        "body": {
+          "members": [
+            "u_69xoS94rD7uZWjn-6qlEDQ"
+          ]
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "dm_unavailable",
+          "message": "You can't start a conversation with these people.",
+          "field": "members"
+        }
+      }
+    },
+    {
+      "name": "feed with closed dm",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/changes",
+        "auth": "bart",
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "changes": [
+            {
+              "conversation": "c_puUrLpkcJ2xzcSgAx6_RxQ",
+              "kind": "channel",
+              "name": "design",
+              "visibility": "private",
+              "archived": false,
+              "grant": "g_FxBR6NmBKK-THEnASYZ4Vw",
+              "role": "manager",
+              "members": 1,
+              "head": 4,
+              "floor": 1,
+              "lastAt": 1795127289506,
+              "read": 3,
+              "unread": 0,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_nTSJn3RWkZ7tSGre5fggrQ",
+              "kind": "channel",
+              "name": "general",
+              "visibility": "workspace",
+              "archived": false,
+              "grant": "g_WhcpqdFTVcpZgdk2PB1Ndg",
+              "role": "member",
+              "members": 6,
+              "head": 10,
+              "floor": 1,
+              "lastAt": 1795127289709,
+              "read": 4,
+              "unread": 1,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            },
+            {
+              "conversation": "c_xbrGcT2qO3WsuNxxppRWYw",
+              "kind": "dm",
+              "name": null,
+              "visibility": "dm",
+              "archived": true,
+              "participants": [
+                "u_69xoS94rD7uZWjn-6qlEDQ",
+                "u_XN0js20bZkcTi7HbEZp2ow"
+              ],
+              "startedBy": "u_69xoS94rD7uZWjn-6qlEDQ",
+              "closedReason": "closed",
+              "grant": "g_Y-Gb8DNgKeSJaP2ripM_8A",
+              "role": "member",
+              "members": 2,
+              "head": 2,
+              "floor": 1,
+              "lastAt": 1795127289830,
+              "read": 1,
+              "unread": 1,
+              "mentions": 0,
+              "removed": [],
+              "removedMore": false
+            }
+          ],
+          "evictions": [],
+          "inlineEvents": [],
+          "directory": {
+            "members": true,
+            "channels": true,
+            "blocks": true
+          },
+          "more": false,
+          "next": "AXMzfCsrvTP9rncmJYNkMlZkUPUqeje0LB3Big9wLO8YvvmskSv9_Bp8R0XSPukjQJDYQzVeV6bgtu6Qg6mGtdK_dzx5pFlK5x9m2EvUCac44qAiT_Ycyzaf8pHsTBhem5zqAaEBoKnpd662mVI8JXtiMm9eTj7W"
+        }
+      }
+    },
+    {
+      "name": "post closed dm",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/conversations/c_xbrGcT2qO3WsuNxxppRWYw/messages",
+        "auth": "bart",
+        "body": {
+          "operationId": "01a1f5ec-a6e1-7cf1-b5c0-c024b00b68aa",
+          "grant": "g_Y-Gb8DNgKeSJaP2ripM_8A",
+          "generation": "hKmMq9BeY-AbXwbEZM4pJQ",
+          "text": "Hallo?",
+          "mentions": []
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "archived",
+          "message": "This conversation is closed.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "unblock",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/blocks/u_XN0js20bZkcTi7HbEZp2ow",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "leave dm",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms/c_eTe_MI9ecYnwJUzY-o4uyw/leave",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "leave dm on a channel",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms/c_nTSJn3RWkZ7tSGre5fggrQ/leave",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no such conversation.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "channel route on a dm",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/channels/c_ywkAxXkwVlDkI7jloVd9Fw/members",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no such conversation.",
+          "scope": "conversation"
+        }
+      }
+    },
+    {
+      "name": "start dm too fast",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/dms",
+        "auth": "olga",
+        "body": {
+          "members": [
+            "u_SeUlzGJlRl0wxLhC4YLiRg"
+          ]
+        }
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "retry-after": "10"
+        },
+        "body": {
+          "error": "rate_limited",
+          "message": "Too many requests. Try again shortly.",
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "remove member",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/u_rMxAVZVRi1IzeCJ-xoWggg",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "leave workspace",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_aih4BLwKPeezeauOPGEHvg/members/me",
+        "auth": "pia",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "create channel over quota",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA/channels",
+        "auth": "tina",
+        "body": {
+          "name": "one more",
+          "visibility": "workspace"
+        }
+      },
+      "response": {
+        "status": 413,
+        "body": {
+          "error": "quota",
+          "message": "This workspace has no room for another conversation.",
+          "scope": "workspace",
+          "limit": "conversations"
+        }
+      }
+    },
+    {
+      "name": "start dm over quota",
+      "request": {
+        "method": "POST",
+        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA/dms",
+        "auth": "tina",
+        "body": {
+          "members": [
+            "u_RMHdQGQTJfs7wAATBUWKJw"
+          ]
+        }
+      },
+      "response": {
+        "status": 413,
+        "body": {
+          "error": "quota",
+          "message": "This workspace has no room for another conversation.",
+          "scope": "workspace",
+          "limit": "conversations"
+        }
+      }
+    },
+    {
+      "name": "delete workspace members remain",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA",
+        "auth": "tina",
+        "body": null
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "members_remain",
+          "message": "Remove everyone else first."
+        }
+      }
+    },
+    {
+      "name": "delete workspace not owner",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_R0sjEfTox4OKvsoVNgtEQA",
+        "auth": "mila",
+        "body": null
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "forbidden",
+          "message": "Only an owner deletes a workspace."
+        }
+      }
+    },
+    {
+      "name": "delete workspace",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/workspaces/w_DjlQ1SRasVYVhT5K1CS9pw",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 204,
+        "body": null
+      }
+    },
+    {
+      "name": "deleted workspace",
+      "request": {
+        "method": "GET",
+        "path": "/v1/workspaces/w_DjlQ1SRasVYVhT5K1CS9pw",
+        "auth": "olga",
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "not_found",
+          "message": "There is no such workspace.",
+          "scope": "workspace"
+        }
+      }
+    },
+    {
+      "name": "sign up with invitation",
+      "request": {
+        "method": "POST",
+        "path": "/v1/signup",
+        "auth": null,
+        "body": {
+          "email": "nina@example.com",
+          "workspaceInvite": {
+            "workspace": "w_aih4BLwKPeezeauOPGEHvg",
+            "invite": "N3QGM43-nkF9aBP_-ghVqw6oV0CxMLtESLyQEwsV5e4"
+          },
+          "kdf": {
+            "alg": "argon2id",
+            "m": 65536,
+            "t": 3,
+            "p": 1
+          },
+          "salt": "AAAAAAAAAAAAAAAAAAAAAA",
+          "authKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "wrappedKey": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "recoveryAuth": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "recoveryWrappedKey": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "device": {
+            "name": "Phone",
+            "platform": "android"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "token": "nina",
+          "account": {
+            "email": "nina@example.com",
+            "createdAt": 1795127290254,
+            "class": "full",
+            "incarnation": null,
+            "kdf": {
+              "alg": "argon2id",
+              "m": 65536,
+              "t": 3,
+              "p": 1
+            },
+            "usage": {
+              "records": 0,
+              "bytes": 0
+            },
+            "limits": {
+              "records": 250000,
+              "bytes": 104857600,
+              "recordBytes": 16384,
+              "batch": 500
+            },
+            "devices": [
+              {
+                "id": "vVJ2lL8DXyaoc7npPNtfAQ",
+                "name": "Phone",
+                "platform": "android",
+                "createdAt": 1795127290254,
+                "lastSeenAt": 1795127290254,
+                "current": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "sign up with used invitation",
+      "request": {
+        "method": "POST",
+        "path": "/v1/signup",
+        "auth": null,
+        "body": {
+          "email": "noor@example.com",
+          "workspaceInvite": {
+            "workspace": "w_aih4BLwKPeezeauOPGEHvg",
+            "invite": "N3QGM43-nkF9aBP_-ghVqw6oV0CxMLtESLyQEwsV5e4"
+          },
+          "kdf": {
+            "alg": "argon2id",
+            "m": 65536,
+            "t": 3,
+            "p": 1
+          },
+          "salt": "AAAAAAAAAAAAAAAAAAAAAA",
+          "authKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "wrappedKey": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "recoveryAuth": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "recoveryWrappedKey": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "device": {
+            "name": "Phone",
+            "platform": "android"
+          }
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "invite_required",
+          "message": "This invite code has been used."
+        }
+      }
+    }
+  ]
+}

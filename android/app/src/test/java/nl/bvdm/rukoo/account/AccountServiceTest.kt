@@ -7,6 +7,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
+import nl.bvdm.rukoo.core.RukooJson
+import nl.bvdm.rukoo.workspaces.InviteLink
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -1342,6 +1349,126 @@ class AccountServiceTest {
         assertEquals(info, desk.status().info)
         desk.setServer("https://elsewhere.example.com")
         assertNull("another server, another operator", desk.status().info)
+    }
+
+    // ---- lending the session to team chat (contract 3.4, android.md "Session borrowing") ----
+
+    /** Counts what [device] announces on sessionEnded, from now on. */
+    private fun ends(device: AccountService): AtomicInteger {
+        val n = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { device.sessionEnded.collect { n.incrementAndGet() } }
+        return n
+    }
+
+    /** Waits until [n] reaches [count], then a little longer to see that it stays there. */
+    private suspend fun settles(n: AtomicInteger, count: Int) {
+        withTimeout(5_000) { while (n.get() < count) delay(10) }
+        delay(100)
+        assertEquals(count, n.get())
+    }
+
+    @Test
+    fun `a borrowed session has the server it signed in at, its token and its tag, and none while signed out`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        assertNull(desk.borrowSession())
+        desk.signUp("borrow@example.com", PASSWORD)
+        val borrowed = desk.borrowSession()!!
+        assertEquals(srv.url, borrowed.server)
+        assertTrue(srv.sessions.containsKey(borrowed.token))
+        val sha = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(borrowed.token.toByteArray()))
+        assertEquals(sha.take(22), borrowed.tag)
+        assertEquals(22, borrowed.tag.length)
+        assertFalse("the token stays out of logs", borrowed.toString().contains(borrowed.token))
+        val again = desk.borrowSession()!!
+        assertSame("one session, one reference", borrowed.ref, again.ref)
+        assertEquals(borrowed.tag, again.tag)
+
+        desk.signOut()
+        assertNull(desk.borrowSession())
+        desk.signIn("borrow@example.com", PASSWORD)
+        val next = desk.borrowSession()!!
+        assertNotEquals("a new session has a new tag", borrowed.tag, next.tag)
+        assertNotSame(borrowed.ref, next.ref)
+    }
+
+    @Test
+    fun `a workspace 401 signs out only the session it was for, once`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.signUp("refused@example.com", PASSWORD)
+        val ended = ends(desk)
+        val first = desk.borrowSession()!!
+        assertTrue(desk.sessionRefused(first))
+        assertFalse(desk.status().signedIn)
+        assertEquals("signed_out", desk.status().error)
+        settles(ended, 1)
+        assertFalse("a second 401 for the same session changes nothing", desk.sessionRefused(first))
+        settles(ended, 1)
+
+        // A late 401 for the session before this one leaves the new one alone.
+        desk.signIn("refused@example.com", PASSWORD)
+        assertFalse(desk.sessionRefused(first))
+        assertTrue(desk.status().signedIn)
+        assertNotNull(desk.borrowSession())
+        settles(ended, 1)
+    }
+
+    @Test
+    fun `every end of a session is announced once`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        val ended = ends(desk)
+        desk.signOut()
+        settles(ended, 0)
+
+        desk.signUp("ends@example.com", PASSWORD)
+        desk.signOut()
+        settles(ended, 1)
+
+        desk.signIn("ends@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("ends@example.com", PASSWORD)
+        laptop.removeDevice(laptop.details().devices.first { it.name == "desk" }.id)
+        signedOut(desk)
+        settles(ended, 2)
+
+        desk.signIn("ends@example.com", PASSWORD)
+        desk.deleteAccount(PASSWORD)
+        settles(ended, 3)
+    }
+
+    @Test
+    fun `signing up with a workspace invitation sends it in place of the invite code`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        val link = InviteLink(srv.url, "w_" + "A".repeat(22), "b".repeat(43))
+        desk.signUp("colleague@example.com", PASSWORD, invite = "a code", workspaceInvite = link)
+        val sent = RukooJson.parseToJsonElement(srv.calls.single { it.route == "POST /v1/signup" }.body).jsonObject
+        val invite = sent.getValue("workspaceInvite").jsonObject
+        assertEquals(JsonPrimitive(link.workspace), invite["workspace"])
+        assertEquals(JsonPrimitive(link.secret), invite["invite"])
+        assertEquals(2, invite.size)
+        assertNull("the invite code doesn't go along", sent["invite"])
+
+        // An invitation for another server never sends its secret here.
+        val other = device(srv)
+        rejects("invalid") {
+            other.signUp("other@example.com", PASSWORD, workspaceInvite = InviteLink("https://elsewhere.example", link.workspace, link.secret))
+        }
+        assertEquals(1, srv.calls.count { it.route == "POST /v1/signup" })
+        assertFalse(srv.calls.any { it.body.contains(link.secret) && it.route != "POST /v1/signup" })
+    }
+
+    @Test
+    fun `a server without team chat reads as one without it`() = runBlocking {
+        val desk = device(server())
+        val info = desk.serverInfo()
+        assertEquals(emptyList<String>(), info.features)
+        assertNull(info.workspace)
+        assertFalse(info.teamChat)
     }
 
     private companion object {

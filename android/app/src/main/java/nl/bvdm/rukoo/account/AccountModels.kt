@@ -1,8 +1,12 @@
 package nl.bvdm.rukoo.account
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import nl.bvdm.rukoo.workspaces.WORKSPACES_FEATURE
+import nl.bvdm.rukoo.workspaces.WORKSPACE_VERSION
+import nl.bvdm.rukoo.workspaces.WorkspaceServerInfo
 
 /** Who runs an account server (`GET /v1/info`, `operator`). */
 @Serializable
@@ -12,7 +16,11 @@ data class ServerOperator(val name: String? = null, val url: String? = null, val
 @Serializable
 data class ServerHosting(val provider: String? = null, val company: String? = null, val country: String? = null, val jurisdiction: String? = null)
 
-/** What `GET /v1/info` says: who runs the server and where it keeps data, shown before anyone signs up. */
+/**
+ * What `GET /v1/info` says: who runs the server and where it keeps data, shown before anyone signs up. [features]
+ * lists what the server offers beyond records, such as `booking` and `workspaces-v1`; [workspace] is there while the
+ * operator has team chat on. Older servers leave both out.
+ */
 @Serializable
 data class ServerInfo(
     val protocol: Int = 0,
@@ -21,7 +29,12 @@ data class ServerInfo(
     val hosting: ServerHosting? = null,
     /** `open`, `invite` or `closed`. */
     val signups: String = "open",
-)
+    val features: List<String> = emptyList(),
+    val workspace: WorkspaceServerInfo? = null,
+) {
+    /** Whether this server has team chat in a version this build speaks: Chat shows only then (contract 3.1). */
+    val teamChat: Boolean get() = WORKSPACES_FEATURE in features && workspace?.versions?.contains(WORKSPACE_VERSION) == true
+}
 
 @Serializable
 data class AccountUsage(val records: Long = 0, val bytes: Long = 0)
@@ -37,13 +50,19 @@ data class AccountDevice(
     val current: Boolean = false,
 )
 
-/** `GET /v1/account`: the account's address, its usage and its devices. */
+/**
+ * `GET /v1/account`: the account's address, its usage and its devices. [accountClass] is `full` for an account that
+ * may make workspaces; [incarnation] names this life of the account once a workspace route has asked for it, and
+ * stays null before. Servers without team chat leave both out.
+ */
 @Serializable
 data class AccountDetails(
     val email: String = "",
     val createdAt: Long = 0,
     val usage: AccountUsage? = null,
     val devices: List<AccountDevice> = emptyList(),
+    @SerialName("class") val accountClass: String? = null,
+    val incarnation: String? = null,
 )
 
 /** The server info kept for the server it came from, so Settings shows it without a network. */
