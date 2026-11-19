@@ -1,7 +1,8 @@
 //! Splitting the microphone of a stopped meeting into voices (`speakers.split`), with the
 //! scripted diarizer instead of the NeMo worker: which voice stays the user, which passages move,
-//! the events Rukoo gets, a split that is stored and never runs twice, failures and stops that
-//! leave the meeting as it was, and passages written after a split.
+//! passages cut where the voice changes, the events Rukoo gets, a split that is stored and never
+//! runs twice, failures and stops that leave the meeting as it was, and passages written after a
+//! split.
 //!
 //! The microphone is synthetic: each hidden speaker is a square wave of its own loudness, which
 //! the scripted diarizer hears, and which the test knows from the script.
@@ -416,6 +417,335 @@ fn a_split_needs_a_stopped_meeting_with_its_microphone_audio() {
         Err(SplitError::NoAudio)
     ));
     assert_eq!(d.script().opens, 0, "no worker for any of them");
+}
+
+/// The user (0) says a word and another voice (1) answers 0.4 s later: too soon to end the
+/// window or the passage, so the pipeline makes one passage of both, which voice 1 holds most
+/// of. Then the user talks alone, longer, so the user is the voice heard longest.
+fn an_exchange() -> Vec<(f64, Option<usize>)> {
+    vec![
+        (0.5, None),
+        (1.0, Some(0)), // 0.5-1.5 s
+        (0.4, None),
+        (3.5, Some(1)), // 1.9-5.4 s, the same passage
+        (1.5, None),
+        (5.0, Some(0)), // 6.9-11.9 s
+        (1.0, None),
+    ]
+}
+
+/// The id of the exchange's first passage, the one both voices share.
+const SHARED: &str = "mic-000000500";
+
+/// The microphone passages in `transcript.db`, by start: (id, start, end, text, speaker,
+/// revision).
+fn stored(rec: &Recording) -> Vec<(String, u64, u64, String, String, u64)> {
+    Transcript::open(rec.dir.path())
+        .unwrap()
+        .passages()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.passage)
+        .filter(|p| p.track == Track::Mic)
+        .map(|p| (p.id, p.start, p.end, p.text, p.speaker.unwrap(), p.revision))
+        .collect()
+}
+
+/// Runs SQL on a meeting's `transcript.db`, as a damaged or older store would hold it.
+fn sql(rec: &Recording, statement: &str) {
+    let conn = rusqlite::Connection::open(rec.dir.path().join("transcript.db")).unwrap();
+    conn.execute_batch(statement).unwrap();
+}
+
+#[test]
+fn a_passage_two_voices_share_is_cut_where_the_voice_changes() {
+    let tmp = TempDir::new("split-cut");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = an_exchange();
+    let rec = recorded(&lib, &pieces, &[]);
+    transcribe(&rec, &log, timed());
+    let before = events(&log, &rec.id());
+    let last = stored(&rec)[1].clone();
+    assert_eq!(
+        stored(&rec),
+        [
+            (
+                SHARED.into(),
+                500,
+                5_400,
+                "w500 w1900".into(),
+                "mic".into(),
+                1
+            ),
+            last.clone(),
+        ]
+    );
+
+    let d = ScriptedDiarizer::new();
+    assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2);
+    // The first piece keeps the passage's id at a new revision and stays the user's; the second
+    // is a passage of its own at revision 1. Taken whole, the passage would have gone to voice 1.
+    let cut = vec![
+        (SHARED.into(), 500, 1_500, "w500".into(), "mic".into(), 2),
+        (
+            "mic-000001900".into(),
+            1_900,
+            5_400,
+            "w1900".into(),
+            "mic-2".into(),
+            1,
+        ),
+        last,
+    ];
+    assert_eq!(stored(&rec), cut);
+    let after = events(&log, &rec.id());
+    let new: Vec<(&str, &Value)> = after[before.len()..]
+        .iter()
+        .map(|e| (e.event.as_str(), &e.data))
+        .collect();
+    assert_eq!(new.len(), 3, "{new:?}");
+    assert_eq!(
+        new[0],
+        (
+            "speaker",
+            &json!({"id": "mic-2", "track": "mic", "label": "Microphone 2"})
+        )
+    );
+    assert_eq!(
+        (new[1].0, &new[1].1["id"], &new[1].1["revision"]),
+        ("passage", &json!(SHARED), &json!(2))
+    );
+    assert_eq!(
+        (new[2].0, &new[2].1["id"], &new[2].1["revision"]),
+        ("passage", &json!("mic-000001900"), &json!(1))
+    );
+    assert_eq!(new[2].1["text"], "w1900");
+    assert_eq!(new[2].1["dictation"], false);
+    assert_no_repeats(&after);
+    // The pieces keep their word timings: each has its own word.
+    let t = Transcript::open(rec.dir.path()).unwrap();
+    let words: Vec<Vec<String>> = t
+        .passages()
+        .unwrap()
+        .iter()
+        .take(2)
+        .map(|s| s.tokens.iter().map(|w| w.text.clone()).collect())
+        .collect();
+    assert_eq!(words, [vec![" w500"], vec![" w1900"]]);
+    drop(t);
+    // meeting.get has the pieces.
+    let snapshot = lib.get(&rec.id(), &log).unwrap();
+    let ids: Vec<&str> = snapshot["passages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [SHARED, "mic-000001900", cut[2].0.as_str()]);
+
+    // A second split answers the same and sends nothing.
+    assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2);
+    assert_eq!(events(&log, &rec.id()).len(), after.len());
+    // So does one after Voice opens the meeting again, and a pipeline over the meeting.
+    drop(log);
+    drop(lib);
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let dir = lib.dir(&rec.id()).unwrap();
+    assert_eq!(split(&dir, &log, &d, &no_stop()).unwrap(), 2);
+    transcribe(&rec, &log, timed());
+    assert_eq!(events(&log, &rec.id()).len(), after.len());
+    assert_eq!(stored(&rec), cut);
+    assert_eq!(d.script().opens, 1, "split once");
+}
+
+#[test]
+fn passages_without_readable_word_timings_take_one_voice_whole() {
+    let tmp = TempDir::new("split-untimed");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = an_exchange();
+    let d = ScriptedDiarizer::new();
+
+    // A recognizer without timings: one passage per window, the first over both voices.
+    let text = recorded(&lib, &pieces, &[]);
+    transcribe(
+        &text,
+        &log,
+        PipelineOptions {
+            timing: fast(),
+            ..PipelineOptions::new(Arc::new(Echo::default()))
+        },
+    );
+    let before = stored(&text);
+    assert_eq!((before[0].1, before[0].4.as_str()), (0, "mic"));
+    assert_eq!(split(&text.dir, &log, &d, &no_stop()).unwrap(), 2);
+    let after = stored(&text);
+    assert_eq!(after.len(), before.len(), "nothing cut: {after:?}");
+    let moved = (before[0].0.clone(), 0, before[0].2, before[0].3.clone());
+    assert_eq!(
+        (
+            after[0].0.clone(),
+            after[0].1,
+            after[0].2,
+            after[0].3.clone()
+        ),
+        moved
+    );
+    assert_eq!((after[0].4.as_str(), after[0].5), ("mic-2", 2));
+
+    // Word timings that can't be read, and ones that spell other words.
+    for (name, tokens) in [
+        ("unreadable", "'not json'"),
+        (
+            "other words",
+            r#"'[[" Hello",0.5,1.5],[" there",1.9,5.4]]'"#,
+        ),
+    ] {
+        let rec = recorded(&lib, &pieces, &[]);
+        transcribe(&rec, &log, timed());
+        sql(
+            &rec,
+            &format!("UPDATE passages SET tokens = {tokens} WHERE id = '{SHARED}'"),
+        );
+        assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2, "{name}");
+        let after = stored(&rec);
+        assert_eq!(after.len(), 2, "{name}: nothing cut: {after:?}");
+        assert_eq!(
+            after[0],
+            (
+                SHARED.into(),
+                500,
+                5_400,
+                "w500 w1900".into(),
+                "mic-2".into(),
+                2
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_dictated_passage_is_never_cut() {
+    let tmp = TempDir::new("split-dictated");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    // The exchange while the user dictated, then voice 1 alone.
+    let mut pieces = an_exchange();
+    pieces.extend([(1.5, None), (2.0, Some(1)), (1.0, None)]);
+    let rec = recorded(&lib, &pieces, &[(500, 1_500)]);
+    transcribe(&rec, &log, timed());
+    let before = stored(&rec);
+    assert_eq!(before.len(), 3, "{before:?}");
+    let d = ScriptedDiarizer::new();
+    assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2);
+    let after = stored(&rec);
+    assert_eq!(after.len(), 3, "{after:?}");
+    // The dictated passage stays whole and the user's, at its revision; voice 1 alone moved.
+    assert_eq!(after[0], before[0]);
+    let t = Transcript::open(rec.dir.path()).unwrap();
+    assert!(t.passages().unwrap()[0].passage.dictation);
+    assert_eq!(after[1], before[1]);
+    assert_eq!((after[2].4.as_str(), after[2].5), ("mic-2", 2));
+}
+
+#[test]
+fn a_piece_on_the_id_of_a_stored_passage_is_not_cut_off() {
+    let tmp = TempDir::new("split-taken");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let rec = recorded(&lib, &an_exchange(), &[]);
+    transcribe(&rec, &log, timed());
+    // A passage already starts where the second piece would, so its id is taken. A pipeline
+    // sends it, as it would any stored passage.
+    sql(
+        &rec,
+        r#"INSERT INTO passages (id, track, speaker, start, "end", text, revision, dictation)
+           VALUES ('mic-000001900', 'mic', 'mic', 1900, 1950, 'uh', 1, 0)"#,
+    );
+    transcribe(&rec, &log, timed());
+    let before = stored(&rec);
+    assert_eq!(before.len(), 3, "{before:?}");
+
+    assert_eq!(
+        split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        2
+    );
+    let after = stored(&rec);
+    // No cut there: the passage stays whole and takes the voice with a clear majority.
+    assert_eq!(after.len(), 3, "{after:?}");
+    assert_eq!(
+        after[0],
+        (
+            SHARED.into(),
+            500,
+            5_400,
+            "w500 w1900".into(),
+            "mic-2".into(),
+            2
+        )
+    );
+    assert_eq!(after[1].0, "mic-000001900");
+    assert_no_repeats(&events(&log, &rec.id()));
+}
+
+#[test]
+fn passages_written_after_a_split_are_cut_as_the_split_cuts_them() {
+    let tmp = TempDir::new("split-cut-later");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let pieces = an_exchange();
+
+    // Transcribed, then split.
+    let first = recorded(&lib, &pieces, &[]);
+    transcribe(&first, &log, timed());
+    split(&first.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap();
+
+    // Split before anything was transcribed, then transcribed.
+    let later = recorded(&lib, &pieces, &[]);
+    let failing = Pipeline::start(
+        later.dir.clone(),
+        log.clone(),
+        PipelineOptions {
+            timing: fast(),
+            ..PipelineOptions::new(Arc::new(Offline))
+        },
+    );
+    wait_for_state(&failing, PipelineState::is_final);
+    failing.shutdown();
+    assert_eq!(
+        split(&later.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        1
+    );
+    transcribe(&later, &log, timed());
+
+    // The same passages, each at revision 1, since none had to change.
+    let without_revision = |rec: &Recording| -> Vec<(String, u64, u64, String, String)> {
+        stored(rec)
+            .into_iter()
+            .map(|(id, start, end, text, speaker, _)| (id, start, end, text, speaker))
+            .collect()
+    };
+    assert_eq!(without_revision(&later), without_revision(&first));
+    assert_eq!(stored(&later).len(), 3);
+    assert!(
+        stored(&later).iter().all(|p| p.5 == 1),
+        "{:?}",
+        stored(&later)
+    );
+    let all = events(&log, &later.id());
+    let speaker = all
+        .iter()
+        .position(|e| e.event == "speaker" && e.data["id"] == "mic-2")
+        .expect("mic-2");
+    let passage = all
+        .iter()
+        .position(|e| e.event == "passage" && e.data["speaker"] == "mic-2")
+        .unwrap();
+    assert!(speaker < passage);
+    assert_no_repeats(&all);
 }
 
 #[test]

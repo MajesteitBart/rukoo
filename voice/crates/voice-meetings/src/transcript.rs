@@ -13,7 +13,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde_json::Value;
 use voice_protocol::{passage_id, Mark, MeetingState, Passage, Speaker, Track};
 
-use crate::segmentation::Token;
+use crate::segmentation::{Draft, Token};
 use crate::speakers::turns::Turn;
 
 pub const FILE_NAME: &str = "transcript.db";
@@ -36,7 +36,8 @@ pub const DIARIZE_KEY: &str = "speakers.diarize";
 /// later pipeline starts no worker for it.
 pub const LABELLED_KEY: &str = "speakers.finished.call";
 /// The voices `speakers.split` left on the microphone, once it split the track: it never splits
-/// it again. Set in the transaction that stores the microphone's turns and moves its passages.
+/// it again. Set in the transaction that stores the microphone's turns and cuts and moves its
+/// passages.
 pub const SPLIT_KEY: &str = "speakers.split.mic";
 /// The `reason` of a microphone split's epoch in `speaker_epochs`; its engine is `nemotron`.
 pub const SPLIT_REASON: &str = "split";
@@ -208,8 +209,9 @@ pub struct SplitWrite {
 pub struct SplitStored {
     /// The voices on the microphone now, `mic` included: 1 or more.
     pub voices: u64,
-    /// The passages that moved to another voice, at their new revision, by start.
-    pub moved: Vec<Passage>,
+    /// The passages that changed, at their new revision, and the pieces that became passages of
+    /// their own, at revision 1, by start.
+    pub changed: Vec<Passage>,
 }
 
 /// How the meeting's processing ended, or that it is processing.
@@ -547,16 +549,20 @@ impl Transcript {
     }
 
     /// Stores a finished microphone split in one transaction: a new epoch for it, the label map,
-    /// the microphone's turns, each passage `voice_of` gives another voice at a new revision, and
-    /// [`SPLIT_KEY`]. A crash leaves either all of it or none.
+    /// the microphone's turns, the microphone's passages as `cut` makes them, and [`SPLIT_KEY`].
+    /// A crash leaves either all of it or none.
     ///
-    /// `voice_of` sees each microphone passage as stored and returns its new speaker, or `None`
-    /// to leave it. A meeting that was split already keeps its split: nothing changes, and the
-    /// answer has its voices and moves nothing.
+    /// `cut` sees each microphone passage as stored, and whether a passage starting at a meeting
+    /// ms is stored already, and returns its pieces by start, each with its speaker. The first
+    /// piece is the passage: when its speaker, end, text or word timings differ, it gets them at
+    /// a new revision. Each later piece becomes a new passage at revision 1, with the id of its
+    /// start; `cut` must not start one where a passage is. No pieces leave the passage as it is.
+    /// A meeting that was split already keeps its split: nothing changes, and the answer has its
+    /// voices and changes nothing.
     pub fn record_split(
         &mut self,
         split: &SplitWrite,
-        voice_of: impl Fn(&Passage) -> Option<String>,
+        cut: impl Fn(&StoredPassage, &dyn Fn(u64) -> bool) -> Vec<Draft>,
     ) -> rusqlite::Result<SplitStored> {
         let tx = self
             .conn
@@ -564,7 +570,7 @@ impl Transcript {
         if let Some(voices) = meta_number(&tx, SPLIT_KEY)? {
             return Ok(SplitStored {
                 voices,
-                moved: Vec::new(),
+                changed: Vec::new(),
             });
         }
         let highest: Option<i64> =
@@ -602,20 +608,49 @@ impl Transcript {
             ..LabelBatch::default()
         };
         Self::write_labels(&tx, Track::Mic, &batch)?;
-        let mut moved = Vec::new();
+        let mut changed = Vec::new();
         let mut voices = std::collections::BTreeSet::new();
+        // An error reads as taken: no cut there, rather than a write that fails.
+        let taken = |start: u64| has_passage(&tx, &passage_id(Track::Mic, start)).unwrap_or(true);
         for stored in query_passages(&tx, "WHERE track = 'mic'", [])? {
+            let pieces = cut(&stored, &taken);
             let mut passage = stored.passage;
-            if let Some(speaker) = voice_of(&passage) {
-                if passage.speaker.as_deref() != Some(speaker.as_str()) {
-                    passage.speaker = Some(speaker);
-                    passage.revision += 1;
-                    update_passage(&tx, &passage)?;
-                    moved.push(passage.clone());
-                }
+            let Some((first, rest)) = pieces.split_first() else {
+                voices.extend(passage.speaker.as_deref().and_then(mic_number));
+                continue;
+            };
+            if passage.speaker != first.speaker
+                || passage.end != first.end
+                || passage.text != first.text
+                || stored.tokens != first.tokens
+            {
+                passage.speaker = first.speaker.clone();
+                passage.end = first.end;
+                passage.text = first.text.clone();
+                passage.revision += 1;
+                rewrite_passage(&tx, &passage, &first.tokens)?;
+                changed.push(passage.clone());
             }
-            if let Some(n) = passage.speaker.as_deref().and_then(mic_number) {
-                voices.insert(n);
+            voices.extend(passage.speaker.as_deref().and_then(mic_number));
+            for piece in rest {
+                let new = StoredPassage {
+                    passage: Passage {
+                        id: passage_id(Track::Mic, piece.start),
+                        track: Track::Mic,
+                        speaker: piece.speaker.clone(),
+                        start: piece.start,
+                        end: piece.end,
+                        text: piece.text.clone(),
+                        revision: 1,
+                        dictation: passage.dictation,
+                        language: passage.language.clone(),
+                    },
+                    tokens: piece.tokens.clone(),
+                };
+                // Without OR REPLACE: a piece on a stored passage's id fails the whole split.
+                write_passage(&tx, "INSERT", &new)?;
+                voices.extend(new.passage.speaker.as_deref().and_then(mic_number));
+                changed.push(new.passage);
             }
         }
         let voices = 1 + voices.len() as u64;
@@ -624,7 +659,12 @@ impl Transcript {
             params![SPLIT_KEY, voices.to_string()],
         )?;
         tx.commit()?;
-        Ok(SplitStored { voices, moved })
+        Ok(SplitStored { voices, changed })
+    }
+
+    /// Whether a passage with this id is stored.
+    pub fn has_passage(&self, id: &str) -> rusqlite::Result<bool> {
+        has_passage(&self.conn, id)
     }
 
     /// Ends the call's speaker turns at `at_ms`, for a stream that stopped: open turns and turns
@@ -1022,6 +1062,31 @@ fn update_passage(conn: &Connection, passage: &Passage) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// Gives a passage the speaker, end, text, revision and word timings of a cut.
+fn rewrite_passage(conn: &Connection, passage: &Passage, tokens: &[Token]) -> rusqlite::Result<()> {
+    conn.execute(
+        r#"UPDATE passages SET speaker = ?2, "end" = ?3, text = ?4, revision = ?5, tokens = ?6
+           WHERE id = ?1"#,
+        params![
+            passage.id,
+            passage.speaker,
+            to_i64(passage.end),
+            passage.text,
+            to_i64(passage.revision),
+            stored_tokens(tokens)
+        ],
+    )?;
+    Ok(())
+}
+
+fn has_passage(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM passages WHERE id = ?1)",
+        [id],
+        |row| row.get(0),
+    )
+}
+
 /// A meta value that holds a number, read with `conn`, which may be a transaction.
 fn meta_number(conn: &Connection, key: &str) -> rusqlite::Result<Option<u64>> {
     let value: Option<String> = conn
@@ -1057,12 +1122,19 @@ fn raise(conn: &Connection, key: &str, value: u64) -> rusqlite::Result<u64> {
 }
 
 fn insert_passage(tx: &rusqlite::Transaction<'_>, p: &StoredPassage) -> rusqlite::Result<()> {
+    write_passage(tx, "INSERT OR REPLACE", p)
+}
+
+/// Writes a whole passage row with `verb`, `INSERT` or `INSERT OR REPLACE`.
+fn write_passage(conn: &Connection, verb: &str, p: &StoredPassage) -> rusqlite::Result<()> {
     let passage = &p.passage;
-    let tokens = (!p.tokens.is_empty()).then(|| encode_tokens(&p.tokens));
-    tx.execute(
-        r#"INSERT OR REPLACE INTO passages
-           (id, track, speaker, start, "end", text, revision, dictation, language, tokens)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
+    let tokens = stored_tokens(&p.tokens);
+    conn.execute(
+        &format!(
+            r#"{verb} INTO passages
+               (id, track, speaker, start, "end", text, revision, dictation, language, tokens)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#
+        ),
         params![
             passage.id,
             passage.track.as_str(),
@@ -1077,6 +1149,11 @@ fn insert_passage(tx: &rusqlite::Transaction<'_>, p: &StoredPassage) -> rusqlite
         ],
     )?;
     Ok(())
+}
+
+/// A passage's `tokens` column: `NULL` without word timings.
+fn stored_tokens(tokens: &[Token]) -> Option<String> {
+    (!tokens.is_empty()).then(|| encode_tokens(tokens))
 }
 
 /// Ownkey's token format: `[[text, start, end], ...]` in seconds, rounded to 10 ms.
