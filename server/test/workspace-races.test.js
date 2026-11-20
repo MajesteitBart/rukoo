@@ -665,7 +665,8 @@ describe('sockets and sessions', () => {
         instance.env = real;
       }
     });
-    expect(status).toBe(426);
+    // The Worker answers it with the workspace's 404.
+    expect(status).toBe(404);
   });
 
   it('takes nothing from what members share when a stranger is over their own allowance', async () => {

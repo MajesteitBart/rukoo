@@ -224,7 +224,9 @@ jobs:
           for attempt in $(seq 1 150); do [ -f "$ready" ] && break; sleep 0.2; done
           test -f "$ready" || { cat "$RUNNER_TEMP/rukoo-server.log"; exit 1; }
           cat "$ready"
-      - run: ./gradlew testDebugUnitTest assembleDebug --console=plain
+      # --rerun: the live tests depend on the server started above, which Gradle's cache can't see, so a cached result
+      # from a run that skipped them, or ran them against another build of the Worker, mustn't stand in.
+      - run: ./gradlew testDebugUnitTest --rerun assembleDebug --console=plain
         env:
           RUKOO_ACCOUNT_TEST_SERVER: http://127.0.0.1:38850
           RUKOO_ACCOUNT_TEST_INVITE: test-invite

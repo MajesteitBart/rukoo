@@ -230,12 +230,17 @@ function scoped(result) {
 // workspace says whether it is. A reference old enough to be settled is put right here: one whose workspace doesn't
 // know the account, left by a join that failed, is given back, and one whose workspace knows it as a former member
 // is marked as left. Both name the version they saw, so a join that recorded the reference again meanwhile keeps it.
+// A workspace the account made and left is never listed; its reference goes once the workspace is gone (settleMade).
 async function list(request, env) {
   const { stub, token } = session(request, env);
   const mine = await stub.workspaces(token);
   if (mine.status !== 200) return send(scoped(mine));
   const found = await Promise.all(
     mine.workspaces.map(async (ref) => {
+      if (ref.former) {
+        await settleMade(env, stub, mine.incarnation, ref);
+        return null;
+      }
       const here = await workspaceObject(env, ref.id).membership(mine.incarnation);
       if (here.state === 'active') return { id: here.id, name: here.name, role: here.role };
       if (ref.stale && here.state === 'former') await stub.leftWorkspace(mine.incarnation, ref.id, ref.version);
@@ -244,6 +249,18 @@ async function list(request, env) {
     })
   );
   return json(200, { workspaces: found.filter(Boolean) });
+}
+
+// A workspace the account made and then left keeps its reference, so the workspace hears when the account is deleted,
+// and the reference counts against the limit on making workspaces. Once the workspace no longer knows the account, as
+// after someone else deleted it, the reference is given back. A failure leaves it for the next time.
+async function settleMade(env, stub, incarnation, ref) {
+  try {
+    const here = await workspaceObject(env, ref.id).membership(incarnation);
+    if (here.state === 'none') await stub.dropWorkspace(incarnation, ref.id, ref.version);
+  } catch (err) {
+    console.error('Could not settle the reference of a workspace this account made:', err?.message || err);
+  }
 }
 
 // Makes a workspace. Its place under MAX_WORKSPACES and the account's reference come first. They are given back
@@ -268,7 +285,18 @@ async function create(request, env) {
   };
   let ref;
   try {
-    ref = await stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
+    const add = () => stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
+    ref = await add();
+    // At the limit, a workspace the account made, left and someone else deleted may still count. Its reference is
+    // settled, and the account tries once more.
+    if (ref.status === 403 && ref.body?.error === 'workspace_limit') {
+      const mine = await stub.workspaces(token);
+      if (mine.status === 200) {
+        const made = mine.workspaces.filter((r) => r.former);
+        await Promise.all(made.map((r) => settleMade(env, stub, mine.incarnation, r)));
+        if (made.length) ref = await add();
+      }
+    }
   } catch (err) {
     await release();
     throw err;
@@ -313,7 +341,8 @@ async function create(request, env) {
 
 // A workspace its owner deleted: the owner's account gives its reference back, which frees the slot the account's
 // limit on making workspaces counts, and the registry frees its place under MAX_WORKSPACES. Either can fail without
-// undoing the delete: the account's list settles the reference the next time it asks, and the place stays taken.
+// undoing the delete: the account's list settles the reference the next time it asks, and the registry asks the
+// workspace about its place once the server is full.
 async function remove(env, id, result) {
   if (result.status === 204) {
     try {
@@ -374,6 +403,7 @@ async function socket(request, env, id) {
     })
   );
   if (response.status === 101) return response;
+  if (response.status === 404) throw new HttpError(404, 'not_found', 'There is no such workspace.', {}, { scope: 'workspace' });
   if (response.status === 429) {
     throw new HttpError(429, 'rate_limited', 'This workspace has too many open connections.', { 'retry-after': '60' }, { scope: 'workspace' });
   }

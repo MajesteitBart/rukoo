@@ -164,47 +164,56 @@ function lockStale(file) {
   }
 }
 
+// Makes file with 'wx', holding this process's ID: true, or false when it exists.
+function makeLock(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'wx');
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    return false;
+  }
+  try {
+    fs.writeSync(fd, String(process.pid));
+  } finally {
+    fs.closeSync(fd);
+  }
+  return true;
+}
+
+// A takeover guard left by a process that ended in the middle of one, a few file operations, goes after this long.
+const GUARD_STALE_MS = 10000;
+
 // True when this process now owns port's lock. False when another living process, or this one for another server,
-// owns it.
+// owns it, or another process is taking over a stale lock on it right now.
 function claimPort(port) {
   const file = lockFile(port);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(file, 'wx');
-      try {
-        fs.writeSync(fd, String(process.pid));
-      } finally {
-        fs.closeSync(fd);
-      }
-      heldLocks.add(port);
-      return true;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-    }
-    if (attempt > 0 || !lockStale(file)) return false;
-    // Two processes can both find the lock stale. Only one rename of it succeeds; the other gets ENOENT and tries
-    // 'wx' again, which fails once the first has made its own. A lock that turns out live after the rename (it was
-    // made fresh between the check and the rename) is put back with link, which doesn't replace a newer one.
-    const aside = `${file}.${process.pid}.stale`;
-    try {
-      fs.renameSync(file, aside);
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
-      continue;
-    }
-    const pid = lockOwner(aside);
-    if (pid !== null && (pid === process.pid || alive(pid))) {
-      try {
-        fs.linkSync(aside, file);
-      } catch (_) {
-        // A third process made a lock meanwhile; it owns the port now.
-      }
-      fs.rmSync(aside, { force: true });
-      return false;
-    }
-    fs.rmSync(aside, { force: true });
+  if (makeLock(file)) {
+    heldLocks.add(port);
+    return true;
   }
-  return false;
+  if (!lockStale(file)) return false;
+  // One process at a time takes over a stale lock: the one that made the guard. While the guard exists nobody else
+  // removes the lock, and nobody makes a new one while the stale one is there, so the lock checked again under the
+  // guard is still the one that goes.
+  const guard = `${file}.takeover`;
+  if (!makeLock(guard)) {
+    try {
+      if (Date.now() - fs.statSync(guard).mtimeMs > GUARD_STALE_MS) fs.rmSync(guard, { force: true });
+    } catch (_) {
+      // Gone already.
+    }
+    return false;
+  }
+  try {
+    if (!lockStale(file)) return false;
+    fs.rmSync(file, { force: true });
+    if (!makeLock(file)) return false;
+    heldLocks.add(port);
+    return true;
+  } finally {
+    fs.rmSync(guard, { force: true });
+  }
 }
 
 function releasePort(port) {
@@ -607,6 +616,9 @@ module.exports = {
   uuidv7,
   mention,
   portLockFile: lockFile,
+  // For the lock's own tests.
+  claimPort,
+  releasePort,
   INVITE,
   PEPPER
 };

@@ -176,11 +176,13 @@ async function signup(request, env) {
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
   let invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
   let uses = inviteUses(env);
+  let workspaceInvite = false;
   // Without a good invite code, an open invitation into a workspace on this server does as well, for one account
   // (WORKSPACES.md, Signing up with an invitation).
   if (mode === 'invite' && !invite) {
     invite = await signupInvite(env, body.workspaceInvite);
     uses = 1;
+    workspaceInvite = Boolean(invite);
   }
   if (mode === 'invite' && !invite) {
     throw new HttpError(
@@ -203,7 +205,7 @@ async function signup(request, env) {
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryObject(env);
   if (registry) {
-    const place = await registry.reserve(maxAccounts(env), invite, uses);
+    const place = await registry.reserve(maxAccounts(env), invite, uses, workspaceInvite);
     if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
     if (place === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
   }

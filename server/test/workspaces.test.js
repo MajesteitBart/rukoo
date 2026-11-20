@@ -369,6 +369,89 @@ describe('deleting a workspace', () => {
     expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces).toHaveLength(3);
   });
 
+  it('frees a place the registry never heard was freed, once the server is full', async () => {
+    const ws = await newWorkspace();
+    const lost = {
+      idFromName: (name) => env.REGISTRY.idFromName(name),
+      get: (id) =>
+        new Proxy(env.REGISTRY.get(id), {
+          get: (target, prop) =>
+            prop === 'forgetWorkspace'
+              ? async () => {
+                  throw new Error('the registry was unreachable');
+                }
+              : target[prop]
+        })
+    };
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token, vars: { REGISTRY: lost } })).status).toBe(204);
+    const registry = env.REGISTRY.get(env.REGISTRY.idFromName('registry'));
+    const sql = (query, ...args) => runInDurableObject(registry, (i, state) => state.storage.sql.exec(query, ...args).one().n);
+    expect(await sql('SELECT COUNT(*) AS n FROM workspace WHERE id = ?', ws.id)).toBe(1);
+    // A server that is full by the places it holds: each new workspace asks up to 25 made ones whether they still
+    // exist, so within a few tries the deleted one's place comes free.
+    const count = await sql('SELECT COUNT(*) AS n FROM workspace');
+    const full = { MAX_WORKSPACES: String(count) };
+    const person = await signup();
+    const make = (name) => api('POST', '/v1/workspaces', { token: person.token, vars: full, body: { name, displayName: 'P' } });
+    let made;
+    for (let i = 0; i <= Math.ceil(count / 25); i++) {
+      made = await make('Next');
+      if (made.status === 201) break;
+      expect(made.body.error).toBe('workspaces_full');
+    }
+    expect(made.status, made.text).toBe(201);
+    expect(await sql('SELECT COUNT(*) AS n FROM workspace WHERE id = ?', ws.id)).toBe(0);
+    // The places of workspaces that exist stay, and the server is full again.
+    expect(await sql('SELECT COUNT(*) AS n FROM workspace')).toBe(count);
+    expect((await make('Third')).body.error).toBe('workspaces_full');
+  });
+
+  it('gives a maker who handed the workspace over and left its place back, once the new owner deletes it', async () => {
+    const ws = await newWorkspace();
+    const route = `/v1/workspaces/${ws.id}`;
+    const ada = await newMember(ws, 'Ada');
+    expect((await api('PATCH', `${route}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'owner' } })).status).toBe(200);
+    expect((await api('PATCH', `${route}/channels/${ws.general}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'manager' } })).status).toBe(200);
+    const left = await api('DELETE', `${route}/members/me`, { token: ws.person.token });
+    expect(left.status, left.text).toBe(204);
+    const one = { MAX_WORKSPACES_PER_ACCOUNT: '1' };
+    const make = (name) => api('POST', '/v1/workspaces', { token: ws.person.token, vars: one, body: { name, displayName: 'P' } });
+    // The workspace the maker left still counts while it exists.
+    expect((await make('Too many')).body.error).toBe('workspace_limit');
+    expect((await remove(ada.person, ws.id)).status).toBe(204);
+    // Listing settles it, and so does making one at the limit.
+    expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces).toEqual([]);
+    const creator = await accountStub(ws.person.email);
+    const refs = () => runInDurableObject(creator, (i, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM workspaces').one().n);
+    expect(await refs()).toBe(0);
+    expect((await make('Replacement')).status).toBe(201);
+  });
+
+  it('settles that place when the maker next makes a workspace, without a list first', async () => {
+    const ws = await newWorkspace();
+    const route = `/v1/workspaces/${ws.id}`;
+    const ada = await newMember(ws, 'Ada');
+    await api('PATCH', `${route}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'owner' } });
+    await api('PATCH', `${route}/channels/${ws.general}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'manager' } });
+    expect((await api('DELETE', `${route}/members/me`, { token: ws.person.token })).status).toBe(204);
+    expect((await remove(ada.person, ws.id)).status).toBe(204);
+    const made = await api('POST', '/v1/workspaces', { token: ws.person.token, vars: { MAX_WORKSPACES_PER_ACCOUNT: '1' }, body: { name: 'Again', displayName: 'P' } });
+    expect(made.status, made.text).toBe(201);
+  });
+
+  it("answers a socket ticket from before the delete with the workspace's 404", async () => {
+    const ws = await newWorkspace();
+    const route = `/v1/workspaces/${ws.id}`;
+    const issued = await api('POST', `${route}/socket-ticket`, { token: ws.person.token });
+    expect(issued.status).toBe(200);
+    expect((await remove(ws.person, ws.id)).status).toBe(204);
+    const socket = await api('GET', `${route}/socket`, {
+      headers: { authorization: `Ticket ${issued.body.ticket}`, upgrade: 'websocket', 'sec-websocket-protocol': 'rukoo.workspace.v1' }
+    });
+    expect(socket.status).toBe(404);
+    expect(socket.body).toMatchObject({ error: 'not_found', scope: 'workspace' });
+  });
+
   it('is for an owner, once everyone else is gone', async () => {
     const ws = await newWorkspace();
     const ada = await newMember(ws, 'Ada');

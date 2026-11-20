@@ -1,8 +1,12 @@
 // Signing up with a workspace invitation in place of an invite code, and the page an invitation link opens
 // (WORKSPACES.md, Signing up with an invitation and The join page).
 
+import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
-import { KDF, call, device, key, newEmail, salt, sealed } from './helpers.js';
+import { registryObject } from '../src/config.js';
+import { LATER_RESERVED_HANDLES } from '../src/input.js';
+import { hostKey, page, publish } from './booking-helpers.js';
+import { KDF, call, device, key, newEmail, salt, sealed, signup } from './helpers.js';
 import { ON, api, invite, newMember, newWorkspace, workspaceSql } from './workspace-helpers.js';
 
 // A sign-up that offers an invitation and no invite code, as the apps send it when someone pastes a link.
@@ -133,6 +137,18 @@ describe('signing up with a workspace invitation', () => {
     expect((await signUp({ workspace: ws.id, invite: other })).status).toBe(201);
   });
 
+  it('tells a second sign-up with the invitation that took the last place that it was used', async () => {
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const full = { MAX_ACCOUNTS: String((await registryObject(env).accounts()) + 1) };
+    expect((await signUp({ workspace: ws.id, invite: secret }, full)).status).toBe(201);
+    refused(await signUp({ workspace: ws.id, invite: secret }, full));
+    // An operator code hears that the server is full, as before.
+    const coded = await signUp(undefined, full, { invite: 'second-code' });
+    expect(coded.status).toBe(403);
+    expect(coded.body.error).toBe('signups_closed');
+  });
+
   it('is announced in GET /v1/info only where it works', async () => {
     const info = async (vars) => (await api('GET', '/v1/info', { vars })).body.workspace.inviteSignups;
     expect(await info({})).toBe(true);
@@ -215,5 +231,27 @@ describe('the join page', () => {
     const res = await call('GET', '/join', { vars });
     expect(res.status).toBe(200);
     expect(res.text).toContain('Invitation to team chat in Rukoo');
+  });
+
+  it('keeps a booking page made under the handle join before it was reserved, and lets nobody else claim it', async () => {
+    const holder = await signup();
+    const body = page('join', await hostKey(), { profile: { name: 'Early host' } });
+    LATER_RESERVED_HANDLES.delete('join');
+    try {
+      expect((await publish(holder, body)).status).toBe(200);
+    } finally {
+      LATER_RESERVED_HANDLES.add('join');
+    }
+    // Its owner goes on publishing it, and checking the handle says it is theirs.
+    const again = await publish(holder, { ...body, profile: { ...body.profile, name: 'Still here' } });
+    expect(again.status, again.text).toBe(200);
+    expect((await call('GET', '/v1/booking/handles/join', { token: holder.token })).body).toMatchObject({ available: false, reason: 'yours' });
+    expect((await call('GET', '/meet/join')).status).toBe(200);
+    // Anyone else hears that it is reserved, from the check and from a publish.
+    const other = await signup();
+    expect((await call('GET', '/v1/booking/handles/join', { token: other.token })).body).toMatchObject({ available: false, reason: 'reserved' });
+    const claimed = await publish(other, page('join', await hostKey()));
+    expect(claimed.status).toBe(409);
+    expect(claimed.body.error).toBe('handle_reserved');
   });
 });

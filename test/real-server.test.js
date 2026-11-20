@@ -10,7 +10,18 @@ const net = require('net');
 const path = require('path');
 const { spawn, execFileSync } = require('child_process');
 const { tempDir, removeDir } = require('./tmp');
-const { startRealServer, connectRealServer, realServerAvailable, skipWithoutServer, uuidv7, mention, portLockFile, INVITE } = require('./fixtures/real-server');
+const {
+  startRealServer,
+  connectRealServer,
+  realServerAvailable,
+  skipWithoutServer,
+  uuidv7,
+  mention,
+  portLockFile,
+  claimPort,
+  releasePort,
+  INVITE
+} = require('./fixtures/real-server');
 const keys = require('../src/main/account/crypto.js');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -163,6 +174,77 @@ test('a lock left by a process that ended is taken over, and close() removes it'
     await own.close();
   }
   assert.equal(fs.existsSync(file), false);
+});
+
+// The takeover of a stale lock is one process's at a time. Before the guard, one process could move aside the lock
+// another had just made in place of the stale one, and a third then made its own: two owners of one port.
+test('a stale lock is left alone while another process takes it over, and a guard left behind goes', async (t) => {
+  const port = await unusedPort();
+  const file = portLockFile(port);
+  const guard = `${file}.takeover`;
+  const ended = await endedPid();
+  fs.writeFileSync(file, String(ended));
+  fs.writeFileSync(guard, String(ended));
+  t.after(() => {
+    fs.rmSync(guard, { force: true });
+    removeLock(file, ended, process.pid);
+  });
+  assert.equal(claimPort(port), false, 'a takeover under way keeps the port');
+  assert.equal(fs.readFileSync(file, 'utf8'), String(ended));
+  assert.ok(fs.existsSync(guard));
+  // A guard older than ten seconds was left by a process that ended mid-takeover. It goes, and the next claim takes
+  // the stale lock over.
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(guard, old, old);
+  assert.equal(claimPort(port), false);
+  assert.equal(fs.existsSync(guard), false);
+  assert.equal(claimPort(port), true);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
+  assert.equal(fs.existsSync(guard), false, 'the takeover removes its guard');
+  releasePort(port);
+  assert.equal(fs.existsSync(file), false);
+});
+
+test('processes that claim one stale lock at the same moment: exactly one gets it', async (t) => {
+  const port = await unusedPort();
+  const file = portLockFile(port);
+  const ended = await endedPid();
+  fs.writeFileSync(file, String(ended));
+  t.after(() => fs.rmSync(`${file}.takeover`, { force: true }));
+  // Each child waits for the same moment, claims, says whether it got the port and holds it until its stdin closes,
+  // so a winner that ended early can't hand the port to a later claimant.
+  const at = Date.now() + 1500;
+  const script = `
+    const { claimPort } = require(${JSON.stringify(path.join(__dirname, 'fixtures', 'real-server.js'))});
+    while (Date.now() < ${at}) {}
+    process.stdout.write(String(claimPort(${port})) + '\\n');
+    process.stdin.resume();
+    process.stdin.on('end', () => process.exit(0));
+  `;
+  const children = Array.from({ length: 6 }, () => spawn(process.execPath, ['-e', script], { windowsHide: true }));
+  t.after(() => {
+    for (const child of children) if (child.exitCode === null) child.kill();
+  });
+  const answers = await Promise.all(
+    children.map(
+      (child) =>
+        new Promise((resolve, reject) => {
+          let out = '';
+          child.stdout.on('data', (chunk) => {
+            out += chunk;
+            if (out.includes('\n')) resolve(out.trim());
+          });
+          child.once('exit', (code) => reject(new Error(`a claimant ended with ${code} before answering`)));
+        })
+    )
+  );
+  const winners = children.filter((_, i) => answers[i] === 'true');
+  assert.equal(winners.length, 1, `answers: ${answers.join(', ')}`);
+  assert.equal(fs.readFileSync(file, 'utf8'), String(winners[0].pid));
+  const exits = children.map((child) => new Promise((resolve) => child.once('exit', resolve)));
+  for (const child of children) child.stdin.end();
+  await Promise.all(exits);
+  assert.equal(fs.existsSync(file), false, "the winner's exit frees the port");
 });
 
 // Two test processes that start a server on one port within milliseconds: without the lock both got it without an

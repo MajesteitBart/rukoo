@@ -454,9 +454,9 @@ export class Workspace extends DurableObject {
   // The socket a device waits on. The Worker has checked the ticket's signature and passes its nonce; the ticket
   // itself was issued here, to one session, and works once.
   async fetch(request) {
-    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket' || !this.present) {
-      return new Response(null, { status: 426 });
-    }
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response(null, { status: 426 });
+    // A workspace deleted after it issued the ticket: the Worker answers its 404.
+    if (!this.present) return new Response(null, { status: 404 });
     const now = Date.now();
     const nonce = request.headers.get('x-ticket') || '';
     const active = (n) => this.sql.exec("SELECT incarnation, account FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
@@ -473,7 +473,7 @@ export class Workspace extends DurableObject {
       this.checking.delete(nonce);
     }
     // The workspace may have been deleted while the account answered; its database is gone with it.
-    if (!this.present) return new Response(null, { status: 426 });
+    if (!this.present) return new Response(null, { status: 404 });
     if (!alive) {
       this.sql.exec('DELETE FROM ticket WHERE nonce = ?', nonce);
       return new Response(null, { status: 401 });
