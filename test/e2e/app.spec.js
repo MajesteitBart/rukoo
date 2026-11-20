@@ -100,6 +100,24 @@ test('the modes are tabs in the title bar, with a highlight on the chosen one', 
   await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
   await expect.poll(off).toBeLessThan(1);
 
+  // A count on a tab leaves the search where it is, and the bar between the tabs and the search still moves the window.
+  const searchLeft = () => win.evaluate(() => Math.round(document.querySelector('.titlebar-search').getBoundingClientRect().left));
+  const before = await searchLeft();
+  await win.evaluate(async () => {
+    const cal = await import('./calendar.js');
+    const start = new Date().setHours(11, 0, 0, 0) + 86400000;
+    cal.setBooking({ status: 'on', bookings: [], requests: [{ id: 'Rf63vMqqWdS0MICDAHKmrw', status: 'pending', type: '30min', typeTitle: '30 minute meeting', start, end: start + 1800000, guest: { name: 'Jane Doe', email: 'jane@example.com', notes: '', timeZone: 'Europe/Amsterdam', locale: 'en', via: '' } }] });
+  });
+  await expect(tab('calendar').locator('.mode-badge')).toHaveText('1');
+  await expect.poll(off).toBeLessThan(1);
+  expect(await searchLeft()).toBe(before);
+  const between = await win.evaluate(() => {
+    const [m, s] = ['.titlebar-modes', '.titlebar-search'].map((x) => document.querySelector(x).getBoundingClientRect());
+    const el = document.elementFromPoint((m.right + s.left) / 2, m.top + m.height / 2);
+    return getComputedStyle(el).webkitAppRegion;
+  });
+  expect(between).toBe('drag');
+
   // Folding the sidebar moves neither the tabs nor the search.
   const lefts = () => win.evaluate(() => ['.titlebar-modes', '.titlebar-search'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().left)));
   const wide = await lefts();

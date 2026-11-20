@@ -524,13 +524,30 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* The main window's bar: the icon and the modes on the left, the search in the middle and the actions on the right.
+ * The outer columns share what the search leaves, so the search keeps its place when a tab gets a count or the
+ * language changes; it moves right only when the tabs need the room, and it shrinks before anything overflows. */
+body.main-window .titlebar {
+  display: grid;
+  grid-template-columns: auto minmax(max-content, 1fr) minmax(0, 520px) minmax(max-content, 1fr);
+}
+body.main-window .titlebar-search {
+  grid-column: 3;
+  width: 100%;
+}
+body.main-window .titlebar-actions {
+  grid-column: 4;
+}
+
 /* The modes: Mail, Calendar, Meet and Chat as tabs beside the icon (app.js renderModeSwitch). They change the sidebar
- * and the workspace together, so they sit above both, where every tab has room for its label. A tab is as wide as
- * its label; one highlight glides to the chosen tab, measured by placeModeThumb as --x and --w. */
+ * and the workspace together, so they sit above both. The bar is chrome, so the tabs are plain labels: the chosen one
+ * gets the sidebar's selected-row fill, which glides to it (placeModeThumb measures --x and --w), and what waits in a
+ * mode is a number after its label, as in the list's quick filters. */
+/* Only the tabs take clicks: the empty rest of their column still drags the window. */
 .titlebar-modes {
   -webkit-app-region: no-drag;
-  flex: none;
-  margin: 0 12px 0 2px;
+  justify-self: start;
+  margin: 0 24px 0 2px;
 }
 .titlebar-modes:empty,
 body.no-accounts .titlebar-modes,
@@ -550,13 +567,9 @@ body:has(.page) .titlebar-modes {
   left: 0;
   width: var(--w, 0);
   border-radius: var(--radius);
-  background: var(--raised);
-  box-shadow: var(--shadow-sm);
+  background: var(--active);
   transform: translateX(var(--x, 0));
   pointer-events: none;
-}
-:root:not(.light) .mode-thumb {
-  background: var(--active);
 }
 .mode-tabs.glides .mode-thumb {
   transition:
@@ -569,29 +582,21 @@ body:has(.page) .titlebar-modes {
   height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 0 10px;
   border-radius: var(--radius);
   font-size: 12.5px;
   font-weight: 500;
   color: var(--text-2);
   white-space: nowrap;
-  transition:
-    color 120ms ease,
-    background 120ms ease;
+  transition: color 120ms ease;
 }
-.mode-tabs button:hover {
-  color: var(--text);
-}
-.mode-tabs button:not([aria-selected='true']):hover {
-  background: var(--hover);
-}
-/* The light theme's hover colour is the title bar's own, so a tab there takes the next step. */
-:root.light .mode-tabs button:not([aria-selected='true']):hover {
-  background: var(--active);
-}
+.mode-tabs button:hover,
 .mode-tabs button[aria-selected='true'] {
   color: var(--text);
+}
+.mode-ic {
+  display: none;
 }
 .mode-ic svg {
   width: 16px;
@@ -599,40 +604,31 @@ body:has(.page) .titlebar-modes {
   stroke-width: 1.7;
   display: block;
 }
-/* What waits in a mode, after its label: booking requests on Calendar (orange), and on Chat a count of what asks for
- * you (accent) or a dot for other unread messages. Dark ink on the orange in both themes; the light theme's panel
- * colour is white, too faint on it. */
+/* Booking requests on Calendar in orange, and on Chat the messages for you in accent, or a dot for other unread
+ * messages. The light theme darkens the orange, as for the booking warnings, so the number stays readable. */
 .mode-badge {
-  min-width: 17px;
-  height: 17px;
-  padding: 0 5px;
-  border-radius: 9999px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 10.5px;
-  font-weight: 650;
+  font-size: 11.5px;
+  font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  background: var(--warn);
-  color: var(--panel);
+  color: var(--warn);
 }
 :root.light .mode-badge {
-  color: var(--text);
+  color: color-mix(in srgb, var(--warn) 55%, var(--text));
 }
 .mode-badge.is-mention,
 :root.light .mode-badge.is-mention {
-  background: var(--accent);
-  color: var(--panel);
+  color: var(--accent);
 }
 .mode-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
   flex: none;
 }
-/* A narrow window gives the room to the search: the tabs show their icons, with the label in the tooltip and a badge
- * on the icon's corner. Half a 1920px screen, 960px, still has the labels. */
+/* A narrow window gives the room to the search: the tabs show their icons, with the label in the tooltip, and a count
+ * becomes a pill on the icon's corner. Half a 1920px screen, 960px, still has the labels. */
 @media (max-width: 939px) {
   .mode-tabs button {
     width: 32px;
@@ -642,21 +638,39 @@ body:has(.page) .titlebar-modes {
   .mode-label {
     display: none;
   }
+  .mode-ic {
+    display: block;
+  }
   .mode-badge,
   .mode-dot {
     position: absolute;
-    top: -2px;
-    right: -2px;
   }
   .mode-badge {
+    top: -2px;
+    right: -2px;
     min-width: 15px;
     height: 15px;
     padding: 0 4px;
+    border-radius: 9999px;
+    display: inline-grid;
+    place-items: center;
     font-size: 9.5px;
+    font-weight: 650;
+    background: var(--warn);
+    color: var(--panel);
+  }
+  /* Dark ink on the orange in both themes; the light theme's panel colour is white, too faint on it. */
+  :root.light .mode-badge {
+    color: var(--text);
+  }
+  .mode-badge.is-mention,
+  :root.light .mode-badge.is-mention {
+    background: var(--accent);
+    color: var(--panel);
   }
   .mode-dot {
-    top: 3px;
-    right: 4px;
+    top: 4px;
+    right: 5px;
     box-shadow: 0 0 0 2px var(--bg);
   }
 }

@@ -20,7 +20,7 @@ App code builds HTML in template strings. Every value in them goes through `esc(
 
 ### Title bar
 
-- `.titlebar-modes` holds the modes as `.mode-tabs`: Mail, Calendar, Meet and Chat beside the icon, built by `renderModeSwitch()` in `app.js`. A tab is 28px high with an 8px radius, a 16px icon and a 12.5px label, and is as wide as its label. One `.mode-thumb` glides to the chosen tab; `placeModeThumb()` measures its place. `.mode-badge` counts what waits in a mode, orange for booking requests and accent for chat, and `.mode-dot` marks other unread chat. Under 940px the tabs show their icons with the badge on the corner. A new mode is another tab here, so the sidebar and its rail stay free for the mode's own content.
+- `.titlebar-modes` holds the modes as `.mode-tabs`: Mail, Calendar, Meet and Chat beside the icon, built by `renderModeSwitch()` in `app.js`. The bar is chrome, so a tab is a plain 12.5px label, 28px high and as wide as its label. The chosen tab gets the sidebar's selected-row fill (`--active`, no shadow) in one `.mode-thumb` that glides to it; `placeModeThumb()` measures its place. `.mode-badge` is a number after the label, like the quick filters' counts: orange for booking requests, accent for chat messages for you. `.mode-dot` marks other unread chat. Under 940px the tabs show their icons, and the count becomes a pill on the icon's corner. The search sits in the middle column of the bar, so a count or a longer Dutch label doesn't move it. A new mode is another tab here, so the sidebar and its rail stay free for the mode's own content.
 - `segmented()` in `ui.js` is for two to four views of one screen, such as the calendar's Day, Week, Month and Upcoming. The modes outgrew it at four.
 
 ### Lists, avatars and pills
