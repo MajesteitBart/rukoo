@@ -893,6 +893,48 @@ class OutboxTest {
     }
 
     @Test
+    fun `in the background outside the worker's window nothing is sent, a backoff's timer included`() = runBlocking {
+        seed()
+        val calls = AtomicInteger()
+        val failing = WorkspaceHttp { _, _, _, _, _ ->
+            calls.incrementAndGet()
+            throw WorkspaceError("network")
+        }
+        val automatic = java.util.concurrent.atomic.AtomicBoolean(false)
+        val box = Outbox(
+            store, client(failing), scope, timing = Outbox.Timing(sendBackoff = listOf(200L)), now = { clock },
+            automatic = { automatic.get() },
+        )
+        try {
+            box.synced(w)
+            val local = box.enqueue(w, general, null, text, mentions)
+            box.kick(retryNow = true)
+            delay(300)
+            assertEquals("nothing goes out in the background", 0, calls.get())
+            // The foreground (or the worker's window): the send goes out, fails and waits its backoff.
+            automatic.set(true)
+            box.kick()
+            val until = System.currentTimeMillis() + 5_000
+            while (calls.get() < 1 && System.currentTimeMillis() < until) delay(10)
+            delay(50)
+            assertEquals(1, calls.get())
+            assertEquals(clock + 200, row(local).nextAt)
+            // The app goes to the background before the backoff ends: its timer sends nothing.
+            automatic.set(false)
+            clock += 200
+            delay(600)
+            assertEquals("the retry timer waited for the foreground", 1, calls.get())
+            automatic.set(true)
+            box.kick(retryNow = true)
+            val again = System.currentTimeMillis() + 5_000
+            while (calls.get() < 2 && System.currentTimeMillis() < again) delay(10)
+            assertEquals(2, calls.get())
+        } finally {
+            box.close()
+        }
+    }
+
+    @Test
     fun `an attempt on a cache that takes no writes waits a backoff step before the next`() = runBlocking {
         seed()
         val tries = AtomicInteger()

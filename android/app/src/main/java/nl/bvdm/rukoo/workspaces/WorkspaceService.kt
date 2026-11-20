@@ -440,7 +440,7 @@ class WorkspaceService internal constructor(
 
         /** The workspaces with a good run in this session, for the connection state. */
         val ran: MutableSet<String> = ConcurrentHashMap.newKeySet()
-        val outbox = Outbox(store, client, scope, OutboxHooks(this), timing.outbox, clock::now)
+        val outbox = Outbox(store, client, scope, OutboxHooks(this), timing.outbox, clock::now, automatic = ::automatic)
 
         @Volatile var selected: String? = null
         @Volatile var socket: LiveSocket? = null

@@ -270,6 +270,9 @@ class FeedRunner(
         e.code == "signed_out" || e.code == "upgrade_required" || e.code == "paused" || (e.code == "not_found" && e.scope == "workspace")
 }
 
+// GET / requests one run may make before its pages, as the desktop's runSync allows.
+private const val DETAILS_PER_RUN = 3
+
 /**
  * The feed, the history and reads of one workspace (contract §3.6, §3.7, §3.9), for the workspace service (A6). It
  * reaches the network only through [WorkspaceClient] and SQLite only through [WorkspaceStore]; [FeedApplier] holds the
@@ -302,6 +305,10 @@ class WorkspaceSync(
     val reads = ReadFlusher(this)
 
     @Volatile private var detailsDue = false
+
+    // The cache revision the last applied `GET /` answered under (null until one did in this process). A pass from the
+    // start begins only when it is the current one: a 410 whose GET / failed, or a restart halfway, asks again first.
+    @Volatile private var detailsRevision: Long? = null
 
     // Whether this sync cut every room but the open one back to ROOM_CACHE_MAX: once, at its first run.
     @Volatile private var trimmed = false
@@ -354,8 +361,8 @@ class WorkspaceSync(
         FeedApplier.check(answer, ws)
         val result = applier.restore(ws, answer, t0, t1, revision)
         guard()
-        // A reset, a restore or a park came in between: this answer is dropped, and the next run asks again.
-        if (result.stale) detailsDue = true
+        // A reset, a restore or a park came in between: this answer is dropped, and the run (or the next) asks again.
+        if (result.stale) detailsDue = true else detailsRevision = result.revision
         if (result.restored || result.keyChanged) loader.onReset()
         result.dropped?.let { hook { events.page(ws, it) } }
         if (result.restored) hook { events.restored(ws) }
@@ -364,7 +371,8 @@ class WorkspaceSync(
     }
 
     /**
-     * One run (§3.6 "A run"): `GET /` when the generation isn't known, then `GET /changes` page by page, each applied
+     * One run (§3.6 "A run"): `GET /` when the generation isn't known, an earlier answer was dropped or failed, or a
+     * pass from the start has no `GET /` answered under the cache's current revision; then `GET /changes` page by page, each applied
      * in one transaction with its cursor; then the stale directories, due reads, the open room's catch-up, `syncedAt`
      * and the service's hooks. Throws [WorkspaceError] for the runner's backoff.
      */
@@ -384,25 +392,34 @@ class WorkspaceSync(
         // Before any request, so a start without a network trims too.
         if (!trimmed) trimmed = loader.trimIdle()
         if (row.state != FeedApplier.STATE_OK) return RunOutcome(skipped = true)
-        if (row.generation == null || detailsDue) {
-            detailsDue = false
-            try {
-                details(inRun = true)
-            } catch (e: WorkspaceError) {
-                detailsDue = true
-                throw e
-            }
-        }
         val changed = LinkedHashSet<String>()
         var installed = false
         var resets = 0
         var pages = 0
+        var asked = 0
         while (true) {
+            // The revision before the row: a reset, Start over or restore bumps it at the start of its transaction, and
+            // the read waits for that transaction, so the row and the revision belong together.
+            val revision = store.revision(ws)
             row = store.read { getWs(ws) } ?: return RunOutcome(changed = changed, gone = true)
             if (row.state != FeedApplier.STATE_OK) return RunOutcome(changed = changed, skipped = true)
             if (pages >= timing.pagesPerRun) return RunOutcome(changed = changed, pass = installed, more = true)
+            // GET / first when the generation isn't known, an answer was dropped or failed, or a pass from the start
+            // has no GET / answered under this revision (a 410, Start over, a restart halfway). At most three per run,
+            // so answers dropped again and again can't keep the run going, as the desktop does.
+            val needsDetails = row.generation == null || detailsDue || (row.passing && row.cursor == null && detailsRevision != revision)
+            if (needsDetails && asked < DETAILS_PER_RUN) {
+                asked += 1
+                detailsDue = false
+                try {
+                    details(inRun = true)
+                } catch (e: WorkspaceError) {
+                    detailsDue = true
+                    throw e
+                }
+                continue
+            }
             val sent = row.cursor
-            val revision = store.revision(ws)
             val active = if (row.passing) null else loader.activeQuery()
             val page = try {
                 call { changes(ws, after = sent, limit = timing.feedLimit, active = active?.room, roomAfter = active?.after) }
@@ -420,7 +437,8 @@ class WorkspaceSync(
                         loader.onReset()
                         changed += result.changed
                         hook { events.page(ws, result) }
-                        details(inRun = true)
+                        // The loop's next turn asks GET / before the pass from the start; a failure there keeps it due.
+                        detailsDue = true
                         continue
                     }
                     "history_regressed" -> {

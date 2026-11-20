@@ -116,6 +116,8 @@ class CacheRevisionTest {
             throw refusal(409, "history_regressed")
         }
         h.http.on("GET", h.route("/changes")) { ok(FeedPage.serializer(), feed(room(head = 2), next = "fresh")) }
+        // Start over's pass asks GET / first.
+        h.http.on("GET", h.route()) { ok(WorkspaceDetails.serializer(), details()) }
         val running = async { h.sync.runFeed() }
         started.await()
         h.sync.applier.startOver(ws)
@@ -179,6 +181,51 @@ class CacheRevisionTest {
         assertEquals(5L, r.read)
         assertEquals(5L, r.readSent)
         assertEquals(1, r.unread)
+    }
+
+    @Test
+    fun `a 410 whose GET slash failed asks GET slash again before the pass, and finds a restore made meanwhile`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.http.once("GET", h.route("/changes")) { throw refusal(410, "reset_required") }
+        h.http.once("GET", h.route()) { throw WorkspaceError("network") }
+        val failed = runCatching { h.sync.runFeed() }.exceptionOrNull()
+        assertEquals("network", (failed as WorkspaceError).code)
+        assertTrue(h.ws().passing)
+        assertNull(h.ws().cursor)
+        // The server was restored meanwhile: the next run's GET / finds it before any page of the pass.
+        h.http.once("GET", h.route()) { ok(WorkspaceDetails.serializer(), details(generation = Ids.GEN2)) }
+        h.feedPages(feed(room(head = 3), next = "restored"))
+        h.sync.runFeed()
+        assertEquals(Ids.GEN2, h.ws().generation)
+        assertEquals("restored", h.ws().cursor)
+        assertEquals(
+            listOf("GET /changes", "GET /", "GET /", "GET /changes"),
+            h.http.calls.map { "${it.method} ${it.route.removePrefix(h.route()).ifEmpty { "/" }}" },
+        )
+        h.http.verify()
+    }
+
+    @Test
+    fun `a pass from the start after a restart asks GET slash first, and again while its answer is dropped`() = runTest {
+        val h = SyncHarness(this, db).start()
+        // A pass from the start under way when the process ended: no GET / answered in this process yet.
+        h.store.tx { updateWs(ws, mapOf("cursor" to null, "passing" to true)) }
+        h.restart()
+        // The first answer arrives after the cache started over meanwhile: dropped, and asked again.
+        h.http.once("GET", h.route()) {
+            h.store.tx { bumpRevision(ws) }
+            ok(WorkspaceDetails.serializer(), details(generation = Ids.GEN2))
+        }
+        h.http.on("GET", h.route()) { ok(WorkspaceDetails.serializer(), details()) }
+        h.feedPages(feed(room(head = 2), next = "first"))
+        h.sync.runFeed()
+        assertEquals(Ids.GEN, h.ws().generation)
+        assertEquals("first", h.ws().cursor)
+        assertEquals(
+            listOf("GET /", "GET /", "GET /changes"),
+            h.http.calls.map { "${it.method} ${it.route.removePrefix(h.route()).ifEmpty { "/" }}" },
+        )
+        h.http.verify()
     }
 
     @Test

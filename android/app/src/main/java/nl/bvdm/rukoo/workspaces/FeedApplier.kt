@@ -43,6 +43,8 @@ data class RestoreResult(
     val dropped: PageResult? = null,
     /** The cache's revision changed while `GET /` was on its way: the answer was dropped, nothing written. */
     val stale: Boolean = false,
+    /** The cache's revision the answer was applied under, read in its transaction (after a restore's own bump). */
+    val revision: Long? = null,
 )
 
 /** What Start over did: [marked] unsent rows await a lookup; [dropped] is the reset the alerts hear. */
@@ -329,7 +331,10 @@ class FeedApplier(
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true, "generation" to w.generation))
             marked = markLookup(ws, row.generation)
-            // The pass that installs the restored generation takes read positions from its feed (install()).
+            // The old generation's read positions say nothing about the new one's seqs: zeroed here, so ReadFlusher
+            // can't report one to the restored server and a staged room's upsert can't keep one, and the pass that
+            // installs the restored generation takes them from its feed (install()).
+            sql.exec("UPDATE room SET read = 0, readLocal = 0, readSent = 0, notified = 0 WHERE ws = ?", ws)
             setMeta(rebaseKey(ws), "1")
         } else if (keyChanged) {
             bumpRevision(ws)
@@ -352,7 +357,7 @@ class FeedApplier(
         )
         setMeta(META_CLOCK_OFFSET, (w.time - (t0 + t1) / 2.0).roundToLong().toString())
         setMeta(META_CLOCK_AT, t1.toString())
-        RestoreResult(restored, keyChanged, marked, dropped)
+        RestoreResult(restored, keyChanged, marked, dropped, revision = revision(ws))
     }
 
     /**

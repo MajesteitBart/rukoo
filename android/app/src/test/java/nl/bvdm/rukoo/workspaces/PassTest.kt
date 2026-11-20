@@ -1,6 +1,12 @@
 package nl.bvdm.rukoo.workspaces
 
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,8 +28,10 @@ class PassTest {
 
     private val ws = Ids.WS
 
+    // A pass from the start runs only after a GET / answered under the cache's current revision, so its run asks one.
     private suspend fun SyncHarness.startPass(fresh: Boolean = true) {
         store.tx { updateWs(ws, mapOf("cursor" to null, "passing" to true, "fresh" to fresh)) }
+        http.on("GET", route()) { ok(WorkspaceDetails.serializer(), details()) }
     }
 
     @Test
@@ -154,6 +162,35 @@ class PassTest {
         h.startPass(fresh = false)
         h.sync.applier.apply(ws, feed(room(Ids.DM, head = 6, read = 5, unread = 1, dm = true), next = "again"), null)
         assertEquals(6L, h.room(Ids.DM)!!.readLocal)
+    }
+
+    @Test
+    fun `a read still to be reported at a restore isn't reported to the restored server`() = runTest {
+        val h = SyncHarness(this, db).start()
+        // Read up to 10 on this phone; the server heard 5 (a report waiting out its gap, or one from offline).
+        h.store.tx {
+            upsertRoom(ws, room(head = 10, read = 5))
+            setRoomFields(ws, Ids.GENERAL, mapOf("readLocal" to 10L, "readSent" to 5L, "notified" to 10L))
+        }
+        val posts = CopyOnWriteArrayList<Long>()
+        h.http.on("POST", h.route("/conversations/${Ids.GENERAL}/read")) { call ->
+            val seq = (call.body as JsonObject).getValue("seq").jsonPrimitive.long
+            posts += seq
+            ok(ReadAck.serializer(), ReadAck(seq))
+        }
+        h.sync.applier.restore(ws, details(generation = Ids.GEN2), TestDb.NOW, TestDb.NOW)
+        var r = h.room()!!
+        assertEquals(listOf(0L, 0L, 0L, 0L), listOf(r.read, r.readLocal, r.readSent, r.notified))
+        h.sync.reads.flushDue()
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals("no old-generation seq goes to the restored server", emptyList<Long>(), posts.toList())
+        // The pass's install takes the restored feed's positions.
+        h.sync.applier.apply(ws, feed(room(head = 5, read = 3, unread = 2), next = "restored"), null)
+        r = h.room()!!
+        assertEquals(listOf(3L, 3L, 3L, 3L), listOf(r.read, r.readLocal, r.readSent, r.notified))
+        assertEquals(2, r.unread)
+        h.http.verify()
     }
 
     @Test

@@ -44,6 +44,11 @@ class Outbox(
     private val timing: Timing = Timing(),
     private val now: () -> Long = System::currentTimeMillis,
     private val newId: (Long) -> String = Uuid7::next,
+    /**
+     * Whether sends may start (§3.11, §7.5): the app in the foreground or ChatSyncWorker's window open. Outside it a
+     * send already on its way finishes, and the rest, retry timers included, wait for the next resume or worker.
+     */
+    private val automatic: () -> Boolean = { true },
 ) {
     /** What the outbox asks of the service. Every hook has a default that does nothing. */
     interface Hooks {
@@ -245,7 +250,7 @@ class Outbox(
      */
     suspend fun flush(budgetMs: Long): Boolean {
         withTimeoutOrNull(budgetMs) {
-            while (!closed) {
+            while (!closed && automatic()) {
                 pump()
                 busy.first { it == 0 }
                 val ready = synchronized(lock) { synced.toSet() }
@@ -283,7 +288,9 @@ class Outbox(
     }
 
     private suspend fun pump() {
-        if (closed) return
+        // In the background without the worker's window nothing starts, a backoff's timer included: the next resume
+        // kicks the queue with retryNow, and the worker's flush runs it.
+        if (closed || !automatic()) return
         val due = try {
             store.read { nextDue(now(), DUE_LIMIT) }
         } catch (e: CancellationException) {
