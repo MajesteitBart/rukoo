@@ -433,24 +433,25 @@ class WorkspaceSync(
      * The directories the feed marked stale (§3.6 "Directory"): `GET /members`, `GET /channels` (full members only:
      * a guest has none), `GET /blocks`. Each answer replaces the workspace's rows in one transaction and clears its
      * flag; a failure leaves the flag for the next run. A server from before blocks (`404` without a scope) has none.
-     * Returns whether anything was replaced.
+     * Each flag reads the row afresh, as the desktop does: the members reload can change my role and mark the
+     * channels stale, and the channels load must follow the role it just wrote. Returns whether anything was replaced.
      */
     suspend fun directory(): Boolean {
-        val row = store.read { getWs(ws) } ?: return false
         var changed = false
-        if (row.membersStale) {
+        if (store.read { getWs(ws) }?.membersStale == true) {
             changed = load {
                 val page = call { members(ws) }
                 store.tx { if (getWs(ws) != null) replaceMembers(ws, page.members, page.more) }
             } || changed
         }
+        val row = store.read { getWs(ws) } ?: return changed
         if (row.channelsStale) {
             changed = load {
                 val list = if (row.role == "guest") emptyList() else call { channels(ws) }
                 store.tx { if (getWs(ws) != null) replaceChannels(ws, list) }
             } || changed
         }
-        if (row.blocksStale) {
+        if (store.read { getWs(ws) }?.blocksStale == true) {
             changed = load {
                 val list = try {
                     call { blocks(ws) }

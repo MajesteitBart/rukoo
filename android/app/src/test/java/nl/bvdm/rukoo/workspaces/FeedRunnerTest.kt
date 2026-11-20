@@ -292,6 +292,54 @@ class FeedRunnerTest {
     }
 
     @Test
+    fun `a guest promoted in the same page that marks the channels stale gets the channel directory`() = runTest {
+        val h = SyncHarness(this, db).start(seed = false)
+        h.seedWs(role = "guest")
+        h.feedPages(feed(room(head = 2), directory = Directory(members = true, channels = true), next = "cursor1"))
+        h.http.on("GET", h.route("/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(Member(Ids.ME, name = "Me", role = "member", state = "active"))))
+        }
+        h.http.on("GET", h.route("/channels")) { ok(ChannelsPage.serializer(), ChannelsPage(listOf(Channel(Ids.RANDOM, "random", "workspace")))) }
+        h.sync.now()
+        val row = h.ws()
+        assertEquals("member", row.role)
+        assertFalse(row.channelsStale)
+        assertEquals(1, h.http.calls("GET", h.route("/channels")).size)
+        assertEquals(listOf(Ids.RANDOM), h.store.read { listChannels(ws) }.map { it.id })
+    }
+
+    @Test
+    fun `a role that crosses the guest line reloads the channels in the same run`() = runTest {
+        val h = SyncHarness(this, db).start(seed = false)
+        h.seedWs(role = "guest")
+        // The server bumps only the members for a role change: no channels flag comes with the promotion.
+        h.store.tx { updateWs(ws, mapOf("membersStale" to true, "channelsStale" to false, "blocksStale" to false)) }
+        var role = "member"
+        h.http.on("GET", h.route("/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(Member(Ids.ME, name = "Me", role = role, state = "active"))))
+        }
+        h.http.on("GET", h.route("/channels")) { ok(ChannelsPage.serializer(), ChannelsPage(listOf(Channel(Ids.RANDOM, "random", "workspace")))) }
+        assertTrue(h.sync.directory())
+        assertFalse(h.ws().channelsStale)
+        assertEquals(listOf(Ids.RANDOM), h.store.read { listChannels(ws) }.map { it.id })
+
+        // Member to admin stays on the same side: no channels reload.
+        role = "admin"
+        h.store.tx { updateWs(ws, mapOf("membersStale" to true)) }
+        assertTrue(h.sync.directory())
+        assertEquals(1, h.http.calls("GET", h.route("/channels")).size)
+
+        // Back to guest: the member's channel list goes without asking GET /channels.
+        role = "guest"
+        h.store.tx { updateWs(ws, mapOf("membersStale" to true)) }
+        assertTrue(h.sync.directory())
+        assertEquals("guest", h.ws().role)
+        assertFalse(h.ws().channelsStale)
+        assertEquals(emptyList<Channel>(), h.store.read { listChannels(ws) })
+        assertEquals(1, h.http.calls("GET", h.route("/channels")).size)
+    }
+
+    @Test
     fun `a stopped runner drops its pending run and its waiters hear skipped`() = runTest {
         val h = SyncHarness(this, db).start()
         val feed = Feed(h)

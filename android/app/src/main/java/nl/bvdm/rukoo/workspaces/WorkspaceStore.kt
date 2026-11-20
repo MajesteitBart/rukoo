@@ -462,6 +462,8 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
         /**
          * Each replace swaps the workspace's rows and clears its stale flag. The caller's own row also sets the
          * workspace's role and name, so a role someone else gave me reaches the workspace list before the next `GET /`.
+         * A role that crosses the guest line also marks the channels stale: the server bumps only the members for a
+         * role change, and a promoted guest has no channel directory yet while a demoted member keeps one too many.
          */
         fun replaceMembers(ws: String, rows: List<Member>, more: Boolean = false) {
             sql.exec("DELETE FROM member WHERE ws = ?", ws)
@@ -472,8 +474,14 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
                 )
             }
             sql.exec("UPDATE ws SET membersStale = 0, membersMore = ? WHERE id = ?", more, ws)
-            val me = getWs(ws)?.me
-            rows.firstOrNull { it.id == me }?.let { sql.exec("UPDATE ws SET role = ?, myName = ? WHERE id = ?", it.role, it.name, ws) }
+            val row = getWs(ws)
+            rows.firstOrNull { it.id == row?.me }?.let {
+                val crossed = (row?.role == "guest") != (it.role == "guest")
+                sql.exec(
+                    "UPDATE ws SET role = ?, myName = ?, channelsStale = CASE WHEN ? THEN 1 ELSE channelsStale END WHERE id = ?",
+                    it.role, it.name, crossed, ws,
+                )
+            }
             sql.touch(ws)
         }
 
