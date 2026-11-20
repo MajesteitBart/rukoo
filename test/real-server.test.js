@@ -398,7 +398,7 @@ test('a private channel with a member, a mention past an accent, a removal and a
   assert.equal(gone.text, undefined);
 
   const head = after.body.head;
-  assert.deepEqual(await server.read(zoe, ws.id, channel.id, head), { read: head });
+  assert.deepEqual(await server.read(zoe, ws.id, channel.id, head), { read: head, readMark: 0 });
 });
 
 test('blocks and direct messages, once the server has their routes', async (t) => {
@@ -453,7 +453,7 @@ test('close() stops the server and removes its temporary folder, and can be call
   await assert.rejects(own.call('GET', '/v1/info'));
 });
 
-test('the command line writes { url, invite, pid }, connectRealServer seeds against it, and deleting the file stops it', async (t) => {
+test('the command line writes { url, invite, pid, previews }, connectRealServer seeds against it, and deleting the file stops it', async (t) => {
   if (skipWithoutServer(t)) return;
   const dir = tempDir('rukoo-real-server-cli-');
   t.after(() => removeDir(dir));
@@ -479,7 +479,10 @@ test('the command line writes { url, invite, pid }, connectRealServer seeds agai
   await until(() => fs.existsSync(readyFile) || child.exitCode !== null, 30000, 'the ready file');
   assert.equal(child.exitCode, null, output);
   const ready = JSON.parse(fs.readFileSync(readyFile, 'utf8'));
-  assert.deepEqual(ready, { url: `http://127.0.0.1:${port}`, invite: INVITE, pid: child.pid });
+  const { previews, ...rest } = ready;
+  assert.deepEqual(rest, { url: `http://127.0.0.1:${port}`, invite: INVITE, pid: child.pid });
+  // The page server link cards are made from, for an emulator's live tests.
+  assert.match(previews, /^http:\/\/127\.0\.0\.1:\d+$/);
 
   const remote = connectRealServer(ready.url);
   assert.equal(remote.stop, undefined);
