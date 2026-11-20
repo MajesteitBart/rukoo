@@ -44,14 +44,14 @@ internal class ScrollAnchor(private var saved: TimelineScroll?) {
     }
 
     /**
-     * The list shows [now], with [keys] the timeline's row keys as they are: whether to save it. The saved row going
-     * from the timeline while the list kept its index and offset is the cache being cut under it, not the person
-     * scrolling: that position waits for its row instead.
+     * The list shows [now], with [keys] the timeline's row keys as they are, [scrolling] while a scroll moves it:
+     * whether to save it. The saved row going from the timeline while nothing scrolled is the cache being cut under the
+     * list, which then shows another row at the same or a clamped index: that position waits for its row instead.
      */
-    fun onScrolled(now: TimelineScroll, keys: List<String>): Boolean {
+    fun onScrolled(now: TimelineScroll, keys: List<String>, scrolling: Boolean): Boolean {
         if (waiting != null) return false
         val s = saved
-        if (s != null && !s.atBottom && s.key != null && s.key != now.key && s.key !in keys && s.index == now.index && s.offset == now.offset) {
+        if (!scrolling && s != null && !s.atBottom && s.key != null && s.key != now.key && s.key !in keys) {
             wait(s)
             return false
         }

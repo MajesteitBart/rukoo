@@ -579,7 +579,7 @@ private fun RoomLog(
             TimelineScroll(count, key, index, listState.firstVisibleItemScrollOffset, TimelineScroll.seqNear(currentItems, index))
         }.distinctUntilChanged().collect { now ->
             val waited = anchor.waiting != null
-            if (anchor.onScrolled(now, currentKeys)) app.roomScrolled(now) else if (!waited) anchorCheck += 1
+            if (anchor.onScrolled(now, currentKeys, listState.isScrollInProgress)) app.roomScrolled(now) else if (!waited) anchorCheck += 1
         }
     }
 

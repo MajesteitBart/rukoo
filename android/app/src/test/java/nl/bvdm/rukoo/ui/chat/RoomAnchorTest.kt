@@ -38,7 +38,7 @@ class RoomAnchorTest {
         // The reopen ended before the load back did: the position isn't given up.
         assertEquals(ScrollAnchor.Step.Wait, anchor.onTimeline(keys(trimmed), trimmed, loading = false))
         // The list showed another row at the saved index meanwhile: that isn't saved over the anchor.
-        assertFalse(anchor.onScrolled(TimelineScroll(1, "e_4", 5, 10, 4), keys(trimmed)))
+        assertFalse(anchor.onScrolled(TimelineScroll(1, "e_4", 5, 10, 4), keys(trimmed), scrolling = false))
 
         anchor.reached(oldest = 1)
         assertEquals("the timeline is a build behind the load", ScrollAnchor.Step.Wait, anchor.onTimeline(keys(trimmed), trimmed, loading = false))
@@ -46,7 +46,7 @@ class RoomAnchorTest {
         val back = keys(loaded)
         assertEquals(ScrollAnchor.Step.ScrollTo(back.indexOf("e_2"), 10), anchor.onTimeline(back, loaded, loading = false))
         assertNull(anchor.waiting)
-        assertTrue("from then on the list's position is saved", anchor.onScrolled(TimelineScroll(1, "e_2", back.indexOf("e_2"), 10, 2), back))
+        assertTrue("from then on the list's position is saved", anchor.onScrolled(TimelineScroll(1, "e_2", back.indexOf("e_2"), 10, 2), back, scrolling = false))
     }
 
     @Test
@@ -55,11 +55,11 @@ class RoomAnchorTest {
         val all = events(1L..6L)
         val before = keys(all)
         val shown = TimelineScroll(1, "e_2", before.indexOf("e_2"), 10, 2)
-        assertTrue(anchor.onScrolled(shown, before))
-        // The app went to the background: the loader cut the range, and the list kept its index and offset.
+        assertTrue(anchor.onScrolled(shown, before, scrolling = true))
+        // The app went to the background: the loader dropped the range, and the shorter list clamped its index.
         val trimmed = events(4L..6L)
         val after = keys(trimmed)
-        assertFalse(anchor.onScrolled(TimelineScroll(1, after.getOrNull(shown.index), shown.index, 10, 4), after))
+        assertFalse(anchor.onScrolled(TimelineScroll(1, after.last(), after.lastIndex, 0, 4), after, scrolling = false))
         assertEquals(shown, anchor.waiting)
         assertEquals(ScrollAnchor.Step.Reach(2), anchor.onTimeline(after, trimmed, loading = false))
     }
@@ -70,7 +70,7 @@ class RoomAnchorTest {
         val trimmed = events(4L..6L)
         anchor.start(keys(events(1L..6L)))
         assertNull(anchor.waiting)
-        assertTrue(anchor.onScrolled(TimelineScroll(1, "e_5", 1, 0, 5), keys(trimmed)))
+        assertTrue(anchor.onScrolled(TimelineScroll(1, "e_5", 1, 0, 5), keys(trimmed), scrolling = true))
     }
 
     @Test
@@ -83,7 +83,7 @@ class RoomAnchorTest {
         anchor.reached(oldest = 4)
         assertEquals(ScrollAnchor.Step.None, anchor.onTimeline(keys(left), left, loading = false))
         assertNull(anchor.waiting)
-        assertTrue(anchor.onScrolled(TimelineScroll(1, "e_4", 5, 10, 4), keys(left)))
+        assertTrue(anchor.onScrolled(TimelineScroll(1, "e_4", 5, 10, 4), keys(left), scrolling = false))
     }
 
     @Test
