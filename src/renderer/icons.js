@@ -131,7 +131,9 @@ export const icons = {
   at: p('<circle cx="12" cy="12" r="3.6"/><path d="M15.6 8.4v4.8a2.4 2.4 0 0 0 4.8 0V12a8.4 8.4 0 1 0-3.3 6.7"/>'),
   thread: p('<path d="M3.5 5.5A2 2 0 0 1 5.5 3.5h8a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H9l-3.5 3v-3a2 2 0 0 1-2-2z"/><path d="M18.5 8.5a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2v3l-3.5-3h-4.5a2 2 0 0 1-2-2"/>'),
   mute: p('<path d="M6.5 16.5V11a5.5 5.5 0 0 1 8.4-4.7M17.5 10.5v6l1.5 2h-14"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M4 3.5 20 20.5"/>'),
-  leave: p('<path d="M13.5 4.5h-6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h6"/><path d="M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5"/>')
+  leave: p('<path d="M13.5 4.5h-6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h6"/><path d="M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5"/>'),
+  // A person with a plus: Add people and Invite people in team chat.
+  userPlus: p('<circle cx="10" cy="8.5" r="3.6"/><path d="M3.5 19.5a6.5 6.5 0 0 1 11.6-4"/><path d="M18.5 13.5v6M15.5 16.5h6"/>')
 };
 
 // Provider tiles on the setup screen.

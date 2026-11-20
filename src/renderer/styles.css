@@ -10587,10 +10587,11 @@ body.chat-mode .titlebar-search {
   margin-left: -4px;
   box-shadow: 0 0 0 1.5px var(--bg);
 }
-/* The rail: a channel shows its first letter on its hue, a mention count a small pill, a plain count the dot. */
+/* The rail: a channel shows its first letter on its hue, a mention count a small pill, a plain count the dot. Browse
+ * channels stays as its search icon: the Channels heading and its plus hide in the rail, and Browse is then the way to
+ * find and make channels. */
 .shell.collapsed .ch-ic svg,
-.shell.collapsed .ch-side-empty,
-.shell.collapsed [data-ch-side='browse'] {
+.shell.collapsed .ch-side-empty {
   display: none;
 }
 .shell.collapsed .ch-ic b {
@@ -11573,6 +11574,621 @@ button.ch-replies .ch-replies-n {
   text-overflow: ellipsis;
 }
 
+/* The rest of the dialogs (chat-dialogs.js, desktop-ui 6): fields, lists of people and channels, invitations,
+ * settings sections and New message's To field. */
+.dialog.ch-quiet-close .buttons button:last-child {
+  background: var(--panel);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.dialog.ch-quiet-close .buttons button:last-child:hover {
+  background: var(--hover);
+}
+.dialog.ch-settings {
+  max-height: calc(100vh - 48px);
+}
+/* A dialog's error line in danger color (.dialog p would make it grey), and a button that can't be pressed yet looks
+ * it, such as Make link before a guest has a channel. */
+.dialog p.error {
+  color: var(--danger);
+}
+.dialog .buttons button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ch-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+.ch-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ch-label {
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-warn {
+  color: var(--warn);
+}
+.ch-checking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-checking[hidden] {
+  display: none;
+}
+.ch-checking .spinner,
+.ch-invites-wait .spinner,
+.ch-successors .spinner {
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.ch-join-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ch-join-head .ch-join-ws {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ch-join-preview p:last-child {
+  margin-bottom: 0;
+}
+.ch-other {
+  margin: 0;
+}
+.ch-other[hidden] {
+  display: none;
+}
+/* The name field of Make and Rename a channel: # inside it. */
+.ch-hash-field {
+  position: relative;
+  display: block;
+}
+.ch-hash {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 13.5px;
+  pointer-events: none;
+}
+.form .ch-hash-field input[type='text'] {
+  padding-left: 22px;
+}
+.ch-checks {
+  display: grid;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0 -6px;
+}
+/* .form label lays fields out as a grid; these rows stay a line. */
+.ch-check-row,
+.ch-radio-row,
+.form .ch-check-row,
+.form .ch-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ch-check-row:hover,
+.ch-radio-row:hover {
+  background: var(--hover);
+}
+.ch-check-row.is-disabled {
+  cursor: default;
+  color: var(--text-3);
+}
+.ch-check-row.is-disabled:hover {
+  background: none;
+}
+.ch-check-row input,
+.ch-radio-row input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+.ch-check-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-check-ic svg,
+.ch-radio-label svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-check-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-check-note {
+  flex: 0 1 auto;
+  text-align: right;
+}
+.ch-radio-row,
+.form .ch-radio-row {
+  align-items: flex-start;
+  padding: 6px;
+}
+.ch-radio-row input {
+  margin-top: 2px;
+}
+.ch-radio-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.ch-radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text);
+}
+.ch-radio-label svg {
+  flex: none;
+  color: var(--text-3);
+}
+.form input[type='text'].ch-link-field {
+  font-size: 12.5px;
+}
+/* Invitations: the made link, and the open ones with Withdraw. */
+.ch-open-invites {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ch-set .ch-open-invites {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+.ch-open-invites summary,
+.ch-browse-archived summary {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ch-open-invites summary:hover,
+.ch-browse-archived summary:hover {
+  color: var(--text);
+}
+/* The summary keeps a disclosure mark: a chevron that turns when it opens. */
+.ch-open-invites summary::-webkit-details-marker,
+.ch-browse-archived summary::-webkit-details-marker {
+  display: none;
+}
+.ch-open-invites summary::before,
+.ch-browse-archived summary::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 2px 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+.ch-open-invites[open] summary::before,
+.ch-browse-archived[open] summary::before {
+  transform: rotate(45deg);
+}
+.ch-invites {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ch-invite {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+.ch-invite-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.ch-invite-role {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.ch-invite-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.ch-invite .link-btn.danger {
+  color: var(--danger);
+}
+.ch-invites-none,
+.ch-browse-none {
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-invites-wait {
+  display: grid;
+  place-items: center;
+  min-height: 48px;
+}
+/* Search and a button above a list, and buttons under it. */
+.ch-dlg-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ch-search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+.ch-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.ch-dlg-tools .btn,
+.ch-dlg-foot .btn {
+  flex: none;
+}
+.ch-dlg-tools .btn svg,
+.ch-set .btn svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.dialog .ch-sub {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* Browse channels. */
+.ch-browse,
+.ch-people {
+  display: grid;
+  gap: 1px;
+  max-height: min(48vh, 420px);
+  margin: 0 -8px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-browse-row,
+.ch-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+.ch-browse-row:hover {
+  background: var(--hover);
+}
+.ch-browse-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 40px;
+  text-align: left;
+  border-radius: 6px;
+}
+.ch-browse-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-browse-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-browse-text {
+  display: grid;
+  min-width: 0;
+}
+.ch-browse-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-browse-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-browse-none {
+  padding-left: 8px;
+}
+.ch-browse-archived {
+  margin-top: 8px;
+}
+.ch-browse-archived[hidden] {
+  display: none;
+}
+/* People: members, the add picker, successors. */
+.ch-person-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-group {
+  display: flex;
+  align-items: flex-end;
+  min-height: 28px;
+  padding: 6px 8px 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.ch-pick .ch-check-row {
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+.ch-successors {
+  display: grid;
+  gap: 2px;
+  max-height: min(40vh, 320px);
+  margin: 0 -6px;
+  overflow-y: auto;
+}
+.ch-successors[aria-busy='true'] {
+  place-items: center;
+  min-height: 56px;
+}
+.ch-person-pick {
+  align-items: center;
+}
+.ch-person-pick input {
+  margin-top: 0;
+}
+/* Workspace settings: sections with a hairline between them. */
+.ch-set {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.ch-set:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.ch-set-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ch-set-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 32px;
+}
+.ch-set-text {
+  display: grid;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.ch-set-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.ch-set-value {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.ch-set-why {
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.dialog .ch-set-help {
+  margin: 0;
+}
+.ch-set .ch-people {
+  max-height: 200px;
+}
+.ch-set-leave {
+  justify-items: start;
+}
+.ch-set-end {
+  justify-content: flex-start;
+}
+.ch-browse-row > .btn {
+  flex: none;
+}
+.btn.ch-danger-btn {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--danger);
+}
+.btn.ch-danger-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+}
+/* New message: picked people as chips in the To field, and the list under it. */
+.ch-to {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: text;
+}
+.ch-to:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.ch-to-label {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-to-chips {
+  display: contents;
+}
+.ch-to-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 2px 0 4px;
+  border-radius: 9999px;
+  background: var(--chip);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ch-to-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-to-x {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  color: var(--text-3);
+}
+.ch-to-x:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.ch-to-x svg {
+  width: 12px;
+  height: 12px;
+}
+.form .ch-to .ch-to-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.ch-new-list {
+  display: grid;
+  gap: 1px;
+  max-height: min(36vh, 280px);
+  margin: -6px -8px 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-new-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ch-new-row:hover,
+.ch-new-row.is-active {
+  background: var(--hover);
+}
+.ch-new-list.is-full .ch-new-row {
+  opacity: 0.45;
+  cursor: default;
+}
+.ch-new-list.is-full .ch-new-row:hover {
+  background: none;
+}
+/* A channel the person isn't in, from Browse: the note fills the log's place and the Join bar sits under it. */
+.ch-main.is-preview .ch-compose {
+  order: 1;
+}
+
 /* A narrow view: the header drops its member count and meta line, rows tighten. */
 @container chat (max-width: 560px) {
   .ch-head {
@@ -11626,7 +12242,9 @@ button.ch-replies .ch-replies-n {
   .ch-replies,
   .ch-tools,
   .ch-box,
-  .ch-send {
+  .ch-send,
+  .ch-open-invites summary::before,
+  .ch-browse-archived summary::before {
     transition: none;
   }
 }

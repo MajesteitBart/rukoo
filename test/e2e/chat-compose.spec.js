@@ -339,12 +339,13 @@ test('removing a message asks first, shows "Message removed" here, and Olga sees
   await expect(removed).toHaveClass(/is-removed/);
   await expect(removed.locator('.ch-name')).toHaveText('Bart');
   await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general)).find((e) => e.id === id)?.redacted, { timeout: 15000 }).toBe(true);
-  // Someone else's message offers no Remove to a member who doesn't manage the channel.
+  // Someone else's message offers no Remove to a member who doesn't manage the channel; a full member can block its
+  // author (contract 5.5).
   await server.post(olga, ws.id, ws.general, 'Olga stays');
   const hers = message(log(), 'Olga stays');
   await expect(hers).toBeVisible({ timeout: 15000 });
   await hers.click({ button: 'right' });
-  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text']);
+  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Block Olga Owner']);
   await win.keyboard.press('Escape');
 });
 

@@ -242,6 +242,7 @@ export function mountView(section, H) {
   // first.
   function dropRoom() {
     closeThread({ restoreFocus: false });
+    main.classList.remove('is-preview');
     if (input) input.dispose();
     input = null;
     compose.textContent = '';
@@ -285,7 +286,7 @@ export function mountView(section, H) {
   function showState(kind, opts = {}) {
     const key = `${kind}|${getLocale()}|${opts.inviteSignups ? 1 : 0}|${H.workspaceName()}|${H.state()?.host || ''}`;
     if (mode === 'state' && key === stateKey) return;
-    if (V.c) dropRoom();
+    if (V.c || mode === 'preview') dropRoom();
     token++;
     mode = 'state';
     stateKey = key;
@@ -328,9 +329,35 @@ export function mountView(section, H) {
           icon: 'hash',
           title: t('chat.empty.pickTitle'),
           body: t('chat.empty.pickBody'),
-          actions: H.browse ? [{ id: 'browse', label: t('chat.sidebar.browse'), run: () => H.browse() }] : []
+          actions: H.browse && (!H.canBrowse || H.canBrowse()) ? [{ id: 'browse', label: t('chat.sidebar.browse'), run: () => H.browse() }] : []
         });
     }
+  }
+
+  // A channel the person isn't in, opened from Browse (contract 5.5): its header, a note in place of the log, and the
+  // bar with Join where the composer goes. Its history needs a membership, so none shows. Drawn again only when the
+  // channel's row or the language changed.
+  function preview(channel, { join }) {
+    const name = channel.name || '';
+    const key = `preview|${channel.id}|${name}|${channel.members}|${channel.visibility}|${getLocale()}`;
+    if (mode === 'preview' && stateKey === key) return;
+    dropRoom();
+    token++;
+    mode = 'preview';
+    stateKey = key;
+    main.classList.add('is-preview');
+    head.hidden = false;
+    area.hidden = true;
+    banner.hidden = true;
+    jumpUp.hidden = jumpDown.hidden = true;
+    empty.hidden = false;
+    compose.hidden = false;
+    const ic = h('span', { class: 'ch-head-ic', 'aria-hidden': 'true' }, svg(channel.visibility === 'private' ? 'lock' : 'hash'));
+    const meta = [t('chat.head.members', { count: channel.members || 0 }), channel.visibility === 'private' ? t('chat.head.private') : ''].filter(Boolean).join(' · ');
+    head.append(h('div', { class: 'ch-titles' }, h('div', { class: 'ch-title-row' }, ic, h('h1', { class: 'ch-title sel', title: name, text: name })), h('div', { class: 'ch-meta', text: meta })));
+    emptyBox({ icon: 'hash', title: t('chat.log.startChannel', { name }), body: t('chat.channel.previewBody', { name }) });
+    input = mountChatInput(compose, { placeholder: '', members: () => Promise.resolve([]), recent: () => [], onSend: () => Promise.resolve(true), onEscape: () => false });
+    input.setBar({ icon: 'hash', text: t('chat.input.notJoined', { name }), actions: [{ id: 'join', label: t('chat.input.join', { name }), primary: true, run: () => join() }] });
   }
 
   // The open conversation went (desktop-ui 7.10): its rows leave the screen at once. Called again while it shows, it
@@ -437,18 +464,21 @@ export function mountView(section, H) {
     log.setAttribute('aria-label', t('chat.log.label', { name }));
   }
 
-  // The header's More menu (contract 5.4). Mark as read and Mute here; the rest of the menu comes with the dialogs.
+  // The header's More menu (contract 5.4): Add people, Members and Rename from chat.js, then Mark as read and Mute,
+  // then Leave, Block and Archive from chat.js.
   function moreMenu(anchor) {
     const room = V.room;
     if (!room) return;
     const name = H.roomName(room);
-    const items = [];
+    const extra = H.roomItems ? H.roomItems(room) : { top: [], bottom: [] };
+    const items = [...extra.top, { separator: true }];
     if ((room.unread || 0) > 0 || (room.mentions || 0) > 0) items.push({ icon: 'check', label: t('chat.head.markRead'), shortcut: 'Shift+Esc', action: () => markRead() });
     items.push(
       room.muted
         ? { icon: 'bell', label: t('chat.head.unmute'), action: () => mute(false, name) }
         : { icon: 'mute', label: t('chat.head.mute'), action: () => mute(true, name) }
     );
+    if (extra.bottom.length) items.push({ separator: true }, ...extra.bottom);
     showMenu(anchor, items, { align: 'right' });
   }
 
@@ -1672,6 +1702,7 @@ export function mountView(section, H) {
     onKey,
     openThread,
     closeThread,
+    preview,
     // Chat mode left the screen: reading stops until a room opens again, and the drafts are saved.
     hide() {
       clearTimeout(V.readTimer);

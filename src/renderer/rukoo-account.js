@@ -27,6 +27,12 @@ const whereText = (info) => {
 };
 const staticRow = (title, desc = '') => `
   <div class="row static"><div class="text"><div class="title">${title}</div>${desc ? `<div class="desc">${desc}</div>` : ''}</div></div>`;
+// Team chat on the server, from its saved info, as main decides it (contract 3.1), and whether a workspace invitation
+// works as an invite code there (contract 2.12).
+const chatIn = (info) => Boolean(info && Array.isArray(info.features) && info.features.includes('workspaces-v1') && info.workspace && Array.isArray(info.workspace.versions) && info.workspace.versions.includes(1));
+const inviteSignups = (info) => chatIn(info) && Boolean(info.workspace.inviteSignups);
+// What team chat says now (contract 4.6), or null where main has none.
+const chatState = () => api('chatState').catch(() => null);
 
 function showRecoveryKey(key) {
   return dialog({
@@ -44,8 +50,9 @@ function showRecoveryKey(key) {
   });
 }
 
-// Asks for the password before something that needs it again; null when cancelled.
-function passwordDialog(title, help, okLabel = t('settings.rukoo.continue'), danger = false) {
+// Asks for the password before something that needs it again; null when cancelled. note: a second paragraph, such as
+// what becomes of team chat messages when the account goes.
+function passwordDialog(title, help, okLabel = t('settings.rukoo.continue'), danger = false, note = '') {
   return dialog({
     title,
     buttons: [
@@ -66,6 +73,7 @@ function passwordDialog(title, help, okLabel = t('settings.rukoo.continue'), dan
     render(body) {
       body.innerHTML = `<div class="form" style="padding:0">
         ${help ? `<p>${esc(help)}</p>` : ''}
+        ${note ? `<p data-note>${esc(note)}</p>` : ''}
         <label>${esc(t('setup.fields.password'))}<input type="password" name="password" autocomplete="current-password"/></label></div>`;
       body.querySelector('input').addEventListener('keydown', (e) => {
         if (e.key === 'Enter') body.closest('.dialog').querySelector('.buttons button:last-child').click();
@@ -111,9 +119,10 @@ function changePasswordDialog() {
   });
 }
 
-// pages: what settings.js needs. row: its row helper; go, back and rerender: its navigation; current(): the page on
-// top; promptDialog: its text prompt; jevOn(): whether this computer sorts mail with Jev, which the privacy page names.
-export function accountPages({ row, go, back, rerender, current, promptDialog, jevOn = () => false }) {
+// pages: what settings.js needs. row: its row helper; go, back, close and rerender: its navigation; current(): the page
+// on top; promptDialog: its text prompt; jevOn(): whether this computer sorts mail with Jev, which the privacy page
+// names; showChat(): puts team chat on screen once Settings closed.
+export function accountPages({ row, go, back, close = back, showChat = () => {}, rerender, current, promptDialog, jevOn = () => false }) {
   let status = null;
   let info = null;
   let infoFailed = false;
@@ -263,7 +272,13 @@ export function accountPages({ row, go, back, rerender, current, promptDialog, j
     return `<div class="card"><form class="form" data-form="rukoo-signup">
       ${emailField()}
       ${passwordFields(t('setup.fields.password'))}
-      ${info && info.signups === 'invite' ? `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"/></label>` : ''}
+      ${
+        info && info.signups === 'invite'
+          ? `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"${inviteSignups(info) ? ' aria-describedby="rukoo-invite-help"' : ''}/>${
+              inviteSignups(info) ? `<span class="field-help" id="rukoo-invite-help">${esc(t('settings.rukoo.inviteChatHelp'))}</span>` : ''
+            }</label>`
+          : ''
+      }
       <label class="inline"><input type="checkbox" name="understand"/> ${esc(t('settings.rukoo.understand'))}</label>
       ${submitRow(t('settings.rukoo.create'))}
     </form></div>`;
@@ -380,6 +395,14 @@ export function accountPages({ row, go, back, rerender, current, promptDialog, j
       }
       status = await api('accountStatus').catch(() => status);
       filled = { view: null, at: 0 };
+      // A sign-up with an invitation link left a pending join: Settings closes back to Chat, which opens the Join
+      // dialog with the link (contract 3.3, 5.10).
+      const chat = kind === 'rukoo-signup' ? await chatState() : null;
+      if (chat && chat.pendingJoin) {
+        close();
+        showChat();
+        return;
+      }
       back();
     } catch (ex) {
       stop(ex.message);
@@ -451,12 +474,17 @@ export function accountPages({ row, go, back, rerender, current, promptDialog, j
         return true;
       }
       case 'rukoo-signout': {
-        const ok = await confirmDialog(t('settings.rukoo.signOut'), t('settings.rukoo.signOutHelp'), t('settings.rukoo.signOut'));
+        // Unsent chat messages live in the chat cache, which goes with the session (contract 3.4).
+        const chat = await chatState();
+        const unsent = chat && Number(chat.unsent) > 0 ? ` ${t('settings.rukoo.unsentChat', { count: Number(chat.unsent) })}` : '';
+        const ok = await confirmDialog(t('settings.rukoo.signOut'), `${t('settings.rukoo.signOutHelp')}${unsent}`, t('settings.rukoo.signOut'));
         if (ok) await run(() => api('accountSignOut'), t('settings.rukoo.signedOut'));
         return true;
       }
       case 'rukoo-delete': {
-        const password = await passwordDialog(t('settings.rukoo.delete'), t('settings.rukoo.deleteHelp'), t('settings.rukoo.delete'), true);
+        const chat = await chatState();
+        const note = chat && chat.available ? t('settings.rukoo.deleteChatNote') : '';
+        const password = await passwordDialog(t('settings.rukoo.delete'), t('settings.rukoo.deleteHelp'), t('settings.rukoo.delete'), true, note);
         if (password) await run(() => api('accountDelete', password), t('settings.rukoo.deleted'));
         return true;
       }

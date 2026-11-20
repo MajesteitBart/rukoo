@@ -1,8 +1,9 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hue, initials, toast, showMenu, dialog, confirmDialog, KEEP_OPEN } from './ui.js';
+import { api, esc, $, hue, initials, toast, showMenu } from './ui.js';
 import { sortRooms, dmTitle, displayName, roomBadge, modeBadge as badgeFor } from './chat-model.js';
 import { mountView } from './chat-view.js';
+import * as D from './chat-dialogs.js';
 
 // Team chat: a fourth mode next to Mail, Calendar and Meet (Ctrl+4), shown while the server of the person's Rukoo
 // account has team chat (contract 3.1, 5.2). Main holds the workspaces, their cache and the network
@@ -42,21 +43,22 @@ export const CH = {
   // The open conversation went (desktop-ui 7.10): { room } (the Room as it was, or null) while the gone state shows,
   // until OK. The room is kept so a language change can draw its name again.
   goneRoom: null,
+  // A channel the person isn't in, opened from Browse (contract 5.5 "Channel not joined"): its directory row.
+  preview: null,
   // Connection history for the foot status and the reconnecting banner.
   wasOnline: false,
   connectingSince: null
 };
 
-// Sidebar and menu entries that U5's dialogs fill in (New message, the Channels plus menu, Browse channels, the
-// workspace's own settings, blocking someone from a message's menu). A button or menu item shows only once its action
-// exists, so nothing on screen does nothing.
+// Sidebar and menu entries, filled in by chat-dialogs.js (desktop-ui 6): New message, the Channels plus menu, Browse
+// channels, the workspace menu's items, and blocking someone from a message's menu.
 export const ACTIONS = {
-  newMessage: null,
-  addChannel: null,
-  browse: null,
-  workspaceItems: null,
+  newMessage: () => D.newMessage(),
+  addChannel: (anchor) => channelMenu(anchor),
+  browse: () => D.browseChannels(),
+  workspaceItems: () => D.workspaceItems(),
   // block(memberId): the block confirmation (desktop-ui 6.13).
-  block: null
+  block: (member) => D.blockMember(member)
 };
 // The thread panel (chat-view.js): open(root, { seq }) shows a thread beside the log, or over it in a narrow view.
 export const THREAD = { open: null };
@@ -70,8 +72,11 @@ let takingJoin = false;
 let loading = null;
 // openConversation is choosing the room: a workspace switch's own first-room open stands back.
 let routing = 0;
-// DMs this window is leaving (Remove from list): their eviction opens the next conversation instead of the gone state.
+// Rooms this window is leaving (Leave channel, Leave conversation, Remove from list): their eviction opens the next
+// conversation instead of the gone state.
 const leaving = new Set();
+// Workspaces this window is leaving or deleting: their removal opens the next workspace instead of the gone state.
+const goingAway = new Set();
 
 // ---------- small helpers ----------
 
@@ -215,6 +220,39 @@ export function chatErrorText(err, context = {}) {
 
 export function init(context) {
   ctx = context;
+  D.bindDialogs({
+    CH,
+    ctx,
+    errorText: (err, context2) => chatErrorText(err, context2),
+    hostNote: () => hostNote(),
+    summary: (id) => summary(id),
+    me: () => me(),
+    myRole: () => myRole(),
+    isGuest: () => isGuest(),
+    roomName: (room) => roomName(room),
+    memberAvatar: (id, cls) => memberAvatar(id, cls),
+    tileHtml: (w) => tileHtml(w),
+    selectWorkspace: (ws, opts) => selectWorkspace(ws, opts),
+    openRoom: (id, opts) => openRoom(id, opts),
+    openDefault: () => openDefault(),
+    previewChannel: (channel) => previewChannel(channel),
+    expectLeave: (id) => leaving.add(id),
+    cancelLeave: (id) => leaving.delete(id),
+    afterLeave: (id) => afterLeave(id),
+    expectGone: (ws) => goingAway.add(ws),
+    cancelGone: (ws) => goingAway.delete(ws),
+    reload: () => reloadView(),
+    refreshState: () =>
+      api('chatState')
+        .then(applyState)
+        .catch(() => {}),
+    setBlocks: (blocks) => {
+      if (Array.isArray(blocks)) CH.blocks = new Set(blocks.map((b) => b.member));
+      redrawSide();
+    }
+  });
+  // A pending join waits while Settings covers the window (the sign-up that made it is still on screen there).
+  document.addEventListener('rukoo:settings-closed', () => maybeTakeJoin());
   api('chatState')
     .then(applyState)
     .catch(() => {
@@ -232,7 +270,7 @@ export function show() {
   CH.open = true;
   ensureView();
   renderPane();
-  if (CH.ws && CH.view && !CH.openId && !CH.goneRoom) openDefault();
+  if (CH.ws && CH.view && !CH.openId && !CH.goneRoom && !CH.preview) openDefault();
   else if (CH.openId && CH.view) view.open(CH.ws, CH.openId, { refresh: true });
   maybeTakeJoin();
 }
@@ -262,7 +300,7 @@ export function onEvent(p) {
       if (CH.openId && CH.rooms.has(CH.openId)) view?.roomChanged(CH.rooms.get(CH.openId));
       redrawSide();
       // A workspace's first pass brings its rooms: the first one opens.
-      if (CH.open && !CH.openId && !CH.goneRoom && !CH.gone && CH.view && !routing) openDefault();
+      if (CH.open && !CH.openId && !CH.goneRoom && !CH.gone && !CH.preview && CH.view && !routing) openDefault();
       else renderPane();
       return;
     case 'directory':
@@ -291,10 +329,29 @@ export function onEvent(p) {
       }
       return;
     case 'removed':
+      // Leaving or deleting it here: the next workspace opens, as the state that follows says.
+      if (goingAway.has(p.ws)) {
+        goingAway.delete(p.ws);
+        api('chatState')
+          .then(applyState)
+          .catch(() => {});
+        return;
+      }
       workspaceGone(p.ws);
       return;
     default:
   }
+}
+
+// A room this window left: it goes from the list now, and the next conversation opens when it was on screen. Its
+// eviction can come a little later; until then it counts as expected.
+function afterLeave(id) {
+  CH.rooms.delete(id);
+  if (CH.openId === id) {
+    CH.openId = null;
+    openDefault();
+  } else redrawSide();
+  setTimeout(() => leaving.delete(id), 10000);
 }
 
 // The open conversation went (desktop-ui 7.10): evicted, or a 404 with scope 'conversation' about it.
@@ -318,6 +375,7 @@ function workspaceGone(ws) {
   CH.blocks.clear();
   CH.openId = null;
   CH.goneRoom = null;
+  CH.preview = null;
   CH.view = null;
   if (CH.open) view?.goneWorkspace(CH.gone.name);
   redrawSide();
@@ -354,6 +412,11 @@ export function onKey(e) {
   // Shift+Escape: the open conversation read (contract 3.9).
   if (e.key === 'Escape' && e.shiftKey && !typing) {
     view?.markRead();
+    return true;
+  }
+  // Ctrl+N: New message, for full members (desktop-ui 9.2).
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n') {
+    if (CH.ws && CH.view && !isGuest()) ACTIONS.newMessage();
     return true;
   }
   return view ? view.onKey(e, { typing }) : false;
@@ -460,10 +523,10 @@ export function sidebarClick(btn) {
       workspaceMenu(btn);
       return true;
     case 'make':
-      makeWorkspace();
+      D.makeWorkspace();
       return true;
     case 'join':
-      openJoin();
+      D.joinWorkspace();
       return true;
     case 'new-message':
     case 'dm-add':
@@ -591,6 +654,7 @@ function switchTo(ws, { openFirst = true } = {}) {
   CH.blocks = new Set();
   CH.openId = null;
   CH.goneRoom = null;
+  CH.preview = null;
   view?.close();
   if (!ws) return;
   const gen = CH.generation;
@@ -639,6 +703,8 @@ async function loadView() {
   CH.rooms = new Map((v.rooms || []).map((r) => [r.id, r]));
   CH.members = new Map((v.members || []).map((m) => [m.id, m]));
   CH.blocks = new Set((v.blocks || []).map((b) => b.member));
+  // A previewed channel follows its directory row (its name and member count).
+  if (CH.preview) CH.preview = CH.view.channels.find((c) => c.id === CH.preview.id) || CH.preview;
   if (CH.openId && !CH.rooms.has(CH.openId)) CH.openId = null;
   if (CH.openId) view?.roomChanged(CH.rooms.get(CH.openId), { directory: true });
   redrawSide();
@@ -663,6 +729,7 @@ export async function selectWorkspace(ws, { openFirst = true } = {}) {
 
 // The conversation a workspace opens on: the one open last time, else the first in sidebar order.
 function openDefault() {
+  CH.preview = null;
   if (!CH.open || !CH.ws || !CH.view) return renderPane();
   const saved = readSaved()[CH.ws];
   const list = inOrder();
@@ -676,6 +743,7 @@ export function openRoom(id, { at = null } = {}) {
   if (!CH.rooms.has(id)) return;
   ensureView();
   CH.goneRoom = null;
+  CH.preview = null;
   CH.openId = id;
   saveOpen(CH.ws, id);
   redrawSide();
@@ -707,7 +775,9 @@ function ensureView() {
     workspaceName: () => summary()?.name || '',
     active: () => CH.open && Boolean(ctx.chatMode?.()),
     errorText: (err) => chatErrorText(err),
-    showMembers: (room) => showMembers(room),
+    showMembers: (room) => D.channelMembers(room),
+    // The header's More menu around Mark as read and Mute (contract 5.4): { top, bottom }.
+    roomItems: (room) => roomItems(room),
     // The workspace's status, for the stopped bar (contract 5.5); full members start DMs from a closed one.
     workspaceStatus: () => summary()?.status || null,
     full: () => !isGuest(),
@@ -739,9 +809,12 @@ function ensureView() {
     goneError: (err, ws, c) => goneError(err, ws, c),
     signIn: () => ctx.openSettings('rukoo-signin'),
     signUp: () => ctx.openSettings('rukoo-signup'),
-    makeWorkspace: () => makeWorkspace(),
-    joinWorkspace: () => openJoin(),
-    browse: ACTIONS.browse ? () => ACTIONS.browse() : null,
+    makeWorkspace: () => D.makeWorkspace(),
+    joinWorkspace: () => D.joinWorkspace(),
+    browse: () => (isGuest() ? null : ACTIONS.browse()),
+    canBrowse: () => !isGuest(),
+    // Join on the bar of a previewed channel.
+    joinPreview: (channel) => joinPreview(channel),
     checkUpdates: () => api('updatesOpen').catch(() => {}),
     startOver: () => startOver(),
     syncNow: () => reconnect()
@@ -763,26 +836,75 @@ async function startDm(others) {
   }
 }
 
-// A closed DM's Remove from list: asked first, then the DM leaves the list and the next conversation opens.
-async function leaveDm(room) {
+// A closed DM's Remove from list, and Leave conversation: asked first, then the DM leaves the list and the next
+// conversation opens (chat-dialogs.js).
+function leaveDm(room) {
+  return D.leaveConversation(room);
+}
+
+// The header's More menu, without Mark as read and Mute, which the view adds between (contract 5.4, desktop-ui 5.2):
+// Add people, Members and Rename on top; Leave, Block and Archive below.
+function roomItems(room) {
+  const top = [];
+  const bottom = [];
+  if (!room) return { top, bottom };
+  const admin = ['owner', 'admin'].includes(myRole());
+  if (room.kind === 'channel') {
+    const manager = room.role === 'manager' && !room.archived;
+    if (manager) top.push({ icon: 'userPlus', label: t('chat.head.addPeople'), action: () => D.channelMembers(room, { add: true }) });
+    top.push({ icon: 'people', label: t('chat.head.membersButton'), action: () => D.channelMembers(room) });
+    if (manager) top.push({ icon: 'edit', label: t('chat.head.rename'), action: () => D.renameChannel(room) });
+    bottom.push({ icon: 'leave', label: t('chat.head.leave'), action: () => D.leaveChannel(room) });
+    if (!room.archived && (room.role === 'manager' || admin)) bottom.push({ separator: true }, { icon: 'archive', label: t('chat.head.archive'), danger: true, action: () => D.archiveChannel(room) });
+  } else {
+    const others = (room.participants || []).filter((id) => id !== me());
+    if (others.length > 1) top.push({ icon: 'people', label: t('chat.head.membersButton'), action: () => D.channelMembers(room) });
+    if (!room.closedReason) bottom.push({ icon: 'leave', label: t('chat.head.leaveDm'), action: () => D.leaveConversation(room) });
+    else bottom.push({ icon: 'leave', label: t('chat.input.removeFromList'), action: () => D.leaveConversation(room) });
+    const other = others.length === 1 ? CH.members.get(others[0]) : null;
+    if (!isGuest() && other && other.state === 'active' && other.role !== 'guest' && !CH.blocks.has(other.id)) {
+      bottom.push({ icon: 'ban', label: t('chat.head.block', { name: displayName(other, t) }), action: () => D.blockMember(other.id) });
+    }
+  }
+  return { top, bottom };
+}
+
+// The Channels plus menu (desktop-ui 5.1): Make a channel, Browse channels.
+function channelMenu(anchor) {
+  showMenu(
+    anchor,
+    [
+      { icon: 'plus', label: t('chat.sidebar.makeChannel'), action: () => D.makeChannel() },
+      { icon: 'search', label: t('chat.sidebar.browse'), action: () => D.browseChannels() }
+    ],
+    { align: 'left' }
+  );
+}
+
+// A channel the person isn't in, from Browse: its header and the Join bar (contract 5.5). Nothing of its history
+// shows, because the server lets only members read it.
+function previewChannel(channel) {
+  if (!channel || !CH.ws) return;
+  if (CH.rooms.has(channel.id)) return openRoom(channel.id);
+  ensureView();
+  CH.goneRoom = null;
+  CH.openId = null;
+  CH.preview = channel;
+  redrawSide();
+  renderPane();
+}
+
+async function joinPreview(channel) {
   const ws = CH.ws;
-  if (!ws || !room) return;
-  const ok = await confirmDialog(t('chat.leaveDm.title'), t(room.closedReason ? 'chat.leaveDm.bodyClosed' : 'chat.leaveDm.body'), t('chat.leaveDm.submit'), true);
-  if (!ok || ws !== CH.ws) return;
-  leaving.add(room.id);
+  if (!ws || !channel) return;
   try {
-    await api('chatLeaveDm', ws, room.id);
+    await api('chatJoinChannel', ws, channel.id);
+    for (let i = 0; i < 80 && ws === CH.ws && !CH.rooms.has(channel.id); i++) await new Promise((r) => setTimeout(r, 100));
     if (ws !== CH.ws) return;
-    CH.rooms.delete(room.id);
-    if (CH.openId === room.id) {
-      CH.openId = null;
-      openDefault();
-    } else redrawSide();
+    if (!CH.rooms.has(channel.id)) await reloadView();
+    if (CH.rooms.has(channel.id)) openRoom(channel.id);
   } catch (err) {
-    if (!goneError(err, ws, room.id)) toast(chatErrorText(err), 5000);
-  } finally {
-    // The eviction can come a little after the answer.
-    setTimeout(() => leaving.delete(room.id), 10000);
+    if (!goneError(err, ws)) toast(chatErrorText(err), 5000);
   }
 }
 
@@ -803,10 +925,12 @@ function renderPane() {
     if (w && w.status === 'upgrade') kind = 'upgrade';
     else if (!CH.view) kind = 'loading';
     else if (CH.goneRoom) kind = 'goneRoom';
+    else if (!CH.openId && CH.preview) kind = 'preview';
     else if (!CH.openId) kind = w && w.status === 'loading' && !CH.rooms.size ? 'loading' : 'pick';
   }
   // The gone conversation stays until OK; drawn again only when its text changed (a language change).
   if (kind === 'goneRoom') view.goneConversation(roomName(CH.goneRoom.room), { focus: false });
+  else if (kind === 'preview') view.preview(CH.preview, { join: () => joinPreview(CH.preview) });
   else if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups) });
   view.setBanner(bannerFor());
   view.stateChanged();
@@ -832,7 +956,7 @@ function startOver() {
     .catch((err) => toast(chatErrorText(err), 5000));
 }
 
-// ---------- the workspace menu (desktop-ui 6.17) ----------
+// ---------- the workspace menu (desktop-ui 6.17, contract 5.10) ----------
 
 function workspaceMenu(anchor) {
   const list = CH.state?.workspaces || [];
@@ -840,237 +964,30 @@ function workspaceMenu(anchor) {
   for (const w of list) {
     items.push({ icon: tileHtml(w), label: w.name, current: w.id === CH.ws, hint: w.attention ? fmt(w.attention) : '', action: () => selectWorkspace(w.id) });
   }
-  const more = typeof ACTIONS.workspaceItems === 'function' ? ACTIONS.workspaceItems() : [];
-  if (more.length) items.push({ separator: true }, ...more);
+  const { top, bottom } = ACTIONS.workspaceItems();
+  if (top.length) items.push({ separator: true }, ...top);
   items.push({ separator: true });
-  items.push({ icon: 'plus', label: t('chat.workspace.make'), action: () => makeWorkspace() });
-  items.push({ icon: 'link', label: t('chat.workspace.join'), action: () => openJoin() });
+  items.push({ icon: 'plus', label: t('chat.workspace.make'), action: () => D.makeWorkspace() });
+  items.push({ icon: 'link', label: t('chat.workspace.join'), action: () => D.joinWorkspace() });
+  if (bottom.length) items.push({ separator: true }, ...bottom);
   showMenu(anchor, items, { align: 'left' });
 }
 
-// ---------- making and joining (U5 moves these into chat-dialogs.js with the rest of desktop-ui 6) ----------
-
-// The name a person goes by in a new workspace: the first mail account's display name, else the part of the Rukoo
-// account's address before the @ (contract 3.3).
-async function defaultName() {
-  const acc = ctx.S?.data?.accounts?.[0];
-  if (acc && String(acc.name || '').trim()) return String(acc.name).trim();
-  const status = await api('accountStatus').catch(() => null);
-  return status && typeof status.email === 'string' ? status.email.split('@')[0] : '';
-}
-
-// 1 to 80 characters on one line, as the server takes them (contract 3.16).
-const nameOk = (s) => {
-  const v = String(s || '').trim();
-  return v.length > 0 && [...v].length <= 80 && !/[\r\n]/.test(v);
-};
-
-function showError(body, field, text) {
-  for (const el of body.querySelectorAll('[data-error]')) {
-    const mine = el.dataset.error === (field || '');
-    el.hidden = !(mine && text);
-    if (mine) el.textContent = text || '';
-  }
-  if (field) body.querySelector(`[name="${field}"]`)?.focus();
-}
-
-function setBusy(scrim, busy) {
-  for (const b of scrim.querySelectorAll('.buttons button')) b.disabled = busy;
-  const primary = scrim.querySelector('.buttons button:last-child');
-  if (primary) primary.toggleAttribute('aria-busy', busy);
-}
-
-// Make a workspace (desktop-ui 6.1): its name, your name in it, and who hosts it.
-export async function makeWorkspace() {
-  if (!CH.state || !CH.state.signedIn) return;
-  const yourName = await defaultName();
-  let finish = null;
-  let busy = false;
-  const submit = async (scrim) => {
-    if (busy) return;
-    const body = scrim.querySelector('.dialog-body');
-    const name = body.querySelector('[name="name"]').value.trim();
-    const displayName = body.querySelector('[name="displayName"]').value.trim();
-    if (!nameOk(name)) return showError(body, 'name', t('chat.errors.invalidName'));
-    if (!nameOk(displayName)) return showError(body, 'displayName', t('chat.errors.invalidName'));
-    showError(body, null, '');
-    busy = true;
-    setBusy(scrim, true);
-    try {
-      const made = await api('chatCreateWorkspace', { name, displayName });
-      finish(made && made.ws);
-    } catch (err) {
-      busy = false;
-      setBusy(scrim, false);
-      const field = err && err.code === 'invalid' && ['name', 'displayName'].includes(err.field) ? err.field : '';
-      showError(body, field, chatErrorText(err));
-    }
-  };
-  const ws = await dialog({
-    title: t('chat.make.title'),
-    buttons: [
-      { get label() { return t('common.actions.cancel'); }, value: null },
-      { label: t('chat.make.submit'), value: (scrim) => (submit(scrim), KEEP_OPEN) }
-    ],
-    render(body, done) {
-      finish = done;
-      body.innerHTML = `<div class="form ch-form">
-        <label>${esc(t('chat.make.name'))}<input type="text" name="name" autocomplete="off" spellcheck="false" placeholder="${esc(t('chat.make.namePlaceholder'))}"/></label>
-        <p class="error" data-error="name" hidden></p>
-        <label>${esc(t('chat.make.yourName'))}<input type="text" name="displayName" autocomplete="off" spellcheck="false" value="${esc(yourName)}"/></label>
-        <p class="error" data-error="displayName" hidden></p>
-        ${hostNote()}
-        <p class="error" data-error="" hidden></p>
-      </div>`;
-      body.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.target.matches('input')) {
-          e.preventDefault();
-          submit(body.closest('.scrim'));
-        }
-      });
-    }
-  });
-  if (ws) await selectWorkspace(ws);
-}
-
-const firstUrlHost = (text) => {
-  const m = String(text || '').match(/https?:\/\/[^\s]+/);
-  if (!m) return '';
-  try {
-    return new URL(m[0]).host;
-  } catch (_) {
-    return '';
-  }
-};
-
-// Join with an invitation link. U3 opens it for a pending join from a sign-up and from the empty state; U5's Join
-// dialog (desktop-ui 6.2, with the preview card) takes its place. link: filled in when there is one.
-export async function openJoin(link = '') {
-  if (!CH.state || !CH.state.signedIn) return;
-  const yourName = await defaultName();
-  let finish = null;
-  let busy = false;
-  let preview = null;
-  const submit = async (scrim) => {
-    if (busy) return;
-    const body = scrim.querySelector('.dialog-body');
-    const text = body.querySelector('[name="link"]').value.trim();
-    if (preview && preview.already) {
-      finish({ ws: preview.workspace.id, already: true });
-      return;
-    }
-    busy = true;
-    setBusy(scrim, true);
-    try {
-      if (!preview) {
-        preview = await api('chatPreviewInvite', text);
-        const info = body.querySelector('[data-preview]');
-        const lines = preview.already
-          ? [t('chat.join.already', { name: preview.workspace.name })]
-          : [
-              t(preview.role === 'guest' ? 'chat.join.invitedByGuest' : 'chat.join.invitedBy', { name: preview.issuer?.name || '' }),
-              t('chat.join.channels', { count: Number(preview.channels) || 0 }),
-              t('chat.join.history')
-            ];
-        info.innerHTML = `<p class="ch-join-ws">${esc(preview.workspace.name)}</p>${lines.map((l) => `<p>${esc(l)}</p>`).join('')}`;
-        info.hidden = false;
-        body.querySelector('[data-name]').hidden = Boolean(preview.already);
-        body.querySelector('[name="link"]').readOnly = true;
-        const primary = scrim.querySelector('.buttons button:last-child');
-        primary.textContent = preview.already ? t('chat.join.open') : t('chat.join.submit', { name: preview.workspace.name });
-        busy = false;
-        setBusy(scrim, false);
-        if (!preview.already) body.querySelector('[name="name"]').focus();
-        return;
-      }
-      const name = body.querySelector('[name="name"]').value.trim();
-      if (!nameOk(name)) {
-        busy = false;
-        setBusy(scrim, false);
-        return showError(body, 'name', t('chat.errors.invalidName'));
-      }
-      const joined = await api('chatJoin', { link: text, name });
-      finish(joined);
-    } catch (err) {
-      busy = false;
-      setBusy(scrim, false);
-      const field = err && err.code === 'invalid' && err.field === 'name' ? 'name' : '';
-      showError(body, field, chatErrorText(err, { linkHost: firstUrlHost(text) }));
-    }
-  };
-  const joined = await dialog({
-    title: t('chat.join.title'),
-    buttons: [
-      { get label() { return t('common.actions.cancel'); }, value: null },
-      { label: t('chat.join.check'), value: (scrim) => (submit(scrim), KEEP_OPEN) }
-    ],
-    render(body, done) {
-      finish = done;
-      body.innerHTML = `<div class="form ch-form">
-        <label>${esc(t('chat.join.link'))}<input type="text" name="link" autocomplete="off" spellcheck="false" value="${esc(link)}"/></label>
-        <div class="ch-join-preview" data-preview hidden></div>
-        <label data-name hidden>${esc(t('chat.make.yourName'))}<input type="text" name="name" autocomplete="off" spellcheck="false" value="${esc(yourName)}"/></label>
-        <p class="error" data-error="name" hidden></p>
-        ${hostNote()}
-        <p class="error" data-error="" hidden></p>
-      </div>`;
-      body.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.target.matches('input')) {
-          e.preventDefault();
-          submit(body.closest('.scrim'));
-        }
-      });
-      // A link that came with a sign-up loads its preview at once.
-      if (link) setTimeout(() => submit(body.closest('.scrim')), 0);
-    }
-  });
-  if (joined && joined.ws) {
-    if (joined.already) toast(t('chat.join.already', { name: summary(joined.ws)?.name || preview?.workspace?.name || '' }));
-    await selectWorkspace(joined.ws);
-  }
-}
+// Make a workspace and Join with an invitation link (chat-dialogs.js), for the empty states and the menu.
+export const makeWorkspace = () => D.makeWorkspace();
+export const openJoin = (link = '') => D.joinWorkspace(link);
 
 // A sign-up with an invitation link left a pending join: the next time Chat shows, the Join dialog opens with it
-// (contract 3.3, 5.8).
+// (contract 3.3, 5.8). Not while Settings covers the window, where the sign-up still shows: closing it brings the
+// dialog (rukoo:settings-closed).
 function maybeTakeJoin() {
   if (!CH.open || takingJoin || !CH.state || !CH.state.pendingJoin || !CH.state.signedIn) return;
+  if (document.querySelector('#overlays .page.settings, .scrim')) return;
   takingJoin = true;
   api('chatTakePendingJoin')
-    .then((r) => (r && r.link ? openJoin(r.link) : null))
+    .then((r) => (r && r.link ? D.joinWorkspace(r.link) : null))
     .catch(() => {})
     .finally(() => {
       takingJoin = false;
     });
-}
-
-// ---------- a channel's members (U5's members dialog, desktop-ui 6.6, takes its place) ----------
-
-async function showMembers(room) {
-  if (!room || !CH.ws) return;
-  const ws = CH.ws;
-  await dialog({
-    title: room.kind === 'channel' ? t('chat.channel.membersTitle', { name: room.name || '' }) : roomName(room),
-    buttons: [{ get label() { return t('common.actions.close'); }, value: null }],
-    render(body) {
-      body.innerHTML = `<div class="ch-members" aria-busy="true"><span class="spinner"></span></div>`;
-      api('chatRoomMembers', ws, room.id)
-        .then((r) => {
-          const list = (r && r.members) || [];
-          const name = (m) => displayName(CH.members.get(m.member), t);
-          list.sort((a, b) => collator().compare(name(a), name(b)));
-          const rows = list
-            .map((m) => {
-              const member = CH.members.get(m.member);
-              const label = m.member === me() ? t('chat.members.you', { name: name(m) }) : name(m);
-              const tags = [m.role === 'manager' ? t('chat.roles.manager') : '', member && member.role === 'guest' ? t('chat.roles.guest') : ''].filter(Boolean);
-              return `<li class="ch-member">${memberAvatar(m.member, 'ch-av-24')}<span class="ch-member-name">${esc(label)}</span>${tags.map((x) => `<span class="ch-tag">${esc(x)}</span>`).join('')}</li>`;
-            })
-            .join('');
-          body.innerHTML = `<ul class="ch-members">${rows}</ul>`;
-        })
-        .catch((err) => {
-          body.innerHTML = `<p class="error">${esc(chatErrorText(err))}</p>`;
-        });
-    }
-  });
 }

@@ -11171,6 +11171,10 @@
     "message": "Couldn't add {names}.",
     "description": "Channel members dialog: error after some people couldn't be added. {names}: those people. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.previewBody": {
+    "message": "Join #{name} to read its messages and post in it.",
+    "description": "Conversation pane: text in place of the log in a channel opened from Browse channels that the user hasn't joined. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
   "chat.members.title": {
     "message": "Members of {workspace}",
     "description": "Workspace members dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
@@ -11206,6 +11210,14 @@
   "chat.members.removeConfirm": {
     "message": "Remove",
     "description": "Workspace members dialog: confirmation button. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.more": {
+    "message": "More actions for {name}",
+    "description": "Workspace members and channel members dialogs: accessible name of the button that opens the menu of one person. {name}: their name. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.blocked": {
+    "message": "Blocked",
+    "description": "Workspace members dialog: tag after the name of someone the user blocked. src/renderer/chat-dialogs.js"
   },
   "chat.new.title": {
     "message": "New message",
@@ -11318,6 +11330,10 @@
   "chat.leave.lastOwner": {
     "message": "You're the only owner. Make someone else an owner first.",
     "description": "Leave a workspace: dialog when the user is its only owner. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.deleteInstead": {
+    "message": "Nobody else is in {workspace}, so you can delete it instead.",
+    "description": "Leave a workspace: second line of the only-owner dialog when the user is its only member, above Delete workspace. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
   },
   "chat.delete.title": {
     "message": "Delete {workspace}?",

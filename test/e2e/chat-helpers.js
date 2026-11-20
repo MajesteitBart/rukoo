@@ -172,8 +172,69 @@ async function holdRuns(app) {
   };
 }
 
+// The dialog on top, and a menu item by its text.
+const dialogBox = (win) => win.locator('.scrim .dialog').last();
+const menuItem = (win, text) => win.locator('.menu [role^="menuitem"]', { hasText: text });
+
+// The workspace menu (desktop-ui 6.17), then one of its items.
+async function workspaceMenu(win, item) {
+  await win.locator('.sidebar [data-ch-side="workspaces"]').click();
+  if (item) await menuItem(win, item).first().click();
+}
+
+// The open conversation's More menu (contract 5.4), then one of its items.
+async function roomMenu(win, item) {
+  await win.locator('section.chat .ch-head [data-ch="more"]').click();
+  if (item) await menuItem(win, item).first().click();
+}
+
+// A room of person's feed as the server sends it (contract 2.4): what another device of theirs would see.
+async function serverRoom(server, person, wsId, conversation) {
+  let cursor = null;
+  let row = null;
+  for (;;) {
+    const route = `/v1/workspaces/${wsId}/changes${cursor ? `?after=${encodeURIComponent(cursor)}` : ''}`;
+    const page = await server.call('GET', route, { token: person.token });
+    if (page.status !== 200) throw new Error(`feed: ${page.status} ${page.text}`);
+    const found = page.body.changes.find((c) => c.conversation === conversation);
+    if (found) row = found;
+    cursor = page.body.next;
+    if (!page.body.more) break;
+  }
+  return row;
+}
+
+// The DMs of person's feed.
+async function serverDms(server, person, wsId) {
+  const out = new Map();
+  let cursor = null;
+  for (;;) {
+    const route = `/v1/workspaces/${wsId}/changes${cursor ? `?after=${encodeURIComponent(cursor)}` : ''}`;
+    const page = await server.call('GET', route, { token: person.token });
+    if (page.status !== 200) throw new Error(`feed: ${page.status} ${page.text}`);
+    for (const c of page.body.changes) if (c.kind === 'dm') out.set(c.conversation, c);
+    cursor = page.body.next;
+    if (!page.body.more) break;
+  }
+  return [...out.values()];
+}
+
+// A GET as person on a workspace route, its body.
+async function serverGet(server, person, wsId, route) {
+  const r = await server.call('GET', `/v1/workspaces/${wsId}${route}`, { token: person.token });
+  if (r.status !== 200) throw new Error(`${route}: ${r.status} ${r.text}`);
+  return r.body;
+}
+
 module.exports = {
   PASSWORD,
+  dialogBox,
+  menuItem,
+  workspaceMenu,
+  roomMenu,
+  serverRoom,
+  serverDms,
+  serverGet,
   skipWithoutServer,
   startServer,
   launch,
