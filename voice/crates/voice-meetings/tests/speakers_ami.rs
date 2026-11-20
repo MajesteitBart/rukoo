@@ -2,7 +2,7 @@
 //! `rukoo-voice-speakers` worker and NeMo-Speech.cpp: three voices before the recording stops,
 //! at least 90 % of transcript time to the right speaker, and the same ids after the worker is
 //! killed. With the excerpt as the microphone of a stopped meeting, `speakers.split` finds its
-//! voices.
+//! voices, and with the excerpt on the call heard at that microphone, it finds no voice there.
 //!
 //! Windows and macOS. It skips unless these are set (`voice/scripts/speaker-assets.ps1` fetches
 //! them, `speaker-assets.mjs` on macOS):
@@ -709,6 +709,134 @@ fn ami_at_one_microphone_splits_into_voices() {
         voice_meetings::split_voices(&rec.dir).unwrap(),
         Some(voices)
     );
+}
+
+/// 5: the bleed gate with the real worker. In the first minute everyone sits at one microphone
+/// and the call is silent; in the second the call plays the excerpt and the microphone, without
+/// headphones, hears it sample for sample. The split finds the room's voices in the first minute
+/// as test 4 does, and hears nothing of the call: every passage the microphone took from the call
+/// stays the user's, and next to no microphone turn falls inside the call's minute. Once with
+/// the call's words, timed by the oracle as Orukeet times them, and once with nothing of the call
+/// transcribed, as after a failed transcription, so the gate goes by the call's recorded audio.
+#[test]
+fn ami_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
+    let Some(assets) = assets() else {
+        return;
+    };
+    let _one = one_at_a_time();
+    let tmp = TempDir::new("ami-bleed");
+    let data = tmp.path().join("data");
+    let library = Library::open(&data).unwrap();
+    let log = EventLog::open(&data).unwrap();
+    let pcm = read_wav(&assets.ami.wav);
+    let half = pcm.len() as u64 / 16;
+    let Labels::Local { diarizer } = nemotron(&assets, &data, tmp.path().join("exe")) else {
+        panic!("no diarizer");
+    };
+    for gate in ["words", "audio"] {
+        let rec = Recording::new(&library, &[Track::Mic, Track::Call]);
+        rec.session(0, 1);
+        rec.segment("mic", 1, 0, &[pcm.as_slice(), pcm.as_slice()].concat());
+        rec.segment("call", 1, 0, &[vec![0; pcm.len()], pcm.clone()].concat());
+        rec.stop(2 * half);
+        let pipeline = Pipeline::start(
+            rec.dir.clone(),
+            log.clone(),
+            PipelineOptions {
+                timed: Some(Arc::new(AmiOracle::new(&assets.ami))),
+                timing: Timing {
+                    poll: Duration::from_millis(50),
+                    ..Timing::default()
+                },
+                ..PipelineOptions::new(Arc::new(Offline))
+            },
+        );
+        wait_until("done", WAIT, || {
+            (pipeline.state() == PipelineState::Done).then_some(())
+        });
+        pipeline.shutdown();
+        let call_ms: u64 = of(&events(&log, &rec.id()), "passage")
+            .iter()
+            .filter(|p| p["track"] == "call")
+            .map(|p| p["end"].as_u64().unwrap() - p["start"].as_u64().unwrap())
+            .sum();
+        assert!(
+            call_ms > 30_000,
+            "the oracle heard {call_ms} ms of the call"
+        );
+        if gate == "audio" {
+            rusqlite::Connection::open(rec.dir.path().join("transcript.db"))
+                .unwrap()
+                .execute_batch(
+                    "DELETE FROM passages WHERE track = 'call';
+                     DELETE FROM windows WHERE track = 'call';
+                     DELETE FROM progress WHERE track = 'call';",
+                )
+                .unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let voices = voice_meetings::split_microphone(
+            &rec.dir,
+            &log,
+            diarizer.as_ref(),
+            &voice_meetings::FollowerTiming::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &|_, _| {},
+        )
+        .unwrap();
+        let took = started.elapsed();
+
+        let mut last: BTreeMap<String, Span> = BTreeMap::new();
+        for p in of(&events(&log, &rec.id()), "passage") {
+            if p["track"] == "mic" {
+                last.insert(
+                    p["id"].as_str().unwrap().to_owned(),
+                    Span {
+                        start: p["start"].as_u64().unwrap(),
+                        end: p["end"].as_u64().unwrap(),
+                        speaker: p["speaker"].as_str().map(str::to_owned),
+                    },
+                );
+            }
+        }
+        let (room, echo): (Vec<Span>, Vec<Span>) = last.into_values().partition(|p| p.start < half);
+        let score = accuracy(&room, &reference(&assets.ami.rttm, 0, 1));
+        let turns = voice_meetings::Transcript::open(rec.dir.path())
+            .unwrap()
+            .turns(Track::Mic, half, 2 * half)
+            .unwrap();
+        let heard_ms: u64 = turns
+            .iter()
+            .map(|t| t.end.min(2 * half).saturating_sub(t.start.max(half)))
+            .sum();
+        let moved: Vec<&Span> = echo
+            .iter()
+            .filter(|p| p.speaker.as_deref() != Some("mic"))
+            .collect();
+        eprintln!(
+            "AMI with the call at the microphone, gated by the call's {gate}: {voices} voices, \
+             {:.1} % of the room's transcript time to the right voice, {} of {} passages from \
+             the call on another voice, {heard_ms} ms of microphone turns in the call's minute \
+             ({call_ms} ms of call passages), split in {took:?}",
+            score * 100.0,
+            moved.len(),
+            echo.len()
+        );
+        assert!(
+            echo.len() >= 10,
+            "{gate}: the oracle heard {} echo passages",
+            echo.len()
+        );
+        assert!(moved.is_empty(), "{gate}: {moved:#?}");
+        assert!(voices >= 2, "{gate}: voices: {voices}");
+        // Measured on Windows: 92.7 % by the words, 94.5 % by the audio.
+        assert!(score >= 0.85, "{gate}: accuracy {score}: {room:#?}");
+        // Measured: 2,226 ms by the words, all of it in the excerpt's soft stretch from 26.7 s to
+        // 29.2 s, which isn't recognized and so has no words to gate by; 0 ms by the audio.
+        let most = if gate == "words" { 4_000 } else { 1_000 };
+        assert!(heard_ms <= most, "{gate}: {turns:#?}");
+    }
 }
 
 /// 3: the worker is killed 30 s into the excerpt's second loop; the main speakers keep their

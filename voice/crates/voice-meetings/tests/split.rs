@@ -467,6 +467,14 @@ fn a_worker_that_fails_or_a_stop_leaves_the_meeting_as_it_was_and_the_next_split
     assert_eq!(split(&rec.dir, &log, &working, &no_stop()).unwrap(), 3);
 }
 
+/// Text without word timings from [`Echo`], one passage per window, as a cloud provider gives.
+fn untimed() -> PipelineOptions {
+    PipelineOptions {
+        timing: fast(),
+        ..PipelineOptions::new(Arc::new(Echo::default()))
+    }
+}
+
 /// Word timings from [`Bursts`], and the call labelled by `d` as Nemotron would label it.
 fn labelled(d: &ScriptedDiarizer) -> PipelineOptions {
     PipelineOptions {
@@ -512,20 +520,55 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
     let log = EventLog::open(tmp.path()).unwrap();
     let (microphone, call) = the_call_at_the_microphone();
     let labels = ScriptedDiarizer::new();
-    // Gated by the call's passages in a meeting without labels, by its turns in one that
-    // Nemotron labelled.
-    for (gate, opts) in [("passages", timed()), ("turns", labelled(&labels))] {
+    // Gated by the call's passages with word timings in a meeting without labels, by its turns
+    // in one that Nemotron labelled, and by where the call's audio sounds when its passages have
+    // no word timings, as from a cloud provider, or when it has no passages at all, as after a
+    // failed transcription.
+    for (gate, opts) in [
+        ("passages", timed()),
+        ("turns", labelled(&labels)),
+        ("audio in passages", untimed()),
+        ("audio", untimed()),
+    ] {
         let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
         rec.session(0, 1);
         rec.segment("mic", 1, 0, &voices(&microphone));
         rec.segment("call", 1, 0, &voices(&call));
         rec.stop(length_ms(&microphone));
         transcribe(&rec, &log, opts);
-        let call_turns = Transcript::open(rec.dir.path())
+        if gate == "audio" {
+            // What a failed transcription leaves of the call: nothing transcribed.
+            sql(
+                &rec,
+                "DELETE FROM passages WHERE track = 'call';
+                 DELETE FROM windows WHERE track = 'call';
+                 DELETE FROM progress WHERE track = 'call';",
+            );
+        }
+        let stored = Transcript::open(rec.dir.path()).unwrap();
+        let call_turns = stored.turns(Track::Call, 0, u64::MAX).unwrap();
+        assert_eq!(call_turns.is_empty(), gate != "turns", "{call_turns:?}");
+        let call_passages: Vec<(u64, u64, bool)> = stored
+            .passages()
             .unwrap()
-            .turns(Track::Call, 0, u64::MAX)
-            .unwrap();
-        assert_eq!(call_turns.is_empty(), gate == "passages", "{call_turns:?}");
+            .into_iter()
+            .filter(|p| p.passage.track == Track::Call)
+            .map(|p| (p.passage.start, p.passage.end, p.tokens.is_empty()))
+            .collect();
+        match gate {
+            // The call's one window without word timings reaches back over the second voice at
+            // the microphone, 5-7.5 s: gated by the whole passage, that voice would be silenced.
+            "audio in passages" => assert!(
+                matches!(call_passages[..], [(start, 12_000.., true)] if start < 7_500),
+                "{call_passages:?}"
+            ),
+            "audio" => assert!(call_passages.is_empty(), "{call_passages:?}"),
+            _ => assert!(
+                call_passages.iter().all(|p| !p.2),
+                "word timings: {call_passages:?}"
+            ),
+        }
+        drop(stored);
 
         let d = ScriptedDiarizer::new();
         assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2, "{gate}");
