@@ -411,10 +411,17 @@ test('a 410 reset takes back every alert of the workspace, as the removals it mi
   assert.equal(svc.store.getRoom(ws.id, dm).notified, posted.seq);
 });
 
-// Start over and a new key start a pass from the start, which lists no removals either: an alert may show a message
-// removed meanwhile, so every alert of the workspace goes with its notice rows.
+// Start over, a restore and a new key start a pass from the start, which lists no removals either: an alert may show a
+// message removed meanwhile, or one a restored backup lacks, so every alert of the workspace goes with its notice rows.
 for (const [what, startPass] of [
   ['Start over', (svc, ws) => chatApi(() => svc).chatReload(ws)],
+  [
+    'a restore',
+    async (svc, ws) => {
+      svc.store.updateWs(ws, { generation: 'OldGenerationXXXXXXXXX' });
+      await svc.details(ws);
+    }
+  ],
   [
     'a new key',
     async (svc, ws) => {

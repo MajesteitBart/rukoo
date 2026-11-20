@@ -513,8 +513,8 @@ class WorkspaceService extends EventEmitter {
     const { restored, keyChanged } = sync.restore(this, ws, answer, { t0, t1 });
     if (restored || keyChanged) {
       this.roomsChanged(ws, this.store.listRooms(ws).map((r) => r.id));
-      // A new key deleted the notice rows: the pass that follows can't list what was removed meanwhile.
-      if (keyChanged) await this.hook(() => this.notifier.onReset(ws));
+      // Both deleted the notice rows: the pass that follows can't list what was removed meanwhile.
+      await this.hook(() => this.notifier.onReset(ws));
       await this.hook(() => this.history.onReset(ws));
       if (restored) await this.hook(() => this.outbox.kick(ws));
     }

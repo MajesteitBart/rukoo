@@ -262,10 +262,10 @@ function startOver(svc, ws) {
 }
 
 // The answer of GET / (wire.checkWorkspace), with t0 and t1 the local times before and after it. A generation other
-// than the stored one is a restore: cached events go, a pass follows, and unsent messages of the old generation are
-// looked up before they are sent again. A new keyId means a pass too, as cursors sealed with the old key are no good;
-// that pass lists no removals, so the cached events and notice rows go as for a 410, and the caller takes the
-// workspace's alerts back. Also measures the clock: server time minus local time.
+// than the stored one is a restore: a pass follows, and unsent messages of the old generation are looked up before
+// they are sent again. A new keyId means a pass too, as cursors sealed with the old key are no good. Either pass lists
+// no removals, and a restored backup may lack messages this device saw, so the cached events and notice rows go as for
+// a 410, and the caller takes the workspace's alerts back. Also measures the clock: server time minus local time.
 function restore(svc, ws, answer, { t0, t1 }) {
   const store = svc.store;
   const { workspace, me } = answer;
@@ -276,6 +276,7 @@ function restore(svc, ws, answer, { t0, t1 }) {
     let keyChanged = false;
     if (row.generation && row.generation !== workspace.generation) {
       restored = true;
+      store.run('DELETE FROM notice WHERE ws = ?', ws);
       store.deleteWsEvents(ws);
       store.clearPass(ws);
       store.updateWs(ws, { cursor: null, passing: 1, generation: workspace.generation });

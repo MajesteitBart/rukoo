@@ -418,10 +418,17 @@ for (const [what, reset] of [
 }
 
 // A pass from the start lists no removals (the server answers removed: [] without a cursor), so a message removed on
-// the server since this device's last page would keep its text in the cache. Start over and a new key drop the cached
-// bodies, as a 410 does (contract 3.6); the rooms and the unsent messages stay.
+// the server since this device's last page would keep its text in the cache. Start over, a restore and a new key drop
+// the cached bodies, as a 410 does (contract 3.6); the rooms and the unsent messages stay.
 for (const [what, startPass] of [
   ['Start over', (svc, ws) => chatApi(() => svc).chatReload(ws)],
+  [
+    'a restore',
+    async (svc, ws) => {
+      svc.store.updateWs(ws, { generation: 'OldGenerationXXXXXXXXX' });
+      await svc.details(ws);
+    }
+  ],
   [
     'a new key',
     async (svc, ws) => {
