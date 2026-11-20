@@ -453,6 +453,33 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    fun `a removed workspace whose deletion SQLite refuses stays hidden and is deleted on a later try`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs(ws)
+            syncedWs(Ids.WS2, "Old")
+            sql.exec("CREATE TRIGGER keep_ws2 BEFORE DELETE ON ws WHEN old.id = '${Ids.WS2}' BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.http.on("GET", h.route(Ids.WS2)) { throw refusal(404, "not_found", scope = "workspace") }
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until("the one that went is hidden") { st -> st.workspaces.map { it.id } == listOf(ws) }
+        // Another connection to the same file sees the row SQLite kept, and lets the next try delete it.
+        val other = db.store()
+        assertEquals(1L, other.read { sql.long("SELECT COUNT(*) FROM ws WHERE id = ?", Ids.WS2) })
+        other.tx { sql.exec("DROP TRIGGER keep_ws2") }
+        other.close()
+        advanceTimeBy(ChatTiming().wipeRetry + 1)
+        runCurrent()
+        val check = db.store()
+        assertEquals("deleted on the retry", 0L, check.read { sql.long("SELECT COUNT(*) FROM ws WHERE id = ?", Ids.WS2) })
+        check.close()
+        assertEquals(listOf(ws), s.state.value.workspaces.map { it.id })
+    }
+
+    @Test
     fun `the listing on resume comes at most once a minute`() = runTest {
         val h = Harness(this, db)
         h.list()

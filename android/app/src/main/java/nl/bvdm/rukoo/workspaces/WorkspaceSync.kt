@@ -128,6 +128,9 @@ class FeedRunner(
     private var stopped = false
     private val waiters = ArrayList<CompletableDeferred<RunOutcome>>()
 
+    // The waiters of the run in progress.
+    private var current: List<CompletableDeferred<RunOutcome>> = emptyList()
+
     private val _state = MutableStateFlow(RunnerState())
     val state: StateFlow<RunnerState> = _state.asStateFlow()
 
@@ -155,10 +158,22 @@ class FeedRunner(
         try {
             return waiter.await()
         } catch (e: CancellationException) {
-            // The caller stopped waiting (a worker's budget ran out): a run not started yet isn't owed to it.
+            // The caller stopped waiting (a worker's budget ran out): a run not started yet isn't owed to it, and the
+            // run in progress no longer goes on for it ([wanted]).
             synchronized(lock) { waiters -= waiter }
+            waiter.cancel()
             throw e
         }
+    }
+
+    /**
+     * Whether the run in progress may make another request: while runs may start on their own ([automatic]), or while
+     * someone still waits for it. A worker whose budget ran out stopped waiting, and its run stops at the next request
+     * instead of paging on outside the worker's window.
+     */
+    fun wanted(): Boolean {
+        val waited = synchronized(lock) { !stopped && current.any { it.isActive } }
+        return waited || automatic()
     }
 
     /** No more runs: a pending one is dropped and its waiters hear `skipped`. A run in progress finishes. */
@@ -214,6 +229,7 @@ class FeedRunner(
             lastStart = clock.now()
             taken = waiters.toList()
             waiters.clear()
+            current = taken
         }
         _state.update { it.copy(running = true) }
         val outcome = try {
@@ -222,6 +238,7 @@ class FeedRunner(
             // Only the scope's end cancels a run, and no run starts after it: every waiter hears skipped.
             val late = synchronized(lock) {
                 running = false
+                current = emptyList()
                 waiters.toList().also { waiters.clear() }
             }
             _state.update { it.copy(running = false) }
@@ -235,6 +252,7 @@ class FeedRunner(
         val late: List<CompletableDeferred<RunOutcome>>
         synchronized(lock) {
             running = false
+            current = emptyList()
             val e = outcome.error
             val now = clock.now()
             when {
@@ -310,6 +328,12 @@ class WorkspaceSync(
     // start begins only when it is the current one: a 410 whose GET / failed, or a restart halfway, asks again first.
     @Volatile private var detailsRevision: Long? = null
 
+    // GET / requests in the order they started, and the newest one applied: an older answer that arrives after a newer
+    // one was applied is dropped, though both started under the same revision.
+    private val detailsStarted = java.util.concurrent.atomic.AtomicLong()
+    private val detailsLock = Any()
+    private var detailsApplied = 0L
+
     // Whether this sync cut every room but the open one back to ROOM_CACHE_MAX: once, at its first run.
     @Volatile private var trimmed = false
 
@@ -355,14 +379,22 @@ class WorkspaceSync(
      */
     suspend fun details(inRun: Boolean = false): WorkspaceDetails {
         val revision = store.revision(ws)
+        val ticket = detailsStarted.incrementAndGet()
         val t0 = clock.now()
         val answer = call { get(ws) }
         val t1 = clock.now()
         FeedApplier.check(answer, ws)
-        val result = applier.restore(ws, answer, t0, t1, revision)
+        // In the restore's transaction: only when no GET / that started later was applied first, as the desktop does.
+        val newest = {
+            synchronized(detailsLock) {
+                (ticket > detailsApplied).also { if (it) detailsApplied = ticket }
+            }
+        }
+        val result = applier.restore(ws, answer, t0, t1, revision, newest)
         guard()
         // A reset, a restore or a park came in between: this answer is dropped, and the run (or the next) asks again.
-        if (result.stale) detailsDue = true else detailsRevision = result.revision
+        // One a newer answer replaced is dropped too, and nothing is due: that answer stands.
+        if (result.stale) detailsDue = true else if (!result.superseded) detailsRevision = result.revision
         if (result.restored || result.keyChanged) loader.onReset()
         result.dropped?.let { hook { events.page(ws, it) } }
         if (result.restored) hook { events.restored(ws) }
@@ -404,6 +436,10 @@ class WorkspaceSync(
             row = store.read { getWs(ws) } ?: return RunOutcome(changed = changed, gone = true)
             if (row.state != FeedApplier.STATE_OK) return RunOutcome(changed = changed, skipped = true)
             if (pages >= timing.pagesPerRun) return RunOutcome(changed = changed, pass = installed, more = true)
+            // Between requests: a run whose waiters stopped waiting (a worker whose budget ran out) goes on only while
+            // runs may start on their own (the foreground, a worker's window). Else it stops here; every page so far
+            // committed with its cursor, and the next run continues from there.
+            if ((pages > 0 || asked > 0) && !runner.wanted()) return RunOutcome(changed = changed, pass = installed, more = true)
             // GET / first when the generation isn't known, an answer was dropped or failed, or a pass from the start
             // has no GET / answered under this revision (a 410, Start over, a restart halfway). At most three per run,
             // so answers dropped again and again can't keep the run going, as the desktop does.
@@ -428,12 +464,18 @@ class WorkspaceSync(
                 // so a late 409 doesn't quarantine and a late 410 doesn't reset the new one. The loop starts from the
                 // new state. (A 404 for the workspace, a 426 and a 401 already took their path in call(): they hold
                 // whatever the cache is.)
+                // The reset and the quarantine check the revision again in their own transactions: one that commits
+                // between this check and theirs leaves them undone.
                 if (store.revision(ws) != revision && !holds(e)) continue
                 when (e.code) {
                     "reset_required" -> {
                         if (resets++ > 0) throw WorkspaceError("server", 410, message = "The feed asked for a second reset in one run.")
-                        val result = applier.reset(ws)
+                        val result = applier.reset(ws, revision)
                         guard()
+                        if (result == null) {
+                            resets -= 1
+                            continue
+                        }
                         loader.onReset()
                         changed += result.changed
                         hook { events.page(ws, result) }
@@ -442,8 +484,9 @@ class WorkspaceSync(
                         continue
                     }
                     "history_regressed" -> {
-                        applier.quarantine(ws)
+                        val applied = applier.quarantine(ws, revision)
                         guard()
+                        if (!applied) continue
                         loader.onReset()
                         hook { events.quarantined(ws) }
                         return RunOutcome(changed = changed, quarantined = true)
@@ -460,6 +503,7 @@ class WorkspaceSync(
             if (result.pass) installed = true
             if (result.evicted.isNotEmpty()) loader.onEvicted(result.evicted)
             if (result.cacheDropped.isNotEmpty()) loader.onCacheDropped(result.cacheDropped)
+            if (result.rebased) loader.onRebased()
             hook { events.page(ws, result) }
             if (!page.more) break
         }
@@ -479,38 +523,44 @@ class WorkspaceSync(
      * flag; a failure leaves the flag for the next run. A server from before blocks (`404` without a scope) has none.
      * Each flag reads the row afresh, as the desktop does: the members reload can change my role and mark the
      * channels stale, and the channels load must follow the role it just wrote. An answer that arrives after the
-     * cache's revision changed is dropped and its flag stays. Returns whether anything was replaced.
+     * cache's revision changed is dropped and its flag stays. Each flag, the role and the revision are read in one
+     * read transaction, so the role a load follows belongs to the revision its answer is compared with: a guest row
+     * read before a restore that promoted the person can't clear the new generation's flag without asking. Returns
+     * whether anything was replaced.
      */
     suspend fun directory(): Boolean {
         var changed = false
-        if (store.read { getWs(ws) }?.membersStale == true) {
+        val (membersRevision, membersRow) = snapshot()
+        if (membersRow?.membersStale == true) {
             changed = load {
-                val revision = store.revision(ws)
                 val page = call { members(ws) }
-                store.tx { current(revision) && run { replaceMembers(ws, page.members, page.more); true } }
+                store.tx { current(membersRevision) && run { replaceMembers(ws, page.members, page.more); true } }
             } || changed
         }
-        val row = store.read { getWs(ws) } ?: return changed
+        val (revision, row) = snapshot()
+        if (row == null) return changed
         if (row.channelsStale) {
             changed = load {
-                val revision = store.revision(ws)
                 val list = if (row.role == "guest") emptyList() else call { channels(ws) }
                 store.tx { current(revision) && run { replaceChannels(ws, list); true } }
             } || changed
         }
-        if (store.read { getWs(ws) }?.blocksStale == true) {
+        val (blocksRevision, blocksRow) = snapshot()
+        if (blocksRow?.blocksStale == true) {
             changed = load {
-                val revision = store.revision(ws)
                 val list = try {
                     call { blocks(ws) }
                 } catch (e: WorkspaceError) {
                     if (e.code == "not_found" && e.scope == null) emptyList() else throw e
                 }
-                store.tx { current(revision) && run { replaceBlocks(ws, list); true } }
+                store.tx { current(blocksRevision) && run { replaceBlocks(ws, list); true } }
             } || changed
         }
         return changed
     }
+
+    // The workspace's cache revision and row, read together: transactions are serialized, so no bump falls between.
+    private suspend fun snapshot(): Pair<Long, WsRow?> = store.read { revision(ws) to getWs(ws) }
 
     // Inside a transaction: the workspace is still there under the revision a request recorded.
     private fun WorkspaceStore.StoreTx.current(revision: Long) = getWs(ws) != null && revision(ws) == revision
@@ -523,9 +573,10 @@ class WorkspaceSync(
     }
 
     /**
-     * The removal path (§3.6): the workspace row goes with everything under it, the runner and read timers stop, and
-     * the service hears [SyncEvents.removed], where it may [close] this sync. The service also sends its own calls'
-     * `404 scope: workspace` here.
+     * The removal path (§3.6): the workspace is hidden from cache reads and its row goes with everything under it
+     * ([FeedApplier.removeWorkspace]; a deletion SQLite refuses waits hidden for the service's retry), the runner and
+     * read timers stop, and the service hears [SyncEvents.removed], where it may [close] this sync. The service also
+     * sends its own calls' `404 scope: workspace` here.
      */
     suspend fun removed() {
         val gone = applier.removeWorkspace(ws)
@@ -848,6 +899,22 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
     }
 
     /**
+     * The pass that installed a restore took every room's read positions from the restored feed (§3.6 "Restore"): a
+     * room on screen takes its New divider from the new `readLocal`, and [RoomLoad.resets] goes up so the screen drops
+     * the read position it kept and what it reported under the old generation.
+     */
+    internal suspend fun onRebased() {
+        allResets.incrementAndGet()
+        val rows = store.read { listRooms(ws) }.associateBy { it.id }
+        _rooms.update { m ->
+            m.mapValues { (id, load) ->
+                val row = rows[id] ?: return@mapValues load.copy(resets = resets(id))
+                load.copy(readAtOpen = row.readLocal, resets = resets(id))
+            }
+        }
+    }
+
+    /**
      * These rooms' cached events went whole: a new grant (the person left and joined again) or `removedMore`. What the
      * loader knew of them belongs to the old range: a room on screen starts over as if just opened, with its read
      * position from the new row, and the end of the run catches the open room up again.
@@ -953,9 +1020,10 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
         val max = if (room == openRoom) Int.MAX_VALUE else timing.roomCacheMax
         val result = sync.applier.applyHistory(ws, room, row.grantId, page, mode, max, revision) ?: return null
         sync.guard()
-        // A floor the page raised took messages, some perhaps shown in an alert: those alerts go, as after a feed page.
+        // A floor the page raised took messages, some perhaps shown in an alert: those alerts go, as after a feed page,
+        // also when the page itself no longer joined the range.
         if (result.removed.isNotEmpty()) sync.hook { sync.events.page(ws, PageResult(removed = mapOf(room to result.removed))) }
-        return page
+        return if (result.merged) page else null
     }
 
     private fun olderDone(room: String) {

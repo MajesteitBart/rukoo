@@ -514,7 +514,9 @@ class Outbox(
     private suspend fun workspaceAnswer(ws: String, e: WorkspaceError) {
         when {
             e.code == "upgrade_required" -> {
-                store.tx { updateWs(ws, mapOf("state" to "upgrade")) }
+                // As the feed parks it: the revision goes up in the same transaction, so a history page or another
+                // answer already on its way to the parked cache is dropped.
+                FeedApplier(store).park(ws)
                 hooks.upgrade(ws)
             }
             e.code == "not_found" && e.scope == "workspace" -> hooks.removed(ws)

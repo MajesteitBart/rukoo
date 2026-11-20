@@ -17,6 +17,7 @@ import nl.bvdm.rukoo.core.RukooJson
  *   the room loader starts what it knew of them over.
  * - [pass]: a pass installed. [partial]: a page of a pass in progress, whose rooms wait in `pass_room`.
  * - [reset]: a `410` reset, Start over or a new key, which takes back every alert of the workspace (§3.10).
+ * - [rebased]: the pass that installed a restore took every room's read positions from the restored feed.
  */
 data class PageResult(
     val changed: Set<String> = emptySet(),
@@ -30,6 +31,7 @@ data class PageResult(
     val pass: Boolean = false,
     val partial: Boolean = false,
     val reset: Boolean = false,
+    val rebased: Boolean = false,
 )
 
 /**
@@ -43,6 +45,8 @@ data class RestoreResult(
     val dropped: PageResult? = null,
     /** The cache's revision changed while `GET /` was on its way: the answer was dropped, nothing written. */
     val stale: Boolean = false,
+    /** A `GET /` that started later was applied first: this older answer was dropped, nothing written. */
+    val superseded: Boolean = false,
     /** The cache's revision the answer was applied under, read in its transaction (after a restore's own bump). */
     val revision: Long? = null,
 )
@@ -62,8 +66,12 @@ enum class HistoryMode {
     BACKWARD,
 }
 
-/** An events page that went into the cache: the events as stored, and messages a raised floor took. */
-data class HistoryResult(val stored: List<Event>, val removed: List<String>)
+/**
+ * An events page that went into the cache: the events as stored, and messages a raised floor took. [merged] is false
+ * when the page no longer joined the range (it moved meanwhile, or the floor emptied it): its events were left out,
+ * but its head and floor applied, and [removed] still names what the floor took.
+ */
+data class HistoryResult(val stored: List<Event>, val removed: List<String>, val merged: Boolean = true)
 
 /**
  * The feed's and the history's writes to the chat cache (contract §3.6, §3.7, §3.9), each one transaction of
@@ -169,7 +177,10 @@ class FeedApplier(
                 )
             }
         }
-        if (rebase) deleteMeta(rebaseKey(ws))
+        if (rebase) {
+            deleteMeta(rebaseKey(ws))
+            out.rebased = true
+        }
         if (fresh) {
             for (r in listRooms(ws)) if (r.notified < r.head) setRoomFields(ws, r.id, mapOf("notified" to r.head))
         }
@@ -251,12 +262,23 @@ class FeedApplier(
      * stale text never shows as current, and the next fetch starts a pass. Rooms, members, drafts, mute and the
      * outbox stay. The result lists every room as changed and, per room, the alerts to take back.
      */
-    suspend fun reset(ws: String): PageResult = store.tx {
+    suspend fun reset(ws: String): PageResult = store.tx { resetTx(ws) }
+
+    /**
+     * A `410` to a request recorded under cache [revision]: the reset applies only while the revision is still that
+     * one, checked in the reset's own transaction, so a Start over or a restore that committed while the refusal was
+     * on its way isn't undone by it. Null when it changed: nothing written.
+     */
+    suspend fun reset(ws: String, revision: Long): PageResult? = store.tx {
+        if (revision(ws) != revision) null else resetTx(ws)
+    }
+
+    private fun WorkspaceStore.StoreTx.resetTx(ws: String): PageResult {
         bumpRevision(ws)
         val dropped = dropBodies(ws)
         clearPass(ws)
         updateWs(ws, mapOf("cursor" to null, "passing" to true))
-        dropped
+        return dropped
     }
 
     // A pass from the start lists no removals (the server answers `removed: []` without a cursor), so before one that
@@ -276,10 +298,14 @@ class FeedApplier(
 
     /**
      * `409 history_regressed` (§3.6): the workspace is behind what this phone saw. It stops until Start over: cached
-     * events go and badges are zeroed. The outbox holds its rows, as it sends only for `ok` workspaces.
+     * events go and badges are zeroed. The outbox holds its rows, as it sends only for `ok` workspaces. With
+     * [revision], the one the refused request recorded, it applies only while the revision is still that one, checked
+     * in this transaction: a late 409 doesn't stop a cache that Start over or a restore replaced meanwhile. Returns
+     * whether it applied.
      */
-    suspend fun quarantine(ws: String): Boolean = store.tx {
+    suspend fun quarantine(ws: String, revision: Long? = null): Boolean = store.tx {
         if (getWs(ws) == null) return@tx false
+        if (revision != null && revision(ws) != revision) return@tx false
         bumpRevision(ws)
         updateWs(ws, mapOf("state" to STATE_QUARANTINED))
         deleteWsEvents(ws)
@@ -316,10 +342,22 @@ class FeedApplier(
      * With [revision], the one recorded before `GET /` went out, an answer that arrives after the revision changed is
      * dropped ([RestoreResult.stale]): a later answer already installed a restore or a new key, or the workspace was
      * reset, started over or parked, and the old answer would put the previous generation back.
+     *
+     * [newest], called inside the transaction after the revision check, says whether no `GET /` that started later was
+     * applied first, and records this one as applied when so: two answers under the same revision can still arrive out
+     * of order, and the older would put back the generation, key or role the newer replaced ([RestoreResult.superseded]).
      */
-    suspend fun restore(ws: String, details: WorkspaceDetails, t0: Long, t1: Long, revision: Long? = null): RestoreResult = store.tx {
+    suspend fun restore(
+        ws: String,
+        details: WorkspaceDetails,
+        t0: Long,
+        t1: Long,
+        revision: Long? = null,
+        newest: (() -> Boolean)? = null,
+    ): RestoreResult = store.tx {
         val row = getWs(ws) ?: return@tx RestoreResult(restored = false, keyChanged = false, marked = 0)
         if (revision != null && revision(ws) != revision) return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, stale = true)
+        if (newest != null && !newest()) return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, superseded = true)
         val w = details.workspace
         val restored = row.generation != null && row.generation != w.generation
         val keyChanged = !restored && row.keyId != null && row.keyId != w.keyId
@@ -361,17 +399,23 @@ class FeedApplier(
     }
 
     /**
-     * The removal path (`404` with `scope: workspace`): the workspace row goes with everything under it, and the WAL
-     * is checkpointed so deleted pages don't linger. Returns whether there was a row.
+     * The removal path (`404` with `scope: workspace`): the workspace is hidden from every cache read at once and its
+     * revision goes up ([WorkspaceStore.hideWs]), then its row goes with everything under it and the WAL is
+     * checkpointed so deleted pages don't linger ([WorkspaceStore.deleteHidden]). When SQLite refuses the deletion the
+     * workspace stays hidden, and [WorkspaceStore.deleteHidden] tries again later. Returns whether there was a visible
+     * row, so a second removal of the same workspace does nothing.
      */
     suspend fun removeWorkspace(ws: String): Boolean {
-        val gone = store.tx {
-            bumpRevision(ws)
-            deleteMeta(rebaseKey(ws))
-            deleteWs(ws)
+        val there = try {
+            store.read { getWs(ws) != null }
+        } catch (e: WorkspaceError) {
+            // The cache can't be read: hide it all the same, so nothing shows it once it can.
+            true
         }
-        if (gone) runCatching { store.checkpoint() }
-        return gone
+        if (!there) return false
+        store.hideWs(ws)
+        store.deleteHidden()
+        return true
     }
 
     /** `426 upgrade_required`: the workspace waits, socket parked, until Rukoo is updated. */
@@ -384,9 +428,10 @@ class FeedApplier(
      * One events page of [room] into its range, as [mode] says (§3.7), in one transaction that first checks the room's
      * grant is still [grant], the one its request started with, and, with [revision], that the workspace's cache
      * revision is still the one recorded before the request. A page from before a grant change, a reset, a restore,
-     * Start over or a new key, or one that no longer joins the range (it moved meanwhile), is discarded: null. The
-     * page raises `head`, applies its `floor`, and stores a tombstoned message removed. [max] caps the range on an
-     * append.
+     * Start over or a new key, is discarded: null. The page raises `head`, applies its `floor`, and stores a tombstoned
+     * message removed. [max] caps the range on an append. A page that no longer joins the range (it moved meanwhile,
+     * or the floor took all of it) leaves its events out ([HistoryResult.merged] false), but its head and floor stay
+     * applied, and [HistoryResult.removed] names what the floor took, so the alerts for those go too.
      */
     suspend fun applyHistory(
         ws: String,
@@ -406,21 +451,22 @@ class FeedApplier(
         val removed = noticesBelow(ws, room, floor) + applyFloor(ws, room, floor)
         val events = page.events.filter { it.seq >= floor }
         val now = getRoom(ws, room)!!
+        val unmerged = HistoryResult(emptyList(), removed, merged = false)
         val stored: List<Event> = when (mode) {
             HistoryMode.NEWEST -> {
                 dropRoomCache(ws, room)
                 prependEvents(ws, room, events)
             }
             HistoryMode.FORWARD -> {
-                val hi = now.hi ?: return@tx null
+                val hi = now.hi ?: return@tx unmerged
                 val after = events.filter { it.seq > hi }
-                if (after.isNotEmpty() && after.first().seq != hi + 1) return@tx null
+                if (after.isNotEmpty() && after.first().seq != hi + 1) return@tx unmerged
                 appendEvents(ws, room, after, max)
             }
             HistoryMode.BACKWARD -> {
-                val lo = now.lo ?: return@tx null
+                val lo = now.lo ?: return@tx unmerged
                 val before = events.filter { it.seq < lo }
-                if (before.isNotEmpty() && before.last().seq != lo - 1) return@tx null
+                if (before.isNotEmpty() && before.last().seq != lo - 1) return@tx unmerged
                 prependEvents(ws, room, before)
             }
         }
@@ -448,6 +494,7 @@ class FeedApplier(
         private val redacted = LinkedHashMap<String, LinkedHashSet<String>>()
         var pass = false
         var partial = false
+        var rebased = false
 
         fun removed(room: String, ids: Collection<String>) {
             if (ids.isNotEmpty()) removed.getOrPut(room) { LinkedHashSet() }.addAll(ids)
@@ -468,6 +515,7 @@ class FeedApplier(
             redacted = redacted.mapValues { it.value.toList() },
             pass = pass,
             partial = partial,
+            rebased = rebased,
         )
     }
 

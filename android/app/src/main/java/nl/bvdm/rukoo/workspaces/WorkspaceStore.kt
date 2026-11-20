@@ -116,11 +116,53 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
      */
     fun revision(ws: String): Long = revisions[ws] ?: 0L
 
+    // Workspaces the server said are gone whose rows SQLite hasn't deleted yet: listWs and getWs leave them out, as
+    // the desktop's store.hideWs does, so nothing reads their cache meanwhile. In memory: after a restart the next
+    // request's 404 removes the workspace again.
+    private val hidden: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * The removal path's first step: [ws] leaves every [StoreTx.listWs] and [StoreTx.getWs] at once, and its revision
+     * goes up, so an answer to a request made before is dropped. [deleteHidden] deletes its rows.
+     */
+    fun hideWs(ws: String) {
+        hidden += ws
+        revisions.merge(ws, 1L, Long::plus)
+    }
+
+    /** Whether a hidden workspace still waits for its rows to go. */
+    val hasHidden: Boolean get() = hidden.isNotEmpty()
+
+    /**
+     * Deletes the rows of every hidden workspace, each in its own transaction, then checkpoints the WAL so deleted pages
+     * don't linger. A workspace SQLite refuses to delete stays hidden for the next try. Returns whether none is left.
+     */
+    suspend fun deleteHidden(): Boolean {
+        var deleted = false
+        for (ws in hidden.toList()) {
+            try {
+                db.transaction {
+                    val tx = StoreTx(this, now, revisions)
+                    tx.deleteMeta(FeedApplier.rebaseKey(ws))
+                    tx.deleteWs(ws)
+                }
+                hidden -= ws
+                deleted = true
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A full disk or a closed cache: it stays hidden.
+            }
+        }
+        if (deleted) runCatching { checkpoint() }
+        return hidden.isEmpty()
+    }
+
     /** One write transaction (`BEGIN IMMEDIATE`); a write SQLite refuses throws `not_saved`. */
-    suspend fun <T> tx(block: StoreTx.() -> T): T = db.transaction { StoreTx(this, now, revisions).block() }
+    suspend fun <T> tx(block: StoreTx.() -> T): T = db.transaction { StoreTx(this, now, revisions, hidden).block() }
 
     /** One read transaction: a consistent view. The block must not write. */
-    suspend fun <T> read(block: StoreTx.() -> T): T = db.read { StoreTx(this, now, revisions).block() }
+    suspend fun <T> read(block: StoreTx.() -> T): T = db.read { StoreTx(this, now, revisions, hidden).block() }
 
     /** Closes the database and deletes the file with its `-wal` and `-shm` files. */
     suspend fun wipe() = db.wipe()
@@ -136,6 +178,7 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
         val sql: Sql,
         private val now: () -> Long,
         private val revisions: MutableMap<String, Long>,
+        private val hidden: Set<String> = emptySet(),
     ) {
         // ---- the cache revision ----
 
@@ -165,9 +208,12 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
         // ---- ws ----
 
-        fun listWs(): List<WsRow> = sql.query("SELECT $WS_COLUMNS FROM ws ORDER BY id", row = ::wsRow)
+        /** The workspaces, without those the removal path hid ([WorkspaceStore.hideWs]). */
+        fun listWs(): List<WsRow> =
+            sql.query("SELECT $WS_COLUMNS FROM ws ORDER BY id", row = ::wsRow).let { rows -> if (hidden.isEmpty()) rows else rows.filter { it.id !in hidden } }
 
-        fun getWs(id: String): WsRow? = sql.one("SELECT $WS_COLUMNS FROM ws WHERE id = ?", id, row = ::wsRow)
+        /** The workspace's row; null for a hidden one ([WorkspaceStore.hideWs]). */
+        fun getWs(id: String): WsRow? = if (id in hidden) null else sql.one("SELECT $WS_COLUMNS FROM ws WHERE id = ?", id, row = ::wsRow)
 
         /** A new workspace row; one that exists keeps its row and gets [row]'s name and role. */
         fun insertWs(row: WsRow): WsRow {
@@ -181,7 +227,8 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
                 row.syncedAt, row.activeAt,
             )
             sql.touch(row.id)
-            return getWs(row.id)!!
+            // Not getWs: a hidden workspace the listing names again still has its row.
+            return sql.one("SELECT $WS_COLUMNS FROM ws WHERE id = ?", row.id, row = ::wsRow)!!
         }
 
         /** Sets the named columns of a workspace; a name outside the `ws` table throws. Returns whether it existed. */

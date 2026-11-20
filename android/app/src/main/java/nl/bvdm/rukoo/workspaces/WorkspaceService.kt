@@ -135,6 +135,8 @@ data class ChatTiming(
     val workerWorkspaces: Int = 10,
     /** A socket closed with 4003 whose `GET /` failed on the network tries again after this. */
     val socketRecheck: Long = 5 * SECOND,
+    /** A removed workspace whose rows SQLite refused to delete stays hidden, and the deletion is tried again this often. */
+    val wipeRetry: Long = MINUTE,
 ) {
     companion object {
         const val SECOND = 1_000L
@@ -453,6 +455,9 @@ class WorkspaceService internal constructor(
         @Volatile var listedAt: Long? = null
         @Volatile var listError: String? = null
         val nudgedAt = ConcurrentHashMap<String, Long>()
+
+        // Whether a retry of the deletions SQLite refused is under way (workspaceGone).
+        val wiping = java.util.concurrent.atomic.AtomicBoolean(false)
         val screenEvents = Queue<Pair<OnScreen, OnScreen>>(Queue.UNLIMITED)
 
         fun begin() {
@@ -567,9 +572,11 @@ class WorkspaceService internal constructor(
         }
     }
 
-    // The removal path's end (§3.6): the row and everything under it went in the sync's transaction. Called from
-    // inside that sync, which this closes last.
+    // The removal path's end (§3.6): the workspace is hidden from cache reads, and the row with everything under it
+    // went in the sync's transaction, or waits for retryHidden when SQLite refused. Called from inside that sync, which
+    // this closes last.
     private fun workspaceGone(l: Live, ws: String) {
+        if (l.store.hasHidden) retryHidden(l)
         val s = l.syncs.remove(ws)
         l.ran -= ws
         l.nudgedAt.remove(ws)
@@ -589,6 +596,24 @@ class WorkspaceService internal constructor(
         }
         stateChanged()
         s?.close()
+    }
+
+    // The deletions SQLite refused, tried again every wipeRetry until none is left or the session ends. The workspaces
+    // stay hidden meanwhile, as the desktop's deleteHidden does.
+    private fun retryHidden(l: Live) {
+        if (!l.wiping.compareAndSet(false, true)) return
+        l.scope.launch {
+            try {
+                while (!l.closed && l.store.hasHidden) {
+                    delay(timing.wipeRetry)
+                    if (l.store.deleteHidden()) break
+                }
+            } finally {
+                l.wiping.set(false)
+            }
+            // One hidden while this loop was ending found it still running.
+            if (!l.closed && l.store.hasHidden) retryHidden(l)
+        }
     }
 
     // ---- listing (§3.11) ----
