@@ -1,7 +1,7 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, showMenu, closeMenu, menuOpen, dialog, confirmDialog, KEEP_OPEN, segmented, setSegmented } from './ui.js';
-import { displayName } from './chat-model.js';
+import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM } from './chat-model.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -955,10 +955,64 @@ export async function archiveChannel(room) {
   }
 }
 
-// Leave a channel (desktop-ui 6.9): asked first; the only manager picks a successor.
+// A channel's members ([{ member, role }]), or null when they don't load; the server's answer to leaving then decides.
+async function roomMembersOrNull(ws, id) {
+  try {
+    const r = await api('chatRoomMembers', ws, id);
+    return (r && r.members) || [];
+  } catch {
+    return null;
+  }
+}
+
+// Who can take a channel over, from its members.
+const successorsFrom = (roomMembers) => successors((roomMembers || []).map((m) => m.member), K.CH.members, K.me(), collator(), t);
+
+// A successor picker: a search field above more than six people, then a radio row per person with none checked, so
+// nobody gets a channel the person didn't choose. group names the radios, so a dialog can hold one per channel.
+function successorPicker(people, group, label) {
+  const search =
+    people.length > SUCCESSOR_SEARCH_FROM
+      ? `<input type="search" class="ch-search ch-successor-search" placeholder="${esc(t('chat.members.search'))}" aria-label="${esc(t('chat.members.search'))}" autocomplete="off" spellcheck="false"/>`
+      : '';
+  const rows = people
+    .map(
+      (id) =>
+        `<label class="ch-radio-row ch-person-pick" data-name="${esc(fold(nameOf(id)))}"><input type="radio" name="${esc(group)}" value="${esc(id)}"/>${K.memberAvatar(id, 'ch-av-24')}<span class="ch-check-label">${esc(nameOf(id))}</span></label>`
+    )
+    .join('');
+  return `${search}<div class="ch-successors" role="radiogroup" aria-label="${esc(label)}">${rows}<p class="field-help ch-successors-none"${people.length ? ' hidden' : ''}>${esc(t('chat.new.none'))}</p></div>`;
+}
+
+// Filters each picker's rows in body as its search field is typed in.
+function filterPickers(body) {
+  body.addEventListener('input', (e) => {
+    const field = e.target.closest('.ch-successor-search');
+    const box = field?.nextElementSibling;
+    if (!box) return;
+    const q = fold(field.value.trim());
+    let shown = 0;
+    for (const row of box.querySelectorAll('.ch-person-pick')) {
+      row.hidden = Boolean(q) && !row.dataset.name.includes(q);
+      if (!row.hidden) shown++;
+    }
+    box.querySelector('.ch-successors-none').hidden = shown > 0;
+  });
+}
+
+// Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor at once,
+// without a confirmation first; anyone else is asked. When the members don't load, the server's last_manager decides.
 export async function leaveChannel(room) {
   const ws = K.CH.ws;
   if (!ws || !room) return false;
+  if (sharedManaged([room]).length) {
+    const inside = await roomMembersOrNull(ws, room.id);
+    if (ws !== K.CH.ws) return false;
+    if (inside && soleManager(inside, K.me())) {
+      K.expectLeave(room.id);
+      return chooseSuccessor(room, successorsFrom(inside));
+    }
+  }
   const body = room.members <= 1 ? t('chat.channel.leaveBodyLast', { name: room.name || '' }) : room.visibility === 'private' ? t('chat.channel.leaveBodyPrivate') : t('chat.channel.leaveBodyPublic');
   const ok = await confirmDialog(t('chat.channel.leaveTitle', { name: room.name || '' }), body, t('chat.channel.leave'), true);
   if (!ok || ws !== K.CH.ws) return false;
@@ -975,16 +1029,18 @@ export async function leaveChannel(room) {
   }
 }
 
-async function chooseSuccessor(room) {
+// The successor question. people: who can take it over, when already loaded; else they load here.
+async function chooseSuccessor(room, people = null) {
   const ws = K.CH.ws;
   let finish = null;
   let busy = false;
-  let people = [];
+  const primary = (scrim) => scrim?.querySelector('.buttons button:last-child');
+  const pickOf = (body) => body.querySelector('[name="successor"]:checked');
   const submit = async (scrim) => {
     if (busy) return;
     const body = scrim.querySelector('.dialog-body');
-    const pick = body.querySelector('[name="successor"]:checked');
-    if (!pick) return showError(body, '', t('chat.errors.lastManager'));
+    const pick = pickOf(body);
+    if (!pick) return;
     clearErrors(body);
     busy = true;
     setBusy(scrim, true);
@@ -1002,26 +1058,28 @@ async function chooseSuccessor(room) {
     buttons: [cancelButton(), { label: t('chat.channel.successorSubmit'), value: (scrim) => (submit(scrim), KEEP_OPEN), danger: true }],
     render(body, close) {
       finish = close;
-      body.innerHTML = `<p>${esc(t('chat.channel.successorBody'))}</p><div class="ch-successors" aria-busy="true"><span class="spinner"></span></div><p class="error" data-error="" hidden></p>`;
+      const scrim = body.closest('.scrim');
+      // Off until someone is picked.
+      primary(scrim).disabled = true;
+      body.addEventListener('change', () => {
+        if (!busy) primary(scrim).disabled = !pickOf(body);
+      });
+      filterPickers(body);
+      const label = t('chat.channel.successorTitle', { name: room.name || '' });
+      const fill = (list) => {
+        const box = body.querySelector('[data-picker]');
+        box.removeAttribute('aria-busy');
+        box.className = 'ch-picker';
+        box.innerHTML = successorPicker(list, 'successor', label);
+      };
+      body.innerHTML = `<p>${esc(t('chat.channel.successorBody'))}</p><div class="ch-picker ch-successors" data-picker aria-busy="true"><span class="spinner"></span></div><p class="error" data-error="" hidden></p>`;
+      if (people) return fill(people);
       api('chatRoomMembers', ws, room.id)
-        .then((r) => {
-          people = ((r && r.members) || [])
-            .map((m) => m.member)
-            .filter((id) => id !== K.me() && K.CH.members.get(id)?.role !== 'guest' && K.CH.members.get(id)?.state === 'active')
-            .sort((a, b) => collator().compare(nameOf(a), nameOf(b)));
-          const box = body.querySelector('.ch-successors');
-          box.removeAttribute('aria-busy');
-          box.innerHTML = people.length
-            ? people
-                .map(
-                  (id, i) =>
-                    `<label class="ch-radio-row ch-person-pick"><input type="radio" name="successor" value="${esc(id)}"${i === 0 ? ' checked' : ''}/>${K.memberAvatar(id, 'ch-av-24')}<span class="ch-check-label">${esc(nameOf(id))}</span></label>`
-                )
-                .join('')
-            : `<p class="field-help">${esc(t('chat.new.none'))}</p>`;
-          body.querySelector('[name="successor"]')?.focus();
-        })
-        .catch((err) => showError(body, '', K.errorText(err)));
+        .then((r) => fill(successorsFrom(r && r.members)))
+        .catch((err) => {
+          fill([]);
+          showError(body, '', K.errorText(err));
+        });
     }
   });
   if (done) {
@@ -1034,10 +1092,34 @@ async function chooseSuccessor(room) {
 
 // ---------- the workspace: leave, delete, name, members, settings (desktop-ui 6.10, 6.15 to 6.17) ----------
 
+// Whether you are the workspace's only owner, as far as the directory knows.
+const isOnlyOwner = () => onlyOwner(K.myRole(), K.me(), K.CH.members, K.CH.view?.membersMore);
+
+// The channels you are the only manager of while others are in them, each with who can take it over
+// ({ id, name, room, people }), by name; null when a channel's members don't load.
+async function soleManaged(ws) {
+  const rooms = sharedManaged(K.CH.rooms.values());
+  const loaded = await Promise.all(rooms.map((r) => roomMembersOrNull(ws, r.id)));
+  if (loaded.some((m) => m === null)) return null;
+  return rooms
+    .map((r, i) => ({ r, inside: loaded[i] }))
+    .filter(({ inside }) => soleManager(inside, K.me()))
+    .map(({ r, inside }) => ({ id: r.id, name: r.name || '', room: r, people: successorsFrom(inside) }))
+    .sort((a, b) => collator().compare(a.name, b.name));
+}
+
+// Leave a workspace (desktop-ui 6.10). What the app knows decides first, before any confirmation: the only owner is
+// told to make someone else an owner (or offered Delete with nobody else in it); the only manager of channels with
+// others in them picks a successor for each in one dialog, whose button hands them over and leaves. Anyone else
+// confirms. The server's last_owner and last_manager lead to the same dialogs when the app couldn't tell.
 export async function leaveWorkspace() {
   const ws = K.CH.ws;
   if (!ws) return false;
   const name = wsName();
+  if (isOnlyOwner()) return lastOwner();
+  const mine = await soleManaged(ws);
+  if (ws !== K.CH.ws) return false;
+  if (mine && mine.length) return managersFirst(mine);
   const ok = await confirmDialog(t('chat.leave.title', { workspace: name }), t('chat.leave.body'), t('chat.leave.submit'), true);
   if (!ok || ws !== K.CH.ws) return false;
   K.expectGone(ws);
@@ -1047,58 +1129,104 @@ export async function leaveWorkspace() {
     return true;
   } catch (err) {
     K.cancelGone(ws);
-    if (err && err.code === 'last_manager') return managersFirst(err.channels || []);
+    if (err && err.code === 'last_manager') return managersFirst(await namedChannels(ws, err.channels || []));
     if (err && err.code === 'last_owner') return lastOwner();
     toast(K.errorText(err), 5000);
     return false;
   }
 }
 
-// The channels the person is the only manager of: each opens its members dialog to hand it over.
-async function managersFirst(channelIds) {
-  const rooms = channelIds.map((id) => K.CH.rooms.get(id) || (K.CH.view?.channels || []).find((c) => c.id === id)).filter(Boolean);
-  const picked = await wsDialog({
-    title: t('chat.workspace.leave'),
-    buttons: [closeButton()],
-    render(body, done) {
-      // Each channel with a Members button, which is where a manager hands it over.
-      body.innerHTML = `<p>${esc(t('chat.leave.managerFirst'))}</p><ul class="ch-browse">${rooms
+// The channels a 409 last_manager named, as managersFirst takes them; their people load here.
+async function namedChannels(ws, ids) {
+  const rooms = [...new Set(ids)].map((id) => K.CH.rooms.get(id) || (K.CH.view?.channels || []).find((c) => c.id === id)).filter(Boolean);
+  const loaded = await Promise.all(rooms.map((r) => roomMembersOrNull(ws, r.id)));
+  return rooms.map((r, i) => ({ id: r.id, name: r.name || '', room: r, people: successorsFrom(loaded[i] || []) }));
+}
+
+// Leaving as the only manager of channels: a successor picker for each, then one button that makes the picks
+// managers and leaves. A last_manager naming channels this dialog didn't hold opens it again with those.
+async function managersFirst(channels) {
+  const ws = K.CH.ws;
+  let finish = null;
+  let busy = false;
+  const group = (c) => `successor-${c.id}`;
+  const picks = (body) => Object.fromEntries(channels.map((c) => [c.id, body.querySelector(`[name="${group(c)}"]:checked`)?.value]));
+  const primary = (scrim) => scrim?.querySelector('.buttons button:last-child');
+  let again = null;
+  const submit = async (scrim) => {
+    if (busy) return;
+    const body = scrim.querySelector('.dialog-body');
+    const chosen = picks(body);
+    if (!handOverReady(channels, chosen)) return;
+    clearErrors(body);
+    busy = true;
+    setBusy(scrim, true);
+    try {
+      for (const c of channels) await api('chatSetChannelRole', ws, c.id, chosen[c.id], 'manager');
+      K.expectGone(ws);
+      try {
+        await api('chatLeaveWorkspace', ws);
+      } catch (err) {
+        K.cancelGone(ws);
+        throw err;
+      }
+      finish(true);
+    } catch (err) {
+      busy = false;
+      setBusy(scrim, false);
+      if (err && err.code === 'last_manager') {
+        again = err.channels || [];
+        return finish(null);
+      }
+      showError(body, '', K.errorText(err));
+    }
+  };
+  const done = await wsDialog({
+    title: t('chat.leave.title', { workspace: wsName() }),
+    buttons: [cancelButton(), { label: t('chat.channel.successorSubmit'), value: (scrim) => (submit(scrim), KEEP_OPEN), danger: true }],
+    render(body, close) {
+      finish = close;
+      const scrim = body.closest('.scrim');
+      body.innerHTML = `<p>${esc(t('chat.leave.managerFirst'))}</p><p>${esc(t('chat.leave.body'))}</p>${channels
         .map(
-          (r) =>
-            `<li class="ch-browse-row"><span class="ch-browse-open"><span class="ch-browse-ic" aria-hidden="true">${channelIcon(r)}</span><span class="ch-browse-text"><span class="ch-browse-name">${esc(
-              r.name || ''
-            )}</span></span></span><button type="button" class="btn secondary sm" data-room="${esc(r.id)}" aria-label="${esc(
-              t('chat.channel.membersTitle', { name: r.name || '' })
-            )}">${icons.people}<span>${esc(t('chat.head.membersButton'))}</span></button></li>`
+          (c) =>
+            `<section class="ch-handover"><h3 class="ch-handover-name"><span class="ch-browse-ic" aria-hidden="true">${channelIcon(c.room)}</span><span>${esc(c.name)}</span></h3>${successorPicker(
+              c.people,
+              group(c),
+              t('chat.channel.successorTitle', { name: c.name })
+            )}</section>`
         )
-        .join('')}</ul>`;
-      body.addEventListener('click', (e) => {
-        const b = e.target.closest('[data-room]');
-        if (b) done(b.dataset.room);
+        .join('')}<p class="error" data-error="" hidden></p>`;
+      filterPickers(body);
+      primary(scrim).disabled = true;
+      body.addEventListener('change', () => {
+        if (!busy) primary(scrim).disabled = !handOverReady(channels, picks(body));
       });
     }
   });
-  const room = picked && K.CH.rooms.get(picked);
-  if (room) {
-    K.openRoom(room.id);
-    await channelMembers(room);
+  if (done) {
+    await K.refreshState();
+    return true;
   }
+  if (again && ws === K.CH.ws) return managersFirst(await namedChannels(ws, again));
   return false;
 }
 
-// The only owner can't leave. With nobody else left, deleting the workspace is the way out (contract 5.10).
+// The only owner can't leave: Members, where someone else becomes an owner, or with nobody else left, deleting the
+// workspace (contract 5.10).
 async function lastOwner() {
   const alone = activeMembers().length <= 1;
   const choice = await wsDialog({
     title: t('chat.workspace.leave'),
     buttons: alone
       ? [{ get label() { return t('chat.workspace.delete'); }, value: 'delete', danger: true, left: true }, { get label() { return t('common.actions.ok'); }, value: null }]
-      : [{ get label() { return t('common.actions.ok'); }, value: null }],
+      : [closeButton(), { get label() { return t('chat.workspace.members'); }, value: 'members' }],
     render(body) {
       body.innerHTML = `<p>${esc(t('chat.leave.lastOwner'))}</p>${alone ? `<p>${esc(t('chat.leave.deleteInstead', { workspace: wsName() }))}</p>` : ''}`;
     }
   });
   if (choice === 'delete') return deleteWorkspace();
+  if (choice === 'members') await workspaceMembers();
   return false;
 }
 
@@ -1419,9 +1547,12 @@ export async function workspaceSettings() {
         ? `<button type="button" class="btn sm ch-danger-btn" data-set="delete"${alone ? '' : ' disabled aria-describedby="ch-delete-why"'}>${icons.trash}<span>${esc(t('chat.delete.submit'))}</span></button>`
         : '';
     const why = myRole === 'owner' && !alone ? `<p class="field-help ch-set-help ch-set-why" id="ch-delete-why">${esc(t('chat.delete.onlyYou'))}</p>` : '';
-    const leave = `<section class="ch-set ch-set-leave"><div class="ch-set-row ch-set-end"><button type="button" class="btn sm ch-danger-btn" data-set="leave">${icons.leave}<span>${esc(
-      t('chat.workspace.leave')
-    )}</span></button>${del}</div>${why}</section>`;
+    // The only owner can't leave; Leave stays on and opens the dialog that says how.
+    const onlyOwnerNow = isOnlyOwner();
+    const leaveWhy = onlyOwnerNow ? `<p class="field-help ch-set-help ch-set-why" id="ch-leave-why">${esc(t('chat.leave.onlyOwnerHint'))}</p>` : '';
+    const leave = `<section class="ch-set ch-set-leave"><div class="ch-set-row ch-set-end"><button type="button" class="btn sm ch-danger-btn" data-set="leave"${
+      onlyOwnerNow ? ' aria-describedby="ch-leave-why"' : ''
+    }>${icons.leave}<span>${esc(t('chat.workspace.leave'))}</span></button>${del}</div>${leaveWhy}${why}</section>`;
     const openInvites = body.querySelector('.ch-open-invites')?.open;
     body.innerHTML = `${you}${host}${invites}${blocked}${leave}<p class="error" data-error="" hidden></p>`;
     const det = body.querySelector('.ch-open-invites');
@@ -1486,7 +1617,9 @@ export function workspaceItems() {
   top.push({ icon: 'people', label: t('chat.workspace.members'), action: () => workspaceMembers() });
   top.push({ icon: 'edit', label: t('chat.workspace.yourName'), action: () => changeName() });
   top.push({ icon: 'settings', label: t('chat.workspace.settings'), action: () => workspaceSettings() });
-  const bottom = [{ icon: 'leave', label: t('chat.workspace.leave'), danger: true, action: () => leaveWorkspace() }];
+  // The only owner can't leave yet: the item says how, and opens the dialog that offers Members.
+  const leaveSub = isOnlyOwner() ? t('chat.leave.onlyOwnerHint') : undefined;
+  const bottom = [{ icon: 'leave', label: t('chat.workspace.leave'), sub: leaveSub, danger: true, action: () => leaveWorkspace() }];
   // Delete only works for an owner who is the only member; while others are in it, Workspace settings says why it's off.
   if (K.myRole() === 'owner' && activeMembers().length <= 1) bottom.push({ icon: 'trash', label: t('chat.workspace.delete'), danger: true, action: () => deleteWorkspace() });
   return { top, bottom };

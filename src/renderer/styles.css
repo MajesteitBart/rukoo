@@ -12068,6 +12068,44 @@ button.ch-replies .ch-replies-n {
 .ch-person-pick input {
   margin-top: 0;
 }
+.ch-person-pick[hidden],
+.ch-successors-none[hidden] {
+  display: none;
+}
+.ch-successors-none {
+  margin: 0;
+  padding: 4px 6px;
+}
+.ch-successor-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+}
+/* Leaving a workspace as the only manager of channels: a picker under each channel's name. */
+.ch-handover {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+.ch-handover-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ch-handover-name span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-handover .ch-successors {
+  max-height: min(28vh, 240px);
+}
 /* Workspace settings: sections with a hairline between them. */
 .ch-set {
   display: grid;

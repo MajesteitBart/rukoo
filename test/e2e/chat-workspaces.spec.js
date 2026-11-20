@@ -230,40 +230,71 @@ test('a pending join waits while another dialog is open and opens the Join dialo
   await expect(win.locator('.scrim')).toHaveCount(0);
 });
 
-test('leaving a workspace as the only manager of a channel asks to hand it over first', async () => {
+test('leaving a workspace as the only manager of channels picks a successor for each, then hands over and leaves', async () => {
   const olga = await server.seedAccount();
   const bart = await server.seedAccount({ password: PASSWORD });
   const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
   const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const mila = await server.seedMember(ws, await server.seedAccount(), 'Mila Bakker');
   const design = await server.seedChannel(bart, ws.id, { name: 'design', members: [ws.me.id] });
+  const ads = await server.seedChannel(bart, ws.id, { name: 'ads', members: [ws.me.id, mila.id] });
   await ready(bart);
   await expect(roomRow(win, 'design')).toBeVisible({ timeout: 15000 });
 
+  // No confirmation first: one dialog with a picker per channel, nobody picked.
   await workspaceMenu(win, 'Leave workspace');
   const dialog = dialogBox(win);
-  await expect(dialog.locator('h2')).toHaveText('Leave Acme?');
-  await expect(dialog.locator('p')).toHaveText('You lose access to its channels and direct messages. Messages you wrote stay.');
-  await dialog.locator('.buttons button').last().click();
-  // The server answers last_manager with the channel: it opens its members dialog.
-  await expect(dialog.locator('p')).toHaveText("You're the only manager of these channels. Hand each one over before you leave.", { timeout: 15000 });
-  await dialog.locator('.ch-browse-row', { hasText: 'design' }).locator('[data-room]').click();
-  await expect(dialog.locator('h2')).toHaveText('Members of #design', { timeout: 15000 });
-  await expect(pane().locator('.ch-title')).toHaveText('design');
-  const olgaRow = dialog.locator('.ch-person', { hasText: 'Olga Owner' });
-  await olgaRow.locator('[data-person]').click();
-  await menuItem(win, 'Make manager').click();
-  await expect(olgaRow.locator('.ch-pill')).toHaveText('Manager', { timeout: 15000 });
-  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('h2')).toHaveText('Leave Acme?', { timeout: 15000 });
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(dialog.locator('.dialog-body > p:not(.error)')).toHaveText([
+    "You're the only manager of these channels. Choose who manages each one after you.",
+    'You lose access to its channels and direct messages. Messages you wrote stay.'
+  ]);
+  await expect(dialog.locator('.ch-handover-name')).toHaveText(['ads', 'design']);
+  await expect(dialog.locator('input[type="radio"]:checked')).toHaveCount(0);
+  const submit = dialog.locator('.buttons button').last();
+  await expect(submit).toHaveText('Hand over and leave');
+  await expect(submit).toBeDisabled();
+  const section = (name) => dialog.locator('.ch-handover', { has: win.locator('.ch-handover-name', { hasText: name }) });
+  await section('design').locator('.ch-person-pick', { hasText: 'Olga Owner' }).click();
+  await expect(submit).toBeDisabled();
+  await section('ads').locator('.ch-person-pick', { hasText: 'Mila Bakker' }).click();
+  await expect(submit).toBeEnabled();
+  await submit.click();
 
-  // Now leaving works: the workspace goes, and with no other one the window offers to make or join one.
-  await workspaceMenu(win, 'Leave workspace');
-  await dialogBox(win).locator('.buttons button').last().click();
+  // The picks manage the channels, and the workspace goes; with no other one the window offers to make or join one.
   await expect(pane().locator('.ch-empty-title')).toHaveText('No workspace yet', { timeout: 15000 });
   await expect(win.locator('.sidebar [data-ch-side="make"]')).toBeVisible();
   const { members } = await serverGet(server, olga, ws.id, '/members');
   expect(members.find((m) => m.id === bartMe.id)?.state).toBe('left');
   const roles = (await serverGet(server, olga, ws.id, `/channels/${design.id}/members`)).members;
   expect(roles).toEqual([{ member: ws.me.id, role: 'manager' }]);
+  const adsRoles = (await serverGet(server, olga, ws.id, `/channels/${ads.id}/members`)).members;
+  expect(adsRoles.find((m) => m.member === mila.id)?.role).toBe('manager');
+  expect(adsRoles.find((m) => m.member === ws.me.id)?.role).toBe('member');
+});
+
+test('the only owner is told before any confirmation, and the menu and Workspace settings say so under Leave', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Team', displayName: 'Bart' });
+  await server.seedMember(ws, await server.seedAccount(), 'Olga');
+  await ready(bart);
+  await expect(switcherName()).toHaveText('Team', { timeout: 15000 });
+
+  await workspaceMenu(win);
+  await expect(menuItem(win, 'Leave workspace')).toContainText('Make someone else an owner first.');
+  await menuItem(win, 'Leave workspace').click();
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('p')).toHaveText("You're the only owner. Make someone else an owner first.", { timeout: 15000 });
+  await expect(dialog.locator('.buttons button')).toHaveText(['Close', 'Members']);
+  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('h2')).toHaveText('Members of Team', { timeout: 15000 });
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  await workspaceMenu(win, 'Workspace settings');
+  await expect(dialog.locator('#ch-leave-why')).toHaveText('Make someone else an owner first.');
+  await expect(dialog.locator('[data-set="leave"]')).toHaveAttribute('aria-describedby', 'ch-leave-why');
 });
 
 test('Owner and Guest ask first in a member menu, and Admin and Member apply with Undo that sets the role back', async () => {
@@ -342,7 +373,7 @@ test('an owner deletes a workspace when alone in it, and Delete stays off while 
   const dialog = dialogBox(win);
   await expect(dialog.locator('h2')).toHaveText('Workspace settings');
   await expect(dialog.locator('[data-set="delete"]')).toBeDisabled();
-  await expect(dialog.locator('.ch-set-why')).toHaveText("You can delete a workspace when you're its only member. Remove everyone else first.");
+  await expect(dialog.locator('#ch-delete-why')).toHaveText("You can delete a workspace when you're its only member. Remove everyone else first.");
   await expect(dialog.locator('.ch-set-title')).toHaveText(['You', 'Host', 'Invitations', 'Blocked people']);
   await expect(dialog.locator('.ch-set-leave button')).toHaveText(['Leave workspace', 'Delete workspace']);
   // Your name opens over Workspace settings, and Escape closes only that dialog.

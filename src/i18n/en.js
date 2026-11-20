@@ -11368,8 +11368,12 @@
     "description": "Leave a workspace: confirmation button. src/renderer/chat-dialogs.js"
   },
   "chat.leave.managerFirst": {
-    "message": "You're the only manager of these channels. Hand each one over before you leave.",
-    "description": "Leave a workspace: dialog when the user is the only manager of some channels, which it lists. src/renderer/chat-dialogs.js"
+    "message": "You're the only manager of these channels. Choose who manages each one after you.",
+    "description": "Leave a workspace as the only manager of some channels: text above a picker per channel for who manages it next; the dialog's button hands them over and leaves. src/renderer/chat-dialogs.js"
+  },
+  "chat.leave.onlyOwnerHint": {
+    "message": "Make someone else an owner first.",
+    "description": "Workspace menu and Workspace settings: quiet line under Leave workspace while the user is the workspace's only owner, who can't leave yet. Android chat_leave_only_owner_hint. src/renderer/chat-dialogs.js"
   },
   "chat.leave.lastOwner": {
     "message": "You're the only owner. Make someone else an owner first.",

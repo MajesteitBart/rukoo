@@ -428,3 +428,38 @@ test('badges and attention follow unread for DMs, mentions for channels, and go 
   assert.deepEqual(modeBadge({ attention: 0, unread: true }), { dot: true });
   assert.equal(modeBadge({ attention: 0, unread: false }), null);
 });
+
+test('leaving: the only owner, the channels that may need a successor, and who can take one over', async () => {
+  const { onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const owners = new Map([...members].map(([k, m]) => [k, k === ME ? { ...m, role: 'owner' } : m]));
+  assert.equal(onlyOwner('owner', ME, owners, false), true);
+  assert.equal(onlyOwner('admin', ME, owners, false), false);
+  assert.equal(onlyOwner('owner', ME, owners, true), false, "a directory that isn't complete can't vouch for it");
+  const twoOwners = new Map(owners).set(ROB, { ...owners.get(ROB), role: 'owner' });
+  assert.equal(onlyOwner('owner', ME, twoOwners, false), false);
+  const formerOwner = new Map(owners).set(OLGA, { ...owners.get(OLGA), role: 'owner' });
+  assert.equal(onlyOwner('owner', ME, formerOwner, false), true, 'someone who left is no owner');
+
+  const ch = (cid, extra = {}) => ({ id: cid, kind: 'channel', role: 'manager', archived: false, members: 3, ...extra });
+  const rooms = [ch('c1'), ch('c2', { members: 1 }), ch('c3', { archived: true }), ch('c4', { role: 'member' }), { id: 'd1', kind: 'dm', role: 'member', members: 2 }];
+  assert.deepEqual(sharedManaged(rooms).map((r) => r.id), ['c1']);
+  assert.deepEqual(sharedManaged(new Map(rooms.map((r) => [r.id, r])).values()).map((r) => r.id), ['c1']);
+  assert.equal(soleManager([{ member: ME, role: 'manager' }, { member: SANNE, role: 'member' }], ME), true);
+  assert.equal(soleManager([{ member: ME, role: 'manager' }, { member: SANNE, role: 'manager' }], ME), false);
+  assert.equal(soleManager([{ member: ME, role: 'manager' }], ME), false);
+
+  // Active full members other than you, by name: not the guest, not someone who left or was deleted.
+  const collator = new Intl.Collator('en', { sensitivity: 'base' });
+  assert.deepEqual(successors([ME, SANNE, MILA, OLGA, PIM, ROB, ROB], members, ME, collator, en), [ROB, SANNE]);
+
+  const a = { id: 'c1', people: [SANNE] };
+  const b = { id: 'c2', people: [ROB] };
+  assert.equal(handOverReady([a, b], {}), false);
+  assert.equal(handOverReady([a, b], { c1: SANNE }), false);
+  assert.equal(handOverReady([a, b], { c1: SANNE, c2: SANNE }), false, 'a pick from another channel does not count');
+  assert.equal(handOverReady([a, b], { c1: SANNE, c2: ROB }), true);
+  assert.equal(handOverReady([a, b], new Map([['c1', SANNE], ['c2', ROB]])), true);
+  assert.equal(handOverReady([], {}), false);
+  assert.equal(SUCCESSOR_SEARCH_FROM, 6);
+});

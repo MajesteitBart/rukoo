@@ -358,3 +358,41 @@ export function canRemove(event, me, room) {
   if (me && event.actor === me) return true;
   return Boolean(room && room.kind === 'channel' && room.role === 'manager');
 }
+
+// ---------- leaving as the last owner or the only manager (desktop-ui 6.9, 6.10) ----------
+
+// A successor list gets a search field once it holds more people than this.
+export const SUCCESSOR_SEARCH_FROM = 6;
+
+// Whether you are the workspace's only owner, as far as the directory knows: an owner with no other active owner in
+// a complete directory (membersMore false). Leaving then can't work (409 last_owner), so the app says so first.
+export function onlyOwner(myRole, me, members, membersMore = false) {
+  if (myRole !== 'owner' || membersMore) return false;
+  return ![...asMap(members).values()].some((m) => m.id !== me && m.state === 'active' && m.role === 'owner');
+}
+
+// The channels that may need a successor before you leave: open channels you manage with other people in them.
+export function sharedManaged(rooms) {
+  return [...(rooms || [])].filter((r) => r.kind === 'channel' && !r.archived && r.role === 'manager' && r.members > 1);
+}
+
+// Whether you are the only manager among a channel's members ([{ member, role }]) while others are in it.
+export function soleManager(roomMembers, me) {
+  const list = roomMembers || [];
+  return list.some((m) => m.member !== me) && !list.some((m) => m.member !== me && m.role === 'manager');
+}
+
+// Who can take a channel over: its active full members other than you, by name. ids: the channel's member IDs.
+export function successors(ids, members, me, collator, t) {
+  const map = asMap(members);
+  return [...new Set(ids || [])]
+    .filter((id) => id !== me && map.get(id)?.state === 'active' && map.get(id)?.role !== 'guest')
+    .sort((a, b) => collator.compare(displayName(map.get(a), t), displayName(map.get(b), t)));
+}
+
+// Whether every channel of a hand-over ([{ id, people }]) has a successor picked from its own people. picks: Map or
+// object of channel ID to member ID.
+export function handOverReady(channels, picks) {
+  const pick = (id) => (picks instanceof Map ? picks.get(id) : picks?.[id]);
+  return channels.length > 0 && channels.every((c) => Array.isArray(c.people) && c.people.includes(pick(c.id)));
+}

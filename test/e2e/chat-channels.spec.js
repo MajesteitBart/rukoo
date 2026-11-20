@@ -170,21 +170,26 @@ test('renaming a channel changes its name in the header, the sidebar and for Olg
   expect(channels.find((c) => c.id === channel.id)?.name).toBe('Café talk');
 });
 
-test('leaving a channel as its only manager asks for a successor', async () => {
+test('leaving a channel as its only manager asks for a successor at once, with nobody picked', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const channel = await server.seedChannel(bart, ws.id, { name: 'handover', members: [ws.me.id] });
   await ready(bart);
   await roomRow(win, 'handover').click();
   await expect(title()).toHaveText('handover');
   await roomMenu(win, 'Leave channel');
+  // No plain confirmation first: the successor question is the one that matters.
   const dialog = dialogBox(win);
-  await expect(dialog.locator('h2')).toHaveText('Leave #handover?');
-  await expect(dialog.locator('p')).toHaveText('You can join again from Browse channels.');
-  await dialog.locator('.buttons button').last().click();
   await expect(dialog.locator('h2')).toHaveText('Choose a new manager for #handover', { timeout: 15000 });
+  await expect(win.locator('.scrim')).toHaveCount(1);
   await expect(dialog.locator('.ch-person-pick .ch-check-label')).toHaveText(['Olga Owner'], { timeout: 15000 });
-  await expect(dialog.locator('[name="successor"]')).toBeChecked();
-  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('[name="successor"]')).not.toBeChecked();
+  await expect(dialog.locator('.ch-successor-search')).toHaveCount(0);
+  const submit = dialog.locator('.buttons button').last();
+  await expect(submit).toHaveText('Hand over and leave');
+  await expect(submit).toBeDisabled();
+  await dialog.locator('.ch-person-pick', { hasText: 'Olga Owner' }).click();
+  await expect(submit).toBeEnabled();
+  await submit.click();
   await expect(win.locator('.scrim')).toHaveCount(0, { timeout: 15000 });
   // The room leaves the sidebar and the next conversation opens; Olga manages it now.
   await expect(roomRow(win, 'handover')).toHaveCount(0, { timeout: 15000 });
@@ -193,6 +198,42 @@ test('leaving a channel as its only manager asks for a successor', async () => {
   const roles = (await serverGet(server, olga, ws.id, `/channels/${channel.id}/members`)).members;
   expect(roles).toEqual([{ member: ws.me.id, role: 'manager' }]);
   expect(roles.some((m) => m.member === bartMe.id)).toBe(false);
+});
+
+test('the successor list of a busy channel can be searched, and a manager beside you gets the plain confirmation', async () => {
+  const { bart, ws } = await twoPeople(server);
+  const names = ['Anna Smit', 'Bram Dekker', 'Carla Visser', 'Daan Mulder', 'Eva Bos', 'Femke de Wit', 'Gijs Meijer'];
+  const people = [];
+  for (const name of names) people.push(await server.seedMember(ws, await server.seedAccount(), name));
+  await server.seedChannel(bart, ws.id, { name: 'busy', members: people.map((p) => p.id) });
+  const pair = await server.seedChannel(bart, ws.id, { name: 'pair', members: [people[0].id] });
+  await ready(bart);
+
+  await roomRow(win, 'busy').click();
+  await expect(title()).toHaveText('busy');
+  await roomMenu(win, 'Leave channel');
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Choose a new manager for #busy', { timeout: 15000 });
+  await expect(dialog.locator('.ch-person-pick')).toHaveCount(7, { timeout: 15000 });
+  const search = dialog.locator('.ch-successor-search');
+  await expect(search).toHaveAttribute('placeholder', 'Find a member');
+  await search.fill('femke');
+  await expect(dialog.locator('.ch-person-pick:visible .ch-check-label')).toHaveText(['Femke de Wit']);
+  await search.fill('nobody');
+  await expect(dialog.locator('.ch-person-pick:visible')).toHaveCount(0);
+  await expect(dialog.locator('.ch-successors-none')).toHaveText('Nobody found');
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // With Anna also managing #pair, leaving it asks the usual question.
+  const made = await server.call('PATCH', `/v1/workspaces/${ws.id}/channels/${pair.id}/members/${people[0].id}`, { token: bart.token, body: { role: 'manager' } });
+  expect(made.status).toBe(200);
+  await roomRow(win, 'pair').click();
+  await expect(title()).toHaveText('pair');
+  await roomMenu(win, 'Leave channel');
+  await expect(dialog.locator('h2')).toHaveText('Leave #pair?', { timeout: 15000 });
+  await expect(dialog.locator('.buttons button').last()).toHaveText('Leave');
+  await dialog.locator('.buttons button').first().click();
 });
 
 test('Make manager and Make member say so with Undo, which sets the channel role back', async () => {
