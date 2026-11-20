@@ -4,6 +4,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteDriver
 import androidx.sqlite.SQLiteStatement
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -252,8 +253,21 @@ class ChatDb private constructor(
          * Opens [file], making it with the §3.5 schema when it is new. A file that fails `quick_check`, has a higher
          * `meta.schema` than this build knows, or isn't a chat cache at all is deleted and made again; when its
          * outbox could still be counted, [lostUnsent] says how many unsent messages went with it.
+         *
+         * When the caller is cancelled after the connection opened, withContext drops the result on its way back;
+         * the connection is closed then, so it doesn't hold the file locked until the process ends.
          */
-        suspend fun open(file: File, driver: SQLiteDriver, io: CoroutineDispatcher = Dispatchers.IO): ChatDb = withContext(io) {
+        suspend fun open(file: File, driver: SQLiteDriver, io: CoroutineDispatcher = Dispatchers.IO): ChatDb {
+            val made = AtomicReference<ChatDb?>(null)
+            try {
+                return withContext(io) { openOn(file, driver, io).also { made.set(it) } }
+            } catch (e: Throwable) {
+                made.getAndSet(null)?.let { db -> runCatching { db.closeLocked() } }
+                throw e
+            }
+        }
+
+        private fun openOn(file: File, driver: SQLiteDriver, io: CoroutineDispatcher): ChatDb {
             file.parentFile?.mkdirs()
             var lost = 0
             if (file.exists()) {
@@ -280,7 +294,7 @@ class ChatDb private constructor(
             } catch (e: Throwable) {
                 throw WorkspaceError("not_saved", message = "The chat cache can't be opened.", cause = e)
             }
-            ChatDb(file, conn, io, lost)
+            return ChatDb(file, conn, io, lost)
         }
 
         /** Deletes the cache file and the files SQLite keeps beside it. */

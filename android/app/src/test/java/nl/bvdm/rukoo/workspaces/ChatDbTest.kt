@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -339,6 +340,31 @@ class ChatDbTest {
         val again = t.open()
         assertEquals(0, again.lostUnsent)
         assertEquals(2L, again.read { long("SELECT COUNT(*) FROM outbox") })
+    }
+
+    @Test
+    fun `an open cancelled after the driver opened the file closes that connection`() = runTest {
+        val closed = AtomicReference<Boolean?>(null)
+        var caller: Job? = null
+        // The caller goes away while the connection is being made: withContext drops the ChatDb on its way back.
+        val driver = object : SQLiteDriver {
+            override fun open(fileName: String): SQLiteConnection {
+                val c = t.driver.open(fileName)
+                caller?.cancel()
+                closed.set(false)
+                return object : SQLiteConnection by c {
+                    override fun close() {
+                        closed.set(true)
+                        c.close()
+                    }
+                }
+            }
+        }
+        val job = launch { ChatDb.open(t.file, driver, Dispatchers.Unconfined) }
+        caller = job
+        job.join()
+        assertTrue(job.isCancelled)
+        assertEquals("the connection nobody received is closed", true, closed.get())
     }
 
     /** A driver whose connections fail [failing] with [error] while [on] is true, as a passing I/O fault would. */
