@@ -313,21 +313,24 @@ class WorkspaceSync(
     }
 
     /**
-     * Start over (§3.6, `reload`): back to `ok` with a pass from the start and every unsent message marked for a
-     * lookup, all in one transaction; then a run that loads `GET /` first.
+     * Start over (§3.6, `reload`): back to `ok` with a pass from the start, the cached events and notice rows dropped
+     * and every unsent message marked for a lookup, all in one transaction; the alerts hear it as a reset. Then a run
+     * that loads `GET /` first, and whose end loads the open room again.
      */
     suspend fun reload() {
-        applier.startOver(ws)
+        val result = applier.startOver(ws)
         loader.onReset()
+        hook { events.page(ws, result.dropped) }
         detailsDue = true
         runner.request()
     }
 
     /**
      * `GET /`: name, role, generation, key, limits, retention and the clock. A new generation runs the restore path
-     * (§3.6), a new key a pass.
+     * (§3.6), a new key a pass whose cached events and alerts went first. Outside a run ([inRun] false) a new key asks
+     * for a run, so the pass and the open room's reload don't wait for the catch-up timer.
      */
-    suspend fun details(): WorkspaceDetails {
+    suspend fun details(inRun: Boolean = false): WorkspaceDetails {
         val t0 = clock.now()
         val answer = call { get(ws) }
         val t1 = clock.now()
@@ -335,7 +338,9 @@ class WorkspaceSync(
         val result = applier.restore(ws, answer, t0, t1)
         guard()
         if (result.restored || result.keyChanged) loader.onReset()
+        result.dropped?.let { hook { events.page(ws, it) } }
         if (result.restored) hook { events.restored(ws) }
+        if (result.keyChanged && !inRun) runner.request()
         return answer
     }
 
@@ -363,7 +368,7 @@ class WorkspaceSync(
         if (row.generation == null || detailsDue) {
             detailsDue = false
             try {
-                details()
+                details(inRun = true)
             } catch (e: WorkspaceError) {
                 detailsDue = true
                 throw e
@@ -390,7 +395,7 @@ class WorkspaceSync(
                         loader.onReset()
                         changed += result.changed
                         hook { events.page(ws, result) }
-                        details()
+                        details(inRun = true)
                         continue
                     }
                     "history_regressed" -> {

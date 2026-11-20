@@ -172,7 +172,7 @@ class ResetTest {
         }
         val seen = CopyOnWriteArrayList<DbChange>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { h.store.changes.collect { seen += it } }
-        val marked = h.sync.applier.startOver(ws)
+        val marked = h.sync.applier.startOver(ws).marked
         assertEquals(2, marked)
         assertEquals("one transaction: one change for the workspace", listOf(DbChange(ws)), seen.toList())
         assertEquals(listOf("queued", "lookup"), h.outboxState("AAAAAAAAAAAAAAAAAAAAAA"))
@@ -213,7 +213,7 @@ class ResetTest {
     }
 
     @Test
-    fun `a new key starts a pass and leaves cached events and the outbox alone`() = runTest {
+    fun `a new key starts a pass, drops cached events as a reset does and leaves the outbox alone`() = runTest {
         val h = SyncHarness(this, db).start()
         h.withRoom()
         h.store.tx { insertOutbox(outbox("AAAAAAAAAAAAAAAAAAAAAA", state = "sending")) }
@@ -223,7 +223,9 @@ class ResetTest {
         assertEquals("key2", row.keyId)
         assertTrue(row.passing)
         assertNull(row.cursor)
-        assertEquals(5, h.events().size)
+        // The pass from the start lists no removals, so no cached body may outlive it (StartOverTest).
+        assertEquals(emptyList<Event>(), h.events())
+        assertTrue(h.events.pages.single().reset)
         assertEquals(listOf("sending", null), h.outboxState("AAAAAAAAAAAAAAAAAAAAAA"))
         assertFalse("restored" in h.events.log)
     }

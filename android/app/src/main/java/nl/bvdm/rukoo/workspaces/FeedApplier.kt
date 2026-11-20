@@ -14,7 +14,7 @@ import nl.bvdm.rukoo.core.RukooJson
  * - [removed]: per room, the message IDs whose alerts go (`removed`, `removedMore`, a floor, a reset).
  * - [redacted]: per room, cached messages that lost their text.
  * - [pass]: a pass installed. [partial]: a page of a pass in progress, whose rooms wait in `pass_room`.
- * - [reset]: a `410` reset, which takes back every alert of the workspace (§3.10).
+ * - [reset]: a `410` reset, Start over or a new key, which takes back every alert of the workspace (§3.10).
  */
 data class PageResult(
     val changed: Set<String> = emptySet(),
@@ -29,8 +29,14 @@ data class PageResult(
     val reset: Boolean = false,
 )
 
-/** What `GET /` changed: a new [restored] generation or a new key both start a pass; [marked] unsent rows await a lookup. */
-data class RestoreResult(val restored: Boolean, val keyChanged: Boolean, val marked: Int)
+/**
+ * What `GET /` changed: a new [restored] generation or a new key both start a pass; [marked] unsent rows await a lookup.
+ * [dropped] is what a new key dropped, a reset for the alerts (null without one).
+ */
+data class RestoreResult(val restored: Boolean, val keyChanged: Boolean, val marked: Int, val dropped: PageResult? = null)
+
+/** What Start over did: [marked] unsent rows await a lookup; [dropped] is the reset the alerts hear. */
+data class StartOverResult(val marked: Int, val dropped: PageResult)
 
 /** Where an events page goes in a room's one contiguous range (§3.7). */
 enum class HistoryMode {
@@ -206,15 +212,25 @@ class FeedApplier(
      * outbox stay. The result lists every room as changed and, per room, the alerts to take back.
      */
     suspend fun reset(ws: String): PageResult = store.tx {
+        val dropped = dropBodies(ws)
+        clearPass(ws)
+        updateWs(ws, mapOf("cursor" to null, "passing" to true))
+        dropped
+    }
+
+    // A pass from the start lists no removals (the server answers `removed: []` without a cursor), so before one that
+    // follows a 410, Start over or a new key the workspace's cached events and notice rows go: a message removed
+    // meanwhile must not keep its text in the timeline, a preview or an alert (§3.6, §3.10, §3.14). Rooms, read
+    // positions, drafts, mute and the outbox stay. The result lists every room as changed and, per room, the alerts
+    // to take back, as a reset, so the alert engine takes back every alert of the workspace.
+    private fun WorkspaceStore.StoreTx.dropBodies(ws: String): PageResult {
         val out = Collect()
         for (r in listRooms(ws)) {
             out.removed(r.id, deleteNotices(ws, r.id).map { it.message })
             out.changed += r.id
         }
         deleteWsEvents(ws)
-        clearPass(ws)
-        updateWs(ws, mapOf("cursor" to null, "passing" to true))
-        out.result().copy(reset = true)
+        return out.result().copy(reset = true)
     }
 
     /**
@@ -232,23 +248,25 @@ class FeedApplier(
     }
 
     /**
-     * Start over (§3.6, `reload`), in one transaction: back to `ok`, a pass from the start, and every unsent message
-     * of the workspace marked for a lookup of its operation before anything else is sent. Returns how many rows it
-     * marked. The caller then runs `GET /` and the pass.
+     * Start over (§3.6, `reload`), in one transaction: back to `ok`, a pass from the start, the cached events and
+     * notice rows dropped as for a 410, and every unsent message of the workspace marked for a lookup of its operation
+     * before anything else is sent. Returns how many rows it marked and the reset for the alerts. The caller then
+     * runs `GET /` and the pass.
      */
-    suspend fun startOver(ws: String): Int = store.tx {
+    suspend fun startOver(ws: String): StartOverResult = store.tx {
         if (getWs(ws) == null) throw WorkspaceError("not_found", scope = "workspace")
+        val dropped = dropBodies(ws)
         updateWs(ws, mapOf("state" to STATE_OK, "cursor" to null, "passing" to true))
         clearPass(ws)
-        markLookup(ws, null)
+        StartOverResult(markLookup(ws, null), dropped)
     }
 
     /**
      * Stores the answer of `GET /`, with [t0] and [t1] the local times before and after it (§3.6 "Restore", §3.8 the
      * clock). A generation other than the stored one is a restore: in the same transaction the cached events go, the
      * next fetch starts a pass, and unsent messages written under the old generation are marked for a lookup. A new
-     * `keyId` starts a pass too, as cursors sealed with the old key are no good. The clock offset is server time minus
-     * local time.
+     * `keyId` starts a pass too, as cursors sealed with the old key are no good; that pass lists no removals, so the
+     * cached events and notice rows go as for a 410. The clock offset is server time minus local time.
      */
     suspend fun restore(ws: String, details: WorkspaceDetails, t0: Long, t1: Long): RestoreResult = store.tx {
         val row = getWs(ws) ?: return@tx RestoreResult(restored = false, keyChanged = false, marked = 0)
@@ -256,12 +274,14 @@ class FeedApplier(
         val restored = row.generation != null && row.generation != w.generation
         val keyChanged = !restored && row.keyId != null && row.keyId != w.keyId
         var marked = 0
+        var dropped: PageResult? = null
         if (restored) {
             deleteWsEvents(ws)
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true, "generation" to w.generation))
             marked = markLookup(ws, row.generation)
         } else if (keyChanged) {
+            dropped = dropBodies(ws)
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true))
         }
@@ -280,7 +300,7 @@ class FeedApplier(
         )
         setMeta(META_CLOCK_OFFSET, (w.time - (t0 + t1) / 2.0).roundToLong().toString())
         setMeta(META_CLOCK_AT, t1.toString())
-        RestoreResult(restored, keyChanged, marked)
+        RestoreResult(restored, keyChanged, marked, dropped)
     }
 
     /**
