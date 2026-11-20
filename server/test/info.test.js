@@ -129,15 +129,35 @@ describe('GET /privacy', () => {
           'Team chat isn’t encrypted end to end, unlike your records.',
           'so we can read and change them, in channels and direct messages alike, and so can Cloudflare',
           'article 6(1)(b) GDPR',
+          'how often you marked a message unread there',
+          'When you react to a message, it keeps which emoji you used and when.',
           'Only the people in a private channel see its name and messages',
           'This server keeps a hash of the secret',
           'Messages are deleted 45 days after they were written',
+          'such as who joined or reacted. A message someone removes loses its text and its reactions at once, but the events that say who reacted to it with which emoji stay until they are deleted with the rest.',
           'your direct messages there close and your open invitations stop working',
           'so it shows as written by a deleted member',
           'Export my data doesn’t include team chat.',
           'deletes it when its session ends'
         ],
-        signups: 'an invitation also works as an invite code'
+        signups: 'an invitation also works as an invite code',
+        previews: [
+          'this server fetches up to three of those pages and adds a link preview of each to the message',
+          'The site sees a request from this server, not your IP address.',
+          'A preview is kept with its message and goes when the message is removed or deleted.',
+          'The message’s author can remove a preview'
+        ],
+        previewImage: 'and the page’s image, which it keeps as a file of the message',
+        files: [
+          'Files you send in team chat are kept in private storage at Cloudflare R2',
+          'A file can be up to 10 MiB, and all files in a workspace up to 5 GiB together.',
+          'Only people who can read the message get a download link, and it works for 60 seconds.',
+          'when someone removes its message or the message is deleted after 45 days',
+          'A file that was uploaded but not sent is deleted after an hour.',
+          'Deleting a workspace deletes its files too.',
+          'who is in them, their messages and files'
+        ],
+        noFiles: 'who is in them and their messages (see Team chat)'
       },
       nl: {
         heading: '<h2 id="team-chat">Teamchat</h2>',
@@ -150,23 +170,54 @@ describe('GET /privacy', () => {
           'Teamchat is niet end-to-end versleuteld, anders dan je records.',
           'Wij kunnen ze dus lezen en wijzigen',
           'artikel 6 lid 1 onder b AVG',
+          'hoe vaak je daar een bericht als ongelezen hebt gemarkeerd',
+          'Reageer je met een emoji op een bericht, dan bewaart hij welke emoji je gebruikte en wanneer.',
           'Alleen de mensen in een privékanaal zien de naam',
           'Deze server bewaart een hash van het geheim',
           'Berichten worden 45 dagen nadat ze zijn geschreven verwijderd',
+          'zoals wie erbij kwam of reageerde. Een bericht dat iemand verwijdert, verliest meteen zijn tekst en reacties, maar de gebeurtenissen die zeggen wie er met welke emoji op reageerde, blijven staan tot ze met de rest worden verwijderd.',
           'sluiten je directe berichten daar en werken je openstaande uitnodigingen niet meer',
           'op naam van een verwijderd lid staat',
           'Mijn gegevens exporteren neemt teamchat niet mee.',
           'verwijdert die als de sessie eindigt'
         ],
-        signups: 'werkt een uitnodiging ook als uitnodigingscode'
+        signups: 'werkt een uitnodiging ook als uitnodigingscode',
+        previews: [
+          'dan haalt deze server tot drie van die pagina’s op en voegt hij van elk een linkvoorbeeld aan het bericht toe',
+          'De site ziet een verzoek van deze server, niet jouw IP-adres.',
+          'Een voorbeeld blijft bij zijn bericht en verdwijnt als het bericht wordt verwijderd.',
+          'De schrijver van het bericht kan een voorbeeld weghalen'
+        ],
+        previewImage: 'en de afbeelding van de pagina, die hij als bestand bij het bericht bewaart',
+        files: [
+          'Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij Cloudflare R2',
+          'Een bestand mag tot 10 MiB groot zijn, en alle bestanden in een werkruimte samen tot 5 GiB.',
+          'Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden.',
+          'als iemand het bericht verwijdert of als het bericht na 45 dagen wordt verwijderd',
+          'Een bestand dat is geüpload maar niet verstuurd, wordt na een uur verwijderd.',
+          'Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.',
+          'wie erin zitten, hun berichten en bestanden'
+        ],
+        noFiles: 'wie erin zitten en hun berichten (zie Teamchat)'
       }
     };
-    for (const [lang, { heading, next, name, parts, signups }] of Object.entries(languages)) {
-      const on = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_RETENTION_DAYS: '45' });
+    for (const [lang, { heading, next, name, parts, signups, previews, previewImage, files, noFiles }] of Object.entries(languages)) {
+      // The tests bind a files bucket and turn link previews on, so both show here.
+      const on = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_RETENTION_DAYS: '45', WORKSPACE_FILE_BYTES: '10485760' });
       expect(on.indexOf(heading), lang).toBeGreaterThan(on.indexOf('<h2 id="booking-pages">'));
       expect(on.indexOf(heading), lang).toBeLessThan(on.indexOf(next));
-      for (const part of parts) expect(on, part).toContain(escapeHtml(part));
+      for (const part of [...parts, ...previews, previewImage, ...files]) expect(on, part).toContain(escapeHtml(part));
       expect(on, lang).toContain(escapeHtml(signups));
+      // With link previews off the statement says nothing about them; files still show.
+      const noPreviews = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_RETENTION_DAYS: '45', WORKSPACE_FILE_BYTES: '10485760', WORKSPACE_PREVIEWS: 'off' });
+      for (const part of [...previews, previewImage]) expect(noPreviews, part).not.toContain(escapeHtml(part));
+      for (const part of files) expect(noPreviews, part).toContain(escapeHtml(part));
+      // Without a files bucket there are no files, and previews come without the page's image.
+      const noBucket = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_FILES: undefined });
+      for (const part of previews) expect(noBucket, part).toContain(escapeHtml(part));
+      for (const part of [previewImage, ...files]) expect(noBucket, part).not.toContain(escapeHtml(part));
+      expect(noBucket, lang).toContain(escapeHtml(noFiles));
+      expect(noBucket, lang).not.toContain('R2');
       // Where sign-ups keep to the operator's own codes, the statement doesn't offer invitations as one.
       const ownCodes = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_SIGNUPS: 'off' });
       expect(ownCodes, lang).toContain(heading);

@@ -105,11 +105,11 @@ Attach files with the paperclip under the text, by dropping them on the conversa
 - Other files show as a card with their kind, name and size. Clicking the card opens the file in its app; the download button saves it where you choose.
 - A draft keeps its uploaded files for an hour. A draft opened later than that says how many files you need to attach again.
 
-Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone.
+Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone. The server at rukoo.io doesn't store files yet.
 
 ### Link previews
 
-When a message holds a web address, the server fetches the page and adds a preview under the message: the site, the title, a short description and the page's image, for up to three addresses. Clicking the preview opens the page in your browser. The author can remove a preview with the cross on it, and that message gets none again. The server fetches the page, not your computer, so the site sees the server's address instead of yours.
+When a message holds a web address, the server fetches the page and adds a preview under the message: the site, the title, a short description and the page's image, for up to three addresses. Clicking the preview opens the page in your browser. The author can remove a preview with the cross on it, and that message gets none again. The server fetches the page, not your computer, so the site sees the server's address instead of yours. On a server that doesn't store files, such as rukoo.io for now, a preview comes without the image.
 
 ## Unread, notifications and mute
 

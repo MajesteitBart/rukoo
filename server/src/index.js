@@ -17,8 +17,10 @@ import {
   bookingRoot,
   checkConfig,
   config,
+  filesOn,
   limitRate,
   positive,
+  previewsOn,
   registryObject,
   workspaceLimits,
   workspaceOrigin,
@@ -70,8 +72,17 @@ async function handle(request, env, ctx) {
   const reading = method === 'GET' || method === 'HEAD';
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
-    // The statement covers team chat only while the server runs it, with the retention it is set to.
-    const chat = workspacesOn(env) ? { retentionDays: workspaceLimits(env).retentionDays, inviteSignups: inviteSignups(env) } : null;
+    // The statement covers team chat only while the server runs it, with the retention it is set to, link previews
+    // while it makes them and files while it has a bucket for them, with their limits.
+    const limits = workspaceLimits(env);
+    const chat = workspacesOn(env)
+      ? {
+          retentionDays: limits.retentionDays,
+          inviteSignups: inviteSignups(env),
+          previews: previewsOn(env),
+          files: filesOn(env) ? { maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null
+        }
+      : null;
     return html(privacy({ ...config(env, url), chat }, privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
