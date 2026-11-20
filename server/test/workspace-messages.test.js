@@ -146,6 +146,47 @@ describe('history', () => {
     expect((await page('?limit=101')).status).toBe(400);
     expect((await page('?after=-1')).status).toBe(400);
   });
+
+  // A grant starts at its member.joined event, but joining a channel gives its earlier history: someone who left and
+  // came back reads what was said before, while they were away and since, under the new grant (contract 3.6).
+  it('gives someone who left a channel and came back its whole history', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const priv = (await api('POST', `/v1/workspaces/${ws.id}/channels`, { token: ws.person.token, body: { name: 'design', visibility: 'private' } })).body.channel.id;
+    const add = () => api('POST', `/v1/workspaces/${ws.id}/channels/${priv}/members`, { token: ws.person.token, body: { member: mila.me.id } });
+    expect((await add()).status).toBe(200);
+
+    const texts = (body) => body.events.filter((e) => e.kind === 'message.posted').map((e) => e.text);
+    for (const [room, rejoin, leave] of [
+      [ws.general, () => api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: mila.person.token }), mila.person],
+      [priv, add, ws.person]
+    ]) {
+      await post(ws.person, ws.id, room, 'before');
+      const first = (await sync(mila.person, ws.id)).rooms.get(room);
+      const out = await api('DELETE', `/v1/workspaces/${ws.id}/channels/${room}/members/${leave === mila.person ? 'me' : mila.me.id}`, { token: leave.token });
+      expect(out.status).toBe(204);
+      await post(ws.person, ws.id, room, 'while away');
+      expect((await events(mila.person, ws.id, room)).status).toBe(404);
+      expect([200, 201]).toContain((await rejoin()).status);
+      await post(ws.person, ws.id, room, 'after');
+
+      const row = (await sync(mila.person, ws.id)).rooms.get(room);
+      expect(row.grant).not.toBe(first.grant);
+      expect(row.floor).toBe(1);
+      const page = (await events(mila.person, ws.id, room, `?before=${row.head + 1}&limit=50`)).body;
+      expect(page).toMatchObject({ head: row.head, floor: 1, more: false });
+      expect(page.events[0].seq).toBe(1);
+      expect(texts(page)).toEqual(['before', 'while away', 'after']);
+      // Forward paging from the floor and the open room's inline events see the same history.
+      expect(texts((await events(mila.person, ws.id, room, '?after=0&limit=50')).body)).toEqual(['before', 'while away', 'after']);
+      const inline = (await changes(mila.person, ws.id, `?active=${room}&roomAfter=0`)).body.inlineEvents;
+      expect(texts({ events: inline })).toEqual(['before', 'while away', 'after']);
+      // The read position starts at the new member.joined, so only what came after it is unread.
+      const joined = page.events.findLast((e) => e.kind === 'member.joined' && e.member === mila.me.id);
+      expect(row.read).toBe(joined.seq);
+      expect(row.unread).toBe(1);
+    }
+  });
 });
 
 describe('mentions and threads', () => {
