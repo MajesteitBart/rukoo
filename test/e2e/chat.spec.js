@@ -47,7 +47,7 @@ async function restart() {
   ({ app, win } = await launch(server, { dataDir }));
 }
 
-test('without team chat on the server the mode switch keeps its three segments and Ctrl+4 does nothing', async () => {
+test('without team chat on the server the title bar has three mode tabs and Ctrl+4 does nothing', async () => {
   const off = await startServer({ vars: { WORKSPACE_MODE: 'off' } });
   try {
     ({ app, win } = await launch(off, { dataDir }));
@@ -56,12 +56,11 @@ test('without team chat on the server the mode switch keeps its three segments a
     // The server's info is in: it says what it offers, and team chat isn't among it.
     await expect.poll(() => win.evaluate(() => window.mail.call('accountStatus').then((s) => Boolean(s.info))), { timeout: 15000 }).toBe(true);
     expect(await win.evaluate(() => window.mail.call('chatState').then((s) => s.available))).toBe(false);
-    const sw = win.locator('.sidebar-mode .segmented');
+    const sw = win.locator('.titlebar-modes .mode-tabs');
     await expect(sw.locator('[role="tab"]')).toHaveCount(3);
-    await expect(sw).not.toHaveClass(/is-stacked/);
     await expect(sw).toHaveAttribute('aria-label', 'Mail, calendar or meetings');
     await expect(sw.locator('[data-mode="chat"]')).toHaveCount(0);
-    await expect(sw.locator('.seg-label')).toHaveText(['Mail', 'Calendar', 'Meet']);
+    await expect(sw.locator('.mode-label')).toHaveText(['Mail', 'Calendar', 'Meet']);
     await win.locator('.list-scroll').focus();
     await win.keyboard.press('Control+4');
     await expect(sw.locator('[data-mode="mail"]')).toHaveAttribute('aria-selected', 'true');
@@ -81,8 +80,8 @@ test('signed out, Chat offers to create an account or sign in', async () => {
   await expect(win.locator('.page.settings h1')).toHaveText('Rukoo account');
   await closeSettings();
   await openChat(win);
-  const sw = win.locator('.sidebar-mode .segmented');
-  await expect(sw).toHaveClass(/is-stacked/);
+  const sw = win.locator('.titlebar-modes .mode-tabs');
+  await expect(sw.locator('.mode-label')).toHaveText(['Mail', 'Calendar', 'Meet', 'Chat']);
   await expect(sw).toHaveAttribute('aria-label', 'Mail, calendar, meetings or chat');
   await expect(pane().locator('.ch-empty-title')).toHaveText('Sign in to use team chat');
   await expect(pane().locator('.ch-empty-body')).toContainText('127.0.0.1');
@@ -150,10 +149,10 @@ test('a seeded workspace lists its rooms with unread counts and mentions, and th
 
   ({ app, win } = await launch(server, { dataDir }));
   await signIn(win, bart);
-  // In Mail, the Chat segment counts the mention and the direct message.
-  const seg = win.locator('.sidebar-mode [data-mode="chat"]');
-  await expect(seg.locator('.seg-badge')).toHaveText('2', { timeout: 15000 });
-  await expect(seg.locator('.seg-badge')).toHaveClass(/is-mention/);
+  // In Mail, the Chat tab counts the mention and the direct message.
+  const seg = win.locator('.titlebar-modes [data-mode="chat"]');
+  await expect(seg.locator('.mode-badge')).toHaveText('2', { timeout: 15000 });
+  await expect(seg.locator('.mode-badge')).toHaveClass(/is-mention/);
   await expect(seg).toHaveAttribute('aria-label', 'Chat, 2 messages for you');
 
   await openChat(win);
@@ -184,7 +183,7 @@ test('opening a room clears its unread count, and the server learns the read pos
   await expect(log().locator('li.ch-new')).toBeVisible();
   await expect(row.locator('.ch-badge')).toHaveCount(0, { timeout: 10000 });
   await expect(row).not.toHaveClass(/is-unread/);
-  await expect(win.locator('.sidebar-mode [data-mode="chat"] .seg-badge')).toHaveCount(0);
+  await expect(win.locator('.titlebar-modes [data-mode="chat"] .mode-badge')).toHaveCount(0);
   await expect.poll(() => serverRead(server, bart, ws.id, dm.conversation), { timeout: 15000 }).toBeGreaterThanOrEqual(posted.seq);
 });
 
@@ -671,7 +670,7 @@ test('after a restart the cached rooms and messages show before the server answe
   try {
     ({ app, win } = await launch(server, { dataDir }));
     // Chat was the mode: the window comes back to it, from the cache, with the server down.
-    await expect(win.locator('.sidebar-mode [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
+    await expect(win.locator('.titlebar-modes [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
     await expect(roomRow(win, 'general')).toBeVisible();
     await expect(message('Cached hello')).toBeVisible();
     await expect(win.locator('.sidebar .sync-status .t')).not.toHaveText('Connected');
@@ -685,7 +684,7 @@ test('Ctrl+4 opens Chat, and Chat stays the mode across a restart', async () => 
   const { bart } = await twoPeople(server);
   ({ app, win } = await launch(server, { dataDir }));
   await signIn(win, bart);
-  const chatSeg = win.locator('.sidebar-mode [data-mode="chat"]');
+  const chatSeg = win.locator('.titlebar-modes [data-mode="chat"]');
   await expect(chatSeg).toBeVisible({ timeout: 15000 });
   await expect(chatSeg).toHaveAttribute('title', 'Chat (Ctrl+4)');
   await win.locator('.list-scroll').focus();
@@ -694,11 +693,11 @@ test('Ctrl+4 opens Chat, and Chat stays the mode across a restart', async () => 
   await expect(win.locator('.shell')).toHaveClass(/chat-mode/);
   await expect(roomRow(win, 'general')).toBeVisible({ timeout: 15000 });
   await win.keyboard.press('Control+1');
-  await expect(win.locator('.sidebar-mode [data-mode="mail"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(win.locator('.titlebar-modes [data-mode="mail"]')).toHaveAttribute('aria-selected', 'true');
   await win.keyboard.press('Control+4');
   await expect(chatSeg).toHaveAttribute('aria-selected', 'true');
   await restart();
-  await expect(win.locator('.sidebar-mode [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
+  await expect(win.locator('.titlebar-modes [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
   await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
 });
 

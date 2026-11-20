@@ -29,8 +29,10 @@ Dark is the default on `:root`. Light overrides it on `:root.light`, which `ui.j
 | `--signature-ink` | `#565c69` | `var(--text-2)` | Signature text in the composer and Settings; dark mode inverts it, so it holds the light value |
 | `--signature-link` | `#2f63c8` | `var(--link)` | Links in a signature, inverted in dark mode like the ink |
 | `--signature-filter` | `invert(1) hue-rotate(180deg)` | `none` | Turns a signature dark the way the reader turns mail dark; pictures get it again to turn back |
-| `--primary` | `#e9ecf5` | `#1c2340` | The one filled button, the active quick filter |
+| `--primary` | `#e9ecf5` | `#1c2340` | The one filled button, the active quick filter, the chosen mode tab |
 | `--on-primary` | `#15171c` | `#ffffff` | Text on `--primary`, and the label on a filled `--danger` button (dark ink on dark's light red, white on light's red) |
+| `--on-primary-warn` | `#8f5d00` | `#f5b84c` | `--warn` where it sits on `--primary`: a booking count on the chosen mode tab |
+| `--on-primary-accent` | `#2a5bc4` | `#7aa5f5` | `--accent` where it sits on `--primary`: a chat count or dot on the chosen mode tab |
 | `--danger` | `#ff6b6b` | `#d23b3b` | Destructive actions and errors |
 | `--star` | `#ffc23d` | `#e8a200` | The star |
 | `--ok` | `#4ccf8b` | `#1f9d5c` | Success, connected |

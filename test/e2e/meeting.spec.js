@@ -247,7 +247,7 @@ async function setTheme(theme) {
 async function setLanguage(language) {
   await win.evaluate((l) => window.mail.call('updateSettings', { language: l }), language);
   await expect(win.locator('html')).toHaveAttribute('lang', language);
-  await expect(win.locator('.sidebar-mode [data-mode="mail"] .seg-label')).toHaveText(language === 'nl' ? 'E-mail' : 'Mail');
+  await expect(win.locator('.titlebar-modes [data-mode="mail"] .mode-label')).toHaveText(language === 'nl' ? 'E-mail' : 'Mail');
 }
 
 async function shot(name) {
@@ -1011,6 +1011,8 @@ test('records the Stand-up from its card: Rukoo hides first, the transcript stre
   }
   await expect(indicator()).toBeVisible();
   await expect(indicator().locator('.rec-time')).toHaveText(/^\d:\d\d$/);
+  // The clock is in the tooltip as well, for the smallest title bar, which leaves it out of the button.
+  await expect(indicator()).toHaveAttribute('title', /\n\d:\d\d(\n|$)/);
   const id = start && voice.status.recording;
 
   // Passages arrive while Voice records, in time order, with the voice's name once per stretch.

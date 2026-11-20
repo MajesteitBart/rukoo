@@ -1469,23 +1469,23 @@
   },
   "calendar.mode.label": {
     "message": "Mail, calendar or meetings",
-    "description": "Sidebar: accessible name of the switch at the top that chooses between the mailbox, the calendar and the meetings. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar: accessible name of the mode tabs beside the icon, which choose between the mailbox, the calendar and the meetings. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.mode.mail": {
     "message": "Mail",
-    "description": "Sidebar switch at the top: the segment that shows the mailbox. Short; it shares a narrow sidebar with the Calendar segment. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: the tab that shows the mailbox. Short; the tabs share the title bar with the search. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.mode.mailShortcut": {
     "message": "Mail (Ctrl+1)",
-    "description": "Tooltip of the Mail segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+    "description": "Tooltip of the Mail tab in the title bar's mode tabs, with its keyboard shortcut. A narrow window shows the tab as an icon, so this also names it. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.mode.calendar": {
     "message": "Calendar",
-    "description": "Sidebar switch at the top: the segment that shows the calendar. Short; it shares a narrow sidebar with the Mail segment. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: the tab that shows the calendar. Short; the tabs share the title bar with the search. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.mode.calendarShortcut": {
     "message": "Calendar (Ctrl+2)",
-    "description": "Tooltip of the Calendar segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+    "description": "Tooltip of the Calendar tab in the title bar's mode tabs, with its keyboard shortcut. A narrow window shows the tab as an icon, so this also names it. src/renderer/app.js (renderModeSwitch)"
   },
   "calendar.sidebar.calendars": {
     "message": "Calendars",
@@ -2033,7 +2033,7 @@
   },
   "calendar.mode.calendarRequests": {
     "message": { "one": "Calendar, {count} booking request", "other": "Calendar, {count} booking requests" },
-    "description": "Accessible name of the Calendar segment in the sidebar switch while booking requests wait for an answer; count is how many. src/renderer/app.js (renderModeSwitch)"
+    "description": "Accessible name of the Calendar tab in the title bar's mode tabs while booking requests wait for an answer; count is how many. src/renderer/app.js (renderModeBadges)"
   },
   "calendar.event.duplicate": {
     "message": "Duplicate",
@@ -9098,11 +9098,11 @@
   },
   "meeting.mode.label": {
     "message": "Meet",
-    "description": "Sidebar switch at the top: the segment that shows Rukoo Voice meetings. Short; it shares a narrow sidebar with the Mail and Calendar segments. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: the tab that shows Rukoo Voice meetings. Short; the tabs share the title bar with the search. src/renderer/app.js (renderModeSwitch)"
   },
   "meeting.mode.shortcut": {
     "message": "Meet (Ctrl+3)",
-    "description": "Tooltip of the Meet segment in the sidebar switch, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+    "description": "Tooltip of the Meet tab in the title bar's mode tabs, with its keyboard shortcut. A narrow window shows the tab as an icon, so this also names it. src/renderer/app.js (renderModeSwitch)"
   },
   "meeting.untitled": {
     "message": "Meeting at {time}",
@@ -10161,23 +10161,23 @@
   },
   "chat.mode.label": {
     "message": "Chat",
-    "description": "Sidebar mode switch: label of the fourth segment, which opens team chat. The segment shows only while team chat is available. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: label of the fourth tab, which opens team chat. The tab shows only while team chat is available. src/renderer/app.js (renderModeSwitch)"
   },
   "chat.mode.shortcut": {
     "message": "Chat (Ctrl+4)",
-    "description": "Sidebar mode switch: tooltip of the Chat segment, with its keyboard shortcut. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: tooltip of the Chat tab, with its keyboard shortcut. A narrow window shows the tab as an icon, so this also names it. src/renderer/app.js (renderModeSwitch)"
   },
   "chat.mode.switchLabel": {
     "message": "Mail, calendar, meetings or chat",
-    "description": "Sidebar mode switch: accessible name of the whole switch while it has the Chat segment. Without team chat the switch keeps calendar.mode.label. src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: accessible name of the tabs while they include Chat. Without team chat they keep calendar.mode.label. src/renderer/app.js (renderModeSwitch)"
   },
   "chat.mode.badgeCount": {
     "message": { "one": "Chat, {count} message for you", "other": "Chat, {count} messages for you" },
-    "description": "Sidebar mode switch: accessible name of the Chat segment while its pill counts direct messages and mentions for the user. {count}: that number. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: accessible name of the Chat tab while its pill counts direct messages and mentions for the user. {count}: that number. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeBadges)"
   },
   "chat.mode.badgeUnread": {
     "message": "Chat, unread messages",
-    "description": "Sidebar mode switch: accessible name of the Chat segment when it shows a dot: unread messages, none of them addressed to the user. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeSwitch)"
+    "description": "Title bar mode tabs: accessible name of the Chat tab when it shows a dot: unread messages, none of them addressed to the user. src/renderer/chat.js (modeBadge), src/renderer/app.js (renderModeBadges)"
   },
   "chat.view.label": {
     "message": "Team chat",

@@ -328,22 +328,22 @@ test('muting a conversation dims its row and silences the mode badge', async () 
   await roomRow(win, 'general').click();
   await expect(title()).toHaveText('general');
 
-  // Olga writes again: the muted row stays quiet, and the Chat segment shows nothing.
+  // Olga writes again: the muted row stays quiet, and the Chat tab shows nothing.
   await server.post(olga, ws.id, dm.conversation, 'Are you there?');
   await expect
     .poll(() => win.evaluate(([w, c]) => window.mail.call('chatView', w).then((v) => v.rooms.find((r) => r.id === c)?.unread || 0), [ws.id, dm.conversation]), { timeout: 15000 })
     .toBe(1);
   await expect(row).not.toHaveClass(/is-unread/);
   await expect(row.locator('.ch-badge, .count')).toHaveCount(0);
-  const seg = win.locator('.sidebar-mode [data-mode="chat"]');
-  await expect(seg.locator('.seg-badge, .seg-dot')).toHaveCount(0);
+  const seg = win.locator('.titlebar-modes [data-mode="chat"]');
+  await expect(seg.locator('.mode-badge, .mode-dot')).toHaveCount(0);
   expect(await win.evaluate(() => window.mail.call('chatState').then((s) => [s.attention, s.unread]))).toEqual([0, false]);
 
-  // Unmuted (here without opening it, which would read it), the row and the Chat segment count her message again.
+  // Unmuted (here without opening it, which would read it), the row and the Chat tab count her message again.
   await win.evaluate(([w, c]) => window.mail.call('chatMute', w, c, false), [ws.id, dm.conversation]);
   await expect(row).not.toHaveClass(/is-muted/, { timeout: 10000 });
   await expect(row.locator('.ch-badge')).toHaveText('1');
-  await expect(seg.locator('.seg-badge')).toHaveText('1');
+  await expect(seg.locator('.mode-badge')).toHaveText('1');
   // And the menu offers Mute again.
   await row.click();
   await roomMenu(win);

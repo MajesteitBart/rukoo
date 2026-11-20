@@ -516,7 +516,7 @@ function keepSideScroll() {
   });
 }
 
-// The sidebar below the mode switch (contract 5.3); app.js adds its foot.
+// The sidebar in Chat (contract 5.3); app.js adds its foot.
 export function sidebarHtml() {
   keepSideFocus();
   keepSideScroll();
@@ -641,7 +641,7 @@ export function footStatus() {
   return { cls: '', text: t('chat.status.offline'), title: s.connection === 'offline' ? t('chat.errors.network', { host: s.host }) : '' };
 }
 
-// The Chat segment's badge (contract 3.10): { count, text }, { dot }, or null.
+// The Chat tab's badge in the title bar (contract 3.10): { count, text }, { dot }, or null.
 export function modeBadge() {
   const s = CH.state;
   if (!s || !s.signedIn || !s.available) return null;

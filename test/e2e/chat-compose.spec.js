@@ -735,7 +735,7 @@ test('a draft with a mention survives switching rooms and a restart', async () =
   await expect(composer(win).locator(`.ch-chip[data-member="${zoe.id}"]`)).toHaveText('@Zoë');
   await closeApp(app);
   ({ app, win } = await launch(server, { dataDir }));
-  await expect(win.locator('.sidebar-mode [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
+  await expect(win.locator('.titlebar-modes [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
   await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
   await expect(composer(win)).toHaveJSProperty('value', 'Draft for later, @Zoë and more', { timeout: 15000 });
   await expect(composer(win).locator(`.ch-chip[data-member="${zoe.id}"]`)).toHaveText('@Zoë');

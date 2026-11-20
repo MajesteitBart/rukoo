@@ -31,8 +31,6 @@ import {
   applyTheme,
   onSystemThemeChange,
   isLight,
-  segmented,
-  setSegmented,
   afterDrag
 } from './ui.js';
 import { fillFrame } from './mailframe.js';
@@ -594,7 +592,7 @@ function renderShell() {
   const app = $('#app');
   if (!app.querySelector('.shell')) {
     app.innerHTML = `<div class="shell">
-      <aside class="sidebar" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}"><div class="sidebar-mode"></div><div class="sidebar-main"></div></aside>
+      <aside class="sidebar" data-i18n-aria-label="mailbox.layout.folders" aria-label="${esc(t('mailbox.layout.folders'))}"><div class="sidebar-main"></div></aside>
       <div class="workspace">
         <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
         <section class="meeting" data-i18n-aria-label="meeting.title" aria-label="${esc(t('meeting.title'))}" data-tab="transcript"></section>
@@ -616,6 +614,7 @@ function renderShell() {
     $('.titlebar-actions [data-agent-toggle]').addEventListener('click', () => toggleAgent());
     $('.titlebar-actions [data-meeting-indicator]').addEventListener('click', (e) => openMeeting(e.currentTarget.dataset.meetingIndicator));
     meeting.renderIndicator();
+    bindModeTabs();
     bindSidebar();
     bindList();
     bindDivider();
@@ -838,6 +837,13 @@ function renderSearch() {
         { align: 'right' }
       );
     });
+    // A press anywhere on the field, its magnifier included, puts the cursor in it. The smallest title bar can leave
+    // the field narrower than its input, which it then cuts off.
+    box.addEventListener('mousedown', (e) => {
+      if (e.target === input || e.target.closest('.search-scope')) return;
+      e.preventDefault();
+      input.focus();
+    });
   }
   const input = box.querySelector('input');
   box.title = `${t('mailbox.search.label')} (${shortcutLabel('Ctrl+E')})`;
@@ -893,11 +899,11 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
-// Mail, Calendar and Meetings at the top of the sidebar, and Chat while the server has team chat. The switch stays in
-// place, so its thumb slides. Three segments keep their labels as they always were; four can't fit 236 px side by
-// side, so each stacks its icon over a smaller label (is-stacked).
+// Mail, Calendar and Meetings as tabs in the title bar, beside the logo, and Chat while the server has team chat. The
+// title bar spans the sidebar and the workspace, which a mode replaces together, and it has room for a label on every
+// tab and for more of them. The tabs stay in place while the rest redraws, so their highlight can glide.
 function renderModeSwitch() {
-  const box = $('.sidebar-mode');
+  const box = $('.titlebar-modes');
   if (!box || !S.data) return;
   const options = [
     { value: 'mail', label: t('calendar.mode.mail'), title: t('calendar.mode.mailShortcut'), icon: 'unread' },
@@ -907,60 +913,128 @@ function renderModeSwitch() {
   const withChat = chat.available();
   if (withChat) options.push({ value: 'chat', label: t('chat.mode.label'), title: t('chat.mode.shortcut'), icon: 'chat' });
   const shape = `${S.data.settings.language}|${options.length}`;
-  const el = box.querySelector('.segmented');
-  if (el && el.dataset.shape === shape) setSegmented(el, prefs.mode);
-  else {
-    box.innerHTML = segmented({ name: 'mode', label: t(withChat ? 'chat.mode.switchLabel' : 'calendar.mode.label'), value: prefs.mode, options });
-    const made = box.querySelector('.segmented');
-    made.dataset.shape = shape;
-    made.dataset.language = S.data.settings.language;
-    made.classList.toggle('is-stacked', withChat);
+  let el = box.querySelector('.mode-tabs');
+  const kept = Boolean(el) && el.dataset.shape === shape;
+  if (kept) {
+    for (const b of el.querySelectorAll('[role="tab"]')) b.setAttribute('aria-selected', String(b.dataset.mode === prefs.mode));
+  } else {
+    box.innerHTML = `<div class="mode-tabs" role="tablist" aria-label="${esc(t(withChat ? 'chat.mode.switchLabel' : 'calendar.mode.label'))}">
+      <span class="mode-thumb" aria-hidden="true"></span>${options
+        .map(
+          (o) =>
+            `<button role="tab" aria-selected="${o.value === prefs.mode}" data-mode="${esc(o.value)}" title="${esc(o.title)}"><span class="mode-ic">${icons[o.icon]}</span><span class="mode-label">${esc(o.label)}</span></button>`
+        )
+        .join('')}</div>`;
+    el = box.querySelector('.mode-tabs');
+    el.dataset.shape = shape;
+    watchModeTabs(el);
   }
-  // Booking requests that wait for an answer: a count on the Calendar segment, also while the mailbox shows.
+  renderModeBadges(box);
+  // The highlight glides when the same tabs get another choice; new tabs, and a badge that came or went, place it.
+  placeModeThumb(kept && el.dataset.on !== prefs.mode);
+  el.dataset.on = prefs.mode;
+}
+
+function renderModeBadges(box) {
+  // Booking requests that wait for an answer: a count on the Calendar tab, also while the mailbox shows.
   const count = calendar.requestCount();
-  segmentBadge(box.querySelector('[data-mode="calendar"]'), count ? { text: count > 99 ? '99+' : String(count), label: t('calendar.mode.calendarRequests', { count }) } : null);
+  tabBadge(box.querySelector('[data-mode="calendar"]'), count ? { text: count > 99 ? '99+' : String(count), label: t('calendar.mode.calendarRequests', { count }) } : null);
   // Team chat (contract 3.10): a count of what asks for you, else a dot for anything unread.
-  const chatSeg = box.querySelector('[data-mode="chat"]');
-  if (chatSeg) {
+  const chatTab = box.querySelector('[data-mode="chat"]');
+  if (chatTab) {
     const b = chat.modeBadge();
-    segmentBadge(
-      chatSeg,
-      b && b.count ? { text: b.text, label: t('chat.mode.badgeCount', { count: b.count }), cls: 'is-mention' } : b && b.dot ? { dot: true, label: t('chat.mode.badgeUnread') } : null
-    );
+    tabBadge(chatTab, b && b.count ? { text: b.text, label: t('chat.mode.badgeCount', { count: b.count }), cls: 'is-mention' } : b && b.dot ? { dot: true, label: t('chat.mode.badgeUnread') } : null);
   }
 }
 
-// A segment's badge: { text, label, cls } for a count pill, { dot, label } for a dot, or null for none. label names
-// the segment with its badge for screen readers.
-function segmentBadge(seg, badge) {
-  if (!seg) return;
-  let pill = seg.querySelector('.seg-badge');
-  let dot = seg.querySelector('.seg-dot');
+// A tab's badge: { text, label, cls } for a count pill, { dot, label } for a dot, or null for none. label names the
+// tab with its badge for screen readers.
+function tabBadge(tab, badge) {
+  if (!tab) return;
+  let pill = tab.querySelector('.mode-badge');
+  let dot = tab.querySelector('.mode-dot');
   if (!badge) {
     pill?.remove();
     dot?.remove();
-    seg.removeAttribute('aria-label');
+    tab.removeAttribute('aria-label');
     return;
   }
   if (badge.dot) {
     pill?.remove();
     if (!dot) {
       dot = document.createElement('span');
-      dot.className = 'seg-dot';
+      dot.className = 'mode-dot';
       dot.setAttribute('aria-hidden', 'true');
-      seg.appendChild(dot);
+      tab.appendChild(dot);
     }
   } else {
     dot?.remove();
     if (!pill) {
       pill = document.createElement('span');
       pill.setAttribute('aria-hidden', 'true');
-      seg.appendChild(pill);
+      tab.appendChild(pill);
     }
-    pill.className = `seg-badge ${badge.cls || ''}`.trim();
+    pill.className = `mode-badge ${badge.cls || ''}`.trim();
     pill.textContent = badge.text;
   }
-  seg.setAttribute('aria-label', badge.label);
+  tab.setAttribute('aria-label', badge.label);
+}
+
+// The fill behind the chosen tab: --x and --w on the tabs. The chosen tab opens its icon and the one before folds its
+// own, so the tabs change width while the fill moves. The fill goes straight to where the chosen tab settles,
+// measured on a copy of the tabs that has no transition running. glide: slide there, for another choice among the same
+// tabs; without it the fill is put there, as when a count, the language or the window's width changed a tab's size. A
+// measurement that changes nothing leaves a glide under way alone.
+// The same copy, with every count at its widest, gives the room the tabs keep, so a count that comes or goes doesn't
+// move the search beside them.
+function placeModeThumb(glide = false) {
+  const tabs = $('.titlebar-modes .mode-tabs');
+  // Hidden behind a page such as Settings, the tabs have no size: the next measurement places the fill.
+  if (!tabs || !tabs.offsetWidth) return;
+  const copy = tabs.cloneNode(true);
+  copy.classList.add('is-measure');
+  copy.removeAttribute('role');
+  copy.setAttribute('aria-hidden', 'true');
+  tabs.after(copy);
+  const on = copy.querySelector('[aria-selected="true"]')?.getBoundingClientRect();
+  const left = copy.getBoundingClientRect().left;
+  for (const tab of copy.querySelectorAll('[data-mode="calendar"], [data-mode="chat"]')) {
+    tab.querySelector('.mode-dot')?.remove();
+    const count = tab.querySelector('.mode-badge') || tab.appendChild(document.createElement('span'));
+    count.className = 'mode-badge';
+    count.textContent = '99+';
+  }
+  const widest = `${copy.getBoundingClientRect().width}px`;
+  copy.remove();
+  if (tabs.parentElement.style.minWidth !== widest) tabs.parentElement.style.minWidth = widest;
+  if (!on || !on.width) return;
+  const place = `${(on.left - left).toFixed(2)}|${on.width.toFixed(2)}`;
+  if (tabs.dataset.place === place) return;
+  tabs.dataset.place = place;
+  tabs.classList.toggle('glides', glide);
+  tabs.style.setProperty('--x', `${on.left - left}px`);
+  tabs.style.setProperty('--w', `${on.width}px`);
+}
+
+// The tabs sit in the title bar, outside the shell, so they are bound once and outlive it.
+let modeTabsBound = false;
+function bindModeTabs() {
+  if (modeTabsBound) return;
+  modeTabsBound = true;
+  const box = $('.titlebar-modes');
+  box.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-mode]');
+    if (tab) setMode(tab.dataset.mode);
+  });
+}
+
+// Places the fill again when the tabs change size: a narrow window turns them into icons, a page such as Settings
+// hides them. It watches the tabs themselves, since their box keeps its room whatever they measure.
+let modeTabsResize = null;
+function watchModeTabs(tabs) {
+  modeTabsResize ||= new ResizeObserver(() => placeModeThumb());
+  modeTabsResize.disconnect();
+  modeTabsResize.observe(tabs);
 }
 
 function setMode(mode) {
@@ -1156,7 +1230,6 @@ function bindSidebar() {
   el.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
-    if (t.dataset.mode) return setMode(t.dataset.mode);
     if (calendarMode() && calendar.sidebarClick(t)) return;
     if (meetingMode() && meeting.sidebarClick(t)) return;
     if (chatMode() && chat.sidebarClick(t, e)) return;
@@ -3848,7 +3921,7 @@ export const ctx = {
   recordMeetingMenu: (anchor, opts) => meeting.recordMenu(anchor, opts),
   openCalendarEvent: (id, start) => openCalendarEvent(id, start),
   agentSync: () => agentViewChanged(),
-  // Team chat (chat.js): whether it is on screen, its badge on the mode switch in every mode, and whether it is there.
+  // Team chat (chat.js): whether it is on screen, its badge on the Chat tab in every mode, and whether it is there.
   chatMode: () => chatMode(),
   renderModeSwitch: () => renderModeSwitch(),
   chatAvailability: () => chatAvailability()

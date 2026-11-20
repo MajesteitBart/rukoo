@@ -96,11 +96,14 @@ test('Linux keeps the title bar clear of window buttons on the left, in both win
       const compose = await titlebar(editor);
       expect(compose.title.left).toBeGreaterThan(compose.area.left);
     }
-    // The icon rail is narrower than the buttons: the search still starts after them.
+    // The icon rail is narrower than the buttons: the icon still starts after them, then the modes and the search.
     await win.evaluate((level) => window.mail.call('setZoom', level), 100);
     await win.click('[data-action="collapse"]');
     await expect(win.locator('body')).toHaveClass(/collapsed-sidebar/);
-    await expect.poll(() => titlebar(win).then((g) => Math.round(g.search.left - g.area.left))).toBe(22);
+    await expect.poll(() => clearance(win)).toEqual({ icon: 22, actions: 12 });
+    const folded = await titlebar(win);
+    expect(folded.modes.left).toBeGreaterThan(folded.icon.right);
+    expect(folded.search.left).toBeGreaterThan(folded.modes.right);
   });
 });
 

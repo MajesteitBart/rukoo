@@ -1,6 +1,6 @@
 # Calendar
 
-The switch at the top of the sidebar, or `Ctrl+2`, replaces the message list and the reader with a calendar. It shows the calendars of every Google account, and of every IMAP account with a CalDAV server in its Server settings, together. The demo account has a sample calendar.
+The Calendar tab in the title bar, or `Ctrl+2`, replaces the message list and the reader with a calendar. It shows the calendars of every Google account, and of every IMAP account with a CalDAV server in its Server settings, together. The demo account has a sample calendar.
 
 ![Calendar week view](screenshots/light/13-calendar.png)
 
