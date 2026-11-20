@@ -663,3 +663,122 @@ test('a service on a new session drops the open room', async (t) => {
   assert.equal(again.history.open, null);
   assert.equal(again.active, null);
 });
+
+// Contract 3.6: a page asked for before Start over belongs to the cache as it stood, with removals the pass from the
+// start can no longer list. It is dropped, and the page asked again under the new cache revision is the one cached.
+test('a history page that comes after Start over is dropped, and the text it carried stays out', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, api, account } = await setup(t, { timing: { minFetchGap: 0 } });
+  const [removed] = await postMany(olga, ws.id, ws.general, 1, { prefix: 'from before Start over' });
+  await svc.sync(ws.id);
+  const held = holdNext(account, (url) => url.includes(`/conversations/${ws.general}/events?`));
+  await api.chatOpen(ws.id, ws.general);
+  await until(() => held.waiting, 10000, 'the held page');
+  await server.redact(olga, ws.id, ws.general, removed.messageId);
+  await api.chatReload(ws.id);
+  await settled(svc, ws.id);
+  assert.equal(svc.store.eventById(ws.id, removed.messageId), null, 'Start over emptied the cache');
+  const mark = svc.events.length;
+  held.release();
+
+  await caughtUp(svc, ws.id, ws.general);
+  const row = svc.store.eventById(ws.id, removed.messageId);
+  assert.equal(row.redacted, 1);
+  assert.equal(row.text, null);
+  assert.ok(!JSON.stringify(svc.events.slice(mark)).includes('from before Start over'), 'no push carried the removed text');
+  assert.ok(pushes(svc, ws.general).slice(-1)[0].events.some((e) => e.id === removed.messageId && e.redacted));
+});
+
+// Contract 3.7, 3.13, 3.14: a thread root the cache couldn't keep lives in the thread's memory. Removing it takes its
+// text out of that memory at once, and a floor past it expires the thread.
+test('a thread root kept outside the cache loses its text when removed and goes below the floor', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc, api, account } = await setup(t, { timing: { ...SMALL, roomCacheMax: 3 } });
+  const [root] = await postMany(bart, ws.id, ws.general, 1, { prefix: 'the old root' });
+  await postMany(olga, ws.id, ws.general, 2, { prefix: 'reply', root: root.messageId });
+  await postMany(olga, ws.id, ws.general, 4, { prefix: 'newer' });
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general);
+  const room = await caughtUp(svc, ws.id, ws.general);
+  assert.ok(room.lo > root.seq + 2, 'the root and its replies are older than the cache');
+
+  const thread = await api.chatThread(ws.id, ws.general, root.messageId);
+  assert.equal(thread.root.text, 'the old root 1');
+  assert.deepEqual(thread.replies.map((r) => r.text), ['reply 1', 'reply 2']);
+  assert.equal(svc.store.eventById(ws.id, root.messageId), null, 'the root is held outside SQLite');
+
+  await api.chatRedact(ws.id, ws.general, root.messageId);
+  const held = [...svc.history.threadMemory.extra.values()].find((e) => e.id === root.messageId);
+  assert.equal(held.text, null, 'the memory lost the text when the removal was learned');
+  assert.equal(held.redacted, true);
+  const again = await api.chatThread(ws.id, ws.general, root.messageId);
+  assert.equal(again.root.redacted, true);
+  assert.equal(again.root.text, null);
+  assert.deepEqual(again.root.mentions, []);
+  assert.equal(again.replies.length, 2);
+
+  // Retention passes the root and its replies (one field of a real feed answer, as retention can't be made on demand).
+  await postMany(olga, ws.id, ws.general, 1, { prefix: 'after' });
+  const floor = root.seq + 3;
+  watchCalls(account, async (method, url, real) => {
+    if (!url.includes('/changes')) return undefined;
+    const answer = await real();
+    return { ...answer, changes: answer.changes.map((c) => (c.conversation === ws.general ? { ...c, floor } : c)) };
+  });
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, ws.general).floor, floor);
+  assert.ok(![...svc.history.threadMemory.extra.values()].some((e) => e.seq < floor), 'what aged out left the memory');
+  const aged = await api.chatThread(ws.id, ws.general, root.messageId);
+  assert.equal(aged.root, null);
+  assert.equal(aged.expired, true);
+  assert.deepEqual(aged.replies, []);
+});
+
+// Contract 3.7, 3.14: opening at a seq returns events of pages the cache couldn't keep. A removal learned while the
+// backfill runs shows in the answer, and one learned later reaches the renderer by ID.
+test('opening at a seq returns detached events as they stand, and tells the renderer of a later removal', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, api, account } = await setup(t, { timing: { ...SMALL, roomCacheMax: 3 } });
+  const notes = await postMany(olga, ws.id, ws.general, 30, { prefix: 'note' });
+  await svc.sync(ws.id);
+  const at = notes[1].seq;
+  // The third events request is the backfill's second page: it waits while a removal reaches the feed.
+  let count = 0;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let waiting = false;
+  watchCalls(account, async (method, url, real) => {
+    if (!url.includes(`/conversations/${ws.general}/events?before=`)) return undefined;
+    count += 1;
+    if (count !== 3) return undefined;
+    const answer = await real();
+    waiting = true;
+    await gate;
+    return answer;
+  });
+  const opening = api.chatOpen(ws.id, ws.general, { at });
+  await until(() => waiting, 10000, 'the held backfill page');
+  const early = notes[24];
+  assert.ok(early.seq < svc.store.getRoom(ws.id, ws.general).lo, 'the removed note is outside the cache');
+  await server.redact(olga, ws.id, ws.general, early.messageId);
+  await svc.sync(ws.id);
+  assert.ok(svc.store.hasTombstone(ws.id, early.messageId));
+  release();
+  const view = await opening;
+  assert.equal(view.complete, true);
+  const shown = view.events.find((e) => e.id === early.messageId);
+  assert.equal(shown.redacted, true);
+  assert.equal(shown.text, null);
+  assert.ok(!JSON.stringify(view).includes('note 25'));
+
+  // Removed after the view was answered: the renderer hears the ID, as the store's redacted covers cached ones only.
+  const later = notes[19];
+  assert.equal(view.events.find((e) => e.id === later.messageId).text, 'note 20');
+  assert.equal(svc.store.eventById(ws.id, later.messageId), null);
+  await server.redact(olga, ws.id, ws.general, later.messageId);
+  await svc.sync(ws.id);
+  assert.ok(
+    svc.events.some((e) => e.kind === 'redacted' && e.conversation === ws.general && e.ids.includes(later.messageId)),
+    'the renderer heard of the removal'
+  );
+});

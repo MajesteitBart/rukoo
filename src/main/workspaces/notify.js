@@ -112,6 +112,9 @@ class Notifier {
     const row = store && store.getWs(ws);
     if (!row) return;
     const epoch = svc.epoch;
+    // The cache revision (contract 3.6): a reset, Start over, restore, new key or park while a page of messages was on
+    // its way ends this run's alerts, as that page belongs to the cache as it stood and may hold removed messages.
+    const rev = svc.revision(ws);
     this.takeBackRead(ws);
     if (row.state !== 'ok' || row.fresh || !row.me) return;
     const due = store.all(DUE, ws);
@@ -146,14 +149,19 @@ class Notifier {
           continue;
         }
         fetches -= 1;
+        const head = room.head;
+        let page;
         try {
-          messages = await this.fetchMessages(ws, room, after, ctx);
+          page = await this.fetchPage(ws, room);
         } catch (err) {
           if (svc.isStale(err)) throw err;
+          svc.guard(epoch);
+          if (svc.revision(ws) !== rev) return;
           // Not now: the room stays due for the next run.
           continue;
         }
         svc.guard(epoch);
+        if (svc.revision(ws) !== rev) return;
         // Meanwhile the person may have read it, muted it or opened it.
         room = store.getRoom(ws, id);
         if (!room || !isDue(room)) continue;
@@ -161,6 +169,10 @@ class Notifier {
           this.mark(ws, id, room.head);
           continue;
         }
+        // The page covers up to the head it was asked for; what came after it waits for the next run.
+        room = { ...room, head: Math.min(room.head, head) };
+        // What was read, aged out or removed while the page was on its way stays out.
+        messages = this.pageMessages(ws, room, Math.max(room.read, room.readLocal, room.notified), page, ctx);
         // The page didn't reach back to after + 1 and showed nothing: what's new may be older than the page.
         if (messages === null) {
           rest.push(room);
@@ -268,12 +280,18 @@ class Notifier {
   // room's cached range. Like cachedMessages, [] only when the page saw every event after `after`: it held the oldest
   // there are (more: false) or reached back to after + 1. A full page of other events that stops short of that gives
   // null, because what's new may be older than the page.
-  async fetchMessages(ws, room, after, ctx) {
-    const svc = this.svc;
-    const page = wire.checkEvents(await svc.call(ws, 'GET', `/conversations/${room.id}/events?before=${room.head + 1}&limit=${FETCH}`));
-    const store = svc.store;
+  //
+  // fetchPage asks for the page; pageMessages reads it once it came, against the room as it stands then: its read
+  // position, its floor and the tombstones.
+  async fetchPage(ws, room) {
+    return wire.checkEvents(await this.svc.call(ws, 'GET', `/conversations/${room.id}/events?before=${room.head + 1}&limit=${FETCH}`));
+  }
+
+  pageMessages(ws, room, after, page, ctx) {
+    const store = this.svc.store;
     const shown = page.events
-      .filter((e) => e.kind === 'message.posted' && !e.redacted && e.seq > after && e.seq <= room.head && !store.hasTombstone(ws, e.id))
+      .filter((e) => e.kind === 'message.posted' && !e.redacted && e.seq > after && e.seq <= room.head)
+      .filter((e) => e.seq >= (room.floor || 0) && !store.hasTombstone(ws, e.id))
       .filter((e) => this.qualifies(e, room, ctx))
       .slice(-LINES);
     if (shown.length) return shown;

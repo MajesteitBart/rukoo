@@ -13,9 +13,14 @@
 // - opening at a seq (a notification) catches up, then pages back until the cache reaches it, at most BACKFILL_PAGES;
 // - older messages come from the cache while it has them, else from the server, prepended;
 // - a thread finds its root in the cache, else pages back up to BACKFILL_PAGES per call.
-// Every page is applied in one transaction that first checks that the room still has the grant the request started
-// under: a page from before a leave and rejoin is dropped. Tombstoned messages are stored removed, each page raises
-// head and applies floor, and the room keeps at most ROOM_CACHE_MAX events.
+// Every page is applied in one transaction that first checks that the room still has the grant, and the workspace the
+// cache revision (svc.revision, contract 3.6), the request started under: a page from before a leave and rejoin, or
+// from before a reset, Start over, restore, new key or park, is dropped. Tombstoned messages are stored removed, each
+// page raises head and applies floor, and the room keeps at most ROOM_CACHE_MAX events.
+//
+// Detached events. Pages the cache couldn't take still answer the renderer: a thread keeps them in threadMemory, and
+// opening at a seq returns them in its view. They honor the room's floor and the tombstones whenever they are returned,
+// and a removal learned later (onRemoved) takes their text out of memory and tells the renderer.
 //
 // Reads. The renderer reports the highest message it showed (chatRead) or asks for head (chatMarkRead). The room's
 // readLocal rises at once, on disk, and its badges are recounted from the cache; POST /read follows at most once per
@@ -58,6 +63,28 @@ function detached(e, removed) {
 
 function bySeq(a, b) {
   return a.seq - b.seq;
+}
+
+// The badges of a room read to `to` (contract 3.9): none at head; counted from the cache when it covers everything
+// after it; else the server's numbers stand until the next page.
+function badgesAt(store, ws, c, to) {
+  const r = store.getRoom(ws, c);
+  if (!r) return;
+  if (to >= r.head) {
+    if (r.unread || r.mentions) store.setRoomFields(ws, c, { unread: 0, mentions: 0 });
+    return;
+  }
+  const me = store.getWs(ws)?.me;
+  const covers = r.lo !== null && r.hi !== null && r.hi >= r.head && r.lo <= to + 1;
+  if (covers && me) store.setRoomFields(ws, c, store.countBadges(ws, c, to, me));
+}
+
+// A detached event (one held outside SQLite) as it stands now: null below the room's floor, a removed message without
+// its text once it has a tombstone or its ID is in removed, else unchanged.
+function current(e, floor, gone) {
+  if (e.seq < floor) return null;
+  if (e.kind !== 'message.posted' || e.redacted || !gone(e.id)) return e;
+  return { ...e, text: null, mentions: [], redacted: true };
 }
 
 class History {
@@ -159,13 +186,14 @@ class History {
   }
 
   // One page of GET /events, in one transaction. kind 'after' with bound X for ?after=X, 'before' with bound Y for
-  // ?before=Y; newest: the page that loads an uncached room, which may start its range. Returns null when the room went
-  // or its grant moved since grant (the page is dropped), else { events, joined, removed, redacted }: events as the
-  // renderer gets them, joined whether the cache took them, removed the IDs whose alerts go (floor, redactions),
-  // redacted the cached messages that lost their text.
-  applyPage(ws, c, page, { grant, kind, bound, newest = false }) {
+  // ?before=Y; newest: the page that loads an uncached room, which may start its range. Returns null when the room went,
+  // its grant moved since grant or the workspace's cache revision since rev (the page is dropped), else { events,
+  // joined, removed, redacted }: events as the renderer gets them, joined whether the cache took them, removed the IDs
+  // whose alerts go (floor, redactions), redacted the cached messages that lost their text.
+  applyPage(ws, c, page, { grant, rev, kind, bound, newest = false }) {
     const store = this.store();
     const out = store.tx(() => {
+      if (this.svc.revision(ws) !== rev) return null;
       let r = store.getRoom(ws, c);
       if (!r || r.grantId !== grant) return null;
       const removed = [];
@@ -232,6 +260,7 @@ class History {
     svc.roomsChanged(ws, [c]);
     if (out.redacted.length) svc.emitChat({ kind: 'redacted', ws, conversation: c, ids: out.redacted });
     if (out.removed.length) {
+      svc.hook(() => this.onRemoved(ws, c, out.removed));
       svc.hook(() => svc.notifier.onRemoved(ws, c, out.removed));
     }
   }
@@ -243,6 +272,8 @@ class History {
     const r = this.svc.store && this.svc.store.getRoom(ws, c);
     if (!r) return;
     if (!events.length && !replace) return;
+    if (replace) this.open.detached = null;
+    this.heldByRenderer(this.open, events);
     this.open.lo = r.lo;
     this.svc.emitChat({ kind: 'events', ws, conversation: c, events, lo: r.lo, hi: r.hi, head: r.head, floor: r.floor, replace });
   }
@@ -291,20 +322,21 @@ class History {
       const r = svc.store.getRoom(ws, c);
       if (!r) return;
       if (r.hi !== null && r.hi >= r.head) return;
+      const rev = svc.revision(ws);
       if (r.hi === null || r.head - r.hi > t.forwardGapMax) {
         // Nothing cached, or too far behind to page forward: the newest page, and the renderer starts over from it. A
         // cache the page can't join goes in the page's own transaction, so a failed request leaves it as it was.
         const bound = r.head + 1;
         const page = await this.fetchEvents(ws, c, `before=${bound}&limit=${t.eventsNewest}`);
         svc.guard(epoch);
-        const out = this.applyPage(ws, c, page, { grant: r.grantId, kind: 'before', bound, newest: true });
+        const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'before', bound, newest: true });
         if (!out) continue;
         this.push(ws, c, out.events, { replace: true });
         if (!page.events.length) return;
       } else {
         const page = await this.fetchEvents(ws, c, `after=${r.hi}&limit=${t.eventsPage}`);
         svc.guard(epoch);
-        const out = this.applyPage(ws, c, page, { grant: r.grantId, kind: 'after', bound: r.hi });
+        const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'after', bound: r.hi });
         if (!out) continue;
         this.push(ws, c, out.events);
         if (!page.events.length) return;
@@ -324,9 +356,10 @@ class History {
       const r = svc.store.getRoom(ws, c);
       if (!r) return { low: bound, floor: false, dropped: true };
       if (bound <= r.floor || bound <= 1) return { low: bound, floor: true, dropped: false };
+      const rev = svc.revision(ws);
       const page = await this.fetchEvents(ws, c, `before=${bound}&limit=${this.timing.eventsPage}`);
       svc.guard(epoch);
-      const out = this.applyPage(ws, c, page, { grant: r.grantId, kind: 'before', bound });
+      const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'before', bound });
       if (!out) return { low: bound, floor: false, dropped: true };
       // What the cache took is read from there; the rest (a page that didn't adjoin it, or one a trim took again).
       for (const e of out.events) {
@@ -377,7 +410,10 @@ class History {
     } else {
       const cached = r.lo !== null ? store.eventsFrom(ws, c, r.lo, this.cacheMax).map(wire.toRenderer) : [];
       const merged = new Map();
-      if (extra) for (const [seq, e] of extra) merged.set(seq, e);
+      if (extra) {
+        this.scrub(ws, c, extra);
+        for (const [seq, e] of extra) merged.set(seq, e);
+      }
       for (const e of cached) merged.set(e.seq, e);
       const all = [...merged.values()].sort(bySeq);
       if (!reached) target = ranOut && all.length ? all[0].seq : r.hi;
@@ -425,6 +461,7 @@ class History {
       this.catchUpLater(ws, c);
       return view;
     }
+    const rev = svc.revision(ws);
     const extra = new Map();
     let reached = false;
     // The backfill went through and stopped short of at: its pages ran out (or the floor came first).
@@ -447,12 +484,51 @@ class History {
       open.quiet = false;
     }
     svc.guard(epoch);
+    // The cache was reset meanwhile: the pages loaded before that belong to the cache as it stood, with removals it
+    // can no longer list, and only the cache as it is now opens.
+    if (svc.revision(ws) !== rev) {
+      extra.clear();
+      reached = false;
+      ranOut = false;
+    }
     // Whether the requests went through or not, a cache that holds at reaches it.
     const now = svc.store.getRoom(ws, c);
     if (now && now.lo !== null && now.lo <= at && at <= now.hi) reached = true;
     const view = this.roomView(ws, c, { at, reached, ranOut, readAtOpen, extra });
     open.lo = svc.store.getRoom(ws, c)?.lo ?? null;
+    this.heldByRenderer(open, view.events);
     return view;
+  }
+
+  // The renderer now shows events of the open room that aren't cached: a removal learned later tells it by ID
+  // (onRemoved), as the store's redact only knows cached ones.
+  heldByRenderer(open, events) {
+    const store = this.svc.store;
+    for (const e of events) {
+      if (e.kind !== 'message.posted' || e.redacted) continue;
+      const row = store.eventAt(open.ws, open.room, e.seq);
+      if (row && row.id === e.id) continue;
+      (open.detached ||= new Map()).set(e.id, e.seq);
+    }
+  }
+
+  // Detached events of room c (a Map seq -> event) as they stand now (see current): those below the floor go, and
+  // removed messages lose their text. ids: more message IDs known to be removed. Returns the IDs that lost their text.
+  scrub(ws, c, map, ids = null) {
+    const store = this.svc.store;
+    const r = store && store.getRoom(ws, c);
+    const floor = r ? r.floor : Infinity;
+    const gone = (id) => Boolean(ids && ids.has(id)) || store.hasTombstone(ws, id);
+    const lost = [];
+    for (const [seq, e] of [...map]) {
+      const now = current(e, floor, gone);
+      if (now === e) continue;
+      if (now) {
+        map.set(seq, now);
+        lost.push(e.id);
+      } else map.delete(seq);
+    }
+    return lost;
   }
 
   // chatClose: no room is open; the feed stops asking for inline events.
@@ -476,12 +552,23 @@ class History {
     if (before <= r.floor) return { events: [], lo: before, hasOlder: false };
     this.requireOk(ws);
     const epoch = svc.epoch;
-    const page = await this.fetchEvents(ws, c, `before=${before}&limit=${this.timing.eventsNewest}`);
+    const rev = svc.revision(ws);
+    // The grant or the cache revision moved meanwhile: the page is dropped, and the renderer gets the room again
+    // through an events push. An error that comes after a reset is dropped the same way.
+    const dropped = { events: [], lo: before, hasOlder: true };
+    let page;
+    try {
+      page = await this.fetchEvents(ws, c, `before=${before}&limit=${this.timing.eventsNewest}`);
+    } catch (err) {
+      svc.guard(epoch);
+      if (svc.revision(ws) !== rev) return dropped;
+      throw err;
+    }
     svc.guard(epoch);
-    const out = this.applyPage(ws, c, page, { grant: r.grantId, kind: 'before', bound: before });
-    // The grant moved meanwhile: the page is dropped, and the renderer gets the room again through an events push.
-    if (!out) return { events: [], lo: before, hasOlder: true };
+    const out = this.applyPage(ws, c, page, { grant: r.grantId, rev, kind: 'before', bound: before });
+    if (!out) return dropped;
     const events = out.events.filter((e) => e.seq < before);
+    if (this.isOpen(ws, c)) this.heldByRenderer(this.open, events);
     const floor = Math.max(page.floor, r.floor);
     const lo = events.length ? events[0].seq : before;
     return { events, lo, hasOlder: events.length > 0 && lo > floor };
@@ -496,15 +583,24 @@ class History {
     this.room(ws, c);
     const store = this.store();
     const key = `${ws}\n${c}\n${rootId}`;
-    const fresh = () => ({ key, epoch, low: null, extra: new Map(), floor: false, cacheLo: undefined });
-    if (!this.threadMemory || this.threadMemory.key !== key || this.threadMemory.epoch !== epoch) this.threadMemory = fresh();
+    // rev: the cache revision the memory's pages were loaded under. A reset since then leaves them out.
+    const fresh = () => ({ key, epoch, rev: svc.revision(ws), low: null, extra: new Map(), floor: false, cacheLo: undefined });
+    const m = this.threadMemory;
+    if (!m || m.key !== key || m.epoch !== epoch || m.rev !== svc.revision(ws)) this.threadMemory = fresh();
     let memory = this.threadMemory;
+    // The memory's events as they stand now (scrub), and the root expired once the floor passed what was searched.
+    const settle = () => {
+      this.scrub(ws, c, memory.extra);
+      const r = store.getRoom(ws, c);
+      if (r && memory.low !== null && memory.low < r.floor) memory.floor = true;
+    };
     const findRoot = () => {
       const row = store.eventById(ws, rootId);
       if (row && row.room === c) return wire.toRenderer(row);
       for (const e of memory.extra.values()) if (e.id === rootId) return e;
       return null;
     };
+    settle();
     let root = findRoot();
     try {
       if (this.isOk(ws)) {
@@ -513,8 +609,8 @@ class History {
         svc.guard(epoch);
         const now = store.getRoom(ws, c);
         // The earlier call's pages went on from the cache's lo as it was then; a cache dropped or trimmed since breaks
-        // that chain, and the search starts again from the cache.
-        if (memory.cacheLo !== undefined && (!now || now.lo !== memory.cacheLo)) {
+        // that chain, and the search starts again from the cache. So does a reset of the cache.
+        if (memory.rev !== svc.revision(ws) || (memory.cacheLo !== undefined && (!now || now.lo !== memory.cacheLo))) {
           memory = this.threadMemory = fresh();
         }
         root = findRoot();
@@ -528,7 +624,6 @@ class History {
           if (memory.extra.size > THREAD_EXTRA_MAX) {
             for (const [seq, e] of memory.extra) if (e.id !== rootId && e.root !== rootId) memory.extra.delete(seq);
           }
-          root = findRoot();
         }
       }
     } catch (err) {
@@ -536,6 +631,10 @@ class History {
       // Offline: the thread shows what the cache has, as incomplete.
     }
     svc.guard(epoch);
+    // A reset while the pages were on their way: what they found belongs to the cache as it stood.
+    if (memory.rev !== svc.revision(ws)) memory = this.threadMemory = fresh();
+    settle();
+    root = findRoot();
     memory.cacheLo = store.getRoom(ws, c)?.lo ?? null;
     const replies = new Map();
     for (const e of memory.extra.values()) if (e.root === rootId && e.kind === 'message.posted') replies.set(e.seq, e);
@@ -637,23 +736,33 @@ class History {
     f.inFlight = true;
     f.again = false;
     const epoch = svc.epoch;
+    const rev = svc.revision(ws);
     let ok = false;
     try {
       const answer = wire.checkRead(await svc.call(ws, 'POST', `/conversations/${c}/read`, { seq: r.readLocal }));
       svc.guard(epoch);
       const store = svc.store;
       const changed = store.tx(() => {
+        // A reset (a restore forgets the read positions) since the request went: the next pass brings the server's.
+        if (svc.revision(ws) !== rev) return false;
         const now = store.getRoom(ws, c);
         if (!now) return false;
+        const readLocal = Math.max(now.readLocal, answer.read);
         store.setRoomFields(ws, c, {
           read: Math.max(now.read, answer.read),
           readSent: Math.max(now.readSent, answer.read),
-          readLocal: Math.max(now.readLocal, answer.read)
+          readLocal
         });
-        recount(store, ws, c);
+        // The server answers with the position it holds, which another device may have moved past what this one
+        // reported: read to head leaves nothing unread, and a cache that covers the rest counts it again.
+        if (readLocal > now.readLocal) badgesAt(store, ws, c, readLocal);
+        else recount(store, ws, c);
         return true;
       });
-      if (changed) svc.roomsChanged(ws, [c]);
+      if (changed) {
+        svc.roomsChanged(ws, [c]);
+        svc.hook(() => svc.notifier.onRead(ws, c));
+      }
       ok = true;
     } catch (err) {
       // The next run's end tries again; an ended session drops it.
@@ -772,10 +881,39 @@ class History {
     const o = this.open;
     if (this.threadMemory && this.threadMemory.key.startsWith(`${ws}\n`)) this.threadMemory = null;
     if (!o || o.ws !== ws || !this.isOpen(ws, o.room)) return;
+    o.detached = null;
     const r = this.svc.store && this.svc.store.getRoom(ws, o.room);
     if (!r) return;
     if (this.cacheDropped(ws, o.room, r)) this.showAgain(ws, o.room);
     else this.followUp(ws, o.room);
+  }
+
+  // Messages of the room were removed (removed, removedMore, a floor, a redaction in a page, this device's Remove): the
+  // detached events in memory lose their text or, below the floor, go, and the renderer hears of the ones it shows
+  // that the store's redacted didn't cover. A cache dropped for removedMore takes the thread's memory with it, as it
+  // can't say which of its events went.
+  onRemoved(ws, room, ids) {
+    const store = this.svc.store;
+    if (!store) return;
+    const removed = new Set(Array.isArray(ids) ? ids : []);
+    const r = store.getRoom(ws, room);
+    const lost = new Set();
+    const m = this.threadMemory;
+    if (m && m.key.startsWith(`${ws}\n${room}\n`)) {
+      if (m.cacheLo !== undefined && (!r || (r.lo === null && m.cacheLo !== null))) this.threadMemory = null;
+      else for (const id of this.scrub(ws, room, m.extra, removed)) lost.add(id);
+    }
+    const o = this.open;
+    if (o && o.ws === ws && o.room === room && o.detached) {
+      for (const [id, seq] of [...o.detached]) {
+        if (r && seq < r.floor) o.detached.delete(id);
+        else if (removed.has(id) || store.hasTombstone(ws, id)) {
+          o.detached.delete(id);
+          if (r) lost.add(id);
+        }
+      }
+    }
+    if (lost.size && this.isOpen(ws, room)) this.svc.emitChat({ kind: 'redacted', ws, conversation: room, ids: [...lost] });
   }
 
   // After the transaction that deleted an evicted room.

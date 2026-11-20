@@ -352,3 +352,28 @@ test('mute and drafts persist across a restart', async (t) => {
   assert.equal(await again.api.chatDraft(ws.id, ws.general, null), null);
   assert.equal(again.state().attention, 1);
 });
+
+// Contract 3.9, 3.10: the answer to POST /read is the position the server holds, which another device may have moved
+// to head past what this one reported. The badges go and the alert is taken back without waiting for the feed.
+test('a read answer that reaches head clears the badges and takes the alert back', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, clock, account, svc } = await setup(t, { n: 2 });
+  const hidden = [];
+  svc.on('unnotify', (id) => hidden.push(id));
+  const [first, last] = await postMany(olga, ws.id, ws.general, 2, { prefix: 'later', mentionOf: () => bartMe.id });
+  await syncNow(clock, svc, ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.notices[0].open.seq, last.seq);
+  const reads = watchReads(account);
+  // Another device reads to head; this one reports the first of the two.
+  await server.read(bart, ws.id, ws.general, last.seq);
+  await svc.api.chatRead(ws.id, ws.general, first.seq);
+  await drive(clock, () => svc.store.getRoom(ws.id, ws.general).readSent === last.seq, 'the read answer');
+  assert.deepEqual(reads, [{ room: ws.general, seq: first.seq }]);
+  const room = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(room.readLocal, room.head);
+  assert.equal(room.unread, 0);
+  assert.equal(room.mentions, 0);
+  assert.deepEqual(hidden, [`chat:${ws.id}:${ws.general}`]);
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, ws.general), []);
+});

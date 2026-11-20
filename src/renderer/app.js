@@ -20,6 +20,7 @@ import {
   cleanPreview,
   toast,
   dropToast,
+  dropTaggedToast,
   showingToast,
   runToastAction,
   showMenu,
@@ -3729,6 +3730,9 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'language') await refresh();
   if (type === 'badge') drawBadge(payload);
   if (type === 'toast') toast(payload);
+  // A chat alert while the window has focus, and the alert taken back (main.js showChatNotification).
+  if (type === 'chat-toast' && payload) toast(payload.body, { tag: payload.id });
+  if (type === 'chat-toast-hide') dropTaggedToast(payload);
   // Undo send (main.js): an email waits after Send, Don't quit kept emails waiting, or the server refused one that
   // waited and its editor opens again.
   if (type === 'send-queued' && payload && typeof payload.id === 'string') offerUndoSend(payload);

@@ -624,10 +624,14 @@ class Store {
   }
 
   // Retention's floor: events below it go; lo rises to it, or the range empties when hi is below it. Returns the IDs
-  // of the messages that went, so the notifier can take their alerts back.
+  // of the messages that went, so the notifier can take their alerts back: the cached ones, and those an alert showed
+  // by its notice row's seq, as an alert may show a message the cache never held.
   applyFloor(ws, room, floor) {
     return this.tx(() => {
       const gone = this.all(`SELECT id FROM event WHERE ws = ? AND room = ? AND seq < ? AND kind = 'message.posted'`, ws, room, floor).map((r) => r.id);
+      for (const n of this.all('SELECT message FROM notice WHERE ws = ? AND room = ? AND seq < ?', ws, room, floor)) {
+        if (!gone.includes(n.message)) gone.push(n.message);
+      }
       this.run('DELETE FROM event WHERE ws = ? AND room = ? AND seq < ?', ws, room, floor);
       this.run(
         `UPDATE room SET lo = CASE WHEN hi IS NULL OR hi < ? THEN NULL ELSE MAX(lo, ?) END,

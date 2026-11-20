@@ -452,10 +452,12 @@ function openChatNotice(open) {
   if (payload.ws && payload.conversation) send('chat', payload);
 }
 
+// A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
+// down too when it still shows.
 function showChatNotification({ id, title, body, open } = {}) {
   const key = String(id || '').slice(0, 200);
   if (win && !win.isDestroyed() && win.isFocused()) {
-    send('toast', String(body || '').slice(0, 200));
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
     return;
   }
   if (screenRecording()) {
@@ -485,6 +487,7 @@ function showChatNotification({ id, title, body, open } = {}) {
 function closeChatNotification(id) {
   const key = String(id || '').slice(0, 200);
   if (process.env.SEM_HIDDEN) (global.__semClosedNotices ||= []).push(key);
+  send('chat-toast-hide', key);
   const n = chatNotices.get(key);
   if (!n) return;
   chatNotices.delete(key);

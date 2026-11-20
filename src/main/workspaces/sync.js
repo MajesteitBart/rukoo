@@ -356,7 +356,9 @@ async function afterPage(svc, ws, result) {
   }
   if (!result.partial) await hook(svc, () => svc.history.afterPage(ws, result));
   for (const [room, ids] of Object.entries(result.removed)) {
-    if (ids.length) await hook(svc, () => svc.notifier.onRemoved(ws, room, ids));
+    if (!ids.length) continue;
+    await hook(svc, () => svc.history.onRemoved(ws, room, ids));
+    await hook(svc, () => svc.notifier.onRemoved(ws, room, ids));
   }
   for (const room of result.evicted) {
     await hook(svc, () => svc.notifier.onEvicted(ws, room));

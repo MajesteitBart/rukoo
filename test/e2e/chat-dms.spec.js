@@ -168,6 +168,29 @@ test("a notification for Olga's direct message opens the conversation at that me
   await expect(target.locator('.ch-text')).toHaveText('Can you call me?');
 });
 
+// Contract 3.4, 3.10: in the focused window an alert is a toast, and taking the alert back takes the toast down too.
+test('a chat toast in the focused window goes when its alert is taken back', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  await ready(bart);
+  await connected(win);
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].isFocused = () => true;
+  });
+  await expect(title()).toHaveText('general', { timeout: 15000 });
+  await expect(dmRow('Olga Owner')).toBeVisible({ timeout: 15000 });
+  const posted = await server.post(olga, ws.id, dm.conversation, 'Can you call me?');
+  await expect(toast()).toHaveText('Olga Owner: Can you call me?', { timeout: 20000 });
+  await expect(toast()).toHaveClass(/show/);
+  expect(await notices(app)).toEqual([]);
+  // The pointer on the toast keeps it up, so only taking the alert back can take it down: Bart reads the
+  // conversation on another device. (The composer's row lies over the toast's box, so the pointer is dispatched.)
+  await toast().dispatchEvent('mouseenter');
+  await server.read(bart, ws.id, dm.conversation, posted.seq);
+  await app.evaluate((_, w) => global.__semChat.sync(w), ws.id);
+  await expect(toast()).not.toHaveClass(/show/, { timeout: 15000 });
+});
+
 test("a notification clicked while history can't load opens the conversation at its newest cached message, unmarked", async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const dm = await server.seedDm(olga, ws.id, [bartMe.id]);

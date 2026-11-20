@@ -11,9 +11,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startRealServer, realServerAvailable, skipWithoutServer, mention } = require('./fixtures/real-server');
-const { attach, chatService, settled, until, sleep } = require('./fixtures/chat-app');
+const { attach, chatService, settled, until, sleep, watchCalls } = require('./fixtures/chat-app');
 const { chatApi } = require('../src/main/workspaces/ipc');
 const { alertText } = require('../src/main/workspaces/notify');
+const sync = require('../src/main/workspaces/sync');
+const wire = require('../src/main/workspaces/wire');
 
 let server;
 test.before(async () => {
@@ -448,3 +450,89 @@ for (const [what, startPass] of [
     assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
   });
 }
+
+// Holds the first answer of a request that match(url) picks, which the server already gave, until release().
+function holdFirst(account, match) {
+  const held = { waiting: false };
+  const gate = new Promise((resolve) => (held.release = resolve));
+  let armed = true;
+  watchCalls(account, async (method, url, real) => {
+    if (!armed || !match(url)) return undefined;
+    armed = false;
+    const answer = await real();
+    held.waiting = true;
+    await gate;
+    return answer;
+  });
+  return held;
+}
+
+// Contract 3.6, 3.10: the page an alert loads belongs to the cache revision it was asked under. Start over while it
+// was on its way drops it: it may hold a message removed meanwhile, which the pass from the start can't list.
+test('an alert page that comes after Start over shows nothing, and the pass after it alerts nothing', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, account, hidden } = await scene(t);
+  const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+  await svc.sync(ws.id);
+  const removed = await server.post(olga, ws.id, dm, 'Removed while the alert loaded');
+  const held = holdFirst(account, (url) => url.includes(`/conversations/${dm}/events?`));
+  const run = svc.sync(ws.id);
+  await until(() => held.waiting, 10000, 'the held alert page');
+  await server.redact(olga, ws.id, dm, removed.messageId);
+  await chatApi(() => svc).chatReload(ws.id);
+  held.release();
+  await run;
+  await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, 'the pass after Start over');
+  await svc.sync(ws.id);
+  assert.deepEqual(svc.notices, []);
+  assert.ok(!svc.notifier.shown.has(roomKey(ws.id, dm)));
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
+  assert.deepEqual(hidden, []);
+});
+
+// Contract 3.10: an alert shows messages after where the person read. A read while the page was on its way counts.
+test('an alert page leaves out the messages read while it was on its way', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, account } = await scene(t);
+  const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+  await svc.sync(ws.id);
+  const read = await server.post(olga, ws.id, dm, 'Read meanwhile');
+  const unread = await server.post(olga, ws.id, dm, 'Still unread');
+  const held = holdFirst(account, (url) => url.includes(`/conversations/${dm}/events?`));
+  const run = svc.sync(ws.id);
+  await until(() => held.waiting, 10000, 'the held alert page');
+  await chatApi(() => svc).chatRead(ws.id, dm, read.seq);
+  held.release();
+  await run;
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.notices[0].body, 'Olga: Still unread');
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), [{ message: unread.messageId, seq: unread.seq }]);
+});
+
+// Contract 3.10: retention takes back an alert whose message aged out, by the seq its notice row recorded, also when
+// the cache never held that message (the alert loaded it).
+test('a floor past a message an alert showed takes the alert back, also when the cache never held it', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, hidden } = await scene(t);
+  const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+  await svc.sync(ws.id);
+  const gone = await server.post(olga, ws.id, dm, 'Ages out');
+  const kept = await server.post(olga, ws.id, dm, 'Stays');
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.at(-1).body, 'Olga: Ages out\nOlga: Stays');
+  assert.equal(svc.store.eventById(ws.id, gone.messageId), null, 'the alert loaded the message; the cache never held it');
+  // A feed page with the floor at the kept message: one field of a real answer, as retention can't be made on demand.
+  const page = wire.checkChanges(await svc.call(ws.id, 'GET', '/changes?limit=64'));
+  const row = page.changes.find((c) => c.conversation === dm);
+  const result = sync.applyPage(svc, ws.id, {
+    ...page,
+    changes: [{ ...row, floor: kept.seq }],
+    evictions: [],
+    inlineEvents: [],
+    next: svc.store.getWs(ws.id).cursor
+  });
+  await sync.afterPage(svc, ws.id, result);
+  assert.equal(svc.store.getRoom(ws.id, dm).floor, kept.seq);
+  assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
+});

@@ -279,6 +279,7 @@ class Outbox {
     });
     svc.emitChat({ kind: 'redacted', ws, conversation: room, ids: [answer.messageId] });
     if (changed) svc.roomsChanged(ws, [room]);
+    svc.hook(() => svc.history.onRemoved(ws, room, [answer.messageId]));
     svc.hook(() => svc.notifier.onRemoved(ws, room, [answer.messageId]));
     svc.sync(ws, 'write');
     return true;
