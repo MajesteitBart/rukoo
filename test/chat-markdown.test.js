@@ -497,10 +497,15 @@ test('time grows with the length, also for long runs that never close', async ()
   };
   for (const [name, s] of Object.entries(cases)) {
     parse(s, []);
-    const started = process.hrtime.bigint();
-    parse(s, []);
-    plainText(s);
-    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    // The best of three runs, so one garbage collection or a busy CI runner doesn't count as slow parsing. A step that
+    // compares every marker with every other is slow on every run.
+    let ms = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const started = process.hrtime.bigint();
+      parse(s, []);
+      plainText(s);
+      ms = Math.min(ms, Number(process.hrtime.bigint() - started) / 1e6);
+    }
     assert.ok(ms < 500, `${name}: ${Math.round(ms)} ms for ${s.length} characters`);
   }
   // The runs that never close are text, all of them.
