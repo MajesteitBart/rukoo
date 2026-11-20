@@ -251,6 +251,9 @@ export function init(context) {
     setBlocks: (blocks) => {
       if (Array.isArray(blocks)) CH.blocks = new Set(blocks.map((b) => b.member));
       redrawSide();
+      // A closed DM's bar says who you blocked and what you can do about it.
+      const open = CH.openId && CH.rooms.get(CH.openId);
+      if (view && open) view.roomChanged(open);
     }
   });
   // A pending join waits while Settings covers the window (the sign-up that made it is still on screen there).
@@ -525,7 +528,14 @@ function roomRow(room) {
   else if (closed) label = t('chat.sidebar.rowClosed', { name });
   else if (b.pill && room.kind === 'channel') label = t('chat.sidebar.rowMentions', { name, count: b.pill });
   else if (b.pill || b.count) label = t('chat.sidebar.rowUnread', { name, count: b.pill || b.count });
-  const badge = b.pill ? `<span class="ch-badge" aria-hidden="true">${fmt(b.pill)}</span>` : b.count ? `<span class="count strong" aria-hidden="true">${fmt(b.count)}</span>` : '';
+  // A closed DM says so in the trailing slot; dimming alone reads like a muted row.
+  const badge = closed
+    ? `<span class="ch-tag ch-row-tag" aria-hidden="true">${esc(t('chat.sidebar.closedTag'))}</span>`
+    : b.pill
+      ? `<span class="ch-badge" aria-hidden="true">${fmt(b.pill)}</span>`
+      : b.count
+        ? `<span class="count strong" aria-hidden="true">${fmt(b.count)}</span>`
+        : '';
   let icon;
   if (room.kind === 'channel') {
     const glyph = room.archived ? icons.archive : room.visibility === 'private' ? icons.lock : icons.hash;
@@ -811,6 +821,8 @@ function ensureView() {
     workspaceStatus: () => summary()?.status || null,
     full: () => !isGuest(),
     startDm: (others) => startDm(others),
+    // A closed DM's Unblock, when you blocked someone in it; the bar then offers Start a new conversation.
+    unblock: (member) => D.unblockMember(member),
     leaveDm: (room) => leaveDm(room),
     // Block {author} in a message's menu, once U5's block dialog is there; full members only (contract 3.12).
     canBlock: () => typeof ACTIONS.block === 'function' && !isGuest(),

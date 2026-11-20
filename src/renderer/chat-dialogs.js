@@ -1,7 +1,7 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, showMenu, closeMenu, menuOpen, dialog, confirmDialog, KEEP_OPEN, segmented, setSegmented } from './ui.js';
-import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM } from './chat-model.js';
+import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM, dmPicker, addPeopleEmpty } from './chat-model.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -775,8 +775,13 @@ export async function channelMembers(room, { add = false } = {}) {
   const chosen = new Set();
   const drawPicker = () => {
     const ul = body.querySelector('[data-pick]');
-    const q = fold(body.querySelector('[name="pick-search"]').value.trim());
-    const rows = candidates().filter((m) => !q || fold(displayName(m, t)).includes(q));
+    const query = body.querySelector('[name="pick-search"]').value.trim();
+    const q = fold(query);
+    const all = candidates();
+    const rows = all.filter((m) => !q || fold(displayName(m, t)).includes(q));
+    // Nobody to add: say whether the workspace has nobody else or everyone is in already, with Invite people.
+    const empty = addPeopleEmpty({ rows: rows.length, candidates: all.length, others: activeMembers().filter((m) => m.id !== K.me()).length, query });
+    const invite = isAdmin() ? `<button type="button" class="btn secondary sm" data-invite>${icons.userPlus}<span>${esc(t('chat.workspace.invite'))}</span></button>` : '';
     ul.innerHTML = rows.length
       ? rows
           .map((m) => {
@@ -790,7 +795,11 @@ export async function channelMembers(room, { add = false } = {}) {
             }</label></li>`;
           })
           .join('')
-      : `<li class="ch-browse-none">${esc(t('chat.new.none'))}</li>`;
+      : empty === 'none'
+        ? `<li class="ch-browse-none">${esc(t('chat.new.none'))}</li>`
+        : `<li class="ch-browse-none ch-new-none" data-empty="${empty}"><span>${esc(
+            empty === 'everyone' ? t('chat.channel.addEveryone', { workspace: wsName(), name: room.name || '' }) : t('chat.new.nobody', { workspace: wsName() })
+          )}</span>${invite}</li>`;
     body.querySelector('[data-add-go]').disabled = !chosen.size;
   };
   const addChosen = async () => {
@@ -924,6 +933,10 @@ export async function channelMembers(room, { add = false } = {}) {
           return;
         }
         if (e.target.closest('[data-add-go]')) addChosen();
+        if (e.target.closest('[data-invite]')) {
+          done(null);
+          invitePeople();
+        }
       });
       picking = Boolean(add && manager);
       load().then(() => {
@@ -1676,10 +1689,14 @@ export async function newMessage(prefill = []) {
   let body = null;
   let scrim = null;
 
-  const shown = () => {
-    const q = fold(body.querySelector('[name="to"]').value.trim());
-    return people().filter((m) => !picked.includes(m.id) && (!q || fold(displayName(m, t)).includes(q)));
+  // Everyone in the directory, so the list can say why a blocked person or a guest can't be picked (contract 3.12).
+  const view = () => {
+    const query = body.querySelector('[name="to"]').value.trim();
+    const q = fold(query);
+    const everyone = activeMembers().sort((a, b) => collator().compare(displayName(a, t), displayName(b, t)));
+    return dmPicker(everyone, { me: mine, blocks: K.CH.blocks, picked, query, matches: (m) => fold(displayName(m, t)).includes(q), membersMore: K.CH.view?.membersMore });
   };
+  const shown = () => view().pick;
   const drawChips = () => {
     body.querySelector('[data-chips]').innerHTML = picked
       .map((id) => {
@@ -1691,21 +1708,43 @@ export async function newMessage(prefill = []) {
       .join('');
   };
   const drawList = () => {
-    const rows = shown();
+    const v = view();
+    const rows = v.pick;
     const full = picked.length >= PICK_MAX;
     if (active >= rows.length) active = Math.max(0, rows.length - 1);
     const ul = body.querySelector('[data-list]');
-    ul.innerHTML = rows.length
-      ? rows
-          .map(
-            (m, i) =>
-              `<li role="option" id="ch-new-opt-${i}" class="ch-new-row${i === active && !full ? ' is-active' : ''}" data-pick="${esc(m.id)}" aria-selected="${i === active && !full}"${full ? ' aria-disabled="true"' : ''}>${K.memberAvatar(
-                m.id,
-                'ch-av-24'
-              )}<span class="ch-person-name">${esc(displayName(m, t))}</span></li>`
-          )
-          .join('')
-      : `<li class="ch-browse-none" role="presentation">${esc(t('chat.new.none'))}</li>`;
+    ul.innerHTML = rows
+      .map(
+        (m, i) =>
+          `<li role="option" id="ch-new-opt-${i}" class="ch-new-row${i === active && !full ? ' is-active' : ''}" data-pick="${esc(m.id)}" aria-selected="${i === active && !full}"${full ? ' aria-disabled="true"' : ''}>${K.memberAvatar(
+            m.id,
+            'ch-av-24'
+          )}<span class="ch-person-name">${esc(displayName(m, t))}</span></li>`
+      )
+      .join('');
+    ul.hidden = !rows.length;
+    // Who can't be picked, and why: off rows outside the listbox, so Unblock is a plain button.
+    const off = body.querySelector('[data-off]');
+    off.innerHTML = [
+      ...v.blocked.map(
+        (m) =>
+          `<li class="ch-new-row is-off" data-off-row="blocked">${K.memberAvatar(m.id, 'ch-av-24')}<span class="ch-person-name">${esc(t('chat.new.blockedRow', { name: displayName(m, t) }))}</span><button type="button" class="link-btn" data-unblock="${esc(
+            m.id
+          )}">${esc(t('chat.block.unblock'))}</button></li>`
+      ),
+      ...v.guests.map(
+        (m) =>
+          `<li class="ch-new-row is-off" data-off-row="guest">${K.memberAvatar(m.id, 'ch-av-24')}<span class="ch-new-off-text"><span class="ch-person-name">${esc(displayName(m, t))}</span><span class="field-help">${esc(
+            t('chat.new.guestRow')
+          )}</span></span></li>`
+      )
+    ].join('');
+    off.hidden = !off.children.length;
+    const none = body.querySelector('[data-none]');
+    none.hidden = !v.empty;
+    if (v.empty === 'nobody') {
+      none.innerHTML = `<span>${esc(t('chat.new.nobody', { workspace: wsName() }))}</span>${isAdmin() ? `<button type="button" class="btn secondary sm" data-invite>${icons.userPlus}<span>${esc(t('chat.workspace.invite'))}</span></button>` : ''}`;
+    } else if (v.empty === 'none') none.textContent = t('chat.new.none');
     ul.classList.toggle('is-full', full);
     body.querySelector('[data-limit]').hidden = !full;
     const input = body.querySelector('[name="to"]');
@@ -1790,6 +1829,8 @@ export async function newMessage(prefill = []) {
             )}"/>
           </div>
           <ul class="ch-new-list" id="ch-new-list" role="listbox" aria-labelledby="ch-new-to" data-list></ul>
+          <ul class="ch-new-list ch-new-off" data-off hidden></ul>
+          <div class="ch-browse-none ch-new-none" role="status" data-none hidden></div>
           <p class="field-help ch-warn" data-limit hidden>${esc(t('chat.new.limit'))}</p>
           <p class="note ch-host">${esc(t('chat.new.hostNote', { host }))}</p>
           <p class="error" data-error="" hidden></p>
@@ -1826,6 +1867,23 @@ export async function newMessage(prefill = []) {
         if (x) return unpick(x.dataset.unpick);
         const row = e.target.closest('[data-pick]');
         if (row && row.getAttribute('aria-disabled') !== 'true') return pick(row.dataset.pick);
+        const un = e.target.closest('[data-unblock]');
+        if (un) {
+          un.disabled = true;
+          return unblockMember(un.dataset.unblock).then((ok) => {
+            if (!body.isConnected) return;
+            if (!ok) un.disabled = false;
+            else {
+              clearErrors(body);
+              drawList();
+              input.focus();
+            }
+          });
+        }
+        if (e.target.closest('[data-invite]')) {
+          done(null);
+          return invitePeople();
+        }
         if (e.target.closest('[data-to]')) input.focus();
       });
       drawChips();

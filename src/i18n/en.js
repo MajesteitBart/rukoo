@@ -10231,6 +10231,10 @@
     "message": "{name}, closed",
     "description": "Chat sidebar: accessible name of a closed direct message, which is dimmed and sorted last. {name}: the people in the conversation. src/renderer/chat.js (sidebarHtml)"
   },
+  "chat.sidebar.closedTag": {
+    "message": "Closed",
+    "description": "Chat sidebar: tag at the end of a closed direct message row, where an unread count would be. Android chat_sidebar_closed_tag. src/renderer/chat.js (roomRow)"
+  },
   "chat.sidebar.noChannels": {
     "message": "No channels yet",
     "description": "Chat sidebar: line under Channels when the user is in no channel. src/renderer/chat.js (sidebarHtml)"
@@ -10795,6 +10799,10 @@
     "message": "This conversation is closed. You can still read it.",
     "description": "Conversation pane: bar instead of the composer in a direct message closed for another reason, such as a block. src/renderer/chat-view.js"
   },
+  "chat.input.closedYouBlocked": {
+    "message": "You blocked {name}. You can still read this conversation.",
+    "description": "Conversation pane: bar instead of the composer in a closed direct message with someone the user blocked; its button is Unblock. {name}: that person. Android chat_input_closed_you_blocked. src/renderer/chat-view.js"
+  },
   "chat.input.newConversation": {
     "message": "Start a new conversation",
     "description": "Conversation pane: button on the closed-conversation bar that starts a new direct message with the same people. src/renderer/chat-view.js"
@@ -11179,6 +11187,10 @@
     "message": "Only an owner or admin can add a guest.",
     "description": "Channel members dialog: note on a guest the user can't add, and the error when the server asks for an owner or admin. src/renderer/chat-dialogs.js, src/renderer/chat.js (chatErrorText)"
   },
+  "chat.channel.addEveryone": {
+    "message": "Everyone in {workspace} is already in #{name}",
+    "description": "Add people picker of a channel: line when every other workspace member is in the channel already; owners and admins get an Invite people button beside it. {workspace}: the workspace name. {name}: the channel name, after #. Android chat_channel_add_everyone. src/renderer/chat-dialogs.js"
+  },
   "chat.channel.addFailed": {
     "message": "Couldn't add {names}.",
     "description": "Channel members dialog: error after some people couldn't be added. {names}: those people. src/renderer/chat-dialogs.js"
@@ -11290,6 +11302,18 @@
   "chat.new.none": {
     "message": "Nobody found",
     "description": "New message dialog: line when the search finds nobody. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.blockedRow": {
+    "message": "You blocked {name}",
+    "description": "New message dialog: a person the user blocked, shown switched off with an Unblock button. {name}: that person. Android chat_new_blocked_row. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.guestRow": {
+    "message": "Guests can't get direct messages.",
+    "description": "New message dialog: line under a guest's name, shown switched off. Android chat_new_guest_row. src/renderer/chat-dialogs.js"
+  },
+  "chat.new.nobody": {
+    "message": "Nobody else is in {workspace} yet",
+    "description": "New message and Add people dialogs: line when the workspace has nobody else; owners and admins get an Invite people button beside it. {workspace}: the workspace name. Android chat_new_nobody. src/renderer/chat-dialogs.js"
   },
   "chat.new.start": {
     "message": "Start conversation",

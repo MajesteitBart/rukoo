@@ -396,3 +396,58 @@ export function handOverReady(channels, picks) {
   const pick = (id) => (picks instanceof Map ? picks.get(id) : picks?.[id]);
   return channels.length > 0 && channels.every((c) => Array.isArray(c.people) && c.people.includes(pick(c.id)));
 }
+
+// ---------- closed conversations and the people pickers (contract 3.12) ----------
+
+// What a closed DM's bar says and offers, or null when the room isn't a closed DM: { key, blocked, startNew }. key is
+// the catalog key after chat.input.: closedYouBlocked when you blocked someone in it (blocked: the first of them by
+// name), else the reason's own line. startNew: a full member may start a new conversation with the same people only
+// when every other one is an active full member nobody here blocked, because the server refuses anything else. A
+// block from the other side keeps the neutral line, since the client doesn't know about blocks it didn't make.
+export function closedBar(room, { me = null, members, blocks, full = true, collator = new Intl.Collator(undefined, { sensitivity: 'base' }), t } = {}) {
+  if (!room || room.kind !== 'dm' || !room.closedReason) return null;
+  const map = asMap(members);
+  const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
+  const others = [...new Set(room.participants || [])].filter((id) => id !== me);
+  const blocked = others.filter((id) => mine.has(id)).sort((a, b) => collator.compare(displayName(map.get(a), t), displayName(map.get(b), t)))[0] || null;
+  const key = blocked ? 'closedYouBlocked' : room.closedReason === 'left' ? 'closedLeft' : room.closedReason === 'ineligible' ? 'closedIneligible' : 'closedBlocked';
+  const startNew =
+    Boolean(full) &&
+    others.length > 0 &&
+    others.every((id) => {
+      const m = map.get(id);
+      return m && m.state === 'active' && m.role !== 'guest' && !mine.has(id);
+    });
+  return { key, blocked, startNew };
+}
+
+// New message's list (desktop-ui 6.11): { pick, blocked, guests, empty }. people: the directory in the order to show.
+// pick: active full members you can message that fit the search and aren't picked yet. blocked: people you blocked,
+// shown switched off with Unblock. guests: shown switched off with the reason, while searching or when nobody else
+// would show. empty: 'none' for a search that finds nobody, 'nobody' when nobody else is in the workspace (as far as
+// a complete directory says), else null. matches(member) says whether a member fits the query.
+export function dmPicker(people, { me = null, blocks, picked = [], query = '', matches = () => true, membersMore = false } = {}) {
+  const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
+  const others = (people || []).filter((m) => m && m.id !== me && m.state === 'active');
+  const searching = Boolean(String(query || '').trim());
+  const fits = (m) => !searching || matches(m);
+  const full = others.filter((m) => m.role !== 'guest');
+  const pick = full.filter((m) => !mine.has(m.id) && !picked.includes(m.id) && fits(m));
+  const blocked = full.filter((m) => mine.has(m.id) && fits(m));
+  const showGuests = searching || !full.length;
+  const guests = showGuests ? others.filter((m) => m.role === 'guest' && fits(m)) : [];
+  let empty = null;
+  if (!pick.length && !blocked.length && !guests.length) {
+    if (searching) empty = 'none';
+    else if (!others.length) empty = membersMore ? 'none' : 'nobody';
+  }
+  return { pick, blocked, guests, empty };
+}
+
+// What Add people says when its list is empty, or null while it has rows: 'none' after a search, 'nobody' when the
+// workspace has nobody else, 'everyone' when everyone else is in the channel already.
+export function addPeopleEmpty({ rows = 0, candidates = 0, others = 0, query = '' } = {}) {
+  if (rows > 0) return null;
+  if (String(query || '').trim() && candidates > 0) return 'none';
+  return others > 0 ? 'everyone' : 'nobody';
+}

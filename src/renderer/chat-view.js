@@ -2,7 +2,7 @@ import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog } from './ui.js';
 import { h } from './agent/bui.js';
-import { timeline, displayName, memberTag, canRemove } from './chat-model.js';
+import { timeline, displayName, memberTag, canRemove, closedBar } from './chat-model.js';
 import { segments, toParts, appendToDraft } from './chat-text.js';
 import { mountChatInput } from './chat-input.js';
 
@@ -544,15 +544,18 @@ export function mountView(section, H) {
     if (!room) return null;
     if (H.workspaceStatus && H.workspaceStatus() === 'quarantined') return { icon: 'warning', text: t('chat.input.paused', { workspace: H.workspaceName() }) };
     if (room.kind === 'channel' && room.archived) return { icon: 'archive', text: t('chat.input.archived', { name: room.name || '' }) };
-    if (room.kind === 'dm' && room.closedReason) {
-      const key = room.closedReason === 'left' ? 'closedLeft' : room.closedReason === 'ineligible' ? 'closedIneligible' : 'closedBlocked';
+    // You blocked someone in it: say so and offer Unblock. Start a new conversation only where the server takes it.
+    const closed = closedBar(room, { me: H.me(), members: members(), blocks: H.blocks(), full: H.full ? H.full() : false, collator: new Intl.Collator(getLocale(), { sensitivity: 'base' }), t });
+    if (closed) {
       const actions = [];
       if (main) {
         const others = (room.participants || []).filter((id) => id !== H.me());
-        if (H.full && H.full() && others.length) actions.push({ id: 'new-conversation', label: t('chat.input.newConversation'), run: () => H.startDm(others) });
+        if (closed.blocked && H.unblock) actions.push({ id: 'unblock', label: t('chat.block.unblock'), run: () => H.unblock(closed.blocked) });
+        else if (closed.startNew) actions.push({ id: 'new-conversation', label: t('chat.input.newConversation'), run: () => H.startDm(others) });
         actions.push({ id: 'remove-from-list', label: t('chat.input.removeFromList'), run: () => H.leaveDm(room) });
       }
-      return { icon: 'lock', text: t(`chat.input.${key}`), actions };
+      const name = closed.blocked ? displayName(members().get(closed.blocked), t) : '';
+      return { icon: 'lock', text: t(`chat.input.${closed.key}`, { name }), actions };
     }
     return null;
   }

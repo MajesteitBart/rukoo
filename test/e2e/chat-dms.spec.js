@@ -249,10 +249,12 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   );
   await dialog.locator('.buttons button').last().click();
   await expect(toast()).toHaveText('Blocked Olga Owner', { timeout: 15000 });
-  await expect(bar().locator('.ch-bar-text')).toHaveText('This conversation is closed. You can still read it.', { timeout: 15000 });
-  await expect(bar().locator('[data-ch-bar]')).toHaveText(['Start a new conversation', 'Remove from list']);
+  // Bart blocked Olga himself: the bar says so and offers Unblock, not a new conversation the server would refuse.
+  await expect(bar().locator('.ch-bar-text')).toHaveText('You blocked Olga Owner. You can still read this conversation.', { timeout: 15000 });
+  await expect(bar().locator('[data-ch-bar]')).toHaveText(['Unblock', 'Remove from list']);
   await expect(pane().locator('.ch-main .ch-log .ch-text', { hasText: 'Hi Bart' })).toBeVisible();
   await expect(roomRow(win, 'Olga Owner')).toHaveClass(/is-closed/);
+  await expect(roomRow(win, 'Olga Owner').locator('.ch-row-tag')).toHaveText('Closed');
   expect((await serverGet(server, bart, ws.id, '/blocks')).blocks.map((b) => b.member)).toEqual([ws.me.id]);
   expect((await serverRoom(server, olga, ws.id, dm.conversation)).closedReason).toBe('closed');
 
@@ -265,7 +267,9 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   await expect(dialog.locator('.ch-set', { hasText: 'Blocked people' })).toContainText("You haven't blocked anyone.", { timeout: 15000 });
   expect((await serverGet(server, bart, ws.id, '/blocks')).blocks).toEqual([]);
   await dialog.locator('.buttons button').last().click();
+  // With the block gone the bar is the neutral one again, and Olga can be asked for a new conversation.
   await expect(bar().locator('.ch-bar-text')).toHaveText('This conversation is closed. You can still read it.');
+  await expect(bar().locator('[data-ch-bar]')).toHaveText(['Start a new conversation', 'Remove from list']);
 
   // Remove from list asks with the same name and says it can't be read afterwards; Remove takes it off the list.
   await bar().locator('[data-ch-bar]', { hasText: 'Remove from list' }).click();
@@ -274,6 +278,106 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   await expect(dialog.locator('.buttons button')).toHaveText(['Cancel', 'Remove']);
   await dialog.locator('.buttons button').last().click();
   await expect(roomRow(win, 'Olga Owner')).toHaveCount(0, { timeout: 15000 });
+});
+
+test("a conversation closed by Bart's own block offers Unblock on its bar, and then a new conversation", async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  await server.post(olga, ws.id, dm.conversation, 'Hi Bart');
+  await server.block(bart, ws.id, ws.me.id);
+  await ready(bart);
+  await roomRow(win, 'Olga Owner').click();
+  await expect(bar().locator('.ch-bar-text')).toHaveText('You blocked Olga Owner. You can still read this conversation.', { timeout: 15000 });
+  await bar().locator('[data-ch-bar="unblock"]').click();
+  await expect(toast()).toHaveText('Unblocked Olga Owner. Start a new conversation to talk again.', { timeout: 15000 });
+  await expect(bar().locator('.ch-bar-text')).toHaveText('This conversation is closed. You can still read it.');
+  await expect(bar().locator('[data-ch-bar]')).toHaveText(['Start a new conversation', 'Remove from list']);
+  expect((await serverGet(server, bart, ws.id, '/blocks')).blocks).toEqual([]);
+  // The new one opens; the old one stays in the list, marked Closed.
+  await bar().locator('[data-ch-bar="new-conversation"]').click();
+  await expect(pane().locator('.ch-main .ch-bar')).toBeHidden({ timeout: 15000 });
+  await expect(dmRow('Olga Owner')).toHaveCount(2, { timeout: 15000 });
+  await expect(win.locator('.sidebar .ch-row.is-closed .ch-row-tag')).toHaveText(['Closed']);
+  await expect(win.locator('.sidebar .ch-row[aria-current="page"] .ch-row-tag')).toHaveCount(0);
+});
+
+test('a conversation closed when someone became a guest offers no new conversation', async () => {
+  const { olga, bart, ws, sanneMe } = await threePeople();
+  const dm = await server.seedDm(bart, ws.id, [sanneMe.id]);
+  await server.post(bart, ws.id, dm.conversation, 'Hi Sanne');
+  const made = await server.call('PATCH', `/v1/workspaces/${ws.id}/members/${sanneMe.id}`, { token: olga.token, body: { role: 'guest' } });
+  expect(made.status).toBe(200);
+  expect((await serverRoom(server, bart, ws.id, dm.conversation)).closedReason).toBe('ineligible');
+  await ready(bart);
+  await dmRow('Sanne').click();
+  await expect(bar().locator('.ch-bar-text')).toContainText('guest', { timeout: 15000 });
+  // The server refuses a DM with a guest, so the bar only offers Remove from list.
+  await expect(bar().locator('[data-ch-bar]')).toHaveText(['Remove from list']);
+});
+
+test('New message shows the people Bart blocked with Unblock and a guest with why, and Nobody found only for a search', async () => {
+  const { bart, ws, sanneMe } = await threePeople();
+  const gus = await server.seedAccount();
+  await server.seedMember(ws, gus, 'Gus Guest', { role: 'guest', channels: [ws.general] });
+  await server.block(bart, ws.id, sanneMe.id);
+  await ready(bart);
+  await win.locator('.sidebar [data-ch-side="new-message"]').click();
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('New message');
+  await expect(dialog.locator('[data-list] .ch-new-row .ch-person-name')).toHaveText(['Olga Owner']);
+  const blocked = dialog.locator('[data-off-row="blocked"]');
+  await expect(blocked.locator('.ch-person-name')).toHaveText(['You blocked Sanne']);
+  await expect(blocked.locator('[data-unblock]')).toHaveText('Unblock');
+  // The guest shows once searched for, switched off, with the reason.
+  await expect(dialog.locator('[data-off-row="guest"]')).toHaveCount(0);
+  await dialog.locator('[name="to"]').fill('gus');
+  await expect(dialog.locator('[data-list]')).toBeHidden();
+  await expect(dialog.locator('[data-off-row="guest"]')).toHaveText(/Gus Guest\s*Guests can't get direct messages\./);
+  await expect(dialog.locator('[data-none]')).toBeHidden();
+  await win.keyboard.press('Enter');
+  await expect(dialog.locator('.ch-to-chip')).toHaveCount(0);
+  await dialog.locator('[name="to"]').fill('nobody like this');
+  await expect(dialog.locator('[data-none]')).toHaveText('Nobody found');
+  // Unblock right here: Sanne can be picked again.
+  await dialog.locator('[name="to"]').fill('');
+  await blocked.locator('[data-unblock]').click();
+  await expect(toast()).toHaveText('Unblocked Sanne. Start a new conversation to talk again.', { timeout: 15000 });
+  await expect(dialog.locator('[data-list] .ch-new-row .ch-person-name')).toHaveText(['Olga Owner', 'Sanne']);
+  await expect(dialog.locator('[data-off-row]')).toHaveCount(0);
+  expect((await serverGet(server, bart, ws.id, '/blocks')).blocks).toEqual([]);
+});
+
+test('alone in a workspace, New message and Add people say nobody else is in it and offer Invite people', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Solo', displayName: 'Bart' });
+  await ready(bart);
+  await win.locator('.sidebar [data-ch-side="new-message"]').click();
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('[data-none]')).toContainText('Nobody else is in Solo yet');
+  await expect(dialog.locator('[data-none] [data-invite]')).toHaveText('Invite people');
+  await dialog.locator('[data-none] [data-invite]').click();
+  await expect(dialog.locator('h2')).toHaveText('Invite people to Solo', { timeout: 15000 });
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // Add people to general: nobody else, then, once Olga joined, everyone is in it already.
+  await roomRow(win, 'general').click();
+  await roomMenu(win, 'Add people');
+  await expect(dialog.locator('[data-empty="nobody"]')).toContainText('Nobody else is in Solo yet', { timeout: 15000 });
+  await expect(dialog.locator('[data-empty="nobody"] [data-invite]')).toHaveText('Invite people');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  const olga = await server.seedAccount();
+  await server.seedMember(ws, olga, 'Olga');
+  // The directory learns about Olga from the feed; Add people asks again each time it opens.
+  await expect(async () => {
+    await roomMenu(win, 'Add people');
+    try {
+      await expect(dialog.locator('[data-empty="everyone"]')).toContainText('Everyone in Solo is already in #general', { timeout: 2000 });
+    } finally {
+      await dialog.locator('.buttons button').last().click();
+    }
+  }).toPass({ timeout: 20000 });
 });
 
 test('leaving a group conversation closes it for Olga', async () => {

@@ -463,3 +463,75 @@ test('leaving: the only owner, the channels that may need a successor, and who c
   assert.equal(handOverReady([], {}), false);
   assert.equal(SUCCESSOR_SEARCH_FROM, 6);
 });
+
+test("a closed DM's bar names the person you blocked and offers a new conversation only where the server takes one", async () => {
+  const { closedBar } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const collator = new Intl.Collator('en', { sensitivity: 'base' });
+  const dm = (participants, closedReason) => ({ id: 'd1', kind: 'dm', participants: [ME, ...participants], closedReason });
+  const bar = (room, opts = {}) => closedBar(room, { me: ME, members, blocks: new Set(), full: true, collator, t: en, ...opts });
+
+  assert.equal(bar(dm([SANNE], null)), null, 'an open DM has no bar');
+  assert.equal(bar({ id: 'c1', kind: 'channel', closedReason: 'closed' }), null);
+
+  // You blocked Sanne: the bar says so, offers Unblock and no new conversation, whatever the reason.
+  assert.deepEqual(bar(dm([SANNE], 'closed'), { blocks: new Set([SANNE]) }), { key: 'closedYouBlocked', blocked: SANNE, startNew: false });
+  assert.deepEqual(bar(dm([SANNE, ROB], 'closed'), { blocks: new Set([SANNE, ROB]) }), { key: 'closedYouBlocked', blocked: ROB, startNew: false }, 'the first blocked person by name');
+  assert.equal(en('chat.input.closedYouBlocked', { name: 'Sanne de Vries' }), 'You blocked Sanne de Vries. You can still read this conversation.');
+
+  // The block came from the other side: the neutral line, and the same people can start again.
+  assert.deepEqual(bar(dm([SANNE], 'closed')), { key: 'closedBlocked', blocked: null, startNew: true });
+  assert.deepEqual(bar(dm([SANNE, ROB], 'closed')), { key: 'closedBlocked', blocked: null, startNew: true });
+
+  // Someone became a guest, left, was deleted or isn't known: the server refuses a new DM, so no button.
+  assert.deepEqual(bar(dm([MILA], 'ineligible')), { key: 'closedIneligible', blocked: null, startNew: false });
+  assert.deepEqual(bar(dm([OLGA], 'left')), { key: 'closedLeft', blocked: null, startNew: false });
+  assert.deepEqual(bar(dm([SANNE, PIM], 'left')), { key: 'closedLeft', blocked: null, startNew: false });
+  assert.deepEqual(bar(dm([id('u', 'stranger')], 'left')), { key: 'closedLeft', blocked: null, startNew: false });
+  // Everyone came back as an active full member: a new conversation works again.
+  assert.equal(bar(dm([SANNE], 'left')).startNew, true);
+  // A guest never starts one.
+  assert.equal(bar(dm([SANNE], 'closed'), { full: false }).startNew, false);
+});
+
+test("New message's list shows who can be picked, who you blocked and the guests, and says why it is empty", async () => {
+  const { dmPicker } = await loading;
+  const everyone = [...members.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const fits = (query) => (m) => m.name.toLowerCase().includes(query.toLowerCase());
+  const view = (opts = {}) => {
+    const r = dmPicker(everyone, { me: ME, blocks: new Set(), query: '', matches: () => true, ...opts });
+    return { pick: r.pick.map((m) => m.id), blocked: r.blocked.map((m) => m.id), guests: r.guests.map((m) => m.id), empty: r.empty };
+  };
+
+  // Active full members only; the guest waits for a search, and nobody left or deleted shows.
+  assert.deepEqual(view(), { pick: [ROB, SANNE], blocked: [], guests: [], empty: null });
+  // Someone you blocked moves to the off rows, with Unblock.
+  assert.deepEqual(view({ blocks: new Set([SANNE]) }), { pick: [ROB], blocked: [SANNE], guests: [], empty: null });
+  // A search shows the guest too, switched off.
+  assert.deepEqual(view({ query: 'mila', matches: fits('mila') }), { pick: [], blocked: [], guests: [MILA], empty: null });
+  assert.deepEqual(view({ query: 'sanne', matches: fits('sanne'), blocks: new Set([SANNE]) }), { pick: [], blocked: [SANNE], guests: [], empty: null });
+  // A search that finds nobody, Olga (who left) included.
+  assert.deepEqual(view({ query: 'olga', matches: fits('olga') }), { pick: [], blocked: [], guests: [], empty: 'none' });
+  // Everyone picked already: nothing to say.
+  assert.deepEqual(view({ picked: [ROB, SANNE] }), { pick: [], blocked: [], guests: [], empty: null });
+
+  // Only guests besides you: they show, switched off.
+  const withGuest = [members.get(ME), members.get(MILA)];
+  assert.deepEqual(dmPicker(withGuest, { me: ME }).guests.map((m) => m.id), [MILA]);
+  // Nobody else at all: Nobody else is in the workspace, unless the directory isn't complete.
+  assert.equal(dmPicker([members.get(ME), members.get(OLGA)], { me: ME }).empty, 'nobody');
+  assert.equal(dmPicker([members.get(ME)], { me: ME, membersMore: true }).empty, 'none');
+});
+
+test('Add people says whether nobody else is in the workspace or everyone is in the channel already', async () => {
+  const { addPeopleEmpty } = await loading;
+  assert.equal(addPeopleEmpty({ rows: 2, candidates: 2, others: 4 }), null);
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 2, others: 4, query: 'zz' }), 'none');
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 0, others: 4 }), 'everyone');
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 0, others: 4, query: 'zz' }), 'everyone');
+  assert.equal(addPeopleEmpty({ rows: 0, candidates: 0, others: 0 }), 'nobody');
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  assert.equal(en('chat.new.nobody', { workspace: 'Acme' }), 'Nobody else is in Acme yet');
+  assert.equal(nl('chat.channel.addEveryone', { workspace: 'Acme', name: 'design' }), 'Iedereen in Acme zit al in #design');
+});

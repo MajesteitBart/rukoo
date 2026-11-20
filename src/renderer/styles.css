@@ -10631,6 +10631,10 @@ body.chat-mode .titlebar-search {
   background: hsl(var(--h) 30% 26%);
   color: hsl(var(--h) 70% 82%);
 }
+/* A closed DM's Closed tag sits where the unread pill goes; the rail has no room for it. */
+.shell.collapsed .ch-row-tag {
+  display: none;
+}
 .shell.collapsed .ch-badge {
   position: absolute;
   top: 2px;
@@ -12289,6 +12293,41 @@ button.ch-replies .ch-replies-n {
 }
 .ch-new-list.is-full .ch-new-row:hover {
   background: none;
+}
+/* People who can't be picked (you blocked them, or a guest), with why; Unblock stays fully clickable. */
+.ch-new-off {
+  margin-top: 0;
+}
+/* Right under the people who can be picked, as one list (the form's gap is 14px). */
+.ch-new-list:not([hidden]) + .ch-new-off {
+  margin-top: -13px;
+}
+.ch-new-row.is-off {
+  cursor: default;
+}
+.ch-new-row.is-off:hover {
+  background: none;
+}
+.ch-new-row.is-off > :first-child {
+  opacity: 0.55;
+}
+.ch-new-row.is-off .ch-person-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+}
+.ch-new-off-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  padding: 4px 0;
+}
+/* Nobody to pick: the line, and Invite people for those who may invite. */
+.ch-new-none {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
 }
 /* A channel the person isn't in, from Browse: the note fills the log's place and the Join bar sits under it. */
 .ch-main.is-preview .ch-compose {
