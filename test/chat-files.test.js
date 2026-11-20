@@ -280,9 +280,12 @@ test('a picked image and PDF are measured, reserved and uploaded, with their sta
   assert.ok(one.expiresAt > Date.now());
   assert.equal(thumbs.length, 1);
   // What was reserved and sent: the declared size and digest, and exactly the bytes.
+  // The two stage at the same time, and the PDF needs no measuring, so either can reserve first.
   const reserves = calls.filter((c) => c.method === 'POST' && c.route.endsWith('/uploads'));
-  assert.deepEqual(reserves[0].body, { name: 'foto.png', type: 'image/png', size: image.length, sha256: sha(image), width: 640, height: 480 });
-  assert.deepEqual(reserves[1].body, { name: 'plan.pdf', type: 'application/pdf', size: pdf.length, sha256: sha(pdf) });
+  assert.equal(reserves.length, 2);
+  const reserved = (name) => reserves.find((c) => c.body.name === name).body;
+  assert.deepEqual(reserved('foto.png'), { name: 'foto.png', type: 'image/png', size: image.length, sha256: sha(image), width: 640, height: 480 });
+  assert.deepEqual(reserved('plan.pdf'), { name: 'plan.pdf', type: 'application/pdf', size: pdf.length, sha256: sha(pdf) });
   assert.deepEqual(links.put.get(one.file), image);
   assert.deepEqual(links.put.get(two.file), pdf);
   assert.equal(uploads.size, 2);
