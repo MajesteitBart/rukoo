@@ -4,6 +4,7 @@ import pkg from '../package.json' with { type: 'json' };
 import { call, device, key, newEmail, salt, sealed, KDF, INVITE, withVars } from './helpers.js';
 import worker from '../src/index.js';
 import { createExecutionContext } from 'cloudflare:test';
+import { s3Vars } from './fixtures/fake-s3.js';
 
 const escapeHtml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -140,6 +141,115 @@ describe('GET /privacy', () => {
       const off = await page(lang);
       expect(off, lang).not.toContain('id="team-chat"');
       expect(off.toLowerCase(), lang).not.toContain(name);
+    }
+  });
+
+  it('names the S3-compatible store that keeps the files, by provider and place when both are set', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    // No R2 binding and the five S3 settings, which are stand-ins and not credentials. Nothing here reaches S3.
+    const s3 = { WORKSPACE_MODE: 'on', WORKSPACE_FILES: undefined, ...s3Vars() };
+    const named = { WORKSPACE_FILES_S3_PROVIDER: 'UpCloud', WORKSPACE_FILES_S3_PLACE: 'Frankfurt am Main' };
+    const languages = {
+      en: {
+        named: [
+          'Files you send in team chat are kept in private storage at UpCloud in Frankfurt am Main, with their name, type and size. This server also keeps their name, type, size and a hash of their content, and for an image its width and height. UpCloud keeps them on our behalf under its data processing terms.',
+          'Like messages, they aren’t encrypted end to end, so we can open them, and so can UpCloud.',
+          'Team chat is readable too: its workspaces, who is in them, their messages and files (see Team chat). Its files are kept at UpCloud in Frankfurt am Main.'
+        ],
+        // Without a named provider, no data processing terms either: the sentence ends at "on our behalf".
+        neutral: [
+          'Files you send in team chat are kept in private storage at the S3-compatible service this server uses, with their name, type and size. This server also keeps their name, type, size and a hash of their content, and for an image its width and height. That service keeps them on our behalf. Like messages',
+          'Like messages, they aren’t encrypted end to end, so we can open them, and so can that service.',
+          'Team chat is readable too: its workspaces, who is in them, their messages and files (see Team chat). Its files are kept at the S3-compatible service this server uses.'
+        ],
+        // What only an S3 store adds.
+        s3Only: ['Its files are kept at', 'This server also keeps their name'],
+        // What stays true of files with either wording.
+        same: [
+          'A file can be up to 25 MiB, and all files in a workspace up to 5 GiB together.',
+          'Your devices upload and download them through this server, which runs on Cloudflare, so they pass through Cloudflare readable on their way.',
+          'Only people who can read the message get a download link, and it works for 60 seconds.',
+          'A file is deleted from storage, usually within a minute, when someone removes its message or the message itself is deleted.',
+          'A file that isn’t sent becomes due for deletion an hour after its upload began. Deleting a workspace deletes its files too.',
+          'and the page’s image, which it keeps as a file of the message',
+          'Team chat is readable too: its workspaces, who is in them, their messages and files (see Team chat).'
+        ],
+        r2: [
+          'Files you send in team chat are kept in private storage at Cloudflare R2, with their name, type, size and a hash of their content, and for an image its width and height. Like messages, they aren’t encrypted end to end, so we can open them, and so can Cloudflare. A file can be up to 25 MiB, and all files in a workspace up to 5 GiB together. Your devices upload and download them through this server. Only people who can read the message get a download link, and it works for 60 seconds. A file is deleted from storage, usually within a minute, when someone removes its message or the message itself is deleted. A file that isn’t sent becomes due for deletion an hour after its upload began. Deleting a workspace deletes its files too.'
+        ]
+      },
+      nl: {
+        named: [
+          'Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij UpCloud in Frankfurt am Main, met hun naam, type en grootte. Deze server bewaart ook hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. UpCloud bewaart ze namens ons onder zijn verwerkersvoorwaarden.',
+          'Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en UpCloud ook.',
+          'Teamchat is ook leesbaar: de werkruimtes, wie erin zitten, hun berichten en bestanden (zie Teamchat). De bestanden staan bij UpCloud in Frankfurt am Main.'
+        ],
+        neutral: [
+          'Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij de S3-compatibele dienst die deze server gebruikt, met hun naam, type en grootte. Deze server bewaart ook hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. Die dienst bewaart ze namens ons. Net als berichten',
+          'Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en die dienst ook.',
+          'Teamchat is ook leesbaar: de werkruimtes, wie erin zitten, hun berichten en bestanden (zie Teamchat). De bestanden staan bij de S3-compatibele dienst die deze server gebruikt.'
+        ],
+        s3Only: ['De bestanden staan bij', 'Deze server bewaart ook hun naam'],
+        same: [
+          'Een bestand mag tot 25 MiB groot zijn, en alle bestanden in een werkruimte samen tot 5 GiB.',
+          'Je apparaten uploaden en downloaden ze via deze server, die op Cloudflare draait, dus onderweg gaan ze leesbaar door Cloudflare.',
+          'Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden.',
+          'Een bestand wordt uit de opslag verwijderd, meestal binnen een minuut, als iemand het bericht verwijdert of als het bericht zelf wordt verwijderd.',
+          'Een bestand dat niet wordt verstuurd, is een uur nadat het uploaden begon aan de beurt voor verwijdering. Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.',
+          'en de afbeelding van de pagina, die hij als bestand bij het bericht bewaart',
+          'Teamchat is ook leesbaar: de werkruimtes, wie erin zitten, hun berichten en bestanden (zie Teamchat).'
+        ],
+        r2: [
+          'Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij Cloudflare R2, met hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en Cloudflare ook. Een bestand mag tot 25 MiB groot zijn, en alle bestanden in een werkruimte samen tot 5 GiB. Je apparaten uploaden en downloaden ze via deze server. Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden. Een bestand wordt uit de opslag verwijderd, meestal binnen een minuut, als iemand het bericht verwijdert of als het bericht zelf wordt verwijderd. Een bestand dat niet wordt verstuurd, is een uur nadat het uploaden begon aan de beurt voor verwijdering. Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.'
+        ]
+      }
+    };
+    const has = (text, parts) => {
+      for (const part of parts) expect(text, part).toContain(escapeHtml(part));
+    };
+    const hasNot = (text, parts) => {
+      for (const part of parts) expect(text, part).not.toContain(escapeHtml(part));
+    };
+    for (const [lang, words] of Object.entries(languages)) {
+      const text = await page(lang, { ...s3, ...named });
+      has(text, [...words.named, ...words.same]);
+      hasNot(text, ['R2', ...words.neutral, ...words.r2]);
+      // Without the provider, the place or both, it names neither.
+      for (const vars of [{ ...named, WORKSPACE_FILES_S3_PROVIDER: '' }, { ...named, WORKSPACE_FILES_S3_PLACE: undefined }, { WORKSPACE_FILES_S3_PROVIDER: ' ' }]) {
+        const neutral = await page(lang, { ...s3, ...vars });
+        has(neutral, [...words.neutral, ...words.same]);
+        hasNot(neutral, ['R2', 'UpCloud', 'Frankfurt', ...words.named]);
+      }
+      // With the R2 binding as well, R2 wins: the paragraph is the R2 one, word for word, and ignores the two settings.
+      const r2 = await page(lang, { ...s3, ...named, WORKSPACE_FILES: env.WORKSPACE_FILES });
+      has(r2, [...words.r2, words.same.at(-1)]);
+      hasNot(r2, ['UpCloud', 'Frankfurt', ...words.neutral, ...words.s3Only]);
+    }
+    // The settings are escaped like every other part of the statement.
+    const escaped = await page('en', { ...s3, WORKSPACE_FILES_S3_PROVIDER: '<b>Acme</b>', WORKSPACE_FILES_S3_PLACE: 'Oslo' });
+    expect(escaped).toContain('at &lt;b&gt;Acme&lt;/b&gt; in Oslo');
+    expect(escaped).not.toContain('<b>Acme</b>');
+  });
+
+  it('says that removing a message also clears who reacted to it with which emoji', async () => {
+    for (const [lang, gone, now, rest] of [
+      [
+        'en',
+        'but the events that say who reacted to it with which emoji stay until they are deleted with the rest',
+        'A message someone removes loses its text and its reactions at once, and removing it also clears who reacted to it with which emoji. An archived channel',
+        'A cleanup runs at least once a day and deletes what has become due; a cleanup that fails is tried again later.'
+      ],
+      [
+        'nl',
+        'maar de gebeurtenissen die zeggen wie er met welke emoji op reageerde, blijven staan tot ze met de rest worden verwijderd',
+        'Een bericht dat iemand verwijdert, verliest meteen zijn tekst en reacties, en daarbij worden ook de gegevens gewist over wie er met welke emoji op reageerde. Een gearchiveerd kanaal',
+        'Een opruimronde draait minstens één keer per dag en verwijdert wat aan de beurt is; een ronde die mislukt, wordt later opnieuw geprobeerd.'
+      ]
+    ]) {
+      const text = (await call('GET', `/privacy?lang=${lang}`, { vars: { WORKSPACE_MODE: 'on' } })).text;
+      expect(text, lang).toContain(escapeHtml(now));
+      expect(text, lang).toContain(escapeHtml(rest));
+      expect(text, lang).not.toContain(escapeHtml(gone));
     }
   });
 

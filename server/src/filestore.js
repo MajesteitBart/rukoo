@@ -13,6 +13,7 @@
 //   list({ prefix, cursor, limit })                      { keys, cursor }: one page, and the cursor of the next or
 //                                                        null.
 //   batch                                                The most keys one delete call and one list page should hold.
+//   kind                                                 'r2' or 's3': which kind of store it is.
 //
 // The S3 store signs every request with AWS Signature Version 4 (sigv4.js). Its errors and logs never hold the secret
 // key, an Authorization header or a signature, and never an error body, in which S3 may repeat what it signed.
@@ -128,6 +129,7 @@ function tellOnce(problem) {
 // didn't match with error 10037.
 function r2Store(bucket) {
   return {
+    kind: 'r2',
     batch: R2_BATCH,
     async put(key, body, { sha256, contentType, name }) {
       try {
@@ -287,6 +289,7 @@ function s3Store(s) {
   }
 
   const store = {
+    kind: 's3',
     batch: S3_BATCH,
 
     // The service checks x-amz-content-sha256 against the bytes. The bytes are hashed here as well, as they stream,

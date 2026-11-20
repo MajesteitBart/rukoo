@@ -236,6 +236,7 @@ The settings in `vars`:
 | `WORKSPACE_FILES_ORIGIN` | A separate address for upload and download links, such as `https://files.example.org`, routed to this Worker as a custom domain or route. Empty means links use the workspace's own address. |
 | `WORKSPACE_PREVIEW_HOSTS` | For tests only: `host:port` pairs that link cards may fetch although they are local. Leave it empty. |
 | `WORKSPACE_FILES_S3_ENDPOINT`, `WORKSPACE_FILES_S3_REGION`, `WORKSPACE_FILES_S3_BUCKET` | An S3-compatible bucket for files instead of R2, with two secrets. Empty by default. See "Files in an S3-compatible bucket" below. |
+| `WORKSPACE_FILES_S3_PROVIDER`, `WORKSPACE_FILES_S3_PLACE` | Who keeps the files of an S3 store and where, as the statement at `/privacy` names them. Empty by default. See "Files in an S3-compatible bucket" below. |
 
 **Files need a bucket.** People send files and images in chat only when the Worker has a private bucket for them: an R2 bucket bound as `WORKSPACE_FILES`, or a bucket in an S3-compatible service named by the five `WORKSPACE_FILES_S3_*` settings (see "Files in an S3-compatible bucket" below). `wrangler.jsonc` has the R2 binding commented out and the S3 settings empty, so a deploy without a bucket keeps working: the server then lists no `files` capability, every file route answers `403 files_off`, and the apps hide Attach, drag and drop and pasting files. Reactions, marking unread and link cards work without a bucket, but link cards then come without their image. To turn files on with R2, make the bucket in the jurisdiction of your accounts and remove the comment marks around `r2_buckets`, with the same `jurisdiction`:
 
@@ -255,6 +256,15 @@ Leave the bucket private, without a public bucket address. Devices upload throug
 | `WORKSPACE_FILES_S3_ACCESS_KEY_ID` | secret | The access key's ID. |
 | `WORKSPACE_FILES_S3_SECRET_ACCESS_KEY` | secret | The access key's secret. |
 
+Two more vars say who keeps the files and where. The statement at `/privacy` names them in its section on where data is kept and in its paragraph on files, which says that this company keeps the files on your behalf under its data processing terms and can read them, and that they pass through Cloudflare on their way. Neither turns files on or off. If you run the S3 service yourself, leave both empty: the statement then names no company and no data processing terms.
+
+| Setting | Kind | What it is |
+|---|---|---|
+| `WORKSPACE_FILES_S3_PROVIDER` | var | The company or service that keeps the files, such as `UpCloud`. |
+| `WORKSPACE_FILES_S3_PLACE` | var | Where it keeps them, such as `Frankfurt am Main`. |
+
+With both set, the statement says the files are kept "in private storage at UpCloud in Frankfurt am Main" and that UpCloud keeps them under its data processing terms. With either one empty, it names neither, says "the S3-compatible service this server uses" instead and leaves out the data processing terms. With R2, the statement names Cloudflare R2 and ignores both.
+
 Give the key access to this one bucket and nothing else: `s3:ListBucket` on the bucket, and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects. Services that take IAM-style policies, UpCloud's among them, express that as:
 
 ```json
@@ -271,7 +281,7 @@ With UpCloud, for example:
 
 1. In the UpCloud control panel, create a Managed Object Storage instance in the region you want, such as `europe-2` (Frankfurt), and a bucket in it, here `rukoo-workspace-files`. Leave public access off.
 2. Create a user for the server, attach a policy like the one above, and create an access key for that user.
-3. Put the instance's public S3 address, the region and the bucket name in the three vars in `wrangler.jsonc` (in `vars`, or in your environment's `vars`), and leave `r2_buckets` commented out.
+3. Put the instance's public S3 address, the region and the bucket name in the three vars in `wrangler.jsonc` (in `vars`, or in your environment's `vars`), and leave `r2_buckets` commented out. For `/privacy`, set `WORKSPACE_FILES_S3_PROVIDER` to `UpCloud` and `WORKSPACE_FILES_S3_PLACE` to the city of the region's data centre, such as `Frankfurt am Main` for `europe-2`.
 4. Set the key as two secrets, so it never appears in `wrangler.jsonc`:
 
    ```bash

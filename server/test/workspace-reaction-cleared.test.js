@@ -2,8 +2,9 @@
 // reaction.added and reaction.removed events become reaction.cleared, by whoever removed the message, with only the
 // target. The rows stay, so the room's sequence numbers stay contiguous.
 
+import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { api, changes, events, newMember, newWorkspace, post, react, workspaceSql } from './workspace-helpers.js';
+import { api, changes, events, newMember, newWorkspace, post, react, workspaceSql, workspaceStub } from './workspace-helpers.js';
 
 const redact = (person, ws, message) => api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/messages/${message}/redact`, { token: person.token });
 const about = (log, message) => log.filter((e) => e.target === message);
@@ -86,5 +87,111 @@ describe('removing a message with reactions', () => {
     expect(event).not.toHaveProperty('emoji');
     const room = (await changes(ws.person, ws.id)).body.changes.find((c) => c.conversation === ws.general);
     expect(room.unread).toBe(0);
+  });
+});
+
+// A workspace whose messages were removed by a version from before RUK-226 still has their reaction.added and
+// reaction.removed events. Its object rewrites them once, when it starts on this version (#upgrade), as a removal does
+// now. The old state is made by removing a message and putting its reaction events back as they were, which is all
+// the older removal did differently, and by dropping the upgrade table such a workspace doesn't have.
+describe('a workspace with messages removed before removals cleared their reactions', () => {
+  const REACTION_ROWS =
+    "SELECT conversation, seq, id, kind, actor, at, data FROM event WHERE kind IN ('reaction.added', 'reaction.removed', 'reaction.cleared') ORDER BY conversation, seq";
+  const putBack = (id, rows) =>
+    runInDurableObject(workspaceStub(id), (instance, state) => {
+      for (const row of rows) {
+        state.storage.sql.exec('UPDATE event SET kind = ?, actor = ?, data = ? WHERE conversation = ? AND seq = ?', row.kind, row.actor, row.data, row.conversation, row.seq);
+      }
+    });
+  const start = (id) =>
+    runInDurableObject(workspaceStub(id), (instance, state) => {
+      new instance.constructor(state, instance.env);
+    });
+  const steps = (id) => workspaceSql(id, 'SELECT step FROM upgrade');
+  const memberKey = async (id, member) => (await workspaceSql(id, 'SELECT n FROM member WHERE id = ?', member))[0].n;
+
+  it('turns their reaction events into reaction.cleared by the remover, once, and leaves other reactions alone', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const tess = await newMember(ws, 'Tess', { channels: [ws.general] });
+    const gone = (await post(mila.person, ws.id, ws.general, 'Lunch at noon?')).body;
+    const kept = (await post(ws.person, ws.id, ws.general, 'Standup moved')).body;
+    await react(tess.person, ws.id, ws.general, gone.messageId, '🎉');
+    await react(ws.person, ws.id, ws.general, kept.messageId, '❤️');
+    await react(mila.person, ws.id, ws.general, gone.messageId, '👍');
+    await react(mila.person, ws.id, ws.general, gone.messageId, '👍', false);
+    const original = await workspaceSql(ws.id, REACTION_ROWS);
+    // Olga, the channel's manager, removes Mila's message, and the database goes back to what the old version left.
+    expect((await redact(ws.person, ws, gone.messageId)).status).toBe(200);
+    await putBack(ws.id, original);
+    await workspaceSql(ws.id, 'DROP TABLE IF EXISTS upgrade');
+    const old = (await events(ws.person, ws.id, ws.general, `?after=${gone.seq}`)).body;
+    expect(about(old.events, gone.messageId).map((e) => [e.kind, e.actor, e.emoji])).toEqual([
+      ['reaction.added', tess.me.id, '🎉'],
+      ['reaction.added', mila.me.id, '👍'],
+      ['reaction.removed', mila.me.id, '👍'],
+      ['message.redacted', ws.me.id, undefined]
+    ]);
+
+    await start(ws.id);
+    const after = (await events(tess.person, ws.id, ws.general, `?after=${gone.seq}`)).body;
+    expect(after.head).toBe(old.head);
+    // Each keeps its place, id and time, and names Olga, who removed the message.
+    const cleared = (e) => ({ seq: e.seq, id: e.id, kind: 'reaction.cleared', actor: ws.me.id, at: e.at, target: gone.messageId, targetSeq: gone.seq });
+    const wasAbout = about(old.events, gone.messageId);
+    expect(about(after.events, gone.messageId)).toEqual([...wasAbout.slice(0, 3).map(cleared), wasAbout[3]]);
+    expect(about(after.events, kept.messageId)).toEqual(about(old.events, kept.messageId));
+    expect(about(after.events, kept.messageId).map((e) => [e.kind, e.actor, e.emoji])).toEqual([['reaction.added', ws.me.id, '❤️']]);
+    // The database holds what a removal makes now, and the step is recorded.
+    const olga = await memberKey(ws.id, ws.me.id);
+    const data = JSON.stringify({ target: gone.messageId, targetSeq: gone.seq });
+    const rows = await workspaceSql(ws.id, REACTION_ROWS);
+    expect(rows).toEqual(original.map((row) => (JSON.parse(row.data).target === gone.messageId ? { ...row, kind: 'reaction.cleared', actor: olga, data } : row)));
+    expect(rows.filter((row) => row.data.includes('🎉') || row.data.includes('👍'))).toEqual([]);
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+
+    // Once: with the step recorded, a later start doesn't look again, so even events put back as they were stay.
+    await putBack(ws.id, original);
+    await start(ws.id);
+    expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual(original);
+    // Safe to run again: without the record it makes the same rows, and the start after that changes nothing.
+    await workspaceSql(ws.id, 'DELETE FROM upgrade');
+    await start(ws.id);
+    expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual(rows);
+    await start(ws.id);
+    expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual(rows);
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+  });
+
+  it('clears them too when retention has already taken the message, from its message.redacted event', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const gone = (await post(mila.person, ws.id, ws.general, 'Typo')).body;
+    await react(ws.person, ws.id, ws.general, gone.messageId, '😅');
+    const original = await workspaceSql(ws.id, REACTION_ROWS);
+    expect((await redact(mila.person, ws, gone.messageId)).status).toBe(200);
+    await putBack(ws.id, original);
+    await workspaceSql(ws.id, 'DROP TABLE IF EXISTS upgrade');
+    // Retention deletes a conversation's events oldest first, as #expire does: here up to the message itself.
+    const [{ n: room }] = await workspaceSql(ws.id, 'SELECT n FROM conversation WHERE id = ?', ws.general);
+    await workspaceSql(ws.id, 'DELETE FROM event WHERE conversation = ? AND seq <= ?', room, gone.seq);
+    await workspaceSql(ws.id, 'UPDATE conversation SET floor = ? WHERE n = ?', gone.seq + 1, room);
+
+    await start(ws.id);
+    const author = await memberKey(ws.id, mila.me.id);
+    expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual([
+      { ...original[0], kind: 'reaction.cleared', actor: author, data: JSON.stringify({ target: gone.messageId, targetSeq: gone.seq }) }
+    ]);
+  });
+
+  it('leaves the reactions of a workspace without removed messages as they are', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const sent = (await post(ws.person, ws.id, ws.general, 'Hello')).body;
+    await react(ws.person, ws.id, ws.general, sent.messageId, '👋');
+    const original = await workspaceSql(ws.id, REACTION_ROWS);
+    await workspaceSql(ws.id, 'DROP TABLE IF EXISTS upgrade');
+    await start(ws.id);
+    expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual(original);
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
   });
 });

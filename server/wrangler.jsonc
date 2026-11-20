@@ -103,7 +103,12 @@
     // WORKSPACE_FILES_S3_SECRET_ACCESS_KEY, never here. The WORKSPACE_FILES binding below wins when both are set.
     "WORKSPACE_FILES_S3_ENDPOINT": "",
     "WORKSPACE_FILES_S3_REGION": "",
-    "WORKSPACE_FILES_S3_BUCKET": ""
+    "WORKSPACE_FILES_S3_BUCKET": "",
+    // Who keeps the files of an S3 store and where, as /privacy names them: the company or service, such as "UpCloud",
+    // and the place, such as "Frankfurt am Main". With either one empty, /privacy names neither and calls it the
+    // S3-compatible service this server uses. They don't turn files on or off.
+    "WORKSPACE_FILES_S3_PROVIDER": "",
+    "WORKSPACE_FILES_S3_PLACE": ""
   },
 
   // Files in team chat live in a private R2 bucket, or in the S3-compatible bucket the WORKSPACE_FILES_S3_* settings
@@ -201,7 +206,11 @@
         "WORKSPACE_PREVIEW_HOSTS": "",
         "WORKSPACE_FILES_S3_ENDPOINT": "https://lqmo4.upcloudobjects.com",
         "WORKSPACE_FILES_S3_REGION": "europe-2",
-        "WORKSPACE_FILES_S3_BUCKET": "rukoo-workspace-files"
+        "WORKSPACE_FILES_S3_BUCKET": "rukoo-workspace-files",
+        // Who keeps the files and where, as /privacy names them: UpCloud Ltd, a Finnish company, in its Frankfurt am Main
+        // data centre (europe-2).
+        "WORKSPACE_FILES_S3_PROVIDER": "UpCloud",
+        "WORKSPACE_FILES_S3_PLACE": "Frankfurt am Main"
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },

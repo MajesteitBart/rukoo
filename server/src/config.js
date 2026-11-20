@@ -104,6 +104,17 @@ export function filesOn(env) {
   return fileStore(env) !== null;
 }
 
+// Which store holds the files, for the privacy statement (privacy.js): null without one, { store: 'r2' } for the
+// WORKSPACE_FILES bucket, else { store: 's3', provider, place }. provider is WORKSPACE_FILES_S3_PROVIDER, the company or
+// service that keeps the files, such as "UpCloud", and place is WORKSPACE_FILES_S3_PLACE, where it keeps them, such as
+// "Frankfurt am Main". Either may be null. Neither decides whether files are on.
+export function filesStorage(env) {
+  const store = fileStore(env);
+  if (!store) return null;
+  if (store.kind === 'r2') return { store: 'r2' };
+  return { store: 's3', provider: text(env.WORKSPACE_FILES_S3_PROVIDER), place: text(env.WORKSPACE_FILES_S3_PLACE) };
+}
+
 // The origin upload and download links point at: WORKSPACE_FILES_ORIGIN, routed to this Worker by the operator, else the
 // workspace's own address.
 export function filesOrigin(env, url) {

@@ -453,7 +453,8 @@ export class Workspace extends DurableObject {
   // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks, and
   // one made before rich messages none for reactions, files and link cards. They are added before the object answers
   // anything. Each step can run again, so an object stopped halfway finishes the next time it starts, and one already
-  // up to date only reads its table definitions.
+  // up to date only reads its table definitions and the upgrade table. That table holds a row for each one-time change
+  // to the data a workspace already has, written in the same transaction as the change, so the change runs once.
   #upgrade() {
     const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
     if (!has('member', 'blocksRev')) this.sql.exec('ALTER TABLE member ADD COLUMN blocksRev INTEGER NOT NULL DEFAULT 0');
@@ -483,7 +484,35 @@ export class Workspace extends DurableObject {
       CREATE INDEX IF NOT EXISTS block_blocked ON block (blocked);
       CREATE TABLE IF NOT EXISTS dm_start (member INTEGER NOT NULL, at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS dm_start_member ON dm_start (member, at);
+      CREATE TABLE IF NOT EXISTS upgrade (step TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;
     `);
+    // A message removed before a removal cleared its reactions (#redact) left reaction.added and reaction.removed
+    // events that still say who reacted to it with which emoji. A new workspace runs this too, once, and finds nothing.
+    if (this.sql.exec("SELECT 1 FROM upgrade WHERE step = 'reactions.cleared'").toArray().length === 0) {
+      this.ctx.storage.transactionSync(() => {
+        this.#clearRemovedReactions();
+        this.sql.exec("INSERT OR IGNORE INTO upgrade (step, at) VALUES ('reactions.cleared', ?)", Date.now());
+      });
+    }
+  }
+
+  // The reaction events of every removed message become reaction.cleared, as #redact makes them now. Each removal's
+  // message.redacted event names the message, its sequence number and who removed it. It outlasts the message's
+  // reaction events: they come before it, and retention deletes a conversation's events oldest first. Each scan reads
+  // the events once, and only a removed message that still has reaction events gets an update. Running it again
+  // changes nothing: what it rewrote no longer matches.
+  #clearRemovedReactions() {
+    const reacted = new Set();
+    for (const row of this.sql.exec(
+      "SELECT DISTINCT conversation, json_extract(data, '$.targetSeq') AS targetSeq FROM event WHERE kind IN ('reaction.added', 'reaction.removed')"
+    )) {
+      reacted.add(`${row.conversation}:${row.targetSeq}`);
+    }
+    if (reacted.size === 0) return;
+    for (const removal of this.sql.exec("SELECT conversation, actor, data FROM event WHERE kind = 'message.redacted'").toArray()) {
+      const { target, targetSeq } = JSON.parse(removal.data);
+      if (reacted.has(`${removal.conversation}:${targetSeq}`)) this.#clearReactions(removal.conversation, target, targetSeq, removal.actor);
+    }
   }
 
   // ---- Called by the Worker ----
@@ -2173,22 +2202,26 @@ export class Workspace extends DurableObject {
       .toArray()) {
       if (JSON.parse(row.data).target === message) this.sql.exec('UPDATE event SET data = ? WHERE conversation = ? AND seq = ?', scrubbed, c.n, row.seq);
     }
-    // Its reactions went out in reaction.added and reaction.removed events, with who reacted and which emoji. Each
-    // becomes reaction.cleared, by whoever removed the message, with only the target.
-    this.sql.exec(
-      `UPDATE event SET kind = 'reaction.cleared', actor = ?, data = ?
-       WHERE conversation = ? AND seq > ? AND kind IN ('reaction.added', 'reaction.removed') AND json_extract(data, '$.targetSeq') = ?`,
-      me.n,
-      JSON.stringify({ target: message, targetSeq: target.seq }),
-      c.n,
-      target.seq,
-      target.seq
-    );
+    this.#clearReactions(c.n, message, target.seq, me.n);
     this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', target.size);
     const { rev } = this.#append(c, 'message.redacted', me, now, { data: { target: message, targetSeq: target.seq } });
     this.sql.exec('INSERT INTO removal (conversation, rev, id, at) VALUES (?, ?, ?, ?)', c.n, rev, blob(id), now);
     this.#wakeRoom(c);
     return reply(200, { messageId: message, redacted: true });
+  }
+
+  // The reactions of a removed message went out in reaction.added and reaction.removed events, with who reacted and
+  // which emoji. Each becomes reaction.cleared, by whoever removed the message, with only the target.
+  #clearReactions(conversation, target, targetSeq, remover) {
+    this.sql.exec(
+      `UPDATE event SET kind = 'reaction.cleared', actor = ?, data = ?
+       WHERE conversation = ? AND seq > ? AND kind IN ('reaction.added', 'reaction.removed') AND json_extract(data, '$.targetSeq') = ?`,
+      remover,
+      JSON.stringify({ target, targetSeq }),
+      conversation,
+      targetSeq,
+      targetSeq
+    );
   }
 
   // A read position only moves forward and never past what exists. The member's other devices are woken, so a

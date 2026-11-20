@@ -5,7 +5,7 @@
 import { escape, link } from './page.js';
 
 // When the text below last changed in a way that matters to the people it describes.
-export const UPDATED = '2026-11-20';
+export const UPDATED = '2026-11-21';
 const PROTOCOL_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/server/PROTOCOL.md';
 
 const TEXT = {
@@ -41,8 +41,10 @@ const TEXT = {
     where: 'Where it is kept, and who helps',
     whereText: (place) =>
       `The server runs on Cloudflare, a service of Cloudflare, Inc. in the United States, which processes the data on our behalf under its data processing terms. ${place} Because Cloudflare is a US company, US law applies to it, also for data kept in the EU. What it could be made to hand over is the list above: your records stay encrypted with a key Cloudflare doesn’t have. A booking page is different: what it publishes is readable, and so are a guest’s details at the moment they book (see Booking pages).`,
+    // files: null without a files bucket, else as chatText gets it. With an S3-compatible store, a second sentence says
+    // where its files are kept.
     whereChat: (files) =>
-      `Team chat is readable too: its workspaces, ${files ? 'who is in them, their messages and files' : 'who is in them and their messages'} (see Team chat).`,
+      `Team chat is readable too: its workspaces, ${files ? 'who is in them, their messages and files' : 'who is in them and their messages'} (see Team chat).${files?.s3 ? ` Its files are kept at ${files.s3.at}.` : ''}`,
     places: {
       eu: 'Accounts are stored and handled in the European Union.',
       us: 'Accounts are stored and handled in the United States.',
@@ -69,7 +71,8 @@ const TEXT = {
     chat: 'Team chat',
     // days: how long the server keeps messages (WORKSPACE_RETENTION_DAYS). signups: whether an invitation works as an
     // invite code here. previews: whether the server makes link previews (WORKSPACE_PREVIEWS). files: null without a
-    // files bucket, else { max, total }: the largest file and a workspace's file space, written out (bytesText).
+    // files bucket, else { max, total, s3 }: the largest file and a workspace's file space, written out (bytesText),
+    // and s3 null for the WORKSPACE_FILES bucket, else what s3Keeper says for an S3-compatible store.
     chatText: (days, signups, previews, files) => [
       'Team chat lets people with an account on this server make workspaces and talk there in channels and in direct messages. For each workspace you are in, this server keeps the name you use there, your role, when you joined and left, the channels and direct messages you are in, how far you have read in each, how often you marked a message unread there, and the messages you write, with the people you mention and, for a reply in a thread, the message it answers. When you react to a message, it keeps which emoji you used and when. It also keeps the people you block, the invitations you make, an ID your device gives each message so a retry isn’t posted twice, and when you started direct messages, to limit how many you start; those times become due for deletion after a day.',
       'Team chat isn’t encrypted end to end, unlike your records. Messages are stored as they were written, so we can read and change them, in channels and direct messages alike, and so can Cloudflare. We also see who is in which conversation. We handle team chat to give you the workspaces you make or join (the agreement with you, article 6(1)(b) GDPR).',
@@ -80,15 +83,25 @@ const TEXT = {
         : []),
       ...(files
         ? [
-            `Files you send in team chat are kept in private storage at Cloudflare R2, with their name, type, size and a hash of their content, and for an image its width and height. Like messages, they aren’t encrypted end to end, so we can open them, and so can Cloudflare. A file can be up to ${files.max}, and all files in a workspace up to ${files.total} together. Your devices upload and download them through this server. Only people who can read the message get a download link, and it works for 60 seconds. A file is deleted from storage, usually within a minute, when someone removes its message or the message itself is deleted. A file that isn’t sent becomes due for deletion an hour after its upload began. Deleting a workspace deletes its files too.`
+            files.s3
+              ? `Files you send in team chat are kept in private storage at ${files.s3.at}, with their name, type and size. This server also keeps their name, type, size and a hash of their content, and for an image its width and height. ${files.s3.keeps} Like messages, they aren’t encrypted end to end, so we can open them, and so can ${files.s3.who}. A file can be up to ${files.max}, and all files in a workspace up to ${files.total} together. Your devices upload and download them through this server, which runs on Cloudflare, so they pass through Cloudflare readable on their way. Only people who can read the message get a download link, and it works for 60 seconds. A file is deleted from storage, usually within a minute, when someone removes its message or the message itself is deleted. A file that isn’t sent becomes due for deletion an hour after its upload began. Deleting a workspace deletes its files too.`
+              : `Files you send in team chat are kept in private storage at Cloudflare R2, with their name, type, size and a hash of their content, and for an image its width and height. Like messages, they aren’t encrypted end to end, so we can open them, and so can Cloudflare. A file can be up to ${files.max}, and all files in a workspace up to ${files.total} together. Your devices upload and download them through this server. Only people who can read the message get a download link, and it works for 60 seconds. A file is deleted from storage, usually within a minute, when someone removes its message or the message itself is deleted. A file that isn’t sent becomes due for deletion an hour after its upload began. Deleting a workspace deletes its files too.`
           ]
         : []),
       'Inside a workspace, owners, admins and members see the name and role of everyone in it and of people who left. Guests see the people in the channels they are in. Members can find and join any channel open to the whole workspace, and whoever joins a channel can read its earlier messages too. Guests see only the channels they were added to. Only the people in a private channel see its name and messages, and only the people in a direct message see that conversation. Owners and admins see the invitations that are still open. Someone you block isn’t told, but may notice that a direct message with you closed or that they can’t start one.',
       `An invitation is a link with a secret in it. Whoever has the link can use it once, for as long as it works: a day, unless its maker picks up to seven. Send it only to the person it is for. In the workspace, this server keeps a hash of the secret, who made the invitation, the role and channels it gives, when it expires and who used it. That record becomes due for deletion 30 days after the invitation expires. An invitation stops working when it is withdrawn, or when its maker leaves or can no longer invite.${signups ? ' On this server an invitation also works as an invite code: someone without an account can make one with it, one account per invitation. For that, the server keeps a separate record of each invitation someone signed up with, or tried to: a hash of its secret and how many accounts it made. That record has no end date and stays even if the sign-up failed or the account is deleted later, so an invitation can’t make a second account.' : ''}`,
-      `Messages become due for deletion ${days === 1 ? 'a day' : `${days} days`} after they were written, together with the other events in each conversation, such as who joined or reacted. A cleanup runs at least once a day and deletes what has become due; a cleanup that fails is tried again later. A message someone removes loses its text and its reactions at once, but the events that say who reacted to it with which emoji stay until they are deleted with the rest. An archived channel or a closed direct message goes once nothing is left in it. The server remembers which messages were removed and who lost access to which conversation, so devices that were away can catch up; that record becomes due for deletion after 14 days. An owner who is the only member of a workspace can delete it, which deletes everything in it at once. The 30 days of backups under How long apply here too: for that time, removed messages can be brought back.`,
+      `Messages become due for deletion ${days === 1 ? 'a day' : `${days} days`} after they were written, together with the other events in each conversation, such as who joined or reacted. A cleanup runs at least once a day and deletes what has become due; a cleanup that fails is tried again later. A message someone removes loses its text and its reactions at once, and removing it also clears who reacted to it with which emoji. An archived channel or a closed direct message goes once nothing is left in it. The server remembers which messages were removed and who lost access to which conversation, so devices that were away can catch up; that record becomes due for deletion after 14 days. An owner who is the only member of a workspace can delete it, which deletes everything in it at once. The 30 days of backups under How long apply here too: for that time, removed messages can be brought back.`,
       'When you leave a workspace or are removed from it, you lose access to its channels and direct messages, your direct messages there close and your open invitations stop working. What you wrote stays, under your name, until it is deleted with the rest. Your account keeps a list of the workspaces you are in or were in, so each of them hears when you delete your account. Deleting it makes you leave every workspace you are still in, takes your name off what you wrote, so it shows as written by a deleted member, and deletes every block you made or received. The messages themselves stay until their workspace deletes them. A workspace where you are the only member stays on the server with nobody in it. Its messages go when they are deleted with the rest, but its name stays, so delete it in Rukoo first if you want it gone at once. Until each workspace has heard of the deletion, the server keeps only that workspace’s ID and a random ID of your account, without your email address, credentials or records. Each workspace then keeps that random ID until it becomes due for deletion after 30 days, so nothing still on its way in under it gets through.',
       'In Rukoo you change your name in a workspace, remove your own messages and leave a workspace yourself. Export my data doesn’t include team chat. Each of your devices keeps its own copy of team chat and deletes it when its session ends, for example when you sign out.'
     ],
+    // Where an S3-compatible store keeps the files (at), who can open them there (who) and the sentence that says who
+    // keeps them (keeps), from the provider and the place the operator set (WORKSPACE_FILES_S3_PROVIDER and
+    // WORKSPACE_FILES_S3_PLACE). While either is missing, the words fit any service, one the operator runs itself
+    // included, so they name no data processing terms.
+    s3Keeper: (provider, place) =>
+      provider && place
+        ? { at: `${provider} in ${place}`, who: provider, keeps: `${provider} keeps them on our behalf under its data processing terms.` }
+        : { at: 'the S3-compatible service this server uses', who: 'that service', keeps: 'That service keeps them on our behalf.' },
     security: 'Security',
     securityText: (protocol) =>
       `Your password goes through Argon2id on your device, and your records are encrypted with AES-256-GCM before they leave it. We can’t reset your password: without your password or your recovery key, nobody can open your records, including us. ${protocol} describes exactly how it works.`,
@@ -129,7 +142,7 @@ const TEXT = {
     whereText: (place) =>
       `De server draait op Cloudflare, een dienst van Cloudflare, Inc. in de Verenigde Staten, dat de gegevens namens ons verwerkt onder zijn verwerkersvoorwaarden. ${place} Omdat Cloudflare een Amerikaans bedrijf is, valt het onder Amerikaans recht, ook voor gegevens in de EU. Wat het zou kunnen moeten afgeven, is de lijst hierboven: je records blijven versleuteld met een sleutel die Cloudflare niet heeft. Een afsprakenpagina is anders: wat die publiceert is leesbaar, en de gegevens van een gast ook, op het moment dat die boekt (zie Afsprakenpagina’s).`,
     whereChat: (files) =>
-      `Teamchat is ook leesbaar: de werkruimtes, ${files ? 'wie erin zitten, hun berichten en bestanden' : 'wie erin zitten en hun berichten'} (zie Teamchat).`,
+      `Teamchat is ook leesbaar: de werkruimtes, ${files ? 'wie erin zitten, hun berichten en bestanden' : 'wie erin zitten en hun berichten'} (zie Teamchat).${files?.s3 ? ` De bestanden staan bij ${files.s3.at}.` : ''}`,
     places: {
       eu: 'Accounts worden opgeslagen en verwerkt in de Europese Unie.',
       us: 'Accounts worden opgeslagen en verwerkt in de Verenigde Staten.',
@@ -164,15 +177,21 @@ const TEXT = {
         : []),
       ...(files
         ? [
-            `Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij Cloudflare R2, met hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en Cloudflare ook. Een bestand mag tot ${files.max} groot zijn, en alle bestanden in een werkruimte samen tot ${files.total}. Je apparaten uploaden en downloaden ze via deze server. Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden. Een bestand wordt uit de opslag verwijderd, meestal binnen een minuut, als iemand het bericht verwijdert of als het bericht zelf wordt verwijderd. Een bestand dat niet wordt verstuurd, is een uur nadat het uploaden begon aan de beurt voor verwijdering. Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.`
+            files.s3
+              ? `Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij ${files.s3.at}, met hun naam, type en grootte. Deze server bewaart ook hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. ${files.s3.keeps} Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en ${files.s3.who} ook. Een bestand mag tot ${files.max} groot zijn, en alle bestanden in een werkruimte samen tot ${files.total}. Je apparaten uploaden en downloaden ze via deze server, die op Cloudflare draait, dus onderweg gaan ze leesbaar door Cloudflare. Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden. Een bestand wordt uit de opslag verwijderd, meestal binnen een minuut, als iemand het bericht verwijdert of als het bericht zelf wordt verwijderd. Een bestand dat niet wordt verstuurd, is een uur nadat het uploaden begon aan de beurt voor verwijdering. Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.`
+              : `Bestanden die je in teamchat verstuurt, staan in niet-openbare opslag bij Cloudflare R2, met hun naam, type, grootte en een hash van de inhoud, en bij een afbeelding de breedte en hoogte. Net als berichten zijn ze niet end-to-end versleuteld. Wij kunnen ze dus openen, en Cloudflare ook. Een bestand mag tot ${files.max} groot zijn, en alle bestanden in een werkruimte samen tot ${files.total}. Je apparaten uploaden en downloaden ze via deze server. Alleen wie het bericht kan lezen, krijgt een downloadlink, en die werkt 60 seconden. Een bestand wordt uit de opslag verwijderd, meestal binnen een minuut, als iemand het bericht verwijdert of als het bericht zelf wordt verwijderd. Een bestand dat niet wordt verstuurd, is een uur nadat het uploaden begon aan de beurt voor verwijdering. Wordt een werkruimte verwijderd, dan verdwijnen ook de bestanden erin.`
           ]
         : []),
       'Binnen een werkruimte zien eigenaren, beheerders en leden de naam en rol van iedereen erin en van mensen die zijn vertrokken. Gasten zien de mensen in de kanalen waarin ze zitten. Leden kunnen elk kanaal vinden dat voor de hele werkruimte zichtbaar is en eraan deelnemen, en wie aan een kanaal deelneemt, kan ook de eerdere berichten lezen. Gasten zien alleen de kanalen waaraan ze zijn toegevoegd. Alleen de mensen in een privékanaal zien de naam en de berichten ervan, en alleen de mensen in een direct bericht zien dat gesprek. Eigenaren en beheerders zien de uitnodigingen die nog openstaan. Wie je blokkeert, krijgt dat niet te horen, maar kan wel merken dat een direct bericht met jou is gesloten of dat een nieuw niet lukt.',
       `Een uitnodiging is een link met een geheim erin. Wie de link heeft, kan hem één keer gebruiken, zolang hij werkt: een dag, tenzij de maker tot zeven dagen kiest. Stuur hem dus alleen naar degene voor wie hij bedoeld is. In de werkruimte bewaart deze server een hash van het geheim, wie de uitnodiging maakte, de rol en kanalen die ze geeft, wanneer ze verloopt en wie haar gebruikte. Die gegevens zijn 30 dagen na het verlopen van de uitnodiging aan de beurt voor verwijdering. Een uitnodiging werkt niet meer als ze is ingetrokken, of als de maker vertrekt of niet meer mag uitnodigen.${signups ? ' Op deze server werkt een uitnodiging ook als uitnodigingscode: iemand zonder account kan er een account mee maken, één per uitnodiging. Daarvoor houdt de server apart bij met welke uitnodigingen iemand een account maakte of probeerde te maken: een hash van het geheim en hoeveel accounts ermee zijn gemaakt. Dat bewaart hij zonder einddatum, ook als het aanmaken mislukte of het account later wordt verwijderd, zodat een uitnodiging geen tweede account maakt.' : ''}`,
-      `Berichten zijn aan de beurt voor verwijdering ${days === 1 ? 'een dag' : `${days} dagen`} nadat ze zijn geschreven, samen met de andere gebeurtenissen in elk gesprek, zoals wie erbij kwam of reageerde. Een opruimronde draait minstens één keer per dag en verwijdert wat aan de beurt is; een ronde die mislukt, wordt later opnieuw geprobeerd. Een bericht dat iemand verwijdert, verliest meteen zijn tekst en reacties, maar de gebeurtenissen die zeggen wie er met welke emoji op reageerde, blijven staan tot ze met de rest worden verwijderd. Een gearchiveerd kanaal of een gesloten direct bericht verdwijnt zodra er niets meer in staat. De server onthoudt welke berichten zijn verwijderd en wie de toegang tot welk gesprek verloor, zodat apparaten die weg waren kunnen bijwerken; dat is na veertien dagen aan de beurt voor verwijdering. Een eigenaar die als enige in een werkruimte zit, kan die verwijderen; dan verdwijnt alles erin in één keer. De back-ups van 30 dagen onder Hoe lang gelden hier ook: zo lang kunnen verwijderde berichten worden teruggehaald.`,
+      `Berichten zijn aan de beurt voor verwijdering ${days === 1 ? 'een dag' : `${days} dagen`} nadat ze zijn geschreven, samen met de andere gebeurtenissen in elk gesprek, zoals wie erbij kwam of reageerde. Een opruimronde draait minstens één keer per dag en verwijdert wat aan de beurt is; een ronde die mislukt, wordt later opnieuw geprobeerd. Een bericht dat iemand verwijdert, verliest meteen zijn tekst en reacties, en daarbij worden ook de gegevens gewist over wie er met welke emoji op reageerde. Een gearchiveerd kanaal of een gesloten direct bericht verdwijnt zodra er niets meer in staat. De server onthoudt welke berichten zijn verwijderd en wie de toegang tot welk gesprek verloor, zodat apparaten die weg waren kunnen bijwerken; dat is na veertien dagen aan de beurt voor verwijdering. Een eigenaar die als enige in een werkruimte zit, kan die verwijderen; dan verdwijnt alles erin in één keer. De back-ups van 30 dagen onder Hoe lang gelden hier ook: zo lang kunnen verwijderde berichten worden teruggehaald.`,
       'Verlaat je een werkruimte of word je eruit verwijderd, dan verlies je de toegang tot de kanalen en directe berichten erin, sluiten je directe berichten daar en werken je openstaande uitnodigingen niet meer. Wat je schreef, blijft staan onder je naam, tot het met de rest wordt verwijderd. Je account houdt een lijst bij van de werkruimtes waarin je zit of zat, zodat elk ervan hoort wanneer je je account verwijdert. Verwijder je het, dan verlaat je elke werkruimte waarin je nog zit, verdwijnt je naam van wat je schreef, dat daarna op naam van een verwijderd lid staat, en worden alle blokkades verwijderd die je maakte of kreeg. De berichten zelf blijven staan tot hun werkruimte ze verwijdert. Een werkruimte waarin je als enige zit, blijft zonder iemand erin op de server staan. De berichten verdwijnen als ze met de rest worden verwijderd, maar de naam blijft. Verwijder hem dus eerst in Rukoo als je hem meteen weg wilt hebben. Tot elke werkruimte van het verwijderen heeft gehoord, bewaart de server alleen de ID van die werkruimte en een willekeurige ID van je account, zonder je e-mailadres, inloggegevens of records. Elke werkruimte bewaart die willekeurige ID daarna tot hij na 30 dagen aan de beurt is voor verwijdering, zodat niets wat nog onderweg was er alsnog mee binnenkomt.',
       'In Rukoo verander je zelf je naam in een werkruimte, verwijder je je eigen berichten en verlaat je een werkruimte. Mijn gegevens exporteren neemt teamchat niet mee. Elk van je apparaten houdt een eigen kopie van teamchat bij en verwijdert die als de sessie eindigt, bijvoorbeeld als je uitlogt.'
     ],
+    s3Keeper: (provider, place) =>
+      provider && place
+        ? { at: `${provider} in ${place}`, who: provider, keeps: `${provider} bewaart ze namens ons onder zijn verwerkersvoorwaarden.` }
+        : { at: 'de S3-compatibele dienst die deze server gebruikt', who: 'die dienst', keeps: 'Die dienst bewaart ze namens ons.' },
     security: 'Beveiliging',
     securityText: (protocol) =>
       `Je wachtwoord gaat op je apparaat door Argon2id, en je records worden met AES-256-GCM versleuteld voordat ze het verlaten. We kunnen je wachtwoord niet resetten: zonder je wachtwoord of je herstelsleutel kan niemand je records openen, wij ook niet. ${protocol} beschrijft precies hoe het werkt.`,
@@ -211,15 +230,22 @@ function bytesText(bytes, lang) {
 }
 
 // chat: null while team chat is off, else { retentionDays, inviteSignups, previews, files } (index.js), files null
-// without a files bucket and else { maxBytes, workspaceBytes }. The statement mentions team chat only on a server that
-// runs it, and link previews and files only where the server makes or keeps them.
+// without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
+// (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
+// files only where the server makes or keeps them.
 export function privacy({ operator, jurisdiction, chat = null }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
   const contact = operator.contact ? T.contact(contactLink(operator.contact)) : '';
   const place = T.places[jurisdiction] || T.places.any;
   const dataItems = chat ? [...T.dataItems, T.dataChat] : T.dataItems;
-  const files = chat?.files ? { max: bytesText(chat.files.maxBytes, lang), total: bytesText(chat.files.workspaceBytes, lang) } : null;
+  const files = chat?.files
+    ? {
+        max: bytesText(chat.files.maxBytes, lang),
+        total: bytesText(chat.files.workspaceBytes, lang),
+        s3: chat.files.store === 's3' ? T.s3Keeper(chat.files.provider, chat.files.place) : null
+      }
+    : null;
   const teamChat = chat
     ? `<h2 id="team-chat">${escape(T.chat)}</h2>\n${T.chatText(chat.retentionDays, chat.inviteSignups, chat.previews, files)
         .map((p) => `<p>${escape(p)}</p>`)
@@ -257,7 +283,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <p>${escape(T.whyText)}</p>
 
 <h2>${escape(T.where)}</h2>
-<p>${escape(chat ? `${T.whereText(place)} ${T.whereChat(Boolean(files))}` : T.whereText(place))}</p>
+<p>${escape(chat ? `${T.whereText(place)} ${T.whereChat(files)}` : T.whereText(place))}</p>
 
 <h2>${escape(T.keep)}</h2>
 <p>${escape(T.keepText)}</p>
