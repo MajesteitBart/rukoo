@@ -179,3 +179,45 @@ test('a server that compresses its answers anyway makes sync fail where it shows
   await expect(sync.locator('.error')).toHaveCount(0);
   await expect(sync).toContainText('Last synced');
 });
+
+test("a sync's start and end leave the overview alone, and a status its row shows redraws it", async () => {
+  await win.evaluate((password) => window.mail.call('accountSignUp', { email: 'row@example.com', password, invite: '' }), PASSWORD);
+  await win.click('[data-action="settings"]');
+  const row = page().locator('[data-a="rukoo"]');
+  await expect(row).toContainText('Signed in as row@example.com');
+  await expect.poll(() => win.evaluate(() => window.mail.call('state').then((s) => s.accounts.every((a) => !a.syncing)))).toBe(true);
+  const status = await win.evaluate(() => window.mail.call('accountStatus'));
+  const send = (payload) => app.evaluate(({ BrowserWindow }, p) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'account', payload: p }), payload);
+  // As main sends at a sync's start and end: only the sync line changes. The overview does redraw for main's 'updated'
+  // (a mail sync), later and only once its round trips are back, so the check waits for a quiet second and runs again
+  // when one came in during it (as the booking test does).
+  await win.evaluate(() => {
+    window.__updatedAt = [performance.now()];
+    window.mail.on(({ type }) => type === 'updated' && window.__updatedAt.push(performance.now()));
+  });
+  const quiet = () => win.evaluate(() => performance.now() - window.__updatedAt.at(-1));
+  let same = null;
+  await expect(async () => {
+    await expect.poll(quiet, { timeout: 10000 }).toBeGreaterThan(1000);
+    const since = await win.evaluate(() => {
+      window.__row = document.querySelector('.page.settings [data-a="rukoo"]');
+      return performance.now();
+    });
+    await send({ ...status, syncing: true });
+    await send({ ...status, syncing: false, lastSync: Date.now(), pending: 0 });
+    await win.waitForTimeout(300);
+    const result = await win.evaluate((t) => ({
+      same: window.__row === document.querySelector('.page.settings [data-a="rukoo"]'),
+      updated: window.__updatedAt.some((at) => at >= t - 1000)
+    }), since);
+    if (result.updated) throw new Error("an 'updated' redraw overlapped the check; trying again");
+    same = result.same;
+  }).toPass({ timeout: 30000 });
+  expect(same, 'a sync status redrew the overview').toBe(true);
+
+  // A sync that fails puts an error in the row, so that status does redraw it (the server's answer is refused, as in
+  // the test above).
+  server.gzip = true;
+  await win.evaluate(() => window.mail.call('accountSync').catch(() => null));
+  await expect(row).toContainText('The server ran into a problem.');
+});

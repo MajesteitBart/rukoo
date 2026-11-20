@@ -129,8 +129,13 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
   let details = null;
   let detailsFailed = false;
   let filled = { view: null, at: 0 };
+  // What the overview last drew of the status (rowHtml).
+  let drawnRow = null;
 
   const signedIn = () => Boolean(status && status.signedIn);
+  // What the overview shows of the status: its row (who is signed in, an error) and, through chatState, whether the
+  // server has team chat. A sync's start and end change only the sync line, which the overview doesn't show.
+  const rowShown = (s) => JSON.stringify(s ? [Boolean(s.signedIn), s.email || null, s.error || null, s.errorText || null, chatIn(s.info)] : null);
 
   async function prepare(view) {
     status = await api('accountStatus').catch(() => status);
@@ -173,7 +178,12 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       details = null;
       filled = { view: null, at: 0 };
     }
-    if (LIVE_VIEWS.includes(current())) rerender();
+    // The overview redraws only when its row would change: every sync sends two statuses, and a redraw replaces the
+    // row under the pointer and the rows of everything else on it.
+    const view = current();
+    if (view === 'main') {
+      if (rowShown(next) !== drawnRow) rerender();
+    } else if (LIVE_VIEWS.includes(view)) rerender();
   }
 
   const syncLine = () => {
@@ -194,6 +204,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
 
   // The row on the Settings overview.
   function rowHtml() {
+    drawnRow = rowShown(status);
     const desc = signedIn() ? esc(t('settings.rukoo.rowSignedIn', { email: status.email })) : esc(t('settings.rukoo.rowSignedOut'));
     const error = signedIn() && status.error ? ` · <span class="error">${esc(status.errorText || '')}</span>` : '';
     return row({ title: esc(t('settings.rukoo.title')), desc: desc + error, action: 'rukoo' });
