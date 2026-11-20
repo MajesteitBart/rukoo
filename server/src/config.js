@@ -2,6 +2,7 @@
 // Every Durable Object namespace goes through the configured jurisdiction: an object is found per jurisdiction, so
 // one looked up without it would seem not to exist.
 
+import { fileStore } from './filestore.js';
 import { HttpError } from './input.js';
 
 export const JURISDICTIONS = ['eu', 'us', 'fedramp'];
@@ -97,9 +98,10 @@ export function workspaceOrigin(env) {
   return originOf(text(env.WORKSPACE_ORIGIN));
 }
 
-// Files in team chat need their bucket. A server deployed without the WORKSPACE_FILES binding has no files, and says so.
+// Files in team chat need a store: the WORKSPACE_FILES bucket, or an S3-compatible one (filestore.js). A server
+// deployed with neither has no files, and says so.
 export function filesOn(env) {
-  return Boolean(env.WORKSPACE_FILES);
+  return fileStore(env) !== null;
 }
 
 // The origin upload and download links point at: WORKSPACE_FILES_ORIGIN, routed to this Worker by the operator, else the

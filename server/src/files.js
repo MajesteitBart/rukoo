@@ -1,15 +1,17 @@
 // Files in team chat (WORKSPACES.md, Rich messages): the links devices upload and download with, and the two routes
-// those links lead to. A file's bytes go between the device and the WORKSPACE_FILES bucket through this Worker and
-// never through the workspace's object, which only keeps track of uploads and keys (workspace.js).
+// those links lead to. A file's bytes go between the device and the file store (filestore.js: the WORKSPACE_FILES
+// bucket or an S3-compatible one) through this Worker and never through the workspace's object, which only keeps
+// track of uploads and keys (workspace.js).
 //
 // A link is <files origin>/v1/workspaces/{w}/files/<token>. The token is the capability: a PUT or GET with it needs no
 // session. It is <payload>.<mac>, the payload base64url JSON { k: 'put' | 'get', w, f, key, exp } and the mac an HMAC of
 // it under PEPPER, signed and checked the way socket tickets are (workspaces.js). A put link names the upload and lives
-// as long as its reservation. A get link names the file's bucket key and lives 60 seconds, so a download that started
-// can finish while a new one needs a member's access again.
+// as long as its reservation. A get link names the file's key in the store and lives 60 seconds, so a download that
+// started can finish while a new one needs a member's access again.
 
 import { fromBase64url, hmac, sameBytes, toBase64url, utf8 } from './bytes.js';
 import { filesOn, filesOrigin, workspaceObject } from './config.js';
+import { DigestMismatch, S3Error, S3Unreachable, fileStore } from './filestore.js';
 import { json, send } from './http.js';
 import { HttpError, invalid } from './input.js';
 
@@ -37,7 +39,7 @@ export function filesOff() {
   return new HttpError(403, 'files_off', 'This server has no storage for files in team chat.');
 }
 
-// The 403 every file route answers on a server without the bucket.
+// The 403 every file route answers on a server without a file store.
 export function needFiles(env) {
   if (!filesOn(env)) throw filesOff();
 }
@@ -80,9 +82,10 @@ export async function fileRoute(request, env, id, token, ctx) {
   return kind === 'put' ? upload(request, env, id, claims, ctx) : download(env, claims);
 }
 
-// An upload: the workspace starts an attempt and names its key, the body streams into the bucket with exactly the
-// declared length and the declared SHA-256, which the bucket checks, and the workspace hears how it ended.
+// An upload: the workspace starts an attempt and names its key, the body streams into the store with exactly the
+// declared length and the declared SHA-256, which the store checks, and the workspace hears how it ended.
 async function upload(request, env, id, claims, ctx) {
+  const store = fileStore(env);
   const declared = request.headers.get('content-length');
   const length = declared === null ? NaN : Number(declared);
   if (!/^\d+$/.test(declared ?? '') || !Number.isSafeInteger(length) || !request.body) {
@@ -102,41 +105,42 @@ async function upload(request, env, id, claims, ctx) {
       }
     });
     const fixed = new FixedLengthStream(size);
-    // When the bucket refuses the bytes it stops reading, which fails the pipe too. The put's error is the one that
+    // When the store refuses the bytes it stops reading, which fails the pipe too. The put's error is the one that
     // says what happened.
     const piping = request.body.pipeThrough(counter).pipeTo(fixed.writable).catch(() => {});
     let failure = null;
     try {
-      await env.WORKSPACE_FILES.put(key, fixed.readable, { sha256, httpMetadata: { contentType: type }, customMetadata: { name } });
+      await store.put(key, fixed.readable, { size, sha256, contentType: type, name });
     } catch (err) {
       failure = err;
     }
     await piping;
     const done = await stub.finishAttempt(claims.f, key, size, failure === null);
-    if (done.gone) await env.WORKSPACE_FILES.delete(key).catch(() => {});
+    if (done.gone) await store.delete([key]).catch(() => {});
     if (failure === null) return send(done);
-    // R2 names a digest that didn't match with error 10037.
-    if (received === size && /\(10037\)|checksum/i.test(String(failure?.message))) {
+    if (received === size && failure instanceof DigestMismatch) {
       throw invalid('The file does not match the SHA-256 it was reserved with.', 'sha256');
     }
-    if (received !== size) throw invalid('The file was not the size it was reserved with.', 'size');
+    // An S3 service may refuse before it has read every byte, and the connection to it may break or stall halfway;
+    // either is the store's failure, which the device can try again, not a short file.
+    const storeFailed = failure instanceof S3Error || failure instanceof S3Unreachable;
+    if (received !== size && !storeFailed) throw invalid('The file was not the size it was reserved with.', 'size');
     throw failure;
   })();
   ctx?.waitUntil(work.catch(() => {}));
   return work;
 }
 
-// A download, streamed from the bucket. The headers keep a browser from showing or running it: it is always an
+// A download, streamed from the store. The headers keep a browser from showing or running it: it is always an
 // attachment, of a type that can't be a page, under a policy that allows nothing.
 async function download(env, claims) {
-  const object = await env.WORKSPACE_FILES.get(claims.key);
+  const object = await fileStore(env).get(claims.key);
   if (!object) throw new HttpError(404, 'not_found', 'This file is gone.');
-  const stored = object.httpMetadata?.contentType;
   return new Response(object.body, {
     headers: {
-      'content-type': SERVED.has(stored) ? stored : 'application/octet-stream',
-      'content-disposition': disposition(object.customMetadata?.name || 'file'),
-      'content-length': String(object.size),
+      'content-type': SERVED.has(object.contentType) ? object.contentType : 'application/octet-stream',
+      'content-disposition': disposition(object.name || 'file'),
+      ...(Number.isSafeInteger(object.size) ? { 'content-length': String(object.size) } : {}),
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; sandbox",
       'cache-control': 'private, no-store'

@@ -5,3 +5,7 @@ PEPPER=
 INVITE_CODES=
 # The local runtime can't place objects in a jurisdiction, so leave this empty for local development.
 JURISDICTION=
+# Files in team chat in an S3-compatible bucket (README.md, "Files in an S3-compatible bucket"): the access key, used
+# with the three WORKSPACE_FILES_S3_* vars. Leave both empty for no S3 store.
+WORKSPACE_FILES_S3_ACCESS_KEY_ID=
+WORKSPACE_FILES_S3_SECRET_ACCESS_KEY=

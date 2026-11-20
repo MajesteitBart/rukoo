@@ -13,13 +13,14 @@
 // that says nothing: a device learns what changed from GET /changes, under its own access.
 //
 // A message can carry files, reactions and link cards (WORKSPACES.md, Rich messages). The files' bytes live in the
-// WORKSPACE_FILES bucket and never pass through this object: the Worker streams them (files.js) and makes link cards
-// (previews.js). This object keeps what they are, who may have them, and every bucket key it ever handed out, until the
-// key is deleted from the bucket again.
+// file store, the WORKSPACE_FILES bucket or an S3-compatible one (filestore.js), and never pass through this object:
+// the Worker streams them (files.js) and makes link cards (previews.js). This object keeps what they are, who may have
+// them, and every key it ever handed out in the store's bucket, until the key is deleted from the bucket again.
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { accountObject, filesOn, workspaceLimits } from './config.js';
+import { fileStore } from './filestore.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 // An operation id older than this is refused even when its retry receipt is gone; one further ahead than the second
@@ -59,13 +60,14 @@ const OPEN_UPLOADS = 20;
 const UPLOAD_TIME = 60 * 60 * 1000;
 const ATTEMPTS = 2;
 const ATTEMPT_TIME = 2 * 60 * 60 * 1000;
-// Keys deleted from the bucket in one call, the most R2 takes at once; how soon the alarm comes for new trash, and
-// how long it waits after a delete failed.
+// Keys deleted from the bucket in one go, at most: the most R2 takes at once. An S3 store takes fewer (its batch,
+// filestore.js). How soon the alarm comes for new trash, and how long it waits after a delete failed.
 const TRASH_BATCH = 1000;
 const TRASH_SOON = 10 * 1000;
 const TRASH_RETRY = 5 * 60 * 1000;
-// Events that are no activity of their own: they never count as unread and don't move a room's lastAt.
-const QUIET = new Set(['reaction.added', 'reaction.removed', 'message.previewed']);
+// Events that are no activity of their own: they never count as unread and don't move a room's lastAt. A removal
+// turns the reaction events of its message into reaction.cleared in place, which stays as quiet.
+const QUIET = new Set(['reaction.added', 'reaction.removed', 'reaction.cleared', 'message.previewed']);
 
 const FULL = new Set(['owner', 'admin', 'member']);
 const ADMIN = new Set(['owner', 'admin']);
@@ -1533,16 +1535,17 @@ export class Workspace extends DurableObject {
     return { status: 204, body: null, account: who.name, incarnation: who.incarnation, ref: owner.ref };
   }
 
-  // Every object under the workspace's prefix leaves the bucket, a page of up to 1,000 at a time. Every key this
-  // workspace makes is under it (fileKey). A failure throws.
+  // Every object under the workspace's prefix leaves the bucket, a page of up to 1,000 at a time (fewer from an S3
+  // store). Every key this workspace makes is under it (fileKey). A failure throws.
   async #forgetFiles(wid) {
-    const bucket = this.env.WORKSPACE_FILES;
-    if (!bucket || !wid) return;
-    let cursor;
+    const store = fileStore(this.env);
+    if (!store || !wid) return;
+    const limit = Math.min(TRASH_BATCH, store.batch);
+    let cursor = null;
     do {
-      const page = await bucket.list({ prefix: `ws/${wid}/`, cursor, limit: TRASH_BATCH });
-      if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
-      cursor = page.truncated ? page.cursor : undefined;
+      const page = await store.list({ prefix: `ws/${wid}/`, cursor, limit });
+      if (page.keys.length) await store.delete(page.keys);
+      cursor = page.cursor;
     } while (cursor);
   }
 
@@ -2126,7 +2129,8 @@ export class Workspace extends DurableObject {
 
   // Removes a message's text for everyone: its author can, and so can a manager of the channel. The message's place
   // in the order stays, a later event says it was removed, and the feed tells every device to drop its copy. Its
-  // reactions and link cards go with the text, without events of their own, and its files go to the trash.
+  // reactions and link cards go with the text, without events of their own, and its files go to the trash. The events
+  // that added and took back its reactions keep their place but no longer say who reacted with what.
   #redact(me, conversation, message) {
     const { c, grant } = this.#room(me, conversation);
     const id = eventBytes(message);
@@ -2153,6 +2157,17 @@ export class Workspace extends DurableObject {
       .toArray()) {
       if (JSON.parse(row.data).target === message) this.sql.exec('UPDATE event SET data = ? WHERE conversation = ? AND seq = ?', scrubbed, c.n, row.seq);
     }
+    // Its reactions went out in reaction.added and reaction.removed events, with who reacted and which emoji. Each
+    // becomes reaction.cleared, by whoever removed the message, with only the target.
+    this.sql.exec(
+      `UPDATE event SET kind = 'reaction.cleared', actor = ?, data = ?
+       WHERE conversation = ? AND seq > ? AND kind IN ('reaction.added', 'reaction.removed') AND json_extract(data, '$.targetSeq') = ?`,
+      me.n,
+      JSON.stringify({ target: message, targetSeq: target.seq }),
+      c.n,
+      target.seq,
+      target.seq
+    );
     this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', target.size);
     const { rev } = this.#append(c, 'message.redacted', me, now, { data: { target: message, targetSeq: target.seq } });
     this.sql.exec('INSERT INTO removal (conversation, rev, id, at) VALUES (?, ?, ?, ?)', c.n, rev, blob(id), now);
@@ -2419,12 +2434,13 @@ export class Workspace extends DurableObject {
   // Deletes the trash from the bucket, a batch at a time, and only then stops counting its bytes. A delete that fails
   // throws and leaves the keys for the next alarm. Returns whether more is waiting.
   async #emptyTrash() {
-    const bucket = this.env.WORKSPACE_FILES;
-    if (!bucket) return false;
-    const rows = this.sql.exec('SELECT key FROM trash ORDER BY at LIMIT ?', TRASH_BATCH + 1).toArray();
+    const store = fileStore(this.env);
+    if (!store) return false;
+    const size = Math.min(TRASH_BATCH, store.batch);
+    const rows = this.sql.exec('SELECT key FROM trash ORDER BY at LIMIT ?', size + 1).toArray();
     if (!rows.length) return false;
-    const batch = rows.slice(0, TRASH_BATCH).map((row) => row.key);
-    await bucket.delete(batch);
+    const batch = rows.slice(0, size).map((row) => row.key);
+    await store.delete(batch);
     if (!this.present) return false;
     this.#write(() => {
       for (const key of batch) {
@@ -2432,7 +2448,7 @@ export class Workspace extends DurableObject {
         if (gone) this.#fileBytes(-gone.size);
       }
     });
-    return rows.length > TRASH_BATCH;
+    return rows.length > size;
   }
 
   // When the alarm comes next: in a minute while a sweep left work or the trash isn't empty, five minutes after a delete
