@@ -45,7 +45,8 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "electron": "^44.5.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "emojibase-data": "^18.0.0"
   },
   "productName": "Rukoo Mail",
   "private": true,

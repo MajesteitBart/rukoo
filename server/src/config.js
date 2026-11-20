@@ -83,7 +83,11 @@ export function workspaceLimits(env) {
     conversations: positive(env.WORKSPACE_CONVERSATIONS, 8192),
     textBytes: 16384,
     contentBytes: positive(env.WORKSPACE_BYTES, 1073741824),
-    retentionDays: positive(env.WORKSPACE_RETENTION_DAYS, 90)
+    retentionDays: positive(env.WORKSPACE_RETENTION_DAYS, 90),
+    // Files: the largest one, and what a workspace's files may take in its bucket, stored and reserved together.
+    // These bytes are counted apart from contentBytes, which stays message text only.
+    fileBytes: positive(env.WORKSPACE_FILE_BYTES, 26214400),
+    filesBytes: positive(env.WORKSPACE_FILES_BYTES, 5368709120)
   };
 }
 
@@ -91,6 +95,43 @@ export function workspaceLimits(env) {
 // request's own address is.
 export function workspaceOrigin(env) {
   return originOf(text(env.WORKSPACE_ORIGIN));
+}
+
+// Files in team chat need their bucket. A server deployed without the WORKSPACE_FILES binding has no files, and says so.
+export function filesOn(env) {
+  return Boolean(env.WORKSPACE_FILES);
+}
+
+// The origin upload and download links point at: WORKSPACE_FILES_ORIGIN, routed to this Worker by the operator, else the
+// workspace's own address.
+export function filesOrigin(env, url) {
+  return originOf(text(env.WORKSPACE_FILES_ORIGIN)) ?? workspaceOrigin(env) ?? url.origin;
+}
+
+// Link cards are made unless WORKSPACE_PREVIEWS is "off".
+export function previewsOn(env) {
+  return String(env.WORKSPACE_PREVIEWS ?? '').trim().toLowerCase() !== 'off';
+}
+
+// WORKSPACE_PREVIEW_HOSTS, for tests only: "host:port" pairs the link fetcher may reach although the address rules
+// refuse them, such as a fixture server on 127.0.0.1. Empty in every real deployment.
+export function previewHosts(env) {
+  return new Set(
+    String(env.WORKSPACE_PREVIEW_HOSTS || '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+// The host names of this server's own addresses, which a link card never fetches, on any port.
+export function ownHosts(env, url) {
+  const hosts = new Set([url.hostname.toLowerCase()]);
+  for (const value of [env.WORKSPACE_ORIGIN, env.WORKSPACE_FILES_ORIGIN, env.BOOKING_ORIGIN]) {
+    const origin = originOf(text(value));
+    if (origin) hosts.add(new URL(origin).hostname.toLowerCase());
+  }
+  return hosts;
 }
 
 // Missing means invite, the default in wrangler.jsonc. Anything unrecognized means closed, so a typo never opens a

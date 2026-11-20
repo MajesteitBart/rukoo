@@ -47,9 +47,9 @@ const BOOKING_PATH = /^\/v1\/booking\/bookings\/([^/]+)$/;
 export const FEATURES = ['booking'];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handle(request, env);
+      return await handle(request, env, ctx);
     } catch (err) {
       if (err instanceof HttpError) {
         return json(err.status, { error: err.code, message: err.message, ...err.extra }, err.headers);
@@ -61,7 +61,7 @@ export default {
   }
 };
 
-async function handle(request, env) {
+async function handle(request, env, ctx) {
   const url = new URL(request.url);
   const { pathname: path } = url;
   const method = request.method;
@@ -104,7 +104,7 @@ async function handle(request, env) {
   checkConfig(env);
 
   // Team chat: workspaces, channels and messages (workspaces.js).
-  if (path === '/v1/workspaces' || path.startsWith('/v1/workspaces/')) return workspaces(request, env, url);
+  if (path === '/v1/workspaces' || path.startsWith('/v1/workspaces/')) return workspaces(request, env, url, ctx);
 
   const route = `${method} ${path}`;
   switch (route) {

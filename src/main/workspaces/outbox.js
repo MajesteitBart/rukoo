@@ -1,8 +1,12 @@
 'use strict';
 
-// Sending and removing messages (team chat contract 3.8 and 3.14). The service (index.js) and the sync engine
-// (sync.js) call the hooks kick() and unsent(); ipc.js turns METHODS into the chat* IPC methods, each as
-// (svc, ...checkedArgs) => result.
+// Sending and removing messages (team chat contract 3.8 and 3.14), reacting to them and removing their link cards
+// (rich chat contract 2.4 and 2.7). The service (index.js) and the sync engine (sync.js) call the hooks kick() and
+// unsent(); ipc.js turns METHODS into the chat* IPC methods, each as (svc, ...checkedArgs) => result.
+//
+// A message with files (rich contract 3.5) names ready uploads: chatSend takes their IDs, files.js gives their File
+// objects, and the outbox row keeps those, so a pending message shows its files and every attempt sends the same IDs.
+// The staged files leave the tray once the row is on disk. A 409 files_unavailable fails the row with reason files.
 //
 // A message is on disk before anything else happens: chatSend writes its outbox row in one transaction, and a write
 // that fails throws not_saved, so the composer keeps the text. The queue then sends the rows, oldest first, one per
@@ -41,6 +45,8 @@ function refusal(err) {
     case 'not_found':
     case 'forbidden':
       return { state: 'failed', reason: 'no_access' };
+    case 'files_unavailable':
+      return { state: 'failed', reason: 'files' };
     default:
       return { state: 'failed', reason: 'invalid' };
   }
@@ -56,7 +62,9 @@ class Outbox {
     chatSend: (svc, ws, c, input) => svc.outbox.send(ws, c, input),
     chatResend: (svc, local, opts) => svc.outbox.resend(local, opts),
     chatDiscard: (svc, local) => svc.outbox.discard(local),
-    chatRedact: (svc, ws, c, message) => svc.outbox.redact(ws, c, message)
+    chatRedact: (svc, ws, c, message) => svc.outbox.redact(ws, c, message),
+    chatReact: (svc, ws, c, message, emoji, on) => svc.outbox.react(ws, c, message, emoji, on),
+    chatRemovePreview: (svc, ws, c, message, url) => svc.outbox.removePreview(ws, c, message, url)
   };
 
   constructor(svc) {
@@ -166,6 +174,8 @@ class Outbox {
     }
     // An archived channel or a closed DM takes no messages; the composer shows a bar instead.
     if (row.room.archived || row.room.closedReason) throw new ChatError('archived');
+    const ids = input.attachments || [];
+    const attachments = svc.files.forSend(ws, room, input.root, ids);
     const local = wire.localId();
     store.tx(() =>
       store.insertOutbox({
@@ -178,11 +188,13 @@ class Outbox {
         text: input.text,
         mentions: input.mentions,
         root: input.root,
+        attachments,
         state: 'queued',
         operationId: null,
         createdAt: svc.now()
       })
     );
+    svc.files.consume(ws, room, input.root, ids);
     const pending = this.pendingFor(ws, room).find((p) => p.local === local);
     this.emitPending(ws, room);
     this.pump();
@@ -281,6 +293,37 @@ class Outbox {
     if (changed) svc.roomsChanged(ws, [room]);
     svc.hook(() => svc.history.onRemoved(ws, room, [answer.messageId]));
     svc.hook(() => svc.notifier.onRemoved(ws, room, [answer.messageId]));
+    svc.hook(() => svc.files.onRemoved(ws, room, [answer.messageId]));
+    svc.sync(ws, 'write');
+    return true;
+  }
+
+  // chatReact (rich contract 2.4): the person's reaction with emoji goes on or off. After the server's answer the
+  // cached message changes at once, the main window hears updated, and the feed's reaction event then changes nothing.
+  // A 429 waits for Retry-After and tries again; setting a reaction is idempotent, so that is safe.
+  async react(ws, room, message, emoji, on) {
+    const svc = this.svc;
+    const epoch = svc.epoch;
+    const { ws: wsRow } = this.writable(ws, room);
+    const answer = wire.checkReact(await svc.call(ws, 'POST', `/conversations/${room}/messages/${message}/react`, { emoji, on }, { retry: true }));
+    svc.guard(epoch);
+    const store = svc.store;
+    const me = (store.getWs(ws) || wsRow).me;
+    if (me && store.getRoom(ws, room) && store.react(ws, room, answer.messageId, answer.emoji, me, answer.on)) svc.emitUpdated(ws, room, [answer.messageId]);
+    if (answer.changed) svc.sync(ws, 'write');
+    return true;
+  }
+
+  // chatRemovePreview (rich contract 2.7): the author takes a link card off the message. The cached message takes the
+  // cards the server answered with.
+  async removePreview(ws, room, message, url) {
+    const svc = this.svc;
+    const epoch = svc.epoch;
+    this.writable(ws, room);
+    const answer = wire.checkPreviewsAnswer(await svc.call(ws, 'POST', `/conversations/${room}/messages/${message}/previews`, { remove: url }, { retry: true }));
+    svc.guard(epoch);
+    const store = svc.store;
+    if (store.getRoom(ws, room) && store.setPreviews(ws, room, message, answer.previews)) svc.emitUpdated(ws, room, [message]);
     svc.sync(ws, 'write');
     return true;
   }
@@ -438,6 +481,9 @@ class Outbox {
         mentions: JSON.parse(current.mentions),
         root: current.root ?? null
       };
+      // The files' IDs, only when there are any, so a message without files is what a server from before takes.
+      const files = wire.jsonList(current.attachments).map((f) => f.id);
+      if (files.length) body.attachments = files;
       let answer;
       try {
         answer = wire.checkPost(await svc.call(row.ws, 'POST', `/conversations/${row.room}/messages`, body));
@@ -602,6 +648,9 @@ class Outbox {
             root: current.root ?? null,
             text: current.text,
             mentions: JSON.parse(current.mentions),
+            attachments: wire.jsonList(current.attachments),
+            previews: [],
+            reactions: [],
             redacted: !visible
           }
         ], { max: svc.timing.roomCacheMax || ROOM_CACHE_MAX });

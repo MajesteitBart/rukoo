@@ -1,6 +1,6 @@
 # Workspace protocol proposal
 
-**Status.** The server has the text slice of Gate 1, with direct messages, blocks, signing up with an invitation and deleting a workspace: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
+**Status.** The server has the text slice of Gate 1, with direct messages, blocks, signing up with an invitation, deleting a workspace, and reactions, files, link cards and marking unread: [Gate 1 routes](#gate-1-routes) is what it answers today, behind a setting that is off by default. Everything else here is a proposal. Where the first release does less than the proposal, [the first release is lighter](#where-the-first-release-is-lighter) says what and why.
 
 Contract for the workspace server, desktop, Android and agent runner. [Architecture](../docs/workspace-architecture.md) · [Existing account and Book protocol](PROTOCOL.md) · [Optional recovery](WORKSPACE-RECOVERY.md)
 
@@ -201,6 +201,8 @@ Keep contiguous room order and never skip an earlier unresolved trigger. A slow 
 
 ## Files
 
+The first release takes a simpler path than the one below: the Worker streams uploads into R2 itself and signs download links of its own, on the workspace's address unless `WORKSPACE_FILES_ORIGIN` names another, instead of S3 presigned reads on a separate origin ([Rich messages](#rich-messages)).
+
 Use a separate private workspace bucket on every provider. R2 is the first qualified store, and its tokens scope to buckets, so a dedicated bucket is the only layout there. Another S3-compatible endpoint is listed once its signed upload, download and cleanup pass WK-6. On such a provider, sharing a bucket with Voice requires independently scoped credentials that the provider enforces for every operation, including listing and deletion. Verify a denied cross-prefix read, write and delete on disposable objects before enabling that layout. [R2 API token permissions](https://developers.cloudflare.com/r2/api/tokens/)
 
 The first Cloudflare path uses a private R2 binding for writes and a restricted S3 credential for signed reads. On VPS configure the internal endpoint separately from an allowlisted public HTTPS download origin. Reuse Voice's provider vocabulary and basic put/get/failure cases; its Rust S3 fake cannot validate signing/checksums or the real bucket. [Voice storage](../voice/README.md#storage)
@@ -214,17 +216,18 @@ Desktop, Android and runner enforce their own limits on redirects, response byte
 
 ## Gate 1 routes
 
-This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js` and `test/workspace-signup.test.js` are the runnable vectors for these routes.
+This is what the server answers today when team chat is turned on ([README](README.md#team-chat)). The sections above describe what it grows into. The tests in `test/workspaces.test.js`, `test/workspace-messages.test.js`, `test/workspace-dms.test.js`, `test/workspace-races.test.js`, `test/workspace-live.test.js`, `test/workspace-signup.test.js`, `test/workspace-reactions.test.js`, `test/workspace-files.test.js` and `test/workspace-previews.test.js` are the runnable vectors for these routes.
 
-Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API. A client may send `Rukoo-Workspace-Version: 1`. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant and `i_` an invitation. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
+Every route takes the account's session token as `Authorization: Bearer <token>`, like the account API, apart from the file links of [Rich messages](#rich-messages), which carry their own capability. A client names the wire version it speaks in `Rukoo-Workspace-Version`, the highest that it and `versions` in `GET /v1/info` share; a request without one is version 1. Version 2 changes one thing: its reader takes a `message.posted` whose `text` is `''` because the message has only files. A version 1 reader gets such a message with `text` set to `📎 ` and the files' names joined by `, `, and `mentions: []`, in the events of a conversation and the feed's `inlineEvents` alike; what is stored doesn't change. An ID is a letter, an underscore and 22 base64url characters: `w_` for a workspace, `c_` a conversation, `u_` a member, `e_` an event, `g_` a grant, `i_` an invitation and `f_` a file. A member's ID belongs to one workspace, so two workspaces can't tell that they share a person. The account's incarnation is only ever sent to its own devices, in `GET /v1/account`.
 
 `GET /v1/info` lists `workspaces-v1` in `features` and adds:
 
 ```json
 "workspace": {
-  "versions": [1],
+  "versions": [1, 2],
   "home": { "origin": "https://rukoo.example", "installation": "…" },
-  "capabilities": [],
+  "capabilities": ["reactions", "unread", "files", "previews"],
+  "files": { "maxBytes": 26214400, "workspaceBytes": 5368709120, "origin": "https://rukoo.example" },
   "recovery": "basic",
   "inviteSignups": true,
   "limits": { "workspacesPerAccount": 3, "membershipsPerAccount": 50, "members": 100, "sockets": 200, "conversations": 8192, "textBytes": 16384 },
@@ -232,7 +235,7 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
 }
 ```
 
-`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)).
+`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)). `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator bound a files bucket, and `previews` unless the operator turned link cards off. `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use.
 
 ### Errors
 
@@ -240,18 +243,25 @@ An error is `{ "error", "message" }`, with `field` for a refused input, `minVers
 
 | Status | `error` | Meaning |
 | --- | --- | --- |
-| 400 | `invalid` | The input named in `field` is wrong. |
+| 400 | `invalid` | The input named in `field` is wrong. For an upload, `field: size` means the bytes aren't as many as reserved and `field: sha256` that their digest doesn't match. |
 | 401 | `unauthorized` | The session ended (`scope: account`), or a socket ticket was refused. |
 | 403 | `forbidden`, `cosign_required`, `workspace_limit`, `workspaces_full`, `workspace_account_scope` | The caller's role, or the server's capacity, doesn't allow it. |
 | 403 | `dm_unavailable` | With `field: members`: a DM can't be started with these people. One answer for every reason the caller mustn't tell apart ([Direct messages](#direct-messages)). |
+| 403 | `files_off` | The server has no files bucket. Every file route answers this, and so does a post that names files. |
 | 404 | `not_found` | With `scope: workspace`: the caller isn't a member, or there is no such workspace. With `scope: conversation`: the caller isn't in it, or there is no such conversation. Each pair gets the same answer. |
 | 409 | `operation_conflict`, `submission_expired`, `stale_grant`, `stale_generation`, `archived`, `name_taken`, `last_owner`, `last_manager`, `history_regressed` | The request conflicts with what is there. `archived` is also the answer to a post in a closed DM. |
 | 409 | `members_remain` | An owner tried to delete a workspace that has other active members: "Remove everyone else first." |
 | 409 | `blocked` | The caller blocked someone in the DM they tried to start. `member` names the first of them. |
+| 409 | `reaction_limit` | The message has 20 different emoji already. |
+| 409 | `files_unavailable` | A post names an upload that isn't ready, was sent already, expired, is someone else's or is for another conversation. `files` lists them. Nothing was posted. |
+| 409 | `invalid_state` | A PUT to an upload that was sent, cancelled, expired or is gone. |
 | 410 | `reset_required`, `invite_gone` | The cursor or the invitation can no longer be used. |
-| 413 | `quota` | The workspace is full. `limit` says what ran out: `members` when joining, `conversations` for a new channel or DM, `invites` for open invitations, `bytes` for stored text. |
+| 410 | `expired` | A file link past its time. |
+| 413 | `quota` | The workspace is full. `limit` says what ran out: `members` when joining, `conversations` for a new channel or DM, `invites` for open invitations, `bytes` for stored text, `files` for file bytes. |
+| 413 | `too_large` | With `limit: fileBytes`: the file is larger than the server takes. |
 | 426 | `upgrade_required` | The server doesn't speak this version of the protocol. `minVersion` says which it does. |
-| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. `limit: dailyDms` means the caller started 20 DMs in the past day. |
+| 429 | `rate_limited` | Too many requests. `Retry-After` gives the seconds to wait. `limit: dailyDms` means the caller started 20 DMs in the past day, `limit: uploads` that they hold 20 open uploads, `limit: attempts` that two PUTs to the same upload are under way. |
+| 503 | `unavailable` | Deleting a workspace failed because its files couldn't be deleted, or waits for a file that is being uploaded. The workspace is still there; try again after `Retry-After` seconds. |
 
 ### Workspaces, members and invitations
 
@@ -261,8 +271,8 @@ Paths below `/v1/workspaces/{id}` are written from there.
 | --- | --- |
 | `GET /v1/workspaces` | → `{ workspaces: [{ id, name, role }] }`: the workspaces this account is a member of, 50 at most (`membershipsPerAccount`). |
 | `POST /v1/workspaces` | `{ name, displayName }` → `201 { workspace, me }`. The maker is its owner and manages a first channel, `general`. When the answer gets lost on the way, the server finds out from the workspace itself whether it was made, so its place under the server's limit is never counted twice or left taken. |
-| `GET /` | → `{ workspace: { id, name, createdAt, generation, keyId, time, limits, retention }, me }`. `time` is the server's clock, which a device reads before it makes an operation ID. |
-| `DELETE /` | → `204`. Deletes the workspace, for an owner who is its only active member: `403 forbidden` for anyone else, `409 members_remain` while someone else is in it. Its open invitations stop working, every socket closes with code 4003, and everything it held goes at once. The owner's account forgets it, so it no longer counts against `workspacesPerAccount`, and its place under the server's limit is free. Afterwards every route answers the 404 of a workspace that doesn't exist, and so does a join that was under way when it went. |
+| `GET /` | → `{ workspace: { id, name, createdAt, generation, keyId, time, limits, retention }, me }`. `time` is the server's clock, which a device reads before it makes an operation ID. `limits` is `{ members, conversations, textBytes, fileBytes, filesBytes }`. |
+| `DELETE /` | → `204`. Deletes the workspace, for an owner who is its only active member: `403 forbidden` for anyone else, `409 members_remain` while someone else is in it. Its files leave the bucket first, while the workspace stays as it is; only then its open invitations stop working, every socket closes with code 4003 and everything else it held goes. The owner's account forgets it, so it no longer counts against `workspacesPerAccount`, and its place under the server's limit is free. Afterwards every route answers the 404 of a workspace that doesn't exist, and so does a join that was under way when it went. While a file of the workspace is being uploaded, and when the bucket fails, the answer is `503 unavailable` with `Retry-After: 30`, and the workspace stays as it was, apart from files already deleted, for the owner to try again. |
 | `GET /members` | → `{ members: [{ id, kind, name, role, state, joinedAt }], more }`. `role` is `owner`, `admin`, `member` or `guest`; `state` is `active`, `left`, `removed` or `deleted`. A full member gets everyone who is active and the 1,000 who left most recently; `more` says there were others. A guest gets the active members of the channels they are in. |
 | `PATCH /members/me` | `{ name }` → `{ me }`. |
 | `PATCH /members/{u}` | `{ role }` → `{ member }`. Owners change anyone. Admins move people between `member` and `guest`. |
@@ -348,19 +358,21 @@ The blocked person's posts stay visible in shared channels and still count as un
 
 | Route | Request and answer |
 | --- | --- |
-| `POST /conversations/{c}/messages` | `{ operationId, grant, generation, text, mentions?, root? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. |
+| `POST /conversations/{c}/messages` | `{ operationId, grant, generation, text, mentions?, root?, attachments? }` → `201 { operationId, messageId, seq }`. A retry with the same ID and content gets `200` and the first answer. `attachments` are ready uploads ([Rich messages](#rich-messages)). |
 | `GET /conversations/{c}/operations/{operationId}` | → `{ messageId, seq, visible }`, or 404 when no message of the caller came from that operation. |
 | `GET /conversations/{c}/events` | `?after=<seq>&limit=<n>` pages forward. `?before=<seq>&limit=<n>` gives the newest events before a sequence. → `{ events, head, floor, more }`, oldest first, 50 unless `limit` says otherwise, 100 at most. |
 | `POST /conversations/{c}/messages/{e}/redact` | → `{ messageId, redacted: true }`. For the author and for a channel manager; in a DM for the author only, also once it closed. |
-| `POST /conversations/{c}/read` | `{ seq }` → `{ read }`. |
+| `POST /conversations/{c}/read` | `{ seq, readMark? }` → `{ read, readMark }`. `readMark` is the room's `readMark` the device knew when it read; one lower than the room's now moves nothing ([Marking unread](#marking-unread)). |
 
-A post to an archived channel or a closed DM gets `409 archived`, unless it is the retry of a message that was already in. `operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent. A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
+A post to an archived channel or a closed DM gets `409 archived`, unless it is the retry of a message that was already in. `operationId` is a UUIDv7 in lowercase. One older than 30 days gets `409 submission_expired`. A message whose retention ran out before that keeps a receipt, so its retry still gets the first answer. `grant` is the grant the device held in the conversation when the message was written, from the feed, and `generation` the workspace's. A message written under a grant that has since ended gets `409 stale_grant`, also when the member is back in under a new one, and the device asks before sending it again. One from before a restore gets `409 stale_generation`. `text` is 1 to 16,384 bytes of UTF-8 and is stored as sent; a message with files may have none, which a reader of wire version 1 gets as the files' names ([Gate 1 routes](#gate-1-routes)). A mention is `{ actor, start, end }`: a member of the conversation, and a byte range of the text that starts and ends between characters. Mentions come in order and don't overlap, 32 at most. `root` is the ID of a top-level message in the same conversation that hasn't been removed.
 
 Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 
 | `kind` | Adds |
 | --- | --- |
-| `message.posted` | `text`, `mentions`, and `root` for a reply. Once removed: `redacted: true` in place of the text and mentions. |
+| `message.posted` | `text`, `mentions`, `attachments`, `previews`, `reactions`, and `root` for a reply. Once removed: `redacted: true` in place of all but `root`. |
+| `reaction.added`, `reaction.removed` | `target`, `targetSeq`, `emoji`. `actor` is who reacted or took it back. |
+| `message.previewed` | `target`, `targetSeq`, `previews`: the message's link cards as they are now. `actor` is the message's author. |
 | `message.redacted` | `target`, `targetSeq`. |
 | `channel.created` | `name`, `visibility`. |
 | `channel.renamed` | `name`. |
@@ -369,6 +381,75 @@ Every event is `{ seq, id, kind, actor, at }` plus what its kind adds:
 | `dm.started` | `members`: the DM's people, as member IDs in the set's order. `actor` is who started it. |
 
 A grant starts at its `member.joined` event, which is also where its read position starts. Joining a channel gives its earlier history. Posting moves the sender's read position to their message. A DM has no `member.joined` events: every grant in it starts at `dm.started`, its first event. Someone leaving a DM is a `member.left`. A DM's close shows in its feed row (`archived` and `closedReason`) and has no event of its own, so every event has an actor.
+
+### Rich messages
+
+A message can carry files, reactions and link cards, and a member can mark a message unread. A `message.posted` that isn't removed looks like this, with `[]` for each list it has nothing in:
+
+```json
+{
+  "seq": 42, "id": "e_…", "kind": "message.posted", "actor": "u_…", "at": 1763550000000,
+  "text": "The plan: https://example.com/q3", "mentions": [],
+  "attachments": [
+    { "id": "f_…", "name": "chart.png", "type": "image/png", "size": 48213, "width": 1200, "height": 630 },
+    { "id": "f_…", "name": "report.pdf", "type": "application/pdf", "size": 210944 }
+  ],
+  "previews": [{
+    "url": "https://example.com/q3", "title": "Q3 plan", "description": "What we do next", "site": "Example",
+    "image": { "id": "f_…", "name": "preview.png", "type": "image/png", "size": 30122, "width": 1200, "height": 630 },
+    "video": false
+  }],
+  "reactions": [{ "emoji": "👍", "actors": ["u_…", "u_…"] }]
+}
+```
+
+`attachments` are in the order the post listed them; `width` and `height` only for an image whose sender gave them. `previews` are link cards: `description` and `site` may be `''`, `image` is a file or null. `reactions` holds one group per emoji, in the order of each group's first reaction, with the people in the order they reacted. A history page carries every message's reactions and cards as they are when the page is read, and the events after it change them in order.
+
+| Route | Request and answer |
+| --- | --- |
+| `POST /conversations/{c}/messages/{e}/react` | `{ emoji, on }` → `{ messageId, emoji, on, changed }`. Adds the caller's reaction, or takes it back with `on: false`. |
+| `POST /conversations/{c}/unread` | `{ message }` → `{ read, readMark }`. Marks a message and everything after it unread for the caller. |
+| `POST /conversations/{c}/uploads` | `{ name, type?, size, sha256, width?, height? }` → `201 { upload: { id, expiresAt }, put: { url, expiresAt } }`. Reserves an upload. |
+| `PUT <put url>` | The file's bytes, with `Content-Length`, and no `Authorization`. → `{ upload: { id, ready: true } }`. |
+| `DELETE /conversations/{c}/uploads/{f}` | → `204`, also when there was nothing to cancel. Cancels the caller's own upload that no message has. |
+| `POST /conversations/{c}/files/{f}/download` | → `{ url, expiresAt, name, type, size, sha256 }`. A link to a file of a message, valid for 60 seconds. |
+| `GET <download url>` | The file, with no `Authorization`. |
+| `POST /conversations/{c}/messages/{e}/previews` | `{ remove: url }` → `{ previews }`. The author takes a link card off their message. |
+
+#### Reactions
+
+`emoji` is one emoji, 1 to 64 bytes of UTF-8, as Unicode recommends it for general interchange (`/^\p{RGI_Emoji}$/v`): skin tones and sequences such as 👨‍👩‍👧 count as one, an emoji without its variation selector such as ❤ instead of ❤️ doesn't. Anything else is `400 invalid` with `field: emoji`; `on` must be a boolean (`field: on`). The caller needs a grant in the conversation, and the message must be a `message.posted` there that wasn't removed, or the answer is `404 not_found`. An archived channel or closed DM answers `409 archived`. A message holds at most 20 different emoji, and a 21st answers `409 reaction_limit`; another person can still add one of the twenty.
+
+When the reaction changes, the room gets a `reaction.added` or `reaction.removed` event and its people are woken. When it doesn't, because the caller reacted with that emoji already or took back one they never gave, `changed` is false and nothing is appended. Reactions are no activity: they don't count as unread, mention nobody, alert nobody and don't move `lastAt`. Removing a message takes its reactions with it, and so does retention, without events.
+
+#### Marking unread
+
+The read position becomes `max(seq − 1, floor − 1, 0)` for the message's `seq`, when that is lower than it is: the message and what came after it count as unread again. It never moves forward here. A change adds 1 to the room's `readMark` for the caller and wakes the caller's devices, which follow the lower position from the feed ([The feed](#the-feed)). The message must be a `message.posted` of the conversation, else `404 not_found`. `read` and `readMark` in the answer are the room's for the caller afterwards.
+
+A device that reads the room on its own may have a read on its way when the member marks something unread, and that read would move the position forward again. So a read names the `readMark` the device knew: `POST /conversations/{c}/read` with a `readMark` lower than the room's changes nothing and answers the room's `read` and `readMark`. A read without `readMark` moves the position as it always did.
+
+#### Files
+
+Files live in the private R2 bucket the operator binds as `WORKSPACE_FILES`. Without the binding, `GET /v1/info` lists no `files` capability and every file route answers `403 files_off`, as does a post that names files. Upload and download links have the form `<files origin>/v1/workspaces/{w}/files/<token>`, on the workspace's own address unless `WORKSPACE_FILES_ORIGIN` names another. A token is a payload and an HMAC under the server's secret, as socket tickets are, and is the only capability a PUT or GET needs. A token that doesn't check out answers `404 not_found`; one past its time `410 expired`.
+
+1. **Reserve.** `name` is 1 to 255 characters after trimming, without control characters, line separators, `/`, `\` or the characters that turn the direction of text around. `type` is a MIME type in lowercase without parameters, at most 127 characters, and `application/octet-stream` when left out. `size` is 1 to `maxBytes` (`WORKSPACE_FILE_BYTES`); a larger one answers `413 too_large` with `limit: fileBytes`. `sha256` is 64 lowercase hex characters. `width` and `height` come together, 1 to 65,535, for an `image/` type only. A wrong field is `400 invalid` with its `field`. The caller needs a grant in a room that isn't archived (`409 archived`). A member holds at most 20 open uploads, reserved or ready but not sent, else `429 rate_limited` with `limit: uploads`. The workspace's file bytes, stored and reserved together, stay within `workspaceBytes` (`WORKSPACE_FILES_BYTES`), else `413 quota` with `limit: files`. An upload expires an hour after it was reserved unless a message took it.
+2. **Upload.** The PUT's `Content-Length` must be the reserved size (`400 invalid`, `field: size`). Each attempt gets a fresh key in the bucket, which the workspace records before a byte is written. The Worker streams the body into the bucket with exactly that length and the reserved SHA-256, which R2 checks: a digest that doesn't match is `400 invalid` with `field: sha256`, and the attempt's key goes to the trash. The upload stays open for another try. The first attempt that ends well makes the upload ready; another that ends after it gets the same answer and its key goes to the trash. A PUT to an upload that is ready, sent, cancelled, expired or gone answers `409 invalid_state`. Two PUTs to one upload may run at once (`429 rate_limited`, `limit: attempts`, for a third). PUTs draw from an allowance per upload, the one accounts outside the workspace share.
+3. **Send.** `POST /conversations/{c}/messages` takes `attachments`: 0 to 10 different upload IDs, `[]` when left out. With at least one, `text` may be empty. In the post's transaction every listed upload must be the caller's, for this conversation, ready, unsent and unexpired; otherwise the answer is `409 files_unavailable` with `files` listing those that aren't, and nothing is posted. The check for a retry comes first, so a retry of a message that was posted gets its first answer. The operation's hash covers the files as well as the text, mentions and root; a message without files hashes as before.
+4. **Download.** The caller needs a grant, and the file must belong to a message of this conversation that wasn't removed and that retention still keeps, or be the image of one of its link cards; otherwise `404 not_found`. The link works for 60 seconds, so a download that started can finish, and a new one needs the member's access again. It serves the stored type when it is one of `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/avif`, `application/pdf`, `text/plain`, `video/mp4`, `video/webm`, `audio/mpeg`, `audio/ogg`, `audio/webm` and `audio/wav`, else `application/octet-stream`, with `Content-Disposition: attachment` carrying the name in ASCII and in UTF-8, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cache-Control: private, no-store` and `Content-Length`. A file deleted from the bucket meanwhile answers `404 not_found`. There is no `Range` support and no thumbnails: apps scale an image from its `width` and `height`.
+5. **The trash.** A key whose file goes is deleted from the bucket by the workspace's alarm, in batches of up to 1,000, usually within a minute and again after a failure. That happens to the files of a removed message and its link card images, the files of messages retention removes, an upload that expired unsent or was cancelled, an attempt that lost or failed, and an attempt that never reported back within two hours. Deleting a workspace first deletes everything under its prefix in the bucket, where every key it makes lives, in batches of up to 1,000, and keeps the workspace when that fails.
+6. **Counting.** File bytes are counted apart from message text (`WORKSPACE_BYTES` stays text only). A reservation counts its size until a message takes it, it expires or it is cancelled; a sent file counts until its key is deleted from the bucket, so a removed file still counts until the trash is empty.
+
+#### Link cards
+
+When `previews` is on, a post that was just made (a `201`, never a retry's `200`) gets cards for up to three distinct addresses in its text, made after the answer, best effort and within 15 seconds in all.
+
+- **Which addresses.** `http://` and `https://` addresses that don't start inside a word, up to the next white space, without the `.,:;!?'"` after them and without a closing `)`, `]`, `}` or `>` that has no opening one in the address, in the order they appear. Addresses longer than 4,096 UTF-16 code units, the most a card's `url` may have, addresses with a user name or password, a port other than the scheme's own, the host names `localhost`, `*.localhost`, `*.local` and `*.internal` and host names without a dot, IP addresses in loopback, private, link-local, shared (CGNAT), multicast, reserved or unspecified ranges, IPv4-mapped, NAT64 and 6to4 forms included, and the server's own hosts (`WORKSPACE_ORIGIN`, `WORKSPACE_FILES_ORIGIN`, `BOOKING_ORIGIN` and the address the post came in on) are skipped. `WORKSPACE_PREVIEW_HOSTS`, for tests only, exempts listed `host:port` pairs.
+- **Fetching.** Redirects are followed by hand, at most three, each to an address that passes the same rules. Each address gets 4 seconds, with `Accept: text/html,application/xhtml+xml`, `User-Agent: Mozilla/5.0 (compatible; RukooBot/1.0; +https://rukoo.io)` and no cookies or credentials. Only a 2xx answer of type `text/html` counts, and only its first 512 KiB is read.
+- **Host names.** Before each fetch, of the page, a redirect target or the image, the Worker looks the host name up through DNS over HTTPS at `https://cloudflare-dns.com/dns-query`, A and AAAA records, following CNAME answers to the addresses they lead to, within the address's 4 seconds. When any answer is in a range the rules above refuse for an IP address, or the lookup fails, runs out of time or finds no address, that address isn't fetched: a page or redirect target gives no card, and an image leaves the card without one. IP addresses and `WORKSPACE_PREVIEW_HOSTS` pairs aren't looked up. The check resolves the name before the fetch but can't pin the connection to the address it checked: the fetch resolves the name again, so a name whose answer changes in between (DNS rebinding) can in principle still reach a private address. On Cloudflare, a Worker's subrequests go out from Cloudflare's network. Any other runtime, such as the planned VPS distribution, must enforce these destination rules at its egress as well.
+- **What a card holds.** `title` from `og:title`, `twitter:title` or the page's first `<title>`; `description` from `og:description`, `twitter:description` or `<meta name="description">`; `site` from `og:site_name`, else the host without `www.`; `video` when `og:type` starts with `video` or the page has an `og:video` tag. Character references are decoded, white space collapsed and control characters dropped, and the title, description and site are cut to 200, 500 and 100 characters, a cut ending in `…`. A page without a title makes no card. `url` is the address as the message has it.
+- **The image**, only with a files bucket: from `og:image` or `twitter:image`, resolved against the page's final address and fetched by the same rules, at most 2 MiB, PNG, JPEG, GIF or WebP by its first bytes. It is stored as a file of the message named `preview.<ext>`, with `width` and `height` from the image's header when the format gives them, and counts against the workspace's file bytes. When those are used up, the card has no image.
+- **Publishing.** The cards are stored on the message and announced with `message.previewed`, whose `actor` is the message's author and whose `previews` are the cards. A message gets cards once. When it was removed meanwhile, or its author removed a card before they came, nothing is appended and the images go to the trash.
+- **Removing a card.** Only the message's author (`403 forbidden` for anyone else). The card goes, its image goes to the trash, and `message.previewed` carries the cards that are left; a card that isn't there changes nothing. A message whose author removed a card is never given cards again. Removing the message removes its cards.
 
 ### The feed
 
@@ -379,13 +460,13 @@ A grant starts at its `member.joined` event, which is also where its read positi
   "changes": [{
     "conversation": "c_…", "kind": "channel", "name": "general", "visibility": "workspace", "archived": false,
     "grant": "g_…", "role": "member", "members": 14,
-    "head": 42, "floor": 1, "lastAt": 1763550000000, "read": 40, "unread": 2, "mentions": 1,
+    "head": 42, "floor": 1, "lastAt": 1763550000000, "read": 40, "readMark": 0, "unread": 2, "mentions": 1,
     "removed": ["e_…"], "removedMore": false
   }, {
     "conversation": "c_…", "kind": "dm", "name": null, "visibility": "dm", "archived": false,
     "participants": ["u_…", "u_…", "u_…"], "startedBy": "u_…", "closedReason": null,
     "grant": "g_…", "role": "member", "members": 3,
-    "head": 12, "floor": 1, "lastAt": 1763550000000, "read": 10, "unread": 2, "mentions": 0,
+    "head": 12, "floor": 1, "lastAt": 1763550000000, "read": 10, "readMark": 0, "unread": 2, "mentions": 0,
     "removed": [], "removedMore": false
   }],
   "evictions": ["c_…"],
@@ -396,7 +477,7 @@ A grant starts at its `member.joined` event, which is also where its read positi
 }
 ```
 
-`members` is how many people hold a grant in the room now. `lastAt` is the time of the event at `head`, or null once retention removed it; clients order DMs by it. A DM has `name: null` and three fields of its own: `participants`, its fixed set of people as member IDs in the order of `dm.started`, the caller included; `startedBy`; and `closedReason`, null while it is open and else `left`, `ineligible` or `closed`. `archived` is true exactly when `closedReason` isn't null, so a device can post in any room that isn't `archived`. Names, roles and states come from `GET /members`: everyone in a DM is a full member, and full members get every active member and the 1,000 most recent former ones.
+`members` is how many people hold a grant in the room now. `lastAt` is the time of the room's newest event that isn't a reaction or a link card (`reaction.added`, `reaction.removed`, `message.previewed`), or null once retention removed it; clients order DMs by it. `readMark` counts how often the member marked a message unread there: a device that sees it higher than it knew takes `read` from the row, also when that is lower than its own. A DM has `name: null` and three fields of its own: `participants`, its fixed set of people as member IDs in the order of `dm.started`, the caller included; `startedBy`; and `closedReason`, null while it is open and else `left`, `ineligible` or `closed`. `archived` is true exactly when `closedReason` isn't null, so a device can post in any room that isn't `archived`. Names, roles and states come from `GET /members`: everyone in a DM is a full member, and full members get every active member and the 1,000 most recent former ones.
 
 Without `after` the answer starts a pass over every room the caller is in. `limit` is 32 unless given, 100 at most. `unread` and `mentions` count up to 100, which a device shows as 99+. `removed` lists the messages redacted in that room since the cursor, 64 at most, and `removedMore` says there were more. `evictions` are rooms the caller lost. `inlineEvents` are up to 20 events of the `active` room after `roomAfter`. `directory` says whether to load `GET /members`, `GET /channels` and `GET /blocks` again. For a guest `channels` is always false, and `members` is true only when someone they share a room with changed, came or went. `blocks` is true on a pass from the start and when the caller's own blocks changed since the cursor, and never because someone blocked them. A cursor is sealed: it opens only for its member, in its restore generation, and its length says nothing.
 
@@ -412,11 +493,11 @@ The server sends one frame, `{"t":"wake"}`, when something changed for this memb
 
 ### Limits on requests
 
-The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks is a read and unblocking a write. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation, blocking someone and deleting the workspace draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
+The workspace counts requests in memory, per account: about 8 reads a second with bursts of 60, 3 writes a second with bursts of 30, a socket ticket every five seconds with bursts of 6, and a new DM every ten seconds with bursts of 10. Listing blocks and asking for a download link are reads; unblocking, reacting, marking unread, reserving or cancelling an upload and removing a link card are writes. A PUT to an upload link has no session, so each upload gets the allowance of an account that isn't a member. Removing a member or a message, leaving a channel, a DM or the workspace, archiving, changing a role, withdrawing an invitation, blocking someone and deleting the workspace draw from their own allowance and skip the workspace-wide ceiling, so they go through while a workspace is busy. Accounts that aren't members share one small allowance. The numbers are first guesses until Gate 3 measures a deployed workspace.
 
 ### Not built yet
 
-DMs with guests, files, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace that still has other members, renaming a workspace, opening invitation links in the apps, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
+DMs with guests, editing and forwarding messages, thumbnails made by the server, ranged downloads, agents and their runner, MCP, guest sign-up vouchers and workspace-only accounts, the encrypted kit, signed checkpoints, bans and reports, closing a workspace that still has other members, renaming a workspace, opening invitation links in the apps, appointing a manager for a channel whose only manager was removed, two people co-signing a guest's admission, per-member storage accounting, the operator CLI and protected recovery. Nothing has been measured on a deployed Worker.
 
 ## Fixture index
 

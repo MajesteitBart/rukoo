@@ -321,8 +321,8 @@ test('mute and drafts persist across a restart', async (t) => {
     (err) => err.code === 'invalid' && err.field === 'mentions'
   );
   // chatDraft reads a kept draft without opening the room (Undo of Discard from another room).
-  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, null), main);
-  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, root), reply);
+  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, null), { ...main, attachments: [], expired: 0 });
+  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, root), { ...reply, attachments: [], expired: 0 });
   assert.equal(await svc.api.chatDraft(ws.id, ws.general, posts[1].messageId), null);
   await assert.rejects(svc.api.chatDraft(ws.id, 'c_' + 'x'.repeat(22), null), (err) => err.code === 'not_found');
   svc.close();
@@ -332,10 +332,10 @@ test('mute and drafts persist across a restart', async (t) => {
   await drive(clock, () => again.store && again.store.getRoom(ws.id, ws.general), 'the cache to open');
   const view = await again.api.chatOpen(ws.id, ws.general);
   assert.equal(view.room.muted, true);
-  assert.deepEqual(view.draft, main);
+  assert.deepEqual(view.draft, { ...main, attachments: [], expired: 0 });
   await caughtUp(clock, again, ws.id, ws.general);
   const thread = await again.api.chatThread(ws.id, ws.general, root);
-  assert.deepEqual(thread.draft, reply);
+  assert.deepEqual(thread.draft, { ...reply, attachments: [], expired: 0 });
   // A feed pass keeps mute: the room row comes again, muted stays local.
   await again.api.chatReload(ws.id);
   await drive(clock, () => {

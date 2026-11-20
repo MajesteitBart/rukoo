@@ -7,7 +7,10 @@ import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 
 import {
   ACCOUNT_NAME,
   accountObject,
+  filesOn,
+  filesOrigin,
   limitRate,
+  previewsOn,
   registryObject,
   signups,
   workspaceLimits,
@@ -16,12 +19,15 @@ import {
   workspaceSignups,
   workspacesOn
 } from './config.js';
+import { downloadable, fileRoute, filesOff, needFiles, reserved } from './files.js';
 import { json, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
+import { schedulePreviews } from './previews.js';
 
 // The wire versions this server speaks. A client names the one it uses in Rukoo-Workspace-Version; none means 1.
-export const VERSIONS = [1];
+// A reader of version 2 takes a message with files and no text; one of version 1 gets the files' names as its text.
+export const VERSIONS = [1, 2];
 const PROTOCOL = 'rukoo.workspace.v1';
 const TICKET_PREFIX = 'rukoo.ticket.';
 
@@ -33,6 +39,7 @@ const MEMBER_ID = ID('u');
 const EVENT_ID = ID('e');
 const INVITE_ID = ID('i');
 const GRANT_ID = ID('g');
+const FILE_ID = ID('f');
 const GENERATION = /^[A-Za-z0-9_-]{22}$/;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -42,6 +49,14 @@ const MENTIONS = 32;
 const INVITE_CHANNELS = 20;
 // The other people in a DM: a DM holds 2 to 8, the one starting it included.
 const DM_OTHERS = 7;
+// Files one message carries, and the longest file name and MIME type an upload may have.
+const ATTACHMENTS = 10;
+const FILE_NAME = 255;
+const FILE_TYPE = 127;
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+// A reaction is one emoji as Unicode recommends it for general interchange, skin tones and sequences included.
+const EMOJI = /^\p{RGI_Emoji}$/v;
+const EMOJI_BYTES = 64;
 
 const encoder = new TextEncoder();
 
@@ -56,8 +71,10 @@ export async function workspaceInfo(env, url) {
   return {
     versions: VERSIONS,
     home: { origin: workspaceOrigin(env) ?? url.origin, installation: installations.get(where) ?? null },
-    // files, runner, mcp, protected-recovery and push-wake are named here once this server has them.
-    capabilities: [],
+    // Reactions and marking unread come with this server. files needs the bucket and previews the operator's
+    // WORKSPACE_PREVIEWS. runner, mcp, protected-recovery and push-wake are named here once this server has them.
+    capabilities: capabilities(env),
+    ...(filesOn(env) ? { files: { maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes, origin: filesOrigin(env, url) } } : {}),
     recovery: 'basic',
     // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite).
     inviteSignups: inviteSignups(env),
@@ -74,6 +91,10 @@ export async function workspaceInfo(env, url) {
     // which includes messages that were removed since.
     retention: { contentDays: limits.retentionDays, feedDays: 14, platformHistoryDays: 30 }
   };
+}
+
+export function capabilities(env) {
+  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : [])];
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
@@ -96,7 +117,9 @@ export async function signupInvite(env, value) {
   return `workspace:${toBase64url(await sha256(utf8(invite)))}`;
 }
 
-export async function workspaces(request, env, url) {
+// ctx is the request's ExecutionContext: link cards are made in its waitUntil after a post, and an upload finishes in
+// it when the device hangs up.
+export async function workspaces(request, env, url, ctx) {
   if (!workspacesOn(env)) throw notFound();
   const version = request.headers.get('rukoo-workspace-version');
   if (version !== null && !VERSIONS.includes(Number(version))) {
@@ -105,6 +128,8 @@ export async function workspaces(request, env, url) {
       scope: 'workspace'
     });
   }
+  // The workspace shapes the events it serves for this version.
+  const wire = version === null ? 1 : Number(version);
   const method = request.method;
   const parts = url.pathname.slice('/v1/workspaces'.length).split('/').slice(1);
   if (parts.length === 0) {
@@ -116,6 +141,8 @@ export async function workspaces(request, env, url) {
   if (!WORKSPACE_ID.test(id)) throw notFound();
   const route = `${method} /${rest.join('/')}`;
   if (route === 'GET /socket') return socket(request, env, id);
+  // A file link carries its own capability and no session (files.js).
+  if (rest[0] === 'files' && rest.length === 2 && (method === 'PUT' || method === 'GET')) return fileRoute(request, env, id, rest[1], ctx);
 
   const { token } = session(request);
   const stub = workspaceObject(env, id);
@@ -149,7 +176,7 @@ export async function workspaces(request, env, url) {
       return ask('channel.create', { name: name(b.name, 'name'), visibility: oneOf(b.visibility, ['workspace', 'private'], 'visibility') });
     }
     case 'GET /changes':
-      return ask('changes', changesQuery(url));
+      return ask('changes', { ...changesQuery(url), version: wire });
     case 'POST /socket-ticket':
       return ticket(env, id, await stub.request(token, 'ticket'));
     case 'POST /dms':
@@ -204,16 +231,49 @@ export async function workspaces(request, env, url) {
   }
   if (area === 'conversations' && rest.length >= 3) {
     const conversation = match(a, CONVERSATION_ID);
-    if (rest.length === 3 && b === 'messages' && method === 'POST') return ask('post', message(conversation, await body()));
-    if (rest.length === 3 && b === 'events' && method === 'GET') return ask('events', eventsQuery(conversation, url));
+    if (rest.length === 3 && b === 'messages' && method === 'POST') {
+      const args = message(conversation, await body());
+      if (args.attachments.length && !filesOn(env)) throw filesOff();
+      const result = await stub.request(token, 'post', args);
+      // A message that was just posted gets its link cards made after the answer; a retry's 200 doesn't.
+      if (result.status === 201) schedulePreviews(ctx, env, url, { workspace: id, conversation, message: result.body.messageId }, args.text);
+      return send(result);
+    }
+    if (rest.length === 3 && b === 'events' && method === 'GET') return ask('events', { ...eventsQuery(conversation, url), version: wire });
     if (rest.length === 3 && b === 'read' && method === 'POST') {
-      return ask('read', { conversation, seq: whole((await body()).seq, 'seq') });
+      // readMark: the room's readMark the device knew when it read, so a read from before a mark of unread moves nothing.
+      const fields = await body();
+      const seq = whole(fields.seq, 'seq');
+      const readMark = fields.readMark === undefined || fields.readMark === null ? null : whole(fields.readMark, 'readMark');
+      return ask('read', { conversation, seq, readMark });
+    }
+    if (rest.length === 3 && b === 'unread' && method === 'POST') {
+      return ask('unread', { conversation, message: event((await body()).message, 'message') });
+    }
+    if (rest.length === 3 && b === 'uploads' && method === 'POST') {
+      needFiles(env);
+      const fields = upload(await body(), env);
+      return reserved(env, url, id, await stub.request(token, 'upload.reserve', { conversation, ...fields }));
+    }
+    if (rest.length === 4 && b === 'uploads' && method === 'DELETE') {
+      needFiles(env);
+      return ask('upload.cancel', { conversation, upload: match(c, FILE_ID) });
     }
     if (rest.length === 4 && b === 'operations' && method === 'GET') {
       return ask('operation', { conversation, operationId: c, op: operation(c).bytes });
     }
+    if (rest.length === 5 && b === 'files' && d === 'download' && method === 'POST') {
+      needFiles(env);
+      return downloadable(env, url, id, await stub.request(token, 'file.download', { conversation, file: match(c, FILE_ID) }));
+    }
     if (rest.length === 5 && b === 'messages' && d === 'redact' && method === 'POST') {
       return ask('redact', { conversation, message: event(c) });
+    }
+    if (rest.length === 5 && b === 'messages' && d === 'react' && method === 'POST') {
+      return ask('react', { conversation, message: event(c), ...reaction(await body()) });
+    }
+    if (rest.length === 5 && b === 'messages' && d === 'previews' && method === 'POST') {
+      return ask('previews.remove', { conversation, message: event(c), remove: previewAddress((await body()).remove) });
     }
   }
   throw notFound();
@@ -511,17 +571,26 @@ function operation(value) {
 }
 
 // A message as the workspace stores it: the text exactly as sent, and mentions as byte ranges in that text. grant
-// and generation say under which access, and in which life of the workspace, the device wrote it.
+// and generation say under which access, and in which life of the workspace, the device wrote it. attachments are
+// uploads that are ready, in the order the message shows them; a message with files may have no text.
 function message(conversation, body) {
   const { bytes: op, time: opTime } = operation(body.operationId);
   const grant = match(body.grant, GRANT_ID, 'grant');
   if (typeof body.generation !== 'string' || !GENERATION.test(body.generation)) {
     throw invalid('generation must be the generation the workspace answered with.', 'generation');
   }
+  const attachments = body.attachments === undefined ? [] : body.attachments;
+  const files =
+    Array.isArray(attachments) &&
+    attachments.length <= ATTACHMENTS &&
+    attachments.every((id) => typeof id === 'string' && FILE_ID.test(id)) &&
+    new Set(attachments).size === attachments.length;
+  if (!files) throw invalid(`attachments must be a list of at most ${ATTACHMENTS} different file ids.`, 'attachments');
   if (typeof body.text !== 'string') throw invalid('text must be a string.', 'text');
   const utf8Text = encoder.encode(body.text);
-  if (utf8Text.length === 0 || utf8Text.length > TEXT_BYTES || !body.text.isWellFormed()) {
-    throw invalid(`text must be 1 to ${TEXT_BYTES} bytes of UTF-8.`, 'text');
+  const least = attachments.length ? 0 : 1;
+  if (utf8Text.length < least || utf8Text.length > TEXT_BYTES || !body.text.isWellFormed()) {
+    throw invalid(`text must be ${least} to ${TEXT_BYTES} bytes of UTF-8.`, 'text');
   }
   const list = body.mentions === undefined ? [] : body.mentions;
   if (!Array.isArray(list) || list.length > MENTIONS) throw invalid(`mentions must be a list of at most ${MENTIONS}.`, 'mentions');
@@ -556,8 +625,59 @@ function message(conversation, body) {
     text: body.text,
     size: utf8Text.length,
     mentions,
-    root
+    root,
+    attachments
   };
+}
+
+// A file to reserve an upload for. The name is shown and saved as it is, so it is one line without path separators or
+// characters that turn the direction of text around, which could make "gpj.exe" read as "exe.jpg". width and height
+// are an image's, for the apps to lay it out before they have it.
+function upload(body, env) {
+  if (typeof body.name !== 'string') throw invalid('name must be a string.', 'name');
+  const name = body.name.trim();
+  const length = Array.from(name).length;
+  if (!length || length > FILE_NAME || !name.isWellFormed() || /[\p{Cc}\p{Zl}\p{Zp}\u202a-\u202e\u2066-\u2069/\\]/u.test(name)) {
+    throw invalid(`name must be a file name of 1 to ${FILE_NAME} characters, without / or \\.`, 'name');
+  }
+  const type = body.type === undefined || body.type === null ? 'application/octet-stream' : body.type;
+  if (typeof type !== 'string' || type.length > FILE_TYPE || !MIME.test(type)) {
+    throw invalid('type must be a MIME type in lowercase, such as image/png.', 'type');
+  }
+  if (!Number.isSafeInteger(body.size) || body.size < 1) throw invalid("size must be the file's size in bytes.", 'size');
+  const most = workspaceLimits(env).fileBytes;
+  if (body.size > most) throw new HttpError(413, 'too_large', `A file can be at most ${most} bytes.`, {}, { limit: 'fileBytes' });
+  if (typeof body.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(body.sha256)) {
+    throw invalid("sha256 must be the file's SHA-256 in lowercase hex.", 'sha256');
+  }
+  const size = {};
+  for (const field of ['width', 'height']) {
+    const value = body[field];
+    if (value === undefined || value === null) continue;
+    if (!type.startsWith('image/') || !Number.isSafeInteger(value) || value < 1 || value > 65535) {
+      throw invalid(`${field} must be a whole number from 1 to 65535, for an image.`, field);
+    }
+    size[field] = value;
+  }
+  if ((size.width === undefined) !== (size.height === undefined)) {
+    throw invalid('width and height come together.', size.width === undefined ? 'width' : 'height');
+  }
+  return { name, type, size: body.size, sha256: body.sha256, width: size.width ?? null, height: size.height ?? null };
+}
+
+function reaction(body) {
+  const { emoji, on } = body;
+  if (typeof emoji !== 'string' || !emoji.isWellFormed() || encoder.encode(emoji).length > EMOJI_BYTES || !EMOJI.test(emoji)) {
+    throw invalid('emoji must be one emoji.', 'emoji');
+  }
+  if (typeof on !== 'boolean') throw invalid('on must be true or false.', 'on');
+  return { emoji, on };
+}
+
+// The address of a link card, as the card names it.
+function previewAddress(value) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > TEXT_BYTES) throw invalid('remove must be the address of a link card.', 'remove');
+  return value;
 }
 
 function number(url, key, fallback, max) {

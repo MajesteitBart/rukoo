@@ -457,6 +457,6 @@ test('a guest sees no New message, no channel actions and nobody to message', as
   const msg = pane().locator('.ch-main .ch-log li.ch-msg').filter({ has: win.locator('.ch-text', { hasText: 'Welcome, guest' }) });
   await expect(msg).toBeVisible({ timeout: 15000 });
   await msg.click({ button: 'right' });
-  await expect(win.locator('.menu [role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text']);
+  await expect(win.locator('.menu [role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Mark unread']);
   await win.keyboard.press('Escape');
 });

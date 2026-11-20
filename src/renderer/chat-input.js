@@ -1,10 +1,13 @@
-import { t } from './i18n.js';
+import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { hue, initials } from './ui.js';
+import { hue, initials, toast, fileSize } from './ui.js';
 import { h } from './agent/bui.js';
 import { toWire, sendProblem, byteLength } from './chat-text.js';
 import { mentionToken, rankMembers } from './mention-match.js';
 import { draftSlotKey, attachDraft, detachDraft, draftWritten, sendStarted, sendSettled } from './chat-drafts.js';
+import { stagedState, draftFiles } from './chat-model.js';
+import { format as formatText, formatForKey, emojiToken, emojiCode } from './chat-format.js';
+import { formatBarEl, mountTray, openEmojiPicker, emojiData, withTone, closeEmojiPicker, pickerOpen } from './chat-rich.js';
 
 // Team chat's composer (contract 3.16, 3.17, 5.5; desktop-ui 5.5 and 5.6): a plain-text editable with mentions as
 // locked chips, the mention picker, Enter to send, the limits line and drafts. chat-view.js mounts one under the log
@@ -84,8 +87,9 @@ const spliceParts = (parts, start, end, insert) => mergedParts([...cutParts(part
 const normalize = (s) => (typeof s.toWellFormed === 'function' ? s.toWellFormed() : s).replace(/ /g, ' ').replace(/\r\n?/g, '\n');
 
 // The draft of parts: { text, mentions } with the text untrimmed and the mentions in UTF-8 bytes, or null when there is
-// nothing but white space.
-export function draftOf(parts) {
+// nothing but white space. files: the ready files that go with it (contract 3.5), which make a draft of their own
+// without text.
+export function draftOf(parts, files = []) {
   let text = '';
   let bytes = 0;
   const mentions = [];
@@ -96,10 +100,33 @@ export function draftOf(parts) {
     text += s;
     bytes += n;
   }
-  return text.trim() ? { text, mentions } : null;
+  if (!text.trim() && !files.length) return null;
+  return files.length ? { text: text.trim() ? text : '', mentions: text.trim() ? mentions : [], attachments: files } : { text, mentions };
 }
 
 const draftKey = (d) => (d ? JSON.stringify(d) : '');
+
+// The formatting bar's state on this computer: shown or not, as the person left it.
+const FORMAT_BAR = 'rukoo.chat.formatBar';
+function formatBarShown() {
+  try {
+    return localStorage.getItem(FORMAT_BAR) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+function rememberFormatBar(on) {
+  try {
+    localStorage.setItem(FORMAT_BAR, on ? '1' : '0');
+  } catch (_) {
+    // Kept for this window only.
+  }
+}
+
+// A staged file as a draft keeps it: its file ID and what shows of it (contract 3.5, 4.5 Draft).
+const fileOf = (s) => ({ id: s.file, name: s.name, type: s.type, size: s.size, ...(s.width ? { width: s.width, height: s.height } : {}), expiresAt: s.expiresAt ?? null });
+// A draft's file as the tray shows it: ready, under a stage of its own, which main doesn't know.
+const stagedOfDraft = (f) => ({ stage: `draft:${f.id}`, name: f.name, type: f.type, size: f.size, width: f.width || 0, height: f.height || 0, state: 'ready', loaded: f.size, file: f.id, error: null, thumb: null, expiresAt: f.expiresAt ?? null, fromDraft: true });
 
 // container: where the composer goes (the view's .ch-compose). opts:
 //   placeholder, label     what the empty input says and its accessible name (the label defaults to the placeholder)
@@ -111,10 +138,14 @@ const draftKey = (d) => (d ? JSON.stringify(d) : '');
 //   draftKey               the draft's workspace, room and thread (draftSlotKey in chat-drafts.js): a send's answer is
 //                          reconciled against that draft as every composer for it left it, this one or a later one
 //   parts                  what the input starts with
-// Returns { el, input, focus, parts, setParts, setMembers, refreshMembers, setBar, setPlaceholder, flush, dispose,
-// hasFocus }.
+//   files                  file staging (contract 3.5), or null for a composer without files:
+//                          { enabled(), pick(), stage(source), unstage(stage), retry(stage), errorText(code), maxBytes() }
+//                          stage takes { path } or { name, type, bytes } and answers the Staged row
+// Returns { el, input, focus, parts, setParts, setMembers, refreshMembers, setBar, setPlaceholder, setStaged,
+// setDraftFiles, attachFiles, refreshCaps, flush, dispose, hasFocus }.
 export function mountChatInput(container, opts = {}) {
   let members = opts.members || (() => []);
+  const files = opts.files || null;
   const listId = `ch-suggest-${Math.random().toString(36).slice(2)}`;
   const input = h('div', {
     class: 'ch-input sel is-empty',
@@ -127,11 +158,35 @@ export function mountChatInput(container, opts = {}) {
   });
   const limit = h('span', { class: 'ch-limit', role: 'status', hidden: true });
   const send = h('button', { type: 'button', class: 'ch-send', disabled: true }, svg('send'));
-  const box = h('div', { class: 'ch-box' }, input, h('div', { class: 'ch-box-row' }, limit, send));
+  // The row under the text (contract 5.2): Mention, Attach, Emoji and Formatting, then the limits line and Send.
+  const tool = (id, icon, label) => h('button', { type: 'button', class: 'ch-tb', 'data-ch-compose': id, 'aria-label': label, title: label }, svg(icon));
+  const mentionB = tool('mention', 'at', t('chat.input.mention'));
+  const attachB = tool('attach', 'clip', t('chat.input.attach'));
+  const emojiB = tool('emoji', 'smile', t('chat.input.emoji'));
+  const formatB = tool('format', 'textFormat', t('chat.input.formatting'));
+  emojiB.setAttribute('aria-haspopup', 'dialog');
+  emojiB.setAttribute('aria-expanded', 'false');
+  const tools = h('div', { class: 'ch-box-tools', role: 'toolbar', 'aria-label': t('chat.input.tools') }, mentionB, attachB, emojiB, formatB);
+  let fmt = formatBarEl((kind) => applyFormat(kind));
+  fmt.hidden = true;
+  const tray = mountTray({
+    onRemove: (stage) => removeStaged(stage),
+    onRetry: (stage) => retryStaged(stage),
+    errorText: (code) => (files && files.errorText ? files.errorText(code) : t('chat.files.failed'))
+  });
+  const box = h('div', { class: 'ch-box' }, tray.el, fmt, input, h('div', { class: 'ch-box-row' }, tools, limit, send));
   const bar = h('div', { class: 'ch-bar', hidden: true });
   container.append(box, bar);
 
   const state = { caret: 0, composing: false, barKey: null, disposed: false };
+  // Staged files (contract 3.5): what main reports for this composer's room and thread, the ready files of a restored
+  // draft that main doesn't list, and the stages a send just took, hidden until main's list drops them or the send
+  // failed.
+  let staged = [];
+  let draftOnly = [];
+  const sending = new Set();
+  const shownStaged = () => [...staged.filter((s) => !sending.has(s.stage)), ...draftOnly.filter((d) => !sending.has(d.stage) && !staged.some((s) => s.file === d.file))];
+  const readyFiles = () => stagedState(shownStaged(), false).ready.map(fileOf);
   // The @ that Escape closed the picker for (its position), so typing on after it doesn't open it again.
   let dismissed = null;
   // The space put in after the last picked chip, while the caret is right after it.
@@ -149,13 +204,33 @@ export function mountChatInput(container, opts = {}) {
   const slotKey = opts.draftKey || draftSlotKey(null, listId, null);
   const history = { list: [{ parts: [], caret: 0 }], at: 0, type: '', last: 0, from: null };
 
+  // The placeholder, and every label of the composer: the view calls it again when the language changes.
   function setPlaceholder(placeholder, label = placeholder) {
     input.dataset.placeholder = placeholder || '';
     input.setAttribute('aria-label', label || placeholder || '');
     if (placeholder) input.setAttribute('aria-placeholder', placeholder);
     send.setAttribute('aria-label', t('chat.input.send'));
     send.title = t('chat.input.send');
+    for (const [b, key] of [
+      [mentionB, 'chat.input.mention'],
+      [attachB, 'chat.input.attach'],
+      [emojiB, 'chat.input.emoji'],
+      [formatB, 'chat.input.formatting']
+    ]) {
+      b.setAttribute('aria-label', t(key));
+      b.title = t(key);
+    }
+    tools.setAttribute('aria-label', t('chat.input.tools'));
+    // The view calls this on every change of the room too: the bar and the tray are drawn again only for a new language.
+    if (labelled === getLocale()) return;
+    labelled = getLocale();
+    const next = formatBarEl((kind) => applyFormat(kind));
+    next.hidden = fmt.hidden;
+    fmt.replaceWith(next);
+    fmt = next;
+    tray.relabel();
   }
+  let labelled = getLocale();
   setPlaceholder(opts.placeholder || '', opts.label || opts.placeholder || '');
 
   // ---------- the input's text ----------
@@ -207,10 +282,14 @@ export function mountChatInput(container, opts = {}) {
       const anchor = Math.min(offsetAt(sel.anchorNode, sel.anchorOffset), len);
       const focus = Math.min(offsetAt(sel.focusNode, sel.focusOffset), len);
       state.caret = Math.min(anchor, focus);
-      return { start: state.caret, end: Math.max(anchor, focus), anchor, focus };
+      state.selEnd = Math.max(anchor, focus);
+      return { start: state.caret, end: state.selEnd, anchor, focus };
     }
-    const at = Math.min(state.caret, value().length);
-    return { start: at, end: at, anchor: at, focus: at };
+    const len = value().length;
+    const at = Math.min(state.caret, len);
+    // The selection the input had when it lost the focus to the formatting bar or the emoji picker.
+    const end = Math.max(at, Math.min(state.selEnd ?? at, len));
+    return { start: at, end, anchor: at, focus: end };
   }
   // The DOM point for a position: in a text node, or before or after a chip, never inside one.
   function pointAt(at) {
@@ -306,13 +385,16 @@ export function mountChatInput(container, opts = {}) {
 
   // The limits line and the Send button (contract 3.16): over 16,384 bytes or 32 mentions, Send stays off and the line
   // says why. Nothing shows below the limits.
+  // Files change it too (contract 3.5): a ready file is enough to send, and one still uploading or failed holds Send.
   function updateSend() {
     const wire = toWire(current());
     const problem = sendProblem(wire);
+    const fs = stagedState(shownStaged(), Boolean(wire.text));
     const text = problem === 'tooLong' ? t('chat.input.tooLong') : problem === 'tooManyMentions' ? t('chat.input.tooManyMentions') : '';
     if (limit.textContent !== text) limit.textContent = text;
     limit.hidden = !text;
-    send.disabled = Boolean(problem);
+    send.disabled = Boolean(problem && !(problem === 'empty' && fs.ready.length)) || !fs.canSend;
+    send.title = fs.busy.length ? t('chat.input.sendWaitsFiles') : t('chat.input.send');
     input.classList.toggle('is-empty', !current().length);
   }
 
@@ -325,15 +407,15 @@ export function mountChatInput(container, opts = {}) {
     clearTimeout(draftTimer);
     draftTimer = null;
     const parts = current();
-    const d = draftOf(parts);
+    const d = draftOf(parts, readyFiles());
     const key = draftKey(d);
     if (key === savedDraft) return;
     writeDraft(d ? parts : null);
   }
   function writeDraft(parts) {
-    const d = parts ? draftOf(parts) : null;
+    const d = parts ? draftOf(parts, readyFiles()) : null;
     savedDraft = draftKey(d);
-    draftWritten(slotKey, d ? parts : null);
+    draftWritten(slotKey, d && d.text ? parts : null);
     if (opts.onDraft) opts.onDraft(d);
   }
 
@@ -348,11 +430,21 @@ export function mountChatInput(container, opts = {}) {
   // mounted for the same draft after it. When main can't take it (it couldn't be saved, say), the text comes back: in
   // the composer on screen for the draft, before what was typed since, or in the saved draft when there is none, so it
   // is never lost (chat-drafts.js sendSettled).
+  // The ready files go along as attachments (contract 3.5): they leave the tray at once and come back when main
+  // refuses the message, since it keeps them staged then.
   function submit() {
     if (state.composing || state.disposed) return;
     const parts = current();
     const wire = toWire(parts);
-    if (sendProblem(wire)) return updateSend();
+    const fs = stagedState(shownStaged(), Boolean(wire.text));
+    const problem = sendProblem(wire);
+    if ((problem && !(problem === 'empty' && fs.ready.length)) || !fs.canSend) return updateSend();
+    wire.attachments = fs.ids;
+    const took = fs.ready.map((s) => s.stage);
+    for (const s of took) sending.add(s);
+    const fromDraft = draftOnly;
+    draftOnly = [];
+    tray.set(shownStaged());
     const caret = selection().start;
     closePicker();
     render([], 0);
@@ -368,15 +460,221 @@ export function mountChatInput(container, opts = {}) {
     // The draft as the send's answer leaves it, written with this composer's onDraft: its workspace, room and thread
     // are the slot's.
     const save = (p) => {
-      if (opts.onDraft) opts.onDraft(p ? draftOf(mergedParts(p)) : null);
+      if (opts.onDraft) opts.onDraft(p ? draftOf(mergedParts(p), readyFiles()) : null);
     };
     Promise.resolve()
       .then(() => opts.onSend && opts.onSend(wire))
       .then(
-        () => sendSettled(ticket, true, parts, save),
-        () => sendSettled(ticket, false, parts, save)
+        () => {
+          sendSettled(ticket, true, parts, save);
+          // Main's next list drops them; until then they stay out of the tray.
+          setTimeout(() => {
+            for (const s of took) if (!staged.some((x) => x.stage === s)) sending.delete(s);
+          }, 0);
+        },
+        () => {
+          for (const s of took) sending.delete(s);
+          if (!state.disposed) {
+            draftOnly = [...fromDraft, ...draftOnly];
+            tray.set(shownStaged());
+            updateSend();
+          }
+          sendSettled(ticket, false, parts, save);
+        }
       );
   }
+
+  // ---------- files (contract 3.5) ----------
+
+  const filesOn = () => Boolean(files) && files.enabled();
+
+  // Main's staged list for this composer changed (the staged event, or chatStaged on opening).
+  function setStaged(list) {
+    if (state.disposed) return;
+    const before = draftKey(draftOf([], readyFiles()));
+    staged = (Array.isArray(list) ? list : []).filter((s) => s && s.stage);
+    for (const s of [...sending]) if (!s.startsWith('draft:') && !staged.some((x) => x.stage === s)) sending.delete(s);
+    // A draft's file main lists now is main's from here on.
+    draftOnly = draftOnly.filter((d) => !staged.some((s) => s.file === d.file));
+    tray.set(shownStaged());
+    updateSend();
+    // A file that became ready (or went) changes the draft.
+    if (draftKey(draftOf([], readyFiles())) !== before) scheduleDraft();
+  }
+
+  // The files of a restored draft (contract 3.5): those past expiresAt go, and a toast says how many. Main stages the
+  // rest again as ready and drops the expired ones itself (dropped: how many it dropped); until its staged list
+  // arrives, the tray shows them from the draft.
+  function setDraftFiles(list, dropped = 0) {
+    if (state.disposed) return;
+    const { kept, expired } = draftFiles(list);
+    draftOnly = kept.filter((f) => !staged.some((s) => s.file === f.id)).map(stagedOfDraft);
+    tray.set(shownStaged());
+    updateSend();
+    const gone = expired + (Number(dropped) || 0);
+    if (gone) toast(t('chat.files.draftExpired', { count: gone }), 6000);
+    if (expired) scheduleDraft();
+  }
+
+  // Files from the picker, a drop or a paste: each is staged on its own, so one that main refuses (too large, say)
+  // doesn't hold back the others. list: [{ path }] or browser File objects.
+  async function attachFiles(list) {
+    if (!filesOn() || state.disposed) return;
+    const max = files.maxBytes ? files.maxBytes() : null;
+    const room = Math.max(0, 10 - shownStaged().length);
+    const take = [...(list || [])].slice(0, room);
+    if ((list || []).length > room) toast(t('chat.files.tooMany', { count: 10 }), 5000);
+    for (const f of take) {
+      const size = Number(f.size) || 0;
+      if (max && size > max) {
+        toast(t('chat.files.tooLarge', { name: f.name || '', size: fileSize(max) }), 6000);
+        continue;
+      }
+      let source;
+      try {
+        source = f.path ? { path: f.path } : { name: f.name || 'file', type: f.type || 'application/octet-stream', bytes: new Uint8Array(await f.arrayBuffer()) };
+      } catch (_) {
+        toast(t('chat.files.unreadable', { name: f.name || '' }), 5000);
+        continue;
+      }
+      if (state.disposed) return;
+      try {
+        const s = await files.stage(source);
+        if (s && s.stage && !staged.some((x) => x.stage === s.stage)) {
+          staged = [...staged, s];
+          tray.set(shownStaged());
+          updateSend();
+        }
+      } catch (err) {
+        toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
+      }
+    }
+  }
+
+  function removeStaged(stage) {
+    const was = shownStaged();
+    const i = was.findIndex((s) => s.stage === stage);
+    if (stage.startsWith('draft:')) draftOnly = draftOnly.filter((d) => d.stage !== stage);
+    else {
+      staged = staged.filter((s) => s.stage !== stage);
+      if (files) Promise.resolve(files.unstage(stage)).catch(() => {});
+    }
+    tray.set(shownStaged());
+    updateSend();
+    scheduleDraft();
+    // The focus goes to the next file's remove button, or back to the text.
+    const next = tray.el.querySelectorAll('.ch-tray-x')[Math.min(i, shownStaged().length - 1)];
+    if (next) next.focus({ preventScroll: true });
+    else input.focus({ preventScroll: true });
+  }
+
+  async function retryStaged(stage) {
+    if (!files) return;
+    try {
+      const s = await files.retry(stage);
+      if (s && s.stage) {
+        staged = staged.map((x) => (x.stage === s.stage ? s : x));
+        tray.set(shownStaged());
+        updateSend();
+      }
+    } catch (err) {
+      toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
+    }
+  }
+
+  async function pickFiles() {
+    if (!filesOn()) return;
+    let list = [];
+    try {
+      list = (await files.pick()) || [];
+    } catch (err) {
+      toast(files.errorText ? files.errorText(err && err.code, err) : t('chat.files.failed'), 6000);
+      return;
+    }
+    input.focus({ preventScroll: true });
+    await attachFiles(list);
+  }
+
+  // The capabilities changed: Attach shows only while the server takes files (contract 5.2).
+  function refreshCaps() {
+    attachB.hidden = !filesOn();
+  }
+
+  // ---------- formatting (contract 3.3) ----------
+
+  function applyFormat(kind) {
+    if (state.disposed || !bar.hidden) return;
+    if (document.activeElement !== input) {
+      input.focus({ preventScroll: true });
+      placeSelection(Math.min(state.caret, value().length), Math.min(state.selEnd ?? state.caret, value().length));
+    }
+    const sel = selection();
+    const parts = current();
+    const res = formatText(kind, partsText(parts), sel.start, sel.end);
+    if (!res) return;
+    let next = parts;
+    for (const e of res.edits) next = spliceParts(next, e.at, e.at + (e.del || 0), e.ins ? [e.ins] : []);
+    render(next, res.start, res.end);
+    record('format');
+    changed();
+  }
+
+  function toggleFormatBar(on = fmt.hidden) {
+    fmt.hidden = !on;
+    formatB.setAttribute('aria-pressed', String(on));
+    formatB.classList.toggle('on', on);
+    rememberFormatBar(on);
+  }
+
+  // ---------- emoji ----------
+
+  // Puts text in place of the selection the composer had when the picker opened.
+  function insertAt(text, sel) {
+    if (state.disposed) return;
+    input.focus({ preventScroll: true });
+    const parts = current();
+    const len = partsText(parts).length;
+    const start = Math.min(sel.start, len);
+    const end = Math.min(sel.end, len);
+    render(spliceParts(parts, start, end, [text]), start + text.length);
+    record('emoji');
+    changed();
+  }
+
+  function openEmoji() {
+    if (!bar.hidden) return;
+    const sel = selection();
+    openEmojiPicker({
+      anchor: emojiB,
+      label: t('chat.emoji.composerLabel'),
+      onPick: (char) => insertAt(char, sel)
+    });
+  }
+
+  // The Mention button: an @ at the caret, after a space when the text before it doesn't end in one, and the list
+  // opens.
+  function startMention() {
+    if (!bar.hidden) return;
+    input.focus({ preventScroll: true });
+    const { start, end } = selection();
+    const before = partsText(current()).slice(0, start);
+    const at = before && !/\s$/.test(before) ? ' @' : '@';
+    render(spliceParts(current(), start, end, [at]), start + at.length);
+    record('insertText');
+    changed();
+  }
+
+  mentionB.addEventListener('mousedown', (e) => e.preventDefault());
+  formatB.addEventListener('mousedown', (e) => e.preventDefault());
+  mentionB.addEventListener('click', () => startMention());
+  attachB.addEventListener('click', () => pickFiles());
+  emojiB.addEventListener('click', () => openEmoji());
+  formatB.addEventListener('click', () => {
+    toggleFormatBar();
+    input.focus({ preventScroll: true });
+  });
+  toggleFormatBar(formatBarShown());
+  refreshCaps();
 
   // For chat-drafts.js, while this composer is the one on screen for its draft.
   const live = {
@@ -434,7 +732,39 @@ export function mountChatInput(container, opts = {}) {
     const before = prev ? (prev.nodeType === 3 ? prev.data : prev.textContent || '').slice(-1) : '';
     const tok = mentionToken(node.data.slice(0, sel.anchorOffset), before);
     if (!tok) return null;
-    return { node, start: tok.start, end: sel.anchorOffset, query: tok.query, at: offsetAt(node, tok.start) };
+    return { kind: 'mention', node, start: tok.start, end: sel.anchorOffset, query: tok.query, at: offsetAt(node, tok.start) };
+  }
+
+  // The ":code" being typed at the caret (contract 3.4), as caretToken() gives a mention.
+  function emojiCaret() {
+    const sel = document.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+    const node = sel.anchorNode;
+    if (!node || node.nodeType !== 3 || node.parentNode !== input) return null;
+    const tok = emojiToken(node.data.slice(0, sel.anchorOffset));
+    if (!tok) return null;
+    return { kind: 'emoji', node, start: tok.start, end: sel.anchorOffset, query: tok.query, at: offsetAt(node, tok.start) };
+  }
+  const anyToken = () => caretToken() || emojiCaret();
+
+  // The emoji data once a completion loaded it, for a ":code:" typed whole.
+  let emojiLoaded = null;
+  let tone = 0;
+  function tryShortcode() {
+    if (!emojiLoaded) return false;
+    const sel = document.getSelection();
+    if (!sel || !sel.rangeCount || !sel.isCollapsed) return false;
+    const node = sel.anchorNode;
+    if (!node || node.nodeType !== 3 || node.parentNode !== input) return false;
+    const tok = emojiCode(node.data.slice(0, sel.anchorOffset));
+    const e = tok && emojiLoaded.byShortcode(tok.code);
+    if (!e) return false;
+    const start = offsetAt(node, tok.start);
+    const end = offsetAt(node, sel.anchorOffset);
+    const char = withTone(e, tone);
+    render(spliceParts(current(), start, end, [char]), start + char.length);
+    record('emoji');
+    return true;
   }
 
   function closePicker() {
@@ -466,7 +796,7 @@ export function mountChatInput(container, opts = {}) {
   // Under the @, or above it where the window has more room; never wider than 320px or taller than the window.
   function place() {
     if (!pick) return;
-    const tok = caretToken();
+    const tok = pick.kind === 'emoji' ? emojiCaret() : caretToken();
     if (!tok) return closePicker();
     const r = document.createRange();
     r.setStart(tok.node, tok.start);
@@ -491,10 +821,10 @@ export function mountChatInput(container, opts = {}) {
     el.style.transformOrigin = down ? 'top left' : 'bottom left';
   }
 
-  function drawPicker(tok, hits) {
+  function drawPicker(tok, hits, kind = 'mention') {
     const was = pick && pick.hits[pick.active] ? pick.hits[pick.active].id : null;
     if (!pick) {
-      const el = h('div', { class: 'suggest mention-suggest ch-suggest' });
+      const el = h('div', { class: `suggest mention-suggest ch-suggest${kind === 'emoji' ? ' is-emoji' : ''}` });
       const list = h('div', { class: 'mention-list', role: 'listbox', id: listId });
       el.append(list);
       // The input keeps the focus and the caret; a click picks.
@@ -508,14 +838,32 @@ export function mountChatInput(container, opts = {}) {
         if (o && pick && o.dataset.i !== undefined && Number(o.dataset.i) !== pick.active) setActive(Number(o.dataset.i));
       });
       document.body.append(el);
-      pick = { box: el, list, at: tok.at, hits, active: 0 };
+      pick = { box: el, list, at: tok.at, hits, active: 0, kind };
       input.setAttribute('aria-controls', listId);
       input.setAttribute('aria-expanded', 'true');
     }
     pick.at = tok.at;
     pick.hits = hits;
-    pick.list.setAttribute('aria-label', t('chat.mentions.label'));
+    pick.list.setAttribute('aria-label', kind === 'emoji' ? t('chat.emoji.completion') : t('chat.mentions.label'));
     pick.list.textContent = '';
+    if (kind === 'emoji') {
+      hits.forEach((hit, i) => {
+        const code = hit.emoji.shortcodes && hit.emoji.shortcodes[0] ? `:${hit.emoji.shortcodes[0]}:` : '';
+        pick.list.append(
+          h(
+            'div',
+            { role: 'option', id: optionId(i), 'data-i': String(i), 'aria-selected': 'false', 'aria-label': hit.emoji.label || hit.char },
+            h('span', { class: 'ch-suggest-emoji', 'aria-hidden': 'true', text: hit.char }),
+            h('span', { class: 'mention-who' }, h('span', { class: 'mention-name', text: code || hit.emoji.label || '' })),
+            code ? h('span', { class: 'mention-tag ch-suggest-label', text: hit.emoji.label || '' }) : null
+          )
+        );
+      });
+      const keep = was ? hits.findIndex((m) => m.id === was) : -1;
+      setActive(keep >= 0 ? keep : 0);
+      place();
+      return;
+    }
     if (!hits.length) {
       pick.list.append(h('div', { class: 'ch-suggest-none', role: 'option', 'aria-disabled': 'true', 'aria-selected': 'false', text: t('chat.mentions.none') }));
     }
@@ -532,9 +880,11 @@ export function mountChatInput(container, opts = {}) {
   }
 
   async function updatePicker() {
-    const tok = state.composing || !bar.hidden ? null : caretToken();
+    const tok = state.composing || !bar.hidden ? null : anyToken();
     if (!tok) dismissed = null;
     if (!tok || tok.at === dismissed) return closePicker();
+    if (pick && pick.kind !== tok.kind) closePicker();
+    if (tok.kind === 'emoji') return updateEmojiPicker(tok);
     const mine = ++pickSeq;
     let list = [];
     try {
@@ -550,8 +900,54 @@ export function mountChatInput(container, opts = {}) {
     drawPicker(now, rankMembers({ query: now.query, members: list, recent, limit: PICK_LIMIT }));
   }
 
+  // ":" and two or more characters: the emoji whose names or short codes match, like the mention list (contract 3.4).
+  async function updateEmojiPicker(tok) {
+    const mine = ++pickSeq;
+    let res;
+    try {
+      res = await emojiData();
+    } catch (_) {
+      return closePicker();
+    }
+    if (mine !== pickSeq || state.disposed) return;
+    emojiLoaded = res.data;
+    try {
+      tone = Math.max(0, Math.min(5, Number(res.recent.skinTone()) || 0));
+    } catch (_) {
+      tone = 0;
+    }
+    const now = emojiCaret();
+    if (!now || now.at !== tok.at) return closePicker();
+    const hits = (res.data.search(now.query, PICK_LIMIT) || []).map((e) => ({ id: e.char, emoji: e, char: withTone(e, tone), recent: res.recent }));
+    if (!hits.length) return closePicker();
+    drawPicker(now, hits, 'emoji');
+  }
+
+  function choose(hit) {
+    if (pick && pick.kind === 'emoji') return chooseEmoji(hit);
+    return chooseMember(hit);
+  }
+
+  // The emoji in place of its ":code".
+  function chooseEmoji(hit) {
+    const tok = emojiCaret();
+    closePicker();
+    if (!tok || !hit) return;
+    const start = tok.at;
+    const end = offsetAt(tok.node, tok.end);
+    render(spliceParts(current(), start, end, [hit.char]), start + hit.char.length);
+    try {
+      hit.recent.useEmoji(hit.char);
+    } catch (_) {
+      // Recent doesn't learn it; the emoji still goes in.
+    }
+    record('emoji');
+    updateSend();
+    scheduleDraft();
+  }
+
   // The person goes in as a locked chip, "@" and their name, with a space after it unless one follows already.
-  function choose(member) {
+  function chooseMember(member) {
     const tok = caretToken();
     closePicker();
     if (!tok || !member) return;
@@ -599,14 +995,20 @@ export function mountChatInput(container, opts = {}) {
   input.addEventListener('input', (e) => {
     if (state.composing || e.isComposing) return;
     settle(e.inputType);
+    // A ":code:" typed whole becomes its emoji.
+    if (e.inputType === 'insertText' && e.data === ':') tryShortcode();
     changed();
   });
+  // Pasted text goes in as plain text. Pasted files without text, such as a screenshot or a file copied in Explorer,
+  // are attached (contract 3.5).
   input.addEventListener('paste', (e) => {
     e.preventDefault();
     const text = e.clipboardData ? e.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n') : '';
-    if (text) insert([text], 'paste');
+    if (text) return insert([text], 'paste');
+    const list = e.clipboardData ? [...e.clipboardData.files] : [];
+    if (list.length && filesOn()) attachFiles(list);
   });
-  // Dropped text goes in as plain text; dropped files do nothing.
+  // Dropped text goes in as plain text; dropped files go to the pane's drop target (chat-view.js), which attaches them.
   input.addEventListener('drop', (e) => {
     if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
   });
@@ -617,6 +1019,14 @@ export function mountChatInput(container, opts = {}) {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
       e.preventDefault();
       undo(key === 'y' || e.shiftKey ? 1 : -1);
+      return;
+    }
+    // The formatting shortcuts (contract 3.3), Slack's.
+    const kind = formatForKey(e);
+    if (kind) {
+      e.preventDefault();
+      e.stopPropagation();
+      applyFormat(kind);
       return;
     }
     if (pick) {
@@ -666,7 +1076,7 @@ export function mountChatInput(container, opts = {}) {
   input.addEventListener('click', () => updatePicker());
   const onSelection = () => {
     if (!pick || document.activeElement !== input) return;
-    const tok = caretToken();
+    const tok = pick.kind === 'emoji' ? emojiCaret() : caretToken();
     if (!tok || tok.at !== pick.at) return closePicker();
     updatePicker();
   };
@@ -691,7 +1101,10 @@ export function mountChatInput(container, opts = {}) {
     render(list, partsText(list).length);
     resetHistory();
     if (dirty) scheduleDraft();
-    else loadedKey = savedDraft = draftKey(draftOf(list));
+    else {
+      loadedKey = draftKey(draftOf(list));
+      savedDraft = draftKey(draftOf(list, readyFiles()));
+    }
     updateSend();
   }
 
@@ -744,6 +1157,12 @@ export function mountChatInput(container, opts = {}) {
     },
     setBar,
     setPlaceholder,
+    setStaged,
+    setDraftFiles,
+    attachFiles,
+    refreshCaps,
+    // The stages this composer shows, for the view's drop target and tests.
+    staged: () => shownStaged(),
     flush: flushDraft,
     dispose() {
       if (state.disposed) return;
@@ -751,6 +1170,7 @@ export function mountChatInput(container, opts = {}) {
       state.disposed = true;
       detachDraft(slotKey, live);
       closePicker();
+      if (pickerOpen()) closeEmojiPicker({ refocus: false });
       document.removeEventListener('selectionchange', onSelection);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('beforeunload', onUnload);

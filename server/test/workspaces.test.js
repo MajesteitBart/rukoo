@@ -38,9 +38,11 @@ describe('turning team chat on', () => {
     expect(info.body.protocol).toBe(1);
     expect(info.body.features).toEqual(['booking', 'workspaces-v1']);
     expect(info.body.workspace).toMatchObject({
-      versions: [1],
+      versions: [1, 2],
       home: { origin: 'https://accounts.example' },
-      capabilities: [],
+      // The tests bind a files bucket; WORKSPACE_PREVIEWS is on.
+      capabilities: ['reactions', 'unread', 'files', 'previews'],
+      files: { maxBytes: 26214400, workspaceBytes: 5368709120, origin: 'https://accounts.example' },
       recovery: 'basic',
       limits: { workspacesPerAccount: 3, members: 100, sockets: 200, conversations: 8192, textBytes: 16384 },
       retention: { contentDays: 90, feedDays: 14, platformHistoryDays: 30 }
@@ -55,11 +57,13 @@ describe('turning team chat on', () => {
 
   it('refuses a version of the protocol it does not speak', async () => {
     const ws = await newWorkspace();
-    const res = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '2' } });
+    const res = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '3' } });
     expect(res.status).toBe(426);
     expect(res.body).toMatchObject({ error: 'upgrade_required', minVersion: 1 });
-    const ok = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '1' } });
-    expect(ok.status).toBe(200);
+    for (const version of ['1', '2']) {
+      const ok = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': version } });
+      expect(ok.status).toBe(200);
+    }
   });
 });
 
@@ -362,6 +366,49 @@ describe('a workspace made by the first release of workspaces', () => {
     expect((await blocks(ws.person, ws.id)).body.blocks.map((b) => b.member)).toEqual([ada.me.id]);
     const texts = (await events(ws.person, ws.id, ws.general)).body.events.filter((e) => e.kind === 'message.posted').map((e) => e.text);
     expect(texts).toEqual(expect.arrayContaining(['Written before the upgrade', 'Written after it']));
+  });
+});
+
+describe('a workspace made before rich messages', () => {
+  it('gets the columns and tables of reactions, files and link cards when its object starts, and keeps lastAt', async () => {
+    const ws = await newWorkspace();
+    const ada = await newMember(ws, 'Ada', { channels: [ws.general] });
+    const before = (await post(ws.person, ws.id, ws.general, 'Written before the upgrade')).body;
+    const lastAt = (await sync(ada.person, ws.id)).rooms.get(ws.general).lastAt;
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(`
+        DROP TABLE reaction;
+        DROP TABLE upload;
+        DROP TABLE attempt;
+        DROP TABLE trash;
+        ALTER TABLE conversation DROP COLUMN last;
+        ALTER TABLE grants DROP COLUMN readMark;
+        ALTER TABLE event DROP COLUMN previews;
+        ALTER TABLE event DROP COLUMN noPreviews;
+        ALTER TABLE workspace DROP COLUMN fileBytes;
+      `);
+      const columns = (table) => sql.exec(`PRAGMA table_info(${table})`).toArray().map((c) => c.name);
+      expect(columns('conversation')).not.toContain('last');
+      new instance.constructor(state, instance.env);
+      new instance.constructor(state, instance.env);
+      expect(columns('conversation')).toContain('last');
+      expect(columns('grants')).toContain('readMark');
+      expect(columns('event')).toEqual(expect.arrayContaining(['previews', 'noPreviews']));
+      expect(columns('workspace')).toContain('fileBytes');
+      expect(sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('reaction', 'upload', 'attempt', 'trash')").toArray()).toHaveLength(4);
+    });
+    // The room's newest event is still its last activity.
+    const room = (await sync(ada.person, ws.id)).rooms.get(ws.general);
+    expect(room).toMatchObject({ lastAt, readMark: 0 });
+    const message = (await events(ada.person, ws.id, ws.general)).body.events.find((e) => e.id === before.messageId);
+    expect(message).toMatchObject({ text: 'Written before the upgrade', attachments: [], previews: [], reactions: [] });
+    const reacted = await api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/messages/${before.messageId}/react`, {
+      token: ada.person.token,
+      body: { emoji: '👍', on: true }
+    });
+    expect(reacted.body.changed).toBe(true);
+    expect((await sync(ada.person, ws.id)).rooms.get(ws.general).lastAt).toBe(lastAt);
   });
 });
 

@@ -208,11 +208,12 @@ Then try it: paste a page into an assistant and ask for the open times, and fetc
 
 Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels and direct messages is here, and the Rukoo apps have no Chat or Channels yet, so turning it on today is for trying the API. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
 
-**You can read it.** A workspace's messages are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. Say so in your privacy statement before you turn it on.
+**You can read it.** A workspace's messages and files are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. Say so in your privacy statement before you turn it on.
 
 What `wrangler.jsonc` already sets up:
 
 - **`WORKSPACES`**, a Durable Object binding with one object per workspace, holding its members, channels and messages in its own SQLite database. The `v4` migration (`new_sqlite_classes: ["Workspace"]`) creates the class.
+- **`WORKSPACE_FILES`**, commented out: the R2 bucket for files in messages. See "Files need a bucket" below.
 
 The settings in `vars`:
 
@@ -229,6 +230,19 @@ The settings in `vars`:
 | `WORKSPACE_CONVERSATIONS` | Channels per workspace, archived ones included until their history is gone. Default 8192. |
 | `WORKSPACE_BYTES` | Bytes of message text a workspace keeps. Past it, posting answers "This workspace is full". Default 1 GiB. A workspace is one Durable Object, which holds 10 GB on Workers Paid and 1 GB on Workers Free, and each message takes about 100 bytes on top of its text, so set this to `268435456` on Workers Free. |
 | `WORKSPACE_RETENTION_DAYS` | Days a message is kept before the server deletes it. Default 90. |
+| `WORKSPACE_FILE_BYTES` | The largest file someone can send, in bytes. Default 25 MiB. |
+| `WORKSPACE_FILES_BYTES` | Bytes of files one workspace may keep, counting files that are still uploading. Past it, an upload answers "This workspace has no room for more files". Default 5 GiB. This is separate from `WORKSPACE_BYTES`, because files live in the bucket, not in the workspace's database. |
+| `WORKSPACE_PREVIEWS` | `on` or `off`. With `on`, the server fetches up to three web addresses in a message and adds a link card with the page's title, description and image. Your server fetches the page, so the site sees your server's address and never a member's. It refuses local and private addresses and your server's own. On by default. |
+| `WORKSPACE_FILES_ORIGIN` | A separate address for upload and download links, such as `https://files.example.org`, routed to this Worker as a custom domain or route. Empty means links use the workspace's own address. |
+| `WORKSPACE_PREVIEW_HOSTS` | For tests only: `host:port` pairs that link cards may fetch although they are local. Leave it empty. |
+
+**Files need a bucket.** People send files and images in chat only when the Worker has a private R2 bucket bound as `WORKSPACE_FILES`. `wrangler.jsonc` has that binding commented out, so a deploy without a bucket keeps working: the server then lists no `files` capability, every file route answers `403 files_off`, and the apps hide Attach, drag and drop and pasting files. Reactions, marking unread and link cards work without a bucket, but link cards then come without their image. To turn files on, make the bucket in the jurisdiction of your accounts and remove the comment marks around `r2_buckets`, with the same `jurisdiction`:
+
+```bash
+npx wrangler r2 bucket create rukoo-workspace-files --jurisdiction eu
+```
+
+Leave the bucket private, without a public bucket address. Devices upload through this Worker, which streams each file into the bucket with the exact size and SHA-256 the device declared, and download with a link the Worker signs, valid for 60 seconds. Files of a removed message and of messages retention removes are deleted from the bucket by the workspace's alarm, usually within a minute. Deleting a workspace deletes its files first, while the workspace stays as it is; when the bucket fails or a file is still being uploaded, the workspace stays and its owner can try again. R2 bills storage and operations separately from Workers ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
 Anyone with an account on your server can make a workspace, within those limits, so invite codes for sign-up are also what decides who can. A workspace's owners and admins invite the others, who need an account on your server too. A new member also gets the workspace's first open channel, normally `general`. An owner who is the only one left in a workspace can delete it.
 
@@ -294,7 +308,7 @@ Run the tests with:
 npm test
 ```
 
-They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. To check that the server bundles without deploying it:
+They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. They bind a local files bucket themselves, and serve the pages link cards are made of from `test/fixtures/preview-pages.cjs` on `127.0.0.1`. `npm run dev` has no files bucket unless you uncomment `r2_buckets` in `wrangler.jsonc`, which then uses a local one in `.wrangler/`. To check that the server bundles without deploying it:
 
 ```sh
 npx wrangler deploy --dry-run --outdir /tmp/rukoo-account-dry

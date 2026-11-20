@@ -4,6 +4,7 @@
 // a list format) come from the caller, so the language is the caller's.
 
 import { mentionsMember, validMentions } from './chat-text.js';
+import { plainText } from './chat-markdown.js';
 
 // A message group ends after this long without one from the same author.
 export const GROUP_MS = 5 * 60 * 1000;
@@ -58,9 +59,29 @@ function sysKind(e) {
 // The part of a member a row's look depends on, for its sig.
 const memberSig = (m) => (m ? `${m.name ?? ''}\u0001${m.state ?? ''}\u0001${m.role ?? ''}` : '');
 
-// The start of a message on one line, for the context line of a reply.
-function snippet(text) {
-  const chars = [...String(text || '').replace(/\s+/g, ' ').trim()];
+const listOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : []);
+
+// What a row's files, cards and reactions look like, for its sig: who reacted shows by name in the tooltips, so a
+// name that changes draws the row again.
+function richSig(attachments, previews, reactions, members) {
+  if (!attachments.length && !previews.length && !reactions.length) return '';
+  const files = attachments.map((f) => [f.id, f.name, f.type, f.size, f.width ?? '', f.height ?? ''].join(':')).join(' ');
+  const cards = previews.map((p) => [p.url, p.title, p.description, p.site, p.image ? p.image.id : '', p.video ? 1 : 0].join(':')).join(' ');
+  const reacts = reactions.map((r) => `${r.emoji}=${actorIds(r.actors).map((a) => `${a}/${members.get(a)?.name ?? ''}`).join(',')}`).join(' ');
+  return [files, cards, reacts].join('\u0002');
+}
+const actorIds = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+
+// The start of a message on one line, for the context line of a reply: its text without Markdown markers (RUK-211
+// contract 3.7).
+function snippet(text, mentions) {
+  let plain;
+  try {
+    plain = plainText(String(text || ''), mentions || []);
+  } catch (_) {
+    plain = String(text || '');
+  }
+  const chars = [...plain.replace(/\s+/g, ' ').trim()];
   return chars.length > CONTEXT_CHARS ? `${chars.slice(0, CONTEXT_CHARS).join('')}…` : chars.join('');
 }
 
@@ -207,6 +228,10 @@ export function timeline(events, opts = {}) {
     const isBlocked = blocked.has(actor);
     const text = removed ? null : item.text;
     const mentions = removed ? [] : item.mentions || [];
+    // Files, link cards and reactions (contract 2.2, 3.1): a pending send carries its files; a removed message none.
+    const attachments = removed ? [] : listOf(item.attachments);
+    const previews = removed || isPending ? [] : listOf(item.previews);
+    const reactions = removed || isPending ? [] : listOf(item.reactions);
     const mentionsMe = !removed && actor !== me && mentionsMember(text, mentions, me, { blocked: isBlocked });
     const author = members.get(actor) || null;
     const row = {
@@ -222,6 +247,9 @@ export function timeline(events, opts = {}) {
       head,
       text,
       mentions,
+      attachments,
+      previews,
+      reactions,
       removed,
       mentionsMe,
       blocked: isBlocked,
@@ -240,7 +268,7 @@ export function timeline(events, opts = {}) {
       const top = messages.get(threadOf);
       if (!top) row.context = { state: 'missing', root: threadOf };
       else if (top.redacted || top.text == null) row.context = { state: 'removed', root: threadOf };
-      else row.context = { state: 'ok', root: threadOf, actor: top.actor, author: members.get(top.actor) || null, text: snippet(top.text) };
+      else row.context = { state: 'ok', root: threadOf, actor: top.actor, author: members.get(top.actor) || null, text: snippet(top.text, top.mentions), files: listOf(top.attachments).length };
     }
     const r = row.replies;
     const c = row.context;
@@ -257,7 +285,8 @@ export function timeline(events, opts = {}) {
       memberSig(author),
       removed ? '' : mentionNames(text, mentions),
       r ? [r.count, r.hasNew ? 1 : 0, r.lastAt ?? '', r.actors.map((a) => `${a}=${members.get(a)?.name ?? ''}`).join(' ')].join(',') : '',
-      c ? [c.state, c.text ?? '', memberSig(c.author)].join(',') : ''
+      c ? [c.state, c.text ?? '', c.files ?? 0, memberSig(c.author)].join(',') : '',
+      richSig(attachments, previews, reactions, members)
     ].join('\u0001');
     rows.push(row);
     prev = row;
@@ -486,4 +515,106 @@ export function inviteRowChannels(names, total, t) {
   const rest = count - Math.min(tags.length, 2);
   const shown = tags.slice(0, 2).join(', ');
   return rest > 0 ? t('chat.invite.namesMore', { names: shown, count: rest }) : shown;
+}
+
+// ---------- reactions, files and link cards (contract 3.1, 3.5, 3.6) ----------
+
+// A message holds at most this many distinct emoji (contract 2.4).
+export const REACTION_LIMIT = 20;
+
+// reactions with actor's reaction on or off, as the cache applies reaction.added and reaction.removed (contract 3.1):
+// added at the end of its emoji's group, which is made at the end when new; taken out, dropping a group that empties.
+// Applying it twice changes nothing. Returns a new list.
+export function applyReaction(reactions, emoji, actor, on) {
+  const list = listOf(reactions).map((r) => ({ emoji: r.emoji, actors: actorIds(r.actors) }));
+  const group = list.find((r) => r.emoji === emoji);
+  if (on) {
+    if (!group) list.push({ emoji, actors: [actor] });
+    else if (!group.actors.includes(actor)) group.actors.push(actor);
+    return list;
+  }
+  if (!group || !group.actors.includes(actor)) return list;
+  group.actors = group.actors.filter((a) => a !== actor);
+  return list.filter((r) => r.actors.length);
+}
+
+// Whether me reacted with emoji.
+export const reacted = (reactions, emoji, me) => listOf(reactions).some((r) => r.emoji === emoji && actorIds(r.actors).includes(me));
+
+// Who reacted, for a chip's tooltip: names in the order they reacted, "You" for you (t('chat.react.you')), at most max
+// of them. Returns { names, more }: more is how many weren't named.
+export function reactionNames(group, { me = null, members, t, max = 8 } = {}) {
+  const map = asMap(members);
+  const actors = actorIds(group && group.actors);
+  const names = actors.slice(0, max).map((a) => (a === me ? t('chat.react.you') : displayName(map.get(a), t)));
+  return { names, more: Math.max(0, actors.length - max) };
+}
+
+// The image types Chromium shows (contract 3.6): a file of one of these, with its width and height, shows as an image.
+export const VIEWABLE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
+export const isImage = (f) => Boolean(f) && VIEWABLE.has(String(f.type || '').toLowerCase()) && f.width > 0 && f.height > 0;
+
+// A message's files as the log shows them: { images, allImages, more, files }. images: up to four images for the grid,
+// more: how many images that leaves out (the "+n" on the fourth), files: the rest as cards, in the order the post
+// listed them.
+export function fileLayout(attachments) {
+  const list = listOf(attachments);
+  const all = list.filter(isImage);
+  return { images: all.slice(0, 4), allImages: all, more: Math.max(0, all.length - 4), files: list.filter((f) => !isImage(f)) };
+}
+
+// The box one image takes: its aspect ratio within max by maxH, never larger than the image itself.
+export function fitBox(width, height, max = 360, maxH = 280) {
+  const w = Number(width) || 0;
+  const h = Number(height) || 0;
+  if (!(w > 0 && h > 0)) return { width: max, height: Math.round((max * 3) / 4) };
+  const scale = Math.min(1, max / w, maxH / h);
+  return { width: Math.max(1, Math.round(w * scale)), height: Math.max(1, Math.round(h * scale)) };
+}
+
+// The kind of a file, for its card's icon: image, pdf, video, audio, archive, text, sheet, slides, doc or file.
+export function fileKind(file) {
+  const type = String((file && file.type) || '').toLowerCase();
+  const ext = (/\.([a-z0-9]{1,8})$/i.exec(String((file && file.name) || '')) || [])[1]?.toLowerCase() || '';
+  if (type.startsWith('image/')) return 'image';
+  if (type === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (type.startsWith('video/')) return 'video';
+  if (type.startsWith('audio/')) return 'audio';
+  if (/zip|x-7z|x-rar|x-tar|gzip/.test(type) || ['zip', '7z', 'rar', 'tar', 'gz', 'tgz'].includes(ext)) return 'archive';
+  if (/spreadsheet|excel|csv/.test(type) || ['xls', 'xlsx', 'ods', 'csv', 'numbers'].includes(ext)) return 'sheet';
+  if (/presentation|powerpoint/.test(type) || ['ppt', 'pptx', 'odp', 'key'].includes(ext)) return 'slides';
+  if (/wordprocessing|msword|opendocument\.text|rtf/.test(type) || ['doc', 'docx', 'odt', 'rtf', 'pages'].includes(ext)) return 'doc';
+  if (type.startsWith('text/') || ['txt', 'md', 'json', 'log'].includes(ext)) return 'text';
+  return 'file';
+}
+
+// Where a link card's image goes: 'below' the text when the image is at least 400 pixels wide, else 'side'; 'none'
+// without one.
+export const cardImage = (preview) => (!preview || !preview.image ? 'none' : Number(preview.image.width) >= 400 ? 'below' : 'side');
+
+// The composer's staged files (contract 3.5): { ready, busy, failed, ids, canSend }. ready: files uploaded, ids their
+// file IDs; busy: still being measured or uploaded; failed: what failed. canSend says whether Send may be on with the
+// text there is: some text or a ready file, and nothing busy or failed.
+export function stagedState(staged, hasText) {
+  const list = listOf(staged);
+  const ready = list.filter((s) => s.state === 'ready' && s.file);
+  const busy = list.filter((s) => s.state === 'measuring' || s.state === 'uploading');
+  const failed = list.filter((s) => s.state === 'failed');
+  return { ready, busy, failed, ids: ready.map((s) => s.file), canSend: (Boolean(hasText) || ready.length > 0) && !busy.length && !failed.length };
+}
+
+// A draft's files that still hold, and how many expired (contract 3.5): files whose expiresAt is past go.
+export function draftFiles(files, now = Date.now()) {
+  const list = listOf(files).filter((f) => typeof f.id === 'string');
+  const kept = list.filter((f) => !(Number.isFinite(f.expiresAt) && f.expiresAt <= now));
+  return { kept, expired: list.length - kept.length };
+}
+
+// Whether a message's More menu offers Message {author} (contract 5.2): someone else's message, by an active full
+// member you haven't blocked, and you a full member yourself.
+export function canMessageAuthor(row, { me = null, myRole = 'member', members, blocks } = {}) {
+  if (!row || !row.actor || row.actor === me || row.pending || myRole === 'guest') return false;
+  const m = asMap(members).get(row.actor);
+  const mine = blocks instanceof Set ? blocks : new Set(blocks || []);
+  return Boolean(m) && m.state === 'active' && m.role !== 'guest' && !mine.has(row.actor);
 }

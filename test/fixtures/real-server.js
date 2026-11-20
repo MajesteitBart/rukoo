@@ -12,6 +12,15 @@
 //   await server.seedMember(ws, bart, 'Bart');
 //   await server.post(olga, ws.id, ws.general, 'Hello');
 //
+// Rich messages: the Worker has a files bucket (unless startRealServer({ files: false })), and a page server on
+// 127.0.0.1 that link cards may fetch (WORKSPACE_PREVIEW_HOSTS):
+//
+//   const file = await server.upload(olga, ws.id, ws.general, { name: 'a.png', type: 'image/png', bytes, width, height });
+//   const sent = await server.post(olga, ws.id, ws.general, 'Look', { attachments: [file.id] });
+//   await server.react(bart, ws.id, ws.general, sent.messageId, '👍');
+//   const got = await server.download(bart, ws.id, ws.general, file.id);   // { status, headers, bytes }
+//   const url = await server.previewPage({ title: 'Plan', description: 'Q3', image: true });
+//
 // In node:test files:
 //
 //   test.before(async () => { if (realServerAvailable()) server = await startRealServer(); });
@@ -31,6 +40,8 @@ const { serverUrl } = require('../../src/main/account/client.js');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SERVER_DIR = path.join(ROOT, 'server');
+// The pages link cards are made of, shared with the server's own tests. Plain Node, nothing from node_modules.
+const PREVIEW_PAGES = path.join(SERVER_DIR, 'test', 'fixtures', 'preview-pages.cjs');
 
 // Loaded on first use: crypto.js needs hash-wasm from the root node_modules, which Android's CI job doesn't install.
 // Only seedAccount({ password }) needs it.
@@ -235,8 +246,10 @@ process.on('exit', () => {
 
 // The worker config, in the temporary folder: wrangler bundles into the config's folder, so server/.wrangler stays
 // untouched. env and $schema go; ratelimits go unless limiters, as one spec makes more than 30 sign-ups, logins and
-// joins a minute from 127.0.0.1 (limitRate() in server/src/config.js skips without its binding).
-function writeConfig(dir, { vars, limiters }) {
+// joins a minute from 127.0.0.1 (limitRate() in server/src/config.js skips without its binding). files binds a local
+// bucket as WORKSPACE_FILES, which wrangler.jsonc leaves commented out; previewHost lets link cards reach the page
+// server.
+function writeConfig(dir, { vars, limiters, files, previewHost }) {
   const config = parseJsonc(fs.readFileSync(path.join(SERVER_DIR, 'wrangler.jsonc'), 'utf8'));
   delete config.env;
   delete config.$schema;
@@ -244,7 +257,9 @@ function writeConfig(dir, { vars, limiters }) {
   // fallthrough: false silences wrangler's warning about the shadowed default .bin rule; bundling is the same.
   config.rules = (config.rules || []).map((rule) => ({ ...rule, fallthrough: false }));
   config.main = path.join(SERVER_DIR, 'src', 'index.js');
-  config.vars = { ...config.vars, ...VARS, ...vars };
+  if (files) config.r2_buckets = [{ binding: 'WORKSPACE_FILES', bucket_name: 'rukoo-workspace-files-test' }];
+  else delete config.r2_buckets;
+  config.vars = { ...config.vars, ...VARS, ...(previewHost ? { WORKSPACE_PREVIEW_HOSTS: previewHost } : {}), ...vars };
   const file = path.join(dir, 'wrangler.json');
   fs.writeFileSync(file, JSON.stringify(config));
   return file;
@@ -287,15 +302,23 @@ async function startWorker(unstable_startWorker, { configPath, port, persist, lo
 }
 
 // options.port: a fixed port, tried once; null picks one from the range. limiters: keep the per-address rate limiters,
-// for a test of the app's 429 handling. vars: overrides such as { WORKSPACE_MODE: 'off' }.
-async function startRealServer({ vars = {}, port = null, limiters = false, logLevel = 'error' } = {}) {
+// for a test of the app's 429 handling. vars: overrides such as { WORKSPACE_MODE: 'off' }. files: false starts the
+// Worker without its files bucket, as a server whose operator made none: no files capability, and 403 files_off.
+async function startRealServer({ vars = {}, port = null, limiters = false, logLevel = 'error', files = true } = {}) {
   if (!realServerAvailable()) throw unavailableError();
   // Miniflare otherwise fetches https://workers.cloudflare.com/cf.json and caches it in .wrangler/cache (or
   // node_modules/.mf) under the current folder. Its built-in request.cf is enough here, and offline.
   process.env.CLOUDFLARE_CF_FETCH_ENABLED = 'false';
   const { unstable_startWorker } = createRequire(path.join(SERVER_DIR, 'package.json'))('wrangler');
+  // The page server binds 127.0.0.1 on a port the system picks, outside the helper's range; it lives as long as the
+  // helper does, through stop() and start().
+  const pages = await require(PREVIEW_PAGES).startPreviewServer();
   const dir = tempDir('rukoo-real-server-');
-  const settings = { configPath: writeConfig(dir, { vars, limiters }), persist: path.join(dir, 'state'), logLevel };
+  const settings = {
+    configPath: writeConfig(dir, { vars, limiters, files, previewHost: pages.host }),
+    persist: path.join(dir, 'state'),
+    logLevel
+  };
 
   let worker = null;
   let url = null;
@@ -344,6 +367,7 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
     }
   } catch (err) {
     removeDir(dir);
+    await pages.close();
     throw err;
   }
   const boundPort = Number(new URL(url).port);
@@ -376,21 +400,23 @@ async function startRealServer({ vars = {}, port = null, limiters = false, logLe
     } finally {
       releasePort(boundPort);
       removeDir(dir);
+      await pages.close();
     }
   }
 
-  return { ...seeding(url), dir, lockFile: lockFile(boundPort), stop, start, close };
+  return { ...seeding(url, { pages }), dir, lockFile: lockFile(boundPort), previewOrigin: pages.origin, stop, start, close };
 }
 
 // The seeding API against a server that already runs, such as one real-server-cli.js started for an emulator check.
-// It has no stop, start or close: the server isn't this process's.
-function connectRealServer(url) {
+// It has no stop, start or close: the server isn't this process's. previews: the page server's origin, which the CLI
+// writes to its ready file, for previewPage().
+function connectRealServer(url, { previews = null } = {}) {
   const base = serverUrl(url);
   if (!base) throw new Error(`Not a server address Rukoo may talk to: ${url}`);
-  return seeding(base);
+  return seeding(base, { previews });
 }
 
-function seeding(url) {
+function seeding(url, { pages = null, previews = null } = {}) {
   // The address as the app normalizes it. Password keys and invitation links depend on it, so the app must be given
   // exactly server.url.
   const canonical = serverUrl(url);
@@ -555,6 +581,88 @@ function seeding(url) {
     return expect(200, call('POST', ws(wsId, `/conversations/${conversation}/read`), as(person, { body: { seq } })), 'read');
   }
 
+  // ---- Rich messages ----
+  //
+  // Each takes the workspace as its ID or as what seedWorkspace() answered.
+  const wid = (w) => (typeof w === 'string' ? w : w.id);
+
+  // A reaction, or taking one back: { messageId, emoji, on, changed }.
+  async function react(person, w, conversation, message, emoji, on = true) {
+    const route = ws(wid(w), `/conversations/${conversation}/messages/${message}/react`);
+    return expect(200, call('POST', route, as(person, { body: { emoji, on } })), 'react');
+  }
+
+  // Marks a message unread for person: { read, readMark }.
+  async function markUnread(person, w, conversation, message) {
+    return expect(200, call('POST', ws(wid(w), `/conversations/${conversation}/unread`), as(person, { body: { message } })), 'mark unread');
+  }
+
+  // Reserves an upload: { upload: { id, expiresAt }, put: { url, expiresAt } }. sha256 and size default to bytes'.
+  async function reserveUpload(person, w, conversation, { name = 'file.bin', type, bytes = Buffer.alloc(0), size, sha256, width, height } = {}) {
+    const body = {
+      name,
+      type,
+      size: size ?? bytes.length,
+      sha256: sha256 ?? crypto.createHash('sha256').update(bytes).digest('hex'),
+      width,
+      height
+    };
+    return expect(201, call('POST', ws(wid(w), `/conversations/${conversation}/uploads`), as(person, { body })), 'reserve upload');
+  }
+
+  // PUTs bytes to an upload link, with no session, as a device does: { status, body }.
+  async function putUpload(link, bytes, { timeout = 30000 } = {}) {
+    const res = await fetch(link, { method: 'PUT', body: bytes, signal: AbortSignal.timeout(timeout) });
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch (_) {
+      json = null;
+    }
+    return { status: res.status, body: json };
+  }
+
+  // Reserves and uploads a file, ready to name in post(…, { attachments }): { id, expiresAt, name, type, size, sha256 }.
+  async function upload(person, w, conversation, { name = 'file.bin', type, bytes = Buffer.from('hello'), width, height } = {}) {
+    const data = Buffer.from(bytes);
+    const sha256 = crypto.createHash('sha256').update(data).digest('hex');
+    const reserved = await reserveUpload(person, w, conversation, { name, type, bytes: data, sha256, width, height });
+    const put = await putUpload(reserved.put.url, data);
+    if (put.status !== 200) throw new Error(`upload: ${put.status} ${JSON.stringify(put.body)}`);
+    return { id: reserved.upload.id, expiresAt: reserved.upload.expiresAt, name, type: type ?? 'application/octet-stream', size: data.length, sha256 };
+  }
+
+  async function cancelUpload(person, w, conversation, file) {
+    return expect(204, call('DELETE', ws(wid(w), `/conversations/${conversation}/uploads/${file}`), as(person)), 'cancel upload');
+  }
+
+  // Downloads a file of a message as person: the download link, then its bytes with no session. { status, headers,
+  // bytes, link }: bytes is a Buffer, and link what the download route answered. When the route refuses, status and
+  // headers are its own, bytes is null and body its answer.
+  async function download(person, w, conversation, file) {
+    const asked = await call('POST', ws(wid(w), `/conversations/${conversation}/files/${file}/download`), as(person));
+    if (asked.status !== 200) return { status: asked.status, headers: asked.headers, bytes: null, body: asked.body };
+    const res = await fetch(asked.body.url, { signal: AbortSignal.timeout(30000) });
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return { status: res.status, headers: res.headers, bytes, link: asked.body };
+  }
+
+  // The author takes a link card off a message: { previews }.
+  async function removePreview(person, w, conversation, message, address) {
+    const route = ws(wid(w), `/conversations/${conversation}/messages/${message}/previews`);
+    return expect(200, call('POST', route, as(person, { body: { remove: address } })), 'remove link card');
+  }
+
+  // A page link cards can be made of, on the page server: its address. image: true for a 64 by 32 PNG, { width,
+  // height } for one of that size, or an image address to put in og:image. Also site, video and titleTag.
+  async function previewPage(spec = {}) {
+    if (pages) return pages.page(spec);
+    if (!previews) throw new Error('previewPage needs the page server: pass { previews } to connectRealServer');
+    const res = await fetch(`${previews}/pages`, { method: 'POST', body: JSON.stringify(spec), signal: AbortSignal.timeout(10000) });
+    return (await res.json()).url;
+  }
+
   // The wake socket as a device opens it from Node: a ticket in the Authorization header (Node's WebSocket takes
   // headers in its init), and only the protocol's own name offered. frames collects the text frames.
   async function openSocket(person, wsId) {
@@ -589,7 +697,16 @@ function seeding(url) {
     post,
     redact,
     read,
-    openSocket
+    openSocket,
+    react,
+    markUnread,
+    reserveUpload,
+    putUpload,
+    upload,
+    cancelUpload,
+    download,
+    removePreview,
+    previewPage
   };
 }
 

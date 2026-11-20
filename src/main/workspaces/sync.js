@@ -14,7 +14,8 @@
 // changed: the rooms whose rows changed; evicted: rooms deleted; appended: the open room's inline events as stored;
 // removed: per room, the message IDs whose alerts go (removed, removedMore, floors); pass: a pass installed; partial: a
 // page of a pass in progress; droppedSends: per evicted room, the unsent messages that went with it; redacted: per
-// room, cached messages that lost their text.
+// room, cached messages that lost their text; updated: per room, the IDs of cached messages whose reactions or link
+// cards the inline events changed (rich contract 3.1), for the updated event.
 //
 // Given expect (position() of the ws row the request was built from) and rev (svc.revision(ws) when the request went
 // out), each returns null instead and changes nothing when the row no longer has that position or the workspace's
@@ -48,7 +49,7 @@ function atPosition(svc, ws, expect, rev = null) {
 }
 
 function emptyResult() {
-  return { changed: [], evicted: [], appended: null, removed: {}, pass: false, partial: false, droppedSends: {}, redacted: {} };
+  return { changed: [], evicted: [], appended: null, removed: {}, pass: false, partial: false, droppedSends: {}, redacted: {}, updated: {} };
 }
 
 function addRemoved(result, room, ids) {
@@ -146,7 +147,11 @@ function appendInline(store, ws, active, events, result) {
   const last = events[events.length - 1].seq;
   const fits = room.hi !== null ? first === room.hi + 1 : last === room.head;
   if (!fits) return;
-  const stored = store.appendEvents(ws, active, events);
+  // Reactions and link cards the events add to cached messages (rich contract 3.1). The answer's messages carry theirs
+  // as they were at least at its newest event; the cached head may be newer than the answer.
+  const touched = new Set();
+  const stored = store.appendEvents(ws, active, events, { touched, asOf: last });
+  if (touched.size) result.updated[active] = [...touched];
   const targets = events.filter((e) => e.kind === 'message.redacted' && e.target).map((e) => e.target);
   if (targets.length) {
     addRedacted(result, { [active]: targets });
@@ -366,6 +371,7 @@ async function afterPage(svc, ws, result) {
   for (const [room, ids] of Object.entries(result.redacted)) {
     if (ids.length) svc.emitChat({ kind: 'redacted', ws, conversation: room, ids });
   }
+  for (const [room, ids] of Object.entries(result.updated || {})) svc.emitUpdated(ws, room, ids);
   if (!result.partial) await hook(svc, () => svc.history.afterPage(ws, result));
   // Every changed room goes to the history module, also without removed IDs: a page can raise a room's floor past
   // events it holds outside the cache (a thread's memory, an opening's detached events) when no cached event was
@@ -374,10 +380,13 @@ async function afterPage(svc, ws, result) {
     const ids = result.removed[room] || [];
     await hook(svc, () => svc.history.onRemoved(ws, room, ids));
     if (ids.length) await hook(svc, () => svc.notifier.onRemoved(ws, room, ids));
+    // Downloaded files of removed messages go from this computer (rich contract 4.6).
+    if (ids.length) await hook(svc, () => svc.files.onRemoved(ws, room, ids));
   }
   for (const room of result.evicted) {
     await hook(svc, () => svc.notifier.onEvicted(ws, room));
     await hook(svc, () => svc.history.onEvicted(ws, room));
+    await hook(svc, () => svc.files.onEvicted(ws, room));
   }
 }
 

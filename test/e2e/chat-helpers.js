@@ -271,7 +271,93 @@ async function serverGet(server, person, wsId, route) {
   return r.body;
 }
 
+// ---------- rich messages (RUK-211) ----------
+
+// A message row of the conversation's log, or of the thread, by its own text.
+const messageRow = (win, text, { thread = false } = {}) =>
+  win.locator(thread ? 'section.chat .ch-thread .ch-thread-log li.ch-msg' : 'section.chat .ch-main .ch-log li.ch-msg').filter({ has: win.locator('.ch-text', { hasText: text }) });
+
+// A button of a message's hover bar (React, Reply in thread, More), shown by pointing at the row.
+async function hoverTool(row, name) {
+  await row.hover();
+  const b = row.locator(`.ch-tools [data-ch-tool="${name}"]`);
+  await expect(b).toBeVisible();
+  return b;
+}
+
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (const byte of buf) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k++) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// A PNG of width by height in one color: a real image whose size main reads from its header.
+function png(width = 40, height = 30, [r, g, b] = [47, 102, 214]) {
+  const zlib = require('zlib');
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const head = Buffer.alloc(13);
+  head.writeUInt32BE(width, 0);
+  head.writeUInt32BE(height, 4);
+  head[8] = 8; // bit depth
+  head[9] = 2; // RGB
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x++) row.set([r, g, b], 1 + x * 3);
+  const raw = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', head), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+// A small valid PDF.
+const pdf = (title = 'Test') => Buffer.from(`%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\n% ${title}\ntrailer << /Root 1 0 R >>\n%%EOF\n`);
+
+// The next file picker answers with paths (main's SEM_HIDDEN hook, global.__semChatPick).
+async function pickNext(app, paths) {
+  await app.evaluate((_e, list) => {
+    global.__semChatPick = list;
+  }, paths);
+}
+
+// A file pasted into the composer as the clipboard hands one over: files and no text.
+async function pasteFile(win, { name, type, bytes }, { thread = false } = {}) {
+  const input = composer(win, { thread });
+  await input.focus();
+  await input.evaluate(
+    (el, f) => {
+      const data = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([data], f.name, { type: f.type }));
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    },
+    { name, type, data: Buffer.from(bytes).toString('base64') }
+  );
+}
+
+// The composer's file tray and its items.
+const tray = (win, { thread = false } = {}) => win.locator(thread ? 'section.chat .ch-thread .ch-tray' : 'section.chat .ch-main .ch-tray');
+
+// A message of the server's history by ID, read as person.
+async function serverMessage(server, person, wsId, conversation, id) {
+  return (await serverEvents(server, person, wsId, conversation)).find((e) => e.id === id) || null;
+}
+
 module.exports = {
+  messageRow,
+  hoverTool,
+  png,
+  pdf,
+  pickNext,
+  pasteFile,
+  tray,
+  serverMessage,
   PASSWORD,
   dialogBox,
   expectBodyFits,

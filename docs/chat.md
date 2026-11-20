@@ -62,16 +62,61 @@ Type in the box under the conversation and press `Enter` to send. `Shift+Enter` 
 
 - **Mentions.** Type `@` and pick a person from the list. They get a notification and the message is marked for them. Typing an `@name` by hand without picking doesn't notify anyone.
 - **Threads.** Hover over a message and choose **Reply in thread**. The thread opens beside the conversation, or over it in a narrow window. Replies also show in the conversation itself, with a line saying who they answer; clicking that line opens the thread. A message with replies shows how many and when the last one came.
-- **Removing.** You can remove your own messages, also in a closed conversation. A channel manager can remove anyone's message in that channel. Rukoo asks first. The message is replaced by "Message removed" for everyone.
+- **Removing.** You can remove your own messages, also in a closed conversation. A channel manager can remove anyone's message in that channel. Rukoo asks first. The message is replaced by "Message removed" for everyone, and its files, link previews and reactions go with it.
 - **Offline.** Messages you send without a connection wait and go out once Rukoo reconnects. A message that can't be sent says why and offers to try again or discard it. Unsent text stays as a draft in each conversation, also after a restart.
 
-Rukoo shows messages as plain text with links. There's no formatting, editing, reactions or attachments in this version.
+### Message actions
+
+Pointing at a message shows a small bar at its top right with **React**, **Reply in thread** and **More**. More holds **Copy text**, **Mark unread**, **Message** the author in a direct message, **Block** and **Remove message**, as far as they apply. A right click on the message, or `Shift+F10` on a selected one, opens the same menu. With the keyboard, move to a message with the arrow keys and press `Tab` to reach its bar, then its files, previews and reactions.
+
+### Formatting
+
+Messages understand a small set of Markdown, and show it formatted:
+
+| Write | Shows as |
+| --- | --- |
+| `**bold**` or `__bold__` | **bold** |
+| `_italic_` or `*italic*` | *italic* |
+| `~~struck~~` | struck through |
+| `` `code` `` | inline code |
+| `[label](https://…)` | a link named label |
+| Lines starting with `- `, `* ` or `+ ` | a bulleted list; indent two spaces to nest, up to three levels |
+| Lines starting with `1. ` | a numbered list |
+| Lines starting with `> ` | a quote |
+| A line of three backticks before and after | a code block |
+| `# `, `## ` or `### ` at the start of a line | a heading |
+
+A backslash before a character shows it as typed, so `\*not italic\*` keeps its stars. Addresses in the text become links on their own. The message keeps the markers, so someone on an older Rukoo sees `**bold**` as written.
+
+The **Aa** button under the text shows a formatting bar with the same styles. They also have shortcuts, the same as Slack's: `Ctrl+B` bold, `Ctrl+I` italic, `Ctrl+Shift+X` strikethrough, `Ctrl+E` code, `Ctrl+Shift+U` link, `Ctrl+Shift+8` bulleted list, `Ctrl+Shift+7` numbered list, `Ctrl+Shift+9` quote and `Ctrl+Alt+Shift+C` code block. With text selected they wrap it, or take the style off when it's there already; without a selection they put in the markers with the cursor between.
+
+### Emoji and reactions
+
+The smiley button under the text opens the emoji picker: search by name, pick from Recently used or a group, and choose a skin tone with the hand at the top. The arrow keys move through the emoji and `Enter` picks one. In the text, `:` and two letters of a name, such as `:thu`, open a list of matching emoji; typing a whole code such as `:tada:` turns it into the emoji. Recently used emoji and the skin tone are kept on this computer.
+
+**React** on a message's bar puts an emoji under it. Each emoji shows once with how many people chose it, tinted when yours is among them; pointing at it names who reacted. Clicking it adds or takes back your reaction, and the smiley button after the reactions adds another. A message can hold 20 different emoji. Reactions never notify anyone and don't count as unread.
+
+### Files and images
+
+Attach files with the paperclip under the text, by dropping them on the conversation or the thread, or by pasting a copied file or screenshot. Each file uploads right away and shows above the text with its progress; a file that fails offers **Retry**, and the cross takes a file off. **Send** waits until every file has uploaded, and a message can be just files without text.
+
+- A message holds up to 10 files of at most 25 MiB each, unless the server sets another limit.
+- Images show in the message: one at its own shape, two to four in a grid, more with "+n" on the fourth. Clicking one opens it large, with **Open** and **Save**; the arrow keys step through the message's images and `Esc` closes it.
+- Other files show as a card with their kind, name and size. Clicking the card opens the file in its app; the download button saves it where you choose.
+- A draft keeps its uploaded files for an hour. A draft opened later than that says how many files you need to attach again.
+
+Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone.
+
+### Link previews
+
+When a message holds a web address, the server fetches the page and adds a preview under the message: the site, the title, a short description and the page's image, for up to three addresses. Clicking the preview opens the page in your browser. The author can remove a preview with the cross on it, and that message gets none again. The server fetches the page, not your computer, so the site sees the server's address instead of yours.
 
 ## Unread, notifications and mute
 
 - A channel with unread messages shows bold with a count. A channel where someone mentioned you, and a direct message with unread messages, shows an accent badge with the count.
 - The Chat segment in the mode switch shows the number of mentions and unread direct messages in all your workspaces, or a dot when only channels have unread messages. The taskbar badge counts mail only.
 - Rukoo marks messages read as you scroll past them while its window has focus. **Mark as read** in the More menu, or `Shift+Esc`, marks the whole conversation read. A read on your phone counts here too.
+- **Mark unread** in a message's More menu makes that message and everything after it unread again: the New line moves there and the badge comes back, also on your other devices. The conversation then stops marking messages read until you open it again, so it stays unread while it's on screen.
 - Rukoo notifies you of new direct messages and of mentions, unless the conversation is on screen. Clicking a notification opens the conversation at that message. When you read the messages here or on another device, the notification goes away. **Settings → General → Team chat notifications** turns these off.
 - **Mute** in a conversation's More menu silences it on this device: no notifications, no badges, and its row is dimmed. Mute isn't synced to your other devices.
 
@@ -99,7 +144,7 @@ When you're removed from a workspace or a conversation, Rukoo removes its messag
 
 ## What the host can read
 
-The workspace lives on one server, the host: the server of the Rukoo account of whoever made it. The host's operator can read and change every message in it, in channels and direct messages, and sees who is in which conversation. That's different from your personal Rukoo account, which encrypts its records on your device ([What's stored and shared](account.md#whats-stored-and-shared)).
+The workspace lives on one server, the host: the server of the Rukoo account of whoever made it. The host's operator can read and change every message in it, in channels and direct messages, including its files and link previews, and sees who is in which conversation. That's different from your personal Rukoo account, which encrypts its records on your device ([What's stored and shared](account.md#whats-stored-and-shared)).
 
 Before you make or join a workspace, the dialog names the host. **Workspace settings** shows the host, who runs it, where it stores data, how long it keeps messages and how many members a workspace can have. Every direct message names the host in its header and at its start.
 
@@ -119,7 +164,11 @@ These are the defaults of the server in this repository. An operator can set oth
 | Message text stored per workspace | 1 GiB |
 | People in a direct message | 2 to 8 |
 | New direct messages | 20 per person per day |
-| One message | 16 KiB of text, 32 mentions |
+| One message | 16 KiB of text, 32 mentions, 10 files |
+| One file | 25 MiB |
+| Files stored per workspace | 5 GiB |
+| Reactions on one message | 20 different emoji |
+| Link previews on one message | 3 |
 | An invitation link | 1, 3 or 7 days, used once |
 
 A conversation whose history aged out says so at its start. Rukoo keeps up to 2,000 messages per conversation on your computer and loads older ones from the server as you scroll up.
@@ -128,17 +177,20 @@ A conversation whose history aged out says so at its start. Rukoo keeps up to 2,
 
 Rukoo keeps a copy of your workspaces on your computer, in `data/chat.db` in your Rukoo profile, so Chat opens at once and works offline. That copy belongs to one sign-in: signing out, deleting your Rukoo account, switching servers or a session ending on the server deletes it, including messages that weren't sent yet. The sign-out dialog says how many those are.
 
+Files you open, save or look at are downloaded into `data/chat-files/`, up to 1 GiB in all; the ones used longest ago go first when it's full. They're deleted with the rest of the copy, and when their message is removed.
+
 When you delete your Rukoo account, what you wrote in team chat stays in each workspace under "Deleted member" until that workspace's retention removes it. Your direct messages close. A workspace where you're the only member stays on the server until retention empties it, so delete it first if you want it gone at once.
 
 Your personal agents in the chat panel don't see team chat. In Chat mode the panel says so, and Rukoo's tools give agents no access to workspaces.
 
 ## On your phone
 
-[Rukoo for Android](android.md) has Chat too, with the same workspaces, channels, direct messages, threads, mentions, mute and blocks. A read on one device counts on the other. Mute and drafts stay on the device where you set them.
+[Rukoo for Android](android.md) has Chat too, with the same workspaces, channels, direct messages, threads, mentions, mute and blocks. A read on one device counts on the other. Mute and drafts stay on the device where you set them. The phone doesn't show reactions, files, link previews or formatting yet: it shows a message's text with its Markdown markers.
 
 ## Not in this version
 
-- Message editing, reactions, formatting, attachments, typing indicators and who's online.
+- Editing and forwarding messages, links to a message, typing indicators and who's online.
+- Voice messages, and playing video or audio inside a message. Such files show as cards that open in their app.
 - Searching messages, and a quick switcher for conversations.
 - Direct messages with guests.
 - Workspaces on another Rukoo server than your account's.
@@ -149,4 +201,4 @@ Your personal agents in the chat panel don't see team chat. In Chat mode the pan
 
 ## How it works
 
-The server side is described in [`server/WORKSPACES.md`](../server/WORKSPACES.md#gate-1-routes), and the plan behind it in [Rukoo workspaces](workspace-architecture.md). On desktop the main process keeps the cache and the connection in `src/main/workspaces/`, and the view is `src/renderer/chat.js` with `chat-view.js`, `chat-input.js` and `chat-dialogs.js`. Tests run against the real server through `test/fixtures/real-server.js`; `test/e2e/chat*.spec.js` drive the app.
+The server side is described in [`server/WORKSPACES.md`](../server/WORKSPACES.md#gate-1-routes), and the plan behind it in [Rukoo workspaces](workspace-architecture.md). On desktop the main process keeps the cache and the connection in `src/main/workspaces/`, with files in `files.js`, and the view is `src/renderer/chat.js` with `chat-view.js`, `chat-input.js` and `chat-dialogs.js`. Rich messages are drawn by `chat-rich.js` (reactions, files, link previews, the image viewer, the emoji picker, the formatting bar and the file tray) from `chat-markdown.js`'s parse of the text; `chat-format.js` holds the formatting commands and `emoji/` the emoji data from [emojibase](https://emojibase.dev) (MIT). Tests run against the real server through `test/fixtures/real-server.js`; `test/e2e/chat*.spec.js` drive the app, `chat-rich.spec.js` the rich messages.

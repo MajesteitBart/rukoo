@@ -282,7 +282,10 @@ test('Undo of Discard from another room puts the message after the draft of its 
       mentions: [
         { actor: joel.id, start: joelAt, end: joelAt + Buffer.byteLength('@Joël') },
         { actor: zoe.id, start: shift, end: shift + Buffer.byteLength('@Zoë') }
-      ]
+      ],
+      // A draft also keeps its files (RUK-211 contract 4.5); this one has none.
+      attachments: [],
+      expired: 0
     });
   await expect(composer(win)).toHaveJSProperty('value', '');
   await roomRow(win, 'general').click();
@@ -625,7 +628,7 @@ test('removing a message asks first, shows "Message removed" here, and Olga sees
   const id = await row.getAttribute('data-id');
   await (await tool(row, 'menu')).click();
   const menu = win.locator('.menu');
-  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Remove message']);
+  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Mark unread', 'Remove message']);
   await menu.locator('[role="menuitem"]', { hasText: 'Remove message' }).click();
   const dialog = win.locator('.scrim .dialog');
   await expect(dialog.locator('h2')).toHaveText('Remove this message?');
@@ -643,7 +646,7 @@ test('removing a message asks first, shows "Message removed" here, and Olga sees
   const hers = message(log(), 'Olga stays');
   await expect(hers).toBeVisible({ timeout: 15000 });
   await hers.click({ button: 'right' });
-  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Block Olga Owner']);
+  await expect(menu.locator('[role="menuitem"]')).toHaveText(['Reply in thread', 'Copy text', 'Mark unread', 'Message Olga Owner', 'Block Olga Owner']);
   await win.keyboard.press('Escape');
 });
 

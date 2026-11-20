@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const { tempDir } = require('./tmp');
-const { openStore, ROOM_CACHE_MAX } = require('../src/main/workspaces/store');
+const { openStore, ROOM_CACHE_MAX, SCHEMA_VERSION } = require('../src/main/workspaces/store');
 const { ChatError, toRenderer } = require('../src/main/workspaces/wire');
 
 const id = (prefix, label) => `${prefix}_${crypto.createHash('sha256').update(label).digest('base64url').slice(0, 22)}`;
@@ -55,22 +55,23 @@ const outboxRow = (label, over = {}) => ({
 const COLUMNS = {
   meta: ['key', 'value'],
   ws: ['id', 'name', 'role', 'me', 'myName', 'generation', 'keyId', 'limits', 'retention', 'cursor', 'passing', 'fresh', 'state', 'membersStale', 'channelsStale', 'blocksStale', 'membersMore', 'syncedAt', 'activeAt'],
-  room: ['ws', 'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members', 'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted'],
+  room: ['ws', 'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members', 'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted', 'readMark', 'readPaused'],
   pass_room: ['ws', 'id', 'row'],
-  event: ['ws', 'room', 'seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'data', 'redacted'],
+  event: ['ws', 'room', 'seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'data', 'redacted', 'attachments', 'previews', 'reactions', 'asOf'],
   tombstone: ['ws', 'message', 'at'],
   member: ['ws', 'id', 'kind', 'name', 'role', 'state', 'joinedAt'],
   channel: ['ws', 'id', 'name', 'visibility', 'archived', 'joined', 'role', 'members'],
   block: ['ws', 'member', 'at'],
-  outbox: ['local', 'ws', 'room', 'actor', 'grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt', 'createdAt'],
-  draft: ['ws', 'room', 'root', 'text', 'mentions', 'at'],
-  notice: ['ws', 'room', 'message', 'seq']
+  outbox: ['local', 'ws', 'room', 'actor', 'grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt', 'createdAt', 'attachments'],
+  draft: ['ws', 'room', 'root', 'text', 'mentions', 'at', 'attachments'],
+  notice: ['ws', 'room', 'message', 'seq'],
+  file_cache: ['ws', 'room', 'file', 'message', 'sha256', 'size', 'name', 'type', 'usedAt']
 };
 
-test('a new cache has the schema of contract 3.5, its pragmas and schema version 1', (t) => {
+test('a new cache has the schema of contract 3.5 with rich chat 4.2, its pragmas and schema version 3', (t) => {
   const store = fresh(t);
   const db = store.db;
-  assert.equal(store.getMeta('schema'), '1');
+  assert.equal(store.getMeta('schema'), '3');
   assert.equal(store.lostUnsent, 0);
   assert.ok(store.quickCheck());
   const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all().map((r) => r.name);
@@ -79,7 +80,7 @@ test('a new cache has the schema of contract 3.5, its pragmas and schema version
     assert.deepEqual(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name), columns, table);
   }
   const indexes = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name`).all().map((r) => r.name);
-  assert.deepEqual(indexes, ['event_id', 'event_root', 'outbox_room']);
+  assert.deepEqual(indexes, ['event_id', 'event_root', 'file_cache_message', 'file_cache_sha', 'outbox_room']);
   const withoutRowid = (table) => /WITHOUT ROWID\s*$/.test(db.prepare(`SELECT sql FROM sqlite_master WHERE name = ?`).get(table).sql);
   for (const table of Object.keys(COLUMNS)) assert.equal(withoutRowid(table), table !== 'outbox', `${table} WITHOUT ROWID`);
   const pragma = (name) => Object.values(db.prepare(`PRAGMA ${name}`).get())[0];
@@ -91,7 +92,7 @@ test('a new cache has the schema of contract 3.5, its pragmas and schema version
   // The cascades: rooms and the directory under ws, events, sends, drafts and notices under their room.
   const parent = (table) => db.prepare(`PRAGMA foreign_key_list(${table})`).all().map((f) => `${f.table}:${f.on_delete}`);
   for (const table of ['room', 'pass_room', 'tombstone', 'member', 'channel', 'block']) assert.deepEqual(parent(table), ['ws:CASCADE'], table);
-  for (const table of ['event', 'outbox', 'draft', 'notice']) assert.deepEqual([...new Set(parent(table))], ['room:CASCADE'], table);
+  for (const table of ['event', 'outbox', 'draft', 'notice', 'file_cache']) assert.deepEqual([...new Set(parent(table))], ['room:CASCADE'], table);
   // The CHECKs.
   assert.throws(() => db.prepare(`INSERT INTO ws (id, name, role, state) VALUES ('w', 'n', 'owner', 'stopped')`).run(), /CHECK/);
 });
@@ -252,6 +253,7 @@ test('deleting a workspace takes everything under it and leaves the other worksp
     store.replaceChannels(ws, [{ id: C, name: 'general', visibility: 'workspace', archived: false, joined: true, role: 'member', members: 1 }]);
     store.replaceBlocks(ws, [{ member: JOEL, at: 1 }]);
     store.putPassRoom(ws, feedRoom());
+    store.putCachedFile({ ws, room: C, file: id('f', 'file'), message: posted(1).id, sha256: 'a'.repeat(64), size: 3, name: 'a.txt', type: 'text/plain' });
   }
   assert.equal(store.deleteWs(W), true);
   for (const table of Object.keys(COLUMNS).filter((x) => x !== 'meta')) {
@@ -296,7 +298,7 @@ test('events of every kind keep their fields and come out as the renderer\'s Eve
   assert.deepEqual(events[0].data, { name: 'general', visibility: 'workspace' });
   assert.equal(events[0].text, null);
   assert.deepEqual(events[1].data, { member: JOEL });
-  assert.deepEqual(events[2], { seq: 3, id: posted(3).id, kind: 'message.posted', actor: JOEL, at: 1003, root: null, text: 'Hoi @Zoë', mentions: mention, redacted: false, data: {} });
+  assert.deepEqual(events[2], { seq: 3, id: posted(3).id, kind: 'message.posted', actor: JOEL, at: 1003, root: null, text: 'Hoi @Zoë', mentions: mention, redacted: false, data: {}, attachments: [], previews: [], reactions: [] });
   assert.deepEqual(events[3].data, { members: [ME, JOEL] });
 });
 
@@ -508,7 +510,7 @@ test('drafts are kept per room and thread, and notices per message', (t) => {
   store.putDraft(W, C, null, { text: 'Main', mentions: [] });
   store.putDraft(W, C, root, { text: 'Thread @Zoë', mentions: [{ actor: ME, start: 7, end: 12 }] });
   store.putDraft(W, C, null, { text: 'Main, again', mentions: [] });
-  assert.deepEqual(store.getDraft(W, C, null), { text: 'Main, again', mentions: [], at: 777 });
+  assert.deepEqual(store.getDraft(W, C, null), { text: 'Main, again', mentions: [], attachments: [], at: 777 });
   assert.deepEqual(store.getDraft(W, C, root).mentions, [{ actor: ME, start: 7, end: 12 }]);
   store.deleteDraft(W, C, null);
   assert.equal(store.getDraft(W, C, null), null);
@@ -703,7 +705,7 @@ test('a wipe whose file can\'t be deleted says so, and leaves no text of the ses
   rm.mock.restore();
   const next = openStore(file);
   t.after(() => next.close());
-  assert.equal(next.getMeta('schema'), '1');
+  assert.equal(next.getMeta('schema'), String(SCHEMA_VERSION));
   assert.equal(next.getMeta('session'), null);
   assert.deepEqual(next.listWs(), []);
   assert.equal(next.countUnsent(), 0);
@@ -741,7 +743,7 @@ test('a file that fails quick_check is replaced, and its unsent messages are cou
   t.after(() => store.close());
   assert.equal(store.lostUnsent, 2);
   assert.ok(store.quickCheck());
-  assert.equal(store.getMeta('schema'), '1');
+  assert.equal(store.getMeta('schema'), String(SCHEMA_VERSION));
   assert.deepEqual(store.listWs(), []);
   assert.equal(store.countUnsent(), 0);
 });
@@ -750,12 +752,12 @@ test('a file of a newer schema is replaced, and its unsent messages are counted'
   const file = path.join(tempDir('rukoo-chat-store-'), 'chat.db');
   cacheWithSends(file);
   const db = new DatabaseSync(file);
-  db.prepare(`UPDATE meta SET value = '2' WHERE key = 'schema'`).run();
+  db.prepare(`UPDATE meta SET value = ? WHERE key = 'schema'`).run(String(SCHEMA_VERSION + 1));
   db.close();
   const store = openStore(file);
   t.after(() => store.close());
   assert.equal(store.lostUnsent, 2);
-  assert.equal(store.getMeta('schema'), '1');
+  assert.equal(store.getMeta('schema'), String(SCHEMA_VERSION));
   assert.deepEqual(store.listWs(), []);
 });
 
@@ -767,7 +769,7 @@ test('a file that is no database at all is replaced with nothing to count', (t) 
   t.after(() => store.close());
   assert.equal(store.lostUnsent, 0);
   assert.ok(store.quickCheck());
-  assert.equal(store.getMeta('schema'), '1');
+  assert.equal(store.getMeta('schema'), String(SCHEMA_VERSION));
 });
 
 // Review 206A item 2: a lock another connection held made openStore take the file for broken; when the lock went
@@ -814,6 +816,6 @@ test('a database without the chat schema is replaced too', (t) => {
   db.close();
   const store = openStore(file);
   t.after(() => store.close());
-  assert.equal(store.getMeta('schema'), '1');
+  assert.equal(store.getMeta('schema'), String(SCHEMA_VERSION));
   assert.equal(store.db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'something'`).get().n, 0);
 });

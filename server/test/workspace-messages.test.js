@@ -44,7 +44,18 @@ describe('sending', () => {
       [4, 'two']
     ]);
     expect(log).toMatchObject({ head: 4, floor: 1, more: false });
-    expect(log.events[2]).toEqual({ seq: 3, id: first.body.messageId, kind: 'message.posted', actor: ws.me.id, at: expect.any(Number), text: 'one', mentions: [] });
+    expect(log.events[2]).toEqual({
+      seq: 3,
+      id: first.body.messageId,
+      kind: 'message.posted',
+      actor: ws.me.id,
+      at: expect.any(Number),
+      text: 'one',
+      mentions: [],
+      attachments: [],
+      previews: [],
+      reactions: []
+    });
 
     // The same id with other words is a conflict, not a second message.
     const changed = await send(ws.person, ws.id, ws.general, { operationId, text: 'one, edited' });
@@ -311,6 +322,7 @@ describe('the feed', () => {
         floor: 1,
         lastAt: expect.any(Number),
         read: 3,
+        readMark: 0,
         unread: 0,
         mentions: 0,
         removed: [],
@@ -372,13 +384,13 @@ describe('the feed', () => {
     const phone = await sync(mila.person, ws.id);
     expect(phone.rooms.get(ws.general)).toMatchObject({ head: 8, read: 3, unread: 5 });
 
-    expect((await read(6)).body).toEqual({ read: 6 });
+    expect((await read(6)).body).toEqual({ read: 6, readMark: 0 });
     // The other device learns of it without a new message.
     const desktop = await sync(mila.person, ws.id, phone.cursor);
     expect(desktop.rooms.get(ws.general)).toMatchObject({ read: 6, unread: 2 });
     // Never backward, never past what exists.
-    expect((await read(4)).body).toEqual({ read: 6 });
-    expect((await read(999)).body).toEqual({ read: 8 });
+    expect((await read(4)).body).toEqual({ read: 6, readMark: 0 });
+    expect((await read(999)).body).toEqual({ read: 8, readMark: 0 });
     expect((await sync(mila.person, ws.id, desktop.cursor)).rooms.get(ws.general)).toMatchObject({ read: 8, unread: 0 });
     // Nobody else's position moved.
     expect((await sync(ws.person, ws.id)).rooms.get(ws.general).read).toBe(8);

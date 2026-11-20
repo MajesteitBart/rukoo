@@ -80,6 +80,7 @@ describe('starting a direct message', () => {
       floor: 1,
       lastAt: expect.any(Number),
       read: 1,
+      readMark: 0,
       unread: 0,
       mentions: 0,
       removed: [],
@@ -345,7 +346,7 @@ describe('messages in a direct message', () => {
     expect((await events(tess.person, ws.id, dm)).status).toBe(404);
     expect((await post(tess.person, ws.id, dm, 'let me in')).status).toBe(404);
 
-    expect((await read(mila.person, ws.id, dm, sent.body.seq)).body).toEqual({ read: sent.body.seq });
+    expect((await read(mila.person, ws.id, dm, sent.body.seq)).body).toEqual({ read: sent.body.seq, readMark: 0 });
     expect(await dmRow(mila.person, ws.id, dm)).toMatchObject({ read: sent.body.seq, unread: 0, mentions: 0 });
     const reply = await post(mila.person, ws.id, dm, 'seen', { root: sent.body.messageId });
     expect(reply.status).toBe(201);

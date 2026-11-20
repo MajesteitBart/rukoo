@@ -13,7 +13,8 @@
 //
 // What an alert shows. Title: #channel, or the DM's people as the sidebar names them, with the workspace's name after
 // it when there are several workspaces. Body: up to three of the newest messages after max(read, notified), one line
-// each as "Name: text", the first 120 characters with mentions as @Name. For a channel those are the messages that
+// each as "Name: text", the first 120 characters with mentions as @Name and without Markdown's markers (rich contract
+// 3.7, plainText below); a message of only files says "Sent a file" or "Sent n files". For a channel those are the messages that
 // mention the person; for a DM every message of someone else. Removed messages and messages of people the person
 // blocked are left out. The cache gives them when it covers that range; else events?before=<head + 1>&limit=20 loads
 // them, for at most three rooms per run. Three rooms alert per run, newest first; a fourth or more make one summary,
@@ -70,10 +71,41 @@ function displayName(member) {
   return String(member.name || '').trim() || t('chat.log.formerMember');
 }
 
+// A text without the markers of chat Markdown (rich contract 3.3), for alerts: code fences, quote, list and heading
+// markers at the start of a line, bold, italic, strikethrough and code delimiters, and links as their label. A marker
+// escaped with a backslash stays as its character. This is a small stripper of the common markers, not the renderer's
+// parser: an alert is one line of at most 120 characters, and what it misses shows as typed.
+function plainText(text) {
+  const escapes = [];
+  // Escaped characters step aside first, so no rule below takes them for markers.
+  let out = String(text || '').replace(/\\([\\`*_~[\]()#>\-+.!])/g, (_, ch) => `\uE002${escapes.push(ch) - 1}\uE003`);
+  out = out
+    .split('\n')
+    .filter((line) => !/^\s*```/.test(line))
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}#{1,3}\s+/, '')
+        .replace(/^\s*(>\s?)+/, '')
+        .replace(/^\s*[-*+]\s+/, '')
+    )
+    .join('\n');
+  out = out
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\[([^\]\n]+)\]\((?:https?:|mailto:)[^)\s]+\)/g, '$1')
+    .replace(/\*\*(?=\S)([^\n]*?\S)\*\*/g, '$1')
+    .replace(/(^|[^\p{L}\p{N}_])__(?=\S)([^\n]*?\S)__(?![\p{L}\p{N}_])/gu, '$1$2')
+    .replace(/~~(?=\S)([^\n]*?\S)~~/g, '$1')
+    .replace(/(^|[^*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?!\*)/g, '$1$2')
+    .replace(/(^|[^\p{L}\p{N}_])_(?=[^\s_])([^_\n]*?[^\s_])_(?![\p{L}\p{N}_])/gu, '$1$2');
+  return out.replace(/\uE002(\d+)\uE003/g, (_, i) => escapes[Number(i)]);
+}
+
 // A message's text as one line of an alert: each mention as the text its author sent, with @ before it when it lacks
-// one; white space folded; the first 120 characters. A range that breaks the rules of contract 3.17 stays plain.
-function alertText(text, mentions) {
+// one; Markdown's markers taken out (plainText); white space folded; the first 120 characters. A range that breaks the
+// rules of contract 3.17 stays plain. A message without text says how many files it sent.
+function alertText(text, mentions, files = 0) {
   let out = String(text || '');
+  const names = [];
   if (Array.isArray(mentions) && mentions.length && !wire.mentionRule(out, mentions)) {
     const bytes = Buffer.from(out, 'utf8');
     let at = 0;
@@ -81,14 +113,26 @@ function alertText(text, mentions) {
     for (const m of mentions) {
       built += bytes.subarray(at, m.start).toString('utf8');
       const part = bytes.subarray(m.start, m.end).toString('utf8');
-      built += part.startsWith('@') ? part : `@${part}`;
+      // Each mention stands aside as a token while the markers go, so a name with an underscore stays whole.
+      built += `\uE000${names.push(part.startsWith('@') ? part : `@${part}`) - 1}\uE001`;
       at = m.end;
     }
     out = built + bytes.subarray(at).toString('utf8');
   }
+  out = plainText(out).replace(/\uE000(\d+)\uE001/g, (_, i) => names[Number(i)] ?? '');
   out = out.replace(/\s+/g, ' ').trim();
+  if (!out && files > 0) out = files === 1 ? say('chat.notify.sentFile', {}, 'Sent a file') : say('chat.notify.sentFiles', { n: files, count: files }, `Sent ${files} files`);
   const chars = Array.from(out);
   return chars.length > BODY_CHARS ? `${chars.slice(0, BODY_CHARS).join('').trimEnd()}…` : out;
+}
+
+// A text from the catalog, or the English fallback while a key isn't in it yet.
+function say(key, params, fallback) {
+  try {
+    return t(key, params);
+  } catch (_) {
+    return fallback;
+  }
 }
 
 class Notifier {
@@ -246,10 +290,11 @@ class Notifier {
     };
   }
 
-  // Whether a message is worth showing in the room's alert.
+  // Whether a message is worth showing in the room's alert: one with text or files (rich contract 3.7).
   qualifies(message, room, ctx) {
     if (message.actor === ctx.me || ctx.blocked.has(message.actor)) return false;
-    if (typeof message.text !== 'string' || !message.text) return false;
+    if (typeof message.text !== 'string') return false;
+    if (!message.text && !(Array.isArray(message.attachments) && message.attachments.length)) return false;
     if (room.kind === 'dm') return true;
     return Array.isArray(message.mentions) && message.mentions.some((m) => m && m.actor === ctx.me);
   }
@@ -261,7 +306,7 @@ class Notifier {
     if (room.hi === null || room.hi === undefined || room.hi < room.head) return null;
     const rows = this.svc.store
       .all(
-        `SELECT id, seq, actor, text, mentions FROM event
+        `SELECT id, seq, actor, text, mentions, attachments FROM event
          WHERE ws = ? AND room = ? AND seq > ? AND seq <= ? AND kind = 'message.posted' AND redacted = 0 AND text IS NOT NULL
          ORDER BY seq`,
         ws,
@@ -269,7 +314,7 @@ class Notifier {
         after,
         room.head
       )
-      .map((r) => ({ ...r, mentions: parseJson(r.mentions, []) }))
+      .map((r) => ({ ...r, mentions: parseJson(r.mentions, []), attachments: parseJson(r.attachments, []) }))
       .filter((m) => this.qualifies(m, room, ctx));
     if (rows.length) return rows.slice(-LINES);
     // Events below the floor are gone, so a range that starts at the floor holds all there is.
@@ -316,7 +361,8 @@ class Notifier {
   }
 
   line(message, ctx) {
-    return t('chat.notify.body', { name: displayName(ctx.members.get(message.actor)), text: alertText(message.text, message.mentions) });
+    const files = Array.isArray(message.attachments) ? message.attachments.length : 0;
+    return t('chat.notify.body', { name: displayName(ctx.members.get(message.actor)), text: alertText(message.text, message.mentions, files) });
   }
 
   mark(ws, room, head) {
@@ -403,4 +449,4 @@ class Notifier {
   }
 }
 
-module.exports = { Notifier, alertText };
+module.exports = { Notifier, alertText, plainText };

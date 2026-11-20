@@ -116,7 +116,7 @@ test('replies show in the main timeline as reply rows with the context of their 
   const rows = timeline([root, gone, top, r1, r2, r3, r4, r5], base);
   assert.deepEqual(shape(rows), ['day', 'msg+1', 'msg+2', 'msg+3', 'reply+4', 'reply-5', 'reply+6', 'reply+7', 'msg+8']);
   const byS = Object.fromEntries(rows.filter((r) => r.seq).map((r) => [r.seq, r]));
-  assert.deepEqual(byS[4].context, { state: 'ok', root: root.id, actor: SANNE, author: members.get(SANNE), text: 'Can someone look at the draft?' });
+  assert.deepEqual(byS[4].context, { state: 'ok', root: root.id, actor: SANNE, author: members.get(SANNE), text: 'Can someone look at the draft?', files: 0 });
   assert.deepEqual(byS[6].context, { state: 'removed', root: gone.id });
   assert.deepEqual(byS[7].context, { state: 'missing', root: r4.root }, 'a root that is not cached');
   assert.equal(byS[7].head, true, 'replies by one author to two different roots are two groups');
@@ -125,6 +125,12 @@ test('replies show in the main timeline as reply rows with the context of their 
   const long = msg(SANNE, T0, { seq: 1, text: 'x'.repeat(200) });
   const ctx = timeline([long, msg(ROB, T0 + MIN, { seq: 2, root: long.id })], base).at(-1).context.text;
   assert.equal(ctx, `${'x'.repeat(120)}…`, 'the context line quotes the start of the root');
+  // Without Markdown markers (RUK-211 contract 3.7), and with the root's files counted for a root without text.
+  const marked = msg(SANNE, T0, { seq: 1, text: '**Plan** for _today_:\n- ship it' });
+  assert.equal(timeline([marked, msg(ROB, T0 + MIN, { seq: 2, root: marked.id })], base).at(-1).context.text, 'Plan for today: ship it');
+  const filesOnly = msg(SANNE, T0, { seq: 1, text: '', attachments: [{ id: id('f', 'a'), name: 'a.pdf', type: 'application/pdf', size: 1 }] });
+  const fileCtx = timeline([filesOnly, msg(ROB, T0 + MIN, { seq: 2, root: filesOnly.id })], base).at(-1).context;
+  assert.deepEqual([fileCtx.text, fileCtx.files], ['', 1]);
 });
 
 test('a root carries the summary of its cached replies, with newest against the read position at open', async () => {
@@ -587,4 +593,187 @@ test('a new invitation link says what it grants, and an open one names its chann
   assert.equal(inviteRowChannels(['', 'design'], 2, en), '#design +1');
   assert.equal(inviteRowChannels([], 2, en), '2 channels');
   assert.equal(inviteRowChannels([], 0, nl), '0 kanalen');
+});
+
+// ---------- rich messages (RUK-211): reactions, files, link cards, formatting ----------
+
+const loadingFormat = import(moduleUrl('chat-format.js'));
+
+test('a reaction joins its group in order, a new emoji makes a group at the end, and applying it twice changes nothing', async () => {
+  const { applyReaction, reacted } = await loading;
+  let r = applyReaction([], '👍', SANNE, true);
+  r = applyReaction(r, '🎉', ME, true);
+  r = applyReaction(r, '👍', ME, true);
+  assert.deepEqual(r, [
+    { emoji: '👍', actors: [SANNE, ME] },
+    { emoji: '🎉', actors: [ME] }
+  ]);
+  assert.deepEqual(applyReaction(r, '👍', ME, true), r);
+  assert.equal(reacted(r, '👍', ME), true);
+  // Taking the last one back drops the group; taking back one that isn't there changes nothing.
+  r = applyReaction(r, '🎉', ME, false);
+  assert.deepEqual(r, [{ emoji: '👍', actors: [SANNE, ME] }]);
+  assert.deepEqual(applyReaction(r, '🎉', ME, false), r);
+  assert.equal(reacted(r, '🎉', ME), false);
+  // Garbage from an old cache reads as no reactions.
+  assert.deepEqual(applyReaction(null, '👍', ME, true), [{ emoji: '👍', actors: [ME] }]);
+});
+
+test('who reacted names you as You, in the order they reacted, and counts the ones past the first eight', async () => {
+  const { reactionNames } = await loading;
+  const t = (key, p) => i18n.translate('en', key, p);
+  assert.deepEqual(reactionNames({ emoji: '👍', actors: [SANNE, ME, PIM] }, { me: ME, members, t }), { names: ['Sanne de Vries', 'You', 'Deleted member'], more: 0 });
+  const many = Array.from({ length: 11 }, (_, i) => id('u', `p${i}`));
+  const { names, more } = reactionNames({ emoji: '👍', actors: many }, { me: ME, members, t });
+  assert.equal(names.length, 8);
+  assert.equal(more, 3);
+  assert.equal(t('chat.react.who', { names: 'Sanne and you', emoji: '👍', count: 2 }), 'Sanne and you reacted with 👍');
+  assert.equal(i18n.translate('nl', 'chat.react.who', { names: 'Sanne', emoji: '👍', count: 1 }), 'Sanne reageerde met 👍');
+});
+
+test("a message's files: images the app can show go in the grid of four with the rest counted, others are cards", async () => {
+  const { fileLayout, fitBox, fileKind, isImage, cardImage } = await loading;
+  const img = (n, extra = {}) => ({ id: id('f', `i${n}`), name: `photo${n}.png`, type: 'image/png', size: 1000, width: 800, height: 600, ...extra });
+  const pdf = { id: id('f', 'pdf'), name: 'Plan.pdf', type: 'application/pdf', size: 250000 };
+  const layout = fileLayout([img(1), pdf, img(2), img(3), img(4), img(5), img(6)]);
+  assert.deepEqual(
+    layout.images.map((f) => f.name),
+    ['photo1.png', 'photo2.png', 'photo3.png', 'photo4.png']
+  );
+  assert.equal(layout.more, 2);
+  assert.deepEqual(layout.files, [pdf]);
+  // An image without its size, or of a type Chromium can't show, is a card.
+  assert.equal(isImage(img(7, { width: undefined })), false);
+  assert.equal(isImage(img(8, { type: 'image/heic' })), false);
+  assert.equal(fileLayout([img(9, { type: 'image/tiff' })]).files.length, 1);
+  // One image fits 360 by 280 at its shape, and is never drawn larger than it is.
+  assert.deepEqual(fitBox(4000, 3000), { width: 360, height: 270 });
+  assert.deepEqual(fitBox(600, 1200), { width: 140, height: 280 });
+  assert.deepEqual(fitBox(120, 80), { width: 120, height: 80 });
+  // Kinds for the card's icon, from the type or else the name.
+  assert.equal(fileKind(pdf), 'pdf');
+  assert.equal(fileKind({ name: 'Q3.xlsx', type: 'application/octet-stream' }), 'sheet');
+  assert.equal(fileKind({ name: 'deck.pptx', type: '' }), 'slides');
+  assert.equal(fileKind({ name: 'a.zip', type: 'application/zip' }), 'archive');
+  assert.equal(fileKind({ name: 'clip.mp4', type: 'video/mp4' }), 'video');
+  assert.equal(fileKind({ name: 'x.bin', type: 'application/octet-stream' }), 'file');
+  // A card's image goes under the text from 400 pixels wide.
+  assert.equal(cardImage({ image: null }), 'none');
+  assert.equal(cardImage({ image: { width: 399 } }), 'side');
+  assert.equal(cardImage({ image: { width: 1200 } }), 'below');
+});
+
+test('Send waits for every staged file, and a ready file is enough to send without text', async () => {
+  const { stagedState, draftFiles } = await loading;
+  const ready = { stage: 's1', state: 'ready', file: id('f', 'a') };
+  assert.deepEqual(stagedState([ready], false).ids, [id('f', 'a')]);
+  assert.equal(stagedState([ready], false).canSend, true);
+  assert.equal(stagedState([], false).canSend, false);
+  assert.equal(stagedState([], true).canSend, true);
+  assert.equal(stagedState([ready, { stage: 's2', state: 'uploading' }], true).canSend, false);
+  assert.equal(stagedState([ready, { stage: 's3', state: 'failed', error: 'too_large' }], true).canSend, false);
+  // A draft keeps files until their upload expires.
+  const now = 1000000;
+  const { kept, expired } = draftFiles([{ id: id('f', 'old'), expiresAt: now - 1 }, { id: id('f', 'new'), expiresAt: now + 60000 }, { id: id('f', 'none') }], now);
+  assert.deepEqual(
+    kept.map((f) => f.id),
+    [id('f', 'new'), id('f', 'none')]
+  );
+  assert.equal(expired, 1);
+});
+
+test('Message the author is for active full members you did not block, never your own message or in a guest view', async () => {
+  const { canMessageAuthor } = await loading;
+  const row = (actor) => ({ type: 'msg', actor, id: id('e', 'x'), seq: 1 });
+  const opts = { me: ME, myRole: 'member', members, blocks: new Set() };
+  assert.equal(canMessageAuthor(row(SANNE), opts), true);
+  assert.equal(canMessageAuthor(row(ME), opts), false);
+  assert.equal(canMessageAuthor(row(MILA), opts), false, 'a guest');
+  assert.equal(canMessageAuthor(row(OLGA), opts), false, 'someone who left');
+  assert.equal(canMessageAuthor(row(SANNE), { ...opts, blocks: new Set([SANNE]) }), false);
+  assert.equal(canMessageAuthor(row(SANNE), { ...opts, myRole: 'guest' }), false);
+  assert.equal(canMessageAuthor({ ...row(SANNE), pending: 'queued' }, opts), false);
+});
+
+test("a message row carries its files, cards and reactions, and its sig changes with them and with a reactor's name", async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const file = { id: id('f', 'a'), name: 'a.pdf', type: 'application/pdf', size: 10 };
+  const card = { url: 'https://example.com/', title: 'Example', description: '', site: 'example.com', image: null, video: false };
+  const m = msg(SANNE, T0, { attachments: [file], previews: [card], reactions: [{ emoji: '👍', actors: [ROB] }] });
+  const row = timeline([m], base).find((r) => r.type === 'msg');
+  assert.deepEqual(row.attachments, [file]);
+  assert.deepEqual(row.previews, [card]);
+  assert.deepEqual(row.reactions, [{ emoji: '👍', actors: [ROB] }]);
+  const sig = (events, opts = base) => timeline(events, opts).find((r) => r.type === 'msg').sig;
+  const before = sig([m]);
+  assert.notEqual(sig([{ ...m, reactions: [{ emoji: '👍', actors: [ROB, ME] }] }]), before);
+  assert.notEqual(sig([{ ...m, previews: [] }]), before);
+  const renamed = new Map(members);
+  renamed.set(ROB, { ...members.get(ROB), name: 'Robert' });
+  assert.notEqual(sig([m], { ...base, members: renamed }), before);
+  // A removed message keeps none of it; an old cache without the fields reads as none.
+  const gone = timeline([{ ...m, redacted: true, text: null }], base).find((r) => r.type === 'msg');
+  assert.deepEqual([gone.attachments, gone.previews, gone.reactions], [[], [], []]);
+  const old = timeline([msg(SANNE, T0)], base).find((r) => r.type === 'msg');
+  assert.deepEqual([old.attachments, old.previews, old.reactions], [[], [], []]);
+  // A pending send shows its files, and has no cards or reactions yet.
+  const p = { local: 'l'.repeat(22), text: '', mentions: [], root: null, state: 'queued', createdAt: T0 + MIN, attachments: [file] };
+  const pending = timeline([m], { ...base, pending: [p] }).find((r) => r.pending);
+  assert.deepEqual(pending.attachments, [file]);
+  assert.deepEqual(pending.reactions, []);
+});
+
+test('the formatting commands wrap a selection or put a pair at the caret, and take markers off again', async () => {
+  const { format, applyEdits } = await loadingFormat;
+  const run = (kind, text, a, b = a) => {
+    const r = format(kind, text, a, b);
+    const out = applyEdits(text, r.edits);
+    return [out, out.slice(r.start, r.end), r.start, r.end];
+  };
+  assert.deepEqual(run('bold', 'hello world', 6, 11), ['hello **world**', 'world', 8, 13]);
+  assert.deepEqual(run('bold', 'hello **world**', 8, 13), ['hello world', 'world', 6, 11]);
+  assert.deepEqual(run('bold', 'hello **world**', 6, 15), ['hello world', 'world', 6, 11]);
+  assert.deepEqual(run('bold', 'hello ', 6), ['hello ****', '', 8, 8]);
+  assert.deepEqual(run('bold', 'hello ****', 8), ['hello ', '', 6, 6]);
+  // White space at the selection's ends stays outside the markers.
+  assert.deepEqual(run('italic', 'a word here', 1, 7), ['a _word_ here', 'word', 3, 7]);
+  assert.deepEqual(run('strike', 'gone', 0, 4), ['~~gone~~', 'gone', 2, 6]);
+  assert.deepEqual(run('code', 'x', 0, 1), ['`x`', 'x', 1, 2]);
+  // Links: the caret goes where the address belongs, or into the label when the selection was the address.
+  assert.deepEqual(run('link', 'see docs now', 4, 8), ['see [docs]() now', '', 11, 11]);
+  assert.deepEqual(run('link', 'https://example.com', 0, 19), ['[](https://example.com)', '', 1, 1]);
+  assert.deepEqual(run('link', 'abc', 3), ['abc[]()', '', 4, 4]);
+  // Lines: every line the selection touches, numbered from 1; when all have the prefix it comes off.
+  assert.equal(run('bullets', 'one\ntwo\nthree', 0, 9)[0], '- one\n- two\n- three');
+  assert.equal(run('bullets', '- one\n- two', 2, 9)[0], 'one\ntwo');
+  assert.equal(run('numbers', 'one\n- two', 0, 7)[0], '1. one\n2. two');
+  assert.equal(run('quote', 'one\ntwo', 5)[0], 'one\n> two');
+  // Code blocks: fences on lines of their own, and off again.
+  assert.deepEqual(run('codeBlock', 'abc', 3), ['abc\n```\n\n```', '', 8, 8]);
+  assert.equal(run('codeBlock', 'a\nline1\nline2\nb', 2, 13)[0], 'a\n```\nline1\nline2\n```\nb');
+  assert.equal(run('codeBlock', 'a\n```\nline1\n```\nb', 6, 11)[0], 'a\nline1\nb');
+});
+
+test("the composer's shortcuts are Slack's, and ':' with two characters opens the emoji list", async () => {
+  const { formatForKey, emojiToken, emojiCode, SHORTCUTS, FORMATS } = await loadingFormat;
+  const key = (k, code, mods = {}) => formatForKey({ key: k, code, ctrlKey: true, ...mods });
+  assert.equal(key('b', 'KeyB'), 'bold');
+  assert.equal(key('i', 'KeyI'), 'italic');
+  assert.equal(key('X', 'KeyX', { shiftKey: true }), 'strike');
+  assert.equal(key('e', 'KeyE'), 'code');
+  assert.equal(key('U', 'KeyU', { shiftKey: true }), 'link');
+  assert.equal(key('*', 'Digit8', { shiftKey: true }), 'bullets');
+  assert.equal(key('&', 'Digit7', { shiftKey: true }), 'numbers');
+  assert.equal(key('(', 'Digit9', { shiftKey: true }), 'quote');
+  assert.equal(key('C', 'KeyC', { shiftKey: true, altKey: true }), 'codeBlock');
+  assert.equal(formatForKey({ key: 'b', code: 'KeyB' }), null, 'without Ctrl');
+  assert.equal(key('z', 'KeyZ'), null);
+  assert.deepEqual(Object.keys(SHORTCUTS).sort(), [...FORMATS].sort());
+  assert.deepEqual(emojiToken('nice :thu'), { start: 5, query: 'thu' });
+  assert.equal(emojiToken('nice :t'), null, 'one character is not enough');
+  assert.equal(emojiToken('at 10:30'), null, 'a time');
+  assert.equal(emojiToken('see http://x'), null);
+  assert.deepEqual(emojiCode('great :tada:'), { start: 6, code: 'tada' });
+  assert.equal(emojiCode('10:30:'), null);
 });

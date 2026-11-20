@@ -133,7 +133,24 @@ export const icons = {
   mute: p('<path d="M6.5 16.5V11a5.5 5.5 0 0 1 8.4-4.7M17.5 10.5v6l1.5 2h-14"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/><path d="M4 3.5 20 20.5"/>'),
   leave: p('<path d="M13.5 4.5h-6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h6"/><path d="M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5"/>'),
   // A person with a plus: Add people and Invite people in team chat.
-  userPlus: p('<circle cx="10" cy="8.5" r="3.6"/><path d="M3.5 19.5a6.5 6.5 0 0 1 11.6-4"/><path d="M18.5 13.5v6M15.5 16.5h6"/>')
+  userPlus: p('<circle cx="10" cy="8.5" r="3.6"/><path d="M3.5 19.5a6.5 6.5 0 0 1 11.6-4"/><path d="M18.5 13.5v6M15.5 16.5h6"/>'),
+  // Team chat's reactions, emoji and formatting (chat-rich.js, chat-input.js).
+  smile: p('<circle cx="12" cy="12" r="8.5"/><path d="M8.5 14.2a4.3 4.3 0 0 0 7 0"/><path d="M9.2 9.6v.3M14.8 9.6v.3" stroke-width="2"/>'),
+  // Add a reaction: a face with a plus at its upper right.
+  smilePlus: p('<path d="M20.3 12.6A8.5 8.5 0 1 1 11.4 3.5"/><path d="M8.5 14.2a4.3 4.3 0 0 0 7 0"/><path d="M9.2 9.6v.3M14.8 9.6v.3" stroke-width="2"/><path d="M18.5 2.8v6M15.5 5.8h6"/>'),
+  strike: p('<path d="M4.5 12h15"/><path d="M16.5 7.3c-.6-1.7-2.3-2.8-4.5-2.8-2.6 0-4.4 1.4-4.4 3.3 0 1.4.9 2.4 2.6 3"/><path d="M8 16.5c.5 1.9 2.2 3 4.2 3 2.6 0 4.5-1.4 4.5-3.4 0-.8-.3-1.5-.9-2.1"/>'),
+  quote: p('<path d="M5 5.5v13"/><path d="M9.5 8h10M9.5 12h10M9.5 16h6.5"/>'),
+  codeBlock: p('<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="m9.5 10-2.5 2.5L9.5 15M14.5 10l2.5 2.5-2.5 2.5"/>'),
+  // File kinds on a file's card: a sheet with what kind it is drawn on it.
+  fileText: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4M8.5 12h7M8.5 15.5h7M8.5 8.5h2.5"/>'),
+  fileVideo: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><path d="M10 11.5v5l4-2.5z"/>'),
+  fileAudio: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><circle cx="10" cy="16" r="1.6"/><path d="M11.6 16v-5l2.9-.8"/>'),
+  fileArchive: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4M10 3.5v1.5M10 7v1.5M10 10.5V12"/><rect x="8.5" y="13.5" width="3" height="3.5" rx="1"/>'),
+  fileSheet: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><rect x="8" y="11" width="7.5" height="6.5" rx="1"/><path d="M8 14.2h7.5M11.5 11v6.5"/>'),
+  fileSlides: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><rect x="8" y="11" width="7.5" height="5" rx="1"/><path d="M11.75 16v2"/>'),
+  filePdf: p('<path d="M6.5 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z"/><path d="M13.5 3.5v4h4"/><path d="M8.5 17.5c1.6-1 3.4-3.6 3.7-6 .2-1.6-1.4-1.6-1.3 0 .2 2.6 2.4 4.6 4.6 4.8 1 .1 1.1-.9.2-1.1-2-.4-5.2.4-7.2 2.3z"/>'),
+  // The skin tone choice in the emoji picker: a raised hand.
+  hand: p('<path d="M8.5 12.5V6a1.5 1.5 0 0 1 3 0v5M11.5 10.5V4.8a1.5 1.5 0 0 1 3 0v5.7M14.5 10.5V6.3a1.5 1.5 0 0 1 3 0v7.2a7 7 0 0 1-7 7h-.6a6 6 0 0 1-4.6-2.2l-2.5-3.1a1.5 1.5 0 0 1 2.3-1.9l1.4 1.7"/>')
 };
 
 // Provider tiles on the setup screen.

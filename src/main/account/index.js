@@ -16,6 +16,9 @@ const keys = require('./crypto');
 const { AccountError, serverUrl, request: httpRequest } = require('./client');
 
 const PROTOCOL = 1;
+// The versions of the workspace protocol (server/WORKSPACES.md) this Rukoo speaks. Version 2 takes a message with
+// files and no text as it is; version 1 gets a text standing in for it.
+const WORKSPACE_VERSIONS = [1, 2];
 const MIN_PASSWORD = 12;
 const SYNC_EVERY = 5 * 60 * 1000;
 const PUSH_AFTER = 2000;
@@ -216,12 +219,21 @@ class AccountService extends EventEmitter {
     }
   }
 
-  // The workspace routes (server/WORKSPACES.md) with this session, in version 1 of their protocol. Unlike call(),
-  // the server's own error code and details survive, because the team chat service acts on them (stale_grant,
-  // reset_required, scope). A 401 from any of them ends the session, as from every other route.
+  // The workspace routes (server/WORKSPACES.md) with this session, in the newest version of their protocol both this
+  // Rukoo and the server speak (workspaceVersion). Unlike call(), the server's own error code and details survive,
+  // because the team chat service acts on them (stale_grant, reset_required, scope). A 401 from any of them ends the
+  // session, as from every other route.
   async workspaceCall(method, route, body, { session = this.session } = {}) {
     if (!this.signedIn || !session) throw fail('signed_out');
-    return this.call(method, route, body, { auth: true, session, raw: true, headers: { 'rukoo-workspace-version': '1' } });
+    const headers = { 'rukoo-workspace-version': String(this.workspaceVersion(session.server)) };
+    return this.call(method, route, body, { auth: true, session, raw: true, headers });
+  }
+
+  // The highest workspace protocol version this Rukoo and the server's saved GET /v1/info both list, else 1.
+  workspaceVersion(server) {
+    const info = this.state.info && this.state.info.server === server ? this.state.info.data : null;
+    const theirs = info && info.workspace && Array.isArray(info.workspace.versions) ? info.workspace.versions : [];
+    return Math.max(1, ...WORKSPACE_VERSIONS.filter((v) => theirs.includes(v)));
   }
 
   // A short, stable tag of the session: the first 22 characters of base64url SHA-256 of its token. The team chat cache
