@@ -846,6 +846,38 @@ test('opening at a seq returns detached events as they stand, and tells the rend
   );
 });
 
+test('an opening at a seq answers with the read position of a Mark unread that came while it waited', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc, api, account } = await setup(t, { timing: SMALL });
+  const notes = await postMany(olga, ws.id, ws.general, 30, { prefix: 'note' });
+  await svc.sync(ws.id);
+  const head = svc.store.getRoom(ws.id, ws.general).head;
+  await api.chatMarkRead(ws.id, ws.general);
+  await until(() => svc.store.getRoom(ws.id, ws.general).readSent >= head, 10000, 'the read to reach the server');
+  // The first backfill page waits while Bart marks a note unread on another device.
+  let held = false;
+  let waiting = false;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  watchCalls(account, async (method, url, real) => {
+    if (held || !url.includes(`/conversations/${ws.general}/events?before=`)) return undefined;
+    held = true;
+    const answer = await real();
+    waiting = true;
+    await gate;
+    return answer;
+  });
+  const opening = api.chatOpen(ws.id, ws.general, { at: notes[1].seq });
+  await until(() => waiting, 10000, 'the held backfill page');
+  const marked = await server.call('POST', route(ws.id, `/conversations/${ws.general}/unread`), { token: bart.token, body: { message: notes[10].messageId } });
+  assert.equal(marked.status, 200);
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, ws.general).readLocal, notes[10].seq - 1);
+  release();
+  const view = await opening;
+  assert.equal(view.readAtOpen, notes[10].seq - 1);
+});
+
 // Contract 3.6: a new grant empties the room's cache, as the feed can't list what was removed while the person was out.
 // Detached events an opening at a seq loaded under the old grant go with it: the new grant raises the cache revision.
 // The removal is kept out of the feed page (synthetic), as for removedMore.

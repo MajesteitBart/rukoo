@@ -301,10 +301,11 @@ test('a feed row of a new grant brings its own readMark and ends the hold of the
   store.upsertRoom(W, feedRoom({ read: 6, unread: 4, readMark: 3 }));
   assert.deepEqual([store.getRoom(W, C).readMark, store.getRoom(W, C).readPaused], [3, 1]);
   // Left and joined again: the new grant counts from 0, and its read and badges count, though its readMark is lower.
+  // What this device read under the old grant goes with it, though it was further.
   const { grantChanged } = store.upsertRoom(W, feedRoom({ grant: id('g', 'again'), read: 2, unread: 9, readMark: 0 }));
   assert.equal(grantChanged, true);
   let r = store.getRoom(W, C);
-  assert.deepEqual([r.grantId, r.read, r.unread, r.readMark, r.readPaused], [id('g', 'again'), 2, 9, 0, 0]);
+  assert.deepEqual([r.grantId, r.read, r.readLocal, r.readSent, r.unread, r.readMark, r.readPaused], [id('g', 'again'), 2, 2, 2, 9, 0, 0]);
   // Its first Mark unread is newer than 0, and holds again.
   store.upsertRoom(W, feedRoom({ grant: id('g', 'again'), read: 1, unread: 10, readMark: 1 }));
   r = store.getRoom(W, C);
@@ -369,6 +370,14 @@ test('inline reaction and card events of the open room come back as updated mess
   assert.deepEqual(result.appended.events.map((e) => e.kind), ['reaction.added', 'message.previewed']);
   const e = wire.toRenderer(store.eventAt(W, C, 5));
   assert.deepEqual([e.reactions, e.previews], [[{ emoji: '👍', actors: [MILA] }], [card()]]);
+  // A message of a later answer is current to that answer's newest event, though the cached head is further: a
+  // reaction after it still applies.
+  store.setRoomFields(W, C, { head: 10 });
+  const o = posted(8);
+  sync.applyPage(svc, W, { ...page, changes: [], inlineEvents: [o], next: 'ghi' }, { active: C });
+  assert.equal(store.eventAt(W, C, 8).asOf, 8);
+  store.appendEvents(W, C, [reacted(9, o, '👍', JOEL)]);
+  assert.deepEqual(reactionsOf(store, 8), [{ emoji: '👍', actors: [JOEL] }]);
 });
 
 // ---- alert text (rich contract 3.7) ----

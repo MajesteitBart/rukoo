@@ -529,7 +529,8 @@ class Store {
       const before = this.getRoom(ws, feed.conversation);
       const grantChanged = Boolean(before && before.grantId !== feed.grant);
       if (before && (grantChanged || !keepLocal)) this.dropRoomCache(ws, feed.conversation);
-      const local = before && keepLocal;
+      // What this device read counts only under the grant it read in.
+      const local = before && keepLocal && !grantChanged;
       const mark = feed.readMark ?? 0;
       // Older: from before the last Mark unread. Newer: the first row since one. Neither under a new grant.
       const older = grantChanged ? '0' : 'excluded.readMark < room.readMark';

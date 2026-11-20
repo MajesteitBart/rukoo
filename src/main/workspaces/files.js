@@ -217,10 +217,10 @@ function imageInfo(b) {
 
 // An HTTP request of its own: no cookies, no account headers, no keep-alive, and no redirect followed. body: a
 // readable stream sent with the given content-length. onChunk(chunk) for each chunk read from body (upload) or
-// received for sink (download). sink: a writable the answer's body goes to when the status is 2xx, at most limit
-// bytes; else the body is read as JSON. Resolves { status, json } for 2xx, rejects with an AccountError (as client.js
-// makes them) otherwise, with the sink's own error when writing fails (a full disk), or with a cancelled error when
-// signal aborts.
+// received for sink (download). sink: makes the writable the answer's body goes to when the status is 2xx, at most
+// limit bytes, in the tick the pipeline takes it, so a file that can't be opened rejects; else the body is read as
+// JSON. Resolves { status, json } for 2xx, rejects with an AccountError (as client.js makes them) otherwise, with the
+// sink's own error when writing fails (a full disk), or with a cancelled error when signal aborts.
 function transfer(url, { method, headers = {}, body = null, sink = null, onChunk = null, limit = Infinity, signal }) {
   const u = new URL(url);
   const lib = u.protocol === 'https:' ? https : http;
@@ -240,6 +240,7 @@ function transfer(url, { method, headers = {}, body = null, sink = null, onChunk
       }
       const ok = status >= 200 && status < 300;
       if (ok && sink) {
+        const out = sink();
         let got = 0;
         const meter = new Transform({
           transform(chunk, _encoding, done) {
@@ -251,8 +252,8 @@ function transfer(url, { method, headers = {}, body = null, sink = null, onChunk
         });
         // An error of any of the three, the sink's included, ends all of them and rejects.
         let failed = null;
-        sink.once('error', (err) => (failed = err));
-        pipeline(res, meter, sink, (err) => {
+        out.once('error', (err) => (failed = err));
+        pipeline(res, meter, out, (err) => {
           if (!err) return finish(resolve, { status, json: null });
           req.destroy();
           finish(reject, err === failed || err.cancelled || err instanceof AccountError ? err : new AccountError('network', 0, err.message));
@@ -963,6 +964,7 @@ class Files {
   // not_found, since the removal's cleanup may have run before its row existed.
   async fetchOnce(ws, c, fileId) {
     const svc = this.svc;
+    const epoch = svc.epoch;
     const store = this.store();
     const dir = this.dir();
     const grant = store.getRoom(ws, c).grantId;
@@ -971,12 +973,17 @@ class Files {
     if (row) {
       const local = path.join(dir, row.sha256);
       if (!(await this.intact(local, row.size, row.sha256))) store.deleteCachedFile(ws, fileId);
-      else if (known && row.room === c && row.message === known.message) {
-        store.touchCachedFile(ws, fileId);
-        return { path: local, name: row.name, type: row.type, size: row.size, sha256: row.sha256 };
+      else if (known && row.room === c && row.message === known.message && svc.epoch === epoch && svc.store === store) {
+        // Read again after the disk check: the hit holds only while the grant, the live message and the row stay.
+        const r = store.getRoom(ws, c);
+        const holder = store.messageWithFile(ws, c, fileId);
+        const again = store.getCachedFile(ws, fileId);
+        if (r && r.grantId === grant && holder && holder.message === known.message && again && again.room === c && again.message === row.message && again.sha256 === row.sha256) {
+          store.touchCachedFile(ws, fileId);
+          return { path: local, name: row.name, type: row.type, size: row.size, sha256: row.sha256 };
+        }
       }
     }
-    const epoch = svc.epoch;
     for (let attempt = 0; ; attempt++) {
       const link = wire.checkDownload(await svc.call(ws, 'POST', `/conversations/${c}/files/${fileId}/download`, undefined, { retry: true }));
       svc.guard(epoch);
@@ -1040,12 +1047,12 @@ class Files {
     const part = path.join(dir, `.${crypto.randomBytes(8).toString('hex')}.part`);
     const hash = crypto.createHash('sha256');
     let size = 0;
-    const sink = fs.createWriteStream(part);
+    let sink = null;
     try {
       await transfer(link.url, {
         method: 'GET',
         headers: { accept: '*/*' },
-        sink,
+        sink: () => (sink = fs.createWriteStream(part)),
         limit: link.size,
         onChunk: (chunk) => {
           hash.update(chunk);
@@ -1056,7 +1063,7 @@ class Files {
       await fsp.rename(part, target);
     } catch (err) {
       // The part goes once the stream let go of it (Windows won't delete an open file).
-      await new Promise((resolve) => (sink.closed ? resolve() : (sink.once('close', resolve), sink.destroy())));
+      if (sink) await new Promise((resolve) => (sink.closed ? resolve() : (sink.once('close', resolve), sink.destroy())));
       await removeQuietly(part);
       throw err;
     }

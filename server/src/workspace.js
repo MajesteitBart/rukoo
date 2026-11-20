@@ -50,9 +50,8 @@ const SWEEP_BATCH = 2000;
 const PROTOCOL = 'rukoo.workspace.v1';
 // Direct messages: how many DMs one member starts in a rolling day. A DM holds 2 to 8 people, which the Worker checks.
 const DM_DAILY = 20;
-// Different emoji one message holds, and the bytes of UTF-8 its text holds.
+// Different emoji one message holds.
 const REACTIONS = 20;
-const TEXT_BYTES = 16384;
 // Files: uploads one member holds open (reserved, under way or ready, and not sent yet), how long a reservation lasts,
 // how many attempts at one upload may be under way at once, and after how long an attempt that never reported back
 // counts as dead.
@@ -1483,34 +1482,39 @@ export class Workspace extends DurableObject {
 
   // ---- Deleting the workspace ----
 
-  // An owner who is the workspace's only member deletes it. One transaction checks that and withdraws the open
-  // invitations; then every file leaves the bucket, and only then the sockets close and the database goes. A bucket
-  // that fails keeps the workspace, which answers 503, so the owner can try again and no file outlives the database
-  // that knows it. The answer carries the caller's account reference, which the Worker gives back, as #ticket's answer
+  // An owner who is the workspace's only member deletes it. Every file leaves the bucket first, while the workspace
+  // stays as it is; a bucket that fails answers 503 and the owner tries again, so no file outlives the database that
+  // knows it. Only then one transaction checks again and withdraws the open invitations, the sockets close and the
+  // database goes. The answer carries the caller's account reference, which the Worker gives back, as #ticket's answer
   // carries a ticket for the Worker to sign.
   async #deleteWorkspace(me, who) {
-    const now = Date.now();
-    const owner = this.#write(() => {
+    const check = () => {
       const self = this.#member(me.id);
       if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
       const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
-      this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
+      // A write under way could land after the bucket was listed.
+      const writing = this.sql
+        .exec("SELECT 1 FROM attempt JOIN upload ON upload.n = attempt.upload WHERE upload.state = 'uploading' AND attempt.at > ? LIMIT 1", Date.now() - ATTEMPT_TIME)
+        .toArray().length;
+      if (writing) throw new Refusal(503, 'unavailable', 'A file is being uploaded. Try again shortly.', {}, { 'retry-after': '30' });
       return self;
-    });
-    // From here every request, and every join still waiting on its account, finds no workspace, so nothing new lands
-    // in the bucket while it is emptied. An upload that ends meanwhile finds no workspace, and the Worker deletes its
-    // key itself.
-    this.present = false;
+    };
+    this.#write(check);
     try {
       await this.#forgetFiles(this.wid);
     } catch (err) {
       console.error('Could not delete the files of a workspace, which stays:', err?.message || err);
-      this.present = true;
-      // An alarm that came while the workspace was away set no next one.
-      this.#alarmBy(now + TRASH_RETRY);
       return reply(503, { error: 'unavailable', message: 'The workspace could not be deleted. Try again shortly.' }, { 'retry-after': '30' });
     }
+    const now = Date.now();
+    const owner = this.#write(() => {
+      const self = check();
+      this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
+      return self;
+    });
+    // From here every request, and every join still waiting on its account, finds no workspace.
+    this.present = false;
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.close(4003, 'deleted');
@@ -2895,10 +2899,10 @@ function eventOut(row, attachments = [], reactions = []) {
 }
 
 // A message of files without text, for a reader of wire version 1, which takes no message without text: its text is
-// a paperclip and the files' names, cut to fit the text limit. What is stored doesn't change.
+// a paperclip and the files' names. What is stored doesn't change.
 function namedFiles(event) {
   if (event.kind !== 'message.posted' || event.redacted || event.text !== '' || !event.attachments.length) return event;
-  let text = `📎 ${event.attachments.map((file) => file.name).join(', ')}`;
-  while (utf8(text).length > TEXT_BYTES) text = Array.from(text).slice(0, -1).join('');
+  // Ten names of at most 255 characters stay under 10.3 KB, well within the 16,384-byte text limit, so nothing is cut.
+  const text = `📎 ${event.attachments.map((file) => file.name).join(', ')}`;
   return { ...event, text, mentions: [] };
 }

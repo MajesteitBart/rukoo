@@ -543,39 +543,65 @@ describe('the trash', () => {
     expect(await bucketKeys(ws.id)).toEqual([]);
   });
 
-  it('keeps the workspace and its files when the bucket fails while it is deleted, so the owner can try again', async () => {
+  it('keeps the workspace when the bucket fails while it is deleted, so the owner can try again', async () => {
     const ws = await newWorkspace();
     const made = await upload(ws.person, ws.id, ws.general);
     await post(ws.person, ws.id, ws.general, 'kept', { attachments: [made.id] });
     await env.WORKSPACE_FILES.put(`ws/${ws.id}/stray`, 'stray');
-    // A bucket that lists but can't delete.
+    // A bucket that lists one object a page and fails on its second delete, when the owner is still a member.
     await runInDurableObject(workspaceStub(ws.id), (instance) => {
       instance.realEnv = instance.env;
       const bucket = instance.env.WORKSPACE_FILES;
+      let deletes = 0;
       const failing = {
-        list: (options) => bucket.list(options),
-        delete: async () => {
+        list: (options) => bucket.list({ ...options, limit: 1 }),
+        delete: async (keys) => {
+          if (++deletes === 1) return bucket.delete(keys);
+          instance.during = await instance.membership(instance.sql.exec('SELECT incarnation FROM member').one().incarnation);
           throw new Error('bucket down');
         }
       };
       instance.env = { ...instance.env, WORKSPACE_FILES: failing };
     });
     const failed = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
-    await runInDurableObject(workspaceStub(ws.id), (instance) => {
+    const during = await runInDurableObject(workspaceStub(ws.id), (instance) => {
       instance.env = instance.realEnv;
+      return instance.during;
     });
     expect(failed.status).toBe(503);
     expect(failed.body.error).toBe('unavailable');
     expect(failed.headers.get('retry-after')).toBe('30');
-    // Nothing went: the workspace, the owner's list, the files and the alarm that sweeps it.
+    expect(during.state).toBe('active');
+    // Only the first batch went: the workspace, the owner's list and its routes still work.
+    expect((await bucketKeys(ws.id)).length).toBe(1);
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
     expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces.map((w) => w.id)).toEqual([ws.id]);
-    expect((await bucketKeys(ws.id)).length).toBe(2);
-    expect(await alarmAt(ws.id)).not.toBeNull();
+    expect((await post(ws.person, ws.id, ws.general, 'still here')).status).toBe(201);
     // The next try deletes the files, then the workspace.
     expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
     expect(await bucketKeys(ws.id)).toEqual([]);
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
+  });
+
+  it('answers 503 and changes nothing while a file of the workspace is being uploaded', async () => {
+    const ws = await newWorkspace();
+    await api('POST', `/v1/workspaces/${ws.id}/invites`, { token: ws.person.token, body: { role: 'member', channels: [ws.general] } });
+    const bytes = text('on its way');
+    const reserved = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    const stuck = new FixedLengthStream(bytes.length);
+    const pending = fileRequest(reserved.put.url, { method: 'PUT', body: stuck.readable, length: bytes.length });
+    expect(await until(async () => (await workspaceSql(ws.id, 'SELECT * FROM attempt')).length === 1)).toBe(true);
+    const busy = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(busy.status).toBe(503);
+    expect(busy.body.error).toBe('unavailable');
+    expect(busy.headers.get('retry-after')).toBe('30');
+    expect(await workspaceSql(ws.id, 'SELECT revokedAt FROM invite')).toEqual([{ revokedAt: null }]);
+    const writer = stuck.writable.getWriter();
+    await writer.write(bytes);
+    await writer.close();
+    expect((await pending).status).toBe(200);
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+    expect(await bucketKeys(ws.id)).toEqual([]);
   });
 
   it('counts an attempt that never reported back as dead after two hours', async () => {

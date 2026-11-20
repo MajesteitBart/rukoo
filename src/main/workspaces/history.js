@@ -531,7 +531,9 @@ class History {
     // Whether the requests went through or not, a cache that holds at reaches it.
     const now = svc.store.getRoom(ws, c);
     if (now && now.lo !== null && now.lo <= at && at <= now.hi) reached = true;
-    const view = this.roomView(ws, c, { at, reached, ranOut, readAtOpen, extra });
+    // A Mark unread that came meanwhile moved the New line.
+    const read = now && now.readMark > r.readMark ? now.readLocal : readAtOpen;
+    const view = this.roomView(ws, c, { at, reached, ranOut, readAtOpen: read, extra });
     open.lo = svc.store.getRoom(ws, c)?.lo ?? null;
     this.heldByRenderer(open, view.events);
     return view;

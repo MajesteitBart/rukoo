@@ -632,6 +632,30 @@ test('the cache answers by itself only for a live cached message of the same roo
   assert.equal(store.getCachedFile(W, b.fileId).message, b.message, 'the row keeps the message it learned');
 });
 
+test('a cache hit whose message is removed during the disk check asks the server instead', async (t) => {
+  const { svc, store, downloads, calls } = await setup(t);
+  const a = withFile(store, downloads, 'a', 1, png(10, 10));
+  await svc.files.file(W, C, a.fileId, 'view');
+  const downloadsAsked = () => calls.filter((c) => c.route.endsWith('/download')).length;
+  const n = downloadsAsked();
+  // The removal lands while the cached file's size and digest are checked.
+  const intact = svc.files.intact.bind(svc.files);
+  let meanwhile = () => {
+    store.addTombstones(W, [a.message]);
+    store.redact(W, [a.message]);
+    svc.files.onRemoved(W, C, [a.message]);
+  };
+  svc.files.intact = async (...args) => {
+    const whole = await intact(...args);
+    if (meanwhile) meanwhile();
+    meanwhile = null;
+    return whole;
+  };
+  await assert.rejects(svc.files.file(W, C, a.fileId, 'view'), (err) => err.code === 'not_found');
+  assert.equal(downloadsAsked(), n + 1);
+  assert.equal(store.getCachedFile(W, a.fileId), null);
+});
+
 test('a download whose file can no longer be written fails, and leaves no part behind', async (t) => {
   const { svc, store, downloads } = await setup(t);
   const a = withFile(store, downloads, 'a', 1, crypto.randomBytes(256 * 1024));
@@ -651,6 +675,18 @@ test('a download whose file can no longer be written fails, and leaves no part b
   // With room again, the same file downloads.
   fs.createWriteStream = real;
   assert.ok(svc.files.serve((await svc.files.file(W, C, a.fileId, 'view')).url));
+});
+
+test('a download whose file can not be opened fails without crashing main', async (t) => {
+  const { svc, store, downloads } = await setup(t);
+  const a = withFile(store, downloads, 'a', 1, png(10, 10));
+  // The folder the file opens in is gone.
+  const real = fs.createWriteStream;
+  t.after(() => (fs.createWriteStream = real));
+  fs.createWriteStream = (file, options) => real(path.join(path.dirname(file), 'gone', path.basename(file)), options);
+  await assert.rejects(svc.files.file(W, C, a.fileId, 'view'), (err) => err instanceof ChatError);
+  assert.equal(store.getCachedFile(W, a.fileId), null);
+  assert.deepEqual(cacheNames(store), []);
 });
 
 test('the cache keeps its limit, least recently used first, and removed messages and leftovers go', async (t) => {
