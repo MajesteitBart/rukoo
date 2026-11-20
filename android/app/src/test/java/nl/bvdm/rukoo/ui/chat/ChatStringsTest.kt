@@ -267,6 +267,29 @@ class ChatStringsTest {
         assertEquals("Geen meldingen of tellers, ook niet als iemand je noemt.", nl.strings["chat_head_mute_hint"])
     }
 
+    @Test
+    fun theInvitationFlowSaysWhatALinkGrantsThatItShowsOnceAndWhatClosingLeaves() {
+        // The desktop's chat.invite.ready*, listAnd, listMore, once, close*, withdrawn and guestNoChannels say the same.
+        assertEquals("One person can join as a member, with %1\$s, until %2\$s.", en.strings["chat_invite_ready_member_in"])
+        assertEquals("One person can join as a guest, only in %1\$s, until %2\$s.", en.strings["chat_invite_ready_guest"])
+        assertEquals("Eén persoon kan deelnemen als gast, alleen in %1\$s, tot %2\$s.", nl.strings["chat_invite_ready_guest"])
+        assertEquals("%1\$s and %2\$d more", en.strings["chat_invite_list_more"])
+        assertEquals("%1\$s en nog %2\$d", nl.strings["chat_invite_list_more"])
+        assertEquals("You'll see this link only once.", unescape(en.strings["chat_invite_once"]))
+        assertEquals("Close without copying the link?", en.strings["chat_invite_close_title"])
+        assertEquals("The invitation stays open until it expires. You can withdraw it under Open invitations.", en.strings["chat_invite_close_body"])
+        assertEquals("De uitnodiging blijft open tot hij verloopt. Je kunt hem intrekken onder Openstaande uitnodigingen.", nl.strings["chat_invite_close_body"])
+        assertEquals("Go back", en.strings["chat_invite_go_back"])
+        assertEquals("Withdrawn. This link no longer works.", en.strings["chat_invite_withdrawn"])
+        assertEquals(
+            "Guests can only be added to channels you manage. Make a channel, or ask a channel's manager to make you one.",
+            unescape(en.strings["chat_invite_guest_no_channels"]),
+        )
+        assertEquals("New channel", en.strings["chat_invite_new_channel"])
+        assertEquals("%1\$s +%2\$d", en.strings["chat_invite_names_more"])
+        assertTrue("chat_invite_ready" !in en.names)
+    }
+
     /** Android's escaped apostrophe, as the screen shows it. */
     private fun unescape(text: String?) = text?.replace("\\'", "'")
 

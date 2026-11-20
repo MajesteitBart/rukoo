@@ -293,7 +293,18 @@
         <item quantity="other">%d dagen</item>
     </plurals>
     <string name="chat_invite_make">Link maken</string>
-    <string name="chat_invite_ready">Iedereen met deze link kan deelnemen tot %1$s. Hij werkt één keer.</string>
+    <string name="chat_invite_ready_member">Eén persoon kan deelnemen als lid tot %1$s.</string>
+    <string name="chat_invite_ready_member_in">Eén persoon kan deelnemen als lid, met %1$s, tot %2$s.</string>
+    <string name="chat_invite_ready_guest">Eén persoon kan deelnemen als gast, alleen in %1$s, tot %2$s.</string>
+    <string name="chat_invite_list_and">%1$s en %2$s</string>
+    <string name="chat_invite_list_more">%1$s en nog %2$d</string>
+    <string name="chat_invite_once">Je ziet deze link maar één keer.</string>
+    <string name="chat_invite_close_title">Sluiten zonder de link te kopiëren?</string>
+    <string name="chat_invite_close_body">De uitnodiging blijft open tot hij verloopt. Je kunt hem intrekken onder Openstaande uitnodigingen.</string>
+    <string name="chat_invite_go_back">Terug</string>
+    <string name="chat_invite_withdrawn">Ingetrokken. Deze link werkt niet meer.</string>
+    <string name="chat_invite_guest_no_channels">Gasten kun je alleen toevoegen aan kanalen die je beheert. Maak een kanaal, of vraag een kanaalbeheerder om jou ook kanaalbeheerder te maken.</string>
+    <string name="chat_invite_new_channel">Nieuw kanaal</string>
     <string name="chat_invite_copy">Link kopiëren</string>
     <string name="chat_invite_copied">Link gekopieerd</string>
     <string name="chat_invite_done">Klaar</string>
@@ -302,6 +313,7 @@
         <item quantity="one">%d kanaal</item>
         <item quantity="other">%d kanalen</item>
     </plurals>
+    <string name="chat_invite_names_more">%1$s +%2$d</string>
     <string name="chat_invite_until">Tot %1$s</string>
     <string name="chat_invite_by">Door %1$s</string>
     <string name="chat_invite_withdraw">Intrekken</string>

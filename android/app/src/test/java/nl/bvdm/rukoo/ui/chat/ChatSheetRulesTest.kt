@@ -370,4 +370,39 @@ class ChatSheetRulesTest {
         assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(channel("c1", "plans"), me, RoomMember(bo, "member")))
         assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(channel("c1", "plans", role = "manager", archived = true), me, RoomMember(bo, "member")))
     }
+    @Test
+    fun aNewLinkSaysWhatItGrantsAndAnOpenOneNamesItsChannels() {
+        val and = { list: String, last: String -> "$list and $last" }
+        val more = { list: String, n: Int -> "$list and $n more" }
+        // Up to three names, then how many more (desktop chat-model.js inviteChannelList).
+        assertEquals("", SheetRules.inviteChannelList(emptyList(), and, more))
+        assertEquals("#general", SheetRules.inviteChannelList(listOf("general"), and, more))
+        assertEquals("#design and #general", SheetRules.inviteChannelList(listOf("design", "general"), and, more))
+        assertEquals("#a, #b and #c", SheetRules.inviteChannelList(listOf("a", "b", "c"), and, more))
+        assertEquals("#a, #b, #c and 2 more", SheetRules.inviteChannelList(listOf("a", "b", "c", "d", "e"), and, more))
+        // A guest only in the channels, a member with them, a member with none picked.
+        val guest = { c: String -> "guest only in $c" }
+        val memberIn = { c: String -> "member with $c" }
+        val member = { "member" }
+        assertEquals("guest only in #design", SheetRules.inviteGrant("guest", "#design", guest, memberIn, member))
+        assertEquals("member with #general", SheetRules.inviteGrant("member", "#general", guest, memberIn, member))
+        assertEquals("member", SheetRules.inviteGrant("member", "", guest, memberIn, member))
+        // A row: two names, then +n; private channels the person can't name count in the +n; no name gives null.
+        val plus = { shown: String, n: Int -> "$shown +$n" }
+        assertEquals("#general", SheetRules.inviteRowChannels(listOf("general"), 1, plus))
+        assertEquals("#design, #general", SheetRules.inviteRowChannels(listOf("design", "general"), 2, plus))
+        assertEquals("#a, #b +2", SheetRules.inviteRowChannels(listOf("a", "b", "c", "d"), 4, plus))
+        assertEquals("#design +2", SheetRules.inviteRowChannels(listOf("design"), 3, plus))
+        assertEquals("#design +1", SheetRules.inviteRowChannels(listOf("", "design"), 2, plus))
+        assertNull(SheetRules.inviteRowChannels(emptyList(), 2, plus))
+    }
+
+    @Test
+    fun closingAsksOnlyWhileANewLinkWasNeitherKeptNorWithdrawn() {
+        assertFalse(SheetRules.inviteCloseAsks(made = false, kept = false, withdrawn = false))
+        assertTrue(SheetRules.inviteCloseAsks(made = true, kept = false, withdrawn = false))
+        assertFalse(SheetRules.inviteCloseAsks(made = true, kept = true, withdrawn = false))
+        assertFalse(SheetRules.inviteCloseAsks(made = true, kept = false, withdrawn = true))
+    }
 }
+

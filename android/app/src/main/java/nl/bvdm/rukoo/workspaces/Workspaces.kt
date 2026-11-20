@@ -81,8 +81,8 @@ interface Workspaces {
     suspend fun removeMember(ws: String, member: String)
     suspend fun invites(ws: String): List<Invite>
 
-    /** Makes an invitation and returns its link (§3.2). [expiresIn] is 86,400, 259,200 or 604,800 seconds. */
-    suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): String
+    /** Makes an invitation and returns it with its link (§3.2). [expiresIn] is 86,400, 259,200 or 604,800 seconds. */
+    suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): MadeInvite
     suspend fun withdrawInvite(ws: String, invite: String)
 
     /** Makes a channel and returns its ID. [visibility] is `workspace` or `private`. */

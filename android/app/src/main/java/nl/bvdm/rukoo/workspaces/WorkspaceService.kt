@@ -1406,10 +1406,10 @@ class WorkspaceService internal constructor(
 
     override suspend fun invites(ws: String): List<Invite> = onWs(ws) { _, s -> s.call { invites(ws) } }
 
-    override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): String = onWs(ws) { l, s ->
+    override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): MadeInvite = onWs(ws) { l, s ->
         val made = write(s) { createInvite(ws, role, channels, expiresIn) }
         confirm(s)
-        InviteLink.format(l.server, ws, made.secret)
+        MadeInvite(made.invite, InviteLink.format(l.server, ws, made.secret))
     }
 
     override suspend fun withdrawInvite(ws: String, invite: String) {

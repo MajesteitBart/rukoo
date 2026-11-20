@@ -43,6 +43,7 @@ import nl.bvdm.rukoo.workspaces.Draft
 import nl.bvdm.rukoo.workspaces.Invite
 import nl.bvdm.rukoo.workspaces.InviteLink
 import nl.bvdm.rukoo.workspaces.InvitePreview
+import nl.bvdm.rukoo.workspaces.MadeInvite
 import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.Mention
 import nl.bvdm.rukoo.workspaces.ResendMode
@@ -617,7 +618,7 @@ class ChatNavTest {
         override suspend fun setRole(ws: String, member: String, role: String) {}
         override suspend fun removeMember(ws: String, member: String) {}
         override suspend fun invites(ws: String): List<Invite> = emptyList()
-        override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): String = no()
+        override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): MadeInvite = no()
         override suspend fun withdrawInvite(ws: String, invite: String) {}
         override suspend fun createChannel(ws: String, name: String, visibility: String): String = no()
         override suspend fun renameChannel(ws: String, channel: String, name: String) {}

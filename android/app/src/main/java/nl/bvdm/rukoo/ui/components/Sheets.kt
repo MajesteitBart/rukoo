@@ -1,6 +1,7 @@
 // Ported in part from Beautiful UI (beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
 package nl.bvdm.rukoo.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,10 +20,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,7 +65,9 @@ class RkSheetScope internal constructor(column: ColumnScope, private val close: 
  * A bottom sheet for long menus and pickers on a phone (the message menu, the chat list, the model list):
  * `raised`, 14dp top corners, a 36x4 drag handle in `borderStrong`, over Rukoo's scrim. Long flows such as
  * the chat get a full-screen route instead (spec 6 §5.5). Show it while a flag is set and clear the flag in
- * [onDismissRequest]; rows call [RkSheetScope.dismiss] to close it with its animation.
+ * [onDismissRequest]; rows call [RkSheetScope.dismiss] to close it with its animation. [holdClose] is asked before a
+ * swipe down, a tap on the scrim or Back closes it: true keeps it open, for a sheet that asks first. [RkSheetScope.dismiss]
+ * closes without asking.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,10 +75,12 @@ fun RkBottomSheet(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     title: String? = null,
+    holdClose: (() -> Boolean)? = null,
     content: @Composable RkSheetScope.() -> Unit,
 ) {
     val c = Rk.colors
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hold by rememberUpdatedState(holdClose)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || hold?.invoke() != true })
     val scope = rememberCoroutineScope()
     val close: () -> Unit = {
         scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismissRequest() }
@@ -90,6 +98,8 @@ fun RkBottomSheet(
             Box(Modifier.padding(top = 8.dp, bottom = 6.dp).size(36.dp, 4.dp).background(c.borderStrong, Rk.shapes.pill))
         },
     ) {
+        // Back skips confirmValueChange, so a sheet that asks first takes Back itself.
+        BackHandler(enabled = holdClose != null) { if (hold?.invoke() != true) close() }
         Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
             if (title != null) SheetHeading(title)
             RkSheetScope(this, close).content()

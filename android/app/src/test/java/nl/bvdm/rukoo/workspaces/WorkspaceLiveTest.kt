@@ -161,7 +161,9 @@ class WorkspaceLiveTest {
         assertEquals(ws, bart.chat.state.value.selected)
 
         // An invitation link (§3.2), its preview and joining with it: a member gets general (§2.11).
-        val text = bart.chat.createInvite(ws, "member", emptyList(), 86_400)
+        val made = bart.chat.createInvite(ws, "member", emptyList(), 86_400)
+        assertEquals("member", made.invite.role)
+        val text = made.link
         assertTrue(text, text.startsWith("${bart.chat.state.value.server}/join#w=$ws&i="))
         val link = present(InviteLink.parse(text, devHosts = true), "a link")
         val preview = olga.chat.previewInvite(link)
@@ -265,7 +267,7 @@ class WorkspaceLiveTest {
         val bart = Person("Bart")
         bart.signUp()
         val ws = bart.chat.createWorkspace("Signup team", "Bart")
-        val link = present(InviteLink.parse(bart.chat.createInvite(ws, "member", emptyList(), 86_400), devHosts = true), "a link")
+        val link = present(InviteLink.parse(bart.chat.createInvite(ws, "member", emptyList(), 86_400).link, devHosts = true), "a link")
 
         // No invite code: the invitation stands in for it (§2.12, §3.3).
         val sam = Person("Sam")

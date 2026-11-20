@@ -313,7 +313,18 @@
         <item quantity="other">%d days</item>
     </plurals>
     <string name="chat_invite_make">Make link</string><!-- Dialog button. -->
-    <string name="chat_invite_ready">Anyone with this link can join until %1$s. It works once.</string><!-- Under the link. -->
+    <string name="chat_invite_ready_member">One person can join as a member until %1$s.</string><!-- Under the link of a member invitation without channels. %1$s: when it expires. -->
+    <string name="chat_invite_ready_member_in">One person can join as a member, with %1$s, until %2$s.</string><!-- Under the link of a member invitation. %1$s: the channels (chat_invite_list_and, chat_invite_list_more). %2$s: when it expires. -->
+    <string name="chat_invite_ready_guest">One person can join as a guest, only in %1$s, until %2$s.</string><!-- Under the link of a guest invitation. %1$s: the channels. %2$s: when it expires. -->
+    <string name="chat_invite_list_and">%1$s and %2$s</string><!-- Two or three channel names under the link. %1$s: the first ones, comma-separated. %2$s: the last. -->
+    <string name="chat_invite_list_more">%1$s and %2$d more</string><!-- More than three channel names under the link. %1$s: the first three. %2$d: how many more. -->
+    <string name="chat_invite_once">You\'ll see this link only once.</string><!-- Under Share link and Copy link. -->
+    <string name="chat_invite_close_title">Close without copying the link?</string><!-- Question when the sheet closes before the link was shared or copied. -->
+    <string name="chat_invite_close_body">The invitation stays open until it expires. You can withdraw it under Open invitations.</string><!-- Text of that question. -->
+    <string name="chat_invite_go_back">Go back</string><!-- Button of that question that returns to the link. -->
+    <string name="chat_invite_withdrawn">Withdrawn. This link no longer works.</string><!-- Under the link after it was withdrawn under Open invitations. -->
+    <string name="chat_invite_guest_no_channels">Guests can only be added to channels you manage. Make a channel, or ask a channel\'s manager to make you one.</string><!-- Instead of the channel list when Guest is picked and the person manages no channel. -->
+    <string name="chat_invite_new_channel">New channel</string><!-- Button under chat_invite_guest_no_channels that opens Make a channel. -->
     <string name="chat_invite_copy">Copy link</string><!-- Button. -->
     <string name="chat_invite_copied">Link copied</string><!-- Toast. -->
     <string name="chat_invite_done">Done</string><!-- Dialog button. -->
@@ -323,6 +334,7 @@
         <item quantity="one">%d channel</item>
         <item quantity="other">%d channels</item>
     </plurals>
+    <string name="chat_invite_names_more">%1$s +%2$d</string><!-- In an invitation row: two channel names and how many more. -->
     <string name="chat_invite_until">Until %1$s</string><!-- In an invitation row. -->
     <string name="chat_invite_by">By %1$s</string><!-- In an invitation row. -->
     <string name="chat_invite_withdraw">Withdraw</string><!-- Row button. -->

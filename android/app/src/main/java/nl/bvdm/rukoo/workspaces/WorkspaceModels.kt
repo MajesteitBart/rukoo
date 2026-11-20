@@ -151,6 +151,9 @@ data class InvitesPage(val invites: List<Invite> = emptyList())
 @Serializable
 data class CreatedInvite(val invite: Invite, val secret: String)
 
+/** A new invitation and its link, which only the answer that made it carries (desktop's `{ invite, link }`). */
+data class MadeInvite(val invite: Invite, val link: String)
+
 @Serializable
 data class IssuerName(val name: String)
 

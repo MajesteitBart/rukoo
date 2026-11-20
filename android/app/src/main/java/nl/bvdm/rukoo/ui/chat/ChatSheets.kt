@@ -93,6 +93,7 @@ import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.ui.settings.ErrorLine
 import nl.bvdm.rukoo.ui.settings.NoteBox
 import nl.bvdm.rukoo.ui.settings.NoteTone
+import nl.bvdm.rukoo.ui.settings.RkDialog
 import nl.bvdm.rukoo.ui.settings.formatDate
 import nl.bvdm.rukoo.ui.settings.formatTime
 import nl.bvdm.rukoo.ui.settings.hostOf
@@ -110,6 +111,7 @@ import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.Invite
 import nl.bvdm.rukoo.workspaces.InviteLink
 import nl.bvdm.rukoo.workspaces.InvitePreview
+import nl.bvdm.rukoo.workspaces.MadeInvite
 import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
@@ -234,6 +236,44 @@ object SheetRules {
 
     /** Whether an invitation can be made (§3.16): a guest needs a channel, and 20 at most. */
     fun inviteReady(role: String, channels: Int): Boolean = channels <= INVITE_CHANNELS_MAX && (role != "guest" || channels > 0)
+
+    /**
+     * The channels a new invitation grants, for the line under its link (desktop chat-model.js `inviteChannelList`):
+     * up to three names, then how many more. [and] joins the last name on, [more] adds the count.
+     */
+    fun inviteChannelList(names: List<String>, and: (String, String) -> String, more: (String, Int) -> String): String {
+        val tags = names.map { "#$it" }
+        return when {
+            tags.size <= 1 -> tags.firstOrNull().orEmpty()
+            tags.size <= 3 -> and(tags.dropLast(1).joinToString(", "), tags.last())
+            else -> more(tags.take(3).joinToString(", "), tags.size - 3)
+        }
+    }
+
+    /**
+     * The line under a new link (desktop `inviteGrant`): a guest only in [channels], a member with them, or a member
+     * with none picked.
+     */
+    fun inviteGrant(role: String, channels: String, guest: (String) -> String, memberIn: (String) -> String, member: () -> String): String = when {
+        role == "guest" -> guest(channels)
+        channels.isNotEmpty() -> memberIn(channels)
+        else -> member()
+    }
+
+    /**
+     * An open invitation's channels (desktop `inviteRowChannels`): up to two names, then "+n" through [more]. [total]
+     * also counts the private channels the person can't name. Null without a name, for the count instead.
+     */
+    fun inviteRowChannels(names: List<String>, total: Int, more: (String, Int) -> String): String? {
+        val tags = names.filter { it.isNotEmpty() }.map { "#$it" }
+        if (tags.isEmpty()) return null
+        val rest = maxOf(total, tags.size) - minOf(tags.size, 2)
+        val shown = tags.take(2).joinToString(", ")
+        return if (rest > 0) more(shown, rest) else shown
+    }
+
+    /** Whether closing the Invite sheet asks first: a link is on screen that nobody shared, copied or withdrew. */
+    fun inviteCloseAsks(made: Boolean, kept: Boolean, withdrawn: Boolean): Boolean = made && !kept && !withdrawn
 
     /** Whether [view]'s person is its only active member, as far as the directory knows. */
     fun alone(view: WorkspaceView): Boolean = !view.membersMore && view.members.count { it.state == "active" && it.id != view.me.id } == 0
@@ -467,7 +507,8 @@ fun ChatOverlays(app: AppViewModel) {
 /**
  * A sheet: an RkBottomSheet on one pane, a dialog capped at 480dp on two (android.md "Sheets and dialogs"). [title] on
  * top, [content] scrolling, [buttons] right-aligned at the bottom, wrapping when Dutch labels don't fit. Both get the
- * close that slides the sheet away first.
+ * close that slides the sheet away first. [holdClose] is asked before a swipe, a tap outside or Back closes it: true
+ * keeps it open, for a sheet that asks first; the close [buttons] and [content] get doesn't ask.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -476,6 +517,7 @@ private fun SheetFrame(
     title: String,
     onDismiss: () -> Unit,
     subtitle: String? = null,
+    holdClose: (() -> Boolean)? = null,
     buttons: (@Composable (close: () -> Unit) -> Unit)? = null,
     content: @Composable ColumnScope.(close: () -> Unit) -> Unit,
 ) {
@@ -506,7 +548,7 @@ private fun SheetFrame(
     // Above the button row, so Close stays visible.
     val toastAt = Modifier.padding(bottom = if (buttons != null) 44.dp else 0.dp)
     if (twoPane) {
-        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Dialog(onDismissRequest = { if (holdClose?.invoke() != true) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             val shape = Rk.shapes.window
             Box(Modifier.padding(24.dp).widthIn(max = 480.dp)) {
                 Column(
@@ -521,7 +563,7 @@ private fun SheetFrame(
             }
         }
     } else {
-        RkBottomSheet(onDismissRequest = onDismiss) {
+        RkBottomSheet(onDismissRequest = onDismiss, holdClose = holdClose) {
             val close: () -> Unit = { dismiss() }
             Box(Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp)) { Body(close) }
@@ -1863,7 +1905,10 @@ private const val KEY_INVITE = "sheet:invite"
 
 /**
  * Member or Guest, the channels the person manages (a guest needs one, 20 at most), and 1, 3 or 7 days. Make link
- * shows the link once, with Share and Copy, both marked sensitive. Open invitations sit below, each with Withdraw.
+ * shows the link once, with Share and Copy, both marked sensitive, and a line that says what it grants. Until the link
+ * is shared or copied, Share link is the filled button and closing the sheet asks first. Open invitations sit below,
+ * each with Withdraw; withdrawing the link on screen says it no longer works. A guest with no channel to pick gets
+ * New channel instead.
  */
 @Composable
 private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit) {
@@ -1878,7 +1923,11 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
     var role by remember { mutableStateOf("member") }
     var chosen by remember { mutableStateOf(setOf<String>()) }
     var days by remember { mutableIntStateOf(SheetRules.INVITE_DAYS.first()) }
-    var made by remember { mutableStateOf<Pair<String, Long>?>(null) }
+    var made by remember { mutableStateOf<MadeInvite?>(null) }
+    var madeNames by remember { mutableStateOf(emptyList<String>()) }
+    var kept by remember { mutableStateOf(false) }
+    var withdrawn by remember { mutableStateOf(false) }
+    var asking by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var invites by remember { mutableStateOf<List<Invite>?>(null) }
     var invitesError by remember { mutableStateOf<String?>(null) }
@@ -1896,15 +1945,23 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
     }
     val copied = stringResource(R.string.chat_invite_copied)
     val shareTitle = stringResource(R.string.chat_invite_share)
+    val asks = SheetRules.inviteCloseAsks(made != null, kept, withdrawn)
+    // A swipe, a tap outside, Back or Done before the link was shared or copied asks first.
+    val holdClose: () -> Boolean = {
+        val ask = SheetRules.inviteCloseAsks(made != null, kept, withdrawn)
+        if (ask) asking = true
+        ask
+    }
 
     fun submit() {
         if (!SheetRules.inviteReady(role, chosen.size)) return
         error = null
-        val channels = managed.map { it.id }.filter { it in chosen }
+        val picked = managed.filter { it.id in chosen }
         val expiresIn = days * 86_400L
         ui.attempt(KEY_INVITE, failed = { e -> error = ui.errorText(e) }) {
-            val link = createInvite(ws, role, channels, expiresIn)
-            made = link to System.currentTimeMillis() + expiresIn * 1000
+            val invite = createInvite(ws, role, picked.map { it.id }, expiresIn)
+            madeNames = picked.map { it.name.orEmpty() }.filter { it.isNotEmpty() }
+            made = invite
             reload++
         }
     }
@@ -1913,27 +1970,50 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
         twoPane,
         stringResource(R.string.chat_invite_title, view.ws.name),
         onDismiss,
+        holdClose = holdClose,
         buttons = { close ->
             if (made != null) {
-                Primary(stringResource(R.string.chat_invite_done), busy = false) { close() }
+                if (asks) {
+                    Secondary(stringResource(R.string.chat_invite_done)) { asking = true }
+                } else {
+                    Primary(stringResource(R.string.chat_invite_done), busy = false) { close() }
+                }
             } else {
                 Secondary(stringResource(R.string.common_actions_cancel)) { close() }
                 Primary(stringResource(R.string.chat_invite_make), busy = busy, enabled = SheetRules.inviteReady(role, chosen.size), onClick = ::submit)
             }
         },
-    ) {
+    ) { close ->
         val result = made
         if (result != null) {
+            val channels = SheetRules.inviteChannelList(
+                madeNames,
+                and = { list, last -> context.getString(R.string.chat_invite_list_and, list, last) },
+                more = { list, n -> context.getString(R.string.chat_invite_list_more, list, n) },
+            )
+            val until = dateTime(result.invite.expiresAt.takeIf { it > 0 } ?: (System.currentTimeMillis() + days * 86_400_000L))
+            val grant = SheetRules.inviteGrant(
+                result.invite.role.ifEmpty { role },
+                channels,
+                guest = { context.getString(R.string.chat_invite_ready_guest, it, until) },
+                memberIn = { context.getString(R.string.chat_invite_ready_member_in, it, until) },
+                member = { context.getString(R.string.chat_invite_ready_member, until) },
+            )
             Form {
-                RkTextField(value = result.first, onValueChange = {}, label = stringResource(R.string.chat_join_link), readOnly = true, singleLine = false, maxLines = 3, mono = true)
+                RkTextField(value = result.link, onValueChange = {}, label = stringResource(R.string.chat_join_link), readOnly = true, singleLine = false, maxLines = 3, mono = true, enabled = !withdrawn)
+                Help(if (withdrawn) stringResource(R.string.chat_invite_withdrawn) else grant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RkButton(stringResource(R.string.chat_invite_share), { shareSensitive(context, result.first, shareTitle) }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = RukooIcons.Export)
+                    RkButton(stringResource(R.string.chat_invite_share), {
+                        kept = true
+                        shareSensitive(context, result.link, shareTitle)
+                    }, kind = if (asks) RkButtonKind.PRIMARY else RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = RukooIcons.Export, enabled = !withdrawn)
                     RkButton(stringResource(R.string.chat_invite_copy), {
-                        copyLink(context, result.first)
+                        kept = true
+                        copyLink(context, result.link)
                         ui.toasts.showToast(copied)
-                    }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = PanelIcons.Copy)
+                    }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = PanelIcons.Copy, enabled = !withdrawn)
                 }
-                Help(stringResource(R.string.chat_invite_ready, dateTime(result.second)))
+                if (!withdrawn) Help(stringResource(R.string.chat_invite_once))
             }
         } else {
             Form {
@@ -1947,7 +2027,23 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
                 Text(stringResource(R.string.chat_invite_channels), style = Rk.type.text12_5, color = Rk.colors.text2)
             }
             Column {
-                if (managed.isEmpty()) Form { Help(stringResource(R.string.chat_invite_channels_none)) }
+                if (managed.isEmpty()) {
+                    Form {
+                        if (role == "guest") {
+                            // A guest can only be added to channels the person manages: say so, and offer to make one.
+                            Help(stringResource(R.string.chat_invite_guest_no_channels))
+                            RkButton(
+                                stringResource(R.string.chat_invite_new_channel),
+                                { app.openChatSheet(ChatSheet.NEW_CHANNEL) },
+                                kind = RkButtonKind.SECONDARY,
+                                size = RkButtonSize.SMALL,
+                                icon = RukooIcons.Plus,
+                            )
+                        } else {
+                            Help(stringResource(R.string.chat_invite_channels_none))
+                        }
+                    }
+                }
                 for (r in managed) {
                     val on = r.id in chosen
                     CheckRow(
@@ -1960,7 +2056,7 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
                 }
             }
             Form {
-                if (role == "guest" && chosen.isEmpty()) Help(stringResource(R.string.chat_invite_guest_needs_channel), warn = true)
+                if (role == "guest" && chosen.isEmpty() && managed.isNotEmpty()) Help(stringResource(R.string.chat_invite_guest_needs_channel), warn = true)
                 Text(stringResource(R.string.chat_invite_expires), style = Rk.type.text12_5, color = Rk.colors.text2)
                 Segmented(
                     SheetRules.INVITE_DAYS.map { it to pluralStringResource(R.plurals.chat_invite_days, it, it) },
@@ -1980,23 +2076,51 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
             }
             invitesError?.let { Form { ErrorLine(it) } }
             for (i in list.orEmpty()) {
+                val channelNames = i.channels
+                    .map { id -> view.rooms.firstOrNull { it.id == id }?.name ?: view.channels.firstOrNull { it.id == id }?.name.orEmpty() }
+                    .filter { it.isNotEmpty() }
+                    .sortedWith(compare)
                 InviteRow(
                     i,
+                    channelNames,
                     issuer = names.display(view.members.firstOrNull { it.id == i.issuer }),
                     busy = ui.isBusy("withdraw:${i.id}"),
-                    onWithdraw = { ui.launch("withdraw:${i.id}", ui.context(ws)) { withdrawInvite(ws, i.id) }?.invokeOnCompletion { reload++ } },
+                    onWithdraw = {
+                        ui.launch("withdraw:${i.id}", ui.context(ws)) {
+                            withdrawInvite(ws, i.id)
+                            // The link on screen no longer works: say so, and nothing shares or copies it.
+                            if (i.id == made?.invite?.id) withdrawn = true
+                        }?.invokeOnCompletion { reload++ }
+                    },
                 )
             }
+        }
+        if (asking) {
+            RkDialog(
+                title = stringResource(R.string.chat_invite_close_title),
+                text = stringResource(R.string.chat_invite_close_body),
+                confirmLabel = stringResource(R.string.common_actions_close),
+                dismissLabel = stringResource(R.string.chat_invite_go_back),
+                onConfirm = {
+                    asking = false
+                    kept = true
+                    close()
+                },
+                onDismiss = { asking = false },
+            )
         }
     }
 }
 
-/** An open invitation: the role, its channels, until when and by whom, with Withdraw. */
+/** An open invitation: the role, its channels by name, until when and by whom, with Withdraw. */
 @Composable
-private fun InviteRow(invite: Invite, issuer: String, busy: Boolean, onWithdraw: () -> Unit) {
+private fun InviteRow(invite: Invite, channelNames: List<String>, issuer: String, busy: Boolean, onWithdraw: () -> Unit) {
     val c = Rk.colors
+    val context = LocalContext.current
+    val channels = SheetRules.inviteRowChannels(channelNames, invite.channelCount) { shown, n -> context.getString(R.string.chat_invite_names_more, shown, n) }
+        ?: pluralStringResource(R.plurals.chat_invite_channel_count, invite.channelCount, invite.channelCount)
     val meta = listOf(
-        pluralStringResource(R.plurals.chat_invite_channel_count, invite.channelCount, invite.channelCount),
+        channels,
         stringResource(R.string.chat_invite_until, dateTime(invite.expiresAt)),
         stringResource(R.string.chat_invite_by, issuer),
     ).joinToString(" · ")
