@@ -86,7 +86,7 @@
     <string name="chat_empty_storage_body">Rukoo kon de opslag voor chat op deze telefoon niet openen. Start Rukoo opnieuw om het nog eens te proberen.</string><!-- phone wording -->
 
     <!-- chat.banner.* -->
-    <string name="chat_banner_offline">Je bent offline. Berichten die je verstuurt, wachten tot Rukoo weer verbinding heeft.</string>
+    <string name="chat_banner_offline">Rukoo kan %1$s niet bereiken. Berichten die je verstuurt, wachten tot er weer verbinding is.</string>
     <string name="chat_banner_reconnecting">Opnieuw verbinden met %1$s…</string>
     <string name="chat_banner_try_now">Nu proberen</string>
     <string name="chat_banner_paused">Rukoo synchroniseert %1$s niet meer, omdat de server achterloopt op wat deze telefoon zag. Kies Opnieuw beginnen om de werkruimte weer van de server te laden.</string><!-- phone wording -->
@@ -114,6 +114,7 @@
     <string name="chat_head_block">%1$s blokkeren</string>
     <string name="chat_head_archive">Kanaal archiveren</string>
     <string name="chat_head_mute">Dempen</string>
+    <string name="chat_head_mute_hint">Geen meldingen of tellers, ook niet als iemand je noemt.</string>
     <string name="chat_head_unmute">Dempen opheffen</string>
     <string name="chat_head_leave_dm">Gesprek verlaten</string>
 
@@ -135,7 +136,7 @@
     <string name="chat_log_start_channel">Dit is het begin van #%1$s</string>
     <string name="chat_log_start_channel_by">%1$s heeft het gemaakt op %2$s.</string>
     <string name="chat_log_start_public">Iedereen in %1$s kan het zien en eraan deelnemen.</string>
-    <string name="chat_log_start_private">Alleen mensen die zijn toegevoegd, kunnen het zien.</string>
+    <string name="chat_log_start_private">Alleen mensen die zijn toegevoegd, en %1$s, die deze werkruimte host, kunnen het lezen.</string>
     <string name="chat_log_start_direct">Dit is het begin van je gesprek met %1$s.</string>
     <string name="chat_log_host_note">%1$s host dit gesprek en kan het lezen.</string>
     <plurals name="chat_log_retention_floor">
@@ -326,6 +327,8 @@
     <string name="chat_channel_search">Zoek een kanaal</string>
     <string name="chat_channel_join">Deelnemen</string>
     <string name="chat_channel_joined">Lid</string>
+    <string name="chat_channel_preview_title">#%1$s</string>
+    <string name="chat_channel_preview_body">Neem deel aan #%1$s om de berichten te lezen en erin te schrijven.</string>
     <plurals name="chat_channel_archived_section">
         <item quantity="one">Gearchiveerd (%d)</item>
         <item quantity="other">Gearchiveerd (%d)</item>
@@ -448,7 +451,7 @@
     <string name="chat_leave_dm_submit">Verlaten</string>
 
     <!-- chat.mute.* -->
-    <string name="chat_mute_done">%1$s gedempt</string>
+    <string name="chat_mute_done">%1$s gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.</string>
     <string name="chat_mute_undone">Dempen van %1$s opgeheven</string>
 
     <!-- chat.delete.* -->

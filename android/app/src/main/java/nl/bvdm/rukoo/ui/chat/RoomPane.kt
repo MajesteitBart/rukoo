@@ -171,11 +171,11 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
             },
         )
         if (paused) PausedBanner(summary.name, busy = app.chatUi.isBusy("reload:$ws")) { app.chatUi.reload(ws) }
-        else if (chat.connection == Connection.OFFLINE) OfflineBanner()
+        else if (chat.connection == Connection.OFFLINE) OfflineBanner(chat.host, busy = app.chatUi.isBusy("refresh:$ws")) { app.chatUi.refresh(ws) }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val t = timeline
             when {
-                notJoined != null -> NotJoinedNote(notJoined, summary?.name.orEmpty())
+                notJoined != null -> NotJoinedNote(notJoined)
                 roomModel == null && view != null -> EmptyState(stringResource(R.string.chat_errors_gone_conversation), icon = ChatIcons.Bubble)
                 t == null || opening == null || (t.loading && t.events.isEmpty() && t.pending.isEmpty()) ->
                     ChatLoading(stringResource(R.string.chat_empty_loading), Modifier.fillMaxSize())
@@ -191,6 +191,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                     names = names,
                     workspace = summary?.name.orEmpty(),
                     host = chat.host,
+                    hostName = chat.operator?.name ?: chat.host,
                     retentionDays = chat.retention?.contentDays,
                     canRead = canRead,
                     onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false, view?.me?.role, members[row.actor], blocked)) actionsFor = row },
@@ -243,13 +244,16 @@ private class OpeningMemo {
     var opening: RoomOpening? = null
 }
 
-/** Where a channel not joined yet keeps its history: what it is, and who can see it. */
+/**
+ * Where a channel not joined yet keeps its history: its name, and that joining shows its messages. The history is only
+ * withheld, so "This is the start of" stays for joined channels.
+ */
 @Composable
-private fun NotJoinedNote(channel: Channel, workspace: String) {
+private fun NotJoinedNote(channel: Channel) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         EmptyState(
-            stringResource(R.string.chat_log_start_channel, channel.name),
-            hint = if (channel.visibility == "private") stringResource(R.string.chat_log_start_private) else stringResource(R.string.chat_log_start_public, workspace),
+            stringResource(R.string.chat_channel_preview_title, channel.name),
+            hint = stringResource(R.string.chat_channel_preview_body, channel.name),
             icon = if (channel.visibility == "private") ChatIcons.Lock else ChatIcons.Hash,
         )
     }
@@ -276,15 +280,26 @@ private fun channelSubtitle(members: Int, visibility: String): String {
     return if (visibility == "private") "$count · ${stringResource(R.string.chat_head_private)}" else count
 }
 
+/**
+ * The chat server is out of reach (desktop chat.banner.offline): it names the server, as mail may still work, and Try
+ * now runs the feed at once, as the desktop's banner does with chatSync.
+ */
 @Composable
-internal fun OfflineBanner() {
+internal fun OfflineBanner(host: String, busy: Boolean, onTryNow: () -> Unit) {
     val c = Rk.colors
-    Text(
-        stringResource(R.string.chat_banner_offline),
-        style = Rk.type.text12_5,
-        color = c.text2,
-        modifier = Modifier.fillMaxWidth().background(c.field).padding(horizontal = 16.dp, vertical = 8.dp),
-    )
+    Row(
+        Modifier.fillMaxWidth().background(c.field).padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.chat_banner_offline, host),
+            style = Rk.type.text12_5,
+            color = c.text2,
+            modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+        )
+        RkLinkButton(stringResource(R.string.chat_banner_try_now), onClick = onTryNow, enabled = !busy)
+    }
 }
 
 /** What a timeline row needs to draw itself. */
@@ -308,6 +323,8 @@ internal class RowContext(
     /** An action under an unsent message. */
     val onPending: ((ChatTimeline.Message, PendingAction) -> Unit)? = null,
     val isBusy: (String) -> Boolean = { false },
+    /** Who hosts the workspace as people know it: the operator's name, else the host name. */
+    val hostName: String = host,
 )
 
 @Composable
@@ -323,6 +340,7 @@ private fun RoomLog(
     names: ChatNames,
     workspace: String,
     host: String,
+    hostName: String,
     retentionDays: Int?,
     canRead: Boolean,
     onLongPress: (ChatTimeline.Message) -> Unit,
@@ -365,6 +383,7 @@ private fun RoomLog(
         room = t.room,
         workspace = workspace,
         host = host,
+        hostName = hostName,
         retentionDays = retentionDays ?: DEFAULT_RETENTION_DAYS,
         events = t.events,
         onOpenThread = { root -> app.openThread(root) },
@@ -647,8 +666,9 @@ private fun IntroRow(ctx: RowContext) {
                     color = c.text2,
                 )
             }
+            // The host can read every room, private channels included, so their intro names it.
             Text(
-                if (room.visibility == "private") stringResource(R.string.chat_log_start_private) else stringResource(R.string.chat_log_start_public, ctx.workspace),
+                if (room.visibility == "private") stringResource(R.string.chat_log_start_private, ctx.hostName) else stringResource(R.string.chat_log_start_public, ctx.workspace),
                 style = Rk.type.text12_5,
                 color = c.text2,
             )

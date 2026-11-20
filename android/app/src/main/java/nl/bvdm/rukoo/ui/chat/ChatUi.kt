@@ -470,7 +470,9 @@ class ChatUi(
     /** Mute or unmute a room, saying so (§3.10). */
     fun mute(ws: String, room: String, title: String, muted: Boolean) = launch("mute:$room", context(ws)) {
         setMuted(ws, room, muted)
-        toasts.showToast(strings.get(if (muted) R.string.chat_mute_done else R.string.chat_mute_undone, title))
+        // The mute toast also says that mentions go quiet, so it stays long enough to read, as on the desktop.
+        if (muted) toasts.showToast(strings.get(R.string.chat_mute_done, title), durationMs = 5000L)
+        else toasts.showToast(strings.get(R.string.chat_mute_undone, title))
     }
 
     fun markRead(ws: String, room: String) = launch("markRead:$room", context(ws)) { markAllRead(ws, room) }

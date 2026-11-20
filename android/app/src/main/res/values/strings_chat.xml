@@ -96,7 +96,7 @@
     <string name="chat_empty_storage_body">Rukoo couldn\'t open its chat storage on this phone. Restart Rukoo to try again.</string><!-- Its text. --><!-- phone wording -->
 
     <!-- chat.banner.* -->
-    <string name="chat_banner_offline">You\'re offline. Messages you send wait until Rukoo reconnects.</string><!-- Banner above the messages. -->
+    <string name="chat_banner_offline">Rukoo can\'t reach %1$s. Messages you send wait until it reconnects.</string><!-- Banner above the messages while the chat server is out of reach, with Try now. %1$s: the server's host name. -->
     <string name="chat_banner_reconnecting">Reconnecting to %1$s…</string><!-- Banner after 10 seconds of reconnecting. -->
     <string name="chat_banner_try_now">Try now</string><!-- Its button. -->
     <string name="chat_banner_paused">Rukoo stopped syncing %1$s because its server is behind what this phone saw. Start over to load it again from the server.</string><!-- Banner when the server is behind the cache (paused workspace). --><!-- phone wording -->
@@ -125,6 +125,7 @@
     <string name="chat_head_block">Block %1$s</string><!-- Menu item in a direct message. -->
     <string name="chat_head_archive">Archive channel</string><!-- Menu item. -->
     <string name="chat_head_mute">Mute</string><!-- Menu item. -->
+    <string name="chat_head_mute_hint">No notifications or counts, even when someone mentions you.</string><!-- Help line under Mute in the details sheet. -->
     <string name="chat_head_unmute">Unmute</string><!-- Menu item. -->
     <string name="chat_head_leave_dm">Leave conversation</string><!-- Menu item in a direct message. -->
 
@@ -148,7 +149,7 @@
     <string name="chat_log_start_channel">This is the start of #%1$s</string><!-- Intro at the top of a channel. -->
     <string name="chat_log_start_channel_by">%1$s made it on %2$s.</string><!-- Line under it. -->
     <string name="chat_log_start_public">Everyone in %1$s can see and join it.</string><!-- Intro line for a workspace-visible channel. -->
-    <string name="chat_log_start_private">Only people who are added can see it.</string><!-- Intro line for a private channel. -->
+    <string name="chat_log_start_private">Only people who are added, and %1$s, which hosts this workspace, can read it.</string><!-- Intro line for a private channel. %1$s: who runs the server (the operator's name, else the host name). -->
     <string name="chat_log_start_direct">This is the start of your conversation with %1$s.</string><!-- Intro of a direct message. {names}: a list. -->
     <string name="chat_log_host_note">%1$s hosts this conversation and can read it.</string><!-- Host disclosure in a direct message. -->
     <!-- Top of a conversation whose oldest messages aged out. -->
@@ -347,6 +348,8 @@
     <string name="chat_channel_search">Find a channel</string><!-- Search field. -->
     <string name="chat_channel_join">Join</string><!-- Row button. -->
     <string name="chat_channel_joined">Joined</string><!-- Row pill. -->
+    <string name="chat_channel_preview_title">#%1$s</string><!-- Title in place of the timeline of a channel not joined yet. -->
+    <string name="chat_channel_preview_body">Join #%1$s to read its messages and post in it.</string><!-- Line under it. -->
     <!-- Collapsible section. -->
     <plurals name="chat_channel_archived_section">
         <item quantity="one">Archived (%d)</item>
@@ -471,7 +474,7 @@
     <string name="chat_leave_dm_submit">Leave</string><!-- Its button. -->
 
     <!-- chat.mute.* -->
-    <string name="chat_mute_done">Muted %1$s</string><!-- Toast. -->
+    <string name="chat_mute_done">Muted %1$s. No notifications or counts, even for mentions.</string><!-- Toast. -->
     <string name="chat_mute_undone">Unmuted %1$s</string><!-- Toast. -->
 
     <!-- chat.delete.* -->

@@ -227,6 +227,28 @@ class ChatStringsTest {
         assertEquals("Thread sluiten", nl.strings["chat_thread_close"])
     }
 
+    @Test
+    fun theHostCanReadPrivateChannelsOfflineNamesTheServerAndMuteSaysMentionsGoQuiet() {
+        // The desktop's chat.log.startPrivate, chat.banner.offline, chat.channel.preview*, chat.mute.done say the same.
+        assertEquals("Only people who are added, and %1\$s, which hosts this workspace, can read it.", en.strings["chat_log_start_private"])
+        assertEquals("Alleen mensen die zijn toegevoegd, en %1\$s, die deze werkruimte host, kunnen het lezen.", nl.strings["chat_log_start_private"])
+        assertEquals("Rukoo can't reach %1\$s. Messages you send wait until it reconnects.", unescape(en.strings["chat_banner_offline"]))
+        assertEquals("Rukoo kan %1\$s niet bereiken. Berichten die je verstuurt, wachten tot er weer verbinding is.", nl.strings["chat_banner_offline"])
+        assertEquals("Try now", en.strings["chat_banner_try_now"])
+        assertEquals("#%1\$s", en.strings["chat_channel_preview_title"])
+        assertEquals("#%1\$s", nl.strings["chat_channel_preview_title"])
+        assertEquals("Join #%1\$s to read its messages and post in it.", en.strings["chat_channel_preview_body"])
+        assertEquals("Neem deel aan #%1\$s om de berichten te lezen en erin te schrijven.", nl.strings["chat_channel_preview_body"])
+        assertEquals("This is the start of #%1\$s", en.strings["chat_log_start_channel"])
+        assertEquals("Muted %1\$s. No notifications or counts, even for mentions.", en.strings["chat_mute_done"])
+        assertEquals("%1\$s gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.", nl.strings["chat_mute_done"])
+        assertEquals("No notifications or counts, even when someone mentions you.", en.strings["chat_head_mute_hint"])
+        assertEquals("Geen meldingen of tellers, ook niet als iemand je noemt.", nl.strings["chat_head_mute_hint"])
+    }
+
+    /** Android's escaped apostrophe, as the screen shows it. */
+    private fun unescape(text: String?) = text?.replace("\\'", "'")
+
     private fun assertNoProblems(problems: List<String>) {
         if (problems.isNotEmpty()) fail(problems.joinToString("\n"))
     }

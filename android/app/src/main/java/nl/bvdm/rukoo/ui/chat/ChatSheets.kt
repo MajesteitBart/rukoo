@@ -1321,7 +1321,8 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
         }
         for (action in SheetRules.detailActions(room, view.me.role, me, blocked)) {
             when (action) {
-                DetailAction.MUTE -> SheetRow(stringResource(R.string.chat_head_mute), icon = RukooIcons.BellOff, onClick = {
+                // Mute silences mentions too, so the row says so before it's chosen.
+                DetailAction.MUTE -> SheetRow(stringResource(R.string.chat_head_mute), icon = RukooIcons.BellOff, hint = stringResource(R.string.chat_head_mute_hint), onClick = {
                     close()
                     ui.mute(ws, room.id, title, true)
                 })

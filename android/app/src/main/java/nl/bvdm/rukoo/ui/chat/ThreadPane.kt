@@ -89,7 +89,7 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
                 if (twoPane) RkIconButton(RukooIcons.Close, stringResource(R.string.chat_thread_close), onClick = app::closeThread)
             },
         )
-        if (!paused && chat.connection == Connection.OFFLINE) OfflineBanner()
+        if (!paused && chat.connection == Connection.OFFLINE) OfflineBanner(chat.host, busy = app.chatUi.isBusy("refresh:$ws")) { app.chatUi.refresh(ws) }
         val t = thread
         if (t == null || roomModel == null || (t.loading && t.root == null && t.replies.isEmpty())) {
             ChatLoading(stringResource(R.string.chat_thread_loading), Modifier.weight(1f).fillMaxWidth())
