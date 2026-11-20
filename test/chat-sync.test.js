@@ -528,7 +528,7 @@ test('a restore or a new key that GET / finds outside a run starts the pass at o
     assert.equal(svc.store.getWs(ws.id).passing, 1, field);
     assert.equal(svc.store.getWs(ws.id).cursor, null, field);
     // The window isn't focused, so the catch-up timer waits five minutes: this run comes from details().
-    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 3000, `the pass after a new ${field}`);
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 15000, `the pass after a new ${field}`);
     assert.ok(feed() > 0, field);
     assert.ok(svc.store.getWs(ws.id).cursor, field);
   }

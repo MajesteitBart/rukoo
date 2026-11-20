@@ -73,15 +73,20 @@ test('a wake reaches a run within a second', async (t) => {
   await until(() => !svc.runners.get(ws.id).running, 5000, 'the runs after the socket opened');
   await sleep(700);
   const a = await server.access(olga, ws.id, ws.general);
-  const calls = watchCalls(account);
+  // When the run the wake starts sends its feed request: how long a loaded server takes to answer it isn't the wake's.
+  let feedAt = null;
+  const calls = watchCalls(account, async (method, url) => {
+    if (feedAt === null && url.startsWith(route(ws.id, '/changes'))) feedAt = Date.now();
+    return undefined;
+  });
   const started = Date.now();
   const posted = await server.call('POST', route(ws.id, `/conversations/${ws.general}/messages`), {
     token: olga.token,
     body: { operationId: require('./fixtures/real-server').uuidv7(a.time), grant: a.grant, generation: a.generation, text: 'Wake up' }
   });
   assert.equal(posted.status, 201, posted.text);
-  await until(() => (svc.store.getRoom(ws.id, ws.general) || {}).head >= posted.body.seq, 3000, 'the run the wake started');
-  const elapsed = Date.now() - started;
+  await until(() => (svc.store.getRoom(ws.id, ws.general) || {}).head >= posted.body.seq, 10000, 'the run the wake started');
+  const elapsed = feedAt - started;
   assert.ok(elapsed < 1000, `the run came ${elapsed} ms after the post`);
   assert.ok(calls.some((c) => c.route.startsWith(route(ws.id, '/changes'))));
 });

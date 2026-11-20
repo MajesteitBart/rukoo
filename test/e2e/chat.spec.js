@@ -538,7 +538,8 @@ test('choosing a workspace or clicking a notification opens one conversation, on
   await win.waitForTimeout(1500);
   let list = await calls();
   expect(opens(list)).toEqual([['open', there.id, there.general]]);
-  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view')).toEqual([['view', there.id]]);
+  // Counted for the workspace being opened: a directory reload of the one on screen that fires late isn't the switch's.
+  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view' && x[1] === there.id)).toEqual([['view', there.id]]);
 
   // A notification for the other room of the first workspace opens that room, without its saved room (general) first.
   await app.evaluate((_, open) => global.__semChatOpen(open), { ws: here.id, conversation: here.other.id });
@@ -547,7 +548,7 @@ test('choosing a workspace or clicking a notification opens one conversation, on
   await win.waitForTimeout(1500);
   list = await calls();
   expect(opens(list)).toEqual([['open', here.id, here.other.id]]);
-  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view')).toEqual([['view', here.id]]);
+  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view' && x[1] === here.id)).toEqual([['view', here.id]]);
 });
 
 test('leaving the open channel elsewhere shows the gone state, and a language change redraws it', async () => {
