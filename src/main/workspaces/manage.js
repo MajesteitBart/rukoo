@@ -222,13 +222,17 @@ class Manage {
     return true;
   }
 
-  // A member row of the directory as the server answered it, when the directory has it.
+  // A member row of the directory as the server answered it, when the directory has it. My own role across the guest
+  // line marks the channels stale, as sync.js directory() does: the next run then fetches them or clears them.
   updateMember(ws, member) {
     const store = this.svc.store;
     store.tx(() => {
       store.run('UPDATE member SET name = ?, role = ?, state = ? WHERE ws = ? AND id = ?', member.name, member.role, member.state, ws, member.id);
       const row = store.getWs(ws);
-      if (row && row.me === member.id) store.updateWs(ws, { myName: member.name, role: member.role });
+      if (row && row.me === member.id) {
+        const crossed = (row.role === 'guest') !== (member.role === 'guest');
+        store.updateWs(ws, { myName: member.name, role: member.role, ...(crossed ? { channelsStale: 1 } : {}) });
+      }
     });
     this.svc.emitChat({ kind: 'directory', ws });
     this.svc.stateChanged();

@@ -355,7 +355,9 @@ async function directory(svc, ws) {
     }
   };
   // The caller's own row carries a role or name someone else changed, which GET / would only bring at the next restore
-  // check: the ws row takes them, so the workspace summary says the same as the member list.
+  // check: the ws row takes them, so the workspace summary says the same as the member list. A role across the guest
+  // line also marks the channels stale, as the server bumps only the members for a role change: a promoted guest has no
+  // channel directory yet and a demoted member one too many. The channels load below reads the row again.
   let meChanged = false;
   await load('membersStale', async () => {
     const res = wire.checkMembers(await svc.call(ws, 'GET', '/members'));
@@ -366,7 +368,8 @@ async function directory(svc, ws) {
       store.replaceMembers(ws, res.members, res.more);
       const mine = row.me && res.members.find((m) => m.id === row.me);
       if (mine && (mine.role !== row.role || mine.name !== row.myName)) {
-        store.updateWs(ws, { role: mine.role, myName: mine.name });
+        const crossed = (row.role === 'guest') !== (mine.role === 'guest');
+        store.updateWs(ws, { role: mine.role, myName: mine.name, ...(crossed ? { channelsStale: 1 } : {}) });
         meChanged = true;
       }
     });

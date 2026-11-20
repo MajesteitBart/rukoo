@@ -480,6 +480,40 @@ test('a role change by someone else reaches the workspace summary, me() and the 
   await roleIs('member');
 });
 
+test('my role across the guest line fetches or clears the channel directory, whoever changes it', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const bartMe = await server.seedMember(ws, bart, 'Bart', { role: 'guest', channels: [ws.general] });
+  await server.seedChannel(olga, ws.id, { name: 'design' });
+  const { svc, api } = await device(t, bart);
+  await settled(svc, ws.id);
+  const names = async () => (await api.chatView(ws.id)).channels.map((c) => c.name).sort();
+  assert.deepEqual(await names(), [], 'a guest has no channel directory');
+
+  // Olga changes the role; the server bumps only the members, so Bart's run must see the line was crossed.
+  const olgaSets = async (role) => {
+    const changed = await server.call('PATCH', route(ws.id, `/members/${bartMe.id}`), { token: olga.token, body: { role } });
+    assert.equal(changed.status, 200, changed.text);
+    await api.chatSync(ws.id);
+    assert.equal(svc.store.getWs(ws.id).role, role);
+  };
+  await olgaSets('member');
+  assert.deepEqual(await names(), ['design', 'general'], 'a promoted guest can browse and join channels');
+  assert.equal(svc.store.getWs(ws.id).channelsStale, 0);
+  await olgaSets('guest');
+  assert.deepEqual(await names(), [], 'a demoted member keeps no channels');
+
+  // Bart changes his own role, as one of two owners: the write's answer sets the role before the run, so the flag
+  // comes from manage.updateMember.
+  await olgaSets('owner');
+  assert.deepEqual(await names(), ['design', 'general']);
+  await api.chatSetRole(ws.id, bartMe.id, 'guest');
+  assert.equal(svc.store.getWs(ws.id).role, 'guest');
+  assert.deepEqual(await names(), [], 'after my own demotion to guest');
+});
+
 test('a sign-up with an invitation link sends workspaceInvite and leaves a pending join', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();
