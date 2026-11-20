@@ -111,7 +111,8 @@ const draftKey = (d) => (d ? JSON.stringify(d) : '');
 //   draftKey               the draft's workspace, room and thread (draftSlotKey in chat-drafts.js): a send's answer is
 //                          reconciled against that draft as every composer for it left it, this one or a later one
 //   parts                  what the input starts with
-// Returns { el, input, focus, parts, setParts, setMembers, setBar, setPlaceholder, flush, dispose, hasFocus }.
+// Returns { el, input, focus, parts, setParts, setMembers, refreshMembers, setBar, setPlaceholder, flush, dispose,
+// hasFocus }.
 export function mountChatInput(container, opts = {}) {
   let members = opts.members || (() => []);
   const listId = `ch-suggest-${Math.random().toString(36).slice(2)}`;
@@ -735,6 +736,11 @@ export function mountChatInput(container, opts = {}) {
     setParts,
     setMembers(fn) {
       members = typeof fn === 'function' ? fn : () => fn || [];
+    },
+    // The members changed (the directory came in, someone joined or left): an open picker asks for them again, so one
+    // opened before the directory loaded doesn't keep saying nobody is here.
+    refreshMembers() {
+      if (pick && !state.disposed) updatePicker();
     },
     setBar,
     setPlaceholder,

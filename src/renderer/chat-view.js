@@ -537,6 +537,13 @@ export function mountView(section, H) {
     });
   }
 
+  // The room's members or the directory changed: the next picker asks main again, and an open one draws again.
+  function membersChanged() {
+    memberCache = null;
+    input?.refreshMembers();
+    T?.input?.refreshMembers();
+  }
+
   // Who posted among the last messages, the latest first: they come first among equal matches in the picker.
   function recentAuthors() {
     const out = [];
@@ -717,7 +724,7 @@ export function mountView(section, H) {
       if (p.replace) V.floor = p.floor || 1;
       else floored = applyFloor(p.floor);
       // A cache made again, or someone joining or leaving: the mention picker asks for the members again.
-      if (p.replace || list.some((e) => e.kind === 'member.joined' || e.kind === 'member.left')) memberCache = null;
+      if (p.replace || list.some((e) => e.kind === 'member.joined' || e.kind === 'member.left')) membersChanged();
       V.room = { ...V.room, head: p.head, floor: p.floor };
       V.loaded = true;
       V.opening = false;
@@ -797,7 +804,7 @@ export function mountView(section, H) {
     // still drops what aged out.
     const floored = applyFloor(room.floor);
     renderHead();
-    if (directory) memberCache = null;
+    if (directory) membersChanged();
     if (input) input.setPlaceholder(placeholderFor(V.room));
     updateBars();
     if (T) renderThreadHead();
@@ -828,9 +835,18 @@ export function mountView(section, H) {
 
   const atBottom = () => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICK_PX;
 
+  // What the intro row shows, all of it, as its sig is made of this: who made the conversation and when, the people of
+  // a DM, and the room's name, kind and visibility, the host and the workspace name.
   function introOf() {
     const first = V.events.find((e) => e.kind === 'channel.created' || e.kind === 'dm.started');
-    return first ? { actor: first.actor, at: first.at } : null;
+    const room = V.room || {};
+    const s = H.state() || {};
+    return {
+      actor: first ? first.actor : null,
+      at: first ? first.at : null,
+      people: room.kind === 'dm' ? (room.participants || []).filter((id) => id !== H.me()) : [],
+      look: [H.roomName(room), room.kind || '', room.visibility || '', (s.operator && s.operator.name) || '', s.host || '', H.workspaceName()]
+    };
   }
 
   // How an unsent row looks: 'sending', 'waiting' (for a connection), 'turn' (for the message above), 'stale'
@@ -979,7 +995,7 @@ export function mountView(section, H) {
     li.append(ic, h('h2', { class: 'ch-intro-title', text: t('chat.log.startChannel', { name }) }));
     const intro = row.intro;
     const lines = [];
-    if (intro) lines.push(t('chat.log.startChannelBy', { name: nameOf(intro.actor), date: dayOf(intro.at) }));
+    if (intro && intro.actor) lines.push(t('chat.log.startChannelBy', { name: nameOf(intro.actor), date: dayOf(intro.at) }));
     // The host can read every room, private channels included, so their intro names it (desktop-ui 6).
     const s = H.state() || {};
     const host = (s.operator && s.operator.name) || s.host || '';

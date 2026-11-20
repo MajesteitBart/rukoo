@@ -320,6 +320,31 @@ test('keys stay and sigs change only for the rows whose look changed', async () 
   assert.notEqual(one[0].sig, timeline([root], { ...base, now: NOW + 86400000 })[0].sig, 'today becomes yesterday');
 });
 
+// A directory that comes in after the room drew (a first sign-in on a slow server) names the people the intro showed as
+// Former member: the intro draws again, as the system rows do.
+test("the intro draws again when the directory brings or changes the names of the conversation's maker and people", async () => {
+  const { timeline } = await loading;
+  seqs = 0;
+  const made = sys('channel.created', SANNE, T0, { name: 'design', visibility: 'workspace' });
+  const intro = { actor: SANNE, at: T0, people: [], look: ['#design', 'channel', 'workspace', '', 'chat.example', 'Acme'] };
+  const opts = { ...base, hasOlder: false, intro };
+  const introRow = (o) => timeline([made], o).find((r) => r.type === 'intro');
+  const before = introRow({ ...opts, members: new Map() });
+  const after = introRow(opts);
+  assert.notEqual(after.sig, before.sig, 'the maker came in with the directory');
+  assert.equal(introRow(opts).sig, after.sig, 'the same directory keeps the row');
+  const renamed = new Map(members);
+  renamed.set(SANNE, { ...members.get(SANNE), name: 'Sanne Visser' });
+  assert.notEqual(introRow({ ...opts, members: renamed }).sig, after.sig, 'a renamed maker');
+  const dm = { ...intro, people: [MILA, ROB] };
+  const dmRenamed = new Map(members);
+  dmRenamed.set(ROB, { ...members.get(ROB), name: 'Robert' });
+  assert.notEqual(introRow({ ...opts, intro: dm, members: dmRenamed }).sig, introRow({ ...opts, intro: dm }).sig, 'a renamed person of a DM');
+  const other = new Map(members);
+  other.set(PIM, { ...members.get(PIM), name: 'Pim Smit' });
+  assert.equal(introRow({ ...opts, intro: dm, members: other }).sig, introRow({ ...opts, intro: dm }).sig, 'someone the intro does not name changes nothing');
+});
+
 test('channels sort by name with the collator, DMs by last activity with closed ones last', async () => {
   const { sortRooms } = await loading;
   const channel = (cid, name, extra = {}) => ({ id: id('c', cid), kind: 'channel', name, archived: false, closedReason: null, ...extra });

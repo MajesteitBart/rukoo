@@ -97,7 +97,8 @@ export function replyCounts(events, { me = null } = {}) {
 //
 // opts: me (your member ID), members (Map or list of Member), readAtOpen (the read seq when the room opened),
 // pending (Pending[] of the room), root (a thread's root ID), floor and hasOlder (from RoomView), blocked (Set of
-// member IDs you blocked), intro (passed through to the intro row), groupMs, now, and sentLocal (Map messageId ->
+// member IDs you blocked), intro (passed through to the intro row: { actor, at, people }, where actor made the
+// conversation and people are the member IDs it names besides), groupMs, now, and sentLocal (Map messageId ->
 // local ID of sends that committed while the view was open, so the row keeps its key and its DOM node).
 export function timeline(events, opts = {}) {
   const {
@@ -126,7 +127,13 @@ export function timeline(events, opts = {}) {
 
   const rows = [];
   if (!root && !hasOlder) {
-    if (!(floor > 1)) rows.push({ type: 'intro', key: 'intro', intro, sig: `intro\u0001${JSON.stringify(intro ?? null)}` });
+    if (!(floor > 1)) {
+      // The intro names who made the conversation and who is in a DM: like a system row, it draws again when the
+      // directory brings or changes their names.
+      const people = intro ? [intro.actor, ...(Array.isArray(intro.people) ? intro.people : [])].filter(Boolean) : [];
+      const sig = ['intro', JSON.stringify(intro ?? null), ...people.map((id) => memberSig(members.get(id)))].join('\u0001');
+      rows.push({ type: 'intro', key: 'intro', intro, sig });
+    }
     else rows.push({ type: 'floor', key: 'floor', floor, sig: 'floor' });
   }
 

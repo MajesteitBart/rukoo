@@ -711,6 +711,8 @@ function trackConnection() {
 // opens once its view is in; off when the caller opens one itself.
 function switchTo(ws, { openFirst = true } = {}) {
   CH.generation++;
+  // A directory reload waiting for the workspace before is done by the view this switch loads.
+  clearTimeout(directoryTimer);
   CH.ws = ws;
   CH.view = null;
   CH.rooms = new Map();

@@ -506,6 +506,12 @@ test('choosing a workspace or clicking a notification opens one conversation, on
   const switcher = win.locator('.sidebar .ch-ws-switch');
   const here = spaces[(await switcher.locator('.name').textContent()).trim()];
   const there = here === spaces.Acme ? spaces.Beta : spaces.Acme;
+  // Both first runs are through, directories and all: a directory that comes in later loads the view again (one
+  // chatView more), which is right but not what is counted here.
+  await expect
+    .poll(() => app.evaluate(() => global.__semChat.debugState().workspaces.every((w) => w.syncedAt && !w.syncing && !w.stale.members && !w.stale.channels && !w.stale.blocks)), { timeout: 15000 })
+    .toBe(true);
+  await win.waitForTimeout(600);
   // Every chatView and chatOpen main answers from here on.
   await app.evaluate(() => {
     const svc = global.__semChat;

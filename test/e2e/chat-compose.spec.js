@@ -144,6 +144,38 @@ test('mentions of Zoë and Joël picked from the list reach the server with the 
   expect(stored.mentions).toEqual(vector.bytes.map((m, i) => ({ actor: actors[i], start: m.start, end: m.end })));
 });
 
+// The member directory loads at the end of a run, after the rooms: on a slow first sign-in the room is on screen, and
+// the picker open, before anyone has a name.
+test('a directory that comes in late fills the open mention picker and names who made the channel', async () => {
+  const { bart, ws } = await twoPeople(server);
+  await server.seedMember(ws, await server.seedAccount(), 'Zoë');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  const intro = log().locator('.ch-intro .ch-intro-line');
+  await expect(intro).toContainText('Olga Owner', { timeout: 15000 });
+  // The directory as a first run has it before GET /members answers: none, and stale.
+  const held = await holdRuns(app);
+  await app.evaluate((_, id) => {
+    const svc = global.__semChat;
+    svc.store.tx(() => {
+      svc.store.replaceMembers(id, []);
+      svc.store.updateWs(id, { membersStale: 1 });
+    });
+    svc.emitChat({ kind: 'directory', ws: id });
+  }, ws.id);
+  await expect(intro).toContainText('Former member');
+  const picker = win.locator('.ch-suggest');
+  await write('Hoi @Zo', { send: false });
+  await expect(picker.locator('.ch-suggest-none')).toHaveText('Nobody here by that name');
+  // The run loads the directory: the picker and the intro take it without another key.
+  await held.release();
+  await expect(picker.locator('[role="option"] .mention-name').first()).toHaveText('Zoë', { timeout: 15000 });
+  await expect(picker.locator('.ch-suggest-none')).toHaveCount(0);
+  await expect(intro).toContainText('Olga Owner');
+  await win.keyboard.press('Enter');
+  await expect(composer(win).locator('.ch-chip')).toHaveText('@Zoë');
+});
+
 test('a chip goes with one Backspace, and @ typed by hand stays plain text', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   await server.seedMember(ws, await server.seedAccount(), 'Zoë');
