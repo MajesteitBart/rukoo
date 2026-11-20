@@ -252,8 +252,11 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
                         twoPane -> TwoPaneLayout(app, nav, holder, backProgress, chatMode)
                         else -> CompactLayout(app, nav, holder, compactState)
                     }
-                    // Toasts sit above the bottom bars and the New message button (spec 6 §5.2).
-                    RkToastHost(app.mailUi.toasts, Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp))
+                    // Toasts sit above the bottom bars and the New message button (spec 6 §5.2). An open chat sheet is
+                    // a window over this one and shows them itself (ChatSheets.kt SheetFrame).
+                    if (!(chatMode && nav.chat.sheet != null)) {
+                        RkToastHost(app.mailUi.toasts, Modifier.align(Alignment.BottomCenter).padding(bottom = 56.dp))
+                    }
                 }
             }
 

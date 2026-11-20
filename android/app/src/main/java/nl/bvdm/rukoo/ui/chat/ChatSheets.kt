@@ -64,6 +64,7 @@ import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.Avatar
 import nl.bvdm.rukoo.ui.components.ExpandChevron
+import nl.bvdm.rukoo.ui.components.LocalRkToast
 import nl.bvdm.rukoo.ui.components.Monogram
 import nl.bvdm.rukoo.ui.components.RkBottomSheet
 import nl.bvdm.rukoo.ui.components.RkButton
@@ -78,6 +79,7 @@ import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.RkMenuItem
 import nl.bvdm.rukoo.ui.components.RkSearchField
 import nl.bvdm.rukoo.ui.components.RkTextField
+import nl.bvdm.rukoo.ui.components.RkToastHost
 import nl.bvdm.rukoo.ui.components.SheetDivider
 import nl.bvdm.rukoo.ui.components.SheetHeading
 import nl.bvdm.rukoo.ui.components.SheetRow
@@ -411,24 +413,33 @@ private fun SheetFrame(
             ) { buttons(close) }
         }
     }
+    // The sheet is a window of its own, over the root's toast host, so it shows the toasts itself: a role change's Undo
+    // has to be in reach while Members is open. RukooRoot leaves its host out while a chat sheet shows.
+    val toasts = LocalRkToast.current
+    // Above the button row, so Close stays visible.
+    val toastAt = Modifier.padding(bottom = if (buttons != null) 44.dp else 0.dp)
     if (twoPane) {
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             val shape = Rk.shapes.window
-            Column(
-                Modifier
-                    .padding(24.dp)
-                    .widthIn(max = 480.dp)
-                    .fillMaxWidth()
-                    .popIn(RukooDurations.DIALOG, fromScale = 0.97f)
-                    .rkSurface(Rk.elevation.overlay, shape, c.raised)
-                    .border(1.dp, c.border, shape)
-                    .padding(top = 20.dp, bottom = 14.dp),
-            ) { Body(onDismiss) }
+            Box(Modifier.padding(24.dp).widthIn(max = 480.dp)) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .popIn(RukooDurations.DIALOG, fromScale = 0.97f)
+                        .rkSurface(Rk.elevation.overlay, shape, c.raised)
+                        .border(1.dp, c.border, shape)
+                        .padding(top = 20.dp, bottom = 14.dp),
+                ) { Body(onDismiss) }
+                RkToastHost(toasts, Modifier.align(Alignment.BottomCenter).then(toastAt))
+            }
         }
     } else {
         RkBottomSheet(onDismissRequest = onDismiss) {
             val close: () -> Unit = { dismiss() }
-            Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp)) { Body(close) }
+            Box(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp)) { Body(close) }
+                RkToastHost(toasts, Modifier.align(Alignment.BottomCenter).then(toastAt))
+            }
         }
     }
 }
