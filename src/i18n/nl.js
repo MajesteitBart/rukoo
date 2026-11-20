@@ -2690,7 +2690,7 @@
   "chat.banner.offline": "Je bent offline. Berichten die je verstuurt, wachten tot Rukoo weer verbinding heeft.",
   "chat.banner.reconnecting": "Opnieuw verbinden met {host}…",
   "chat.banner.tryNow": "Nu proberen",
-  "chat.banner.paused": "Rukoo synchroniseert {workspace} niet meer, omdat de server achterloopt op wat deze computer zag. Begin opnieuw om de werkruimte opnieuw van de server te laden.",
+  "chat.banner.paused": "Rukoo synchroniseert {workspace} niet meer, omdat de server achterloopt op wat deze computer zag. Kies Opnieuw beginnen om de werkruimte weer van de server te laden.",
   "chat.banner.startOver": "Opnieuw beginnen",
   "chat.gone.conversationTitle": "Je bent niet meer in {name}",
   "chat.gone.conversationBody": "Je bent uit dit gesprek gehaald, of het bestaat niet meer. Rukoo heeft de berichten van deze computer verwijderd.",
