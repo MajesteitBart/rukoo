@@ -21,15 +21,41 @@ data class InviteLink(val server: String, val workspace: String, val secret: Str
         private val LOCAL = setOf("localhost", "127.0.0.1", "::1")
 
         // JavaScript's \s, so a link ends where desktop's ends.
-        private val URL_IN_TEXT = Regex("https?://[^\\t\\n\\u000B\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+")
+        private const val SPACE = "\\t\\n\\u000B\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
+        private val URL_IN_TEXT = Regex("https?://[^$SPACE]+")
+        private val WORDS = Regex("[$SPACE]+")
+
+        // Characters that can't end a link, such as the full stop of a sentence or the bracket around a link, and the
+        // ones that can't start a link written without its scheme. A secret or workspace ID never ends in one.
+        private const val QUOTES = "‘’‚“”„«»‹›"
+        private val CLOSING = Regex("[.,;:!?)\\]}>'\"$QUOTES]+\\z")
+        private val OPENING = Regex("^[(\\[{<'\"$QUOTES]+")
+
+        // <host>[:<port>][/<path>]/join#<fragment>, a link pasted without https://.
+        private val WITHOUT_SCHEME = Regex("[A-Za-z0-9.-]+(:[0-9]+)?(/[^$SPACE]*)?/join#[^$SPACE]*")
 
         /**
-         * The steps of §3.2, one to five: the first http or https URL in the trimmed [text]; http only for local
-         * hosts, with [EMULATOR_HOST] added when [devHosts]; no user info; a path ending in `/join`; a fragment of
-         * exactly `w` and `i`, in any order, of the right shapes. Null for anything else (`bad_link`).
+         * Step one of §3.2: the first http or https URL in the trimmed [text] up to white space, without the
+         * characters that can't end a link. Without one, the first word that is a link without its scheme, read as
+         * https.
+         */
+        private fun linkIn(text: String): String? {
+            val trimmed = text.trim()
+            URL_IN_TEXT.find(trimmed)?.let { return it.value.replace(CLOSING, "") }
+            for (word in trimmed.split(WORDS)) {
+                val bare = word.replace(OPENING, "").replace(CLOSING, "")
+                if (WITHOUT_SCHEME.matches(bare)) return "https://$bare"
+            }
+            return null
+        }
+
+        /**
+         * The steps of §3.2, one to five: the link in the trimmed [text]; http only for local hosts, with
+         * [EMULATOR_HOST] added when [devHosts]; no user info; a path ending in `/join`; a fragment of exactly `w` and
+         * `i`, in any order, of the right shapes. Null for anything else (`bad_link`).
          */
         fun parse(text: String, devHosts: Boolean): InviteLink? {
-            val found = URL_IN_TEXT.find(text.trim())?.value ?: return null
+            val found = linkIn(text) ?: return null
             val url = found.toHttpUrlOrNull() ?: return null
             val host = url.host.lowercase()
             val local = host in LOCAL || (devHosts && host == EMULATOR_HOST)

@@ -715,7 +715,10 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
             }) {
                 val card = previewInvite(parsed)
                 if (text.trim() == t) {
-                    checkedText = t
+                    // The field shows the link that was read (§3.2), in place of a sentence around it or a full stop
+                    // after it.
+                    if (parsed.text != t) text = parsed.text
+                    checkedText = parsed.text
                     link = parsed
                     preview = card
                 }
