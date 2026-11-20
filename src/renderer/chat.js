@@ -68,6 +68,8 @@ let view = null;
 let directoryTimer = null;
 let bannerTimer = null;
 let takingJoin = false;
+// A pending join waiting for another dialog to close.
+let joinRetry = null;
 // The chatView in flight for the workspace on screen: { gen, promise }, so a caller waits for it instead of asking again.
 let loading = null;
 // openConversation is choosing the room: a workspace switch's own first-room open stands back.
@@ -979,10 +981,16 @@ export const openJoin = (link = '') => D.joinWorkspace(link);
 
 // A sign-up with an invitation link left a pending join: the next time Chat shows, the Join dialog opens with it
 // (contract 3.3, 5.8). Not while Settings covers the window, where the sign-up still shows: closing it brings the
-// dialog (rukoo:settings-closed).
+// dialog (rukoo:settings-closed). Not over another dialog either: it opens once that one closes.
 function maybeTakeJoin() {
+  clearTimeout(joinRetry);
+  joinRetry = null;
   if (!CH.open || takingJoin || !CH.state || !CH.state.pendingJoin || !CH.state.signedIn) return;
-  if (document.querySelector('#overlays .page.settings, .scrim')) return;
+  if (document.querySelector('#overlays .page.settings')) return;
+  if (document.querySelector('.scrim')) {
+    joinRetry = setTimeout(maybeTakeJoin, 400);
+    return;
+  }
   takingJoin = true;
   api('chatTakePendingJoin')
     .then((r) => (r && r.link ? D.joinWorkspace(r.link) : null))

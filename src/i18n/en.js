@@ -11159,6 +11159,10 @@
     "message": "Remove {member} from #{name}?",
     "description": "Channel members dialog: confirmation title before taking someone out. {member}: that person; {name}: the channel name, after #. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.removeBody": {
+    "message": "{member} won't be in #{name} anymore. What they wrote stays.",
+    "description": "Channel members dialog: confirmation text before taking someone out of this one channel; they stay in the workspace. {member}: that person; {name}: the channel name, after #. src/renderer/chat-dialogs.js"
+  },
   "chat.channel.addTitle": {
     "message": "Add people to #{name}",
     "description": "Channel members dialog: button and title of the picker that adds people to the channel. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
@@ -11209,7 +11213,7 @@
   },
   "chat.members.removeConfirm": {
     "message": "Remove",
-    "description": "Workspace members dialog: confirmation button. src/renderer/chat-dialogs.js"
+    "description": "Workspace members and channel members dialogs: confirmation button before taking someone out. src/renderer/chat-dialogs.js"
   },
   "chat.members.more": {
     "message": "More actions for {name}",

@@ -194,6 +194,42 @@ test('leaving a channel as its only manager asks for a successor', async () => {
   expect(roles.some((m) => m.member === bartMe.id)).toBe(false);
 });
 
+test('removing someone from a channel asks about that channel only, and Escape there keeps the members dialog', async () => {
+  const { bart, ws, bartMe } = await twoPeople(server);
+  const channel = await server.seedChannel(bart, ws.id, { name: 'design', members: [ws.me.id] });
+  await ready(bart);
+  await roomRow(win, 'design').click();
+  await expect(title()).toHaveText('design');
+  await roomMenu(win, 'Members');
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Members of #design');
+  const olgaRow = dialog.locator('.ch-person', { hasText: 'Olga Owner' });
+  await olgaRow.locator('[data-person]').click({ timeout: 15000 });
+  await menuItem(win, 'Remove from #design').click();
+  // The confirmation opens over the members dialog and speaks of this channel, not the workspace.
+  await expect(win.locator('.scrim')).toHaveCount(2);
+  await expect(dialog.locator('h2')).toHaveText('Remove Olga Owner from #design?');
+  await expect(dialog.locator('p')).toHaveText("Olga Owner won't be in #design anymore. What they wrote stays.");
+  // Escape closes the confirmation alone.
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(dialog.locator('h2')).toHaveText('Members of #design');
+  await expect(olgaRow).toHaveCount(1);
+
+  // Removing her for real takes her out of the channel, and she stays in the workspace.
+  await olgaRow.locator('[data-person]').click();
+  await menuItem(win, 'Remove from #design').click();
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(olgaRow).toHaveCount(0, { timeout: 15000 });
+  const roles = (await serverGet(server, bart, ws.id, `/channels/${channel.id}/members`)).members;
+  expect(roles.map((m) => m.member)).toEqual([bartMe.id]);
+  const { members } = await serverGet(server, bart, ws.id, '/members');
+  expect(members.find((m) => m.id === ws.me.id)?.state).toBe('active');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
 test('muting a conversation dims its row and silences the mode badge', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const dm = await server.seedDm(olga, ws.id, [bartMe.id]);

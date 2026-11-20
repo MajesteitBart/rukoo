@@ -197,6 +197,35 @@ test('signing up with an invitation link in the invite field ends in the Join di
   expect(await win.evaluate(() => window.mail.call('chatState').then((s) => s.pendingJoin))).toBe(false);
 });
 
+test('a pending join waits while another dialog is open and opens the Join dialog once it closes', async () => {
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount({ password: PASSWORD });
+  await server.seedWorkspace(bart, { name: 'Home', displayName: 'Bart' });
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
+  const { link } = await server.createInvite(olga, ws.id, { role: 'member' });
+  await ready(bart);
+  await expect(switcherName()).toHaveText('Home', { timeout: 15000 });
+  await workspaceMenu(win, 'Workspace settings');
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Workspace settings');
+
+  // Test hook: main remembers the join as a sign-up with a link does (contract 3.3), while Workspace settings is open.
+  await app.evaluate((_, l) => global.__semChat.manage.rememberJoin(l), link);
+  await expect.poll(() => win.evaluate(() => window.mail.call('chatState').then((s) => s.pendingJoin))).toBe(true);
+  await win.waitForTimeout(1000);
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(dialog.locator('h2')).toHaveText('Workspace settings');
+
+  // Closing it brings the Join dialog with the link.
+  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('h2')).toHaveText('Join a workspace', { timeout: 5000 });
+  await expect(dialog.locator('[name="link"]')).toHaveValue(link);
+  await expect(dialog.locator('[data-preview] .ch-join-ws')).toHaveText('Acme', { timeout: 15000 });
+  expect(await win.evaluate(() => window.mail.call('chatState').then((s) => s.pendingJoin))).toBe(false);
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
 test('leaving a workspace as the only manager of a channel asks to hand it over first', async () => {
   const olga = await server.seedAccount();
   const bart = await server.seedAccount({ password: PASSWORD });
@@ -252,11 +281,26 @@ test('an owner deletes a workspace when alone in it, and Delete stays off while 
   await expect(dialog.locator('.ch-set-why')).toHaveText("You can delete a workspace when you're its only member. Remove everyone else first.");
   await expect(dialog.locator('.ch-set-title')).toHaveText(['You', 'Host', 'Invitations', 'Blocked people']);
   await expect(dialog.locator('.ch-set-leave button')).toHaveText(['Leave workspace', 'Delete workspace']);
+  // Your name opens over Workspace settings, and Escape closes only that dialog.
+  await dialog.locator('[data-set="name"]').click();
+  await expect(win.locator('.scrim')).toHaveCount(2);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(dialog.locator('h2')).toHaveText('Workspace settings');
   await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  // The workspace menu has no Delete while Olga is in Team.
+  await workspaceMenu(win);
+  await expect(menuItem(win, 'Leave workspace')).toBeVisible();
+  await expect(menuItem(win, 'Delete workspace')).toHaveCount(0);
+  await win.keyboard.press('Escape');
 
-  // Solo has only Bart: Delete asks, then the workspace goes and Team opens.
+  // Solo has only Bart: the menu offers Delete, which asks, then the workspace goes and Team opens.
   await workspaceMenu(win, 'Solo');
   await expect(switcherName()).toHaveText('Solo', { timeout: 15000 });
+  await workspaceMenu(win);
+  await expect(menuItem(win, 'Delete workspace')).toHaveCount(1);
+  await win.keyboard.press('Escape');
   await workspaceMenu(win, 'Workspace settings');
   await expect(dialog.locator('[data-set="delete"]')).toBeEnabled();
   await dialog.locator('[data-set="delete"]').click();

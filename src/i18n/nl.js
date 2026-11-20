@@ -2873,6 +2873,7 @@
   "chat.channel.makeMember": "Gewoon lid maken",
   "chat.channel.removeMember": "Verwijderen uit #{name}",
   "chat.channel.removeTitle": "{member} verwijderen uit #{name}?",
+  "chat.channel.removeBody": "{member} zit daarna niet meer in #{name}. Wat {member} schreef, blijft staan.",
   "chat.channel.addTitle": "Mensen toevoegen aan #{name}",
   "chat.channel.addGuestNeedsAdmin": "Alleen een eigenaar of beheerder kan een gast toevoegen.",
   "chat.channel.addFailed": "Kan {names} niet toevoegen.",

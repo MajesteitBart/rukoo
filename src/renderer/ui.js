@@ -465,6 +465,9 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
       resolve(value);
     };
     const onKey = (e) => {
+      // A dialog opened from another one, such as a confirmation: each dialog listens on the document, so only the one
+      // on top takes keys, and Escape closes it alone.
+      if (scrim !== [...document.querySelectorAll('.scrim')].pop()) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         done(null);

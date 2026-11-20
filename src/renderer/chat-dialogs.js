@@ -809,7 +809,12 @@ export async function channelMembers(room, { add = false } = {}) {
     }
   };
   const removeOne = async (id) => {
-    const ok = await confirmDialog(t('chat.channel.removeTitle', { member: nameOf(id), name: room.name || '' }), t('chat.members.removeBody', { name: nameOf(id) }), t('chat.members.removeConfirm'), true);
+    const ok = await confirmDialog(
+      t('chat.channel.removeTitle', { member: nameOf(id), name: room.name || '' }),
+      t('chat.channel.removeBody', { member: nameOf(id), name: room.name || '' }),
+      t('chat.members.removeConfirm'),
+      true
+    );
     if (!ok) return;
     try {
       await api('chatRemoveFromChannel', ws, room.id, id);
@@ -1440,7 +1445,8 @@ export function workspaceItems() {
   top.push({ icon: 'edit', label: t('chat.workspace.yourName'), action: () => changeName() });
   top.push({ icon: 'settings', label: t('chat.workspace.settings'), action: () => workspaceSettings() });
   const bottom = [{ icon: 'leave', label: t('chat.workspace.leave'), danger: true, action: () => leaveWorkspace() }];
-  if (K.myRole() === 'owner') bottom.push({ icon: 'trash', label: t('chat.workspace.delete'), danger: true, action: () => deleteWorkspace() });
+  // Delete only works for an owner who is the only member; while others are in it, Workspace settings says why it's off.
+  if (K.myRole() === 'owner' && activeMembers().length <= 1) bottom.push({ icon: 'trash', label: t('chat.workspace.delete'), danger: true, action: () => deleteWorkspace() });
   return { top, bottom };
 }
 
