@@ -32,9 +32,12 @@ test.afterEach(async () => {
   removeDir(dataDir);
 });
 
+// The page's width in CSS pixels follows the window's content width at the zoom. That width comes from the window: once
+// a frameless window has been shown, Windows makes it 16 px wider than launch() asked for.
 async function setZoom(percent) {
   await app.evaluate(({ BrowserWindow }, f) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(f), percent / 100);
-  await expect.poll(() => win.evaluate(() => window.innerWidth)).toBe(percent === 200 ? 700 : 1400);
+  const content = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getContentBounds().width);
+  await expect.poll(() => win.evaluate(() => window.innerWidth)).toBe(Math.round((content * 100) / percent));
 }
 
 // Acme with general, six more channels and two DMs for Bart, an admin, and a person he blocked: enough rows that the
