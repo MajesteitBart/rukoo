@@ -192,7 +192,10 @@ mod tests {
     #[test]
     fn ping_answers_with_the_version() {
         let responses = run(b"{\"op\":\"ping\"}\n");
-        assert_eq!(responses, [json!({"ok": true, "version": "0.1.0"})]);
+        assert_eq!(
+            responses,
+            [json!({"ok": true, "version": env!("CARGO_PKG_VERSION")})]
+        );
     }
 
     #[test]

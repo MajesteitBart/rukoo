@@ -20,7 +20,7 @@ fn assert_failure(response: &Value, kind: &str) {
 fn assert_alive(worker: &mut Worker) {
     assert_eq!(
         worker.request(&json!({"op": "ping"})),
-        json!({"ok": true, "version": "0.1.0"})
+        json!({"ok": true, "version": env!("CARGO_PKG_VERSION")})
     );
 }
 
@@ -43,7 +43,7 @@ fn ping_reports_the_version() {
     assert_alive(&mut worker);
     assert_eq!(
         worker.request(&json!({"op": "ping", "id": "p"})),
-        json!({"ok": true, "id": "p", "version": "0.1.0"})
+        json!({"ok": true, "id": "p", "version": env!("CARGO_PKG_VERSION")})
     );
 }
 
