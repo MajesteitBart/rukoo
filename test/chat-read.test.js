@@ -174,7 +174,9 @@ test('reads coalesce to one POST per 5 s per room, and positions never go back',
   assert.equal(room().readLocal, head);
   await until(() => reads.length === 4, 5000, 'the flush to head');
   assert.equal(reads[3].seq, head);
-  // The feed confirms it, and keeps it there.
+  // The feed confirms it, and keeps it there: once the server has answered the read, as a run before that may still
+  // bring the position the server had.
+  await until(() => room().readSent === head, 5000, 'its answer');
   await syncNow(clock, svc, ws.id);
   assert.equal(room().readLocal, head);
   assert.equal(room().read, head);
