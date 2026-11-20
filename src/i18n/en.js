@@ -10735,6 +10735,310 @@
     "message": "tries again at {time}",
     "description": "Message list: after chat.msg.waiting and a middle dot, when Rukoo tries to send the message next. {time}: a time of day with seconds. src/renderer/chat-view.js"
   },
+  "chat.msg.markUnread": {
+    "message": "Mark unread",
+    "description": "Message menu (More on a message's hover bar, right click, Shift+F10): item that marks the conversation unread from this message on. src/renderer/chat-view.js"
+  },
+  "chat.msg.markedUnread": {
+    "message": "Marked unread",
+    "description": "Toast after Mark unread: the conversation shows the New line at that message again. src/renderer/chat-view.js"
+  },
+  "chat.msg.messageAuthor": {
+    "message": "Message {name}",
+    "description": "Message menu: item that opens a direct message with the message's author. {name}: the author's name. src/renderer/chat-view.js"
+  },
+  "chat.react.add": {
+    "message": "Add reaction",
+    "description": "Hover bar of a message and the button after its reactions: tooltip and accessible name of the button that opens the emoji picker to react. src/renderer/chat-view.js; src/renderer/chat-rich.js"
+  },
+  "chat.react.label": {
+    "message": "Reactions",
+    "description": "Accessible name of the row of reaction chips under a message. src/renderer/chat-rich.js"
+  },
+  "chat.react.picker": {
+    "message": "Choose a reaction",
+    "description": "Accessible name of the emoji picker opened to react to a message. src/renderer/chat-view.js"
+  },
+  "chat.react.you": {
+    "message": "You",
+    "description": "In the list of who reacted (chat.react.who): the person themselves. src/renderer/chat-rich.js"
+  },
+  "chat.react.who": {
+    "message": { "one": "{names} reacted with {emoji}", "other": "{names} reacted with {emoji}" },
+    "description": "Tooltip and accessible name of a reaction chip under a message. {names}: who reacted, as a list (\"Olga and you\"), or chat.react.namesMore; {emoji}: the emoji; {count}: how many reacted, for the verb. src/renderer/chat-rich.js"
+  },
+  "chat.react.namesMore": {
+    "message": { "one": "{names} and {count} other", "other": "{names} and {count} others" },
+    "description": "In chat.react.who when more than eight people reacted: the first eight names, then how many more. {names}: names separated by commas; {count}: the rest. src/renderer/chat-rich.js"
+  },
+  "chat.files.openImage": {
+    "message": "Open {name}",
+    "description": "Accessible name of an image in a message, which opens the viewer. {name}: the file name. src/renderer/chat-rich.js"
+  },
+  "chat.files.openImageMore": {
+    "message": { "one": "Open {name} and {count} more image", "other": "Open {name} and {count} more images" },
+    "description": "Accessible name of the fourth image in a message with more than four, which shows \"+n\". {name}: its file name; {count}: the images not shown. src/renderer/chat-rich.js"
+  },
+  "chat.files.open": {
+    "message": "Open {name}, {size}",
+    "description": "Accessible name of a file card in a message: downloads the file and opens it in its app. {name}: the file name; {size}: its size, such as \"250 KB\". src/renderer/chat-rich.js"
+  },
+  "chat.files.openTitle": {
+    "message": "Open in its app",
+    "description": "Tooltip of a file card in a message. src/renderer/chat-rich.js"
+  },
+  "chat.files.save": {
+    "message": "Download {name}",
+    "description": "Accessible name of the download button on a file card in a message. {name}: the file name. src/renderer/chat-rich.js"
+  },
+  "chat.files.saveTitle": {
+    "message": "Download",
+    "description": "Tooltip of the download button on a file card in a message. src/renderer/chat-rich.js"
+  },
+  "chat.files.saved": {
+    "message": "Saved {name}",
+    "description": "Toast after a file from a message was saved where the person chose. {name}: the file name. src/renderer/chat-view.js"
+  },
+  "chat.files.trayLabel": {
+    "message": "Files to send",
+    "description": "Accessible name of the row of attached files above the composer's text. src/renderer/chat-rich.js"
+  },
+  "chat.files.preparing": {
+    "message": "Preparing",
+    "description": "State of an attached file above the composer while Rukoo measures it, before the upload starts. src/renderer/chat-rich.js"
+  },
+  "chat.files.uploading": {
+    "message": "Uploading {percent}%",
+    "description": "State of an attached file above the composer while it uploads. {percent}: 0 to 100. src/renderer/chat-rich.js"
+  },
+  "chat.files.ready": {
+    "message": "Ready",
+    "description": "State of an attached file above the composer once it's uploaded and goes with the next message. src/renderer/chat-rich.js"
+  },
+  "chat.files.failed": {
+    "message": "Couldn't upload",
+    "description": "State of an attached file above the composer when its upload failed for a reason without its own text; Retry and Remove follow. src/renderer/chat-rich.js; src/renderer/chat-input.js"
+  },
+  "chat.files.remove": {
+    "message": "Remove {name}",
+    "description": "Accessible name of the remove button on an attached file above the composer. {name}: the file name. src/renderer/chat-rich.js"
+  },
+  "chat.files.removeTitle": {
+    "message": "Remove",
+    "description": "Tooltip of the remove button on an attached file above the composer. src/renderer/chat-rich.js"
+  },
+  "chat.files.draftExpired": {
+    "message": { "one": "{count} file in your draft expired before you sent it. Attach it again.", "other": "{count} files in your draft expired before you sent them. Attach them again." },
+    "description": "Toast when a saved draft opens with files whose upload expired (an hour after it was made). {count}: how many. src/renderer/chat-input.js"
+  },
+  "chat.files.tooMany": {
+    "message": { "one": "A message can hold {count} file.", "other": "A message can hold {count} files." },
+    "description": "Toast when the person attaches more files than a message can hold; the rest isn't attached. {count}: the limit, 10. src/renderer/chat-input.js"
+  },
+  "chat.files.tooLarge": {
+    "message": "{name} is larger than {size}, the most this server takes.",
+    "description": "Toast when an attached file is over the server's limit. {name}: the file name; {size}: the limit, such as \"25 MB\". src/renderer/chat-input.js"
+  },
+  "chat.files.unreadable": {
+    "message": "Rukoo couldn't read {name}.",
+    "description": "Toast when a dropped or pasted file can't be read. {name}: the file name. src/renderer/chat-input.js"
+  },
+  "chat.files.dropHere": {
+    "message": "Drop files to send them in {name}",
+    "description": "Over the conversation while files are dragged over it. {name}: the conversation, \"#name\" or the people of a DM. src/renderer/chat-view.js"
+  },
+  "chat.files.dropThread": {
+    "message": "Drop files to reply with them in this thread",
+    "description": "Over the thread panel while files are dragged over it. src/renderer/chat-view.js"
+  },
+  "chat.cards.remove": {
+    "message": "Remove the preview of {title}",
+    "description": "Accessible name of the remove button on a link preview under your own message. {title}: the page's title. src/renderer/chat-rich.js"
+  },
+  "chat.cards.removeTitle": {
+    "message": "Remove preview",
+    "description": "Tooltip of the remove button on a link preview under your own message. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.label": {
+    "message": "Image",
+    "description": "Accessible name of the image viewer when the image has no name. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.open": {
+    "message": "Open",
+    "description": "Image viewer: button that opens the image in its app. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.openTitle": {
+    "message": "Open in its app",
+    "description": "Image viewer: tooltip of the Open button. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.save": {
+    "message": "Save",
+    "description": "Image viewer: button that saves the image where the person chooses. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.saveTitle": {
+    "message": "Save to this computer",
+    "description": "Image viewer: tooltip of the Save button. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.close": {
+    "message": "Close (Esc)",
+    "description": "Image viewer: tooltip and accessible name of the close button, with its key. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.previous": {
+    "message": "Previous image (Left arrow)",
+    "description": "Image viewer with several images: the button that shows the one before. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.next": {
+    "message": "Next image (Right arrow)",
+    "description": "Image viewer with several images: the button that shows the next one. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.position": {
+    "message": "{n} of {count} · {size}",
+    "description": "Image viewer with several images: under the name, which image shows and its size. {n}: its place; {count}: the images; {size}: the file size. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.label": {
+    "message": "Emoji",
+    "description": "Accessible name of the emoji picker and its grid. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.composerLabel": {
+    "message": "Insert an emoji",
+    "description": "Accessible name of the emoji picker opened from the composer's Emoji button. src/renderer/chat-input.js"
+  },
+  "chat.emoji.search": {
+    "message": "Search emoji",
+    "description": "Emoji picker: placeholder and accessible name of the search field. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.groups": {
+    "message": "Emoji groups",
+    "description": "Emoji picker: accessible name of the row of group tabs. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.recent": {
+    "message": "Recently used",
+    "description": "Emoji picker: the heading and tab of the emoji used last on this computer. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.results": {
+    "message": "Search results",
+    "description": "Emoji picker: the heading over what a search found. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.none": {
+    "message": "No emoji found",
+    "description": "Emoji picker: a search that finds nothing. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.loading": {
+    "message": "Loading emoji",
+    "description": "Emoji picker: accessible name of the spinner while its data loads. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.failed": {
+    "message": "Rukoo couldn't load the emoji.",
+    "description": "Emoji picker: its data couldn't load. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.completion": {
+    "message": "Emoji",
+    "description": "Accessible name of the list of emoji that opens while the person types \":\" and part of a name in the composer. src/renderer/chat-input.js"
+  },
+  "chat.emoji.tone": {
+    "message": "Skin tone",
+    "description": "Emoji picker: accessible name of the row of skin tones. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.toneButton": {
+    "message": "Choose a skin tone",
+    "description": "Emoji picker: tooltip and accessible name of the button that opens the skin tones. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone0": {
+    "message": "Default",
+    "description": "Emoji picker: the skin tone choice without a tone (yellow). src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone1": {
+    "message": "Light",
+    "description": "Emoji picker: skin tone 1 of 5. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone2": {
+    "message": "Medium light",
+    "description": "Emoji picker: skin tone 2 of 5. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone3": {
+    "message": "Medium",
+    "description": "Emoji picker: skin tone 3 of 5. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone4": {
+    "message": "Medium dark",
+    "description": "Emoji picker: skin tone 4 of 5. src/renderer/chat-rich.js"
+  },
+  "chat.emoji.tone5": {
+    "message": "Dark",
+    "description": "Emoji picker: skin tone 5 of 5. src/renderer/chat-rich.js"
+  },
+  "chat.format.label": {
+    "message": "Formatting",
+    "description": "Accessible name of the formatting bar above the composer's text. src/renderer/chat-rich.js"
+  },
+  "chat.format.bold": {
+    "message": "Bold",
+    "description": "Formatting bar: makes the selection bold (Markdown **). Its shortcut follows in the tooltip. src/renderer/chat-rich.js"
+  },
+  "chat.format.italic": {
+    "message": "Italic",
+    "description": "Formatting bar: makes the selection italic (Markdown _). src/renderer/chat-rich.js"
+  },
+  "chat.format.strike": {
+    "message": "Strikethrough",
+    "description": "Formatting bar: strikes the selection through (Markdown ~~). src/renderer/chat-rich.js"
+  },
+  "chat.format.code": {
+    "message": "Code",
+    "description": "Formatting bar: marks the selection as inline code (Markdown backticks). src/renderer/chat-rich.js"
+  },
+  "chat.format.link": {
+    "message": "Link",
+    "description": "Formatting bar: makes the selection a link, [label](address). src/renderer/chat-rich.js"
+  },
+  "chat.format.bullets": {
+    "message": "Bulleted list",
+    "description": "Formatting bar: makes the selected lines a bulleted list. src/renderer/chat-rich.js"
+  },
+  "chat.format.numbers": {
+    "message": "Numbered list",
+    "description": "Formatting bar: makes the selected lines a numbered list. src/renderer/chat-rich.js"
+  },
+  "chat.format.quote": {
+    "message": "Quote",
+    "description": "Formatting bar: makes the selected lines a quote (Markdown >). src/renderer/chat-rich.js"
+  },
+  "chat.format.codeBlock": {
+    "message": "Code block",
+    "description": "Formatting bar: puts the selected lines in a code block (Markdown fences). src/renderer/chat-rich.js"
+  },
+  "chat.input.tools": {
+    "message": "Composer tools",
+    "description": "Accessible name of the row of buttons under the composer's text: Mention, Attach, Emoji, Formatting. src/renderer/chat-input.js"
+  },
+  "chat.input.mention": {
+    "message": "Mention someone",
+    "description": "Composer: tooltip and accessible name of the @ button, which puts in an @ and opens the list of people. src/renderer/chat-input.js"
+  },
+  "chat.input.attach": {
+    "message": "Attach files",
+    "description": "Composer: tooltip and accessible name of the paperclip button, which opens the file picker. src/renderer/chat-input.js"
+  },
+  "chat.input.emoji": {
+    "message": "Emoji",
+    "description": "Composer: tooltip and accessible name of the button that opens the emoji picker. src/renderer/chat-input.js"
+  },
+  "chat.input.formatting": {
+    "message": "Formatting",
+    "description": "Composer: tooltip and accessible name of the Aa button, which shows or hides the formatting bar. src/renderer/chat-input.js"
+  },
+  "chat.input.sendWaitsFiles": {
+    "message": "Send waits for the files to upload",
+    "description": "Composer: tooltip of the Send button while an attached file still uploads. src/renderer/chat-input.js"
+  },
+  "chat.notify.sentFile": {
+    "message": "Sent a file",
+    "description": "What a message without text says in a notification, the screen reader announcement and the Remove dialog: it holds one file. src/main/workspaces/notify.js; src/renderer/chat-view.js"
+  },
+  "chat.notify.sentFiles": {
+    "message": { "one": "Sent {count} file", "other": "Sent {count} files" },
+    "description": "What a message without text says in a notification, the screen reader announcement and the Remove dialog: it holds several files. {count}: how many. src/main/workspaces/notify.js; src/renderer/chat-view.js"
+  },
   "chat.remove.title": {
     "message": "Remove this message?",
     "description": "Remove a message: confirmation title. src/renderer/chat-view.js"
@@ -11662,6 +11966,46 @@
   "chat.errors.mentions": {
     "message": "Someone you mentioned isn't in this conversation any more.",
     "description": "Team chat error, shown under an unsent message: the server refused it because someone it mentions left the conversation. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.reactionLimit": {
+    "message": "This message has 20 different reactions, the most it can hold.",
+    "description": "Team chat error, in a toast: a 21st different emoji on a message (409 reaction_limit). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.filesOff": {
+    "message": "{host} doesn't take files.",
+    "description": "Team chat error, in a toast: the server has no file storage (403 files_off). {host}: the server. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.fileTooLargeSize": {
+    "message": "This file is larger than {size}, the most this server takes.",
+    "description": "Team chat error, in a toast or under an attached file: the file is over the server's limit (413 too_large). {size}: the limit, such as \"25 MB\". src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.fileTooLarge": {
+    "message": "This file is too large for this server.",
+    "description": "Team chat error, in a toast or under an attached file: the file is over the server's limit (413 too_large) and Rukoo doesn't know the limit; chat.errors.fileTooLargeSize names it. src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
+  },
+  "chat.errors.quotaFiles": {
+    "message": "{workspace} has no room for more files.",
+    "description": "Team chat error: the workspace's file storage is full (413 quota with limit files). {workspace}: its name. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.uploadsLimit": {
+    "message": "You have 20 files waiting to be sent. Send or remove some first.",
+    "description": "Team chat error: the person has 20 uploads that weren't sent yet (429 rate_limited with limit uploads). src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
+  },
+  "chat.errors.filesUnavailable": {
+    "message": "A file in this message is no longer available. Attach it again.",
+    "description": "Team chat error, under an unsent message and in toasts: a file it names expired, was sent already or is gone (409 files_unavailable, pending reason files). src/renderer/chat.js (chatErrorText); src/renderer/chat-view.js"
+  },
+  "chat.errors.uploadGone": {
+    "message": "This upload stopped. Attach the file again.",
+    "description": "Team chat error, under an attached file: its upload expired or was sent (409 invalid_state). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.fileExpired": {
+    "message": "The file's link expired. Try again.",
+    "description": "Team chat error, in a toast: a download or upload link ran out before it was used (410 expired). src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.fileUnreadable": {
+    "message": "Rukoo couldn't read this file.",
+    "description": "Team chat error, in a toast or under an attached file: Rukoo couldn't read a file on this computer to upload it (code unreadable). src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
   },
   "chat.errors.failed": {
     "message": "Something went wrong. Try again.",

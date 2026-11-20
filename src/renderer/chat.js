@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hue, initials, toast, showMenu } from './ui.js';
+import { api, esc, $, hue, initials, toast, showMenu, fileSize } from './ui.js';
 import { sortRooms, dmTitle, displayName, roomBadge, modeBadge as badgeFor } from './chat-model.js';
 import { mountView } from './chat-view.js';
 import * as D from './chat-dialogs.js';
@@ -112,6 +112,23 @@ const fmt = (n) => (n > 99 ? '99+' : String(n));
 const listFormat = () => new Intl.ListFormat(getLocale(), { type: 'conjunction', style: 'long' });
 const collator = () => new Intl.Collator(getLocale(), { sensitivity: 'base', numeric: true });
 const summary = (id = CH.ws) => (CH.state?.workspaces || []).find((w) => w.id === id) || null;
+
+// What the server offers beyond team chat v1 (RUK-211 contract 2.1, 5.2): reactions, unread, files and previews, as
+// ChatState carries GET /v1/info's workspace.capabilities. Only what it lists shows.
+let capsFor = { state: undefined, set: new Set() };
+export function caps() {
+  const s = CH.state;
+  if (capsFor.state !== s) {
+    const list = s && Array.isArray(s.capabilities) ? s.capabilities.filter((x) => typeof x === 'string') : [];
+    capsFor = { state: s, set: new Set(list) };
+  }
+  return capsFor.set;
+}
+// The largest file the server takes, in bytes, or null when it doesn't say (contract 2.1 workspace.files.maxBytes).
+const fileLimit = () => {
+  const n = Number(CH.state?.files?.maxBytes ?? CH.state?.limits?.fileBytes);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+};
 const myRole = () => CH.view?.me?.role || summary()?.role || 'member';
 const isGuest = () => myRole() === 'guest';
 const me = () => CH.view?.me?.id || null;
@@ -172,7 +189,25 @@ export function chatErrorText(err, context = {}) {
     case 'upgrade_required':
       return t('chat.errors.upgrade', { host });
     case 'rate_limited':
+      if (err.limit === 'uploads') return t('chat.errors.uploadsLimit');
       return err.limit === 'dailyDms' ? t('chat.errors.dailyDms') : t('chat.errors.rateLimited', { count: Math.max(1, Number(err.retryAfter) || 1) });
+    // Rich messages (RUK-211 contract 2.9).
+    case 'reaction_limit':
+      return t('chat.errors.reactionLimit');
+    case 'files_off':
+      return t('chat.errors.filesOff', { host });
+    case 'too_large': {
+      const max = fileLimit();
+      return max ? t('chat.errors.fileTooLargeSize', { size: fileSize(max) }) : t('chat.errors.fileTooLarge');
+    }
+    case 'unreadable':
+      return t('chat.errors.fileUnreadable');
+    case 'files_unavailable':
+      return t('chat.errors.filesUnavailable');
+    case 'invalid_state':
+      return t('chat.errors.uploadGone');
+    case 'expired':
+      return t('chat.errors.fileExpired');
     case 'not_found':
       if (err.scope === 'workspace') return t('chat.errors.goneWorkspace');
       if (err.scope === 'conversation') return t('chat.errors.goneConversation');
@@ -204,7 +239,7 @@ export function chatErrorText(err, context = {}) {
     case 'invite_gone':
       return t('chat.errors.inviteGone');
     case 'quota': {
-      const by = { members: 'quotaMembers', conversations: 'quotaConversations', invites: 'quotaInvites', bytes: 'quotaBytes' }[err.limit];
+      const by = { members: 'quotaMembers', conversations: 'quotaConversations', invites: 'quotaInvites', bytes: 'quotaBytes', files: 'quotaFiles' }[err.limit];
       return t(`chat.errors.${by || 'quota'}`, { workspace });
     }
     case 'invalid':
@@ -324,6 +359,8 @@ export function onEvent(p) {
     case 'redacted':
     case 'pending':
     case 'sent':
+    case 'updated':
+    case 'staged':
       if (p.ws === CH.ws) view?.onEvent(p);
       return;
     case 'evicted':
@@ -864,6 +901,9 @@ function ensureView() {
     state: () => CH.state,
     me: () => me(),
     myRole: () => myRole(),
+    // What the server offers (RUK-211 contract 5.2), and its largest file.
+    caps: () => caps(),
+    fileLimit: () => fileLimit(),
     members: () => CH.members,
     blocks: () => CH.blocks,
     room: (id) => CH.rooms.get(id) || null,

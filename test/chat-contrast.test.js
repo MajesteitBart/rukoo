@@ -93,6 +93,20 @@ test('information in chat is set in the supporting ink, not the caption grey', (
   }
 });
 
+test('text in a message bubble, a reaction chip and a file card reads at 4.5:1 in both themes', () => {
+  for (const [name, theme] of Object.entries(themes)) {
+    const bubble = theme.get('--ch-bubble');
+    assert.ok(bubble, `${name} has --ch-bubble`);
+    atLeast(theme.get('--text'), bubble, 4.5, `${name} message text in its bubble`);
+    atLeast(theme.get('--text-2'), bubble, 4.5, `${name} quote and reaction count in a bubble`);
+    atLeast(theme.get('--ch-text-3'), bubble, 4.5, `${name} file size on a file card`);
+    atLeast(theme.get('--link'), bubble, 4.5, `${name} link in a bubble`);
+    // The bubble shows on the panel and on the row under the pointer.
+    assert.notEqual(bubble, theme.get('--ch-row-hover'));
+    assert.notEqual(bubble, theme.get('--panel'));
+  }
+});
+
 test("the count pill draws its digits in the panel color, readable on the accent in both themes", () => {
   const badge = rule('.ch-badge');
   assert.equal(badge.get('color'), 'var(--panel)');

@@ -2,10 +2,12 @@ import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog, dialog, esc } from './ui.js';
 import { h } from './agent/bui.js';
-import { timeline, displayName, memberTag, canRemove, closedBar } from './chat-model.js';
-import { segments, toParts, appendToDraft } from './chat-text.js';
+import { timeline, displayName, memberTag, canRemove, closedBar, applyReaction, reacted, canMessageAuthor } from './chat-model.js';
+import { toParts, appendToDraft } from './chat-text.js';
+import { plainText } from './chat-markdown.js';
 import { mountChatInput } from './chat-input.js';
 import { draftSlotKey, draftWritten } from './chat-drafts.js';
+import { textEl as richText, filesEl, cardsEl, reactionsEl, openViewer, closeViewer, openEmojiPicker, closeEmojiPicker, busyCard, dragHasFiles } from './chat-rich.js';
 
 // Team chat's pane (contract 5.4 to 5.6, desktop-ui 5.2 to 5.7 and 7): the open conversation's header, the banner,
 // the log with its reading, jump pills and older history, the composer and the bars that replace it, unsent messages
@@ -13,6 +15,10 @@ import { draftSlotKey, draftWritten } from './chat-drafts.js';
 // shows; this module draws it. The log's rows come from chat-model.js timeline() and are kept by key: a row is built
 // again only when its sig changed, so live messages, pending sends and removals touch only their rows and the scroll
 // position holds.
+//
+// Rich messages (RUK-211 contract 3, 5.2): a message's Markdown, files, link cards and reactions come from
+// chat-rich.js; the hover bar holds React, Reply in thread and More, whose menu adds Mark unread and Message the
+// author. Files dropped on the pane go to the composer under the drop.
 //
 // Everything in the log was written by people: it reaches the DOM through h()'s text prop and text nodes, never as
 // HTML. Icons are the app's own static markup.
@@ -63,6 +69,21 @@ const firstChars = (text, n) => {
 };
 const bySeq = (a, b) => a.seq - b.seq;
 
+// A message as one line of plain text (contract 3.7): its text without the Markdown markers, or "Sent a file" for one
+// without text.
+function summaryOf(text, files) {
+  let plain = '';
+  try {
+    plain = plainText(String(text || '')).trim();
+  } catch (_) {
+    plain = String(text || '').trim();
+  }
+  if (plain) return plain;
+  const n = Array.isArray(files) ? files.length : 0;
+  if (!n) return '';
+  return n === 1 ? t('chat.notify.sentFile') : t('chat.notify.sentFiles', { count: n });
+}
+
 function copyText(text) {
   if (!text) return;
   navigator.clipboard.writeText(text).then(
@@ -83,6 +104,8 @@ export function mountView(section, H) {
   scroll.append(older, log);
   const jumpUp = h('button', { class: 'ch-jump is-up', type: 'button', 'data-ch': 'jump-unread', hidden: true });
   const jumpDown = h('button', { class: 'ch-jump is-down', type: 'button', 'data-ch': 'jump-latest', hidden: true });
+  // Where dragged files land (contract 5.2): over the log and composer it drops into, while files are dragged.
+  const drop = h('div', { class: 'ch-drop', 'aria-hidden': 'true', hidden: true }, h('div', { class: 'ch-drop-box' }, svg('clip'), h('span', { class: 'ch-drop-text' })));
   // The log and the pills over it, which sit at its own top and bottom edge.
   const area = h('div', { class: 'ch-log-area', hidden: true }, scroll, jumpUp, jumpDown);
   const compose = h('div', { class: 'ch-compose', hidden: true });
@@ -104,7 +127,7 @@ export function mountView(section, H) {
   const tScroll = h('div', { class: 'ch-thread-scroll', tabindex: '-1' }, tOlder, tNote, tLog);
   const tCompose = h('div', { class: 'ch-thread-compose' });
   const thread = h('aside', { class: 'ch-thread', hidden: true }, tHead, tScroll, tCompose);
-  section.append(main, thread);
+  section.append(main, thread, drop);
 
   // 'room' while a conversation shows, 'state' for an empty or gone state, null before either.
   let mode = null;
@@ -120,8 +143,12 @@ export function mountView(section, H) {
   let memberCache = null;
   // The connection the unsent rows were drawn for: a queued message waits for it.
   let drawnConnection = null;
+  // The server's capabilities the log and composers were drawn for.
+  let drawnCaps = null;
   // Closers of the open dialogs about the open room's messages (Remove message): dropRoom() closes them.
   const roomDialogs = new Set();
+  // Reactions this window put in before main confirmed them: message ID -> its reactions before, for when it fails.
+  const optimistic = new Map();
 
   function blank() {
     return {
@@ -158,7 +185,9 @@ export function mountView(section, H) {
       // The rows on screen by key, for the tools and menus.
       rows: new Map(),
       focusKey: null,
-      targetTimer: null
+      targetTimer: null,
+      // Mark unread (contract 3.2): the room reports no reads until it opens again.
+      paused: false
     };
   }
 
@@ -198,7 +227,7 @@ export function mountView(section, H) {
     !(T && getComputedStyle(thread).position === 'absolute');
 
   function considerRead() {
-    if (!canRead()) return;
+    if (!canRead() || V.paused || (V.room && V.room.readingPaused)) return;
     let best = 0;
     for (const s of V.visible) if (s > best) best = s;
     if (best <= V.readBest) return;
@@ -229,6 +258,8 @@ export function mountView(section, H) {
   function markRead() {
     if (mode !== 'room' || !V.c) return;
     const top = V.room?.head || 0;
+    // It also ends a hold from Mark unread, as main does.
+    V.paused = false;
     V.readBest = Math.max(V.readBest, top);
     V.readSent = Math.max(V.readSent, top);
     clearTimeout(V.readTimer);
@@ -259,6 +290,11 @@ export function mountView(section, H) {
     input = null;
     compose.textContent = '';
     memberCache = null;
+    optimistic.clear();
+    // The picker and the viewer belong to the room's messages; the focus doesn't go back to a row that goes.
+    closeEmojiPicker({ refocus: false });
+    closeViewer({ refocus: false });
+    hideDrop();
     clearTimeout(V.readTimer);
     clearTimeout(V.targetTimer);
     for (const li of V.nodes.values()) io.unobserve(li);
@@ -428,6 +464,15 @@ export function mountView(section, H) {
   function stateChanged() {
     if (mode !== 'room') return;
     updateBars();
+    // What the server offers changed (contract 5.2): the composers' Attach and every message's tools follow.
+    const caps = [...H.caps()].sort().join(',');
+    if (caps !== drawnCaps) {
+      drawnCaps = caps;
+      input?.refreshCaps();
+      T?.input?.refreshCaps();
+      if (V.loaded) render({ position: 'keep' });
+      if (T) renderThread({ position: 'keep' });
+    }
     const connection = H.state()?.connection || null;
     if (connection === drawnConnection) return;
     drawnConnection = connection;
@@ -583,6 +628,30 @@ export function mountView(section, H) {
     if (T && T.input) T.input.setBar(threadBar());
   }
 
+  // A composer's file staging for its room and thread (contract 3.5, 4.3): main measures, reserves and uploads.
+  function filesFor(ws, c, root) {
+    return {
+      enabled: () => H.caps().has('files'),
+      pick: () => api('chatPickFiles'),
+      stage: (source) => api('chatStage', ws, c, root, source),
+      unstage: (stage) => api('chatUnstage', stage),
+      retry: (stage) => api('chatRetryStage', stage),
+      errorText: (code, err) => H.errorText(err && err.code ? err : { code: code || null }),
+      maxBytes: () => H.fileLimit()
+    };
+  }
+
+  // What main has staged for a composer already, such as uploads that went on while the room was closed.
+  function loadStaged(target, ws, c, root) {
+    if (!H.caps().has('files')) return;
+    api('chatStaged', ws, c, root).then(
+      (list) => {
+        if (target && Array.isArray(list)) target.setStaged(list);
+      },
+      () => {}
+    );
+  }
+
   function mountComposer() {
     if (input) input.dispose();
     compose.textContent = '';
@@ -599,17 +668,22 @@ export function mountView(section, H) {
         return true;
       },
       onDraft: (draft) => api('chatSaveDraft', ws, c, null, draft).catch(() => {}),
-      draftKey: draftSlotKey(ws, c, null)
+      draftKey: draftSlotKey(ws, c, null),
+      files: filesFor(ws, c, null)
     });
+    loadStaged(input, ws, c, null);
     updateBars();
   }
 
   // chatSend (contract 3.8): main writes the message to disk and answers with its pending row; the queue sends it. A
   // refusal puts the text back in the composer (chat-input.js) and says why, unless the room or the workspace is gone.
+  // The composer's ready files go along as attachments (contract 3.5).
   function sendMessage(wire, root) {
     const ws = V.ws;
     const c = V.c;
-    return api('chatSend', ws, c, { text: wire.text, mentions: wire.mentions, root }).then(
+    const body = { text: wire.text, mentions: wire.mentions, root };
+    if (wire.attachments && wire.attachments.length) body.attachments = wire.attachments;
+    return api('chatSend', ws, c, body).then(
       (res) => {
         const p = res && res.pending;
         if (!p || V.ws !== ws || V.c !== c || V.pending.some((x) => x.local === p.local)) return true;
@@ -650,6 +724,7 @@ export function mountView(section, H) {
     V.room = H.room(c);
     V.opening = true;
     drawnConnection = H.state()?.connection || null;
+    drawnCaps = [...H.caps()].sort().join(',');
     showRoom(true);
     renderHead();
     renderOlder();
@@ -686,7 +761,11 @@ export function mountView(section, H) {
     renderHead();
     if (input) {
       input.setPlaceholder(placeholderFor(V.room));
-      if (rv.draft && !input.parts().length) input.setParts(toParts(rv.draft.text, rv.draft.mentions));
+      if (rv.draft && !input.parts().length) {
+        // The draft's files first, so the text loads as the draft it is (contract 3.5).
+        if ((Array.isArray(rv.draft.attachments) && rv.draft.attachments.length) || rv.draft.expired) input.setDraftFiles(rv.draft.attachments || [], rv.draft.expired);
+        input.setParts(toParts(rv.draft.text, rv.draft.mentions));
+      }
     }
     updateBars();
     if (!V.loaded) return renderOlder();
@@ -707,6 +786,39 @@ export function mountView(section, H) {
 
   function onEvent(p) {
     if (mode !== 'room' || p.ws !== V.ws || p.conversation !== V.c) return;
+    if (p.kind === 'updated') {
+      // Cached messages changed their reactions or link cards (contract 4.4): they take the place of what shows, which
+      // also settles a reaction this window put in first.
+      const list = (Array.isArray(p.events) ? p.events : []).filter((e) => e && Number.isSafeInteger(e.seq));
+      const bySeqMap = new Map(list.map((e) => [e.seq, e]));
+      let changed = false;
+      V.events = V.events.map((e) => {
+        const next = bySeqMap.get(e.seq);
+        if (!next) return e;
+        changed = true;
+        return { ...e, ...next };
+      });
+      for (const e of list) optimistic.delete(e.id);
+      if (changed && V.loaded) render({ position: atBottom() ? 'bottom' : 'keep' });
+      if (T) {
+        let mine = false;
+        for (const e of list) {
+          const old = T.ev.get(e.seq);
+          if (!old) continue;
+          T.ev.set(e.seq, { ...old, ...e });
+          mine = true;
+        }
+        if (mine) renderThread({ position: threadAtEnd() ? 'bottom' : 'keep' });
+      }
+      return;
+    }
+    if (p.kind === 'staged') {
+      // A composer's staged files changed (contract 4.4): the room's own or the open thread's.
+      const root = p.root || null;
+      const target = root ? (T && T.root === root ? T.input : null) : input;
+      if (target) target.setStaged(Array.isArray(p.staged) ? p.staged : []);
+      return;
+    }
     if (p.kind === 'events') {
       const wasLoaded = V.loaded;
       const stick = !wasLoaded || atBottom();
@@ -785,7 +897,7 @@ export function mountView(section, H) {
         V.sentLocal.set(p.messageId, p.local);
         const item = V.pending.find((x) => x.local === p.local);
         if (item && Number.isSafeInteger(p.seq) && !V.events.some((e) => e.seq === p.seq || e.id === p.messageId)) {
-          const ev = { seq: p.seq, id: p.messageId, kind: 'message.posted', actor: H.me(), at: Date.now(), root: item.root || null, text: item.text, mentions: item.mentions || [], redacted: false, data: {} };
+          const ev = { seq: p.seq, id: p.messageId, kind: 'message.posted', actor: H.me(), at: Date.now(), root: item.root || null, text: item.text, mentions: item.mentions || [], attachments: item.attachments || [], previews: [], reactions: [], redacted: false, data: {} };
           merge([ev]);
           if (inThread(ev)) T.ev.set(ev.seq, ev);
         }
@@ -869,9 +981,14 @@ export function mountView(section, H) {
         return 'sending';
     }
   }
-  // The look is part of a pending row's sig: the connection changes it without a pending event.
+  // The look is part of a pending row's sig: the connection changes it without a pending event. A message's tools and
+  // reactions depend on what the server offers (contract 5.2), so its capabilities are part of every message's sig.
   function withLooks(rows) {
-    for (const r of rows) if (r.pending) r.sig += `\u0001${lookOf(r)}`;
+    const caps = [...H.caps()].sort().join(',');
+    for (const r of rows) {
+      if (r.pending) r.sig += `\u0001${lookOf(r)}`;
+      if (r.type === 'msg' || r.type === 'reply') r.sig += `\u0001${caps}`;
+    }
     return rows;
   }
 
@@ -922,6 +1039,8 @@ export function mountView(section, H) {
   function reconcile(list, old, rows, { observe = false, fresh = new Set(), focusKey = null, thread: threaded = false } = {}) {
     const active = document.activeElement;
     const focused = active && list.contains(active) ? active.closest('li')?.dataset.key : null;
+    // A control in a row that is built again, such as a reaction chip just pressed, keeps the focus in its new copy.
+    const control = focused && active !== active.closest('li') ? controlKey(active) : null;
     const next = new Map();
     for (const row of rows) {
       let li = old.get(row.key);
@@ -947,10 +1066,36 @@ export function mountView(section, H) {
     // One message row takes Tab (desktop-ui 9.2): the focused one, else the last.
     const msgs = [...list.querySelectorAll('li.ch-msg')];
     const keep = (focused && next.get(focused)) || (focusKey && next.get(focusKey)) || msgs[msgs.length - 1] || null;
-    for (const li of msgs) li.tabIndex = li === keep ? 0 : -1;
+    rove(list, keep);
     const now = focused && next.get(focused);
-    if (now && !now.contains(document.activeElement)) now.focus({ preventScroll: true });
+    if (now && !now.contains(document.activeElement)) {
+      const same = control ? now.querySelector(control) : null;
+      (same || now).focus({ preventScroll: true });
+    }
     return next;
+  }
+
+  // The row that takes Tab, and its controls with it (contract 5.2: the hover bar's buttons are reachable with Tab from
+  // the focused row); every other row's controls stay out of the order.
+  function rove(list, keep) {
+    for (const li of list.querySelectorAll('li.ch-msg')) {
+      const on = li === keep;
+      li.tabIndex = on ? 0 : -1;
+      for (const b of li.querySelectorAll('[data-roving]')) b.tabIndex = on ? 0 : -1;
+    }
+  }
+
+  // A selector for the same control in a row's new copy.
+  function controlKey(el) {
+    const c = el.closest('[data-ch-tool], [data-emoji], .ch-react-add, [data-file], .ch-card-title, .ch-card-x, .ch-replies, .ch-context');
+    if (!c) return null;
+    if (c.dataset.chTool) return `[data-ch-tool="${CSS.escape(c.dataset.chTool)}"]`;
+    if (c.dataset.emoji) return `.ch-react[data-emoji="${CSS.escape(c.dataset.emoji)}"]`;
+    if (c.classList.contains('ch-react-add')) return '.ch-react-add';
+    if (c.dataset.file) return `[data-file="${CSS.escape(c.dataset.file)}"]${c.classList.contains('ch-file') ? ` .${[...el.classList].find((x) => x.startsWith('ch-file-')) || 'ch-file-main'}` : ''}`;
+    if (c.classList.contains('ch-card-title')) return '.ch-card-title';
+    if (c.classList.contains('ch-card-x')) return '.ch-card-x';
+    return c.classList.contains('ch-replies') ? '.ch-replies' : '.ch-context';
   }
 
   function build(row, ctx) {
@@ -1039,27 +1184,163 @@ export function mountView(section, H) {
   // A reply's context line opens its thread (contract 3.13).
   function contextLine(c) {
     let text;
-    if (c.state === 'ok') text = t('chat.log.replyTo', { name: displayName(c.author, t), text: c.text });
+    if (c.state === 'ok') text = t('chat.log.replyTo', { name: displayName(c.author, t), text: c.text || summaryOf('', Array.from({ length: c.files || 0 })) });
     else if (c.state === 'removed') text = t('chat.log.replyToRemoved');
     else text = t('chat.log.replyInThread');
-    return h('button', { type: 'button', class: 'ch-context', 'data-ch': 'thread', 'data-root': c.root, title: text, tabindex: '-1' }, svg('reply'), h('span', { text }));
+    return h('button', { type: 'button', class: 'ch-context', 'data-ch': 'thread', 'data-root': c.root, 'data-roving': '', title: text, tabindex: '-1' }, svg('reply'), h('span', { text }));
   }
 
+  // The message's Markdown (contract 3.3), its mentions named in their tooltips.
   function textEl(row) {
-    const div = h('div', { class: 'ch-text sel' });
-    for (const seg of segments(row.text, row.mentions, { me: H.me(), blocked: row.blocked })) {
-      if (seg.href) div.append(h('a', { class: 'ch-link', href: seg.href, target: '_blank', rel: 'noopener noreferrer', text: seg.text }));
-      else if (seg.mention) div.append(h('span', { class: seg.me ? 'ch-mention is-me' : 'ch-mention', title: nameOf(seg.mention), text: seg.text }));
-      else div.append(document.createTextNode(seg.text));
+    return richText(row.text, row.mentions, { me: H.me(), blocked: row.blocked, nameOf });
+  }
+
+  // ---------- files, link cards and reactions (contract 3.6) ----------
+
+  // Main's address of an image, for the log, the cards and the viewer (contract 4.3 chatFile 'view').
+  const viewUrl = (ws, c) => (file) => api('chatFile', ws, c, file.id, 'view');
+
+  function fileAction(ws, c, file, action, card) {
+    const run = () => api('chatFile', ws, c, file.id, action);
+    return busyCard(card, run).then(
+      (res) => {
+        if (action === 'save' && res === true) toast(t('chat.files.saved', { name: file.name || '' }));
+      },
+      (err) => {
+        if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+      }
+    );
+  }
+
+  function filesOf(row) {
+    const ws = V.ws;
+    const c = V.c;
+    return filesEl(row.attachments, {
+      pending: Boolean(row.pending),
+      url: viewUrl(ws, c),
+      onView: (images, i) =>
+        openViewer(images, i, {
+          url: viewUrl(ws, c),
+          onOpen: (f) => fileAction(ws, c, f, 'open', null),
+          onSave: (f) => fileAction(ws, c, f, 'save', null)
+        }),
+      onOpen: (f, card) => fileAction(ws, c, f, 'open', card),
+      onSave: (f, card) => fileAction(ws, c, f, 'save', card)
+    });
+  }
+
+  // A link card's remove button (contract 2.7): the card goes at once, and comes back when the server refuses.
+  function cardsOf(row) {
+    const ws = V.ws;
+    const c = V.c;
+    const own = row.actor === H.me() && !row.pending && Boolean(row.id);
+    return cardsEl(row.previews, {
+      canRemove: own,
+      url: viewUrl(ws, c),
+      onRemove: (url, card) => {
+        card.hidden = true;
+        api('chatRemovePreview', ws, c, row.id, url).catch((err) => {
+          card.hidden = false;
+          if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+        });
+      }
+    });
+  }
+
+  // The message's current reactions: the event as the view has it now, which a click may have changed since the row
+  // was drawn.
+  function reactionsNow(id) {
+    const e = V.events.find((x) => x.id === id) || (T ? [...T.ev.values()].find((x) => x.id === id) : null);
+    return e ? e.reactions || [] : [];
+  }
+
+  function patchReactions(id, reactions) {
+    let hit = false;
+    V.events = V.events.map((e) => {
+      if (e.id !== id) return e;
+      hit = true;
+      return { ...e, reactions };
+    });
+    let threadHit = false;
+    if (T) {
+      for (const [seq, e] of T.ev) {
+        if (e.id !== id) continue;
+        T.ev.set(seq, { ...e, reactions });
+        threadHit = true;
+      }
     }
-    return div;
+    if (hit && V.loaded) render({ position: atBottom() ? 'bottom' : 'keep' });
+    if (threadHit) renderThread({ position: 'keep' });
+  }
+
+  // Your reaction on or off (contract 2.4, 3.6): it shows at once, and main's updated event settles it. A refusal
+  // puts the reactions back as they were and says why.
+  function react(id, emoji, on) {
+    if (!id || !H.caps().has('reactions')) return;
+    const ws = V.ws;
+    const c = V.c;
+    const before = reactionsNow(id);
+    if (!optimistic.has(id)) optimistic.set(id, before);
+    patchReactions(id, applyReaction(before, emoji, H.me(), on));
+    api('chatReact', ws, c, id, emoji, on).catch((err) => {
+      if (V.ws !== ws || V.c !== c) return;
+      const was = optimistic.get(id);
+      optimistic.delete(id);
+      if (was) patchReactions(id, was);
+      if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+    });
+  }
+
+  // The emoji picker for a reaction, by the button that opened it. The row keeps its hover bar while it is open.
+  function reactPicker(id, anchor) {
+    if (!id || !H.caps().has('reactions')) return;
+    const li = anchor.closest('li.ch-msg');
+    if (li) li.classList.add('has-popup');
+    openEmojiPicker({
+      anchor,
+      label: t('chat.react.picker'),
+      onClose: () => li && li.classList.remove('has-popup'),
+      onPick: (char) => react(id, char, !reacted(reactionsNow(id), char, H.me()))
+    });
+  }
+
+  function reactionsOf(row) {
+    return reactionsEl(row.reactions, {
+      me: H.me(),
+      members: members(),
+      canAdd: true,
+      onToggle: (emoji, on) => react(row.id, emoji, on),
+      onAdd: (button) => reactPicker(row.id, button)
+    });
+  }
+
+  // Mark unread (contract 3.2): the room's read position goes back to before the message, the New divider moves
+  // there, and the room reports no reads until it opens again.
+  async function markUnread(row) {
+    const ws = V.ws;
+    const c = V.c;
+    let res;
+    try {
+      res = await api('chatMarkUnread', ws, c, row.id);
+    } catch (err) {
+      if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+      return;
+    }
+    if (mode !== 'room' || V.ws !== ws || V.c !== c) return;
+    const read = res && Number.isSafeInteger(res.read) ? res.read : Math.max(0, (row.seq || 1) - 1);
+    V.paused = true;
+    clearTimeout(V.readTimer);
+    V.readBest = V.readSent = read;
+    V.readAtOpen = read;
+    if (V.loaded) render({ position: 'keep' });
+    toast(t('chat.msg.markedUnread'));
   }
 
   function repliesEl(row) {
     const r = row.replies;
     const count = t(r.hasNew ? 'chat.log.repliesUnread' : 'chat.log.replies', { count: r.count });
     const last = Number.isFinite(r.lastAt) ? t('chat.log.lastReply', { time: listTime(r.lastAt) }) : '';
-    const btn = h('button', { type: 'button', class: `ch-replies${r.hasNew ? ' has-new' : ''}`, 'data-ch': 'thread', 'data-root': row.id, tabindex: '-1', 'aria-label': [count, last].filter(Boolean).join(', ') });
+    const btn = h('button', { type: 'button', class: `ch-replies${r.hasNew ? ' has-new' : ''}`, 'data-ch': 'thread', 'data-root': row.id, 'data-roving': '', tabindex: '-1', 'aria-label': [count, last].filter(Boolean).join(', ') });
     const avs = h('span', { class: 'ch-replies-av', 'aria-hidden': 'true' });
     for (const id of r.actors) avs.append(avatarEl(id, nameOf(id), { cls: 'ch-av-16', deleted: members().get(id)?.state === 'deleted' }));
     btn.append(avs);
@@ -1082,6 +1363,8 @@ export function mountView(section, H) {
         return t('chat.errors.mentions');
       case 'no_access':
         return t('chat.errors.goneConversation');
+      case 'files':
+        return t('chat.errors.filesUnavailable');
       default:
         return t('chat.errors.invalid');
     }
@@ -1112,7 +1395,7 @@ export function mountView(section, H) {
         line.append(svg('warning'), say(t('chat.msg.failed', { reason: reasonText(row.reason) })));
         if (row.reason === 'quota') line.append(act('retry', t('chat.msg.retry')));
         if (row.reason === 'mentions') line.append(act('without-mentions', t('chat.msg.sendWithoutMentions')));
-        if (row.reason === 'conflict' || row.reason === 'archived') line.append(act('copy', t('chat.msg.copy')));
+        if ((row.reason === 'conflict' || row.reason === 'archived' || row.reason === 'files') && row.text) line.append(act('copy', t('chat.msg.copy')));
         line.append(act('discard', t('chat.msg.discard')));
         break;
       }
@@ -1123,14 +1406,19 @@ export function mountView(section, H) {
     return line;
   }
 
-  // The menu of a message (desktop-ui 5.3, contract 5.5): Reply in thread, Copy text, Block {author} once U5 gives
-  // blocks a dialog, and Remove message when the person may remove it. Unsent rows have none.
+  // The menu of a message (desktop-ui 5.3, contract 5.5, RUK-211 contract 5.2): Reply in thread, Copy text, Mark
+  // unread, Message {author}, Block {author}, and Remove message when the person may remove it. More on the hover bar,
+  // a right click and Shift+F10 open it. Unsent rows have none.
   function menuItems(row, threaded) {
     if (row.pending || !row.id) return [];
     const items = [];
     const root = row.root || row.id;
     if (!threaded && (!row.removed || (row.replies && row.replies.count))) items.push({ icon: 'thread', label: t('chat.msg.reply'), action: () => openThread(root) });
     if (!row.removed && row.text) items.push({ icon: 'copy', label: t('chat.msg.copy'), action: () => copyText(row.text) });
+    if (!row.removed && H.caps().has('unread')) items.push({ icon: 'markUnread', label: t('chat.msg.markUnread'), action: () => markUnread(row) });
+    if (!row.removed && H.startDm && canMessageAuthor(row, { me: H.me(), myRole: H.myRole(), members: members(), blocks: H.blocks() })) {
+      items.push({ icon: 'chat', label: t('chat.msg.messageAuthor', { name: nameOf(row.actor) }), action: () => H.startDm([row.actor]) });
+    }
     const author = members().get(row.actor);
     if (H.canBlock && H.canBlock() && row.actor !== H.me() && author && author.state === 'active' && author.role !== 'guest' && !H.blocks().has(row.actor)) {
       items.push({ separator: true }, { icon: 'ban', label: t('chat.head.block', { name: nameOf(row.actor) }), action: () => H.block(row.actor) });
@@ -1139,17 +1427,23 @@ export function mountView(section, H) {
     return items;
   }
 
-  // The tools over a message on hover and focus. They take no Tab stop of their own: the row does, and Shift+F10
-  // opens the same actions as a menu.
+  // The hover bar over a message (contract 5.2): React, Reply in thread and More, as round buttons in a floating pill.
+  // It shows on hover and while the row or one of its controls has the focus; Tab from the focused row reaches its
+  // buttons. Pending and removed messages have none: a removed one keeps Reply in thread in its menu.
   function toolsEl(row, threaded) {
-    const items = menuItems(row, threaded);
-    if (!items.length) return null;
-    const tool = (id, icon, label) => h('button', { type: 'button', class: 'icon-btn sm', 'data-ch-tool': id, tabindex: '-1', 'aria-label': label, title: label }, svg(icon));
+    if (row.pending || row.removed || !row.id) return null;
+    const tool = (id, icon, label) => h('button', { type: 'button', class: 'ch-tool', 'data-ch-tool': id, 'data-roving': '', tabindex: '-1', 'aria-label': label, title: label }, svg(icon));
     const bar = h('div', { class: 'ch-tools', role: 'toolbar', 'aria-label': t('chat.msg.actions') });
-    if (!threaded && (!row.removed || (row.replies && row.replies.count))) bar.append(tool('reply', 'thread', t('chat.msg.reply')));
-    if (!row.removed && row.text) bar.append(tool('copy', 'copy', t('chat.msg.copy')));
+    if (H.caps().has('reactions') && (row.reactions || []).length < 20) {
+      const b = tool('react', 'smilePlus', t('chat.react.add'));
+      b.setAttribute('aria-haspopup', 'dialog');
+      bar.append(b);
+    }
+    if (!threaded) bar.append(tool('reply', 'thread', t('chat.msg.reply')));
     // More always, so a narrow view that keeps only it still reaches every action.
-    bar.append(tool('menu', 'more', t('chat.msg.more')));
+    const more = tool('menu', 'more', t('chat.msg.more'));
+    more.setAttribute('aria-haspopup', 'menu');
+    bar.append(more);
     return bar;
   }
 
@@ -1187,13 +1481,24 @@ export function mountView(section, H) {
       body.append(line);
     } else body.append(h('span', { class: 'ch-vh', text: t('chat.msg.sender', { name, time: hhmm(row.at) }) }));
     if (row.removed) body.append(h('div', { class: 'ch-removed' }, svg('trash'), h('span', { text: t('chat.log.removed') })));
-    else body.append(textEl(row));
+    else {
+      // The text, then its files, link cards and reactions (contract 3.6, 5.2).
+      if (row.text) body.append(textEl(row));
+      if (row.attachments && row.attachments.length) body.append(filesOf(row));
+      if (row.previews && row.previews.length) {
+        const cards = cardsOf(row);
+        if (cards) body.append(cards);
+      }
+      if (row.reactions && row.reactions.length && !row.pending && H.caps().has('reactions')) body.append(reactionsOf(row));
+    }
     if (!threaded && row.replies && row.replies.count) body.append(repliesEl(row));
     if (row.pending) body.append(stateLine(row));
     if (row.mentionsMe) li.setAttribute('aria-description', t('chat.msg.mentionsYou'));
     li.append(body);
+    // The hover bar comes first in the row, so Tab from the focused row reaches React before the message's own links
+    // and chips; it is positioned, so where it sits in the row doesn't move it on screen.
     const tools = toolsEl(row, threaded);
-    if (tools) li.append(tools);
+    if (tools) li.prepend(tools);
     return li;
   }
 
@@ -1209,7 +1514,7 @@ export function mountView(section, H) {
     const c = V.c;
     const id = row.id;
     const own = row.actor === H.me();
-    const first = String(row.text || '').split(/\r?\n/).find((line) => line.trim()) || '';
+    const first = summaryOf(row.text, row.attachments).split('\n').find((line) => line.trim()) || '';
     const quote = first.length > 120 ? `${first.slice(0, 119).trimEnd()}…` : first;
     const said = [t(own ? 'chat.remove.body' : 'chat.remove.bodyOther', { name: roomLabel(room), author: nameOf(row.actor) })];
     if (row.replies && row.replies.count) said.push(t('chat.remove.replies'));
@@ -1449,7 +1754,7 @@ export function mountView(section, H) {
   function announceArrivals(list) {
     if (!list.length || !document.hasFocus()) return;
     const e = list[list.length - 1];
-    announce.textContent = t('chat.msg.announce', { name: nameOf(e.actor), text: firstChars(e.text, ANNOUNCE_CHARS) });
+    announce.textContent = t('chat.msg.announce', { name: nameOf(e.actor), text: firstChars(summaryOf(e.text, e.attachments), ANNOUNCE_CHARS) });
   }
 
   // ---------- the thread panel (contract 3.13, 5.6; desktop-ui 5.7) ----------
@@ -1576,7 +1881,10 @@ export function mountView(section, H) {
     T.expired = Boolean(tv.expired);
     if (!T.draftDone) {
       T.draftDone = true;
-      if (tv.draft && T.input && !T.input.parts().length) T.input.setParts(toParts(tv.draft.text, tv.draft.mentions));
+      if (tv.draft && T.input && !T.input.parts().length) {
+        if ((Array.isArray(tv.draft.attachments) && tv.draft.attachments.length) || tv.draft.expired) T.input.setDraftFiles(tv.draft.attachments || [], tv.draft.expired);
+        T.input.setParts(toParts(tv.draft.text, tv.draft.mentions));
+      }
     }
     // A root removed without replies has nothing to show.
     if (tv.root && tv.root.redacted && !threadReplies() && !V.pending.some((x) => x.root === root)) {
@@ -1620,8 +1928,10 @@ export function mountView(section, H) {
         return true;
       },
       onDraft: (draft) => api('chatSaveDraft', ws, c, rootId, draft).catch(() => {}),
-      draftKey: draftSlotKey(ws, c, rootId)
+      draftKey: draftSlotKey(ws, c, rootId),
+      files: filesFor(ws, c, rootId)
     });
+    loadStaged(T.input, ws, c, rootId);
     renderThread({ position: seq ? 'at' : 'bottom' });
     syncCover();
     T.input.focus();
@@ -1658,7 +1968,7 @@ export function mountView(section, H) {
     if (!restoreFocus || mode !== 'room') return;
     const li = log.querySelector(`li.ch-msg[data-id="${CSS.escape(root)}"]`);
     if (li) {
-      for (const x of log.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
+      rove(log, li);
       V.focusKey = li.dataset.key;
       li.focus({ preventScroll: true });
       li.scrollIntoView({ block: 'nearest' });
@@ -1680,14 +1990,16 @@ export function mountView(section, H) {
   log.addEventListener('focusin', (e) => {
     const li = e.target.closest('li.ch-msg');
     if (!li) return;
+    if (V.focusKey === li.dataset.key && li.tabIndex === 0) return;
     V.focusKey = li.dataset.key;
-    for (const x of log.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
+    rove(log, li);
   });
   tLog.addEventListener('focusin', (e) => {
     const li = e.target.closest('li.ch-msg');
     if (!li || !T) return;
+    if (T.focusKey === li.dataset.key && li.tabIndex === 0) return;
     T.focusKey = li.dataset.key;
-    for (const x of tLog.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
+    rove(tLog, li);
   });
 
   section.addEventListener('click', (e) => {
@@ -1698,6 +2010,7 @@ export function mountView(section, H) {
       if (!row) return;
       if (tool.dataset.chTool === 'reply') openThread(row.root || row.id);
       else if (tool.dataset.chTool === 'copy') copyText(row.text);
+      else if (tool.dataset.chTool === 'react') reactPicker(row.id, tool);
       else messageMenu(li, (() => {
         const r = tool.getBoundingClientRect();
         return { x: r.left, y: r.bottom + 4 };
@@ -1731,6 +2044,56 @@ export function mountView(section, H) {
         return toNew();
       default:
     }
+  });
+
+  // ---------- files dropped on the pane (contract 5.2) ----------
+
+  // The composer a drop at e goes to: the thread's over the thread panel, else the room's. None while a bar replaces
+  // it or the server takes no files.
+  function dropTarget(e) {
+    if (mode !== 'room' || !V.c || !H.caps().has('files')) return null;
+    const over = T && !thread.hidden && thread.contains(e.target);
+    const target = over ? T.input : input;
+    if (!target || !target.bar.hidden) return null;
+    return { target, over };
+  }
+
+  function showDrop(e) {
+    const d = dropTarget(e);
+    if (!d) return hideDrop();
+    const box = (d.over ? thread : main).getBoundingClientRect();
+    const host = section.getBoundingClientRect();
+    Object.assign(drop.style, { left: `${box.left - host.left}px`, top: `${box.top - host.top}px`, width: `${box.width}px`, height: `${box.height}px` });
+    const text = d.over ? t('chat.files.dropThread') : t('chat.files.dropHere', { name: V.room ? roomLabel(V.room) : '' });
+    const label = drop.querySelector('.ch-drop-text');
+    if (label.textContent !== text) label.textContent = text;
+    drop.hidden = false;
+    return d;
+  }
+  function hideDrop() {
+    drop.hidden = true;
+  }
+  section.addEventListener('dragenter', (e) => {
+    if (!dragHasFiles(e) || !dropTarget(e)) return;
+    e.preventDefault();
+    showDrop(e);
+  });
+  section.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    // The window never opens a file dropped on the chat, also where it can't take one.
+    e.preventDefault();
+    const d = showDrop(e);
+    e.dataTransfer.dropEffect = d ? 'copy' : 'none';
+  });
+  section.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget || !section.contains(e.relatedTarget)) hideDrop();
+  });
+  section.addEventListener('drop', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    hideDrop();
+    const d = dropTarget(e);
+    if (d) d.target.attachFiles([...e.dataTransfer.files]);
   });
 
   section.addEventListener('contextmenu', (e) => {

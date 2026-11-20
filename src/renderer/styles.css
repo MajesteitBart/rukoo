@@ -54,6 +54,16 @@
   --text-3: #7a808e;
   /* Team chat's caption grey: timestamps and counts in chat pass 4.5:1 on the panel and on dialogs, mail keeps --text-3. */
   --ch-text-3: #8a909e;
+  /* Team chat's message bubble, reaction chips and file cards, and the row under the pointer around them. */
+  --ch-bubble: #26272e;
+  --ch-row-hover: #1f2025;
+  /* Over a picture: the "+3" on the fourth image, the play badge on a video card. The image viewer is dark in both
+     themes, as a photo viewer is. */
+  --ch-overlay: rgba(10, 12, 18, 0.58);
+  --ch-on-overlay: #ffffff;
+  --ch-viewer-bg: rgba(8, 9, 12, 0.92);
+  --ch-viewer-ink: #eceef2;
+  --ch-viewer-soft: rgba(255, 255, 255, 0.12);
   --accent: #7aa5f5;
   --accent-soft: rgba(122, 165, 245, 0.15);
   --link: #8ab0ff;
@@ -97,6 +107,13 @@
   --text-2: #565c69;
   --text-3: #868b98;
   --ch-text-3: #666b7a;
+  --ch-bubble: #f0f1f4;
+  --ch-row-hover: #fafbfc;
+  --ch-overlay: rgba(10, 12, 18, 0.52);
+  --ch-on-overlay: #ffffff;
+  --ch-viewer-bg: rgba(8, 9, 12, 0.9);
+  --ch-viewer-ink: #eceef2;
+  --ch-viewer-soft: rgba(255, 255, 255, 0.14);
   --accent: #2f66d6;
   --accent-soft: rgba(47, 102, 214, 0.1);
   --link: #2f63c8;
@@ -10909,8 +10926,9 @@ body.chat-mode .titlebar-search {
   padding-top: 8px;
 }
 .ch-msg:hover,
-.ch-msg:focus-within {
-  background: var(--hover);
+.ch-msg:focus-within,
+.ch-msg.has-popup {
+  background: var(--ch-row-hover);
 }
 .ch-msg > .avatar,
 .ch-msg > .ch-time.is-gutter {
@@ -10970,12 +10988,30 @@ body.chat-mode .titlebar-search {
   font-weight: 500;
   line-height: 1;
 }
+/* The text sits in a rounded bubble as wide as it needs. The first of a group points at the avatar with a tighter
+   corner; the rest of the group stacks under it 2px apart. */
 .ch-text {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 2px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  background: var(--ch-bubble);
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.ch-msg.is-head .ch-text {
+  border-top-left-radius: 6px;
+}
+/* One to three emoji and nothing else: larger, without the bubble. */
+.ch-text.is-jumbo {
+  padding: 0 2px;
+  background: none;
+  font-size: 32px;
+  line-height: 1.25;
 }
 .ch-text.sel,
 .ch-title.sel {
@@ -11176,31 +11212,54 @@ button.ch-replies .ch-replies-n {
 .ch-jump.is-down {
   bottom: 8px;
 }
-/* The tools over a message on hover and focus, at its top right inside the row, so they never cover the New divider
-   or the row above: Reply in thread, Copy text, More. They take no Tab stop; the row does, and Shift+F10 opens the
-   same actions as a menu. */
+/* The hover bar (RUK-211 contract 5.2): React, Reply in thread and More as round buttons in a floating pill at the
+   message's top right. It rides up over the row's top edge, as the first line of a row is its name or its bubble. Tab
+   from the focused row reaches its buttons; Shift+F10 opens the same actions as a menu. A 32px pill holds 28px
+   buttons at a 2px inset, so the buttons are pills too. */
 .ch-tools {
   position: absolute;
-  top: 2px;
-  right: 16px;
+  top: -12px;
+  right: 20px;
   z-index: 3;
   display: flex;
   gap: 2px;
   padding: 2px;
-  border-radius: 8px;
+  border-radius: 9999px;
   background: var(--raised);
   box-shadow: var(--shadow-sm);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
 }
-.ch-tools .icon-btn.sm {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
+.ch-msg.is-head > .ch-tools {
+  top: -6px;
+}
+.ch-tool {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ch-tool svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+.ch-tool:hover,
+.ch-tool[aria-expanded='true'] {
+  background: var(--active);
+  color: var(--text);
+}
+.ch-tool:active {
+  transform: scale(0.96);
 }
 .ch-msg:hover > .ch-tools,
-.ch-msg:focus-within > .ch-tools {
+.ch-msg:focus-within > .ch-tools,
+.ch-msg.has-popup > .ch-tools {
   opacity: 1;
   pointer-events: auto;
 }
@@ -11265,7 +11324,9 @@ button.ch-replies .ch-replies-n {
   color: var(--text-2);
 }
 
-/* The composer: one box under the log, growing with the text up to 40 percent of the window, then scrolling. */
+/* The composer: a card under the log (RUK-211 contract 5.2) with, top to bottom, the files to send, the formatting
+   bar when it's on, the text, and a row of round buttons with Send at its end. The text grows up to 40 percent of the
+   window, then scrolls. */
 .ch-compose {
   padding: 0 20px 16px;
 }
@@ -11276,14 +11337,14 @@ button.ch-replies .ch-replies-n {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px 8px 8px 12px;
-  border-radius: 12px;
-  background: var(--panel-2);
-  box-shadow: inset 0 0 0 1px var(--border);
+  padding: 8px 8px 6px 12px;
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--border), var(--shadow-sm);
   transition: box-shadow 120ms ease;
 }
 .ch-box:focus-within {
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-sm);
 }
 .ch-box[hidden] {
   display: none;
@@ -11319,6 +11380,40 @@ button.ch-replies .ch-replies-n {
   gap: 8px;
   min-height: 28px;
 }
+.ch-box-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 auto 0 -6px;
+  flex: none;
+}
+.ch-tb {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ch-tb svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+.ch-tb:hover,
+.ch-tb[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--text);
+}
+.ch-tb.on {
+  background: var(--active);
+  color: var(--text);
+}
+.ch-tb:active {
+  transform: scale(0.96);
+}
 .ch-limit {
   flex: 1;
   min-width: 0;
@@ -11332,7 +11427,7 @@ button.ch-replies .ch-replies-n {
   flex: none;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: 9999px;
   background: var(--primary);
   color: var(--on-primary);
   transition: background-color 120ms ease, color 120ms ease;
@@ -12351,6 +12446,983 @@ button.ch-replies .ch-replies-n {
   order: 1;
 }
 
+/* ---------- team chat: rich messages (RUK-211) ---------- */
+
+/* Markdown in a message (chat-rich.js textEl, contract 3.3). Blocks follow each other 4px apart in the bubble. */
+.ch-text > * {
+  margin: 0;
+}
+.ch-text > * + * {
+  margin-top: 4px;
+}
+.ch-text strong,
+.ch-h {
+  font-weight: 650;
+}
+.ch-h {
+  line-height: 1.35;
+  text-wrap: balance;
+}
+.ch-h.is-1 {
+  font-size: 1.25em;
+}
+.ch-h.is-2 {
+  font-size: 1.125em;
+}
+.ch-text s {
+  color: var(--text-2);
+}
+.ch-code,
+.ch-pre {
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+}
+.ch-code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.ch-pre {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--border);
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.ch-quote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
+}
+.ch-list {
+  padding-left: 22px;
+}
+.ch-list .ch-list {
+  margin: 0;
+}
+.ch-list li::marker {
+  color: var(--text-2);
+}
+
+/* Files in a message (contract 3.6): one image in a box of at most 360 by 280 at its own shape, two to four in a grid,
+   "+n" on the fourth for the rest; other files as cards with their kind, name, size and a download button. */
+.ch-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.ch-media {
+  display: grid;
+  gap: 4px;
+  width: min(360px, 100%);
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 118px;
+}
+.ch-media.is-n1 {
+  width: min(var(--w, 360px), 100%);
+  grid-template-columns: 1fr;
+  grid-auto-rows: auto;
+}
+.ch-media.is-n1 .ch-img {
+  aspect-ratio: var(--ar, 4 / 3);
+}
+.ch-media.is-n2 {
+  grid-auto-rows: 178px;
+}
+.ch-media.is-n3 .ch-img:first-child {
+  grid-row: span 2;
+}
+.ch-img {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--ch-bubble);
+  color: var(--text-3);
+  cursor: zoom-in;
+}
+.ch-img img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.ch-img.is-loaded img {
+  opacity: 1;
+}
+.ch-img-ph {
+  display: grid;
+}
+.ch-img-ph svg {
+  width: 22px;
+  height: 22px;
+}
+.ch-img.is-loaded .ch-img-ph {
+  visibility: hidden;
+}
+.ch-img::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--border);
+  pointer-events: none;
+}
+.ch-img-more {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: var(--ch-overlay);
+  color: var(--ch-on-overlay);
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ch-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ch-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: min(360px, 100%);
+  min-height: 56px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--ch-bubble);
+}
+.ch-file-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.ch-file-ic {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-2);
+}
+.ch-file-ic svg {
+  width: 20px;
+  height: 20px;
+}
+.ch-file-ic .spinner {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-file-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ch-file-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-file-meta,
+.ch-tray-sub {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-file-main:hover .ch-file-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ch-file-dl {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ch-file-dl svg {
+  width: 17px;
+  height: 17px;
+}
+.ch-file-dl:hover {
+  background: var(--active);
+  color: var(--text);
+}
+.ch-file.is-busy button {
+  pointer-events: none;
+}
+.ch-file.is-unsent {
+  min-height: 48px;
+}
+.ch-file.is-unsent .ch-file-ic {
+  width: 36px;
+  height: 36px;
+}
+
+/* Link cards under a message (contract 3.6): the site, the title as the link, two lines of description, the image to
+   the right, or under the text when it's wide. The author's remove button shows on hover and focus. */
+.ch-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ch-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  width: min(480px, 100%);
+  padding: 10px 12px 10px 14px;
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--border), inset 3px 0 0 var(--border-strong);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ch-card:hover {
+  background: var(--hover);
+}
+.ch-card.is-below {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(388px, 100%);
+}
+.ch-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ch-card-site {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--link);
+  text-decoration: none;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.ch-card-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ch-card-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.ch-card-img {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--ch-bubble);
+  color: var(--text-3);
+}
+.ch-card.is-below .ch-card-img {
+  width: 100%;
+  max-width: 360px;
+  height: auto;
+}
+.ch-card-img img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.ch-card-img.is-loaded img {
+  opacity: 1;
+}
+.ch-card-img.is-loaded .ch-img-ph {
+  visibility: hidden;
+}
+.ch-card-img .ch-img-ph svg {
+  width: 18px;
+  height: 18px;
+}
+.ch-card-play {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: var(--ch-overlay);
+  color: var(--ch-on-overlay);
+}
+.ch-card-play svg {
+  width: 15px;
+  height: 15px;
+  margin-left: 2px;
+  fill: currentColor;
+}
+.ch-card-x {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-2);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.ch-card-x svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+}
+.ch-card:hover .ch-card-x,
+.ch-card:focus-within .ch-card-x {
+  opacity: 1;
+}
+.ch-card-x:hover {
+  color: var(--text);
+}
+
+/* Reactions under everything else (contract 3.6): a pill per emoji with its count, tinted when it holds yours, and the
+   add button, which shows with the row's hover bar. */
+.ch-reacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.ch-react {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px 0 7px;
+  border-radius: 9999px;
+  background: var(--ch-bubble);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: box-shadow 120ms ease, background-color 120ms ease;
+}
+.ch-react:hover {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.ch-react:active,
+.ch-react-add:active {
+  transform: scale(0.96);
+}
+.ch-react-e {
+  font-size: 15px;
+  line-height: 1;
+}
+.ch-react-n {
+  min-width: 1ch;
+  font-weight: 500;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.ch-react.is-mine {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.ch-react.is-mine .ch-react-n {
+  color: var(--link);
+}
+.ch-react-add {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--text-2);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+.ch-react-add svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-msg:hover .ch-react-add,
+.ch-msg:focus-within .ch-react-add,
+.ch-msg.has-popup .ch-react-add {
+  opacity: 1;
+}
+.ch-react-add:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* The composer's files (contract 3.5): image thumbnails and file cards above the text, each with its remove button,
+   a bar while it uploads and Retry when it failed. */
+.ch-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 4px -4px;
+  padding-top: 2px;
+}
+.ch-tray-item {
+  position: relative;
+  flex: none;
+  border-radius: 12px;
+  background: var(--ch-bubble);
+}
+.ch-tray-item.is-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 248px;
+  max-width: 100%;
+  height: 52px;
+  padding: 6px 30px 6px 6px;
+}
+.ch-tray-item.is-file .ch-file-ic {
+  width: 40px;
+  height: 40px;
+}
+/* As tall as a file card, so a row of mixed files lines up. */
+.ch-tray-item.is-image {
+  width: 52px;
+  height: 52px;
+}
+.ch-tray-thumb {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.ch-tray-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ch-tray-item.is-image .ch-tray-sub {
+  display: none;
+}
+.ch-tray-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-3) 30%, transparent);
+  visibility: hidden;
+}
+.ch-tray-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ch-tray-item.is-busy .ch-tray-bar {
+  visibility: visible;
+}
+.ch-tray-item.is-image.is-busy img {
+  opacity: 0.55;
+}
+.ch-tray-item.is-failed {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 50%, transparent);
+}
+.ch-tray-item.is-failed .ch-tray-sub {
+  color: var(--danger);
+}
+.ch-tray-item.is-image.is-failed img {
+  opacity: 0.4;
+}
+.ch-tray-retry {
+  flex: none;
+  min-height: 24px;
+  font-size: 12px;
+}
+.ch-tray-item.is-image .ch-tray-retry {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  transform: translateX(-50%);
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+}
+.ch-tray-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-2);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.ch-tray-x svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.2;
+}
+.ch-tray-item.is-file .ch-tray-x {
+  top: 50%;
+  right: 6px;
+  margin-top: -10px;
+}
+.ch-tray-item:hover .ch-tray-x,
+.ch-tray-item:focus-within .ch-tray-x,
+.ch-tray-item.is-failed .ch-tray-x {
+  opacity: 1;
+}
+.ch-tray-x:hover {
+  color: var(--text);
+}
+
+/* The formatting bar above the composer's text (contract 3.3): round buttons, a hairline under it. */
+.ch-fmt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 2px -6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.ch-fmt .icon-btn.sm {
+  border-radius: 9999px;
+}
+.ch-fmt-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+/* ":smile" in the composer: the emoji list, on the mention list's styles. */
+.ch-suggest.is-emoji [role='option'] {
+  gap: 10px;
+}
+.ch-suggest-emoji {
+  flex: none;
+  width: 22px;
+  font-size: 18px;
+  line-height: 1;
+  text-align: center;
+}
+.ch-suggest-label {
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The emoji picker (contract 3.4, 5.2): search and skin tone, group tabs, the grid with sticky group names, and the
+   emoji under the keyboard or the pointer at its foot. A popover: 14px corners, the menu's layer. */
+.ch-emoji {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: 348px;
+  max-width: calc(100vw - 16px);
+  height: 404px;
+  max-height: calc(100vh - 16px);
+  padding: 8px 8px 0;
+  border-radius: 14px;
+  background: var(--raised);
+  box-shadow: var(--shadow), 0 0 0 1px var(--border);
+  animation: pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ch-emoji-top {
+  display: flex;
+  gap: 6px;
+}
+.ch-emoji-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.ch-emoji-field svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  margin-top: -7.5px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+.ch-emoji-search {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px 0 30px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--chip);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.ch-emoji-search::placeholder {
+  color: var(--text-3);
+}
+/* The field's own clear button is the system's blue cross; backspace clears it, and Escape closes the picker. */
+.ch-emoji-search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.ch-emoji-tone,
+.ch-emoji-tone-opt,
+.ch-emoji-tab,
+.ch-emoji-cell {
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ch-emoji-tone {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 18px;
+}
+.ch-emoji-tone:hover,
+.ch-emoji-tone[aria-expanded='true'] {
+  background: var(--hover);
+}
+.ch-emoji-tones {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  padding-top: 4px;
+}
+.ch-emoji-tone-opt {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 18px;
+}
+.ch-emoji-tone-opt:hover,
+.ch-emoji-tone-opt[aria-checked='true'] {
+  background: var(--active);
+}
+.ch-emoji-tabs {
+  display: flex;
+  gap: 1px;
+  margin: 6px -8px 0;
+  padding: 0 6px 4px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ch-emoji-tab {
+  flex: none;
+  width: 32px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 17px;
+  color: var(--text-2);
+}
+.ch-emoji-tab svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-emoji-tab:hover {
+  background: var(--hover);
+}
+/* Positioned, so a group's offsetTop is its place in the list its tab scrolls to. */
+.ch-emoji-grid {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 -8px;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+}
+.ch-emoji-sec {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+.ch-emoji-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 2px 4px;
+  background: var(--raised);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.ch-emoji-cells {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+}
+.ch-emoji-cell {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  font-size: 22px;
+}
+.ch-emoji-cell:hover,
+.ch-emoji-cell:focus-visible,
+.ch-emoji-cell[tabindex='0']:focus {
+  background: var(--active);
+}
+.ch-emoji-cell:focus-visible {
+  outline-offset: -2px;
+}
+.ch-emoji-status {
+  display: flex;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-emoji-status:not(:empty) {
+  padding: 24px 8px;
+}
+.ch-emoji-status .spinner {
+  margin: 0;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-emoji-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  margin: 0 -8px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-emoji-big {
+  flex: none;
+  font-size: 22px;
+  line-height: 1;
+}
+.ch-emoji-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-emoji-code {
+  flex: none;
+  margin-left: auto;
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* The image viewer (contract 3.6, 5.2): the picture at fit size on a dark scrim, its name, Open, Save and close on top,
+   arrows beside it when the message has several. Dark in both themes, as a photo viewer is. */
+.scrim.ch-viewer {
+  /* Under the 40px title bar, which stays above every scrim with the window's own buttons. */
+  inset: 40px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  /* .scrim centers a dialog; the viewer's bar and picture take the whole width. */
+  align-items: stretch;
+  justify-items: stretch;
+  padding: 12px 16px 16px;
+  background: var(--ch-viewer-bg);
+  color: var(--ch-viewer-ink);
+}
+.ch-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+}
+.ch-viewer-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ch-viewer-name {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-viewer-meta {
+  font-size: 12px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.ch-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.ch-viewer-actions .btn svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-viewer .icon-btn {
+  color: var(--ch-viewer-ink);
+  border-radius: 9999px;
+}
+.ch-viewer .icon-btn:hover {
+  background: var(--ch-viewer-soft);
+}
+.ch-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px 48px 0;
+}
+.ch-viewer-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.ch-viewer-stage.is-loaded .ch-viewer-img {
+  opacity: 1;
+}
+.ch-viewer-step {
+  position: absolute;
+  top: 50%;
+  margin-top: -20px;
+  width: 40px;
+  height: 40px;
+  background: var(--ch-viewer-soft);
+}
+.ch-viewer-step.is-prev {
+  left: 16px;
+}
+.ch-viewer-step.is-next {
+  right: 16px;
+}
+.ch-viewer-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Files dragged over the conversation or the thread: where they go. It lets the drag through to what is under it,
+   which tells the view which composer takes the drop. The thread's overlay is layer 6, so this is 7. */
+.ch-drop {
+  position: absolute;
+  z-index: 7;
+  display: grid;
+  padding: 12px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  pointer-events: none;
+}
+.ch-drop-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 16px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  text-wrap: balance;
+}
+.ch-drop-box svg {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+.ch-drop-text {
+  max-width: 32ch;
+}
+
+/* Touch screens have no hover: the add-reaction and remove buttons show without one. */
+@media (hover: none) {
+  .ch-react-add,
+  .ch-card-x,
+  .ch-tray-x {
+    opacity: 1;
+  }
+}
+
 /* A narrow view: the header drops its member count and meta line, rows tighten. */
 @container chat (max-width: 560px) {
   .ch-head {
@@ -12387,24 +13459,43 @@ button.ch-replies .ch-replies-n {
   .ch-compose {
     padding: 0 12px 12px;
   }
-  /* Only More stays in the tools; its menu holds the rest. */
-  .ch-tools [data-ch-tool='reply'],
-  .ch-tools [data-ch-tool='copy'] {
+  /* React and More stay in the hover bar; More's menu holds Reply in thread. */
+  .ch-tools [data-ch-tool='reply'] {
     display: none;
+  }
+  .ch-tools {
+    right: 12px;
+  }
+  .ch-card.is-side .ch-card-img {
+    width: 56px;
+    height: 56px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ch-msg.is-arriving,
   .ch-jump,
-  .ch-thread.is-entering {
+  .ch-thread.is-entering,
+  .ch-emoji {
     animation: none;
   }
   .ch-msg,
   .ch-replies,
   .ch-tools,
+  .ch-tool,
   .ch-box,
   .ch-send,
+  .ch-tb,
+  .ch-react,
+  .ch-react-add,
+  .ch-card,
+  .ch-card-x,
+  .ch-file-dl,
+  .ch-tray-x,
+  .ch-tray-bar i,
+  .ch-img img,
+  .ch-card-img img,
+  .ch-viewer-img,
   .ch-open-invites summary::before,
   .ch-browse-archived summary::before {
     transition: none;
