@@ -28,10 +28,12 @@ import { meet } from './meet.js';
 import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
+import { workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
 export { Booking } from './booking.js';
 export { Registry } from './registry.js';
+export { Workspace } from './workspace.js';
 
 const TOKEN = /^Bearer ([A-Za-z0-9_-]{43})\.[A-Za-z0-9_-]{43}$/i;
 const DEVICE_PATH = /^\/v1\/devices\/([^/]+)$/;
@@ -66,7 +68,7 @@ async function handle(request, env) {
   if (path === '/privacy' && reading) {
     return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
-  if (path === '/v1/info' && method === 'GET') return json(200, info(env, url));
+  if (path === '/v1/info' && method === 'GET') return json(200, await info(env, url));
   const account = path === '/v1' || path.startsWith('/v1/');
   const root = bookingRoot(env);
   if (path === '/meet' || path.startsWith('/meet/')) return root ? toRoot(request, root, url) : meet(request, env, url);
@@ -84,6 +86,9 @@ async function handle(request, env) {
   if (!account) throw notFound();
 
   checkConfig(env);
+
+  // Team chat: workspaces, channels and messages (workspaces.js).
+  if (path === '/v1/workspaces' || path.startsWith('/v1/workspaces/')) return workspaces(request, env, url);
 
   const route = `${method} ${path}`;
   switch (route) {
@@ -340,8 +345,10 @@ function limits(env) {
   };
 }
 
-function info(env, url) {
+// workspace and the workspaces-v1 feature are there only while the operator has team chat turned on.
+async function info(env, url) {
   const { operator, jurisdiction: where, signups: mode } = config(env, url);
+  const workspace = await workspaceInfo(env, url);
   return {
     protocol: 1,
     version: pkg.version,
@@ -349,7 +356,8 @@ function info(env, url) {
     hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction: where },
     signups: mode,
     limits: limits(env),
-    features: FEATURES
+    features: workspace ? [...FEATURES, 'workspaces-v1'] : FEATURES,
+    ...(workspace ? { workspace } : {})
   };
 }
 

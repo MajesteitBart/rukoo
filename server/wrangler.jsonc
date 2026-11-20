@@ -10,17 +10,20 @@
   // One Durable Object per account, each with its own SQLite database.
   // REGISTRY: one object for the whole server that counts the accounts, for MAX_ACCOUNTS.
   // BOOKINGS: one object per booking page handle, holding what the page published and its bookings.
+  // WORKSPACES: one object per team workspace, holding its members, channels and messages (WORKSPACES.md).
   "durable_objects": {
     "bindings": [
       { "name": "ACCOUNTS", "class_name": "Account" },
       { "name": "REGISTRY", "class_name": "Registry" },
-      { "name": "BOOKINGS", "class_name": "Booking" }
+      { "name": "BOOKINGS", "class_name": "Booking" },
+      { "name": "WORKSPACES", "class_name": "Workspace" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Account"] },
     { "tag": "v2", "new_sqlite_classes": ["Registry"] },
-    { "tag": "v3", "new_sqlite_classes": ["Booking"] }
+    { "tag": "v3", "new_sqlite_classes": ["Booking"] },
+    { "tag": "v4", "new_sqlite_classes": ["Workspace"] }
   ],
 
   "vars": {
@@ -57,7 +60,26 @@
     // to BOOKING_ORIGIN (apart from /, /privacy and the account API), and links to them name the same pages.
     "BOOKING_FORMER_ROOTS": "",
     // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
-    "BLOCKED_HANDLES": ""
+    "BLOCKED_HANDLES": "",
+    // Team chat (WORKSPACES.md): "on" or "off". Whoever runs this server can read a workspace's messages, unlike the
+    // records accounts sync. Deploy with "off" first, and turn it on in a second deploy, once every address of this
+    // server runs this version: an older version would wipe a deleted account before its workspaces heard of it.
+    "WORKSPACE_MODE": "off",
+    // The one address workspaces on this server are known by, such as "https://rukoo.example". "" for the address
+    // each request came in on.
+    "WORKSPACE_ORIGIN": "",
+    // The most workspaces this server holds, how many one account may make, and how many it may be in at once.
+    "MAX_WORKSPACES": 100,
+    "MAX_WORKSPACES_PER_ACCOUNT": 3,
+    "MAX_WORKSPACE_MEMBERSHIPS": 50,
+    // Per workspace: members, open connections, channels, bytes of message text kept, and days a message is kept.
+    // A workspace is one Durable Object, which holds 10 GB on Workers Paid and 1 GB on Workers Free, and a message
+    // takes about 100 bytes on top of its text: lower WORKSPACE_BYTES to 268435456 on Workers Free.
+    "WORKSPACE_MEMBERS": 100,
+    "WORKSPACE_SOCKETS": 200,
+    "WORKSPACE_CONVERSATIONS": 8192,
+    "WORKSPACE_BYTES": 1073741824,
+    "WORKSPACE_RETENTION_DAYS": 90
   },
 
   // Limits prelogin, signup, login and recovery to 30 requests a minute per client address in each Cloudflare
@@ -94,7 +116,8 @@
         "bindings": [
           { "name": "ACCOUNTS", "class_name": "Account" },
           { "name": "REGISTRY", "class_name": "Registry" },
-          { "name": "BOOKINGS", "class_name": "Booking" }
+          { "name": "BOOKINGS", "class_name": "Booking" },
+          { "name": "WORKSPACES", "class_name": "Workspace" }
         ]
       },
       "vars": {
@@ -119,7 +142,18 @@
         // their links as the same pages.
         "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
         "BOOKING_FORMER_ROOTS": "https://rukoo.io",
-        "BLOCKED_HANDLES": ""
+        "BLOCKED_HANDLES": "",
+        // Team chat stays off here until the apps have it.
+        "WORKSPACE_MODE": "off",
+        "WORKSPACE_ORIGIN": "https://rukoo.io",
+        "MAX_WORKSPACES": 100,
+        "MAX_WORKSPACES_PER_ACCOUNT": 3,
+        "MAX_WORKSPACE_MEMBERSHIPS": 50,
+        "WORKSPACE_MEMBERS": 100,
+        "WORKSPACE_SOCKETS": 200,
+        "WORKSPACE_CONVERSATIONS": 8192,
+        "WORKSPACE_BYTES": 1073741824,
+        "WORKSPACE_RETENTION_DAYS": 90
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },

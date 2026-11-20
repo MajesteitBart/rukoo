@@ -23,7 +23,10 @@ export default defineConfig({
           BOOKING_ORIGIN: '',
           BOOKING_ALIASES: '',
           BOOKING_FORMER_ROOTS: '',
-          BLOCKED_HANDLES: ''
+          BLOCKED_HANDLES: '',
+          // Team chat is off, as in wrangler.jsonc; the workspace tests turn it on per request.
+          WORKSPACE_MODE: 'off',
+          WORKSPACE_ORIGIN: ''
         }
       }
     })

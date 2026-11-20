@@ -58,6 +58,41 @@ export function registryObject(env) {
   return ns.get(ns.idFromName('registry'));
 }
 
+// The object of one workspace (workspace.js). An id nobody made leaves its object empty.
+export function workspaceObject(env, id) {
+  const ns = namespace(env, env.WORKSPACES);
+  return ns.get(ns.idFromName(`workspace
+${id}`));
+}
+
+// Team chat is off until the operator turns it on, and needs its binding. Turning it on is the last step of a
+// rollout: every route of the server must already run a build that knows workspaces (WORKSPACES.md, Conventions).
+export function workspacesOn(env) {
+  return Boolean(env.WORKSPACES) && String(env.WORKSPACE_MODE ?? '').trim().toLowerCase() === 'on';
+}
+
+// What a workspace may hold. textBytes is one message; contentBytes is all the message text a workspace keeps, which
+// has to stay well under what one Durable Object stores (10 GB on Workers Paid, 1 GB on Workers Free).
+export function workspaceLimits(env) {
+  return {
+    max: positive(env.MAX_WORKSPACES, 100),
+    perAccount: positive(env.MAX_WORKSPACES_PER_ACCOUNT, 3),
+    memberships: positive(env.MAX_WORKSPACE_MEMBERSHIPS, 50),
+    members: positive(env.WORKSPACE_MEMBERS, 100),
+    sockets: positive(env.WORKSPACE_SOCKETS, 200),
+    conversations: positive(env.WORKSPACE_CONVERSATIONS, 8192),
+    textBytes: 16384,
+    contentBytes: positive(env.WORKSPACE_BYTES, 1073741824),
+    retentionDays: positive(env.WORKSPACE_RETENTION_DAYS, 90)
+  };
+}
+
+// WORKSPACE_ORIGIN as an origin, or null: the one address workspaces on this server are known by. Without it, each
+// request's own address is.
+export function workspaceOrigin(env) {
+  return originOf(text(env.WORKSPACE_ORIGIN));
+}
+
 // Missing means invite, the default in wrangler.jsonc. Anything unrecognized means closed, so a typo never opens a
 // server that was meant to be private.
 export function signups(env) {
