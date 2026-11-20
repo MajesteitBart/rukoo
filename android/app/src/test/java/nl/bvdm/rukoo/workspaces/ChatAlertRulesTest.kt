@@ -287,6 +287,16 @@ class ChatAlertRulesTest {
         assertEquals(kept, newestOf(kept.copy(seq = 3), kept))
         assertEquals(kept.copy(text = "cached"), newestOf(kept.copy(text = "cached"), kept))
 
+        // The row reads the store's tombstone before the engine hears of the removal (the view can be built first).
+        assertEquals(kept, s.store.read { keptPreview(kept) { hasTombstone(ws, it) } })
+        s.store.tx { addTombstones(ws, listOf(kept.id)) }
+        val gone = s.store.read { keptPreview(kept) { hasTombstone(ws, it) } }!!
+        assertTrue(gone.redacted)
+        assertNull(gone.text)
+        assertTrue(gone.mentions.isEmpty())
+        assertEquals(kept.seq, gone.seq)
+        assertNull(keptPreview(null) { true })
+
         // A removal turns it into a removed message; an eviction, the workspace going and the session's end drop it.
         s.engine.onRemoved(ws, Ids.DM, listOf(kept.id), s.store)
         assertTrue(s.engine.fetchedPreview(ws, Ids.DM)!!.redacted)

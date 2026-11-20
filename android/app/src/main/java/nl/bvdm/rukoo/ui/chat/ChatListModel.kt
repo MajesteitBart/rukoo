@@ -172,16 +172,14 @@ object ChatListModel {
     }
 
     /**
-     * The dot on the list's workspace button (desktop chat.js `othersAsk`): another workspace than [selected] has
-     * something calling for attention or unread messages. Warning when such a workspace is stopped; null for none.
+     * The dot on the list's workspace button, as desktop's workspace tile (chat.js `tileHtml`): a warning when the
+     * [selected] workspace itself is stopped, else a dot when another workspace has something calling for attention or
+     * unread messages (`othersAsk`); null for none.
      */
-    fun othersNews(workspaces: List<WorkspaceSummary>, selected: String?): NewsTone? {
-        val asking = workspaces.filter { it.id != selected && (it.attention > 0 || it.unread) }
-        return when {
-            asking.isEmpty() -> null
-            asking.any { it.status == WorkspaceStatus.QUARANTINED } -> NewsTone.WAITING
-            else -> NewsTone.UNREAD
-        }
+    fun othersNews(workspaces: List<WorkspaceSummary>, selected: String?): NewsTone? = when {
+        workspaces.any { it.id == selected && it.status == WorkspaceStatus.QUARANTINED } -> NewsTone.WAITING
+        workspaces.any { it.id != selected && (it.attention > 0 || it.unread) } -> NewsTone.UNREAD
+        else -> null
     }
 
     /** What the Unread filter keeps: a room with unread messages that isn't muted, and the room open beside the list. */

@@ -44,6 +44,7 @@
     <string name="chat_sidebar_no_direct">No direct messages yet</string><!-- Line under Direct messages. -->
     <string name="chat_sidebar_row_muted">%1$s, muted</string><!-- Accessible name of a muted conversation row. -->
     <string name="chat_sidebar_row_closed">%1$s, closed</string><!-- Accessible name of a closed direct message row. -->
+    <string name="chat_list_you">You: %1$s</string><!-- Second line of a direct message row in the conversation list when the newest message is the user's own. %1$s: its text. -->
 
     <!-- chat.workspace.* -->
     <string name="chat_workspace_switch">Switch workspace</string><!-- Tooltip of the workspace switcher. -->
@@ -493,7 +494,6 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string><!-- Notification text. -->
-    <string name="chat_list_you">You: %1$s</string><!-- Second line of a direct message row in the conversation list when the newest message is the user's own. %1$s: its text. -->
     <string name="chat_notify_summary_title">Team chat</string><!-- Title of the summary notification. -->
     <!-- Its text. -->
     <plurals name="chat_notify_summary_body">

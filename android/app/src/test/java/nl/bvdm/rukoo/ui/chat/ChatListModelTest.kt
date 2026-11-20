@@ -169,15 +169,21 @@ class ChatListModelTest {
     }
 
     @Test
-    fun `the workspace button gets a dot when another workspace asks for attention, a warning when that one is stopped`() {
+    fun `the workspace button gets a dot when another workspace asks for attention, a warning when the selected one is stopped`() {
         val acme = WorkspaceSummary("w1", "Acme", "member", status = WorkspaceStatus.OK, attention = 2)
         val studio = WorkspaceSummary("w2", "Studio", "member", status = WorkspaceStatus.OK)
         // Only the selected workspace has news: the list itself shows it.
         assertNull(ChatListModel.othersNews(listOf(acme, studio), "w1"))
         assertEquals(NewsTone.UNREAD, ChatListModel.othersNews(listOf(acme, studio), "w2"))
         assertEquals(NewsTone.UNREAD, ChatListModel.othersNews(listOf(acme.copy(attention = 0, unread = true), studio), "w2"))
-        assertEquals(NewsTone.WAITING, ChatListModel.othersNews(listOf(acme.copy(status = WorkspaceStatus.QUARANTINED), studio), "w2"))
         assertNull(ChatListModel.othersNews(listOf(acme.copy(attention = 0), studio), "w2"))
+        // As desktop's tile: the warning is for the selected workspace being stopped, whatever the others have.
+        val stopped = studio.copy(status = WorkspaceStatus.QUARANTINED)
+        assertEquals(NewsTone.WAITING, ChatListModel.othersNews(listOf(acme, stopped), "w2"))
+        assertEquals(NewsTone.WAITING, ChatListModel.othersNews(listOf(acme.copy(attention = 0), stopped), "w2"))
+        // Another workspace being stopped is no warning on this button.
+        assertEquals(NewsTone.UNREAD, ChatListModel.othersNews(listOf(acme.copy(status = WorkspaceStatus.QUARANTINED), studio), "w2"))
+        assertNull(ChatListModel.othersNews(listOf(acme.copy(attention = 0, status = WorkspaceStatus.QUARANTINED), studio), "w2"))
     }
 
     @Test
