@@ -26,6 +26,11 @@
 // readLocal rises at once, on disk, and its badges are recounted from the cache; POST /read follows at most once per
 // READ_FLUSH per room, and a failed one goes again at the end of the next run.
 //
+// Mark unread (rich contract 3.2). chatMarkUnread moves the room's read position back to before a message through
+// POST /unread, and the room holds back its reads (readPaused) until the person opens it again: switching to another
+// room and back, or opening Chat again. chatMarkRead still works then, and ends the hold. Another device follows
+// through the feed's readMark (store.upsertRoom), and holds back its reads of the room the same way.
+//
 // What the service gives this module: svc.store, svc.epoch, svc.call(ws, method, route, body), svc.guard(epoch),
 // svc.emitChat(payload), svc.roomsChanged(ws, ids), svc.setActive({ ws, room } | null), svc.active, svc.timing,
 // svc.timers, svc.now(), svc.isStale(err), svc.hookFailed(err), svc.outbox and svc.notifier.
@@ -41,12 +46,14 @@ const AROUND = 50;
 // The most events a thread keeps in memory from pages the cache couldn't take.
 const THREAD_EXTRA_MAX = 5000;
 
-// A checked event from a page that isn't cached, in the renderer's shape. removed: tombstoned here.
+// A checked event from a page that isn't cached, in the renderer's shape. removed: tombstoned here. A message keeps
+// its files, cards and reactions as the page had them.
 function detached(e, removed) {
   const message = e.kind === 'message.posted';
   const gone = message && (e.redacted === true || removed);
   const data = {};
-  for (const key of ['name', 'visibility', 'member', 'members', 'target', 'targetSeq']) if (e[key] !== undefined) data[key] = e[key];
+  for (const key of ['name', 'visibility', 'member', 'members', 'target', 'targetSeq', 'emoji']) if (e[key] !== undefined) data[key] = e[key];
+  const rich = message && !gone;
   return {
     seq: e.seq,
     id: e.id,
@@ -54,10 +61,13 @@ function detached(e, removed) {
     actor: e.actor,
     at: e.at,
     root: e.root ?? null,
-    text: message && !gone ? e.text : null,
-    mentions: message && !gone ? e.mentions || [] : [],
+    text: rich ? e.text : null,
+    mentions: rich ? e.mentions || [] : [],
     redacted: Boolean(gone),
-    data
+    data,
+    attachments: rich ? e.attachments || [] : [],
+    previews: rich ? e.previews || [] : [],
+    reactions: rich ? e.reactions || [] : []
   };
 }
 
@@ -84,7 +94,7 @@ function badgesAt(store, ws, c, to) {
 function current(e, floor, gone) {
   if (e.seq < floor) return null;
   if (e.kind !== 'message.posted' || e.redacted || !gone(e.id)) return e;
-  return { ...e, text: null, mentions: [], redacted: true };
+  return { ...e, text: null, mentions: [], redacted: true, attachments: [], previews: [], reactions: [] };
 }
 
 class History {
@@ -98,7 +108,8 @@ class History {
     chatMarkRead: (svc, ws, c) => svc.history.markRead(ws, c),
     chatMute: (svc, ws, c, muted) => svc.history.mute(ws, c, muted),
     chatSaveDraft: (svc, ws, c, root, draft) => svc.history.saveDraft(ws, c, root, draft),
-    chatDraft: (svc, ws, c, root) => svc.history.storedDraft(ws, c, root)
+    chatDraft: (svc, ws, c, root) => svc.history.storedDraft(ws, c, root),
+    chatMarkUnread: (svc, ws, c, message) => svc.history.markUnread(ws, c, message)
   };
 
   constructor(svc) {
@@ -188,8 +199,10 @@ class History {
   // One page of GET /events, in one transaction. kind 'after' with bound X for ?after=X, 'before' with bound Y for
   // ?before=Y; newest: the page that loads an uncached room, which may start its range. Returns null when the room went,
   // its grant moved since grant or the workspace's cache revision since rev (the page is dropped), else { events,
-  // joined, removed, redacted }: events as the renderer gets them, joined whether the cache took them, removed the IDs
-  // whose alerts go (floor, redactions), redacted the cached messages that lost their text.
+  // joined, removed, redacted, updated }: events as the renderer gets them, joined whether the cache took them, removed
+  // the IDs whose alerts go (floor, redactions), redacted the cached messages that lost their text, updated the cached
+  // messages whose reactions or cards its events changed (rich contract 3.1). A page isn't always pushed to the
+  // renderer, so updated names those inside it too.
   applyPage(ws, c, page, { grant, rev, kind, bound, newest = false }) {
     const store = this.store();
     const out = store.tx(() => {
@@ -227,8 +240,9 @@ class History {
         const target = store.eventById(ws, e.target);
         if (target && target.room === c && !target.redacted) redacted.push(e.target);
       }
+      const touched = new Set();
       if (joined && events.length) {
-        store.writeEvents(ws, c, events);
+        store.writeEvents(ws, c, events, { touched });
         store.run(
           'UPDATE room SET lo = MIN(COALESCE(lo, ?), ?), hi = MAX(COALESCE(hi, ?), ?) WHERE ws = ? AND id = ?',
           first,
@@ -249,7 +263,7 @@ class History {
         const row = joined ? store.eventAt(ws, c, e.seq) : null;
         return row && row.id === e.id ? wire.toRenderer(row) : detached(e, store.hasTombstone(ws, e.id));
       });
-      return { events: shown, joined, removed: [...new Set([...removed, ...targets])], redacted };
+      return { events: shown, joined, removed: [...new Set([...removed, ...targets])], redacted, updated: [...touched] };
     });
     if (out) this.afterApply(ws, c, out);
     return out;
@@ -259,9 +273,11 @@ class History {
     const svc = this.svc;
     svc.roomsChanged(ws, [c]);
     if (out.redacted.length) svc.emitChat({ kind: 'redacted', ws, conversation: c, ids: out.redacted });
+    if (out.updated && out.updated.length) svc.emitUpdated(ws, c, out.updated);
     if (out.removed.length) {
       svc.hook(() => this.onRemoved(ws, c, out.removed));
       svc.hook(() => svc.notifier.onRemoved(ws, c, out.removed));
+      svc.hook(() => svc.files.onRemoved(ws, c, out.removed));
     }
   }
 
@@ -389,9 +405,21 @@ class History {
       });
   }
 
+  // A kept draft as the renderer gets it (rich contract 4.5): its text, mentions and the files it keeps. Files whose
+  // upload expired go, and expired says how many; the rest are staged again as ready (files.restore), so the tray
+  // shows them and chatSend takes them.
   draft(ws, c, root) {
     const d = this.store().getDraft(ws, c, root);
-    return d ? { text: d.text, mentions: d.mentions } : null;
+    if (!d) return null;
+    const { attachments, expired } = this.svc.files.restore(ws, c, root, d.attachments);
+    if (expired) {
+      try {
+        this.store().putDraft(ws, c, root, { text: d.text, mentions: d.mentions, attachments });
+      } catch (err) {
+        this.svc.hookFailed(err);
+      }
+    }
+    return { text: d.text, mentions: d.mentions, attachments, expired };
   }
 
   // RoomView (contract 4.6). Without at: the newest EVENTS_PAGE cached events. With at: from AROUND events before it
@@ -443,8 +471,14 @@ class History {
   // the backfill to at, unless the cache already holds it up to head.
   async openRoom(ws, c, opts = {}) {
     const svc = this.svc;
-    const r = this.room(ws, c);
+    let r = this.room(ws, c);
     const epoch = svc.epoch;
+    // Opening the room again ends a hold of its reads after Mark unread; a chatOpen of the room already open doesn't.
+    if (r.readPaused && !this.isOpen(ws, c)) {
+      this.store().setRoomFields(ws, c, { readPaused: 0 });
+      svc.roomsChanged(ws, [c]);
+      r = this.room(ws, c);
+    }
     const readAtOpen = r.readLocal;
     const open = { ws, room: c, epoch, quiet: false, lo: r.lo };
     this.open = open;
@@ -673,19 +707,27 @@ class History {
   // ---- reads (contract 3.9) ----
 
   // chatRead: the renderer showed messages up to seq. readLocal rises (never falls), the badges are recounted, and the
-  // flush to the server follows.
-  read(ws, c, seq) {
+  // flush to the server follows. A room held back after Mark unread takes no reports (rich contract 3.2); force is
+  // chatMarkRead's, which ends the hold.
+  read(ws, c, seq, { force = false } = {}) {
     const svc = this.svc;
     const store = this.store();
     this.room(ws, c);
+    let paused = false;
     const moved = store.tx(() => {
       const r = store.getRoom(ws, c);
+      if (r.readPaused && !force) return false;
+      if (r.readPaused) {
+        store.setRoomFields(ws, c, { readPaused: 0 });
+        paused = true;
+      }
       const to = Math.min(seq, r.head);
       if (to <= r.readLocal) return false;
       store.setRoomFields(ws, c, { readLocal: to });
       recount(store, ws, c);
       return true;
     });
+    if (paused && !moved) svc.roomsChanged(ws, [c]);
     if (!moved) return true;
     svc.roomsChanged(ws, [c]);
     svc.hook(() => svc.notifier.onRead(ws, c));
@@ -693,10 +735,47 @@ class History {
     return true;
   }
 
-  // chatMarkRead: everything up to head.
+  // chatMarkRead: everything up to head, also while the room holds back its reads, whose hold it ends.
   markRead(ws, c) {
     const r = this.room(ws, c);
-    return this.read(ws, c, r.head);
+    return this.read(ws, c, r.head, { force: true });
+  }
+
+  // chatMarkUnread (rich contract 3.2): the read position goes back to before message on the server, and here in one
+  // transaction: read, readLocal and readSent take the answer's read, readMark is stored, the badges are counted again
+  // from the cache when it covers the rest, and the room holds back its reads until it is opened again. Read flushes of
+  // the room that are on their way are dropped (flush checks readMark), so they can't move it forward again. Answers
+  // { read }.
+  async markUnread(ws, c, message) {
+    const svc = this.svc;
+    this.room(ws, c);
+    this.requireOk(ws);
+    const epoch = svc.epoch;
+    const answer = wire.checkUnread(await svc.call(ws, 'POST', `/conversations/${c}/unread`, { message }, { retry: true }));
+    svc.guard(epoch);
+    const store = this.store();
+    const f = this.flushes.get(keyOf(ws, c));
+    if (f && f.timer) {
+      svc.timers.clearTimeout(f.timer);
+      f.timer = null;
+    }
+    const changed = store.tx(() => {
+      const r = store.getRoom(ws, c);
+      if (!r) return false;
+      // Another device marked it unread again after this one: the feed brings that.
+      if (answer.readMark < r.readMark) return false;
+      store.setRoomFields(ws, c, { read: answer.read, readLocal: answer.read, readSent: answer.read, readMark: answer.readMark, readPaused: 1 });
+      const me = store.getWs(ws)?.me;
+      const now = store.getRoom(ws, c);
+      if (now.read >= now.head) store.setRoomFields(ws, c, { unread: 0, mentions: 0 });
+      else if (me && now.lo !== null && now.hi !== null && now.hi >= now.head && now.lo <= now.read + 1) {
+        store.setRoomFields(ws, c, store.countBadges(ws, c, now.read, me));
+      }
+      return true;
+    });
+    if (changed) svc.roomsChanged(ws, [c]);
+    svc.sync(ws, 'write');
+    return { read: answer.read };
   }
 
   flushState(ws, c) {
@@ -742,6 +821,7 @@ class History {
     f.again = false;
     const epoch = svc.epoch;
     const rev = svc.revision(ws);
+    const mark = r.readMark ?? 0;
     let ok = false;
     try {
       const answer = wire.checkRead(await svc.call(ws, 'POST', `/conversations/${c}/read`, { seq: r.readLocal }));
@@ -752,6 +832,8 @@ class History {
         if (svc.revision(ws) !== rev) return false;
         const now = store.getRoom(ws, c);
         if (!now) return false;
+        // Marked unread since the request went: its answer is from before, and mustn't move the read forward again.
+        if ((now.readMark ?? 0) !== mark || now.readPaused) return false;
         const readLocal = Math.max(now.readLocal, answer.read);
         store.setRoomFields(ws, c, {
           read: Math.max(now.read, answer.read),
@@ -793,12 +875,14 @@ class History {
     return { room: wire.toRoom(store.getRoom(ws, c)) };
   }
 
-  // chatSaveDraft: the main composer's draft (root null) or a thread's. null or empty text deletes it.
+  // chatSaveDraft: the main composer's draft (root null) or a thread's, with the ready files it keeps. null, or empty
+  // text without files, deletes it.
   saveDraft(ws, c, root, draft) {
     this.room(ws, c);
     const store = this.store();
-    if (!draft || draft.text === '') store.deleteDraft(ws, c, root);
-    else store.putDraft(ws, c, root, { text: draft.text, mentions: draft.mentions });
+    const attachments = draft && Array.isArray(draft.attachments) ? draft.attachments : [];
+    if (!draft || (draft.text === '' && !attachments.length)) store.deleteDraft(ws, c, root);
+    else store.putDraft(ws, c, root, { text: draft.text, mentions: draft.mentions, attachments });
     return true;
   }
 

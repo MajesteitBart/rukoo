@@ -17,7 +17,8 @@ const {
   Notification,
   Menu,
   screen,
-  session
+  session,
+  protocol
 } = require('electron');
 const { Engine } = require('./engine');
 const { Outbox, Handoff, savedToDrafts, askBeforeQuit } = require('./outbox');
@@ -58,6 +59,10 @@ const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner')
 // ---- chat ----
 const { WorkspaceService, chatTiming } = require('./workspaces');
 const { chatApi } = require('./workspaces/ipc');
+const { VIEW_SCHEME: CHAT_FILE_SCHEME } = require('./workspaces/files');
+// Team chat shows a downloaded image through rukoo-chat-file://view/<token> (workspaces/files.js), which serves only
+// files this session downloaded. Registered before the app is ready, as Electron requires.
+protocol.registerSchemesAsPrivileged([{ scheme: CHAT_FILE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 // ---- /chat ----
 // ---- voice ----
 const { VoiceService, VoiceError, bridgePathHere } = require('./voice');
@@ -433,6 +438,86 @@ function showBookingNotification({ title, body, open }) {
 }
 
 // ---- chat ----
+// What only Electron does for team chat's files (workspaces/files.js): the dialogs, opening a file in its default app,
+// and nativeImage for a thumbnail. Under SEM_HIDDEN a spec answers the dialogs itself: global.__semChatPick holds the
+// paths the next pick answers with, global.__semChatSaveTo the path the next Save writes to (null cancels), and a
+// file Rukoo would open is recorded in global.__semChatOpened instead.
+const chatHost = {
+  async pickFiles() {
+    if (process.env.SEM_HIDDEN && Array.isArray(global.__semChatPick)) {
+      const paths = global.__semChatPick.filter((p) => typeof p === 'string');
+      global.__semChatPick = null;
+      return paths;
+    }
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], title: t('composer.attachments.pick') });
+    return res.canceled ? [] : res.filePaths;
+  },
+  async saveDialog(name) {
+    if (process.env.SEM_HIDDEN && global.__semChatSaveTo !== undefined) {
+      const to = global.__semChatSaveTo;
+      global.__semChatSaveTo = undefined;
+      return typeof to === 'string' ? to : null;
+    }
+    const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), name) });
+    return res.canceled || !res.filePath ? null : res.filePath;
+  },
+  async openPath(file) {
+    if (process.env.SEM_HIDDEN) {
+      (global.__semChatOpened ||= []).push(file);
+      return '';
+    }
+    return shell.openPath(file);
+  },
+  async askRisky(name) {
+    const res = await dialog.showMessageBox(win, {
+      type: 'warning',
+      title: t('native.attachments.open'),
+      message: t('native.attachments.riskyTitle', { filename: name }),
+      detail: t('native.attachments.riskyHelp'),
+      buttons: [t('common.actions.cancel'), t('native.attachments.save')],
+      defaultId: 0,
+      cancelId: 0
+    });
+    return res.response === 1 ? 'save' : 'cancel';
+  },
+  // A PNG data URL of the image fitting side by side pixels, or null for a format nativeImage can't read.
+  thumbnail(file, side) {
+    const img = nativeImage.createFromPath(file);
+    if (img.isEmpty()) return null;
+    const { width, height } = img.getSize();
+    const scale = Math.min(1, side / Math.max(width, height, 1));
+    return img.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: 'good' }).toDataURL();
+  },
+  imageSize(file) {
+    const img = nativeImage.createFromPath(file);
+    return img.isEmpty() ? null : img.getSize();
+  }
+};
+
+// rukoo-chat-file://view/<token>: a file chatFile(…, 'view') downloaded in this session, with headers that keep it
+// from running or being sniffed as anything but its type.
+async function serveChatFile(request) {
+  const hit = workspaces && workspaces.files ? workspaces.files.serve(request.url) : null;
+  if (!hit) return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } });
+  let body;
+  try {
+    body = await fs.promises.readFile(hit.path);
+  } catch (_) {
+    return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } });
+  }
+  const image = hit.type !== 'application/octet-stream';
+  return new Response(body, {
+    headers: {
+      'content-type': hit.type,
+      'content-length': String(body.length),
+      'content-disposition': image ? 'inline' : 'attachment',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'cache-control': 'private, no-store'
+    }
+  });
+}
+
 // Team chat alerts (workspaces/notify.js), each with a stable id so a read or a removal can take it back. A toast
 // while the main window is focused; nothing while the screen records; recorded in __semNotices in test mode; else a
 // desktop notification whose click opens the conversation at the message.
@@ -2222,8 +2307,10 @@ app.whenReady().then(() => {
     account,
     dataDir: path.join(app.getPath('userData'), 'data'),
     settings: () => engine.settings,
-    timing: chatTiming(process.env)
+    timing: chatTiming(process.env),
+    host: chatHost
   }).init();
+  protocol.handle(CHAT_FILE_SCHEME, serveChatFile);
   if (process.env.SEM_HIDDEN) {
     global.__semChat = workspaces;
     // What a click on a chat notification does, for a spec that follows one recorded in __semNotices.

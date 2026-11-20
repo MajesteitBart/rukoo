@@ -13,12 +13,13 @@ const { PASSWORD, attach, signIn, newAccount, chatService, settled, watchCalls, 
 const { tempDir } = require('./tmp');
 const { WorkspaceService, chatTiming, blankState, isAvailable } = require('../src/main/workspaces');
 const { chatApi } = require('../src/main/workspaces/ipc');
-const { openStore, SCHEMA } = require('../src/main/workspaces/store');
+const { openStore, SCHEMA, SCHEMA_VERSION } = require('../src/main/workspaces/store');
 const { ChatError } = require('../src/main/workspaces/wire');
 const { AccountError } = require('../src/main/account/client');
 const { History } = require('../src/main/workspaces/history');
 const { Outbox } = require('../src/main/workspaces/outbox');
 const { Manage } = require('../src/main/workspaces/manage');
+const { Files } = require('../src/main/workspaces/files');
 const { Notifier } = require('../src/main/workspaces/notify');
 
 let server;
@@ -181,12 +182,14 @@ test('a server without team chat gets no workspace requests, and Chat is unavail
 
 const STATE_KEYS = [
   'available', 'storage', 'signedIn', 'server', 'host', 'operator', 'jurisdiction', 'signups', 'inviteSignups', 'retention', 'limits',
-  'notifications', 'pendingJoin', 'unsent', 'lostUnsent', 'selected', 'connection', 'attention', 'unread', 'workspaces'
+  'notifications', 'pendingJoin', 'unsent', 'lostUnsent', 'selected', 'connection', 'attention', 'unread', 'workspaces',
+  // Rich messages: what the server can do, and its files settings.
+  'capabilities', 'files'
 ].sort();
 const SUMMARY_KEYS = ['id', 'name', 'role', 'status', 'syncing', 'socket', 'error', 'attention', 'unread'].sort();
 const ROOM_KEYS = [
   'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'role', 'members', 'head', 'floor', 'lastAt',
-  'read', 'unread', 'mentions', 'attention', 'muted', 'hasCache'
+  'read', 'unread', 'mentions', 'attention', 'muted', 'hasCache', 'readMark', 'readingPaused'
 ].sort();
 
 test('ChatState, WorkspaceView and the events have the shapes of contract 4.5 and 4.6', async (t) => {
@@ -365,7 +368,7 @@ test('a broken cache file is replaced, and its unsent messages are reported once
   const db = new DatabaseSync(path.join(dir, 'chat.db'));
   try {
     db.exec(SCHEMA);
-    db.exec(`INSERT INTO meta (key, value) VALUES ('schema', '2')`);
+    db.prepare(`INSERT INTO meta (key, value) VALUES ('schema', ?)`).run(String(SCHEMA_VERSION + 1));
     db.exec(`INSERT INTO ws (id, name, role) VALUES ('w', 'Old', 'member')`);
     db.exec(`INSERT INTO room (ws, id, kind, visibility, archived, grantId, members, head, floor, read, readLocal, readSent, unread, mentions)
              VALUES ('w', 'c', 'channel', 'workspace', 0, 'g', 2, 1, 1, 0, 0, 0, 0, 0)`);
@@ -385,7 +388,7 @@ test('a broken cache file is replaced, and its unsent messages are reported once
   assert.equal((await chatApi(() => svc).chatState()).lostUnsent, 2);
   assert.equal(svc.state().lostUnsent, 0, 'reported once');
   await settled(svc, ws.id);
-  assert.equal(svc.store.getMeta('schema'), '1');
+  assert.equal(svc.store.getMeta('schema'), String(SCHEMA_VERSION));
   assert.equal(svc.store.countUnsent(), 0);
 });
 
@@ -448,7 +451,7 @@ test('the modules other packages fill in start as hooks that do nothing', () => 
   const notifier = new Notifier(svc);
   for (const hook of ['afterRun', 'onRead', 'onRemoved', 'onEvicted', 'onWorkspaceGone', 'clear']) assert.equal(typeof notifier[hook], 'function');
   // The core methods, and those the modules add.
-  const modules = [History, Outbox, Manage].flatMap((Module) => Object.keys(Module.METHODS));
+  const modules = [History, Outbox, Manage, Files].flatMap((Module) => Object.keys(Module.METHODS));
   assert.deepEqual(Object.keys(chatApi(() => null)).sort(), ['chatReload', 'chatSelect', 'chatState', 'chatSync', 'chatView', ...modules].sort());
 });
 

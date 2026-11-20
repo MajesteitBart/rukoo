@@ -7,12 +7,20 @@
 //
 // Rows are written with INSERT ... ON CONFLICT ... DO UPDATE, never INSERT OR REPLACE: a replace deletes the row first,
 // and the cascade would take a room's events, queued sends, drafts and notices with it.
+//
+// Version 2 (rich chat contract 4.2) adds what rich messages need: a message's files, link cards and reactions, the
+// files of an unsent message and of a draft, a room's readMark and whether this device holds back its reads of it,
+// and the index of downloaded files. A version 1 file migrates in place; a new file is made as version 1 and migrated
+// the same way, so both end with the same tables.
 const fs = require('fs');
 const path = require('path');
-const { ChatError } = require('./wire');
+const { ChatError, jsonList } = require('./wire');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const ROOM_CACHE_MAX = 2000;
+// Downloaded files live next to chat.db (rich contract 4.6); staged uploads made from dropped or pasted bytes too.
+const FILES_DIR = 'chat-files';
+const UPLOADS_DIR = 'chat-uploads';
 
 // busy_timeout first, so a lock another connection holds a moment longer is waited for from the first statement on.
 const PRAGMAS = `
@@ -23,7 +31,7 @@ PRAGMA foreign_keys = ON;
 PRAGMA secure_delete = ON;
 `;
 
-const SCHEMA = `
+const SCHEMA_V1 = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 -- schema = '1'; session = the session tag; server = the credential URL; selected = a w_ ID;
 -- clockOffset = server time minus local time in ms; clockAt = local ms when it was measured
@@ -138,6 +146,35 @@ CREATE TABLE notice (                       -- alerts on screen, so a read or a 
 ) WITHOUT ROWID;
 `;
 
+// Each version's changes to the one before, in order. MIGRATIONS[v] takes a file of version v - 1 to version v.
+const MIGRATIONS = {
+  2: `
+ALTER TABLE event ADD COLUMN attachments TEXT;      -- a message's files, JSON [File]; NULL means []
+ALTER TABLE event ADD COLUMN previews TEXT;         -- its link cards, JSON [Preview]; NULL means []
+ALTER TABLE event ADD COLUMN reactions TEXT;        -- its reactions, JSON [{ emoji, actors }]; NULL means []
+ALTER TABLE outbox ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';   -- JSON [File] the message sends
+ALTER TABLE draft ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';    -- JSON [File] with expiresAt
+ALTER TABLE room ADD COLUMN readMark INTEGER NOT NULL DEFAULT 0;        -- the feed's readMark as last seen
+ALTER TABLE room ADD COLUMN readPaused INTEGER NOT NULL DEFAULT 0;      -- 1 after Mark unread until the room opens again
+
+CREATE TABLE file_cache (                   -- downloaded files in chat-files/, each named by its SHA-256
+  ws TEXT NOT NULL, room TEXT NOT NULL,
+  file TEXT NOT NULL,                       -- f_
+  message TEXT,                             -- e_ of the message whose file or card image it is, when known
+  sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+  name TEXT NOT NULL, type TEXT NOT NULL,   -- as the download route answered
+  usedAt INTEGER NOT NULL,                  -- for the least recently used to go first
+  PRIMARY KEY (ws, file),
+  FOREIGN KEY (ws, room) REFERENCES room(ws, id) ON DELETE CASCADE
+) WITHOUT ROWID;
+CREATE INDEX file_cache_message ON file_cache (ws, message) WHERE message IS NOT NULL;
+CREATE INDEX file_cache_sha ON file_cache (sha256);
+`
+};
+
+// The tables of the current version, as a new file gets them.
+const SCHEMA = [SCHEMA_V1, ...Object.keys(MIGRATIONS).sort((a, b) => a - b).map((v) => MIGRATIONS[v])].join('\n');
+
 // The columns a caller may set through updateWs, setRoomFields and updateOutbox. Everything else is the store's.
 const WS_FIELDS = [
   'name', 'role', 'me', 'myName', 'generation', 'keyId', 'limits', 'retention', 'cursor', 'passing', 'fresh', 'state',
@@ -145,12 +182,62 @@ const WS_FIELDS = [
 ];
 const ROOM_FIELDS = [
   'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members',
-  'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted'
+  'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted',
+  'readMark', 'readPaused'
 ];
-const OUTBOX_FIELDS = ['grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt'];
-const JSON_FIELDS = new Set(['limits', 'retention', 'participants', 'mentions']);
+const OUTBOX_FIELDS = ['grantId', 'generation', 'text', 'mentions', 'root', 'operationId', 'state', 'reason', 'attempts', 'nextAt', 'attachments'];
+const JSON_FIELDS = new Set(['limits', 'retention', 'participants', 'mentions', 'attachments']);
 // The fields of an event besides its own columns, kept as JSON in data.
 const EVENT_COLUMNS = new Set(['seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'redacted']);
+// A message's own columns since version 2. Other kinds keep fields of these names in data, such as the cards of a
+// message.previewed.
+const RICH_COLUMNS = new Set(['attachments', 'previews', 'reactions']);
+// The events that change a cached message instead of showing as one (rich contract 3.1).
+const CHANGE_KINDS = new Set(['reaction.added', 'reaction.removed', 'message.previewed']);
+
+// A list as a column stores it: JSON, or NULL for an empty one.
+const listColumn = (list) => (Array.isArray(list) && list.length ? JSON.stringify(list) : null);
+
+// An event's data column as an object, {} for NULL or anything else.
+function parseData(text) {
+  if (text === null || text === undefined) return {};
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+// A message's reactions after actor added (on) or took back emoji, or null when that changes nothing (rich contract
+// 3.1): an added actor goes at the end of the emoji's group, a new group at the end; a group that empties goes.
+function reactionChange(list, emoji, actor, on) {
+  const groups = Array.isArray(list) ? list.map((g) => ({ emoji: g.emoji, actors: Array.isArray(g.actors) ? [...g.actors] : [] })) : [];
+  const group = groups.find((g) => g.emoji === emoji);
+  if (on) {
+    if (group && group.actors.includes(actor)) return null;
+    if (group) group.actors.push(actor);
+    else groups.push({ emoji, actors: [actor] });
+    return groups;
+  }
+  if (!group || !group.actors.includes(actor)) return null;
+  group.actors = group.actors.filter((a) => a !== actor);
+  return group.actors.length ? groups : groups.filter((g) => g !== group);
+}
+
+// The folders of downloaded and staged files of the cache at file. They go with it.
+const filesDir = (file) => path.join(path.dirname(file), FILES_DIR);
+const uploadsDir = (file) => path.join(path.dirname(file), UPLOADS_DIR);
+
+function removeFileFolders(file) {
+  for (const dir of [filesDir(file), uploadsDir(file)]) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (_) {
+      // A file another process holds; the files module sweeps what no row names at the next start.
+    }
+  }
+}
 
 const sidecars = (file) => [file, `${file}-wal`, `${file}-shm`];
 
@@ -300,6 +387,7 @@ class Store {
       }
     }
     this.close();
+    removeFileFolders(this.file);
     return removeFiles(this.file);
   }
 
@@ -424,6 +512,12 @@ class Store {
   // - every field is updated, readLocal and readSent rise to read, and events below floor go.
   // keepLocal false also forgets what this device read and cached, as for a new room; muted and notified stay.
   // The badges are the server's; the caller recounts them with countBadges when readLocal is ahead (3.9).
+  //
+  // readMark (rich contract 3.2) counts how often the person marked the room unread. A row with a higher one than the
+  // cached is the first since a Mark unread: read, readLocal and readSent take its read, also when that is lower, and
+  // this device holds back its reads of the room until it opens it again. A row with a lower one left the server
+  // before the last Mark unread this device knows of, so its read position and badges are from before it and stay
+  // out; everything else of the row counts.
   // Returns { row, inserted, grantChanged, dropped }: dropped lists the message IDs the floor took.
   upsertRoom(ws, feed, { keepLocal = true } = {}) {
     return this.tx(() => {
@@ -431,18 +525,28 @@ class Store {
       const grantChanged = Boolean(before && before.grantId !== feed.grant);
       if (before && (grantChanged || !keepLocal)) this.dropRoomCache(ws, feed.conversation);
       const local = before && keepLocal;
+      const mark = feed.readMark ?? 0;
+      // Older: from before the last Mark unread. Newer: the first row since one.
+      const older = 'excluded.readMark < room.readMark';
+      const newer = 'excluded.readMark > room.readMark';
       this.run(
         `INSERT INTO room (ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role,
-           members, head, floor, lastAt, read, readLocal, readSent, unread, mentions)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, readMark)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (ws, id) DO UPDATE SET
            kind = excluded.kind, name = excluded.name, visibility = excluded.visibility, archived = excluded.archived,
            closedReason = excluded.closedReason, participants = excluded.participants, startedBy = excluded.startedBy,
            grantId = excluded.grantId, role = excluded.role, members = excluded.members, head = excluded.head,
-           floor = excluded.floor, lastAt = excluded.lastAt, read = excluded.read,
-           readLocal = ${local ? 'MAX(room.readLocal, excluded.read)' : 'excluded.read'},
-           readSent = ${local ? 'MAX(room.readSent, excluded.read)' : 'excluded.read'},
-           unread = excluded.unread, mentions = excluded.mentions`,
+           floor = excluded.floor, lastAt = excluded.lastAt,
+           read = CASE WHEN ${older} THEN room.read ELSE excluded.read END,
+           readLocal = CASE WHEN ${older} THEN room.readLocal WHEN ${newer} THEN excluded.read
+                            ELSE ${local ? 'MAX(room.readLocal, excluded.read)' : 'excluded.read'} END,
+           readSent = CASE WHEN ${older} THEN room.readSent WHEN ${newer} THEN excluded.read
+                           ELSE ${local ? 'MAX(room.readSent, excluded.read)' : 'excluded.read'} END,
+           unread = CASE WHEN ${older} THEN room.unread ELSE excluded.unread END,
+           mentions = CASE WHEN ${older} THEN room.mentions ELSE excluded.mentions END,
+           readPaused = CASE WHEN ${newer} THEN 1 ELSE room.readPaused END,
+           readMark = MAX(room.readMark, excluded.readMark)`,
         ws,
         feed.conversation,
         feed.kind,
@@ -462,7 +566,8 @@ class Store {
         feed.read,
         feed.read,
         feed.unread,
-        feed.mentions
+        feed.mentions,
+        mark
       );
       const dropped = this.applyFloor(ws, feed.conversation, feed.floor);
       return { row: this.getRoom(ws, feed.conversation), inserted: !before, grantChanged, dropped };
@@ -524,20 +629,32 @@ class Store {
 
   // Writes checked events (wire.checkEvent) and returns the rows as stored. A tombstoned message is stored removed, a
   // removed one never gets its text back, and a message.redacted removes its target and tombstones it.
-  writeEvents(ws, room, events) {
+  //
+  // Rich messages (rich contract 3.1): a message keeps its files, cards and reactions as the server sent them. Reaction
+  // and card events are stored like every event, so the range stays contiguous, and change their target when it is
+  // cached. A message from a page carries its reactions and cards as they were when the page was made; the cached
+  // reaction and card events after the page then apply on top again, in order, so an older page can't take back one
+  // that came in meanwhile. Applying one twice changes nothing. touched, a Set, collects the IDs of cached messages
+  // whose reactions or cards changed, for the updated event.
+  writeEvents(ws, room, events, { touched = null } = {}) {
     const stored = [];
+    const messages = new Set();
     for (const e of events) {
       const message = e.kind === 'message.posted';
       const removed = message && (e.redacted === true || this.hasTombstone(ws, e.id));
       const data = {};
-      for (const [k, v] of Object.entries(e)) if (!EVENT_COLUMNS.has(k)) data[k] = v;
+      for (const [k, v] of Object.entries(e)) if (!EVENT_COLUMNS.has(k) && !(message && RICH_COLUMNS.has(k))) data[k] = v;
+      const rich = message && !removed;
       this.run(
-        `INSERT INTO event (ws, room, seq, id, kind, actor, at, root, text, mentions, data, redacted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO event (ws, room, seq, id, kind, actor, at, root, text, mentions, data, redacted, attachments, previews, reactions)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (ws, room, seq) DO UPDATE SET
            id = excluded.id, kind = excluded.kind, actor = excluded.actor, at = excluded.at, root = excluded.root,
            text = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.text END,
            mentions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.mentions END,
+           attachments = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.attachments END,
+           previews = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.previews END,
+           reactions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.reactions END,
            data = excluded.data, redacted = MAX(event.redacted, excluded.redacted)`,
         ws,
         room,
@@ -547,26 +664,76 @@ class Store {
         e.actor,
         e.at,
         e.root ?? null,
-        message && !removed ? e.text : null,
-        message && !removed ? JSON.stringify(e.mentions || []) : null,
+        rich ? e.text : null,
+        rich ? JSON.stringify(e.mentions || []) : null,
         Object.keys(data).length ? JSON.stringify(data) : null,
-        removed ? 1 : 0
+        removed ? 1 : 0,
+        rich ? listColumn(e.attachments) : null,
+        rich ? listColumn(e.previews) : null,
+        rich ? listColumn(e.reactions) : null
       );
       if (e.kind === 'message.redacted' && e.target) {
         this.addTombstones(ws, [e.target]);
         this.redact(ws, [e.target]);
       }
+      if (rich) messages.add(e.id);
+      if (CHANGE_KINDS.has(e.kind) && this.applyChange(ws, room, e) && touched) touched.add(e.target);
       stored.push(e.seq);
+    }
+    // The cached reaction and card events after the page, again on top of the page's messages.
+    if (messages.size && events.length) {
+      const last = events[events.length - 1].seq;
+      const later = this.all(
+        `SELECT seq, kind, actor, data FROM event WHERE ws = ? AND room = ? AND seq > ?
+           AND kind IN ('reaction.added', 'reaction.removed', 'message.previewed') ORDER BY seq`,
+        ws,
+        room,
+        last
+      );
+      for (const row of later) {
+        const data = parseData(row.data);
+        if (!messages.has(data.target)) continue;
+        this.applyChange(ws, room, { ...data, kind: row.kind, actor: row.actor });
+      }
     }
     return stored.map((seq) => this.eventAt(ws, room, seq)).filter(Boolean);
   }
 
+  // A reaction or card event on its cached target, a message of the room that isn't removed. Returns whether the
+  // target changed.
+  applyChange(ws, room, e) {
+    if (!e || typeof e.target !== 'string') return false;
+    const target = this.get('SELECT room, seq, kind, redacted, previews, reactions FROM event WHERE ws = ? AND id = ?', ws, e.target);
+    if (!target || target.room !== room || target.kind !== 'message.posted' || target.redacted) return false;
+    if (e.kind === 'message.previewed') {
+      const next = listColumn(Array.isArray(e.previews) ? e.previews : []);
+      if (next === target.previews) return false;
+      this.run('UPDATE event SET previews = ? WHERE ws = ? AND room = ? AND seq = ?', next, ws, room, target.seq);
+      return true;
+    }
+    const next = reactionChange(jsonList(target.reactions), e.emoji, e.actor, e.kind === 'reaction.added');
+    if (!next) return false;
+    this.run('UPDATE event SET reactions = ? WHERE ws = ? AND room = ? AND seq = ?', listColumn(next), ws, room, target.seq);
+    return true;
+  }
+
+  // This device's own reaction, answered by the server (chatReact): the cached message changes at once, before its
+  // reaction event comes through the feed, which then changes nothing. Returns whether it changed.
+  react(ws, room, message, emoji, actor, on) {
+    return this.tx(() => this.applyChange(ws, room, { kind: on ? 'reaction.added' : 'reaction.removed', target: message, emoji, actor }));
+  }
+
+  // A message's cards as the server answered after the author removed one. Returns whether it changed.
+  setPreviews(ws, room, message, previews) {
+    return this.tx(() => this.applyChange(ws, room, { kind: 'message.previewed', target: message, previews }));
+  }
+
   // Events after the cached range, ascending: hi rises to the last, lo is set when the room had no cache, head follows,
   // and a room over ROOM_CACHE_MAX loses its lowest events. The caller checks that they start at hi + 1 (3.6).
-  appendEvents(ws, room, events, { max = ROOM_CACHE_MAX } = {}) {
+  appendEvents(ws, room, events, { max = ROOM_CACHE_MAX, touched = null } = {}) {
     if (!events.length) return [];
     return this.tx(() => {
-      const stored = this.writeEvents(ws, room, events);
+      const stored = this.writeEvents(ws, room, events, { touched });
       const first = events[0].seq;
       const last = events[events.length - 1].seq;
       this.run('UPDATE room SET lo = COALESCE(lo, ?), hi = MAX(COALESCE(hi, ?), ?), head = MAX(head, ?) WHERE ws = ? AND id = ?', first, last, last, last, ws, room);
@@ -576,10 +743,10 @@ class Store {
   }
 
   // Events before the cached range, ascending: lo falls to the first, hi is set when the room had no cache.
-  prependEvents(ws, room, events) {
+  prependEvents(ws, room, events, { touched = null } = {}) {
     if (!events.length) return [];
     return this.tx(() => {
-      const stored = this.writeEvents(ws, room, events);
+      const stored = this.writeEvents(ws, room, events, { touched });
       const first = events[0].seq;
       const last = events[events.length - 1].seq;
       this.run('UPDATE room SET lo = MIN(COALESCE(lo, ?), ?), hi = COALESCE(hi, ?), head = MAX(head, ?) WHERE ws = ? AND id = ?', first, first, last, last, ws, room);
@@ -651,15 +818,19 @@ class Store {
     });
   }
 
-  // Removed messages lose their text and mentions, in any room of the workspace. Returns { [room]: ids } for the ones
-  // that were cached with text, so the service can emit redacted.
+  // Removed messages lose their text and mentions, and their files, cards and reactions, in any room of the workspace.
+  // Returns { [room]: ids } for the ones that were cached with text, so the service can emit redacted.
   redact(ws, ids) {
     return this.tx(() => {
       const out = {};
       for (const id of ids) {
         const row = this.get('SELECT room, redacted FROM event WHERE ws = ? AND id = ?', ws, id);
         if (!row) continue;
-        this.run('UPDATE event SET text = NULL, mentions = NULL, redacted = 1 WHERE ws = ? AND id = ?', ws, id);
+        this.run(
+          'UPDATE event SET text = NULL, mentions = NULL, attachments = NULL, previews = NULL, reactions = NULL, redacted = 1 WHERE ws = ? AND id = ?',
+          ws,
+          id
+        );
         if (!row.redacted) (out[row.room] ||= []).push(id);
       }
       return out;
@@ -795,12 +966,13 @@ class Store {
 
   // ---- outbox ----
 
-  // A message to send, written before anything goes out (contract 3.8). mentions are stored as the wire's JSON.
+  // A message to send, written before anything goes out (contract 3.8). mentions are stored as the wire's JSON, and
+  // attachments as the File objects it sends (rich contract 3.5), whose IDs go on the wire.
   insertOutbox(row) {
     this.tx(() =>
       this.run(
-        `INSERT INTO outbox (local, ws, room, actor, grantId, generation, text, mentions, root, operationId, state, reason, attempts, nextAt, createdAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO outbox (local, ws, room, actor, grantId, generation, text, mentions, root, operationId, state, reason, attempts, nextAt, createdAt, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.local,
         row.ws,
         row.room,
@@ -815,7 +987,8 @@ class Store {
         row.reason ?? null,
         row.attempts ?? 0,
         row.nextAt ?? 0,
-        row.createdAt ?? this.now()
+        row.createdAt ?? this.now(),
+        JSON.stringify(row.attachments || [])
       )
     );
     return this.getOutbox(row.local);
@@ -881,22 +1054,24 @@ class Store {
 
   // ---- drafts ----
 
-  // root null is the room's main composer.
+  // root null is the room's main composer. attachments: the ready files the draft keeps, File objects with expiresAt.
   getDraft(ws, room, root) {
-    const row = this.get('SELECT text, mentions, at FROM draft WHERE ws = ? AND room = ? AND root = ?', ws, room, root || '');
-    return row ? { text: row.text, mentions: JSON.parse(row.mentions), at: row.at } : null;
+    const row = this.get('SELECT text, mentions, attachments, at FROM draft WHERE ws = ? AND room = ? AND root = ?', ws, room, root || '');
+    return row ? { text: row.text, mentions: JSON.parse(row.mentions), attachments: jsonList(row.attachments), at: row.at } : null;
   }
 
   putDraft(ws, room, root, draft) {
     this.tx(() =>
       this.run(
-        `INSERT INTO draft (ws, room, root, text, mentions, at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (ws, room, root) DO UPDATE SET text = excluded.text, mentions = excluded.mentions, at = excluded.at`,
+        `INSERT INTO draft (ws, room, root, text, mentions, attachments, at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (ws, room, root) DO UPDATE SET text = excluded.text, mentions = excluded.mentions,
+           attachments = excluded.attachments, at = excluded.at`,
         ws,
         room,
         root || '',
         draft.text,
         JSON.stringify(draft.mentions || []),
+        JSON.stringify(draft.attachments || []),
         this.now()
       )
     );
@@ -934,6 +1109,81 @@ class Store {
       return rows;
     });
   }
+
+  // ---- downloaded files (rich contract 4.6) ----
+
+  // The cached message of the room that holds file f_ as one of its files or as a card's image: { message, file }
+  // with the File object, or null.
+  messageWithFile(ws, room, file) {
+    const needle = `"id":"${file}"`;
+    const rows = this.all(
+      `SELECT id, attachments, previews FROM event WHERE ws = ? AND room = ? AND kind = 'message.posted' AND redacted = 0
+         AND (instr(attachments, ?) > 0 OR instr(previews, ?) > 0) ORDER BY seq DESC LIMIT 5`,
+      ws,
+      room,
+      needle,
+      needle
+    );
+    for (const row of rows) {
+      const found = jsonList(row.attachments).find((f) => f && f.id === file) || jsonList(row.previews).map((p) => p && p.image).find((f) => f && f.id === file);
+      if (found) return { message: row.id, file: found };
+    }
+    return null;
+  }
+
+  getCachedFile(ws, file) {
+    return this.get('SELECT * FROM file_cache WHERE ws = ? AND file = ?', ws, file);
+  }
+
+  putCachedFile(row) {
+    this.tx(() =>
+      this.run(
+        `INSERT INTO file_cache (ws, room, file, message, sha256, size, name, type, usedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (ws, file) DO UPDATE SET room = excluded.room, message = COALESCE(excluded.message, file_cache.message),
+           sha256 = excluded.sha256, size = excluded.size, name = excluded.name, type = excluded.type, usedAt = excluded.usedAt`,
+        row.ws,
+        row.room,
+        row.file,
+        row.message ?? null,
+        row.sha256,
+        row.size,
+        row.name,
+        row.type,
+        row.usedAt ?? this.now()
+      )
+    );
+  }
+
+  touchCachedFile(ws, file, at = this.now()) {
+    this.tx(() => this.run('UPDATE file_cache SET usedAt = ? WHERE ws = ? AND file = ?', at, ws, file));
+  }
+
+  // The rows of removed messages' files go; the files module then deletes what no row names any more.
+  dropCachedFilesOf(ws, messages) {
+    return this.tx(() => {
+      let n = 0;
+      for (const message of messages) n += Number(this.run('DELETE FROM file_cache WHERE ws = ? AND message = ?', ws, message).changes);
+      return n;
+    });
+  }
+
+  deleteCachedFile(ws, file) {
+    this.tx(() => this.run('DELETE FROM file_cache WHERE ws = ? AND file = ?', ws, file));
+  }
+
+  // Each downloaded file once, with its size and when any row of it was last used, least recently used first.
+  cachedFiles() {
+    return this.all('SELECT sha256, MAX(size) AS size, MAX(usedAt) AS usedAt FROM file_cache GROUP BY sha256 ORDER BY usedAt, sha256');
+  }
+
+  // Every row of one downloaded file goes, for the size limit.
+  forgetCachedSha(sha256) {
+    this.tx(() => this.run('DELETE FROM file_cache WHERE sha256 = ?', sha256));
+  }
+
+  hasCachedSha(sha256) {
+    return Boolean(this.get('SELECT 1 AS x FROM file_cache WHERE sha256 = ? LIMIT 1', sha256));
+  }
 }
 
 // What a file that can't be used still says about its unsent messages, or 0.
@@ -956,14 +1206,39 @@ function connect(DatabaseSync, file) {
   }
 }
 
-// The file's state: 'ok' for a cache of this schema, 'empty' for a new file, 'broken' for one to replace.
+// The file's state: 'ok' for a cache of this schema, 'empty' for a new file, 'old' for one of an earlier version that
+// migrates, 'broken' for one to replace.
 function inspect(db) {
   const check = db.prepare('PRAGMA quick_check').all();
   if (check.length !== 1 || Object.values(check[0])[0] !== 'ok') return 'broken';
   if (!db.prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table'`).get()) return 'empty';
   if (!db.prepare(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'meta'`).get()) return 'broken';
   const version = db.prepare(`SELECT value FROM meta WHERE key = 'schema'`).get();
-  return version && version.value === String(SCHEMA_VERSION) ? 'ok' : 'broken';
+  if (version && version.value === String(SCHEMA_VERSION)) return 'ok';
+  const from = version ? Number(version.value) : NaN;
+  return Number.isSafeInteger(from) && from >= 1 && from < SCHEMA_VERSION ? 'old' : 'broken';
+}
+
+// SQLite's result codes that say nothing about the file: it is busy or locked elsewhere, the disk failed or is full,
+// or it can't be opened now. A migration that fails with one leaves the file for the next attempt.
+const PASSING = new Set([5, 6, 10, 13, 14]);
+const passing = (err) => Boolean(err && typeof err.errcode === 'number' && PASSING.has(err.errcode & 0xff));
+
+// The migrations from version from up to SCHEMA_VERSION, in one transaction with the new meta.schema.
+function migrate(db, from) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (let v = from + 1; v <= SCHEMA_VERSION; v++) db.exec(MIGRATIONS[v]);
+    db.prepare(`UPDATE meta SET value = ? WHERE key = 'schema'`).run(String(SCHEMA_VERSION));
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch (_) {
+      // SQLite rolled back already.
+    }
+    throw err;
+  }
 }
 
 // Opens the cache at file, or makes it. A file that fails PRAGMA quick_check, isn't a database, or has another
@@ -993,6 +1268,21 @@ function openStore(file, { now = Date.now } = {}) {
     // Not a database, or a corrupt one: counted as far as it can be, then replaced.
     state = 'broken';
   }
+  if (state === 'old') {
+    // An earlier version migrates in place (rich contract 4.2). A migration that fails for the file's sake replaces
+    // it as a broken one would be (contract 3.4); one the disk or a lock stopped leaves it for the next attempt.
+    try {
+      const from = Number(db.prepare(`SELECT value FROM meta WHERE key = 'schema'`).get().value);
+      migrate(db, from);
+      state = 'ok';
+    } catch (err) {
+      if (passing(err)) {
+        db.close();
+        throw err;
+      }
+      state = 'broken';
+    }
+  }
   if (state === 'broken') {
     if (db) {
       lostUnsent = countOutbox(db);
@@ -1003,6 +1293,8 @@ function openStore(file, { now = Date.now } = {}) {
       }
     }
     if (!removeFiles(file)) throw new ChatError('not_saved');
+    // The downloaded files of the replaced cache go with it.
+    removeFileFolders(file);
     db = connect(DatabaseSync, file);
     state = 'empty';
   }
@@ -1025,4 +1317,16 @@ function openStore(file, { now = Date.now } = {}) {
   return new Store(db, file, { now, lostUnsent });
 }
 
-module.exports = { openStore, Store, SCHEMA, PRAGMAS, SCHEMA_VERSION, ROOM_CACHE_MAX };
+module.exports = {
+  openStore,
+  Store,
+  SCHEMA,
+  SCHEMA_V1,
+  MIGRATIONS,
+  PRAGMAS,
+  SCHEMA_VERSION,
+  ROOM_CACHE_MAX,
+  reactionChange,
+  filesDir,
+  uploadsDir
+};

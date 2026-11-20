@@ -28,9 +28,9 @@ const ROOM_VIEW = ['at', 'complete', 'draft', 'events', 'hasOlder', 'hi', 'lo', 
 const THREAD_VIEW = ['complete', 'draft', 'expired', 'pending', 'replies', 'root'];
 const ROOM = [
   'archived', 'attention', 'closedReason', 'floor', 'hasCache', 'head', 'id', 'kind', 'lastAt', 'members', 'mentions', 'muted', 'name',
-  'participants', 'read', 'role', 'startedBy', 'unread', 'visibility'
+  'participants', 'read', 'readMark', 'readingPaused', 'role', 'startedBy', 'unread', 'visibility'
 ];
-const EVENT = ['actor', 'at', 'data', 'id', 'kind', 'mentions', 'redacted', 'root', 'seq', 'text'];
+const EVENT = ['actor', 'at', 'attachments', 'data', 'id', 'kind', 'mentions', 'previews', 'reactions', 'redacted', 'root', 'seq', 'text'];
 const EVENTS_PUSH = ['conversation', 'events', 'floor', 'head', 'hi', 'kind', 'lo', 'replace', 'ws'];
 const keys = (o) => Object.keys(o).sort();
 // Pages of 5 for the newest and older ones, 10 forward and backfill, and a room 30 behind loads the newest page.

@@ -22,6 +22,7 @@ const { History } = require('./history');
 const { Outbox } = require('./outbox');
 const { Manage } = require('./manage');
 const { Notifier } = require('./notify');
+const { Files } = require('./files');
 
 const { ChatError, chatError } = wire;
 
@@ -71,7 +72,9 @@ const TIMING = {
   // SEM_CHAT_RETRY_DELAY: how long the outbox holds its first retry after a reconnect, for the held-row journey.
   retryDelay: 0,
   // A cache file that couldn't be deleted is tried again this often.
-  wipeRetry: MINUTE
+  wipeRetry: MINUTE,
+  // Downloaded team chat files kept on this computer (rich contract 4.6).
+  fileCacheMax: 1024 * 1024 * 1024
 };
 
 // The test knobs (contract 4.8): under SEM_HIDDEN, SEM_CHAT_FAST=1 makes the read flush 300 ms, the catch-up 2 s and
@@ -168,14 +171,50 @@ function blankState() {
     connection: 'idle',
     attention: 0,
     unread: false,
-    workspaces: []
+    workspaces: [],
+    capabilities: [],
+    files: null
   };
+}
+
+// What /v1/info lists the workspace server can do (rich contract 2.1): reactions, unread, files, previews.
+function capabilitiesOf(info) {
+  const ws = info && info.workspace && typeof info.workspace === 'object' ? info.workspace : null;
+  const list = ws && Array.isArray(ws.capabilities) ? ws.capabilities : [];
+  return [...new Set(list.filter((c) => typeof c === 'string' && /^[a-z][a-z0-9_-]{0,39}$/.test(c)))].slice(0, 50);
+}
+
+// /v1/info's workspace.files when files are listed: { maxBytes, workspaceBytes, origin }, origin '' for the server's.
+function filesOf(info) {
+  if (!capabilitiesOf(info).includes('files')) return null;
+  const f = info.workspace.files && typeof info.workspace.files === 'object' ? info.workspace.files : {};
+  let origin = '';
+  if (typeof f.origin === 'string' && f.origin) {
+    try {
+      const u = new URL(f.origin);
+      if (u.protocol === 'https:' || u.protocol === 'http:') origin = u.origin;
+    } catch (_) {
+      origin = '';
+    }
+  }
+  return { maxBytes: isInt(f.maxBytes) ? f.maxBytes : null, workspaceBytes: isInt(f.workspaceBytes) ? f.workspaceBytes : null, origin };
 }
 
 class WorkspaceService extends EventEmitter {
   // settings: () => engine.settings. timing: overrides of TIMING (chatTiming). WebSocket, now, random and timers can
-  // be replaced in tests.
-  constructor({ account, dataDir, settings = () => ({}), timing = {}, WebSocket = globalThis.WebSocket, now = Date.now, random = Math.random, timers = realTimers }) {
+  // be replaced in tests. host: what only Electron does for files.js (dialogs, opening a file, nativeImage), which
+  // main.js gives and tests replace.
+  constructor({
+    account,
+    dataDir,
+    settings = () => ({}),
+    timing = {},
+    WebSocket = globalThis.WebSocket,
+    now = Date.now,
+    random = Math.random,
+    timers = realTimers,
+    host = {}
+  }) {
     super();
     this.account = account;
     this.dataDir = dataDir;
@@ -186,6 +225,7 @@ class WorkspaceService extends EventEmitter {
     this.now = now;
     this.random = random;
     this.timers = timers;
+    this.host = host || {};
     this.store = null;
     this.epoch = 0;
     // false when node:sqlite couldn't open the cache, or a file to replace couldn't be deleted.
@@ -229,6 +269,7 @@ class WorkspaceService extends EventEmitter {
     this.outbox = new Outbox(this);
     this.manage = new Manage(this);
     this.notifier = new Notifier(this);
+    this.files = new Files(this);
     this.onStatus = () => this.follow();
     this.onInfo = () => this.follow();
   }
@@ -263,7 +304,7 @@ class WorkspaceService extends EventEmitter {
     if (this.removeTimer) this.timers.clearTimeout(this.removeTimer);
     this.flushTimer = this.retryTimer = this.removeTimer = null;
     this.stopNetwork();
-    for (const module of [this.history, this.outbox, this.manage, this.notifier]) {
+    for (const module of [this.history, this.outbox, this.manage, this.notifier, this.files]) {
       if (module && typeof module.close === 'function') {
         try {
           module.close();
@@ -367,6 +408,11 @@ class WorkspaceService extends EventEmitter {
     } catch (err) {
       this.hookFailed(err);
     }
+    try {
+      this.files.clear();
+    } catch (err) {
+      this.hookFailed(err);
+    }
   }
 
   // Signed out: the cache and its -wal and -shm files go (contract 3.4), unsent messages with them. A file another
@@ -450,6 +496,11 @@ class WorkspaceService extends EventEmitter {
     }
     try {
       this.manage.onSignedIn();
+    } catch (err) {
+      this.hookFailed(err);
+    }
+    try {
+      this.files.onOpened();
     } catch (err) {
       this.hookFailed(err);
     }
@@ -702,6 +753,7 @@ class WorkspaceService extends EventEmitter {
     this.emit('event', { kind: 'removed', ws, reason });
     this.hook(() => this.history.onWorkspaceGone(ws));
     this.hook(() => this.notifier.onWorkspaceGone(ws));
+    this.hook(() => this.files.onWorkspaceGone(ws));
     this.updateSockets();
     this.stateChanged();
     if (reason === 'removed') this.list().catch(() => {});
@@ -1044,6 +1096,16 @@ class WorkspaceService extends EventEmitter {
     this.updateSockets();
   }
 
+  // What the server can do (rich contract 2.1), from /v1/info: 'reactions', 'unread', 'files', 'previews'.
+  capabilities() {
+    return capabilitiesOf(this.info);
+  }
+
+  // /v1/info's workspace.files, or null without files.
+  filesInfo() {
+    return filesOf(this.info);
+  }
+
   // { id, name, role } of the person in ws, from GET /, or null before it answered.
   me(ws) {
     const row = this.store && this.store.getWs(ws);
@@ -1155,7 +1217,10 @@ class WorkspaceService extends EventEmitter {
       connection: this.connection(workspaces),
       attention: Math.min(attention, 100),
       unread,
-      workspaces
+      workspaces,
+      // Rich messages (rich contract 2.1): what the renderer shows only when the server lists it.
+      capabilities: this.capabilities(),
+      files: this.filesInfo()
     };
     if (take && this.lostUnsent) {
       this.lostUnsent = 0;
@@ -1197,6 +1262,18 @@ class WorkspaceService extends EventEmitter {
       return;
     }
     this.emit('event', payload);
+  }
+
+  // Cached messages of a room whose reactions or link cards changed (rich contract 4.4): the updated event with each
+  // as the renderer's Event, as the cache has it now.
+  emitUpdated(ws, room, ids) {
+    if (!this.store || !Array.isArray(ids) || !ids.length) return;
+    const events = [];
+    for (const id of new Set(ids)) {
+      const row = this.store.eventById(ws, id);
+      if (row && row.room === room) events.push(wire.toRenderer(row));
+    }
+    if (events.length) this.emit('event', { kind: 'updated', ws, conversation: room, events: events.sort((a, b) => a.seq - b.seq) });
   }
 
   // These rooms of ws changed (or went: removed). The rooms event reads them from the cache when it goes out, so it
@@ -1360,10 +1437,12 @@ class WorkspaceService extends EventEmitter {
       listedAt: Number.isFinite(this.listedAt) ? this.listedAt : null,
       listError: this.listError,
       unsent: store ? store.countUnsent() : 0,
+      staged: [...this.files.staged.values()].map((e) => ({ stage: e.stage, ws: e.ws, room: e.conversation, state: e.state, error: e.error, file: e.file })),
+      views: this.files.views.size,
       hookError: this.hookError ? String(this.hookError.message || this.hookError).slice(0, 500) : null,
       workspaces
     };
   }
 }
 
-module.exports = { WorkspaceService, chatTiming, blankState, isAvailable, TIMING, Stale };
+module.exports = { WorkspaceService, chatTiming, blankState, isAvailable, capabilitiesOf, filesOf, TIMING, Stale };

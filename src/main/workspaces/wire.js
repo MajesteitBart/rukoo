@@ -4,7 +4,10 @@
 // anything of them reaches the cache, the renderer's IPC arguments, which are checked before any request, and the
 // errors the renderer tells apart. Nothing here talks to the network or the disk. The rules are in server/WORKSPACES.md
 // ("Gate 1 routes") and in the team chat contract: invitation links (3.2), operation IDs (3.8), errors (3.15), names
-// and limits (3.16), mentions (3.17), IPC methods (4.4) and the shapes the renderer gets (4.6).
+// and limits (3.16), mentions (3.17), IPC methods (4.4) and the shapes the renderer gets (4.6). Rich messages
+// (reactions, files, link cards, mark unread) follow the rich chat contract: the message shape (2.2), reactions (2.4),
+// mark unread (2.5), files (2.6), link cards (2.7), the new event kinds (2.8) and errors (2.9), and the desktop's IPC
+// methods and shapes (4.3 to 4.5).
 const crypto = require('crypto');
 const { t } = require('../../i18n');
 const { AccountError } = require('../account/client');
@@ -16,7 +19,11 @@ const MEMBER_ID = ID('u');
 const EVENT_ID = ID('e');
 const GRANT_ID = ID('g');
 const INVITE_ID = ID('i');
+const FILE_ID = ID('f');
 const LOCAL_ID = /^[A-Za-z0-9_-]{22}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+// A reaction is one fully qualified emoji of Unicode's RGI set, as the server checks it (rich contract 2.4).
+const RGI_EMOJI = /^\p{RGI_Emoji}$/v;
 const SECRET = /^[A-Za-z0-9_-]{43}$/;
 const GENERATION = /^[A-Za-z0-9_-]{22}$/;
 const KEY_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -51,13 +58,28 @@ const CHANNELS_MAX = 10000;
 const BLOCKS_MAX = 10000;
 const INVITES_MAX = 1000;
 const WORKSPACES_MAX = 200;
+// Rich messages (rich contract 2.2 to 2.7): files per message, link cards per message, distinct emoji per message,
+// the bytes of one emoji, a file's name in characters and its type, an image side, and the longest link.
+const ATTACHMENTS_MAX = 10;
+const PREVIEWS_MAX = 3;
+const REACTIONS_MAX = 20;
+const EMOJI_BYTES = 64;
+const FILE_NAME = 255;
+const FILE_TYPE = 127;
+const IMAGE_SIDE = 65535;
+const URL_LENGTH = 4096;
+// A card's texts as the server cuts them (200, 500 and 100 characters and an ellipsis), with room for characters of
+// two UTF-16 units each.
+const PREVIEW_TITLE = 402;
+const PREVIEW_DESCRIPTION = 1002;
+const PREVIEW_SITE = 202;
 
 const MEMBER_ROLES = ['owner', 'admin', 'member', 'guest'];
 const MEMBER_STATES = ['active', 'left', 'removed', 'deleted'];
 const ROOM_ROLES = ['manager', 'member'];
 const CLOSED_REASONS = ['left', 'ineligible', 'closed'];
 const SCOPES = ['account', 'workspace', 'conversation'];
-const LIMITS = ['members', 'conversations', 'invites', 'bytes', 'dailyDms'];
+const LIMITS = ['members', 'conversations', 'invites', 'bytes', 'dailyDms', 'fileBytes', 'files', 'uploads'];
 
 const encoder = new TextEncoder();
 const utf8Length = (text) => encoder.encode(text).length;
@@ -97,7 +119,16 @@ const KEYS = {
   stale_grant: 'chat.errors.failed',
   stale_generation: 'chat.errors.failed',
   history_regressed: 'chat.errors.failed',
-  reset_required: 'chat.errors.failed'
+  reset_required: 'chat.errors.failed',
+  // Rich messages (rich contract 2.9). invalid_state and expired concern an upload or download link, which files.js
+  // handles itself by reserving or asking again; unreadable is the app's: a file on this computer it couldn't read.
+  reaction_limit: 'chat.errors.reactionLimit',
+  files_off: 'chat.errors.filesOff',
+  too_large: 'chat.errors.fileTooLarge',
+  files_unavailable: 'chat.errors.filesUnavailable',
+  invalid_state: 'chat.errors.failed',
+  expired: 'chat.errors.failed',
+  unreadable: 'chat.errors.fileUnreadable'
 };
 // Never call errors: the engines turn these into outbox rows and workspace states (contract 3.15).
 const INTERNAL = new Set(['operation_conflict', 'submission_expired', 'stale_grant', 'stale_generation', 'history_regressed', 'reset_required']);
@@ -105,7 +136,8 @@ const QUOTA_KEYS = {
   members: 'chat.errors.quotaMembers',
   conversations: 'chat.errors.quotaConversations',
   invites: 'chat.errors.quotaInvites',
-  bytes: 'chat.errors.quotaBytes'
+  bytes: 'chat.errors.quotaBytes',
+  files: 'chat.errors.quotaFiles'
 };
 const NAME_FIELDS = new Set(['name', 'displayName']);
 
@@ -117,6 +149,7 @@ function errorKey(code, { scope, limit, field } = {}) {
     return 'chat.errors.notFound';
   }
   if (code === 'rate_limited' && limit === 'dailyDms') return 'chat.errors.dailyDms';
+  if (code === 'rate_limited' && limit === 'uploads') return 'chat.errors.uploadsLimit';
   if (code === 'quota') return QUOTA_KEYS[limit] || 'chat.errors.quota';
   if (code === 'invalid' && NAME_FIELDS.has(field)) return 'chat.errors.invalidName';
   return KEYS[code] || KEYS.server;
@@ -168,7 +201,8 @@ function chatError(err) {
   const details = err.details && typeof err.details === 'object' ? err.details : {};
   let code = err.code;
   if (code === 'unauthorized' || err.status === 401) code = 'signed_out';
-  else if (code === 'too_large') code = 'server';
+  // The server's 413 too_large is a file over its limit; client.js's own too_large is an answer too big to read.
+  else if (code === 'too_large' && err.status !== 413) code = 'server';
   else if (!Object.hasOwn(KEYS, code)) code = 'server';
   return new ChatError(code, {
     status: err.status,
@@ -404,7 +438,9 @@ function checkRoom(v, where = 'room') {
     unread: int(v.unread, `${where}.unread`, 0, BADGE_CAP),
     mentions: int(v.mentions, `${where}.mentions`, 0, BADGE_CAP),
     removed: v.removed === undefined ? [] : ids(v.removed, EVENT_ID, `${where}.removed`, REMOVED_IDS),
-    removedMore: v.removedMore === undefined ? false : bool(v.removedMore, `${where}.removedMore`)
+    removedMore: v.removedMore === undefined ? false : bool(v.removedMore, `${where}.removedMore`),
+    // How often the person marked the room unread (rich contract 2.5); 0 from a server from before it.
+    readMark: v.readMark === undefined ? 0 : int(v.readMark, `${where}.readMark`)
   };
   if (room.read > room.head) throw refused(`${where}.read`);
   if (dm) {
@@ -420,6 +456,65 @@ function refusedName(where) {
   throw refused(`${where}.name`);
 }
 
+// A file of a message or a card's image (rich contract 2.2): { id, name, type, size, width?, height? }.
+function checkFile(v, where = 'file') {
+  obj(v, where);
+  const f = {
+    id: id(v.id, FILE_ID, `${where}.id`),
+    name: str(v.name, `${where}.name`, FILE_NAME * 2, 1),
+    type: str(v.type, `${where}.type`, FILE_TYPE, 1),
+    size: int(v.size, `${where}.size`, 1)
+  };
+  if (v.width !== undefined && v.width !== null) f.width = int(v.width, `${where}.width`, 1, IMAGE_SIDE);
+  if (v.height !== undefined && v.height !== null) f.height = int(v.height, `${where}.height`, 1, IMAGE_SIDE);
+  return f;
+}
+
+function checkFiles(v, where, max = ATTACHMENTS_MAX) {
+  const out = list(v, where, max).map((f, i) => checkFile(f, `${where}[${i}]`));
+  if (new Set(out.map((f) => f.id)).size !== out.length) throw refused(where);
+  return out;
+}
+
+function webUrl(v, where) {
+  str(v, where, URL_LENGTH, 1);
+  if (!/^https?:\/\/\S+$/i.test(v)) throw refused(where);
+  return v;
+}
+
+// A link card (rich contract 2.2 and 2.7): { url, title, description, site, image, video }.
+function checkLinkPreview(v, where = 'preview') {
+  obj(v, where);
+  return {
+    url: webUrl(v.url, `${where}.url`),
+    title: str(v.title, `${where}.title`, PREVIEW_TITLE, 1),
+    description: v.description === undefined ? '' : str(v.description, `${where}.description`, PREVIEW_DESCRIPTION),
+    site: v.site === undefined ? '' : str(v.site, `${where}.site`, PREVIEW_SITE),
+    image: v.image === undefined || v.image === null ? null : checkFile(v.image, `${where}.image`),
+    video: v.video === undefined ? false : bool(v.video, `${where}.video`)
+  };
+}
+
+function checkLinkPreviews(v, where) {
+  return list(v, where, PREVIEWS_MAX).map((p, i) => checkLinkPreview(p, `${where}[${i}]`));
+}
+
+function emojiText(v, where) {
+  if (typeof v !== 'string' || !v.length || !v.isWellFormed() || utf8Length(v) > EMOJI_BYTES) throw refused(where);
+  return v;
+}
+
+// A message's reactions (rich contract 2.2): one group per emoji, in the order of their first reaction, each with
+// the people who reacted in the order they did.
+function checkReactions(v, where) {
+  const out = list(v, where, REACTIONS_MAX).map((r, i) => {
+    obj(r, `${where}[${i}]`);
+    return { emoji: emojiText(r.emoji, `${where}[${i}].emoji`), actors: ids(r.actors, MEMBER_ID, `${where}[${i}].actors`, MEMBERS_MAX, 1) };
+  });
+  if (new Set(out.map((r) => r.emoji)).size !== out.length) throw refused(where);
+  return out;
+}
+
 // One event (server/WORKSPACES.md "Messages", contract 2.4). Kinds this version doesn't know are kept without their
 // fields, so a newer server's event doesn't stop the feed; the timeline shows nothing for them.
 function checkEvent(v, where = 'event') {
@@ -433,7 +528,7 @@ function checkEvent(v, where = 'event') {
     at: time(v.at, `${where}.at`)
   };
   switch (kind) {
-    case 'message.posted':
+    case 'message.posted': {
       if (v.root !== undefined && v.root !== null) e.root = id(v.root, EVENT_ID, `${where}.root`);
       if (v.redacted === true) {
         if (v.text !== undefined || v.mentions !== undefined) throw refused(`${where}.redacted`);
@@ -441,16 +536,36 @@ function checkEvent(v, where = 'event') {
         break;
       }
       if (v.redacted !== undefined && v.redacted !== false) throw refused(`${where}.redacted`);
-      if (typeof v.text !== 'string' || !v.text.isWellFormed() || v.text.length === 0 || utf8Length(v.text) > TEXT_BYTES) {
+      // Files, cards and reactions came with rich messages (rich contract 2.2); a server from before sends none.
+      const attachments = v.attachments === undefined ? [] : checkFiles(v.attachments, `${where}.attachments`);
+      // With a file the text may be empty.
+      const empty = attachments.length > 0;
+      if (typeof v.text !== 'string' || !v.text.isWellFormed() || (v.text.length === 0 && !empty) || utf8Length(v.text) > TEXT_BYTES) {
         throw refused(`${where}.text`);
       }
       e.text = v.text;
       if (mentionRule(v.text, v.mentions === undefined ? [] : v.mentions)) throw refused(`${where}.mentions`);
       e.mentions = (v.mentions || []).map((m) => ({ actor: m.actor, start: m.start, end: m.end }));
+      e.attachments = attachments;
+      e.previews = v.previews === undefined ? [] : checkLinkPreviews(v.previews, `${where}.previews`);
+      e.reactions = v.reactions === undefined ? [] : checkReactions(v.reactions, `${where}.reactions`);
       break;
+    }
     case 'message.redacted':
       e.target = id(v.target, EVENT_ID, `${where}.target`);
       e.targetSeq = int(v.targetSeq, `${where}.targetSeq`, 1);
+      break;
+    // Rich contract 2.8. They never show as a row, count or alert; the cache applies them to their target.
+    case 'reaction.added':
+    case 'reaction.removed':
+      e.target = id(v.target, EVENT_ID, `${where}.target`);
+      e.targetSeq = int(v.targetSeq, `${where}.targetSeq`, 1);
+      e.emoji = emojiText(v.emoji, `${where}.emoji`);
+      break;
+    case 'message.previewed':
+      e.target = id(v.target, EVENT_ID, `${where}.target`);
+      e.targetSeq = int(v.targetSeq, `${where}.targetSeq`, 1);
+      e.previews = checkLinkPreviews(v.previews, `${where}.previews`);
       break;
     case 'channel.created':
       e.name = str(v.name, `${where}.name`, NAME_UNITS, 1);
@@ -549,7 +664,10 @@ function checkWorkspaceRow(v, where) {
     limits: {
       members: int(limits.members, `${where}.limits.members`),
       conversations: int(limits.conversations, `${where}.limits.conversations`),
-      textBytes: int(limits.textBytes, `${where}.limits.textBytes`)
+      textBytes: int(limits.textBytes, `${where}.limits.textBytes`),
+      // The largest file and the workspace's file bytes (rich contract 2.1), from a server with files.
+      ...(limits.fileBytes === undefined ? {} : { fileBytes: int(limits.fileBytes, `${where}.limits.fileBytes`) }),
+      ...(limits.filesBytes === undefined ? {} : { filesBytes: int(limits.filesBytes, `${where}.limits.filesBytes`) })
     },
     retention: {
       contentDays: int(retention.contentDays, `${where}.retention.contentDays`),
@@ -733,6 +851,61 @@ function checkTicket(v) {
   };
 }
 
+// POST /conversations/{c}/messages/{m}/react: { messageId, emoji, on, changed } (rich contract 2.4).
+function checkReact(v) {
+  obj(v, 'react');
+  return {
+    messageId: id(v.messageId, EVENT_ID, 'react.messageId'),
+    emoji: emojiText(v.emoji, 'react.emoji'),
+    on: bool(v.on, 'react.on'),
+    changed: v.changed === undefined ? true : bool(v.changed, 'react.changed')
+  };
+}
+
+// POST /conversations/{c}/unread: { read, readMark } (rich contract 2.5).
+function checkUnread(v) {
+  obj(v, 'unread');
+  return { read: int(v.read, 'unread.read'), readMark: int(v.readMark, 'unread.readMark') };
+}
+
+// POST /conversations/{c}/uploads: { upload: { id, expiresAt }, put: { url, expiresAt } } (rich contract 2.6).
+function checkReserve(v) {
+  obj(v, 'reserve');
+  const upload = obj(v.upload, 'reserve.upload');
+  const put = obj(v.put, 'reserve.put');
+  return {
+    upload: { id: id(upload.id, FILE_ID, 'reserve.upload.id'), expiresAt: time(upload.expiresAt, 'reserve.upload.expiresAt') },
+    put: { url: webUrl(put.url, 'reserve.put.url'), expiresAt: time(put.expiresAt, 'reserve.put.expiresAt') }
+  };
+}
+
+// PUT <put url>: { upload: { id, ready: true } }.
+function checkUploaded(v) {
+  obj(v, 'uploaded');
+  const upload = obj(v.upload, 'uploaded.upload');
+  if (upload.ready !== true) throw refused('uploaded.upload.ready');
+  return { upload: { id: id(upload.id, FILE_ID, 'uploaded.upload.id'), ready: true } };
+}
+
+// POST /conversations/{c}/files/{f}/download: { url, expiresAt, name, type, size, sha256 }.
+function checkDownload(v) {
+  obj(v, 'download');
+  return {
+    url: webUrl(v.url, 'download.url'),
+    expiresAt: time(v.expiresAt, 'download.expiresAt'),
+    name: str(v.name, 'download.name', FILE_NAME * 2, 1),
+    type: str(v.type, 'download.type', FILE_TYPE, 1),
+    size: int(v.size, 'download.size', 1),
+    sha256: id(v.sha256, SHA256, 'download.sha256')
+  };
+}
+
+// POST /conversations/{c}/messages/{m}/previews: { previews }.
+function checkPreviewsAnswer(v) {
+  obj(v, 'previews');
+  return { previews: checkLinkPreviews(v.previews, 'previews.previews') };
+}
+
 // ---- Shapes for the renderer (contract 4.6) ----
 
 function parseJson(text, fallback) {
@@ -744,14 +917,22 @@ function parseJson(text, fallback) {
   }
 }
 
-const DATA_FIELDS = ['name', 'visibility', 'member', 'members', 'target', 'targetSeq'];
+const DATA_FIELDS = ['name', 'visibility', 'member', 'members', 'target', 'targetSeq', 'emoji'];
 
-// A cached event row as the renderer's Event: mentions in UTF-8 bytes as the server sent them.
+// A JSON list from a column, [] for NULL or anything that isn't one.
+function jsonList(text) {
+  const v = parseJson(text, []);
+  return Array.isArray(v) ? v : [];
+}
+
+// A cached event row as the renderer's Event: mentions in UTF-8 bytes as the server sent them. A message that isn't
+// removed carries its files, cards and reactions (rich contract 4.5); every other event carries [] for each.
 function toRenderer(row) {
   const raw = parseJson(row.data, {});
   const data = {};
   for (const key of DATA_FIELDS) if (isObject(raw) && raw[key] !== undefined) data[key] = raw[key];
   const mentions = parseJson(row.mentions, []);
+  const rich = row.kind === 'message.posted' && !row.redacted;
   return {
     seq: row.seq,
     id: row.id,
@@ -762,7 +943,10 @@ function toRenderer(row) {
     text: row.redacted ? null : row.text ?? null,
     mentions: row.redacted || !Array.isArray(mentions) ? [] : mentions,
     redacted: Boolean(row.redacted),
-    data
+    data,
+    attachments: rich ? jsonList(row.attachments) : [],
+    previews: rich ? jsonList(row.previews) : [],
+    reactions: rich ? jsonList(row.reactions) : []
   };
 }
 
@@ -790,7 +974,11 @@ function toRoom(row) {
     mentions: row.mentions,
     attention: muted ? 0 : dm ? row.unread : row.mentions,
     muted,
-    hasCache: row.lo !== null && row.lo !== undefined
+    hasCache: row.lo !== null && row.lo !== undefined,
+    // Mark unread (rich contract 3.2): how often the person marked the room unread, and whether this device holds
+    // back its reads of it until the room is opened again.
+    readMark: row.readMark ?? 0,
+    readingPaused: Boolean(row.readPaused)
   };
 }
 
@@ -803,6 +991,7 @@ function toPending(row, { waiting = false } = {}) {
     root: row.root ?? null,
     text: row.text,
     mentions: parseJson(row.mentions, []),
+    attachments: jsonList(row.attachments),
     state: waiting && row.state === 'queued' ? 'waiting' : row.state,
     reason: row.reason ?? null,
     nextAt: row.nextAt,
@@ -852,6 +1041,65 @@ function oneOfInput(v, values, field) {
   return v;
 }
 
+// A file's name as the server takes it (rich contract 2.6): 1 to 255 characters after trimming, no control
+// characters, no / or \.
+function fileName(v, field = 'name') {
+  if (typeof v !== 'string' || v.length > FILE_NAME * 8) throw invalid(field);
+  const trimmed = v.trim();
+  if (!trimmed || !trimmed.isWellFormed() || Array.from(trimmed).length > FILE_NAME || /[\p{Cc}/\\]/u.test(trimmed)) throw invalid(field);
+  return trimmed;
+}
+
+// A MIME type in lowercase, at most 127 characters, without parameters.
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+function mimeType(v, field = 'type') {
+  if (typeof v !== 'string' || v.length > FILE_TYPE || !MIME.test(v)) throw invalid(field);
+  return v;
+}
+
+function sideOf(v, field) {
+  if (v === undefined || v === null) return undefined;
+  if (!Number.isSafeInteger(v) || v < 1 || v > IMAGE_SIDE) throw invalid(field);
+  return v;
+}
+
+// A File object as the renderer hands it back in a draft: a ready file's ID and metadata, and when its upload
+// expires unsent.
+function fileObject(v, field = 'attachments') {
+  plain(v, field);
+  const out = { id: pattern(FILE_ID, field)(v.id), name: fileName(v.name, field), type: mimeType(v.type, field) };
+  if (!Number.isSafeInteger(v.size) || v.size < 1) throw invalid(field);
+  out.size = v.size;
+  const width = sideOf(v.width, field);
+  const height = sideOf(v.height, field);
+  if (width !== undefined) out.width = width;
+  if (height !== undefined) out.height = height;
+  if (v.expiresAt !== undefined && v.expiresAt !== null) {
+    if (!Number.isSafeInteger(v.expiresAt) || v.expiresAt < 0 || v.expiresAt > TIME_MAX) throw invalid(field);
+    out.expiresAt = v.expiresAt;
+  }
+  return out;
+}
+
+function fileObjects(v, field = 'attachments') {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > ATTACHMENTS_MAX) throw invalid(field);
+  const out = v.map((f) => fileObject(f, field));
+  if (new Set(out.map((f) => f.id)).size !== out.length) throw invalid(field);
+  return out;
+}
+
+function fileIds(v, field = 'attachments') {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > ATTACHMENTS_MAX) throw invalid(field);
+  const out = v.map(pattern(FILE_ID, field));
+  if (new Set(out).size !== out.length) throw invalid(field);
+  return out;
+}
+
+// The longest path chatStage takes: Windows' extended paths go to 32,767 characters.
+const PATH_LENGTH = 32767;
+
 // The checks each argument goes through, by what it is.
 const input = {
   ws: pattern(WORKSPACE_ID, 'ws'),
@@ -873,17 +1121,44 @@ const input = {
     return v;
   },
   // A message to send: the text exactly as it goes on the wire, 1 to 16,384 bytes with something besides white space,
-  // at most 32 mentions in its UTF-8 bytes, and a thread root or null.
+  // at most 32 mentions in its UTF-8 bytes, and a thread root or null. attachments: the IDs of 0 to 10 ready files
+  // (rich contract 3.5); with at least one the text may be empty.
   send(v) {
     plain(v, 'input');
-    const text = textOf(v.text, { maxBytes: TEXT_BYTES, allowEmpty: false });
-    return { text, mentions: checkMentions(text, v.mentions), root: input.root(v.root) };
+    const attachments = fileIds(v.attachments);
+    const text = textOf(v.text, { maxBytes: TEXT_BYTES, allowEmpty: attachments.length > 0 });
+    return { text, mentions: checkMentions(text, v.mentions), root: input.root(v.root), attachments };
   },
+  // A draft: its text, mentions and the ready files it keeps (rich contract 3.5).
   draft(v) {
     if (v === null || v === undefined) return null;
     plain(v, 'draft');
     const text = textOf(v.text, { maxBytes: DRAFT_BYTES, allowEmpty: true });
-    return { text, mentions: checkMentions(text, v.mentions, { max: DRAFT_MENTIONS }) };
+    return { text, mentions: checkMentions(text, v.mentions, { max: DRAFT_MENTIONS }), attachments: fileObjects(v.attachments) };
+  },
+  file: pattern(FILE_ID, 'file'),
+  stage: pattern(LOCAL_ID, 'stage'),
+  // A reaction's emoji: one fully qualified RGI emoji of at most 64 bytes (rich contract 2.4).
+  emoji(v) {
+    if (typeof v !== 'string' || !v.isWellFormed() || utf8Length(v) > EMOJI_BYTES || !RGI_EMOJI.test(v)) throw invalid('emoji');
+    return v;
+  },
+  // What chatStage attaches: { path } of a file chatPickFiles answered with, or { name, type, bytes } of one dropped
+  // or pasted, which the sandboxed renderer sends as bytes. type may be '' or absent; files.js works it out.
+  stageSource(v) {
+    plain(v, 'source');
+    if (v.path !== undefined) {
+      if (typeof v.path !== 'string' || !v.path || v.path.length > PATH_LENGTH || !v.path.isWellFormed() || v.path.includes('\0')) throw invalid('path');
+      return { path: v.path };
+    }
+    if (!(v.bytes instanceof Uint8Array)) throw invalid('bytes');
+    const type = v.type === undefined || v.type === null || v.type === '' ? null : mimeType(String(v.type).toLowerCase().split(';')[0].trim());
+    return { name: fileName(v.name), type, bytes: v.bytes };
+  },
+  fileAction: (v) => oneOfInput(v, ['view', 'open', 'save'], 'action'),
+  previewUrl(v) {
+    if (typeof v !== 'string' || v.length > URL_LENGTH || !/^https?:\/\/\S+$/i.test(v)) throw invalid('url');
+    return v;
   },
   openOptions(v) {
     if (v === null || v === undefined) return {};
@@ -976,7 +1251,17 @@ const ARGS = {
   chatStartDm: (w, members) => [ws(w), input.dmMembers(members)],
   chatLeaveDm: (w, conv) => [ws(w), c(conv)],
   chatBlock: (w, member) => [ws(w), input.member(member)],
-  chatUnblock: (w, member) => [ws(w), input.member(member)]
+  chatUnblock: (w, member) => [ws(w), input.member(member)],
+  // Rich messages (rich contract 4.3).
+  chatReact: (w, conv, message, emoji, on) => [ws(w), c(conv), input.message(message), input.emoji(emoji), input.bool(on, 'on')],
+  chatMarkUnread: (w, conv, message) => [ws(w), c(conv), input.message(message)],
+  chatPickFiles: () => [],
+  chatStage: (w, conv, root, source) => [ws(w), c(conv), input.root(root), input.stageSource(source)],
+  chatUnstage: (stage) => [input.stage(stage)],
+  chatRetryStage: (stage) => [input.stage(stage)],
+  chatStaged: (w, conv, root) => [ws(w), c(conv), input.root(root)],
+  chatFile: (w, conv, file, action) => [ws(w), c(conv), input.file(file), input.fileAction(action)],
+  chatRemovePreview: (w, conv, message, url) => [ws(w), c(conv), input.message(message), input.previewUrl(url)]
 };
 
 // The checked arguments of one IPC call, or ChatError('invalid') with the field that failed. An unknown method is
@@ -1021,12 +1306,38 @@ module.exports = {
   checkMe,
   checkMemberAnswer,
   checkTicket,
+  checkFile,
+  checkLinkPreview,
+  checkReact,
+  checkUnread,
+  checkReserve,
+  checkUploaded,
+  checkDownload,
+  checkPreviewsAnswer,
   toRenderer,
   toRoom,
   toPending,
+  jsonList,
   input,
   ARGS,
   checkArgs,
-  patterns: { WORKSPACE_ID, CONVERSATION_ID, MEMBER_ID, EVENT_ID, GRANT_ID, INVITE_ID, LOCAL_ID, SECRET, GENERATION, CURSOR, UUID_V7 },
-  limits: { NAME_LENGTH, TEXT_BYTES, MENTIONS_MAX, DRAFT_BYTES, DRAFT_MENTIONS, LINK_LENGTH, INVITE_CHANNELS, INVITE_EXPIRY, DM_OTHERS, BADGE_CAP }
+  patterns: { WORKSPACE_ID, CONVERSATION_ID, MEMBER_ID, EVENT_ID, GRANT_ID, INVITE_ID, FILE_ID, LOCAL_ID, SECRET, GENERATION, CURSOR, UUID_V7, SHA256, RGI_EMOJI, MIME },
+  limits: {
+    NAME_LENGTH,
+    TEXT_BYTES,
+    MENTIONS_MAX,
+    DRAFT_BYTES,
+    DRAFT_MENTIONS,
+    LINK_LENGTH,
+    INVITE_CHANNELS,
+    INVITE_EXPIRY,
+    DM_OTHERS,
+    BADGE_CAP,
+    ATTACHMENTS_MAX,
+    PREVIEWS_MAX,
+    REACTIONS_MAX,
+    EMOJI_BYTES,
+    FILE_NAME,
+    FILE_TYPE
+  }
 };

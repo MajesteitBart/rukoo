@@ -1,8 +1,8 @@
 'use strict';
 
 // The chat* IPC methods (team chat contract 4.4) as one table that main.js spreads into its api. The core answers
-// chatState, chatSelect, chatView, chatSync and chatReload; History.METHODS, Outbox.METHODS and Manage.METHODS add the
-// rest. Each entry of those is (svc, ...args) => result. Here every one is wrapped the same way:
+// chatState, chatSelect, chatView, chatSync and chatReload; History.METHODS, Outbox.METHODS, Manage.METHODS and
+// Files.METHODS add the rest. Each entry of those is (svc, ...args) => result. Here every one is wrapped the same way:
 // - its arguments go through wire.checkArgs (wire.input.*) before anything else, and a refused one throws
 //   ChatError('invalid', { field }) before any request;
 // - every method but chatState throws ChatError('signed_out') while the service is missing or has no cache;
@@ -14,6 +14,7 @@ const { blankState } = require('./index');
 const { History } = require('./history');
 const { Outbox } = require('./outbox');
 const { Manage } = require('./manage');
+const { Files } = require('./files');
 
 const CORE = {
   chatState: (svc) => svc.state({ take: true }),
@@ -31,7 +32,7 @@ function callError(err) {
 
 // get: () => the WorkspaceService, or null before main.js made it.
 function chatApi(get) {
-  const table = { ...History.METHODS, ...Outbox.METHODS, ...Manage.METHODS, ...CORE };
+  const table = { ...History.METHODS, ...Outbox.METHODS, ...Manage.METHODS, ...Files.METHODS, ...CORE };
   const api = {};
   for (const [name, fn] of Object.entries(table)) {
     if (typeof fn !== 'function') continue;

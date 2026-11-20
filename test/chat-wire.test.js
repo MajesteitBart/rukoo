@@ -23,6 +23,8 @@ const E = id('e', 'one');
 const E2 = id('e', 'two');
 const G = id('g', 'grant');
 const I = id('i', 'invite');
+const F = id('f', 'file');
+const F2 = id('f', 'image');
 const LOCAL = crypto.createHash('sha256').update('local').digest('base64url').slice(0, 22);
 const SECRET = crypto.createHash('sha256').update('secret').digest('base64url').slice(0, 43);
 const GENERATION = crypto.createHash('sha256').update('generation').digest('base64url').slice(0, 22);
@@ -167,9 +169,9 @@ test('checkChanges takes a page with a channel, a DM and inline events, and keep
   const out = wire.checkChanges(body);
   assert.deepEqual(Object.keys(out), ['changes', 'evictions', 'inlineEvents', 'directory', 'next', 'more']);
   assert.equal(out.changes[0].extra, undefined);
-  assert.deepEqual(out.changes[0], { ...channelRow(), participants: null, startedBy: null, closedReason: null });
-  assert.deepEqual(out.changes[1], dmRow());
-  assert.deepEqual(out.inlineEvents[1], posted(42, { text: 'Hoi @Zoë', mentions: [{ actor: U, start: 4, end: 9 }], root: E }));
+  assert.deepEqual(out.changes[0], { ...channelRow(), participants: null, startedBy: null, closedReason: null, readMark: 0 });
+  assert.deepEqual(out.changes[1], { ...dmRow(), readMark: 0 });
+  assert.deepEqual(out.inlineEvents[1], { ...posted(42, { text: 'Hoi @Zoë', mentions: [{ actor: U, start: 4, end: 9 }], root: E }), attachments: [], previews: [], reactions: [] });
   assert.deepEqual(out.directory, { members: false, channels: true, blocks: false });
   // A closed DM is archived; a server from before DMs leaves out members, lastAt and directory.blocks.
   assert.equal(wire.checkChanges(page({ changes: [dmRow({ archived: true, closedReason: 'closed' })] })).changes[0].closedReason, 'closed');
@@ -348,7 +350,10 @@ const METHODS = [
   'chatDeleteWorkspace', 'chatSetMyName', 'chatSetRole', 'chatRemoveMember', 'chatInvites', 'chatCreateInvite',
   'chatWithdrawInvite', 'chatCreateChannel', 'chatRenameChannel', 'chatArchiveChannel', 'chatJoinChannel',
   'chatAddToChannel', 'chatSetChannelRole', 'chatRemoveFromChannel', 'chatLeaveChannel', 'chatStartDm', 'chatLeaveDm',
-  'chatBlock', 'chatUnblock'
+  'chatBlock', 'chatUnblock',
+  // Rich messages (rich contract 4.3).
+  'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatStaged', 'chatFile',
+  'chatRemovePreview'
 ];
 
 const zoe = vectors.mentions.find((c) => c.text.includes('Zoë') && c.bytes.length === 1);
@@ -371,19 +376,37 @@ const CALLS = {
   chatMute: { ok: [[[W, C, true], [W, C, true]]], bad: [[[W, C, 1], 'muted']] },
   chatSaveDraft: {
     ok: [
-      [[W, C, null, { text: zoe.text, mentions: zoe.bytes }], [W, C, null, { text: zoe.text, mentions: zoe.bytes }]],
-      [[W, C, E, { text: '' }], [W, C, E, { text: '', mentions: [] }]],
-      [[W, C, null, null], [W, C, null, null]]
+      [[W, C, null, { text: zoe.text, mentions: zoe.bytes }], [W, C, null, { text: zoe.text, mentions: zoe.bytes, attachments: [] }]],
+      [[W, C, E, { text: '' }], [W, C, E, { text: '', mentions: [], attachments: [] }]],
+      [[W, C, null, null], [W, C, null, null]],
+      [
+        [W, C, null, { text: '', attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5, extra: 1 }] }],
+        [W, C, null, { text: '', mentions: [], attachments: [{ id: F2, name: 'foto.png', type: 'image/png', size: 9, width: 4, height: 3, expiresAt: 5 }] }]
+      ]
     ],
-    bad: [[[W, C, 'e_x', null], 'root'], [[W, C, null, { text: 5 }], 'text'], [[W, C, null, { text: zoe.text, mentions: zoe.utf16 }], 'mentions'], [[W, C, null, 'draft'], 'draft']]
+    bad: [
+      [[W, C, 'e_x', null], 'root'],
+      [[W, C, null, { text: 5 }], 'text'],
+      [[W, C, null, { text: zoe.text, mentions: zoe.utf16 }], 'mentions'],
+      [[W, C, null, 'draft'], 'draft'],
+      [[W, C, null, { text: '', attachments: [{ id: E, name: 'a', type: 'text/plain', size: 1 }] }], 'attachments'],
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 0 }] }], 'attachments'],
+      [[W, C, null, { text: '', attachments: [{ id: F, name: 'a', type: 'text/plain', size: 1, width: 0 }] }], 'attachments']
+    ]
   },
   chatDraft: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]], [[W, C], [W, C, null]]], bad: [[[W, C, 'e_x'], 'root'], [[W, E, null], 'conversation']] },
   chatSend: {
     ok: [
-      [[W, C, { text: zoe.text, mentions: zoe.bytes, root: null }], [W, C, { text: zoe.text, mentions: zoe.bytes, root: null }]],
-      [[W, C, { text: 'Hoi', root: E }], [W, C, { text: 'Hoi', mentions: [], root: E }]]
+      [[W, C, { text: zoe.text, mentions: zoe.bytes, root: null }], [W, C, { text: zoe.text, mentions: zoe.bytes, root: null, attachments: [] }]],
+      [[W, C, { text: 'Hoi', root: E }], [W, C, { text: 'Hoi', mentions: [], root: E, attachments: [] }]],
+      // With a file the text may be empty (rich contract 2.3).
+      [[W, C, { text: '', attachments: [F, F2] }], [W, C, { text: '', mentions: [], root: null, attachments: [F, F2] }]]
     ],
     bad: [
+      [[W, C, { text: '', attachments: [] }], 'text'],
+      [[W, C, { text: 'Hoi', attachments: [F, F] }], 'attachments'],
+      [[W, C, { text: 'Hoi', attachments: [E] }], 'attachments'],
+      [[W, C, { text: 'Hoi', attachments: Array.from({ length: 11 }, (_, i) => id('f', `n${i}`)) }], 'attachments'],
       [[W, C, { text: '' }], 'text'],
       [[W, C, { text: ' \n ' }], 'text'],
       [[W, C, { text: 'é'.repeat(8193) }], 'text'],
@@ -439,7 +462,33 @@ const CALLS = {
   },
   chatLeaveDm: { ok: [[[W, D], [W, D]]], bad: [[[W, null], 'conversation']] },
   chatBlock: { ok: [[[W, U2], [W, U2]]], bad: [[[W, null], 'member']] },
-  chatUnblock: { ok: [[[W, U2], [W, U2]]], bad: [[[W, E], 'member']] }
+  chatUnblock: { ok: [[[W, U2], [W, U2]]], bad: [[[W, E], 'member']] },
+  chatReact: {
+    ok: [[[W, C, E, '👍', true], [W, C, E, '👍', true]], [[W, C, E, '👍🏽', false], [W, C, E, '👍🏽', false]], [[W, C, E, '👨‍👩‍👧', true], [W, C, E, '👨‍👩‍👧', true]]],
+    bad: [[[W, C, E, 'a', true], 'emoji'], [[W, C, E, '❤', true], 'emoji'], [[W, C, E, '👍👍', true], 'emoji'], [[W, C, E, '👍', 1], 'on'], [[W, C, C, '👍', true], 'message']]
+  },
+  chatMarkUnread: { ok: [[[W, C, E], [W, C, E]]], bad: [[[W, C, null], 'message']] },
+  chatPickFiles: { ok: [[[], []]], bad: [] },
+  chatStage: {
+    ok: [
+      [[W, C, null, { path: 'C:\\files\\plan.pdf' }], [W, C, null, { path: 'C:\\files\\plan.pdf' }]],
+      [[W, C, E, { name: ' foto.png ', type: 'image/PNG', bytes: new Uint8Array([1, 2]) }], [W, C, E, { name: 'foto.png', type: 'image/png', bytes: new Uint8Array([1, 2]) }]],
+      [[W, C, null, { name: 'blob', bytes: new Uint8Array([1]) }], [W, C, null, { name: 'blob', type: null, bytes: new Uint8Array([1]) }]]
+    ],
+    bad: [
+      [[W, C, null, { path: '' }], 'path'],
+      [[W, C, null, { name: 'a/b', bytes: new Uint8Array([1]) }], 'name'],
+      [[W, C, null, { name: 'x'.repeat(256), bytes: new Uint8Array([1]) }], 'name'],
+      [[W, C, null, { name: 'a', bytes: [1, 2] }], 'bytes'],
+      [[W, C, null, { name: 'a', type: 'not a type', bytes: new Uint8Array([1]) }], 'type'],
+      [[W, C, null, 'file'], 'source']
+    ]
+  },
+  chatUnstage: { ok: [[[LOCAL], [LOCAL]]], bad: [[['x'], 'stage']] },
+  chatRetryStage: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage']] },
+  chatStaged: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]]], bad: [[[W, C, 'e_x'], 'root']] },
+  chatFile: { ok: [[[W, C, F, 'view'], [W, C, F, 'view']], [[W, C, F, 'save'], [W, C, F, 'save']]], bad: [[[W, C, E, 'view'], 'file'], [[W, C, F, 'delete'], 'action']] },
+  chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] }
 };
 
 test('every IPC method of the contract has an argument check, and nothing else does', () => {
@@ -585,11 +634,11 @@ test('toRenderer, toRoom and toPending give the shapes of contract 4.6', () => {
   const at = 1763550000000;
   assert.deepEqual(
     wire.toRenderer({ ws: W, room: C, seq: 3, id: E, kind: 'message.posted', actor: U, at, root: null, text: zoe.text, mentions: JSON.stringify(zoe.bytes), data: null, redacted: 0 }),
-    { seq: 3, id: E, kind: 'message.posted', actor: U, at, root: null, text: zoe.text, mentions: zoe.bytes, redacted: false, data: {} }
+    { seq: 3, id: E, kind: 'message.posted', actor: U, at, root: null, text: zoe.text, mentions: zoe.bytes, redacted: false, data: {}, attachments: [], previews: [], reactions: [] }
   );
   assert.deepEqual(
     wire.toRenderer({ seq: 4, id: E2, kind: 'message.posted', actor: U, at, root: E, text: null, mentions: null, data: null, redacted: 1 }),
-    { seq: 4, id: E2, kind: 'message.posted', actor: U, at, root: E, text: null, mentions: [], redacted: true, data: {} }
+    { seq: 4, id: E2, kind: 'message.posted', actor: U, at, root: E, text: null, mentions: [], redacted: true, data: {}, attachments: [], previews: [], reactions: [] }
   );
   assert.deepEqual(
     wire.toRenderer({ seq: 5, id: E2, kind: 'message.redacted', actor: U, at, root: null, text: null, mentions: null, data: JSON.stringify({ target: E, targetSeq: 3, other: 1 }), redacted: 0 }).data,
@@ -602,13 +651,145 @@ test('toRenderer, toRoom and toPending give the shapes of contract 4.6', () => {
   };
   assert.deepEqual(wire.toRoom(row), {
     id: D, kind: 'dm', name: null, visibility: 'dm', archived: false, closedReason: null, participants: [U, U2], startedBy: U,
-    role: 'member', members: 2, head: 9, floor: 1, lastAt: at, read: 7, unread: 2, mentions: 1, attention: 2, muted: false, hasCache: true
+    role: 'member', members: 2, head: 9, floor: 1, lastAt: at, read: 7, unread: 2, mentions: 1, attention: 2, muted: false, hasCache: true,
+    readMark: 0, readingPaused: false
   });
+  assert.deepEqual([wire.toRoom({ ...row, readMark: 3, readPaused: 1 }).readMark, wire.toRoom({ ...row, readMark: 3, readPaused: 1 }).readingPaused], [3, true]);
   assert.equal(wire.toRoom({ ...row, kind: 'channel', name: 'general', visibility: 'workspace', participants: null }).attention, 1);
   assert.equal(wire.toRoom({ ...row, muted: 1 }).attention, 0);
   assert.equal(wire.toRoom({ ...row, lo: null, hi: null }).hasCache, false);
   const pending = { local: LOCAL, ws: W, room: C, actor: U, grantId: G, generation: GENERATION, text: 'Hoi', mentions: '[]', root: null, operationId: null, state: 'queued', reason: null, attempts: 0, nextAt: 0, createdAt: at };
-  assert.deepEqual(wire.toPending(pending), { local: LOCAL, ws: W, conversation: C, root: null, text: 'Hoi', mentions: [], state: 'queued', reason: null, nextAt: 0, createdAt: at });
+  assert.deepEqual(wire.toPending(pending), { local: LOCAL, ws: W, conversation: C, root: null, text: 'Hoi', mentions: [], attachments: [], state: 'queued', reason: null, nextAt: 0, createdAt: at });
   assert.equal(wire.toPending(pending, { waiting: true }).state, 'waiting');
   assert.equal(wire.toPending({ ...pending, state: 'held', reason: 'stale_grant' }, { waiting: true }).state, 'held');
+});
+
+// ---- rich messages (rich contract 2.2 to 2.9) ----
+
+const file = (over = {}) => ({ id: F, name: 'plan.pdf', type: 'application/pdf', size: 1234, ...over });
+const image = (over = {}) => ({ id: F2, name: 'foto.png', type: 'image/png', size: 99, width: 640, height: 480, ...over });
+const card = (over = {}) => ({ url: 'https://example.com/a', title: 'A page', description: '', site: 'example.com', image: null, video: false, ...over });
+
+test('a message carries its files, cards and reactions, and may have no text when it has a file', () => {
+  const e = wire.checkEvent(
+    posted(7, {
+      text: '',
+      attachments: [file(), image()],
+      previews: [card({ image: image({ id: id('f', 'card') }) })],
+      reactions: [{ emoji: '👍', actors: [U, U2] }, { emoji: '🎉', actors: [U3] }]
+    })
+  );
+  assert.equal(e.text, '');
+  assert.deepEqual(e.attachments, [file(), image()]);
+  assert.equal(e.previews[0].image.id, id('f', 'card'));
+  assert.deepEqual(e.reactions, [{ emoji: '👍', actors: [U, U2] }, { emoji: '🎉', actors: [U3] }]);
+  // A server from before rich messages sends none of them.
+  assert.deepEqual(wire.checkEvent(posted(8)).attachments, []);
+  const cases = [
+    ['event.text', posted(9, { text: '' })],
+    ['event.attachments', posted(9, { attachments: [file(), file()] })],
+    ['event.attachments', posted(9, { attachments: Array.from({ length: 11 }, (_, i) => file({ id: id('f', `n${i}`) })) })],
+    ['event.attachments[0].id', posted(9, { attachments: [file({ id: E })] })],
+    ['event.attachments[0].size', posted(9, { attachments: [file({ size: 0 })] })],
+    ['event.attachments[0].width', posted(9, { attachments: [image({ width: 70000 })] })],
+    ['event.previews', posted(9, { previews: [card(), card(), card(), card()] })],
+    ['event.previews[0].url', posted(9, { previews: [card({ url: 'javascript:alert(1)' })] })],
+    ['event.previews[0].title', posted(9, { previews: [card({ title: '' })] })],
+    ['event.reactions', posted(9, { reactions: [{ emoji: '👍', actors: [U] }, { emoji: '👍', actors: [U2] }] })],
+    ['event.reactions[0].actors', posted(9, { reactions: [{ emoji: '👍', actors: [] }] })],
+    ['event.reactions[0].actors', posted(9, { reactions: [{ emoji: '👍', actors: [U, U] }] })],
+    ['event.reactions[0].emoji', posted(9, { reactions: [{ emoji: 'x'.repeat(65), actors: [U] }] })]
+  ];
+  for (const [where, v] of cases) refusedAt(() => wire.checkEvent(v), where);
+});
+
+test('reaction and card events name their target, and a room row carries readMark', () => {
+  const base = { seq: 12, id: E2, actor: U2, at: 1763550000000 };
+  assert.deepEqual(wire.checkEvent({ ...base, kind: 'reaction.added', target: E, targetSeq: 7, emoji: '👍', extra: 1 }), {
+    ...base,
+    kind: 'reaction.added',
+    target: E,
+    targetSeq: 7,
+    emoji: '👍'
+  });
+  assert.equal(wire.checkEvent({ ...base, kind: 'reaction.removed', target: E, targetSeq: 7, emoji: '👍' }).kind, 'reaction.removed');
+  assert.deepEqual(wire.checkEvent({ ...base, kind: 'message.previewed', target: E, targetSeq: 7, previews: [card()] }).previews, [card()]);
+  refusedAt(() => wire.checkEvent({ ...base, kind: 'reaction.added', target: E, targetSeq: 7 }), 'event.emoji');
+  refusedAt(() => wire.checkEvent({ ...base, kind: 'message.previewed', target: E, targetSeq: 0, previews: [] }), 'event.targetSeq');
+  refusedAt(() => wire.checkEvent({ ...base, kind: 'message.previewed', target: E, targetSeq: 7 }), 'event.previews');
+  assert.equal(wire.checkRoom(channelRow({ readMark: 3 })).readMark, 3);
+  refusedAt(() => wire.checkRoom(channelRow({ readMark: -1 })), 'room.readMark');
+});
+
+test('the answers of the rich routes are checked whole', () => {
+  assert.deepEqual(wire.checkReact({ messageId: E, emoji: '👍', on: true, changed: false }), { messageId: E, emoji: '👍', on: true, changed: false });
+  refusedAt(() => wire.checkReact({ messageId: E, emoji: '👍', on: 'yes', changed: true }), 'react.on');
+  assert.deepEqual(wire.checkUnread({ read: 4, readMark: 2 }), { read: 4, readMark: 2 });
+  refusedAt(() => wire.checkUnread({ read: 4 }), 'unread.readMark');
+  const reserve = { upload: { id: F, expiresAt: 10 }, put: { url: 'http://127.0.0.1:1/v1/workspaces/x/files/t.m', expiresAt: 10 } };
+  assert.deepEqual(wire.checkReserve(reserve), reserve);
+  refusedAt(() => wire.checkReserve({ ...reserve, put: { url: 'file:///etc/passwd', expiresAt: 10 } }), 'reserve.put.url');
+  assert.deepEqual(wire.checkUploaded({ upload: { id: F, ready: true } }), { upload: { id: F, ready: true } });
+  refusedAt(() => wire.checkUploaded({ upload: { id: F, ready: false } }), 'uploaded.upload.ready');
+  const download = { url: 'https://rukoo.io/v1/workspaces/w/files/t', expiresAt: 5, name: 'plan.pdf', type: 'application/pdf', size: 3, sha256: 'a'.repeat(64) };
+  assert.deepEqual(wire.checkDownload(download), download);
+  refusedAt(() => wire.checkDownload({ ...download, sha256: 'A'.repeat(64) }), 'download.sha256');
+  assert.deepEqual(wire.checkPreviewsAnswer({ previews: [card()] }), { previews: [card()] });
+  const ws = {
+    id: W,
+    name: 'Team',
+    createdAt: 1,
+    generation: GENERATION,
+    keyId: 'k1',
+    time: 2,
+    limits: { members: 1, conversations: 1, textBytes: 1, fileBytes: 26214400, filesBytes: 5 },
+    retention: { contentDays: 1, feedDays: 1 }
+  };
+  const member = { id: U, kind: 'human', name: 'Zoë', role: 'owner', state: 'active', joinedAt: 1 };
+  assert.equal(wire.checkWorkspace({ workspace: ws, me: member }).workspace.limits.fileBytes, 26214400);
+});
+
+test('the rich error codes keep their details and pick their keys', () => {
+  const cases = [
+    ['reaction_limit', 409, {}, 'chat.errors.reactionLimit'],
+    ['files_off', 403, {}, 'chat.errors.filesOff'],
+    ['too_large', 413, { limit: 'fileBytes' }, 'chat.errors.fileTooLarge'],
+    ['quota', 413, { limit: 'files' }, 'chat.errors.quotaFiles'],
+    ['rate_limited', 429, { limit: 'uploads', retryAfter: 5 }, 'chat.errors.uploadsLimit'],
+    ['files_unavailable', 409, {}, 'chat.errors.filesUnavailable']
+  ];
+  for (const [code, status, details, key] of cases) {
+    const err = wire.chatError(new AccountError(code, status, 'server words', details));
+    assert.equal(err.code, code);
+    assert.equal(err.limit, details.limit ?? null);
+    assert.equal(wire.errorKey(err.code, err), key);
+  }
+  // client.js's own too_large (an answer too big to read) is no file over the limit.
+  assert.equal(wire.chatError(new AccountError('too_large', 200)).code, 'server');
+});
+
+test('toRenderer gives a message its files, cards and reactions, and none to a removed one or another kind', () => {
+  const row = {
+    seq: 3,
+    id: E,
+    kind: 'message.posted',
+    actor: U,
+    at: 1,
+    root: null,
+    text: '',
+    mentions: '[]',
+    data: null,
+    redacted: 0,
+    attachments: JSON.stringify([file()]),
+    previews: JSON.stringify([card()]),
+    reactions: JSON.stringify([{ emoji: '👍', actors: [U] }])
+  };
+  const e = wire.toRenderer(row);
+  assert.deepEqual([e.attachments, e.previews, e.reactions], [[file()], [card()], [{ emoji: '👍', actors: [U] }]]);
+  assert.deepEqual(wire.toRenderer({ ...row, attachments: null, previews: null, reactions: null }).attachments, []);
+  const removed = wire.toRenderer({ ...row, redacted: 1, text: null });
+  assert.deepEqual([removed.attachments, removed.previews, removed.reactions], [[], [], []]);
+  const reaction = wire.toRenderer({ ...row, kind: 'reaction.added', text: null, data: JSON.stringify({ target: E2, targetSeq: 2, emoji: '👍' }) });
+  assert.deepEqual(reaction.data, { target: E2, targetSeq: 2, emoji: '👍' });
+  assert.deepEqual(reaction.reactions, []);
 });
