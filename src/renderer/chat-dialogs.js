@@ -83,6 +83,36 @@ function fieldOf(err, fields) {
   return err && err.code === 'invalid' && fields.includes(err.field) ? err.field : err && err.code === 'name_taken' && fields.includes('name') ? 'name' : '';
 }
 
+// Makes a dialog a chat dialog, whose body scrolls between the title and the buttons. While the body holds more than
+// it shows, the dialog gets is-scrollable (a hairline above the buttons) and, while more sits below the visible part,
+// has-more (a fade at the body's bottom edge), so a cut between two sections still shows that the dialog goes on. The
+// classes follow scrolling, a resized window or zoom, and content that changes, such as a list that loads or a
+// section that opens.
+function chatDialog(body) {
+  const box = body.closest('.dialog');
+  box.classList.add('ch-dialog');
+  const check = () => {
+    const over = body.scrollHeight - body.clientHeight;
+    box.classList.toggle('is-scrollable', over > 1);
+    box.classList.toggle('has-more', over - body.scrollTop > 1);
+  };
+  let queued = false;
+  const soon = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      check();
+    });
+  };
+  body.addEventListener('scroll', check, { passive: true });
+  body.addEventListener('toggle', soon, true);
+  new ResizeObserver(soon).observe(body);
+  new MutationObserver(soon).observe(body, { childList: true, subtree: true, attributes: true, characterData: true });
+  soon();
+  return box;
+}
+
 // A dialog about the workspace on screen: it closes when that workspace changes or goes (desktop-ui 7.11).
 function wsDialog(opts) {
   const gen = K.CH.generation;
@@ -93,7 +123,7 @@ function wsDialog(opts) {
       timer = setInterval(() => {
         if (K.CH.generation !== gen || !body.isConnected) done(null);
       }, 250);
-      body.closest('.dialog').classList.add('ch-dialog');
+      chatDialog(body);
       if (opts.quietClose) body.closest('.dialog').classList.add('ch-quiet-close');
       if (opts.cls) body.closest('.dialog').classList.add(...opts.cls.split(' '));
       if (opts.render) opts.render(body, done);
@@ -170,7 +200,7 @@ export async function makeWorkspace() {
     buttons: [cancelButton(), { label: t('chat.make.submit'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
     render(body, done) {
       finish = done;
-      body.closest('.dialog').classList.add('ch-dialog');
+      chatDialog(body);
       body.innerHTML = `<div class="form ch-form">
         <label>${esc(t('chat.make.name'))}<input type="text" name="name" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${esc(t('chat.make.namePlaceholder'))}"/></label>
         <p class="error" data-error="name" hidden></p>
@@ -321,7 +351,7 @@ export async function joinWorkspace(link = '') {
     buttons: [cancelButton(), { label: t('chat.join.check'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
     render(body, done) {
       finish = done;
-      body.closest('.dialog').classList.add('ch-dialog');
+      chatDialog(body);
       body.innerHTML = `<div class="form ch-form">
         <label>${esc(t('chat.join.link'))}<input type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#w=…" value="${esc(link)}"/></label>
         <p class="error" data-error="link" hidden></p>

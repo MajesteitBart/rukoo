@@ -884,10 +884,19 @@ body.dragging-mail .nav-item * {
   }
 }
 
-/* Collapsed: an icon rail. */
+/* Collapsed: an icon rail. When the rail runs short of height, at 200 percent zoom for one, the list keeps about three
+   rows and the whole column scrolls instead: the mode switch, the tiles and the foot scroll away with the list and keep
+   their size. The column draws no scrollbar of its own, which would take 9 of the rail's 60px and cut the list's
+   tiles; the list's own scrollbar and the rows cut at its edge show that more follows. */
 .shell.collapsed .sidebar {
   padding: 2px 8px 8px;
   align-items: center;
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+.shell.collapsed .sidebar > *,
+.shell.collapsed .sidebar-main > * {
+  flex-shrink: 0;
 }
 .shell.collapsed .account-switch {
   width: 44px;
@@ -910,6 +919,7 @@ body.dragging-mail .nav-item * {
 }
 .shell.collapsed .nav {
   width: 100%;
+  min-height: 120px;
 }
 .shell.collapsed .nav-item {
   justify-content: center;
@@ -11627,6 +11637,18 @@ button.ch-replies .ch-replies-n {
   overflow: hidden auto;
   margin: -4px -8px 0;
   padding: 4px 8px;
+}
+/* A body that scrolls shows that it does: the scrollbar stays hidden until it's used, so a cut between two sections
+ * would look like the dialog's end. A hairline above the buttons while the body overflows, and a 16px fade at its
+ * bottom edge while more sits below (chatDialog() in chat-dialogs.js sets both classes). */
+.dialog.ch-dialog.is-scrollable > .buttons {
+  margin-top: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.dialog.ch-dialog.has-more > .dialog-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 }
 /* A dialog's error line in danger color (.dialog p would make it grey), and a button that can't be pressed yet looks
  * it, such as Make link before a guest has a channel. */

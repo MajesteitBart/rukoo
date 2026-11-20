@@ -443,9 +443,36 @@ function keepSideFocus() {
   });
 }
 
+// The list keeps its place through those redraws as well. The open conversation's row comes into view when another
+// conversation opens and when Chat's list comes back after another mode: in the rail at 200 percent zoom the list shows
+// about three rows and the whole column scrolls, so the open row is easily out of sight.
+let shownRoom = null;
+function keepSideScroll() {
+  const nav = $('.sidebar .ch-nav');
+  const top = nav ? nav.scrollTop : 0;
+  queueMicrotask(() => {
+    const next = $('.sidebar .ch-nav');
+    if (!next) return;
+    if (nav && next !== nav) next.scrollTop = top;
+    if (!CH.openId) shownRoom = null;
+    if (!CH.openId || (nav && CH.openId === shownRoom)) return;
+    const row = next.querySelector(`[data-ch-open="${CSS.escape(CH.openId)}"]`);
+    if (!row) return;
+    shownRoom = CH.openId;
+    // The list first, then the column around it; 8px to spare, so the row doesn't end right at the cut.
+    for (const box of [next, $('.sidebar')]) {
+      const r = row.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      if (r.top < b.top + 8) box.scrollTop -= b.top + 8 - r.top;
+      else if (r.bottom > b.bottom - 8) box.scrollTop += r.bottom - (b.bottom - 8);
+    }
+  });
+}
+
 // The sidebar below the mode switch (contract 5.3); app.js adds its foot.
 export function sidebarHtml() {
   keepSideFocus();
+  keepSideScroll();
   // Room above the foot, which belongs at the bottom also when the sidebar has nothing else to show.
   const fill = '<div class="ch-side-fill" aria-hidden="true"></div>';
   const s = CH.state;
