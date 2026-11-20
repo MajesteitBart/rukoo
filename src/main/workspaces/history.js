@@ -362,11 +362,14 @@ class History {
 
   // RoomView (contract 4.6). Without at: the newest EVENTS_PAGE cached events. With at: from AROUND events before it
   // through hi, as the renderer has no way to ask for newer pages; extra adds events of pages the cache couldn't keep.
+  // When at wasn't reached, the view opens at the nearest event it has instead (complete: false): the newest cached
+  // one when at is newer than hi (a catch-up that couldn't run), else the oldest loaded one (contract 3.7).
   roomView(ws, c, { at = null, reached = true, readAtOpen, extra = null }) {
     const store = this.store();
     const r = store.getRoom(ws, c);
     if (!r) throw new ChatError('not_found', { scope: 'conversation' });
     let events = [];
+    let target = at;
     if (at === null) {
       if (r.hi !== null) events = store.eventsBefore(ws, c, r.hi + 1, this.timing.eventsPage).map(wire.toRenderer);
     } else {
@@ -375,11 +378,12 @@ class History {
       if (extra) for (const [seq, e] of extra) merged.set(seq, e);
       for (const e of cached) merged.set(e.seq, e);
       const all = [...merged.values()].sort(bySeq);
-      if (reached) {
-        let index = all.findIndex((e) => e.seq >= at);
+      if (!reached) target = r.hi !== null && at > r.hi ? r.hi : all.length ? all[0].seq : null;
+      if (target !== null) {
+        let index = all.findIndex((e) => e.seq >= target);
         if (index < 0) index = all.length;
-        events = all.slice(Math.max(0, index - AROUND));
-      } else events = all;
+        events = all.slice(Math.max(0, index - (this.timing.around || AROUND)));
+      }
     }
     const lo = events.length ? events[0].seq : null;
     return {
@@ -390,7 +394,7 @@ class History {
       hasOlder: lo !== null && lo > r.floor,
       complete: at === null ? true : reached,
       readAtOpen,
-      at: at === null ? null : reached ? at : lo,
+      at: target,
       pending: this.pending(ws, c),
       draft: this.draft(ws, c, null)
     };
@@ -426,12 +430,9 @@ class History {
       if (this.isOk(ws)) {
         await this.catchUp(ws, c);
         const now = svc.store.getRoom(ws, c);
-        if (now && now.lo !== null) {
-          if (now.lo <= at) reached = true;
-          else {
-            const back = await this.pageBack(ws, c, now.lo, this.timing.backfillPages, (low) => low <= at, extra);
-            reached = back.low <= at;
-          }
+        if (now && now.lo !== null && now.lo > at) {
+          const back = await this.pageBack(ws, c, now.lo, this.timing.backfillPages, (low) => low <= at, extra);
+          reached = back.low <= at;
         }
       }
     } catch (err) {
@@ -441,6 +442,9 @@ class History {
       open.quiet = false;
     }
     svc.guard(epoch);
+    // Whether the requests went through or not, a cache that holds at reaches it.
+    const now = svc.store.getRoom(ws, c);
+    if (now && now.lo !== null && now.lo <= at && at <= now.hi) reached = true;
     const view = this.roomView(ws, c, { at, reached, readAtOpen, extra });
     open.lo = svc.store.getRoom(ws, c)?.lo ?? null;
     return view;
