@@ -250,6 +250,14 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `Owner and Guest ask first, Admin and Member apply at once`() {
+        assertTrue(SheetRules.roleAsks("owner"))
+        assertTrue(SheetRules.roleAsks("guest"))
+        assertFalse(SheetRules.roleAsks("admin"))
+        assertFalse(SheetRules.roleAsks("member"))
+    }
+
+    @Test
     fun `a channel's managers change roles and remove others, in an open channel`() {
         val managed = channel("c1", "plans", role = "manager")
         assertEquals(

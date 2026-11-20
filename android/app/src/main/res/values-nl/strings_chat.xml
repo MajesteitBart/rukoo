@@ -334,6 +334,8 @@
     <string name="chat_channel_members_title">Leden van #%1$s</string>
     <string name="chat_channel_make_manager">Kanaalbeheerder maken</string>
     <string name="chat_channel_make_member">Gewoon lid maken</string>
+    <string name="chat_channel_now_manager">%1$s is nu kanaalbeheerder</string>
+    <string name="chat_channel_now_member">%1$s is nu gewoon lid</string>
     <string name="chat_channel_remove_member">Verwijderen uit #%1$s</string>
     <string name="chat_channel_remove_title">%1$s verwijderen uit #%2$s?</string>
     <string name="chat_channel_add_title">Mensen toevoegen aan #%1$s</string>
@@ -347,6 +349,14 @@
     <string name="chat_members_you">%1$s (jij)</string>
     <string name="chat_members_message">Bericht sturen</string>
     <string name="chat_members_change_role">Rol wijzigen</string>
+    <string name="chat_members_owner_title">%1$s eigenaar maken?</string>
+    <string name="chat_members_owner_body">Eigenaren kunnen alles in %1$s wijzigen en ook jou verwijderen.</string>
+    <string name="chat_members_owner_confirm">Eigenaar maken</string>
+    <string name="chat_members_guest_title">%1$s gast maken?</string>
+    <string name="chat_members_guest_body">%1$s ziet alleen nog de kanalen waar iemand %1$s aan toevoegt. De directe berichten waarin %1$s zit, worden voor iedereen daarin gesloten.</string>
+    <string name="chat_members_guest_confirm">Gast maken</string>
+    <string name="chat_members_now_admin">%1$s is nu beheerder</string>
+    <string name="chat_members_now_member">%1$s is nu lid</string>
     <string name="chat_members_remove">Uit werkruimte verwijderen</string>
     <string name="chat_members_remove_title">%1$s verwijderen uit %2$s?</string>
     <string name="chat_members_remove_body">%1$s verliest de toegang tot alle kanalen en directe berichten hier. Wat %1$s schreef, blijft staan.</string>

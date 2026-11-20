@@ -704,7 +704,27 @@ class ChatUi(
         toasts.showToast(strings.get(R.string.chat_block_unblocked, name))
     }
 
-    fun changeRole(ws: String, member: String, role: String) = launch("role:$member", context(ws)) { setRole(ws, member, role) }
+    /**
+     * Change [name]'s workspace role from [before] to [role] (desktop-ui 6.15). Owner and Guest ask first
+     * ([SheetRules.roleAsks]); Admin and Member apply at once and say so, with Undo, which sets [before] back.
+     */
+    fun changeRole(ws: String, member: String, name: String, before: String, role: String) = launch("role:$member", context(ws)) {
+        if (SheetRules.roleAsks(role)) {
+            val owner = role == "owner"
+            val ok = confirm(
+                strings.get(if (owner) R.string.chat_members_owner_title else R.string.chat_members_guest_title, name),
+                if (owner) strings.get(R.string.chat_members_owner_body, wsName(ws)) else strings.get(R.string.chat_members_guest_body, name),
+                strings.get(if (owner) R.string.chat_members_owner_confirm else R.string.chat_members_guest_confirm),
+                danger = !owner,
+            )
+            if (!ok) return@launch
+        }
+        setRole(ws, member, role)
+        if (!SheetRules.roleAsks(role)) {
+            val said = strings.get(if (role == "admin") R.string.chat_members_now_admin else R.string.chat_members_now_member, name)
+            toasts.showToast(said, strings.get(R.string.common_actions_undo)) { launch("role:$member", context(ws)) { setRole(ws, member, before) } }
+        }
+    }
 
     /** Remove someone from the workspace (desktop-ui 6.15), asked first. */
     fun askRemoveMember(ws: String, member: String, name: String) = launch("remove:$member", context(ws)) {
@@ -717,8 +737,23 @@ class ChatUi(
         if (ok) removeMember(ws, member)
     }
 
-    fun changeChannelRole(ws: String, channel: String, member: String, role: String) =
-        launch("channelRole:$member", context(ws)) { setChannelRole(ws, channel, member, role) }
+    /**
+     * Make [name] a manager or a plain member of [channel] (desktop-ui 6.6): at once, said with Undo, which sets the
+     * other role back. [changed] runs after the change and after Undo, for the members list to load again.
+     */
+    fun changeChannelRole(ws: String, channel: String, member: String, name: String, role: String, changed: () -> Unit = {}) =
+        launch("channelRole:$member", context(ws)) {
+            try {
+                setChannelRole(ws, channel, member, role)
+            } finally {
+                changed()
+            }
+            val before = if (role == "manager") "member" else "manager"
+            val said = strings.get(if (role == "manager") R.string.chat_channel_now_manager else R.string.chat_channel_now_member, name)
+            toasts.showToast(said, strings.get(R.string.common_actions_undo)) {
+                launch("channelRole:$member", context(ws)) { setChannelRole(ws, channel, member, before) }?.invokeOnCompletion { changed() }
+            }
+        }
 
     /** Remove someone from a channel (desktop-ui 6.6), asked first. */
     fun askRemoveFromChannel(ws: String, channel: Room, member: String, name: String) = launch("channelRemove:$member", context(ws)) {

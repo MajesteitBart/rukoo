@@ -73,6 +73,18 @@ class ChatUiSheetsTest {
 
         override suspend fun roomMembers(ws: String, room: String): List<RoomMember> =
             listOf(RoomMember(ME, "manager"), RoomMember(MILA, "member"), RoomMember(OLGA, "member"))
+
+        val roles = ArrayList<String>()
+
+        override suspend fun setRole(ws: String, member: String, role: String) {
+            roles += role
+        }
+
+        val channelRoles = ArrayList<String>()
+
+        override suspend fun setChannelRole(ws: String, channel: String, member: String, role: String) {
+            channelRoles += role
+        }
     }
 
     private object Strings : UiStrings {
@@ -131,6 +143,99 @@ class ChatUiSheetsTest {
         advanceUntilIdle()
         assertEquals(listOf(null, MILA), w.leaves)
         assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `Owner asks first, Cancel keeps the role, and the confirmed change says nothing more`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.changeRole("w1", MILA, "Mila Bakker", "member", "owner")
+        advanceUntilIdle()
+        val asked = ui.dialog!!
+        assertEquals(Strings.get(R.string.chat_members_owner_title, "Mila Bakker"), asked.title)
+        assertEquals(Strings.get(R.string.chat_members_owner_confirm), asked.confirmLabel)
+        assertEquals(false, asked.danger)
+        asked.answer(DialogChoice.CANCEL)
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), w.roles)
+
+        ui.changeRole("w1", MILA, "Mila Bakker", "member", "owner")
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf("owner"), w.roles)
+        assertNull(ui.toasts.current)
+    }
+
+    @Test
+    fun `Guest asks first and says the direct messages close`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.changeRole("w1", MILA, "Mila Bakker", "member", "guest")
+        advanceUntilIdle()
+        val asked = ui.dialog!!
+        assertEquals(Strings.get(R.string.chat_members_guest_title, "Mila Bakker"), asked.title)
+        assertEquals(Strings.get(R.string.chat_members_guest_body, "Mila Bakker"), asked.message)
+        assertEquals(Strings.get(R.string.chat_members_guest_confirm), asked.confirmLabel)
+        assertTrue(asked.danger)
+        asked.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf("guest"), w.roles)
+        assertNull(ui.toasts.current)
+    }
+
+    @Test
+    fun `Admin applies at once, and its Undo sets the role from before back`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        // An owner made admin: Undo makes them owner again, not member.
+        ui.changeRole("w1", MILA, "Mila Bakker", "owner", "admin")
+        advanceUntilIdle()
+        assertNull(ui.dialog)
+        assertEquals(listOf("admin"), w.roles)
+        val toast = ui.toasts.current!!
+        assertEquals(Strings.get(R.string.chat_members_now_admin, "Mila Bakker"), toast.message)
+        assertEquals(Strings.get(R.string.common_actions_undo), toast.actionLabel)
+        toast.onAction!!()
+        advanceUntilIdle()
+        assertEquals(listOf("admin", "owner"), w.roles)
+    }
+
+    @Test
+    fun `Member applies at once with Undo`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.changeRole("w1", MILA, "Mila Bakker", "guest", "member")
+        advanceUntilIdle()
+        assertNull(ui.dialog)
+        assertEquals(Strings.get(R.string.chat_members_now_member, "Mila Bakker"), ui.toasts.current?.message)
+        ui.toasts.current!!.onAction!!()
+        advanceUntilIdle()
+        assertEquals(listOf("member", "guest"), w.roles)
+    }
+
+    @Test
+    fun `Make manager and Make member say so with Undo, and the list loads again after each`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        var loads = 0
+        ui.changeChannelRole("w1", "c1", MILA, "Mila Bakker", "manager") { loads++ }
+        advanceUntilIdle()
+        assertEquals(listOf("manager"), w.channelRoles)
+        assertEquals(1, loads)
+        assertEquals(Strings.get(R.string.chat_channel_now_manager, "Mila Bakker"), ui.toasts.current?.message)
+        ui.toasts.current!!.onAction!!()
+        advanceUntilIdle()
+        assertEquals(listOf("manager", "member"), w.channelRoles)
+        assertEquals(2, loads)
+
+        ui.changeChannelRole("w1", "c1", MILA, "Mila Bakker", "member") { loads++ }
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_channel_now_member, "Mila Bakker"), ui.toasts.current?.message)
+        ui.toasts.current!!.onAction!!()
+        advanceUntilIdle()
+        assertEquals(listOf("manager", "member", "member", "manager"), w.channelRoles)
+        assertEquals(4, loads)
     }
 
     @Test

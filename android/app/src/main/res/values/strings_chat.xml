@@ -356,6 +356,8 @@
     <string name="chat_channel_members_title">Members of #%1$s</string><!-- Dialog title. -->
     <string name="chat_channel_make_manager">Make manager</string><!-- Row menu item. -->
     <string name="chat_channel_make_member">Make member</string><!-- Row menu item. -->
+    <string name="chat_channel_now_manager">%1$s is now a manager</string><!-- Toast after Make manager, with Undo. %1$s: that person. -->
+    <string name="chat_channel_now_member">%1$s is now a member</string><!-- Toast after Make member in a channel, with Undo. %1$s: that person. -->
     <string name="chat_channel_remove_member">Remove from #%1$s</string><!-- Row menu item. -->
     <string name="chat_channel_remove_title">Remove %1$s from #%2$s?</string><!-- Confirmation. -->
     <string name="chat_channel_add_title">Add people to #%1$s</string><!-- Button and picker title. -->
@@ -369,6 +371,14 @@
     <string name="chat_members_you">%1$s (you)</string><!-- The user's own row. -->
     <string name="chat_members_message">Message</string><!-- Row menu item. -->
     <string name="chat_members_change_role">Change role</string><!-- Row menu heading. -->
+    <string name="chat_members_owner_title">Make %1$s an owner?</string><!-- Confirmation title before making someone an owner. %1$s: that person. -->
+    <string name="chat_members_owner_body">Owners can change everything in %1$s, including removing you.</string><!-- Its text. %1$s: the workspace name. -->
+    <string name="chat_members_owner_confirm">Make owner</string><!-- Its button. -->
+    <string name="chat_members_guest_title">Make %1$s a guest?</string><!-- Confirmation title before making someone a guest. %1$s: that person. -->
+    <string name="chat_members_guest_body">%1$s will only see the channels someone adds them to. The direct messages %1$s is in close for everyone in them.</string><!-- Its text: their DMs close for good, for every participant. %1$s: that person. -->
+    <string name="chat_members_guest_confirm">Make guest</string><!-- Its button. -->
+    <string name="chat_members_now_admin">%1$s is now an admin</string><!-- Toast after making someone an admin, with Undo. %1$s: that person. -->
+    <string name="chat_members_now_member">%1$s is now a member</string><!-- Toast after making someone a workspace member, with Undo. %1$s: that person. -->
     <string name="chat_members_remove">Remove from workspace</string><!-- Row menu item. -->
     <string name="chat_members_remove_title">Remove %1$s from %2$s?</string><!-- Confirmation title. -->
     <string name="chat_members_remove_body">%1$s loses access to every channel and direct message here. What they wrote stays.</string><!-- Its text. -->

@@ -299,6 +299,12 @@ object SheetRules {
         else -> null
     }
 
+    /**
+     * Whether setting [role] asks first. Owner and Guest reach past the person: an owner can remove you, and a guest's
+     * DMs close for everyone in them. Admin and Member apply at once with Undo.
+     */
+    fun roleAsks(role: String): Boolean = role == "owner" || role == "guest"
+
     /** A channel member row's menu for a manager of an open channel; nothing for the person themself. */
     fun channelMemberActions(room: Room, me: String?, target: RoomMember): List<ChannelMemberAction> {
         if (room.kind != RoomKind.CHANNEL || room.role != "manager" || room.archived || target.member == me) return emptyList()
@@ -1423,7 +1429,7 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                                         for (role in roles) {
                                             RkMenuItem(roleName(role), checked = m.role == role, onClick = {
                                                 dismissMenu()
-                                                if (m.role != role) ui.changeRole(ws, m.id, role)
+                                                if (m.role != role) ui.changeRole(ws, m.id, name, m.role, role)
                                             })
                                         }
                                         first = false
@@ -1558,11 +1564,11 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
                                     when (action) {
                                         ChannelMemberAction.MAKE_MANAGER -> RkMenuItem(stringResource(R.string.chat_channel_make_manager), icon = RukooIcons.People, onClick = {
                                             dismissMenu()
-                                            ui.changeChannelRole(ws, room.id, rm.member, "manager")?.invokeOnCompletion { reload++ }
+                                            ui.changeChannelRole(ws, room.id, rm.member, name, "manager") { reload++ }
                                         })
                                         ChannelMemberAction.MAKE_MEMBER -> RkMenuItem(stringResource(R.string.chat_channel_make_member), icon = RukooIcons.Person, onClick = {
                                             dismissMenu()
-                                            ui.changeChannelRole(ws, room.id, rm.member, "member")?.invokeOnCompletion { reload++ }
+                                            ui.changeChannelRole(ws, room.id, rm.member, name, "member") { reload++ }
                                         })
                                         ChannelMemberAction.REMOVE -> {
                                             MenuSeparator()
