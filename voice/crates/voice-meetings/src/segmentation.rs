@@ -103,8 +103,7 @@ pub fn next_boundary_with(samples: &[i16], last: bool, speaker_cuts: &[usize]) -
     let mut heard = false;
     let mut boundary = None;
     for i in 0..energy.len().min(CORE_LIMIT / FRAME) {
-        let history = &energy[i.saturating_sub(HISTORY_FRAMES - 1)..=i];
-        let quiet = energy[i] < threshold(history);
+        let quiet = quiet_frame(&energy, i);
         heard |= !quiet;
         run = if quiet { run + 1 } else { 0 };
         let elapsed = (i + 1) * FRAME;
@@ -177,11 +176,17 @@ pub fn next_boundary_with(samples: &[i16], last: bool, speaker_cuts: &[usize]) -
 }
 
 /// The mean absolute sample of every whole frame.
-fn frame_energy(samples: &[i16]) -> Vec<f64> {
+pub(crate) fn frame_energy(samples: &[i16]) -> Vec<f64> {
     samples
         .chunks_exact(FRAME)
         .map(|frame| frame.iter().map(|&s| f64::from(s).abs()).sum::<f64>() / FRAME as f64)
         .collect()
+}
+
+/// Whether frame `i` of `energy` ([`frame_energy`]) holds no speech: it is below the threshold
+/// of the 10 s up to it.
+pub(crate) fn quiet_frame(energy: &[f64], i: usize) -> bool {
+    energy[i] < threshold(&energy[i.saturating_sub(HISTORY_FRAMES - 1)..=i])
 }
 
 /// Ownkey's threshold: 8 % of the 90th percentile of the frames that aren't digital silence,
