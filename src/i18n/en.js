@@ -11151,6 +11151,14 @@
     "message": "Make member",
     "description": "Channel members dialog: row menu item that turns a channel manager back into a member. src/renderer/chat-dialogs.js"
   },
+  "chat.channel.nowManager": {
+    "message": "{name} is now a manager",
+    "description": "Channel members dialog: toast after making someone a channel manager, with Undo. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.channel.nowMember": {
+    "message": "{name} is now a member",
+    "description": "Channel members dialog: toast after turning a channel manager back into a plain channel member, with Undo. {name}: that person. src/renderer/chat-dialogs.js"
+  },
   "chat.channel.removeMember": {
     "message": "Remove from #{name}",
     "description": "Channel members dialog: row menu item that takes someone out of the channel. {name}: the channel name, after #. src/renderer/chat-dialogs.js"
@@ -11198,6 +11206,38 @@
   "chat.members.changeRole": {
     "message": "Change role",
     "description": "Workspace members dialog: row menu heading over the role choices. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.ownerTitle": {
+    "message": "Make {name} an owner?",
+    "description": "Workspace members dialog: confirmation title before making someone an owner. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.ownerBody": {
+    "message": "Owners can change everything in {workspace}, including removing you.",
+    "description": "Workspace members dialog: confirmation text before making someone an owner, who can then also remove the user. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.ownerConfirm": {
+    "message": "Make owner",
+    "description": "Workspace members dialog: confirmation button that makes someone an owner. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.guestTitle": {
+    "message": "Make {name} a guest?",
+    "description": "Workspace members dialog: confirmation title before making someone a guest. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.guestBody": {
+    "message": "{name} will only see the channels someone adds them to. The direct messages {name} is in close for everyone in them.",
+    "description": "Workspace members dialog: confirmation text before making someone a guest; their direct messages close for good, for every participant. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.guestConfirm": {
+    "message": "Make guest",
+    "description": "Workspace members dialog: confirmation button that makes someone a guest. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.nowAdmin": {
+    "message": "{name} is now an admin",
+    "description": "Workspace members dialog: toast after making someone an admin, with Undo. {name}: that person. src/renderer/chat-dialogs.js"
+  },
+  "chat.members.nowMember": {
+    "message": "{name} is now a member",
+    "description": "Workspace members dialog: toast after making someone a member of the workspace, with Undo. {name}: that person. src/renderer/chat-dialogs.js"
   },
   "chat.members.remove": {
     "message": "Remove from workspace",

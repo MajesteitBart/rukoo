@@ -195,6 +195,38 @@ test('leaving a channel as its only manager asks for a successor', async () => {
   expect(roles.some((m) => m.member === bartMe.id)).toBe(false);
 });
 
+test('Make manager and Make member say so with Undo, which sets the channel role back', async () => {
+  const { bart, ws } = await twoPeople(server);
+  const channel = await server.seedChannel(bart, ws.id, { name: 'design', members: [ws.me.id] });
+  const roleOf = async () => (await serverGet(server, bart, ws.id, `/channels/${channel.id}/members`)).members.find((m) => m.member === ws.me.id)?.role;
+  await ready(bart);
+  await roomRow(win, 'design').click();
+  await expect(title()).toHaveText('design');
+  await roomMenu(win, 'Members');
+  const dialog = dialogBox(win);
+  const olgaRow = dialog.locator('.ch-person', { hasText: 'Olga Owner' });
+
+  await olgaRow.locator('[data-person]').click({ timeout: 15000 });
+  await menuItem(win, 'Make manager').click();
+  await expect(toast().locator('span')).toHaveText('Olga Owner is now a manager');
+  await expect(olgaRow.locator('.ch-pill')).toHaveText('Manager', { timeout: 15000 });
+  await toast().locator('button').click();
+  await expect(olgaRow.locator('.ch-pill')).toHaveCount(0, { timeout: 15000 });
+  expect(await roleOf()).toBe('member');
+
+  await olgaRow.locator('[data-person]').click();
+  await menuItem(win, 'Make manager').click();
+  await expect(olgaRow.locator('.ch-pill')).toHaveText('Manager', { timeout: 15000 });
+  await olgaRow.locator('[data-person]').click();
+  await menuItem(win, 'Make member').click();
+  await expect(toast().locator('span')).toHaveText('Olga Owner is now a member');
+  await expect(olgaRow.locator('.ch-pill')).toHaveCount(0, { timeout: 15000 });
+  await toast().locator('button').click();
+  await expect(olgaRow.locator('.ch-pill')).toHaveText('Manager', { timeout: 15000 });
+  expect(await roleOf()).toBe('manager');
+  await dialog.locator('.buttons button').last().click();
+});
+
 test('removing someone from a channel asks about that channel only, and Escape there keeps the members dialog', async () => {
   const { bart, ws, bartMe } = await twoPeople(server);
   const channel = await server.seedChannel(bart, ws.id, { name: 'design', members: [ws.me.id] });

@@ -803,12 +803,22 @@ export async function channelMembers(room, { add = false } = {}) {
     ];
     menuInDialog(btn, items);
   };
-  const setRole = async (id, role) => {
+  // Manager and member apply at once; the toast's Undo sets the role from before back, without a toast of its own.
+  const setRole = async (id, role, undoable = true) => {
+    const before = (list || []).find((x) => x.member === id)?.role;
     try {
       await api('chatSetChannelRole', ws, room.id, id, role);
-      await load();
     } catch (err) {
-      showError(body, '', K.errorText(err));
+      // Undo can come after the dialog closed.
+      if (body.isConnected) showError(body, '', K.errorText(err));
+      else toast(K.errorText(err), 5000);
+      return;
+    }
+    if (body.isConnected) await load();
+    if (undoable && before && before !== role) {
+      toast(t(role === 'manager' ? 'chat.channel.nowManager' : 'chat.channel.nowMember', { name: nameOf(id) }), {
+        action: { label: t('common.actions.undo'), run: () => setRole(id, before, false) }
+      });
     }
   };
   const removeOne = async (id) => {
@@ -1283,13 +1293,38 @@ export async function workspaceMembers() {
     setTimeout(draw, 500);
     setTimeout(draw, 1500);
   };
+  // Owner and Guest reach past the person, so they ask first: an owner can remove you, and a guest's DMs close for
+  // everyone in them. Admin and Member apply at once with Undo, which sets the role from before back.
   const setRole = async (m, role) => {
+    const name = displayName(m, t);
+    const before = m.role;
+    if (role === 'owner' || role === 'guest') {
+      const ok = await confirmDialog(
+        t(`chat.members.${role}Title`, { name }),
+        t(`chat.members.${role}Body`, { name, workspace: wsName() }),
+        t(`chat.members.${role}Confirm`),
+        role === 'guest'
+      );
+      if (!ok) return;
+    }
+    if (!(await applyRole(m.id, role))) return;
+    if (role === 'admin' || role === 'member') {
+      toast(t(role === 'admin' ? 'chat.members.nowAdmin' : 'chat.members.nowMember', { name }), {
+        action: { label: t('common.actions.undo'), run: () => applyRole(m.id, before) }
+      });
+    }
+  };
+  const applyRole = async (id, role) => {
     try {
-      await api('chatSetRole', ws, m.id, role);
+      await api('chatSetRole', ws, id, role);
       await K.reload();
       later();
+      return true;
     } catch (err) {
-      showError(body, '', K.errorText(err));
+      // Undo can come after the dialog closed.
+      if (body.isConnected) showError(body, '', K.errorText(err));
+      else toast(K.errorText(err), 5000);
+      return false;
     }
   };
   const removeMember = async (m) => {

@@ -90,7 +90,7 @@ The person isn't told, but may notice that a conversation with you closed or tha
 A workspace has **owners**, **admins**, **members** and **guests**.
 
 - Owners change anyone's role and remove anyone. Admins invite people, move people between member and guest, and remove members and guests.
-- **Members** in the workspace menu lists everyone by role, with Message, Change role, Block and Remove where you may use them.
+- **Members** in the workspace menu lists everyone by role, with Message, Change role, Block and Remove where you may use them. Making someone an owner or a guest asks first. Admin and Member apply at once, with Undo, and so do Make manager and Make member in a channel.
 - **Change your name** sets the name others see for you in this workspace.
 - **Leave workspace** takes away your access to its channels and direct messages. What you wrote stays, with your name. If you're the only manager of channels other people are in, Rukoo lists them so you can hand each over first. The only owner makes someone else owner first.
 - **Delete workspace** is for an owner who is its only member. It deletes every channel and message at once and can't be undone. With other people still in it, remove them first.

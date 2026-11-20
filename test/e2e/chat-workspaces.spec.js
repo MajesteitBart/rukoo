@@ -262,6 +262,66 @@ test('leaving a workspace as the only manager of a channel asks to hand it over 
   expect(roles).toEqual([{ member: ws.me.id, role: 'manager' }]);
 });
 
+test('Owner and Guest ask first in a member menu, and Admin and Member apply with Undo that sets the role back', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
+  const mila = await server.seedMember(ws, await server.seedAccount(), 'Mila Bakker');
+  const roleOf = async () => (await serverGet(server, bart, ws.id, '/members')).members.find((m) => m.id === mila.id)?.role;
+  await ready(bart);
+  await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
+
+  await workspaceMenu(win, 'Members');
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Members of Acme');
+  const milaRow = dialog.locator('.ch-person', { hasText: 'Mila Bakker' });
+  const pick = async (role) => {
+    await milaRow.locator('[data-person]').click({ timeout: 15000 });
+    await menuItem(win, role).first().click();
+  };
+
+  // Admin applies at once and says so; Undo makes her a member again.
+  await pick('Admin');
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(toast().locator('span')).toHaveText('Mila Bakker is now an admin');
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('admin');
+  await toast().locator('button').click();
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('member');
+
+  // Owner asks first, and Escape keeps her a member.
+  await pick('Owner');
+  await expect(win.locator('.scrim')).toHaveCount(2);
+  await expect(dialog.locator('h2')).toHaveText('Make Mila Bakker an owner?');
+  await expect(dialog.locator('p')).toHaveText('Owners can change everything in Acme, including removing you.');
+  await expect(dialog.locator('.buttons button').last()).toHaveText('Make owner');
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  expect(await roleOf()).toBe('member');
+  await pick('Owner');
+  await dialog.locator('.buttons button').last().click();
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('owner');
+
+  // Member from owner: Undo sets owner back, not member.
+  await pick('Member');
+  await expect(toast().locator('span')).toHaveText('Mila Bakker is now a member');
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('member');
+  await toast().locator('button').click();
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('owner');
+
+  // Guest asks first and says what closes.
+  await pick('Guest');
+  await expect(win.locator('.scrim')).toHaveCount(2);
+  await expect(dialog.locator('h2')).toHaveText('Make Mila Bakker a guest?');
+  await expect(dialog.locator('p')).toHaveText(
+    'Mila Bakker will only see the channels someone adds them to. The direct messages Mila Bakker is in close for everyone in them.'
+  );
+  await expect(dialog.locator('.buttons button').last()).toHaveText('Make guest');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect.poll(roleOf, { timeout: 15000 }).toBe('guest');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
 test('an owner deletes a workspace when alone in it, and Delete stays off while someone else is in it', async () => {
   const bart = await server.seedAccount({ password: PASSWORD });
   const olga = await server.seedAccount();
