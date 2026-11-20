@@ -198,6 +198,12 @@ class Notifier {
     this.takeBack(ws, room);
   }
 
+  // The workspace's history was reset (410): the removals this device missed can't be listed any more, so any alert of
+  // it may show a removed message, and every one goes. The reset deleted their notice rows.
+  onReset(ws) {
+    this.onWorkspaceGone(ws);
+  }
+
   // The person lost the workspace: every alert of it goes.
   onWorkspaceGone(ws) {
     for (const [id, entry] of [...this.shown]) {

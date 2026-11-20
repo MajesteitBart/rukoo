@@ -390,3 +390,23 @@ test('taking back: a read here and on another device, a removal, an eviction and
   assert.equal(svc.store.getWs(ws.id), null);
   assert.deepEqual(hidden.slice(4), [key]);
 });
+
+test('a 410 reset takes back every alert of the workspace, as the removals it missed are unknown', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, hidden } = await scene(t);
+  const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+  await svc.sync(ws.id);
+  const posted = await server.post(olga, ws.id, dm, 'Soon unknown');
+  await svc.sync(ws.id);
+  assert.equal(svc.notices.length, 1);
+  assert.equal(svc.store.noticesForRoom(ws.id, dm).length, 1);
+  // Another member's cursor makes the server answer 410 reset_required.
+  const theirs = await server.call('GET', `/v1/workspaces/${ws.id}/changes`, { token: olga.token });
+  svc.store.updateWs(ws.id, { cursor: theirs.body.next });
+  const outcome = await svc.sync(ws.id);
+  assert.ok(!outcome.error, `the run got through: ${outcome.error && outcome.error.code}`);
+  assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
+  assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
+  assert.equal(svc.notices.length, 1, 'the pass after the reset alerts nothing new');
+  assert.equal(svc.store.getRoom(ws.id, dm).notified, posted.seq);
+});

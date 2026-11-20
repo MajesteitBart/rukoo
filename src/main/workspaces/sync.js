@@ -217,10 +217,13 @@ function allRooms(store, ws) {
   return store.listRooms(ws).map((r) => r.id);
 }
 
-// 410 reset_required: the cached bodies go before the rebuild starts, so stale text never shows as current.
+// 410 reset_required: the cached bodies go before the rebuild starts, so stale text never shows as current. The server
+// can no longer list what was removed in the meantime, so the alerts' notice rows go too, and the caller takes every
+// alert of the workspace back (contract 3.6 and 3.10).
 function reset(svc, ws) {
   const store = svc.store;
   store.tx(() => {
+    store.run('DELETE FROM notice WHERE ws = ?', ws);
     store.deleteWsEvents(ws);
     store.clearPass(ws);
     store.updateWs(ws, { cursor: null, passing: 1 });
@@ -426,6 +429,7 @@ async function runSync(svc, ws) {
         if (resets > 0) throw new ChatError('server', { status: 410 });
         resets += 1;
         reset(svc, ws);
+        await hook(svc, () => svc.notifier.onReset(ws));
         await hook(svc, () => svc.history.onReset(ws));
         await svc.details(ws, { inRun: true });
         svc.guard(epoch);
