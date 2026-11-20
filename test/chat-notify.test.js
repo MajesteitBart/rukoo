@@ -410,3 +410,34 @@ test('a 410 reset takes back every alert of the workspace, as the removals it mi
   assert.equal(svc.notices.length, 1, 'the pass after the reset alerts nothing new');
   assert.equal(svc.store.getRoom(ws.id, dm).notified, posted.seq);
 });
+
+// Start over and a new key start a pass from the start, which lists no removals either: an alert may show a message
+// removed meanwhile, so every alert of the workspace goes with its notice rows.
+for (const [what, startPass] of [
+  ['Start over', (svc, ws) => chatApi(() => svc).chatReload(ws)],
+  [
+    'a new key',
+    async (svc, ws) => {
+      svc.store.updateWs(ws, { keyId: 'an-old-key' });
+      await svc.details(ws);
+    }
+  ]
+]) {
+  test(`${what} takes back every alert of the workspace`, async (t) => {
+    if (skipWithoutServer(t)) return;
+    const { olga, ws, bartMe, svc, hidden } = await scene(t);
+    const dm = (await server.seedDm(olga, ws.id, [bartMe.id])).conversation;
+    await svc.sync(ws.id);
+    const posted = await server.post(olga, ws.id, dm, 'Removed after the alert');
+    await svc.sync(ws.id);
+    assert.equal(svc.notices.length, 1);
+    assert.equal(svc.store.noticesForRoom(ws.id, dm).length, 1);
+    await server.redact(olga, ws.id, dm, posted.messageId);
+    await startPass(svc, ws.id);
+    assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
+    assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, `the pass after ${what}`);
+    assert.equal(svc.notices.length, 1, 'the pass alerts nothing new');
+    assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
+  });
+}

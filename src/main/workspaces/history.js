@@ -750,8 +750,8 @@ class History {
     if (o && o.ws === ws && this.isOpen(ws, o.room)) this.followUp(ws, o.room);
   }
 
-  // After the transaction of a 410, a quarantine, a restore or Start over. The first three deleted the workspace's
-  // cached events, and the open room shows again from scratch; Start over keeps them, and the room only catches up.
+  // After the transaction of a 410, a quarantine, a restore, a new key or Start over. Each deleted the workspace's
+  // cached events, so an open room that showed messages shows again from scratch; one that showed none catches up.
   onReset(ws) {
     const o = this.open;
     if (this.threadMemory && this.threadMemory.key.startsWith(`${ws}\n`)) this.threadMemory = null;

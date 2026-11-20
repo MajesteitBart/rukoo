@@ -417,6 +417,46 @@ for (const [what, reset] of [
   });
 }
 
+// A pass from the start lists no removals (the server answers removed: [] without a cursor), so a message removed on
+// the server since this device's last page would keep its text in the cache. Start over and a new key drop the cached
+// bodies, as a 410 does (contract 3.6); the rooms and the unsent messages stay.
+for (const [what, startPass] of [
+  ['Start over', (svc, ws) => chatApi(() => svc).chatReload(ws)],
+  [
+    'a new key',
+    async (svc, ws) => {
+      svc.store.updateWs(ws, { keyId: 'an-old-key' });
+      await svc.details(ws);
+    }
+  ]
+]) {
+  test(`${what} drops cached bodies, so text removed meanwhile leaves the cache`, async (t) => {
+    if (skipWithoutServer(t)) return;
+    const { olga, ws, bartMe, svc } = await setup(t);
+    holdOutbox(svc);
+    const kept = await server.post(olga, ws.id, ws.general, 'Still here');
+    const gone = await server.post(olga, ws.id, ws.general, 'Removed while away');
+    await svc.sync(ws.id);
+    await cacheRoom(svc, ws.id, ws.general);
+    assert.equal(svc.store.eventById(ws.id, gone.messageId).text, 'Removed while away');
+    const room = svc.store.getRoom(ws.id, ws.general);
+    const local = 'HHHHHHHHHHHHHHHHHHHHHH';
+    svc.store.insertOutbox({ local, ws: ws.id, room: ws.general, actor: bartMe.id, grantId: room.grantId, generation: svc.store.getWs(ws.id).generation, text: 'waits', mentions: [], createdAt: Date.now() });
+    // Removed on the server; this device doesn't run before the pass from the start.
+    await server.redact(olga, ws.id, ws.general, gone.messageId);
+    await startPass(svc, ws.id);
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, `the pass after ${what}`);
+    assert.equal(svc.store.eventById(ws.id, gone.messageId), null);
+    assert.equal(svc.store.eventById(ws.id, kept.messageId), null, 'every cached body went, as for a 410');
+    const after = svc.store.getRoom(ws.id, ws.general);
+    assert.deepEqual([after.lo, after.hi], [null, null]);
+    assert.equal(after.head, room.head + 1, 'the room is still there, with the removal counted in its head');
+    assert.equal(svc.store.countUnsent(), 1, 'the unsent message stays');
+    svc.store.checkpoint();
+    assert.ok(!fs.readFileSync(svc.file).includes(Buffer.from('Removed while away')));
+  });
+}
+
 test('a restore or a new key that GET / finds outside a run starts the pass at once', async (t) => {
   if (skipWithoutServer(t)) return;
   const { ws, svc } = await setup(t);

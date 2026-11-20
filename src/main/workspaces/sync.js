@@ -246,10 +246,14 @@ function quarantine(svc, ws) {
 }
 
 // Start over (chatReload), after a quarantine or whenever the person asks: a pass from the start, with every unsent
-// message of the workspace checked against the server before it is sent again.
+// message of the workspace checked against the server before it is sent again. A pass from the start lists no
+// removals, so as with a 410 the cached bodies and the alerts' notice rows go, and the caller takes every alert of the
+// workspace back (contract 3.6 and 3.10). Rooms, read positions, drafts, mute and the outbox stay.
 function startOver(svc, ws) {
   const store = svc.store;
   store.tx(() => {
+    store.run('DELETE FROM notice WHERE ws = ?', ws);
+    store.deleteWsEvents(ws);
     store.updateWs(ws, { state: 'ok', cursor: null, passing: 1 });
     store.clearPass(ws);
     store.markLookup(ws, null);
@@ -259,8 +263,9 @@ function startOver(svc, ws) {
 
 // The answer of GET / (wire.checkWorkspace), with t0 and t1 the local times before and after it. A generation other
 // than the stored one is a restore: cached events go, a pass follows, and unsent messages of the old generation are
-// looked up before they are sent again. A new keyId means a pass too, as cursors sealed with the old key are no good.
-// Also measures the clock: server time minus local time.
+// looked up before they are sent again. A new keyId means a pass too, as cursors sealed with the old key are no good;
+// that pass lists no removals, so the cached events and notice rows go as for a 410, and the caller takes the
+// workspace's alerts back. Also measures the clock: server time minus local time.
 function restore(svc, ws, answer, { t0, t1 }) {
   const store = svc.store;
   const { workspace, me } = answer;
@@ -277,6 +282,8 @@ function restore(svc, ws, answer, { t0, t1 }) {
       store.markLookup(ws, row.generation);
     } else if (row.keyId && row.keyId !== workspace.keyId) {
       keyChanged = true;
+      store.run('DELETE FROM notice WHERE ws = ?', ws);
+      store.deleteWsEvents(ws);
       store.clearPass(ws);
       store.updateWs(ws, { cursor: null, passing: 1 });
     }

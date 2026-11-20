@@ -511,10 +511,12 @@ class WorkspaceService extends EventEmitter {
     this.guard(epoch);
     if (!this.store.getWs(ws)) return answer;
     const { restored, keyChanged } = sync.restore(this, ws, answer, { t0, t1 });
-    if (restored) {
+    if (restored || keyChanged) {
       this.roomsChanged(ws, this.store.listRooms(ws).map((r) => r.id));
+      // A new key deleted the notice rows: the pass that follows can't list what was removed meanwhile.
+      if (keyChanged) await this.hook(() => this.notifier.onReset(ws));
       await this.hook(() => this.history.onReset(ws));
-      await this.hook(() => this.outbox.kick(ws));
+      if (restored) await this.hook(() => this.outbox.kick(ws));
     }
     // From the listing, a 4003 or the outbox: the pass mustn't wait for the catch-up timer. During a run this only
     // makes another run follow, for a reset that came after the run's last page.
@@ -774,6 +776,7 @@ class WorkspaceService extends EventEmitter {
     r.error = null;
     r.failures = 0;
     r.notBefore = 0;
+    await this.hook(() => this.notifier.onReset(ws));
     await this.hook(() => this.history.onReset(ws));
     await this.hook(() => this.outbox.kick(ws));
     this.updateSockets();
