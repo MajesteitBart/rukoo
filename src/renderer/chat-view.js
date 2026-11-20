@@ -698,7 +698,13 @@ export function mountView(section, H) {
       render({ position: !wasLoaded || p.replace ? 'open' : stick ? 'bottom' : 'keep', arrivals });
       if (T) {
         const mine = list.filter(inThread);
-        if (mine.length) {
+        if (p.replace) {
+          // The cache was emptied (a 410, a restore, a new key or Start over), and what the thread showed may hold text
+          // removed since: it keeps only what the replace carries and loads again from the cache or the server.
+          T.ev = new Map(mine.map((e) => [e.seq, e]));
+          renderThread({ position: 'keep' });
+          loadThread();
+        } else if (mine.length) {
           const end = threadAtEnd();
           for (const e of mine) T.ev.set(e.seq, e);
           renderThread({ position: end ? 'bottom' : 'keep' });

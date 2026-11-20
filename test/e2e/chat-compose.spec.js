@@ -371,6 +371,49 @@ test('a thread whose first message is removed swaps its composer for a note', as
   await expect(log().locator(`li.ch-msg[data-id="${root.messageId}"] .ch-replies-n`)).toHaveText('1 reply');
 });
 
+// Start over empties the cache, and its pass from the start lists no removals: an open thread drops what it showed and
+// loads again, so a reply removed on the server before it leaves the thread too (contract 3.6, 3.14). The room loads
+// again only the range it showed, and the thread's first messages are more than a page older than that, so only the
+// thread's own load can bring the removal.
+test('an open thread loads again after Start over, without a reply removed before it', async () => {
+  test.setTimeout(90000);
+  const { olga, bart, ws } = await twoPeople(server);
+  const root = await server.post(olga, ws.id, ws.general, 'Plans for the offsite');
+  const gone = await server.post(olga, ws.id, ws.general, 'Reply removed while away', { root: root.messageId });
+  // More than a page of messages after it, from four more people, as each one's send lane allows a burst of 30.
+  const others = [];
+  for (const name of ['Ann', 'Ben', 'Cas', 'Dee']) {
+    const person = await server.seedAccount();
+    await server.seedMember(ws, person, name);
+    others.push(person);
+  }
+  await Promise.all(others.map(async (person, n) => {
+    for (let i = 0; i < 27; i++) await server.post(person, ws.id, ws.general, `Filler ${n}.${i}`);
+  }));
+  await server.post(olga, ws.id, ws.general, 'Reply that stays', { root: root.messageId });
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  // The thread opens from the recent reply, and pages back for its first message and the older reply.
+  const recent = message(log(), 'Reply that stays');
+  await expect(recent).toBeVisible({ timeout: 15000 });
+  await expect(message(log(), 'Plans for the offsite')).toHaveCount(0);
+  await (await tool(recent, 'reply')).click();
+  await expect(message(threadLog(), 'Plans for the offsite')).toBeVisible({ timeout: 15000 });
+  await expect(message(threadLog(), 'Reply removed while away')).toBeVisible();
+  await expect(message(threadLog(), 'Reply that stays')).toBeVisible();
+  // Removed on the server while this device doesn't run: the thread still shows it.
+  await holdRuns(app);
+  await server.redact(olga, ws.id, ws.general, gone.messageId);
+  await win.waitForTimeout(1500);
+  await expect(message(threadLog(), 'Reply removed while away')).toBeVisible();
+  await win.evaluate((id) => window.mail.call('chatReload', id), ws.id);
+  await expect(message(threadLog(), 'Reply removed while away')).toHaveCount(0, { timeout: 15000 });
+  await expect(threadPane()).toBeVisible();
+  await expect(message(threadLog(), 'Plans for the offsite')).toBeVisible({ timeout: 15000 });
+  await expect(message(threadLog(), 'Reply that stays')).toBeVisible();
+  await expect(threadLog().locator(`li.ch-msg[data-id="${gone.messageId}"] .ch-removed`)).toHaveText('Message removed');
+});
+
 test('a draft with a mention survives switching rooms and a restart', async () => {
   const { bart, ws, olga, bartMe } = await twoPeople(server);
   await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
