@@ -117,6 +117,7 @@ import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
 import nl.bvdm.rukoo.workspaces.RoomMember
 import nl.bvdm.rukoo.workspaces.WorkspaceError
+import nl.bvdm.rukoo.workspaces.WorkspaceStatus
 import nl.bvdm.rukoo.workspaces.WorkspaceView
 
 // ---- the rules behind the sheets, pure so ChatSheetRulesTest covers them ----
@@ -376,9 +377,15 @@ object SheetRules {
      * A room's details (contract §7.4): for a channel Mute, Mark as read, Members, Add people and Rename for managers,
      * Archive for managers, owners and admins, and Leave; for a DM Mute, Mark as read, Leave conversation (Remove from
      * list once closed), and Block or Unblock in a one-to-one DM for full members. An archived channel can't be added
-     * to, renamed or archived.
+     * to, renamed or archived. While the workspace can't take writes (not [writable]: the server asks for an update),
+     * only what stays on the phone is offered: Mute, Mark as read and Members.
      */
-    fun detailActions(room: Room, myRole: String?, me: String?, blocked: Set<String>): List<DetailAction> {
+    fun detailActions(room: Room, myRole: String?, me: String?, blocked: Set<String>, writable: Boolean = true): List<DetailAction> =
+        detailActionsFor(room, myRole, me, blocked).filter { writable || it in LOCAL_DETAILS }
+
+    private val LOCAL_DETAILS = setOf(DetailAction.MUTE, DetailAction.UNMUTE, DetailAction.MARK_READ, DetailAction.MEMBERS)
+
+    private fun detailActionsFor(room: Room, myRole: String?, me: String?, blocked: Set<String>): List<DetailAction> {
         val out = ArrayList<DetailAction>()
         out += if (room.muted) DetailAction.UNMUTE else DetailAction.MUTE
         out += DetailAction.MARK_READ
@@ -401,9 +408,13 @@ object SheetRules {
     /**
      * A member row's menu (desktop-ui 6.15): Message for full members to another full member they haven't blocked;
      * the roles an owner (any) or an admin (member and guest, for members and guests) may give; Block or Unblock for
-     * full members; Remove for owners, and for admins over members and guests. Nothing for the person themself.
+     * full members; Remove for owners, and for admins over members and guests. Nothing for the person themself. While
+     * the workspace can't take writes (not [writable]), only Message, which opens the DM.
      */
-    fun memberActions(myRole: String?, me: String?, target: Member, blocked: Set<String>): List<MemberAction> {
+    fun memberActions(myRole: String?, me: String?, target: Member, blocked: Set<String>, writable: Boolean = true): List<MemberAction> =
+        memberActionsFor(myRole, me, target, blocked).filter { writable || it == MemberAction.MESSAGE }
+
+    private fun memberActionsFor(myRole: String?, me: String?, target: Member, blocked: Set<String>): List<MemberAction> {
         if (target.id == me || target.state != "active") return emptyList()
         val out = ArrayList<MemberAction>()
         val full = ChatListModel.isFullMember(myRole)
@@ -442,9 +453,12 @@ object SheetRules {
      */
     fun roleAsks(role: String): Boolean = role == "owner" || role == "guest"
 
-    /** A channel member row's menu for a manager of an open channel; nothing for the person themself. */
-    fun channelMemberActions(room: Room, me: String?, target: RoomMember): List<ChannelMemberAction> {
-        if (room.kind != RoomKind.CHANNEL || room.role != "manager" || room.archived || target.member == me) return emptyList()
+    /**
+     * A channel member row's menu for a manager of an open channel; nothing for the person themself, nor while the
+     * workspace can't take writes (not [writable]).
+     */
+    fun channelMemberActions(room: Room, me: String?, target: RoomMember, writable: Boolean = true): List<ChannelMemberAction> {
+        if (!writable || room.kind != RoomKind.CHANNEL || room.role != "manager" || room.archived || target.member == me) return emptyList()
         return listOf(if (target.role == "manager") ChannelMemberAction.MAKE_MEMBER else ChannelMemberAction.MAKE_MANAGER, ChannelMemberAction.REMOVE)
     }
 }
@@ -787,6 +801,13 @@ private fun selectedView(app: AppViewModel): WorkspaceView? {
     val nav by app.state.collectAsStateWithLifecycle()
     val view by app.chatView.collectAsStateWithLifecycle()
     return view?.takeIf { it.ws.id == nav.chat.workspaceId }
+}
+
+/** Whether workspace [ws] takes writes: not while the server asks for an update (426, contract §3.15). */
+@Composable
+private fun takesWrites(app: AppViewModel, ws: String): Boolean {
+    val chat by app.chatState.collectAsStateWithLifecycle()
+    return chat.workspaces.firstOrNull { it.id == ws }?.status != WorkspaceStatus.UPGRADE
 }
 
 /** A date and time as the settings pages write them. */
@@ -1504,7 +1525,7 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
             }
             SheetDivider()
         }
-        for (action in SheetRules.detailActions(room, view.me.role, me, blocked)) {
+        for (action in SheetRules.detailActions(room, view.me.role, me, blocked, takesWrites(app, ws))) {
             when (action) {
                 // Mute silences mentions too, so the row says so before it's chosen.
                 DetailAction.MUTE -> SheetRow(stringResource(R.string.chat_head_mute), icon = RukooIcons.BellOff, hint = stringResource(R.string.chat_head_mute_hint), onClick = {
@@ -1578,6 +1599,7 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
     val names = rememberChatNames()
     val compare = rememberCompare()
     val blocked = remember(view) { view.blocks.mapTo(HashSet()) { it.member } }
+    val writable = takesWrites(app, ws)
     var query by remember { mutableStateOf("") }
     val groups = remember(view, query, compare) {
         val list = view.members.filter { it.state == "active" && SheetRules.matches(it.name, query) }.sortedWith { a, b -> compare.compare(a.name, b.name) }
@@ -1609,7 +1631,7 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                 for (m in people) {
                     val name = names.display(m)
                     val label = if (m.id == view.me.id) stringResource(R.string.chat_members_you, name) else name
-                    val actions = SheetRules.memberActions(view.me.role, view.me.id, m, blocked)
+                    val actions = SheetRules.memberActions(view.me.role, view.me.id, m, blocked, writable)
                     PersonRow(
                         m.id,
                         m,
@@ -1720,7 +1742,8 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
             error = ui.errorText(e)
         }
     }
-    val manager = room.kind == RoomKind.CHANNEL && room.role == "manager" && !room.archived
+    val writable = takesWrites(app, ws)
+    val manager = room.kind == RoomKind.CHANNEL && room.role == "manager" && !room.archived && writable
     val shown = remember(list, query, members, compare) {
         list.orEmpty().filter { SheetRules.matches(names.display(members[it.member]), query) }
             .sortedWith { a, b -> compare.compare(names.display(members[a.member]), names.display(members[b.member])) }
@@ -1731,7 +1754,7 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
         title,
         onDismiss,
         buttons = { close ->
-            if (room.kind == RoomKind.CHANNEL) {
+            if (room.kind == RoomKind.CHANNEL && writable) {
                 RkLinkButton(stringResource(R.string.chat_head_leave), onClick = {
                     close()
                     ui.askLeaveChannel(ws, room, members, view.me.id)
@@ -1757,7 +1780,7 @@ private fun RoomMembers(app: AppViewModel, view: WorkspaceView, room: Room, twoP
                 val m = members[rm.member]
                 val name = names.display(m)
                 val label = if (rm.member == view.me.id) stringResource(R.string.chat_members_you, name) else name
-                val actions = SheetRules.channelMemberActions(room, view.me.id, rm)
+                val actions = SheetRules.channelMemberActions(room, view.me.id, rm, writable)
                 PersonRow(
                     rm.member,
                     m,

@@ -610,6 +610,11 @@ data class RoomLoad(
     val olderDone: Boolean = false,
     /** The §3.15 code of the last failed load, or null. */
     val error: String? = null,
+    /**
+     * How often the room's cached range was replaced ([RoomLoader.resets]): it goes up when its cache was dropped and
+     * [readAtOpen] taken again, and stays the same when the loader closes the room and opens it again.
+     */
+    val resets: Long = 0,
 )
 
 data class ThreadKey(val room: String, val root: String)
@@ -648,6 +653,17 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
     private val _threads = MutableStateFlow<Map<ThreadKey, ThreadLoad>>(emptyMap())
     val threads: StateFlow<Map<ThreadKey, ThreadLoad>> = _threads.asStateFlow()
 
+    // Cache replacements so far: every room's (a reset, a restore, quarantine, Start over) and each room's own (a new
+    // grant, removedMore). They outlive a room's close, so reopening it keeps its count.
+    private val allResets = java.util.concurrent.atomic.AtomicLong()
+    private val roomResets = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * How often [room]'s cached range was replaced in this sync, for [RoomLoad.resets]: a screen that kept the read
+     * position it opened with takes the new one when this changes.
+     */
+    fun resets(room: String): Long = allResets.get() + (roomResets[room] ?: 0L)
+
     /** Whether older messages can still load: the range stops above the floor and no older page came back empty. */
     fun hasOlder(row: RoomRow): Boolean = row.lo != null && row.lo > row.floor && _rooms.value[row.id]?.olderDone != true
 
@@ -671,7 +687,7 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
         openRoom = room
         _rooms.update { m ->
             val before = m[room]
-            m + (room to ((if (again && before != null) before else RoomLoad(readAtOpen = row.readLocal)).copy(loading = true, error = null)))
+            m + (room to ((if (again && before != null) before else RoomLoad(readAtOpen = row.readLocal, resets = resets(room))).copy(loading = true, error = null)))
         }
         try {
             // The UI may switch rooms without closing the last one.
@@ -826,7 +842,8 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
 
     /** The workspace's cached events went (a reset, a restore, quarantine, Start over): what the loader knew is stale. */
     internal fun onReset() {
-        _rooms.update { m -> m.mapValues { it.value.copy(complete = true, olderDone = false) } }
+        allResets.incrementAndGet()
+        _rooms.update { m -> m.mapValues { (id, load) -> load.copy(complete = true, olderDone = false, resets = resets(id)) } }
         _threads.value = emptyMap()
     }
 
@@ -837,11 +854,12 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
      */
     internal suspend fun onCacheDropped(rooms: Collection<String>) {
         val ids = rooms.toSet()
+        for (id in ids) roomResets.merge(id, 1L, Long::plus)
         val rows = store.read { ids.mapNotNull { getRoom(ws, it) } }.associateBy { it.id }
         _rooms.update { m ->
             m.mapValues { (id, load) ->
                 val row = rows[id] ?: return@mapValues load
-                load.copy(readAtOpen = row.readLocal, complete = true, olderDone = false)
+                load.copy(readAtOpen = row.readLocal, complete = true, olderDone = false, resets = resets(id))
             }
         }
         _threads.update { m -> m.filterKeys { it.room !in ids } }

@@ -298,6 +298,20 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `while the server asks for an update, details and member menus offer only what stays on the phone`() {
+        val manager = channel("c1", "plans", role = "manager")
+        assertEquals(
+            listOf(DetailAction.MUTE, DetailAction.MARK_READ, DetailAction.MEMBERS),
+            SheetRules.detailActions(manager, "owner", me, emptySet(), writable = false),
+        )
+        assertEquals(listOf(DetailAction.MUTE, DetailAction.MARK_READ), SheetRules.detailActions(dm("d1", ann), "member", me, emptySet(), writable = false))
+        assertEquals(listOf(DetailAction.MUTE, DetailAction.MARK_READ), SheetRules.detailActions(dm("d3", ann, closed = "closed"), "member", me, setOf(ann), writable = false))
+        // Message only opens the DM; roles, Block and Remove are writes.
+        assertEquals(listOf(MemberAction.MESSAGE), SheetRules.memberActions("owner", me, people.first { it.id == ann }, emptySet(), writable = false))
+        assertEquals(emptyList<ChannelMemberAction>(), SheetRules.channelMemberActions(manager, me, RoomMember(bo, "member"), writable = false))
+    }
+
+    @Test
     fun `a DM's details offer leaving, and Block or Unblock only one to one for full members`() {
         assertEquals(
             listOf(DetailAction.MUTE, DetailAction.MARK_READ, DetailAction.LEAVE_DM, DetailAction.BLOCK),

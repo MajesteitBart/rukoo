@@ -36,6 +36,7 @@ import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
 import nl.bvdm.rukoo.ui.chat.ChatFilter
 import nl.bvdm.rukoo.ui.chat.ChatListModel
+import nl.bvdm.rukoo.ui.chat.TimelineScroll
 import nl.bvdm.rukoo.ui.composer.DraftStore
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
@@ -321,6 +322,8 @@ class ChatNavTest {
         // The service's loader closed in the background (or while folded behind the list) and opened again with the
         // newest read position: the divider stays where it was placed (§3.18).
         assertEquals(5L, placed.readPosition(timeline("c1", readAtOpen = 9)))
+        // The sync replaced the room's cached range (a new grant, removedMore, a reset): its new read position counts.
+        assertEquals(9L, placed.readPosition(timeline("c1", readAtOpen = 9).copy(resets = 1)))
     }
 
     // ---- the view model ----
@@ -673,6 +676,13 @@ class ChatNavTest {
         // A placement reported for an opening that is over changes nothing.
         vm.roomPlaced(first.count - 1, 9)
         assertEquals(5L, vm.roomOpening.value!!.readAt)
+        // Placing again with the same cache keeps the first read position; a replaced cache brings its own, kept from then on.
+        vm.roomPlaced(first.count, 9)
+        assertEquals(5L, vm.roomOpening.value!!.readAt)
+        vm.roomPlaced(first.count, 9, resets = 1)
+        assertEquals(first.copy(readAt = 9, resets = 1), vm.roomOpening.value)
+        vm.roomPlaced(first.count, 12, resets = 1)
+        assertEquals(9L, vm.roomOpening.value!!.readAt)
         // Another room is another opening, without a read position until its divider is placed.
         vm.openRoom("c2")
         val other = vm.roomOpening.value!!
@@ -686,6 +696,37 @@ class ChatNavTest {
         assertNull(vm.roomOpening.value)
         vm.openRoom("c2")
         assertTrue(vm.roomOpening.value!!.count > other.count)
+    }
+
+    @Test
+    fun `the room's scroll position lasts as long as its opening, through folding and the background`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        w.views["w1"] = MutableStateFlow(view("w1", room("c1"), room("c2")))
+        val (s, vm) = vm(w)
+        s.screen.setForeground(true)
+        vm.onLayout(twoPane = true)
+        vm.setMode(AppMode.CHAT)
+        vm.openRoom("c1")
+        val first = vm.roomOpening.value!!.count
+        assertNull("a new opening starts at the bottom", vm.roomScroll(first))
+        val scroll = TimelineScroll(first, "e_3", index = 12, offset = 40)
+        vm.roomScrolled(scroll)
+        // Folding the room behind the list takes its pane out of the composition; unfolding finds the position here.
+        vm.chatInteracted(ChatPane.HOME)
+        vm.onLayout(twoPane = false)
+        vm.onLayout(twoPane = true)
+        s.screen.setForeground(false)
+        s.screen.setForeground(true)
+        assertEquals(scroll, vm.roomScroll(first))
+        // A position from an opening that is over is dropped.
+        vm.roomScrolled(TimelineScroll(first - 1, "e_1", 3, 0))
+        assertEquals(scroll, vm.roomScroll(first))
+        // Another room is another opening, from the bottom; the last one's position went with it.
+        vm.openRoom("c2")
+        val other = vm.roomOpening.value!!.count
+        assertNull(vm.roomScroll(other))
+        assertNull(vm.roomScroll(first))
     }
 
     @Test

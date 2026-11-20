@@ -228,6 +228,8 @@ data class RoomTimeline(
     val loading: Boolean,
     /** The main composer's. */
     val draft: Draft?,
+    /** How often the room's cached range was replaced (RoomLoad.resets): a change brings a new [readAtOpen]. */
+    val resets: Long = 0,
 )
 
 /** A root's cached replies: how many, the newest, and up to three repliers, newest first. */

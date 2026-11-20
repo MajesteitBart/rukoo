@@ -140,13 +140,14 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
             onOpenThread = null,
             onOpenUrl = app::openUrl,
             reasonText = { app.chatUi.reasonText(it, app.chatUi.context(ws)) },
-            onLongPress = { row -> if (MessageRules.hasActions(row, me, roomModel, inThread = true, view?.me?.role, members[row.actor], blocked)) actionsFor = row },
+            onLongPress = { row -> if (MessageRules.hasActions(row, me, roomModel, inThread = true, view?.me?.role, members[row.actor], blocked, writable = !upgrade)) actionsFor = row },
             onPending = { row, action ->
                 row.local?.let { local ->
                     app.chatUi.pendingAction(ws, room, PendingRow(local, row.root, row.text.orEmpty(), row.mentions), action) { copyText(context, app, it) }
                 }
             },
             isBusy = app.chatUi::isBusy,
+            writable = !upgrade,
         )
         val listState = rememberLazyListState()
         LazyColumn(
@@ -247,6 +248,7 @@ private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: Str
                 author = members[row.actor],
                 names = names,
                 replyCount = if (row.id == root) t.replies.count { it.isMessage } else 0,
+                writable = !upgrade,
                 onDismiss = { actionsFor = null },
             )
         }

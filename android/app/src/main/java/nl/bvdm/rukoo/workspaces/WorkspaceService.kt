@@ -1014,6 +1014,7 @@ class WorkspaceService internal constructor(
                 complete = load?.complete ?: true,
                 loading = load?.loading ?: false,
                 draft = getDraft(ws, room, null)?.draft,
+                resets = load?.resets ?: s?.loader?.resets(room) ?: 0L,
             )
         }
     } catch (e: WorkspaceError) {

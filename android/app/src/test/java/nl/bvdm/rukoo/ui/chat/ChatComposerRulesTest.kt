@@ -92,6 +92,24 @@ class ChatComposerRulesTest {
     }
 
     @Test
+    fun `while the server asks for an update, unsent rows and the message menu offer only what stays on the phone`() {
+        // Send, Send again, Try again and Send without mentions would only meet the upgrade toast.
+        assertEquals(listOf(PendingAction.DISCARD), MessageRules.pendingActions(PendingState.HELD, "stale_grant", writable = false))
+        assertEquals(listOf(PendingAction.DISCARD), MessageRules.pendingActions(PendingState.HELD, "unknown", writable = false))
+        assertEquals(listOf(PendingAction.DISCARD), MessageRules.pendingActions(PendingState.FAILED, "quota", writable = false))
+        assertEquals(listOf(PendingAction.DISCARD), MessageRules.pendingActions(PendingState.FAILED, "mentions", writable = false))
+        assertEquals(listOf(PendingAction.COPY, PendingAction.DISCARD), MessageRules.pendingActions(PendingState.FAILED, "conflict", writable = false))
+        // Block and Remove are writes; Reply in thread reads, and Copy text stays on the phone.
+        val sanneMember = member(sanne)
+        assertEquals(
+            listOf(MessageAction.REPLY, MessageAction.COPY),
+            MessageRules.actions(message(sanne), me, room(role = "manager"), inThread = false, "owner", sanneMember, emptySet(), writable = false),
+        )
+        assertEquals(listOf(MessageAction.COPY), MessageRules.actions(message(me), me, room(), inThread = true, "member", member(me), emptySet(), writable = false))
+        assertFalse(MessageRules.hasActions(message(sanne, removed = true), me, room(RoomKind.DM), inThread = true, "admin", sanneMember, emptySet(), writable = false))
+    }
+
+    @Test
     fun `authors remove their own messages anywhere, managers any message in their channel`() {
         assertTrue(MessageRules.canRemove(message(me), me, room()))
         assertTrue(MessageRules.canRemove(message(me), me, room(RoomKind.DM, archived = true, closed = "left")))

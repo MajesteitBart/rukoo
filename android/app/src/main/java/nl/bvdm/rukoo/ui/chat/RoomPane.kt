@@ -29,8 +29,6 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -195,7 +193,8 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                     hostName = chat.operator?.name ?: chat.host,
                     retentionDays = chat.retention?.contentDays,
                     canRead = canRead,
-                    onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false, view?.me?.role, members[row.actor], blocked)) actionsFor = row },
+                    writable = !upgrade,
+                    onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false, view?.me?.role, members[row.actor], blocked, writable = !upgrade)) actionsFor = row },
                 )
             }
         }
@@ -235,6 +234,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                 author = members[target.actor],
                 names = names,
                 onDismiss = { actionsFor = null },
+                writable = !upgrade,
             )
         }
     }
@@ -261,15 +261,25 @@ private fun NotJoinedNote(channel: Channel) {
 }
 
 /**
- * The timeline's scroll position, saved with the [opening] it belongs to. The pane's saved state outlives an opening
- * (RukooRoot's holder keeps the slot's state after Back, and every room's pane saves under the same key), so another
- * opening starts at the bottom, from where the New divider is placed again (§3.18). Folding and a thread over the room
- * keep the opening, and with it the position.
+ * Where a room's timeline was in [opening]: the first visible row's [key], and its bottom-up [index] and [offset]. The
+ * view model keeps it for the opening (folding, the background and a thread over the room keep it), so another opening
+ * starts at the bottom, from where the New divider is placed again (§3.18).
  */
-internal fun timelineSaver(opening: Long): Saver<LazyListState, Any> = listSaver(
-    save = { listOf(opening, it.firstVisibleItemIndex.toLong(), it.firstVisibleItemScrollOffset.toLong()) },
-    restore = { saved -> if (saved.size == 3 && saved[0] == opening) LazyListState(saved[1].toInt(), saved[2].toInt()) else LazyListState() },
-)
+data class TimelineScroll(val opening: Long, val key: String?, val index: Int, val offset: Int) {
+    /** Whether the timeline was at the bottom, following new messages. */
+    val atBottom: Boolean get() = index == 0 && offset < STICK_PX
+
+    /**
+     * The index and offset to show in [keys], the timeline's row keys bottom up as they are now. At the bottom it stays
+     * there, with what came meanwhile. Elsewhere the row it showed comes back at its current index, as rows that came
+     * meanwhile (a message, a pending row, a day divider) moved every index; when that row is gone, the saved index.
+     */
+    fun restoreIn(keys: List<String>): Pair<Int, Int> {
+        if (atBottom) return 0 to offset
+        val i = key?.let { keys.indexOf(it) } ?: -1
+        return (if (i >= 0) i else index) to offset
+    }
+}
 
 @Composable
 private fun roomSubtitle(room: Room, host: String): String =
@@ -326,6 +336,8 @@ internal class RowContext(
     val isBusy: (String) -> Boolean = { false },
     /** Who hosts the workspace as people know it: the operator's name, else the host name. */
     val hostName: String = host,
+    /** False while the server asks for an update (426): unsent rows offer only Copy text and Discard. */
+    val writable: Boolean = true,
 )
 
 @Composable
@@ -344,6 +356,7 @@ private fun RoomLog(
     hostName: String,
     retentionDays: Int?,
     canRead: Boolean,
+    writable: Boolean,
     onLongPress: (ChatTimeline.Message) -> Unit,
 ) {
     val workspaces = app.services.workspaces ?: return
@@ -352,17 +365,27 @@ private fun RoomLog(
     val at = opening.at
     val reached = opening.reached
     // The read position this opening placed its New divider from, which stays while the service's loader closes and
-    // opens again behind it (the app in the background, the room folded behind the list).
+    // opens again behind it (the app in the background, the room folded behind the list), until the sync replaces the
+    // room's cached range.
     val readAt = opening.readPosition(t)
     val rows = remember(t, me, blocked, readAt) {
         ChatTimeline.rows(t.events, t.pending, me, readAt, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies)
     }
     // Bottom up: the newest row is item 0.
     val items = remember(rows) { rows.asReversed() }
-    // Both belong to this opening: a new one starts at the bottom with the New divider still to place.
+    // Both belong to this opening: a new one starts at the bottom with the New divider still to place. The view model
+    // keeps them for the opening, as this pane leaves the composition while the room is folded behind the list.
     val count = opening.count
-    val listState = rememberSaveable(count, saver = timelineSaver(count)) { LazyListState() }
-    var placed by rememberSaveable(count) { mutableStateOf<Long?>(null) }
+    val keys = remember(items) { items.map { it.key } }
+    val restored = remember(count) { app.roomScroll(count) }
+    val listState = remember(count) {
+        val (index, offset) = restored?.restoreIn(keys) ?: (0 to 0)
+        LazyListState(index, offset)
+    }
+    // The row the saved position showed may come with a later page: the position is final once it did, or once the
+    // load ended without it, and is saved from then on.
+    var anchored by remember(count) { mutableStateOf(restored == null || restored.atBottom || restored.key in keys) }
+    var placed by remember(count) { mutableStateOf(if (opening.readAt != null) count else null) }
     val positioned = placed == count
     val scope = rememberCoroutineScope()
     var older by remember(ws, room) { mutableStateOf(Older.IDLE) }
@@ -401,6 +424,7 @@ private fun RoomLog(
             }
         },
         isBusy = app.chatUi::isBusy,
+        writable = writable,
     )
 
     fun loadOlder() {
@@ -474,13 +498,38 @@ private fun RoomLog(
                 pinned = false
             }
             placed = count
-            app.roomPlaced(count, readAt)
+            app.roomPlaced(count, readAt, t.resets)
             return@LaunchedEffect
         }
         val i = items.indexOfFirst { it is ChatTimeline.New }
         if (i > 0 && i > (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0)) showDivider(listState, i, viewport, animate = false)
         placed = count
-        app.roomPlaced(count, readAt)
+        app.roomPlaced(count, readAt, t.resets)
+    }
+
+    // The sync replaced the room's cached range after the divider was placed (§3.18): it follows the new read position,
+    // which stays from then on.
+    LaunchedEffect(t.resets, positioned) {
+        if (positioned && opening.readAt != null && opening.resets != t.resets) app.roomPlaced(count, t.readAtOpen, t.resets)
+    }
+
+    // A position kept from earlier in the opening, put back at the row it showed once that row is loaded.
+    LaunchedEffect(keys, t.loading) {
+        val r = restored ?: return@LaunchedEffect
+        if (anchored) return@LaunchedEffect
+        val i = r.key?.let { keys.indexOf(it) } ?: -1
+        if (i >= 0) listState.scrollToItem(i, r.offset)
+        if (i >= 0 || !t.loading) anchored = true
+    }
+
+    // Where the timeline is, for the view model to bring back later in this opening.
+    LaunchedEffect(listState, anchored) {
+        if (!anchored) return@LaunchedEffect
+        snapshotFlow {
+            val index = listState.firstVisibleItemIndex
+            val key = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
+            TimelineScroll(count, key, index, listState.firstVisibleItemScrollOffset)
+        }.distinctUntilChanged().collect { app.roomScrolled(it) }
     }
 
     // Follow the user's own scrolling: near the bottom the timeline sticks to new messages, else the Latest pill shows.
@@ -865,7 +914,7 @@ private fun PendingLine(row: ChatTimeline.Message, state: PendingState, ctx: Row
         Text(text, style = Rk.type.text12.lineHeight(1.4f), color = if (danger) c.danger else c.text2)
     }
     val on = ctx.onPending ?: return
-    val actions = MessageRules.pendingActions(state, reason)
+    val actions = MessageRules.pendingActions(state, reason, ctx.writable)
     if (actions.isEmpty()) return
     val busy = row.local?.let { ctx.isBusy("pending:$it") } == true
     Row(Modifier.padding(start = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -55,8 +55,15 @@ internal fun SemanticsPropertyReceiver.messageActionsSemantics(label: String, op
 }
 
 /**
+ * A message row's node for screen readers: it merges the row's name, time and text into one stop that carries
+ * [messageActionsSemantics], as combinedClickable did. Its links and the reply summary keep nodes of their own.
+ */
+internal fun Modifier.messageRowSemantics(label: String, open: () -> Unit): Modifier =
+    semantics(mergeDescendants = true) { messageActionsSemantics(label, open) }
+
+/**
  * A message row's way into its menu: a long press on touch, with Rukoo's pressed fill and the long press buzz, and
- * [messageActionsSemantics] for screen readers. A tap does nothing, so taps on its links still open them.
+ * [messageRowSemantics] for screen readers. A tap does nothing, so taps on its links still open them.
  */
 @Composable
 internal fun messageActions(label: String, open: () -> Unit): Modifier {
@@ -78,7 +85,7 @@ internal fun messageActions(label: String, open: () -> Unit): Modifier {
                 },
             )
         }
-        .semantics { messageActionsSemantics(label) { current() } }
+        .messageRowSemantics(label) { current() }
 }
 
 /** What the person can do with a message that isn't sent (contract §3.8 "Answers" and "Resend modes"). */
@@ -93,9 +100,13 @@ object MessageRules {
      * The actions under an unsent message, by its state and reason: a held stale grant is sent again with Send, an
      * unknown outcome with Send again (asked first), a refused quota with Try again, refused mentions without them, and
      * a conflict or a closed room offers to copy the text. Every held or failed row can be discarded; a row still on
-     * its way offers nothing.
+     * its way offers nothing. While the workspace can't take writes (not [writable]: the server asks for an update),
+     * only Copy text and Discard stay, which don't reach the server.
      */
-    fun pendingActions(state: PendingState, reason: String?): List<PendingAction> = when (state) {
+    fun pendingActions(state: PendingState, reason: String?, writable: Boolean = true): List<PendingAction> =
+        pendingActionsFor(state, reason).filter { writable || it == PendingAction.COPY || it == PendingAction.DISCARD }
+
+    private fun pendingActionsFor(state: PendingState, reason: String?): List<PendingAction> = when (state) {
         PendingState.HELD -> if (reason == "stale_grant") listOf(PendingAction.SEND, PendingAction.DISCARD) else listOf(PendingAction.SEND_AGAIN, PendingAction.DISCARD)
         PendingState.FAILED -> when (reason) {
             "quota" -> listOf(PendingAction.RETRY, PendingAction.DISCARD)
@@ -130,7 +141,10 @@ object MessageRules {
         message.pending == null && message.id != null && me != null && message.actor != me && ChatListModel.isFullMember(myRole) &&
             author != null && author.state == "active" && ChatListModel.isFullMember(author.role) && message.actor !in blocked
 
-    /** The menu's items in their order: Reply in thread, Copy text, Block {author}, Remove message. */
+    /**
+     * The menu's items in their order: Reply in thread, Copy text, Block {author}, Remove message. Block and Remove are
+     * writes, left out while the workspace can't take them (not [writable]: the server asks for an update).
+     */
     fun actions(
         message: ChatTimeline.Message,
         me: String?,
@@ -139,11 +153,12 @@ object MessageRules {
         myRole: String?,
         author: Member?,
         blocked: Set<String>,
+        writable: Boolean = true,
     ): List<MessageAction> = buildList {
         if (canReply(message, inThread)) add(MessageAction.REPLY)
         if (canCopy(message)) add(MessageAction.COPY)
-        if (canBlock(message, me, myRole, author, blocked)) add(MessageAction.BLOCK)
-        if (canRemove(message, me, room)) add(MessageAction.REMOVE)
+        if (writable && canBlock(message, me, myRole, author, blocked)) add(MessageAction.BLOCK)
+        if (writable && canRemove(message, me, room)) add(MessageAction.REMOVE)
     }
 
     /** How many characters of a message's first line the menu's title and Remove's question quote. */
@@ -171,7 +186,8 @@ object MessageRules {
         myRole: String?,
         author: Member?,
         blocked: Set<String>,
-    ): Boolean = actions(message, me, room, inThread, myRole, author, blocked).isNotEmpty()
+        writable: Boolean = true,
+    ): Boolean = actions(message, me, room, inThread, myRole, author, blocked, writable).isNotEmpty()
 }
 
 /** An item of a message's menu. */
@@ -205,10 +221,12 @@ internal fun MessageActionsSheet(
     onDismiss: () -> Unit,
     /** How many replies the message has: its summary's count in the room, the thread's replies for its first message. */
     replyCount: Int = message.replies?.count ?: 0,
+    /** False while the server asks for an update: Block and Remove aren't offered. */
+    writable: Boolean = true,
 ) {
     val context = LocalContext.current
     app.chatUi.Covering()
-    val actions = MessageRules.actions(message, me, room, inThread, myRole, author, blocked)
+    val actions = MessageRules.actions(message, me, room, inThread, myRole, author, blocked, writable)
     // The sheet covers the message, so its title says which one it is: the author and the first line.
     val line = if (message.removed) null else MessageRules.firstLine(message.text)
     val title = if (line != null) stringResource(R.string.chat_msg_actions_title, names.display(author), line) else stringResource(R.string.chat_msg_actions)

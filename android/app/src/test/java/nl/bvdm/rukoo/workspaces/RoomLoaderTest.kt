@@ -321,6 +321,34 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `a room's reset count goes up when its cache is replaced, and stays when it closes and opens again`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.withRoom(head = 80, read = 70)
+        val loader = h.sync.loader
+        loader.open(general)
+        val first = loader.rooms.value.getValue(general).resets
+        // Folded behind the list, or in the background: the loader closes the room and opens it again.
+        loader.close(general)
+        loader.open(general)
+        assertEquals("a screen keeping its read position keeps it", first, loader.rooms.value.getValue(general).resets)
+        // A new grant or removedMore drops the room's cache: the screen takes the new read position.
+        loader.onCacheDropped(listOf(general))
+        val dropped = loader.rooms.value.getValue(general).resets
+        assertTrue(dropped > first)
+        // A reset, a restore, quarantine or Start over replaces every room's.
+        loader.onReset()
+        val reset = loader.rooms.value.getValue(general).resets
+        assertTrue(reset > dropped)
+        // One that happened while the room was closed still counts when it opens again.
+        loader.close(general)
+        loader.onCacheDropped(listOf(general))
+        assertTrue(loader.resets(general) > reset)
+        loader.open(general)
+        assertEquals(loader.resets(general), loader.rooms.value.getValue(general).resets)
+        assertTrue(loader.rooms.value.getValue(general).resets > reset)
+    }
+
+    @Test
     fun `an open room keeps its range while open and is cut back to ROOM_CACHE_MAX when it closes`() = runTest {
         val h = SyncHarness(this, db, SyncTiming(roomCacheMax = 50)).start()
         h.withRoom(head = 200)

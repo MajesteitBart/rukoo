@@ -59,6 +59,7 @@ import nl.bvdm.rukoo.ui.chat.ChatFilter
 import nl.bvdm.rukoo.ui.chat.ChatListModel
 import nl.bvdm.rukoo.ui.chat.ChatUi
 import nl.bvdm.rukoo.ui.chat.ChatUiHost
+import nl.bvdm.rukoo.ui.chat.TimelineScroll
 import nl.bvdm.rukoo.ui.composer.ComposerFiles
 import nl.bvdm.rukoo.ui.composer.Recipients
 import nl.bvdm.rukoo.ui.mail.DialogChoice
@@ -94,7 +95,9 @@ sealed interface ChatFollow {
  * oldest cached seq right after that open, which RoomPane waits for in its own timeline, and [complete], false when
  * the backfill stopped short of [at]. [readAt] is the read position the New divider was placed from, kept for the
  * whole opening (§3.18): the service's loader closes while the room is off screen (in the background, or folded behind
- * the list) and opens again with the newest read position, which mustn't move the divider.
+ * the list) and opens again with the newest read position, which mustn't move the divider. [resets] is the room's
+ * [RoomTimeline.resets] that read position came with: when the sync replaced the room's cached range since (a reset, a
+ * new grant, `removedMore`), the timeline's new read position counts instead.
  */
 data class RoomOpening(
     val ws: String,
@@ -105,13 +108,17 @@ data class RoomOpening(
     val oldest: Long? = null,
     val complete: Boolean = true,
     val readAt: Long? = null,
+    val resets: Long = 0,
 ) {
     /** The open at [at] ended, and [loaded] is the room's timeline read after it (null when none came). */
     fun reachedWith(loaded: RoomTimeline?): RoomOpening =
         copy(reached = true, oldest = loaded?.events?.minOfOrNull { it.seq }, complete = loaded?.complete ?: true)
 
-    /** The read position the New divider goes after: the one it was placed from, else [t]'s read position at open. */
-    fun readPosition(t: RoomTimeline): Long = readAt ?: t.readAtOpen
+    /**
+     * The read position the New divider goes after: the one it was placed from, else [t]'s read position at open, which
+     * also wins once the room's cached range was replaced after the placement.
+     */
+    fun readPosition(t: RoomTimeline): Long = readAt?.takeIf { resets == t.resets } ?: t.readAtOpen
 }
 
 /**
@@ -519,6 +526,10 @@ class AppViewModel(
 
     private val _roomOpening = MutableStateFlow<RoomOpening?>(null)
 
+    // Where the room on screen was scrolled in its opening, kept here so folding, the background and a pane that left
+    // the composition meanwhile find it (RoomPane restores it by the row it showed).
+    private var roomScroll: TimelineScroll? = null
+
     /** The room on screen and which opening of it this is; null while no room is on screen. */
     val roomOpening: StateFlow<RoomOpening?> = _roomOpening.asStateFlow()
 
@@ -603,14 +614,26 @@ class AppViewModel(
     private fun endOpening() {
         openedRoom = null
         _roomOpening.value = null
+        roomScroll = null
     }
 
     /**
-     * The room's timeline placed its New divider from [readAt] in opening [count]: the divider stays after that read
-     * position until the opening ends, whatever the service's loader says meanwhile (§3.18).
+     * The room's timeline placed its New divider from [readAt] in opening [count], with the timeline's [resets]: the
+     * divider stays after that read position until the opening ends, whatever the service's loader says meanwhile
+     * (§3.18). Only a replaced cache ([resets] changed) brings a new one.
      */
-    fun roomPlaced(count: Long, readAt: Long) {
-        _roomOpening.value?.let { o -> if (o.count == count && o.readAt == null) _roomOpening.value = o.copy(readAt = readAt) }
+    fun roomPlaced(count: Long, readAt: Long, resets: Long = 0) {
+        _roomOpening.value?.let { o ->
+            if (o.count == count && (o.readAt == null || o.resets != resets)) _roomOpening.value = o.copy(readAt = readAt, resets = resets)
+        }
+    }
+
+    /** Where the room's timeline was in opening [count], or null when it wasn't saved in this opening. */
+    fun roomScroll(count: Long): TimelineScroll? = roomScroll?.takeIf { it.opening == count && _roomOpening.value?.count == count }
+
+    /** Saves where the room's timeline is, for the opening it belongs to while that opening lasts. */
+    fun roomScrolled(scroll: TimelineScroll) {
+        if (_roomOpening.value?.count == scroll.opening) roomScroll = scroll
     }
 
     /**

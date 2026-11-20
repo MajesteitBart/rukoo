@@ -4,8 +4,6 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.Locale
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.runtime.saveable.SaverScope
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Context
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Message
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Row
@@ -278,18 +276,26 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun `a saved scroll position comes back for the same opening only, so another starts at the bottom`() {
-        // The room's pane keeps its saved state after Back; reopening (or another room in that pane) is a new opening.
-        val scope = SaverScope { true }
-        val saved = with(timelineSaver(opening = 7)) { scope.save(LazyListState(42, 18)) }!!
-        val again = timelineSaver(opening = 7).restore(saved)!!
-        assertEquals(42, again.firstVisibleItemIndex)
-        assertEquals(18, again.firstVisibleItemScrollOffset)
-        val next = timelineSaver(opening = 8).restore(saved)!!
-        assertEquals(0, next.firstVisibleItemIndex)
-        assertEquals(0, next.firstVisibleItemScrollOffset)
-        // A plain index and offset, as LazyListState.Saver keeps them, carry no opening and don't come back either.
-        assertEquals(0, timelineSaver(opening = 7).restore(listOf(42, 18))!!.firstVisibleItemIndex)
+    fun `a kept scroll position comes back at the row it showed, after rows came while the room was folded`() {
+        val events = (1L..6L).map { msg(it, if (it % 2 == 0L) sanne else mila, t0 + it * 10 * minute, "m$it") }
+        val before = rows(events, readAtOpen = 6).asReversed().map { it.key }
+        // Scrolled up to e_3, 12 pixels into it.
+        val i = before.indexOf("e_3")
+        val kept = TimelineScroll(opening = 7, key = "e_3", index = i, offset = 12)
+        // Folded behind the list: two messages and a pending row came, the next day, so a day divider too.
+        val later = events + listOf(msg(7, sanne, t0 + 24 * 60 * minute, "m7"), msg(8, mila, t0 + 24 * 60 * minute + minute, "m8"))
+        val pending = listOf(pending("l_1", t0 + 24 * 60 * minute + 2 * minute, PendingState.SENDING))
+        val after = rows(later, pending, readAtOpen = 6).asReversed().map { it.key }
+        val (index, offset) = kept.restoreIn(after)
+        assertEquals("e_3", after[index])
+        assertTrue("every index moved, so the saved one would show a newer row", index > i)
+        assertEquals(12, offset)
+        // A row that went (removed with retention, say) falls back to the saved index.
+        assertEquals(i to 12, kept.copy(key = "e_gone").restoreIn(after))
+        // At the bottom it stays at the bottom, with what came meanwhile.
+        assertEquals(0 to 30, TimelineScroll(7, "e_6", 0, 30).restoreIn(after))
+        assertTrue(TimelineScroll(7, "e_6", 0, 30).atBottom)
+        assertFalse(kept.atBottom)
     }
 
     // ---- helpers ----
