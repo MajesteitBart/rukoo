@@ -240,7 +240,7 @@ fn an_encoder_without_nemo_metadata_is_bad_model() {
     assert!(error.contains("vocab_size"), "{error}");
     assert_eq!(
         worker.request(&json!({"op": "ping"})),
-        json!({"ok": true, "version": "0.1.0"})
+        json!({"ok": true, "version": env!("CARGO_PKG_VERSION")})
     );
     worker.send(&json!({"op": "quit"}));
     assert!(worker.wait().success());

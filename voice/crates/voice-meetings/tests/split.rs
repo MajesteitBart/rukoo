@@ -410,6 +410,99 @@ fn a_split_whose_events_never_went_out_sends_them_at_the_next_start_or_before_do
     assert!(!untouched.dir.path().join("transcript.db").exists());
 }
 
+/// Runs SQL on the event log's `bridge.db`, as a Voice that stopped halfway would leave it.
+fn log_sql(log: &EventLog, statement: &str) {
+    let conn = rusqlite::Connection::open(log.path()).unwrap();
+    conn.execute_batch(statement).unwrap();
+}
+
+#[test]
+fn a_start_reads_only_the_note_of_a_split_whose_events_all_went_out() {
+    let tmp = TempDir::new("split-sent");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    transcribe(&rec, &log, timed());
+    assert_eq!(
+        split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        3
+    );
+    let sent = events(&log, &rec.id()).len();
+
+    // Every microphone passage moves to a revision the log never got, so a start that read the
+    // passages would send all six. The log's note says the split's events went out: it sends none.
+    sql(
+        &rec,
+        "UPDATE passages SET revision = revision + 1 WHERE track = 'mic'",
+    );
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+    assert_eq!(events(&log, &rec.id()).len(), sent);
+}
+
+#[test]
+fn a_power_cut_that_lost_a_splits_last_events_sends_them_also_after_the_start_appended() {
+    let tmp = TempDir::new("split-power-cut");
+    let lib = Library::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    let (before, first) = {
+        let log = EventLog::open(tmp.path()).unwrap();
+        transcribe(&rec, &log, timed());
+        let before = events(&log, &rec.id());
+        assert_eq!(
+            split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+            3
+        );
+        (before.clone(), events(&log, &rec.id())[before.len()].seq)
+    };
+
+    // The power cut rolled the log back to the split's first event: the other three and the
+    // note, which came after them, are gone, and so is the head that numbered them.
+    let conn = rusqlite::Connection::open(tmp.path().join("bridge.db")).unwrap();
+    conn.execute_batch(&format!(
+        "DELETE FROM events WHERE seq > {first}; DELETE FROM notes; UPDATE meta SET head = {first};"
+    ))
+    .unwrap();
+    drop(conn);
+    let log = EventLog::open(tmp.path()).unwrap();
+    assert_eq!(log.head(), first);
+    // The start appends before it catches up, and gives the lost numbers out again.
+    for n in 1..=3 {
+        log.remove_meeting(&format!("m-20000101-000000-000{n}"))
+            .unwrap();
+    }
+    assert_eq!(log.head(), first + 3);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 3);
+    assert_split_sent(&log, &rec, &before, &pieces);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+}
+
+#[test]
+fn a_split_that_stopped_halfway_through_its_events_sends_the_rest_at_the_next_start() {
+    let tmp = TempDir::new("split-halfway");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    transcribe(&rec, &log, timed());
+    let before = events(&log, &rec.id());
+    assert_eq!(
+        split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        3
+    );
+
+    // Voice stopped after the split's first event: the log lacks the other three, and the note.
+    let first = events(&log, &rec.id())[before.len()].seq;
+    log_sql(
+        &log,
+        &format!("DELETE FROM events WHERE seq > {first}; DELETE FROM notes;"),
+    );
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 3);
+    assert_split_sent(&log, &rec, &before, &pieces);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+}
+
 /// Nothing a split wrote: no voices, no microphone turns, no epoch, passages as they were.
 fn assert_untouched(rec: &Recording, log: &EventLog, before: &[Stored]) {
     assert_eq!(split_voices(&rec.dir).unwrap(), None);
@@ -467,6 +560,14 @@ fn a_worker_that_fails_or_a_stop_leaves_the_meeting_as_it_was_and_the_next_split
     assert_eq!(split(&rec.dir, &log, &working, &no_stop()).unwrap(), 3);
 }
 
+/// Text without word timings from [`Echo`], one passage per window, as a cloud provider gives.
+fn untimed() -> PipelineOptions {
+    PipelineOptions {
+        timing: fast(),
+        ..PipelineOptions::new(Arc::new(Echo::default()))
+    }
+}
+
 /// Word timings from [`Bursts`], and the call labelled by `d` as Nemotron would label it.
 fn labelled(d: &ScriptedDiarizer) -> PipelineOptions {
     PipelineOptions {
@@ -512,20 +613,71 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
     let log = EventLog::open(tmp.path()).unwrap();
     let (microphone, call) = the_call_at_the_microphone();
     let labels = ScriptedDiarizer::new();
-    // Gated by the call's passages in a meeting without labels, by its turns in one that
-    // Nemotron labelled.
-    for (gate, opts) in [("passages", timed()), ("turns", labelled(&labels))] {
+    // Gated by the call's passages with word timings in a meeting without labels, by its turns
+    // in one that Nemotron labelled, and by where the call's audio sounds when its passages have
+    // no word timings, as from a cloud provider, or when it has no passages at all, as after a
+    // failed transcription or one that heard no words in the whole call.
+    for (gate, opts) in [
+        ("passages", timed()),
+        ("turns", labelled(&labels)),
+        ("audio in passages", untimed()),
+        ("audio", untimed()),
+        ("audio, no words", untimed()),
+        ("audio, labelled without turns", untimed()),
+    ] {
         let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
         rec.session(0, 1);
         rec.segment("mic", 1, 0, &voices(&microphone));
         rec.segment("call", 1, 0, &voices(&call));
         rec.stop(length_ms(&microphone));
         transcribe(&rec, &log, opts);
-        let call_turns = Transcript::open(rec.dir.path())
+        if gate == "audio" {
+            // What a failed transcription leaves of the call: nothing transcribed.
+            sql(
+                &rec,
+                "DELETE FROM passages WHERE track = 'call';
+                 DELETE FROM windows WHERE track = 'call';
+                 DELETE FROM progress WHERE track = 'call';",
+            );
+        }
+        if gate.starts_with("audio, ") {
+            // A recognizer that returned no text for every window: the call is transcribed to
+            // its end, without a passage.
+            sql(&rec, "DELETE FROM passages WHERE track = 'call';");
+        }
+        if gate == "audio, labelled without turns" {
+            // And labels that heard the whole call without a turn.
+            sql(
+                &rec,
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('speakers.finished.call', '1');",
+            );
+        }
+        let stored = Transcript::open(rec.dir.path()).unwrap();
+        let call_turns = stored.turns(Track::Call, 0, u64::MAX).unwrap();
+        assert_eq!(call_turns.is_empty(), gate != "turns", "{call_turns:?}");
+        let call_passages: Vec<(u64, u64, bool)> = stored
+            .passages()
             .unwrap()
-            .turns(Track::Call, 0, u64::MAX)
-            .unwrap();
-        assert_eq!(call_turns.is_empty(), gate == "passages", "{call_turns:?}");
+            .into_iter()
+            .filter(|p| p.passage.track == Track::Call)
+            .map(|p| (p.passage.start, p.passage.end, p.tokens.is_empty()))
+            .collect();
+        match gate {
+            // The call's one window without word timings reaches back over the second voice at
+            // the microphone, 5-7.5 s: gated by the whole passage, that voice would be silenced.
+            "audio in passages" => assert!(
+                matches!(call_passages[..], [(start, 12_000.., true)] if start < 7_500),
+                "{call_passages:?}"
+            ),
+            "audio" | "audio, no words" | "audio, labelled without turns" => {
+                assert!(call_passages.is_empty(), "{call_passages:?}")
+            }
+            _ => assert!(
+                call_passages.iter().all(|p| !p.2),
+                "word timings: {call_passages:?}"
+            ),
+        }
+        drop(stored);
 
         let d = ScriptedDiarizer::new();
         assert_eq!(split(&rec.dir, &log, &d, &no_stop()).unwrap(), 2, "{gate}");

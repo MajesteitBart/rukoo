@@ -777,12 +777,13 @@ class VoiceStore {
   // A split can cut a passage the user corrected into pieces: the correction stays whole on the first piece, which
   // keeps the passage's id, and the later pieces it covers don't show, so no words show twice. Only pieces that came
   // after the correction, on its track and within what it covered, count: a passage that was there before stays.
+  // Maps each hidden piece to the passage whose correction covers it.
   covered(m) {
-    const out = new Set();
+    const out = new Map();
     for (const [pid, c] of Object.entries(m.correctedEnds)) {
       const first = m.passages[pid];
       if (!first || !Object.hasOwn(m.corrections, pid) || c.end <= first.end) continue;
-      for (const p of Object.values(m.passages)) if (p.id !== pid && p.track === first.track && p.start >= first.end && p.start < c.end && int(p.added) > c.at) out.add(p.id);
+      for (const p of Object.values(m.passages)) if (p.id !== pid && p.track === first.track && p.start >= first.end && p.start < c.end && int(p.added) > c.at) out.set(p.id, pid);
     }
     return out;
   }
@@ -810,22 +811,29 @@ class VoiceStore {
         return { ...s, you, letter: mic.letters[s.id] || null, name: own ? own.name : null, address: own ? own.address || null : null, from: own ? own.from : null };
       });
     const covered = this.covered(m);
+    // What the user dictated is theirs, whichever voice at the microphone they said is them.
+    const voiced = (p) => (p.track === 'mic' && p.speaker !== null && (mic.joined || (p.dictation && p.speaker === 'mic')) ? { ...p, speaker: mic.you } : p);
+    const byTime = (a, b) => a.start - b.start || (a.track < b.track ? -1 : 1);
     const passages = Object.values(m.passages)
       .filter((p) => !covered.has(p.id))
       .map((p) => {
-        // What the user dictated is theirs, whichever voice at the microphone they said is them.
-        const theirs = p.track === 'mic' && p.speaker !== null && (mic.joined || (p.dictation && p.speaker === 'mic'));
-        const v = theirs ? { ...p, speaker: mic.you } : p;
+        const v = voiced(p);
         if (!Object.prototype.hasOwnProperty.call(m.corrections, p.id)) return { ...v, corrected: false };
         return { ...v, text: m.corrections[p.id], original: p.text, corrected: true };
       })
-      .sort((a, b) => a.start - b.start || (a.track < b.track ? -1 : 1));
+      .sort(byTime);
+    // The pieces a correction hides still hold their voice's speech: the player hears them, under the correction.
+    const pieces = Object.values(m.passages)
+      .filter((p) => covered.has(p.id))
+      .map((p) => ({ ...voiced(p), under: covered.get(p.id) }))
+      .sort(byTime);
     const marks = Object.values(m.marks).sort((a, b) => a.at - b.at);
     const frames = Object.values(m.frames).sort((a, b) => a.at - b.at);
     return {
       meeting: { ...e },
       speakers,
       passages,
+      pieces,
       marks,
       frames,
       notes: m.notes ? { ...m.notes } : { text: '', rev: 0, updatedAt: null },

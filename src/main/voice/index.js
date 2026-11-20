@@ -442,12 +442,16 @@ class VoiceService extends EventEmitter {
       } else {
         if (d.passages.size) payload.passages = full.passages.filter((p) => d.passages.has(p.id));
         if (d.removed.size) payload.removedPassages = [...d.removed];
+        // A split's pieces can arrive as passages, from another client or the start's catch-up: a correction may hide
+        // them, and the player still plays them.
+        if (d.passages.size || d.removed.size) payload.pieces = full.pieces;
         if (d.marks.size) payload.marks = full.marks.filter((k) => d.marks.has(k.id));
         if (d.frames.size) payload.frames = full.frames.filter((f) => d.frames.has(f.id));
         // With the guests of the linked event to pick from, as meetingGet gives them.
         if (d.speakers) payload.speakers = this.speakers(id);
         if (d.notes) payload.notes = full.notes;
-        if (d.mic) payload.mic = this.micState(id);
+        // A new voice at the microphone can come from a split this Rukoo didn't ask for: the card's split row follows.
+        if (d.mic || d.speakers) payload.mic = this.micState(id);
       }
       this.emit('meeting', payload);
     }
@@ -469,6 +473,7 @@ class VoiceService extends EventEmitter {
       // Each with the guests of the linked event the meeting view offers as names.
       speakers: this.speakers(id),
       passages: full.passages,
+      pieces: full.pieces,
       marks: full.marks,
       frames: full.frames,
       notes: full.notes,

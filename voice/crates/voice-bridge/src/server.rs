@@ -636,6 +636,8 @@ struct Session {
     last: u64,
     client: Arc<Entry>,
     connection: u64,
+    /// Replies waiting for events stored before their command finished, in order.
+    waiting: VecDeque<Answered>,
 }
 
 impl Session {
@@ -653,6 +655,7 @@ impl Session {
             last: 0,
             client,
             connection,
+            waiting: VecDeque::new(),
         }
     }
 
@@ -711,8 +714,9 @@ impl Session {
         self.send(Message::Welcome(welcome).to_json()).await?;
         self.client.welcomed.store(true, Ordering::SeqCst);
         self.reached(from.saturating_sub(1));
-        self.catch_up().await?;
 
+        // The replay goes out from the loop, a page at a time, so the commands Rukoo sends
+        // meanwhile are read and run while it does.
         let (jobs, queue) = mpsc::channel(COMMAND_QUEUE);
         // Unbounded, so the worker never waits on this loop while this loop waits on the worker.
         let (replies_out, mut replies) = mpsc::unbounded_channel();
@@ -745,10 +749,29 @@ impl Session {
         if *self.quit.borrow() {
             return Ok(End::Quit);
         }
+        // Whether the log holds events this connection hasn't had: the replay at first, then a
+        // burst the live channel couldn't carry, or the events a reply waits for. They go out a
+        // page at a time from the log.
+        let mut behind = true;
+        // Whether the last pass read a frame or a reply: then an owed page goes first, so a
+        // client that keeps sending commands can't hold back the pages its replies wait for.
+        let mut page_next = false;
+        // Whether the last pass read a frame: then the next one leaves input out, so replies and
+        // live events get a turn between two frames of a client that never stops sending.
+        let mut read_last = false;
         loop {
+            if behind && std::mem::take(&mut page_next) {
+                behind = self.next_page().await?;
+                continue;
+            }
+            let skip_input = std::mem::take(&mut read_last);
+            // In order, with the log's pages last: a command that comes while events keep
+            // arriving is read after at most the page in hand, and a reply goes out once the
+            // events stored before its command finished are out, however long the run of pages.
             tokio::select! {
+                biased;
                 _ = self.quit.changed() => return Ok(End::Quit),
-                frame = source.next() => match frame {
+                frame = source.next(), if !skip_input => { page_next = true; read_last = true; match frame {
                     Some(Ok(Frame::Text(text))) => {
                         // Stamped before the job waits in the queue, so a command's deadline
                         // counts the time it spends behind earlier ones.
@@ -763,9 +786,11 @@ impl Session {
                                         Ok(()) => Reply::ok(id, Object::new()),
                                         Err(error) => Reply::error(id, reply_error(error)),
                                     };
-                                    let head = self.shared.log.head();
-                                    self.flush_to(head).await?;
-                                    self.send(within_limit(reply)).await?;
+                                    let answered = Answered {
+                                        json: within_limit(reply),
+                                        head: self.shared.log.head(),
+                                    };
+                                    behind |= self.answer(answered).await?;
                                 }
                                 job => jobs.send(job).await.map_err(|_| End::Dropped)?,
                             }
@@ -777,22 +802,10 @@ impl Session {
                     Some(Ok(Frame::Close(_))) | None => return Ok(End::ClientClosed),
                     Some(Err(WsError::Capacity(_))) => return Ok(End::TooBig),
                     Some(Err(_)) => return Ok(End::Dropped),
-                },
-                received = live.recv() => match received {
-                    Ok(stored) if stored.seq <= self.last => {}
-                    Ok(stored) if stored.seq == self.last + 1 => {
-                        self.last = stored.seq;
-                        self.send(stored.to_json()).await?;
-                        self.reached(stored.seq);
-                    }
-                    // A burst outran the channel, or an event went missing in it: the log has
-                    // every event that still exists.
-                    Ok(_) | Err(RecvError::Lagged(_)) => self.catch_up().await?,
-                    Err(RecvError::Closed) => return Ok(End::Dropped),
-                },
+                }},
                 Some(answered) = replies.recv() => {
-                    self.flush_to(answered.head).await?;
-                    self.send(answered.json).await?;
+                    page_next = true;
+                    behind |= self.answer(answered).await?;
                 }
                 _ = ping.tick() => {
                     if pong_due.is_none() {
@@ -807,66 +820,85 @@ impl Session {
                     // No answer: the peer is gone or stuck. A close frame would wait for it too.
                     return Ok(End::Dropped);
                 }
+                received = live.recv(), if !behind => match received {
+                    Ok(stored) if stored.seq <= self.last => {}
+                    Ok(stored) if stored.seq == self.last + 1 => {
+                        self.last = stored.seq;
+                        self.send(stored.to_json()).await?;
+                        self.reached(stored.seq);
+                    }
+                    // A burst outran the channel, or an event went missing in it: the log has
+                    // every event that still exists.
+                    Ok(_) | Err(RecvError::Lagged(_)) => behind = true,
+                    Err(RecvError::Closed) => return Ok(End::Dropped),
+                },
+                // Only when nothing above is ready.
+                _ = std::future::ready(()), if behind => behind = self.next_page().await?,
+                // A pass without input that found nothing else to do: read input again.
+                _ = std::future::ready(()), if skip_input => {}
             }
         }
     }
 
-    /// Sends the stored events up to `head` that this connection doesn't have yet, before a
-    /// reply. A command's events then reach Rukoo before its answer, however the loop's select
-    /// picks between the live events and the replies: `speakers.split` sends a split's events
-    /// before it answers `done` (PROTOCOL.md).
-    async fn flush_to(&mut self, head: u64) -> Result<(), End> {
-        // Only up to `head`, the log's head when the command finished: events that keep arriving
-        // after it must not hold the reply, nor this loop's reading of the next command.
-        while self.last < head {
-            let log = self.shared.log.clone();
-            let after = self.last;
-            let page = blocking(move || log.page(after, PAGE)).await?;
-            let more = page.len() == PAGE;
-            let mut sent = false;
-            for stored in page {
-                if stored.seq > head {
-                    break;
-                }
-                self.sink
-                    .feed(Frame::text(stored.to_json()))
-                    .await
-                    .map_err(|_| End::Dropped)?;
-                self.last = stored.seq;
-                sent = true;
-            }
+    /// Sends a reply once every event stored before its command finished is out, and after the
+    /// replies before it: `speakers.split` sends a split's events before it answers `done`
+    /// (PROTOCOL.md). Events stored after the command finished don't hold it. Returns whether
+    /// it still waits for events this connection hasn't had; the loop's pages send them, with
+    /// the reply right after.
+    async fn answer(&mut self, answered: Answered) -> Result<bool, End> {
+        self.waiting.push_back(answered);
+        let last = self.last;
+        if self.release(last).await? {
             self.sink.flush().await.map_err(|_| End::Dropped)?;
-            let last = self.last;
-            self.reached(last);
-            // Numbers can skip: nothing stored up to `head` is left when a page sent nothing.
-            if !more || !sent {
+        }
+        Ok(!self.waiting.is_empty())
+    }
+
+    /// Feeds the waiting replies, in order, whose command finished when the log's head was at or
+    /// below `seq`. Returns whether it fed any.
+    async fn release(&mut self, seq: u64) -> Result<bool, End> {
+        if self.waiting.front().is_none_or(|a| a.head > seq) {
+            return Ok(false);
+        }
+        // The client has the events fed so far by the time it reads the reply.
+        let last = self.last;
+        self.reached(last);
+        while self.waiting.front().is_some_and(|a| a.head <= seq) {
+            let Some(answered) = self.waiting.pop_front() else {
                 break;
-            }
+            };
+            self.sink
+                .feed(Frame::text(answered.json))
+                .await
+                .map_err(|_| End::Dropped)?;
         }
-        Ok(())
+        Ok(true)
     }
 
-    /// Sends every stored event after `last`, page by page.
-    async fn catch_up(&mut self) -> Result<(), End> {
-        loop {
-            let log = self.shared.log.clone();
-            let after = self.last;
-            let page = blocking(move || log.page(after, PAGE)).await?;
-            let more = page.len() == PAGE;
-            for stored in page {
-                self.sink
-                    .feed(Frame::text(stored.to_json()))
-                    .await
-                    .map_err(|_| End::Dropped)?;
-                self.last = stored.seq;
-            }
-            self.sink.flush().await.map_err(|_| End::Dropped)?;
-            let last = self.last;
-            self.reached(last);
-            if !more {
-                return Ok(());
-            }
+    /// Sends the next page of stored events after `last`, each waiting reply right after the
+    /// events stored before its command finished. Returns whether the log may hold more.
+    async fn next_page(&mut self) -> Result<bool, End> {
+        let log = self.shared.log.clone();
+        let after = self.last;
+        let page = blocking(move || log.page(after, PAGE)).await?;
+        let more = page.len() == PAGE;
+        for stored in page {
+            // Numbers can skip: a reply whose head is below this event has all it waits for.
+            self.release(stored.seq.saturating_sub(1)).await?;
+            self.sink
+                .feed(Frame::text(stored.to_json()))
+                .await
+                .map_err(|_| End::Dropped)?;
+            self.last = stored.seq;
         }
+        // A short page holds every event stored when it was read, and every waiting reply's
+        // head was read before that.
+        let up_to = if more { self.last } else { u64::MAX };
+        self.release(up_to).await?;
+        self.sink.flush().await.map_err(|_| End::Dropped)?;
+        let last = self.last;
+        self.reached(last);
+        Ok(more)
     }
 
     async fn send(&mut self, json: String) -> Result<(), End> {

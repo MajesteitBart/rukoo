@@ -7,14 +7,14 @@
 //! restarts and finishes meetings that were cut off. It never stops a recorder because the app
 //! is quitting.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -233,6 +233,13 @@ pub struct Controller {
     inner: Mutex<Option<Live>>,
     changed: Condvar,
     on_change: Box<dyn Fn(Change) + Send + Sync>,
+    /// Changes waiting for `on_change`, oldest first. A change to the live meeting is queued
+    /// while `inner` is locked, so this is the order in which the meeting changed.
+    pending: Mutex<VecDeque<Change>>,
+    /// Held by the thread that hands the pending changes to `on_change`.
+    delivering: Mutex<()>,
+    /// That thread, so a change `on_change` itself causes waits for it instead of for itself.
+    deliverer: Mutex<Option<ThreadId>>,
     stopped: AtomicBool,
     watchdog: Mutex<Option<JoinHandle<()>>>,
     /// Settings' screen mode for a meeting that doesn't say, and whether this computer can
@@ -247,6 +254,9 @@ struct LaunchError {
 }
 
 impl Controller {
+    /// `on_change` hears every change one at a time, in the order the meeting changed, on the
+    /// thread that made the change or on one that was handing an earlier change on. It may read
+    /// the controller, such as [`Controller::current`].
     pub fn new(
         options: ControllerOptions,
         on_change: impl Fn(Change) + Send + Sync + 'static,
@@ -261,6 +271,9 @@ impl Controller {
             inner: Mutex::new(None),
             changed: Condvar::new(),
             on_change: Box::new(on_change),
+            pending: Mutex::new(VecDeque::new()),
+            delivering: Mutex::new(()),
+            deliverer: Mutex::new(None),
             stopped: AtomicBool::new(false),
             watchdog: Mutex::new(None),
             screen: Mutex::new((ScreenMode::Off, false)),
@@ -302,8 +315,41 @@ impl Controller {
         lock(&self.inner)
     }
 
+    /// Reports a change that no lock orders, such as a meeting finished at start.
     fn emit(&self, change: Change) {
-        (self.on_change)(change);
+        self.queue(change);
+        self.deliver();
+    }
+
+    /// Queues a change for `on_change`. A change to the live meeting is queued with `inner`
+    /// locked and handed on with [`Controller::deliver`] once the lock is released, so the
+    /// engine hears of the meeting's changes in the order they happened: the watchdog's clock,
+    /// which can take the lock the moment a start releases it, comes after `Started`, and
+    /// nothing comes after `Ended`.
+    fn queue(&self, change: Change) {
+        lock(&self.pending).push_back(change);
+    }
+
+    /// Hands the queued changes to `on_change`, oldest first and one at a time. Returns once
+    /// every change queued before the call has been handed on, by this thread or by the one that
+    /// was handing changes on. Call it without `inner`: `on_change` reads the controller. A
+    /// change that `on_change` itself causes is handed on when it returns.
+    fn deliver(&self) {
+        let me = thread::current().id();
+        if *lock(&self.deliverer) == Some(me) {
+            return;
+        }
+        let _turn = lock(&self.delivering);
+        *lock(&self.deliverer) = Some(me);
+        // Dropped before the turn, also when `on_change` panics.
+        let _done = Delivered(&self.deliverer);
+        loop {
+            let next = lock(&self.pending).pop_front();
+            let Some(change) = next else {
+                return;
+            };
+            (self.on_change)(change);
+        }
     }
 
     /// At start: reattaches to a recorder that still records and finishes meetings whose
@@ -398,8 +444,9 @@ impl Controller {
             alive_since: Instant::now(),
             failed_pings: 0,
         });
+        self.queue(Change::Reattached { id, paused, at_ms });
         drop(inner);
-        self.emit(Change::Reattached { id, paused, at_ms });
+        self.deliver();
     }
 
     /// Starts recording a new meeting.
@@ -465,11 +512,13 @@ impl Controller {
                     alive_since: now,
                     failed_pings: 0,
                 });
-                drop(inner);
-                self.emit(Change::Started {
+                // Queued before the watchdog can see the meeting, so its first clock follows.
+                self.queue(Change::Started {
                     id: id.clone(),
                     at_ms: 0,
                 });
+                drop(inner);
+                self.deliver();
                 Ok(id)
             }
             Err(e) => {
@@ -562,13 +611,14 @@ impl Controller {
         }
         let id = live.id.clone();
         *inner = None;
-        drop(inner);
-        self.changed.notify_all();
-        self.emit(Change::Ended {
+        self.queue(Change::Ended {
             id,
             reason: reason.to_string(),
             at_ms,
         });
+        drop(inner);
+        self.changed.notify_all();
+        self.deliver();
         Ok(())
     }
 
@@ -589,12 +639,13 @@ impl Controller {
         live.at_ms = reply["t"].as_u64().unwrap_or(live.clock());
         live.at_when = Instant::now();
         let (id, at_ms) = (live.id.clone(), live.at_ms);
-        drop(inner);
-        self.emit(if pause {
+        self.queue(if pause {
             Change::Paused { id, at_ms }
         } else {
             Change::Resumed { id, at_ms }
         });
+        drop(inner);
+        self.deliver();
         Ok(())
     }
 
@@ -755,14 +806,14 @@ impl Controller {
             if live.restarts > 0 && live.alive_since.elapsed() >= self.timing.stable_after {
                 live.restarts = 0;
             }
-            let change = Change::Clock {
+            self.queue(Change::Clock {
                 id: live.id.clone(),
                 at_ms: live.at_ms,
                 mic_ok: live.mic_ok,
                 call: live.call,
-            };
+            });
             drop(inner);
-            self.emit(change);
+            self.deliver();
             return;
         }
         if !exited {
@@ -782,13 +833,14 @@ impl Controller {
             // It stopped on its own: the length limit.
             let id = live.id.clone();
             *inner = None;
-            drop(inner);
-            self.changed.notify_all();
-            self.emit(Change::Ended {
+            self.queue(Change::Ended {
                 id,
                 reason,
                 at_ms: t,
             });
+            drop(inner);
+            self.changed.notify_all();
+            self.deliver();
             return;
         }
         let max = self.timing.backoff.len() as u32;
@@ -802,20 +854,21 @@ impl Controller {
             }
             let id = live.id.clone();
             *inner = None;
-            drop(inner);
-            self.changed.notify_all();
             let at_ms = finished.ok().and_then(|done| done.stopped_at).unwrap_or(0);
-            self.emit(Change::Notify {
+            self.queue(Change::Notify {
                 title_key: NOTIFY_MEETING,
                 body: format!(
                     "The recorder stopped {max} times in a row, so Voice ended the meeting. Everything recorded until then is saved."
                 ),
             });
-            self.emit(Change::Ended {
+            self.queue(Change::Ended {
                 id,
                 reason: "interrupted".into(),
                 at_ms,
             });
+            drop(inner);
+            self.changed.notify_all();
+            self.deliver();
             return;
         }
         live.restarts += 1;
@@ -849,9 +902,10 @@ impl Controller {
                 live.file = file;
                 live.alive_since = Instant::now();
                 live.failed_pings = 0;
+                self.queue(Change::Restarted { id, attempt });
                 drop(inner);
                 self.changed.notify_all();
-                self.emit(Change::Restarted { id, attempt });
+                self.deliver();
             }
             Err(e) if e.code == Some(EXIT_BUSY) => {
                 // A recorder records into it after all: watch that one. When it holds the
@@ -1077,6 +1131,15 @@ pub(crate) fn spawn_detached(command: &mut Command) -> io::Result<Child> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Clears [`Controller::deliverer`] when the thread handing changes on is done.
+struct Delivered<'a>(&'a Mutex<Option<ThreadId>>);
+
+impl Drop for Delivered<'_> {
+    fn drop(&mut self) {
+        *lock(self.0) = None;
+    }
 }
 
 #[cfg(test)]

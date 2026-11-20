@@ -10,10 +10,11 @@
 //!
 //! Without headphones the microphone hears the call too. Before the stream hears the track, the
 //! bleed gate silences it wherever the call has speech, [`BLEED_MARGIN_MS`] wider on each side:
-//! the call's turns where Nemotron labelled the call, its passages elsewhere ([`call_speech`]).
-//! A call voice heard through the speakers then never becomes a voice at the microphone. Room
-//! speech under call speech is silenced with it, so words there get no clear voice and stay the
-//! user's.
+//! the call's turns where Nemotron labelled the call, its passages elsewhere, and where the call
+//! has no word timings or no passages at all, the stretches where its recorded audio sounds
+//! ([`call_speech`]). A call voice heard through the speakers then never becomes a voice at the
+//! microphone. Room speech under call speech is silenced with it, so words there get no clear
+//! voice and stay the user's.
 //!
 //! A microphone passage with word timings is cut where the voice changes, as the pipeline cuts a
 //! labelled call window ([`mic_pieces`]): its first piece keeps the passage's id at a new
@@ -42,7 +43,9 @@ use voice_protocol::{events, Passage, Track};
 use crate::library::MeetingDir;
 use crate::pipeline::{emit_once, logged_keys, mic_speaker, passage_key, speaker_of, DRIFT_GAP};
 use crate::reader::{TrackReader, PER_MS};
-use crate::segmentation::{draft, seconds_to_ms, words, Draft, Token};
+use crate::segmentation::{
+    draft, frame_energy, quiet_frame, seconds_to_ms, words, Draft, Token, FRAME,
+};
 use crate::speakers::follower::{pad_with, FollowerTiming, Labeller};
 use crate::speakers::turns::{passage_speaker, word_speakers, Turn};
 use crate::transcript::{
@@ -288,7 +291,8 @@ pub fn split_microphone(
     }
     let stretches = mapper.stretches();
     let mut transcript = Transcript::open(dir.path())?;
-    let gate = call_speech(&transcript)?;
+    let call = TrackReader::new(dir.path(), Track::Call.as_str(), mapper.segments());
+    let gate = call_speech(&transcript, &call)?;
     let heard = listen(dir, &reader, &gate, diarizer, timing, stop, progress)?;
     if heard.gated > 0 {
         eprintln!(
@@ -318,17 +322,27 @@ pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
     Ok(send_owed(dir, log, false)?.map_or(0, |(voices, _)| voices))
 }
 
-/// At Voice's start: sends what a split stored by an earlier run still owes Rukoo
-/// ([`send_split`]), as when Voice quit between storing the split and sending its events.
-/// Returns how many events went out. A meeting that wasn't split costs one read of its
-/// `transcript.db`, and none is created; a meeting the log has no events of is left alone, since
-/// Rukoo doesn't know it from this log. No diarizer runs.
+/// At Voice's start, before the bridge serves: sends what a split stored by an earlier run still
+/// owes Rukoo ([`send_split`]), as when Voice quit between storing the split and sending its
+/// events. Returns how many events went out. A meeting that wasn't split costs one read of its
+/// `transcript.db`, and none is created; one whose split's events the log noted as all sent
+/// ([`SPLIT_SENT_NOTE`]) costs one more read of the log; only a split without that note is read
+/// again in full. A meeting the log has no events of is left alone, since Rukoo doesn't know it
+/// from this log. No diarizer runs.
 pub fn catch_up_split(dir: &MeetingDir, log: &EventLog) -> Result<usize, SplitError> {
     if stored_split_voices(dir.path()).is_none() {
         return Ok(0);
     }
+    // The note lives in the log, after the split's events: a power cut that lost any of them
+    // lost the note too, whatever the start appended since.
+    if log.noted(dir.id().as_str(), SPLIT_SENT_NOTE)? {
+        return Ok(0);
+    }
     Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent))
 }
+
+/// The [`EventLog::note`] that every event of a meeting's microphone split is in the log.
+pub const SPLIT_SENT_NOTE: &str = "split.mic";
 
 /// [`send_split`]'s work: the voices on the track and how many events went out. `None` when
 /// `known_only` and the log has no events of the meeting.
@@ -399,6 +413,11 @@ fn send_owed(
             to_data(passage),
         )?;
     }
+    // Every event of the split is in the log now. Without the note the next start only reads the
+    // split again.
+    if let Err(e) = log.note(meeting, SPLIT_SENT_NOTE) {
+        eprintln!("voice-meetings: {meeting}: couldn't note that the split's events went out: {e}");
+    }
     Ok(Some((voices, emitted.len() - known)))
 }
 
@@ -409,32 +428,110 @@ fn to_data(value: &impl serde::Serialize) -> serde_json::Value {
 /// Where the call has speech, in meeting ms: the stretches the bleed gate silences at the
 /// microphone. The call's turns count where they are final: everywhere once Nemotron heard the
 /// whole call, up to the settled position while it hadn't. Its passages count past that, so a
-/// meeting without labels, or whose labels stopped, is gated by its passages.
-fn call_speech(transcript: &Transcript) -> rusqlite::Result<Vec<(u64, u64)>> {
+/// meeting without labels, or whose labels stopped, is gated by its passages. A passage with word
+/// timings counts whole. One without them can hold a whole recognition window, as a cloud
+/// provider's do, so it counts only where the call's recorded audio sounds inside it. So does
+/// the call past what was transcribed of it, as when its transcription failed, and all of a call
+/// without turns or passages.
+fn call_speech(transcript: &Transcript, call: &TrackReader) -> Result<Vec<(u64, u64)>, SplitError> {
     let turns = transcript.turns(Track::Call, 0, u64::MAX)?;
-    let until = if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
+    let passages: Vec<(u64, u64, bool)> = transcript
+        .passages()?
+        .into_iter()
+        .filter(|p| p.passage.track == Track::Call)
+        .map(|p| (p.passage.start, p.passage.end, !p.tokens.is_empty()))
+        .collect();
+    // A call with neither turns nor passages says nothing about where it spoke, also when its
+    // labels or its transcription ran to the end without finding any: its sound counts from the
+    // start.
+    let silent = turns.is_empty() && passages.is_empty();
+    let until = if silent {
+        0
+    } else if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
         u64::MAX
     } else if turns.is_empty() {
         0
     } else {
         transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0)
     };
-    let passages: Vec<(u64, u64)> = transcript
-        .passages()?
-        .into_iter()
-        .filter(|p| p.passage.track == Track::Call)
-        .map(|p| (p.passage.start, p.passage.end))
-        .collect();
-    Ok(gate_spans(&turns, &passages, until, BLEED_MARGIN_MS))
+    // In meeting samples, as the call's audio.
+    let transcribed = if silent {
+        0
+    } else {
+        transcript.cursor(Track::Call)?
+    };
+    // The audio is read only when the gate goes by it somewhere.
+    let by_sound = until < call.end().div_ceil(PER_MS)
+        && (transcribed < call.end()
+            || passages
+                .iter()
+                .any(|&(_, stop, timed)| !timed && stop > until));
+    let sound = if by_sound {
+        call_sound(call)?
+    } else {
+        Vec::new()
+    };
+    Ok(gate_spans(
+        &turns,
+        &passages,
+        transcribed / PER_MS,
+        &sound,
+        until,
+        BLEED_MARGIN_MS,
+    ))
 }
 
-/// The gate's stretches: each turn, and each passage's part after `until`, `margin` wider on
-/// both sides, merged where they touch, by start.
-fn gate_spans(turns: &[Turn], passages: &[(u64, u64)], until: u64, margin: u64) -> Vec<(u64, u64)> {
+/// Where the call's recorded audio sounds, in meeting ms, by start: the 50 ms frames the rule
+/// that cuts recognition windows doesn't call quiet ([`quiet_frame`]).
+fn call_sound(call: &TrackReader) -> io::Result<Vec<(u64, u64)>> {
+    // A minute at a time, a whole number of frames.
+    const CHUNK: u64 = 60_000 * PER_MS;
+    let mut energy = Vec::new();
+    let mut at = 0;
+    while at < call.end() {
+        energy.extend(frame_energy(&call.read(at, (at + CHUNK).min(call.end()))?));
+        at += CHUNK;
+    }
+    let frame_ms = FRAME as u64 / PER_MS;
+    let mut sound: Vec<(u64, u64)> = Vec::new();
+    for i in (0..energy.len()).filter(|&i| !quiet_frame(&energy, i)) {
+        let start = i as u64 * frame_ms;
+        match sound.last_mut() {
+            Some(last) if last.1 == start => last.1 = start + frame_ms,
+            _ => sound.push((start, start + frame_ms)),
+        }
+    }
+    Ok(sound)
+}
+
+/// The gate's stretches, `margin` wider on both sides, merged where they touch, by start: each
+/// turn, and past `until` each passage `(start, end, timed)` with word timings whole, and the
+/// call's `sound` inside each passage without them and from `transcribed` on.
+fn gate_spans(
+    turns: &[Turn],
+    passages: &[(u64, u64, bool)],
+    transcribed: u64,
+    sound: &[(u64, u64)],
+    until: u64,
+    margin: u64,
+) -> Vec<(u64, u64)> {
+    let past = |start: u64, end: u64| (start.max(until), end);
+    let untimed: Vec<(u64, u64)> = passages
+        .iter()
+        .filter(|p| !p.2)
+        .map(|p| past(p.0, p.1))
+        .chain([past(transcribed, u64::MAX)])
+        .collect();
+    let heard = sound.iter().flat_map(|&(a, b)| {
+        untimed
+            .iter()
+            .map(move |&(start, end)| (a.max(start), b.min(end)))
+    });
     let mut spans: Vec<(u64, u64)> = turns
         .iter()
         .map(|t| (t.start, t.end))
-        .chain(passages.iter().map(|&(start, end)| (start.max(until), end)))
+        .chain(passages.iter().filter(|p| p.2).map(|p| past(p.0, p.1)))
+        .chain(heard)
         .filter(|&(start, end)| end > start)
         .map(|(start, end)| (start.saturating_sub(margin), end.saturating_add(margin)))
         .collect();
@@ -933,20 +1030,99 @@ mod tests {
     #[test]
     fn the_gate_takes_the_final_call_turns_and_the_passages_past_them() {
         let turns = vec![turn("call-1", 1_000, 2_000), turn("call-2", 2_300, 3_000)];
-        let passages = [(500, 2_900), (2_500, 4_000), (6_000, 7_000), (8_000, 8_000)];
+        let passages = [
+            (500, 2_900, true),
+            (2_500, 4_000, true),
+            (6_000, 7_000, true),
+            (8_000, 8_000, true),
+        ];
+        // The call sounds at 9 s too, but up to 10 s it was transcribed with word timings: the
+        // audio doesn't count there.
+        let sound = [(9_000, 9_500)];
+        let gate = |turns: &[Turn], until| gate_spans(turns, &passages, 10_000, &sound, until, 200);
         // Turns final up to 3 s: a passage counts only past that, and an empty one not at all.
-        assert_eq!(
-            gate_spans(&turns, &passages, 3_000, 200),
-            [(800, 4_200), (5_800, 7_200)]
-        );
+        assert_eq!(gate(&turns, 3_000), [(800, 4_200), (5_800, 7_200)]);
         // Nemotron heard the whole call: its turns alone.
-        assert_eq!(gate_spans(&turns, &passages, u64::MAX, 200), [(800, 3_200)]);
+        assert_eq!(gate(&turns, u64::MAX), [(800, 3_200)]);
         // Without turns, every passage; the margin stops at the meeting's start.
         assert_eq!(
-            gate_spans(&[], &[(100, 900), (1_000, 1_500)], 0, 200),
+            gate_spans(
+                &[],
+                &[(100, 900, true), (1_000, 1_500, true)],
+                1_500,
+                &[],
+                0,
+                200
+            ),
             [(0, 1_700)]
         );
-        assert!(gate_spans(&[], &[], 0, 200).is_empty());
+        assert!(gate_spans(&[], &[], 0, &[], 0, 200).is_empty());
+    }
+
+    #[test]
+    fn without_word_timings_the_gate_follows_the_call_s_audio() {
+        // The call sounds at 1-2 s, 5-6 s and 12-13 s.
+        let sound = [(1_000, 2_000), (5_000, 6_000), (12_000, 13_000)];
+        // A cloud provider's passage is its whole window, 0-8 s: only where the call sounds in
+        // it counts.
+        assert_eq!(
+            gate_spans(&[], &[(0, 8_000, false)], 20_000, &sound, 0, 200),
+            [(800, 2_200), (4_800, 6_200)]
+        );
+        // With word timings the passage counts whole, as before.
+        assert_eq!(
+            gate_spans(&[], &[(0, 8_000, true)], 20_000, &sound, 0, 200),
+            [(0, 8_200)]
+        );
+        // Past what was transcribed, as after a failed transcription, the audio alone.
+        assert_eq!(
+            gate_spans(&[], &[], 0, &sound, 0, 200),
+            [(800, 2_200), (4_800, 6_200), (11_800, 13_200)]
+        );
+        assert_eq!(
+            gate_spans(&[], &[(0, 8_000, true)], 10_000, &sound, 0, 200),
+            [(0, 8_200), (11_800, 13_200)]
+        );
+        // Turns final up to 5.5 s stay as they are; the audio counts only past them.
+        let turns = [turn("call-1", 1_000, 2_000)];
+        assert_eq!(
+            gate_spans(&turns, &[(0, 8_000, false)], 13_000, &sound, 5_500, 200),
+            [(800, 2_200), (5_300, 6_200)]
+        );
+    }
+
+    #[test]
+    fn the_call_sounds_where_its_frames_are_louder_than_the_window_threshold() {
+        let tmp = crate::test_support::TempDir::new("split-call-sound");
+        let dir = tmp.path();
+        // 2 s of quiet at ±50, 1 s of a square wave at 4000, 1 s of quiet; a second segment of
+        // speech from 70 s, past the first minute's read.
+        let wave = |level: i16, ms: usize| -> Vec<i16> {
+            (0..ms * 16)
+                .map(|i| if (i / 27) % 2 == 0 { level } else { -level })
+                .collect()
+        };
+        let first = [wave(50, 2_000), wave(4_000, 1_000), wave(50, 1_000)].concat();
+        let segments = [(1, 0, first), (2, 70_000, wave(4_000, 500))].map(|(seq, t, pcm)| {
+            let file = voice_recorder::meeting::segment_file("call", seq);
+            let path = dir.join(&file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut w = voice_audio::SegmentWriter::create(&path).unwrap();
+            w.append(&pcm).unwrap();
+            voice_recorder::timeline::SegmentRecord {
+                track: "call".into(),
+                seq,
+                t,
+                file,
+                ended: Some(w.close().unwrap()),
+            }
+        });
+        let call = TrackReader::new(dir, "call", &segments);
+        assert_eq!(
+            call_sound(&call).unwrap(),
+            [(2_000, 3_000), (70_000, 70_500)]
+        );
+        assert!(call_sound(&TrackReader::default()).unwrap().is_empty());
     }
 
     #[test]
