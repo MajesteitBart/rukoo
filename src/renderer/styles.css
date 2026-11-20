@@ -993,6 +993,34 @@ body.dragging-mail .nav-item * {
 .shell.collapsed .sidebar-mode .seg-ic {
   display: block;
 }
+/* Four modes, with team chat on the server: four labels side by side don't fit 236 px, so each segment stacks its
+   icon over an 11px label. The track's 12px corners hold 10px segments. Three modes keep the switch above, and the
+   rail keeps its upright icons. */
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked {
+  height: 46px;
+  border-radius: 12px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-thumb {
+  border-radius: 10px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked button {
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+  border-radius: 10px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic {
+  display: block;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-label {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 13px;
+}
 
 /* ---------- avatars, pills, checkboxes ---------- */
 
@@ -7070,6 +7098,39 @@ button.cal-title:hover {
   padding: 0 4px;
   font-size: 9.5px;
 }
+/* Team chat on the Chat segment (contract 3.10): an accent count of what asks for you, else a dot for unread
+   messages. White on the accent in light; the dark panel colour on it in dark. */
+.seg-badge.is-mention,
+:root.light .seg-badge.is-mention {
+  background: var(--accent);
+  color: var(--panel);
+}
+.seg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+  flex: none;
+}
+/* In the stacked switch a badge sits at the top right of its icon, at the rail's size. */
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge,
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-dot {
+  position: absolute;
+  top: 3px;
+  left: calc(50% + 5px);
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9.5px;
+}
+.shell.collapsed .sidebar-mode .seg-dot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .cal-panel {
@@ -10376,4 +10437,856 @@ button.mt-person:disabled {
 }
 .mtset-pill.is-error i {
   background: var(--danger);
+}
+
+/* ---------- team chat ---------- */
+
+/* Team chat takes the place of the list and the reader, as the calendar and meetings do (chat.js, chat-view.js).
+   Search looks through mail, so it waits for Mail. The view is a size container: the thread panel and the narrow
+   rules read its own width, whatever the sidebar and the agent panel take.
+   Layers: sticky day dividers 2, message tools 3, jump pills 5, the narrow thread overlay 6. */
+.chat {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  container: chat / inline-size;
+}
+.shell.chat-mode .chat {
+  display: flex;
+}
+.shell.chat-mode .listpane,
+.shell.chat-mode .divider,
+.shell.chat-mode .reader {
+  display: none;
+}
+body.chat-mode .titlebar-search {
+  visibility: hidden;
+}
+
+/* The sidebar: the workspace switcher, then Channels and Direct messages. */
+.ch-ws-tile {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  background: hsl(var(--h) 38% 27%);
+  color: hsl(var(--h) 70% 84%);
+}
+:root.light .ch-ws-tile {
+  background: hsl(var(--h) 60% 93%);
+  color: hsl(var(--h) 45% 32%);
+}
+/* Another workspace asks for you (accent), or this one is stopped (warning). */
+.ch-ws-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.ch-ws-dot.is-warn {
+  background: var(--warn);
+}
+.menu .mi .ch-ws-tile {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 8.5px;
+}
+.ch-nav.no-compose {
+  margin-top: 6px;
+}
+.ch-row.is-unread {
+  color: var(--text);
+  font-weight: 600;
+}
+.ch-row.is-unread .ic {
+  color: var(--text-2);
+}
+.ch-row.is-muted,
+.ch-row.is-closed,
+.ch-row.is-muted:hover,
+.ch-row.is-closed:hover {
+  color: var(--text-3);
+}
+.ch-row.active.is-muted,
+.ch-row.active.is-closed {
+  color: var(--text-2);
+}
+.ch-ic b {
+  display: none;
+}
+.ch-badge {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ch-row-quiet {
+  color: var(--text-3);
+}
+.ch-side-fill {
+  flex: 1;
+  min-height: 0;
+}
+.ch-side-empty {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.avatar.ch-av-14 {
+  width: 14px;
+  height: 14px;
+  font-size: 7px;
+}
+.avatar.ch-av-16 {
+  width: 16px;
+  height: 16px;
+  font-size: 7.5px;
+}
+.avatar.ch-av-18 {
+  width: 18px;
+  height: 18px;
+  font-size: 9px;
+}
+.avatar.ch-av-24 {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+.avatar.ch-av-40 {
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
+}
+.ch-av-group {
+  display: inline-flex;
+  align-items: center;
+}
+.ch-av-group .avatar + .avatar {
+  margin-left: -4px;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+/* The rail: a channel shows its first letter on its hue, a mention count a small pill, a plain count the dot. */
+.shell.collapsed .ch-ic svg,
+.shell.collapsed .ch-side-empty,
+.shell.collapsed [data-ch-side='browse'] {
+  display: none;
+}
+.shell.collapsed .ch-ic b {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: hsl(var(--h) 55% 90%);
+  color: hsl(var(--h) 45% 30%);
+}
+:root:not(.light) .shell.collapsed .ch-ic b {
+  background: hsl(var(--h) 30% 26%);
+  color: hsl(var(--h) 70% 82%);
+}
+.shell.collapsed .ch-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9.5px;
+}
+
+/* The pane: header, banner, log, composer. */
+.ch-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ch-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ch-titles {
+  flex: 1;
+  min-width: 0;
+}
+.ch-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ch-head-ic {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-head-ic svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+.ch-title {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-head-muted {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-head-muted svg {
+  width: 14px;
+  height: 14px;
+}
+.ch-meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.ch-members-n {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A strip under the header: offline, reconnecting, stopped. Its height only while it shows, without motion. */
+.ch-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px 4px 20px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-banner > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-banner-text {
+  flex: 1;
+  min-width: 0;
+  text-wrap: pretty;
+}
+.ch-banner .link-btn {
+  flex: none;
+  min-height: 24px;
+}
+
+.ch-log-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The view keeps the scroll position itself when older rows come in above (chat-view.js render 'anchor'). */
+.ch-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding-bottom: 12px;
+}
+.ch-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ch-older {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-older.is-reserved {
+  height: 40px;
+}
+.ch-older.is-opening {
+  height: 72px;
+}
+.ch-older-text {
+  min-width: 0;
+}
+.ch-older .spinner,
+.ch-empty .spinner {
+  margin: 0;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+
+/* Day dividers stay at the top while their day scrolls by. */
+.ch-day {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px 6px;
+  background: var(--panel);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.ch-day::before,
+.ch-day::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+/* The first message after where you had read when you opened the room. It stays put while you read. */
+.ch-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.ch-new::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+}
+.ch-floor {
+  padding: 16px 20px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ch-intro {
+  padding: 28px 20px 12px;
+}
+.ch-intro-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: var(--chip);
+  color: var(--text-2);
+}
+.ch-intro-ic svg {
+  width: 22px;
+  height: 22px;
+}
+.ch-intro-ic:has(.avatar) {
+  background: none;
+}
+.ch-intro-ic .avatar + .avatar {
+  margin-left: -8px;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.ch-intro-title {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+.ch-intro-line {
+  max-width: 64ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* A message: the avatar column, then the name line and the text. A continuation shows its time in the avatar column
+   on hover and focus; the time is in the row's text for screen readers either way. */
+.ch-msg {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 2px 20px;
+  outline-offset: -2px;
+  transition: background-color 120ms ease;
+}
+.ch-msg.is-head {
+  padding-top: 8px;
+}
+.ch-msg:hover,
+.ch-msg:focus-within {
+  background: var(--hover);
+}
+.ch-msg > .avatar,
+.ch-msg > .ch-time.is-gutter {
+  grid-column: 1;
+}
+.ch-msg > .ch-body,
+.ch-msg > .ch-context {
+  grid-column: 2;
+  min-width: 0;
+}
+.ch-msg > .avatar {
+  margin-top: 2px;
+}
+.ch-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.ch-time.is-gutter {
+  align-self: start;
+  padding-top: 3px;
+  font-size: 11px;
+  text-align: right;
+  visibility: hidden;
+}
+.ch-msg:hover > .ch-time.is-gutter,
+.ch-msg:focus-within > .ch-time.is-gutter {
+  visibility: visible;
+}
+.ch-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.ch-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-tag {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+.ch-text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ch-text.sel,
+.ch-title.sel {
+  user-select: text;
+}
+.ch-link {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ch-mention {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--link);
+  font-weight: 500;
+}
+.ch-mention.is-me {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text);
+}
+/* A message that mentions you: an accent bar on its left edge. */
+.ch-msg.mentions-me {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ch-removed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.ch-removed svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.ch-msg.is-pending .ch-text {
+  color: var(--text-2);
+}
+/* A reply in the main log: "replied to …" above it opens the thread. */
+.ch-context {
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 24px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: left;
+}
+.ch-context svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-context span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.ch-context:hover {
+  color: var(--text);
+}
+button.ch-context:hover span {
+  text-decoration: underline;
+}
+/* A thread's summary under its first message. */
+.ch-replies {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 24px;
+  margin: 4px 0 2px -4px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  transition: background-color 120ms ease;
+}
+button.ch-replies:hover {
+  background: var(--active);
+}
+.ch-replies-av {
+  display: inline-flex;
+  flex: none;
+}
+.ch-replies-av .avatar + .avatar {
+  margin-left: -4px;
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+.ch-replies-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.ch-replies-n {
+  flex: none;
+  color: var(--text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+button.ch-replies .ch-replies-n {
+  color: var(--link);
+}
+.ch-replies-at {
+  min-width: 0;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A notification's message, outlined for two seconds after it opened. */
+.ch-msg.is-target {
+  outline: 2px solid var(--focus);
+}
+/* A system event: who joined, left, made or renamed the channel. */
+.ch-sys {
+  display: grid;
+  grid-template-columns: 32px minmax(0, max-content) max-content;
+  column-gap: 10px;
+  align-items: center;
+  padding: 4px 20px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-sys-ic {
+  color: var(--text-3);
+  display: grid;
+  place-items: center;
+}
+.ch-sys-ic svg {
+  width: 14px;
+  height: 14px;
+}
+.ch-sys-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ch-sys .ch-time {
+  font-size: 11.5px;
+}
+.ch-vh,
+.ch-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*    0ms  a message that arrives while the room is open fades up 8px
+ *  200ms  it rests. Loaded history doesn't move. */
+.ch-msg.is-arriving {
+  animation: ch-arrive 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+@keyframes ch-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* New messages below, or unread ones above: a pill at the log's edge. */
+.ch-jump {
+  position: absolute;
+  left: 50%;
+  z-index: 5;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 9px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  animation: pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.ch-jump svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-jump.is-up {
+  top: 8px;
+}
+.ch-jump.is-down {
+  bottom: 8px;
+}
+.ch-compose {
+  padding: 0 20px 16px;
+}
+.ch-compose:empty {
+  display: none;
+}
+
+/* What the pane says when no conversation shows: loading, signed out, no workspace, gone. */
+.ch-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-3);
+}
+.ch-empty > svg {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  opacity: 0.5;
+  stroke-width: 1.3;
+}
+.ch-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-wrap: balance;
+}
+.ch-empty-body {
+  max-width: 420px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.ch-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ch-empty-hint {
+  max-width: 380px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+
+/* Dialogs: make and join a workspace, a room's members. */
+.ch-form {
+  padding: 0;
+}
+.ch-form .error {
+  margin: -8px 0 0;
+}
+.ch-host {
+  font-size: 12.5px;
+}
+.ch-join-preview p {
+  margin: 0 0 4px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ch-join-preview .ch-join-ws {
+  margin-bottom: 6px;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+}
+.ch-members {
+  max-height: 50vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-members[aria-busy='true'] {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+}
+.ch-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+.ch-member-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A narrow view: the header drops its member count and meta line, rows tighten. */
+@container chat (max-width: 560px) {
+  .ch-head {
+    padding: 8px 8px 8px 12px;
+  }
+  .ch-meta,
+  .ch-members-n {
+    display: none;
+  }
+  .ch-msg {
+    grid-template-columns: 28px minmax(0, 1fr);
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-sys {
+    grid-template-columns: 28px minmax(0, max-content) max-content;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-msg > .avatar.ch-av {
+    width: 28px;
+    height: 28px;
+  }
+  .ch-day,
+  .ch-new,
+  .ch-intro,
+  .ch-floor {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-banner {
+    padding-left: 12px;
+  }
+  .ch-compose {
+    padding: 0 12px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-msg.is-arriving,
+  .ch-jump {
+    animation: none;
+  }
+  .ch-msg,
+  .ch-replies {
+    transition: none;
+  }
 }

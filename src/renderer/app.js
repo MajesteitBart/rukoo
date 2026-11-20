@@ -44,6 +44,7 @@ import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSor
 import { planServerSearch as planSearch } from './server-search.js';
 import * as calendar from './calendar.js';
 import * as meeting from './meeting.js';
+import * as chat from './chat.js';
 import { mountInvite, openInviteFile } from './invite.js';
 // The availability panel registers itself with the calendar; applyBooking puts the booking page on the calendar.
 import { applyBooking } from './calendar-free.js';
@@ -137,12 +138,19 @@ export const S = {
   server: null
 };
 
-// Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar' or 'meeting'.
+// Layout preferences live in the renderer; they only matter to this window. mode: 'mail', 'calendar', 'meeting' or
+// 'chat'.
 const prefs = { listWidth: 400, sidebarCollapsed: false, agentOpen: false, agentWidth: 380, sidebarWithAgent: false, mode: 'mail', relatedOpen: true, ...readPrefs() };
-const MODES = ['mail', 'calendar', 'meeting'];
-if (!MODES.includes(prefs.mode)) prefs.mode = 'mail';
+// Team chat is a mode only while the server has it (chat.available(), contract 5.2).
+const BASE_MODES = ['mail', 'calendar', 'meeting'];
+const modes = () => (chat.available() ? [...BASE_MODES, 'chat'] : BASE_MODES);
+// Chat saved as the mode waits for chat's state, which says whether it is there; the window starts in Mail meanwhile
+// and switches once it knows (restoreChat).
+let chatWanted = prefs.mode === 'chat';
+if (!BASE_MODES.includes(prefs.mode)) prefs.mode = 'mail';
 const calendarMode = () => prefs.mode === 'calendar';
 const meetingMode = () => prefs.mode === 'meeting';
+const chatMode = () => prefs.mode === 'chat';
 function readPrefs() {
   try {
     return JSON.parse(localStorage.getItem('rukoo.layout') || '{}');
@@ -260,6 +268,7 @@ async function refreshOnce() {
     agentPanel?.relocalize();
     calendar.relocalize();
     meeting.relocalize();
+    chat.relocalize();
   }
   // With one account, "Alle accounts" would just repeat it; show the account itself.
   if (data.accounts.length === 1) S.scope = data.accounts[0].id;
@@ -320,6 +329,25 @@ async function refreshOnce() {
     else calendar.show();
   }
   if (meetingMode() && !meeting.isOpen()) meeting.show();
+  if (chatMode() && !chat.isOpen()) chat.show();
+  restoreChat();
+}
+
+// Chat was the mode when the window last closed: once chat's state says it is there, and the mailbox is up, the window
+// goes back to it. Without it the window stays in Mail. Once only: after that the user picks the mode.
+function restoreChat() {
+  if (!chatWanted || !S.data || !S.data.accounts.length || !chat.known()) return;
+  chatWanted = false;
+  if (chat.available() && prefs.mode === 'mail') setMode('chat');
+}
+
+// Chat's state changed whether it is there (chat.js): the switch gains or loses its segment, and a window in Chat
+// mode without it goes to Mail.
+function chatAvailability() {
+  if (!S.data || !S.data.accounts.length) return;
+  if (chatMode() && !chat.available()) setMode('mail');
+  else renderSidebar();
+  restoreChat();
 }
 
 // ---------- older mail ----------
@@ -569,6 +597,7 @@ function renderShell() {
       <div class="workspace">
         <section class="calendar" data-i18n-aria-label="calendar.title" aria-label="${esc(t('calendar.title'))}"></section>
         <section class="meeting" data-i18n-aria-label="meeting.title" aria-label="${esc(t('meeting.title'))}" data-tab="transcript"></section>
+        <section class="chat" data-i18n-aria-label="chat.view.label" aria-label="${esc(t('chat.view.label'))}" data-thread="closed"></section>
         <section class="listpane" data-i18n-aria-label="mailbox.layout.messages" aria-label="${esc(t('mailbox.layout.messages'))}">
           <div class="list-head"></div>
           <div class="list-tools"></div>
@@ -608,9 +637,12 @@ function renderShell() {
   document.body.classList.toggle('calendar-mode', calendarMode());
   shell.classList.toggle('meeting-mode', meetingMode());
   document.body.classList.toggle('meeting-mode', meetingMode());
-  // The sidebar holds folders, calendars or meetings; its name for screen readers follows, also after a language change.
+  shell.classList.toggle('chat-mode', chatMode());
+  document.body.classList.toggle('chat-mode', chatMode());
+  // The sidebar holds folders, calendars, meetings or team chat's conversations; its name for screen readers follows,
+  // also after a language change.
   const side = shell.querySelector('.sidebar');
-  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : meetingMode() ? 'meeting.sidebar.label' : 'mailbox.layout.folders';
+  const sideLabel = calendarMode() ? 'calendar.sidebar.calendars' : meetingMode() ? 'meeting.sidebar.label' : chatMode() ? 'chat.sidebar.label' : 'mailbox.layout.folders';
   side.dataset.i18nAriaLabel = sideLabel;
   side.setAttribute('aria-label', t(sideLabel));
   root.style.setProperty('--sidebar-w', `${collapsed ? RAIL_W : SIDEBAR_W}px`);
@@ -690,6 +722,12 @@ let viewTimer = null;
 function agentViewChanged() {
   clearTimeout(viewTimer);
   viewTimer = setTimeout(() => {
+    // In Chat mode the agent learns only that: no email, meeting or conversation (contract 5.2, 5.11).
+    if (chatMode()) {
+      api('agentView', { mode: 'chat', meetingId: null, openMessageId: null, checkedIds: [], scope: S.scope, view: S.view, folder: S.folder, composer: null }).catch(() => {});
+      agentPanel?.sync();
+      return;
+    }
     const c = S.composer;
     api('agentView', {
       mode: meetingMode() ? 'meeting' : calendarMode() ? 'calendar' : 'mail',
@@ -844,7 +882,7 @@ function syncStatus(accounts = calendarMode() ? calendar.syncAccounts() : scoped
 setInterval(() => {
   const el = $('.sync-status');
   if (!el || !S.data) return;
-  const status = meetingMode() ? meeting.footStatus() : syncStatus();
+  const status = meetingMode() ? meeting.footStatus() : chatMode() ? chat.footStatus() : syncStatus();
   el.className = `sync-status ${status.cls}`;
   el.title = status.title;
   el.querySelector('.t').textContent = status.text;
@@ -854,41 +892,78 @@ function accountAvatar(acc) {
   return `<span class="avatar acc" style="--acc:${esc(acc.color || '#6f9cf2')}" aria-hidden="true">${esc((acc.name || acc.email).trim()[0] || '?').toUpperCase()}</span>`;
 }
 
-// Mail, Calendar and Meetings at the top of the sidebar. The switch stays in place, so its thumb slides.
+// Mail, Calendar and Meetings at the top of the sidebar, and Chat while the server has team chat. The switch stays in
+// place, so its thumb slides. Three segments keep their labels as they always were; four can't fit 236 px side by
+// side, so each stacks its icon over a smaller label (is-stacked).
 function renderModeSwitch() {
   const box = $('.sidebar-mode');
+  if (!box || !S.data) return;
   const options = [
     { value: 'mail', label: t('calendar.mode.mail'), title: t('calendar.mode.mailShortcut'), icon: 'unread' },
     { value: 'calendar', label: t('calendar.mode.calendar'), title: t('calendar.mode.calendarShortcut'), icon: 'calendar' },
     { value: 'meeting', label: t('meeting.mode.label'), title: t('meeting.mode.shortcut'), icon: 'mic' }
   ];
+  const withChat = chat.available();
+  if (withChat) options.push({ value: 'chat', label: t('chat.mode.label'), title: t('chat.mode.shortcut'), icon: 'chat' });
+  const shape = `${S.data.settings.language}|${options.length}`;
   const el = box.querySelector('.segmented');
-  if (el && el.dataset.language === S.data.settings.language) setSegmented(el, prefs.mode);
+  if (el && el.dataset.shape === shape) setSegmented(el, prefs.mode);
   else {
-    box.innerHTML = segmented({ name: 'mode', label: t('calendar.mode.label'), value: prefs.mode, options });
-    box.querySelector('.segmented').dataset.language = S.data.settings.language;
+    box.innerHTML = segmented({ name: 'mode', label: t(withChat ? 'chat.mode.switchLabel' : 'calendar.mode.label'), value: prefs.mode, options });
+    const made = box.querySelector('.segmented');
+    made.dataset.shape = shape;
+    made.dataset.language = S.data.settings.language;
+    made.classList.toggle('is-stacked', withChat);
   }
   // Booking requests that wait for an answer: a count on the Calendar segment, also while the mailbox shows.
   const count = calendar.requestCount();
-  const seg = box.querySelector('[data-mode="calendar"]');
-  let badge = seg.querySelector('.seg-badge');
-  if (!count) {
-    badge?.remove();
+  segmentBadge(box.querySelector('[data-mode="calendar"]'), count ? { text: count > 99 ? '99+' : String(count), label: t('calendar.mode.calendarRequests', { count }) } : null);
+  // Team chat (contract 3.10): a count of what asks for you, else a dot for anything unread.
+  const chatSeg = box.querySelector('[data-mode="chat"]');
+  if (chatSeg) {
+    const b = chat.modeBadge();
+    segmentBadge(
+      chatSeg,
+      b && b.count ? { text: b.text, label: t('chat.mode.badgeCount', { count: b.count }), cls: 'is-mention' } : b && b.dot ? { dot: true, label: t('chat.mode.badgeUnread') } : null
+    );
+  }
+}
+
+// A segment's badge: { text, label, cls } for a count pill, { dot, label } for a dot, or null for none. label names
+// the segment with its badge for screen readers.
+function segmentBadge(seg, badge) {
+  if (!seg) return;
+  let pill = seg.querySelector('.seg-badge');
+  let dot = seg.querySelector('.seg-dot');
+  if (!badge) {
+    pill?.remove();
+    dot?.remove();
     seg.removeAttribute('aria-label');
     return;
   }
-  if (!badge) {
-    badge = document.createElement('span');
-    badge.className = 'seg-badge';
-    badge.setAttribute('aria-hidden', 'true');
-    seg.appendChild(badge);
+  if (badge.dot) {
+    pill?.remove();
+    if (!dot) {
+      dot = document.createElement('span');
+      dot.className = 'seg-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      seg.appendChild(dot);
+    }
+  } else {
+    dot?.remove();
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.setAttribute('aria-hidden', 'true');
+      seg.appendChild(pill);
+    }
+    pill.className = `seg-badge ${badge.cls || ''}`.trim();
+    pill.textContent = badge.text;
   }
-  badge.textContent = count > 99 ? '99+' : String(count);
-  seg.setAttribute('aria-label', t('calendar.mode.calendarRequests', { count }));
+  seg.setAttribute('aria-label', badge.label);
 }
 
 function setMode(mode) {
-  if (mode === prefs.mode || !MODES.includes(mode)) return;
+  if (mode === prefs.mode || !modes().includes(mode)) return;
   const was = prefs.mode;
   prefs.mode = mode;
   savePrefs();
@@ -897,8 +972,10 @@ function setMode(mode) {
   renderSidebar();
   if (was === 'calendar') calendar.hide();
   if (was === 'meeting') meeting.hide();
+  if (was === 'chat') chat.hide();
   if (mode === 'calendar') calendar.show();
   else if (mode === 'meeting') meeting.show();
+  else if (mode === 'chat') chat.show();
   else {
     renderList();
     $('.list-scroll')?.focus();
@@ -929,7 +1006,7 @@ function updateButton() {
 }
 
 function sidebarFoot() {
-  const status = meetingMode() ? meeting.footStatus() : syncStatus();
+  const status = meetingMode() ? meeting.footStatus() : chatMode() ? chat.footStatus() : syncStatus();
   return `${updateButton()}${sortStatusHtml()}<div class="sidebar-foot">
       <button class="sync-status ${status.cls}" data-action="sync" title="${esc(status.title)}"><span class="dot"></span><span class="t">${esc(status.text)}</span></button>
       <button class="icon-btn" data-action="settings" data-i18n-title="settings.title.short" title="${esc(t('settings.title.short'))}">${icons.settings}</button>
@@ -969,6 +1046,10 @@ function renderSidebar() {
   }
   if (meetingMode()) {
     $('.sidebar-main').innerHTML = meeting.sidebarHtml() + sidebarFoot();
+    return;
+  }
+  if (chatMode()) {
+    $('.sidebar-main').innerHTML = chat.sidebarHtml() + sidebarFoot();
     return;
   }
   const el = $('.sidebar-main');
@@ -1077,6 +1158,7 @@ function bindSidebar() {
     if (t.dataset.mode) return setMode(t.dataset.mode);
     if (calendarMode() && calendar.sidebarClick(t)) return;
     if (meetingMode() && meeting.sidebarClick(t)) return;
+    if (chatMode() && chat.sidebarClick(t)) return;
     switch (t.dataset.action) {
       case 'accounts':
         return accountMenu(t);
@@ -1087,6 +1169,8 @@ function bindSidebar() {
       case 'sync':
         // In meeting mode the line says how Rukoo Voice is; Settings has the details.
         if (meetingMode()) return openSettings(ctx, { view: 'meetings' });
+        // In Chat mode it syncs the workspace, or opens the Rukoo account while signed out.
+        if (chatMode()) return chat.reconnect();
         return calendarMode() ? calendar.syncNow() : syncNow();
       case 'collapse':
         if (prefs.agentOpen) prefs.sidebarWithAgent = sidebarCollapsed();
@@ -3317,10 +3401,11 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.target.closest && e.target.closest('.composer')) return;
   if (!S.data || !S.data.accounts.length) return;
-  // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook; Ctrl+3 opens the meetings.
-  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
+  // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook; Ctrl+3 opens the meetings and Ctrl+4 the chat,
+  // while the server has team chat.
+  if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3' || (e.key === '4' && chat.available()))) {
     e.preventDefault();
-    return setMode(e.key === '1' ? 'mail' : e.key === '2' ? 'calendar' : 'meeting');
+    return setMode(e.key === '1' ? 'mail' : e.key === '2' ? 'calendar' : e.key === '3' ? 'meeting' : 'chat');
   }
   if (calendarMode()) {
     if (!e.target.closest?.('.agentpane, .bui-menu, .sort-panel') && calendar.onKey(e)) e.preventDefault();
@@ -3328,6 +3413,10 @@ document.addEventListener('keydown', (e) => {
   }
   if (meetingMode()) {
     if (!e.target.closest?.('.agentpane, .bui-menu') && meeting.onKey(e)) e.preventDefault();
+    return;
+  }
+  if (chatMode()) {
+    if (!e.target.closest?.('.agentpane, .bui-menu') && chat.onKey(e)) e.preventDefault();
     return;
   }
   // The rest follows the chosen keyboard scheme (keymap.js). Writing, searching and syncing work while typing too,
@@ -3602,6 +3691,16 @@ window.mail.on(async ({ type, payload }) => {
   if (type === 'calendar') calendar.reload();
   // Rukoo Voice and its meetings (main.js voice block).
   if (type === 'meeting') meeting.onEvent(payload);
+  // Team chat (workspaces/index.js, contract 4.5). A click on a chat notification comes as kind 'open': Chat opens at
+  // that conversation and message (contract 5.7).
+  if (type === 'chat' && payload && typeof payload === 'object') {
+    if (payload.kind === 'open') {
+      if (S.data && S.data.accounts.length && chat.available()) {
+        setMode('chat');
+        chat.openConversation(payload.ws, payload.conversation, Number.isSafeInteger(payload.seq) ? payload.seq : null);
+      }
+    } else chat.onEvent(payload);
+  }
   // A reminder or a booking notification was clicked: the calendar opens on that event or request, or on the day
   // when the notification names only its start.
   if (type === 'calendar-open' && payload && S.data && S.data.accounts.length) {
@@ -3744,10 +3843,15 @@ export const ctx = {
   // The arrow beside a card's Record: what Voice records of the screen. opts: {onPick(screen)} or {title, eventId}.
   recordMeetingMenu: (anchor, opts) => meeting.recordMenu(anchor, opts),
   openCalendarEvent: (id, start) => openCalendarEvent(id, start),
-  agentSync: () => agentViewChanged()
+  agentSync: () => agentViewChanged(),
+  // Team chat (chat.js): whether it is on screen, its badge on the mode switch in every mode, and whether it is there.
+  chatMode: () => chatMode(),
+  renderModeSwitch: () => renderModeSwitch(),
+  chatAvailability: () => chatAvailability()
 };
 
 calendar.init(ctx);
 meeting.init(ctx);
+chat.init(ctx);
 api('bookingState').then(applyBooking).catch(() => {});
 refresh().catch((err) => toast(err.message, 6000));

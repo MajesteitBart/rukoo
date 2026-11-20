@@ -915,15 +915,19 @@ export function mountAgentPanel(ctx) {
   // ---------- following the email on screen ----------
 
   function currentEmail() {
-    // In meeting mode the chat is about the meeting on screen, and in calendar mode about no email: the email that
-    // stays open behind them is off screen.
+    // In meeting mode the chat is about the meeting on screen, and in calendar and team chat mode about no email: the
+    // email that stays open behind them is off screen.
     if (ctx.meetingMode && ctx.meetingMode()) return null;
     if (ctx.calendarMode && ctx.calendarMode()) return null;
+    if (ctx.chatMode && ctx.chatMode()) return null;
     const m = S.message;
     return m && m.id && m.id === S.selectedId && !m.error && m.role !== 'drafts' ? m : null;
   }
   // Changes once more when the full message arrives, with its Message-ID and unsubscribe details.
   const emailKey = (m) => (m ? `${m.id}|${m.html === null || m.html === undefined ? '' : 'full'}` : '');
+  // Team chat on screen counts as a view of its own, so the empty chat says the agent can't see it, also when no email
+  // was open before.
+  const viewKey = (m) => (ctx.chatMode?.() ? 'chat:' : emailKey(m));
   const messageRef = (m) => ({
     id: m.id,
     messageId: m.messageId || null,
@@ -951,7 +955,7 @@ export function mountAgentPanel(ctx) {
 
   function lookupMatchesView(look) {
     if (look !== lookups) return false;
-    const key = ctx.meetingMode?.() ? `meeting:${currentMeeting()?.id || ''}` : emailKey(currentEmail());
+    const key = ctx.meetingMode?.() ? `meeting:${currentMeeting()?.id || ''}` : viewKey(currentEmail());
     if (key === P.emailKey) return true;
     // The panel can skip sync while closed. Retry this lookup if it reopens on the same email or meeting.
     P.emailKey = undefined;
@@ -967,7 +971,7 @@ export function mountAgentPanel(ctx) {
   async function syncEmail() {
     if (!ctx.agentOpen()) return;
     const m = currentEmail();
-    const key = emailKey(m);
+    const key = viewKey(m);
     if (key === P.emailKey) return;
     const look = ++lookups;
     const otherEmail = (m ? m.id : null) !== P.emailId;
@@ -1813,6 +1817,8 @@ export function mountAgentPanel(ctx) {
     const m = contextEmail();
     const meeting = contextMeeting();
     const calendar = ctx.calendarMode?.();
+    // Team chat on screen: the agent sees none of it, and the panel says so.
+    const teamChat = !meeting && Boolean(ctx.chatMode?.());
     // An email is on screen, but the user left it out: the add chip brings it back.
     const leftOut = !m && P.detached && Boolean(currentEmail());
     const state = stateOf(id);
@@ -1821,7 +1827,7 @@ export function mountAgentPanel(ctx) {
     const blocked = P.unavailable || BLOCKED.has(state);
     // The user turned agents' access to meetings off (Settings > Meetings): the agent gets nothing from the meeting.
     const meetingsOff = Boolean(S.data && S.data.settings && S.data.settings.meetingAgentsCanRead === false);
-    const titleKey = blocked ? 'setupTitle' : meeting ? 'titleMeeting' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
+    const titleKey = blocked ? 'setupTitle' : meeting ? 'titleMeeting' : teamChat ? 'titleChat' : calendar ? 'titleCalendar' : m ? 'title' : 'titleNoEmail';
     const title = t(`agent.empty.${titleKey}`, { name });
     const body = blocked
       ? t('agent.empty.setupBody', { name })
@@ -1829,13 +1835,15 @@ export function mountAgentPanel(ctx) {
         ? meetingsOff
           ? t('agent.empty.bodyMeetingOff')
           : t('agent.empty.bodyMeeting')
-        : calendar
-          ? t('agent.empty.bodyCalendar')
-          : m
-            ? t('agent.empty.body', { name })
-            : leftOut
-              ? t('agent.empty.bodyLeftOut')
-              : t('agent.empty.bodyNoEmail', { name });
+        : teamChat
+          ? t('agent.empty.bodyChat')
+          : calendar
+            ? t('agent.empty.bodyCalendar')
+            : m
+              ? t('agent.empty.body', { name })
+              : leftOut
+                ? t('agent.empty.bodyLeftOut')
+                : t('agent.empty.bodyNoEmail', { name });
     const card = B.recommendationCard({ eyebrow: name, title, body, actions: [], icon: B.icon('sparkle', 11) }, () => {});
     box.append(elOf(card));
     if (!blocked && meeting) {

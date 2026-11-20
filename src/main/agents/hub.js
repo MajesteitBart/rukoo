@@ -1087,7 +1087,8 @@ class AgentHub extends EventEmitter {
       ? { mode: str(s.composer.mode, 20), replyToId: str(s.composer.replyToId, 2000), draftId: str(s.composer.draftId, 2000) }
       : null;
     this.viewState = {
-      mode: ['mail', 'calendar', 'meeting'].includes(s.mode) ? s.mode : 'mail',
+      // Chat: team chat is on screen, and the agent sees none of it (tools.js shows mail only in mail mode).
+      mode: ['mail', 'calendar', 'meeting', 'chat'].includes(s.mode) ? s.mode : 'mail',
       meetingId: str(s.meetingId, 80),
       openMessageId: str(s.openMessageId, 2000),
       checkedIds: (Array.isArray(s.checkedIds) ? s.checkedIds : []).filter((v) => typeof v === 'string').slice(0, 50).map((v) => v.slice(0, 2000)),

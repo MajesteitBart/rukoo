@@ -10347,6 +10347,14 @@
     "message": "Signed out",
     "description": "Chat sidebar foot: status without a Rukoo account session; a click opens Settings on the Rukoo account page. src/renderer/chat.js (footStatus)"
   },
+  "chat.status.stopped": {
+    "message": "Stopped",
+    "description": "Chat sidebar foot: short status while the workspace on screen is stopped because its server is behind what this computer saw; the banner over the conversation says why and offers Start over. src/renderer/chat.js (footStatus)"
+  },
+  "chat.status.update": {
+    "message": "Update needed",
+    "description": "Chat sidebar foot: short status while the server needs a newer Rukoo for the workspace on screen; its tooltip says to update. src/renderer/chat.js (footStatus)"
+  },
   "chat.empty.loading": {
     "message": "Loading team chat",
     "description": "Chat view: accessible name of the spinner while team chat loads. src/renderer/chat.js"
