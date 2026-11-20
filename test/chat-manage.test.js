@@ -449,6 +449,37 @@ test('a write that gets 429 waits Retry-After and tries again, three times withi
   assert.equal(tries.filter((c) => c.method === 'POST' && c.route.endsWith('/invites')).length, 3);
 });
 
+test('a role change by someone else reaches the workspace summary, me() and the view at the next run', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const { svc, api } = await device(t, bart);
+  await settled(svc, ws.id);
+  const summaryRole = (state) => state.workspaces.find((w) => w.id === ws.id).role;
+  assert.equal(summaryRole(await api.chatState()), 'member');
+
+  const roleIs = async (role) => {
+    const changed = await server.call('PATCH', route(ws.id, `/members/${bartMe.id}`), { token: olga.token, body: { role } });
+    assert.equal(changed.status, 200);
+    const sent = svc.events.length;
+    await api.chatSync(ws.id);
+    assert.equal(summaryRole(await api.chatState()), role, 'the sidebar row');
+    assert.equal(svc.me(ws.id).role, role);
+    assert.equal((await api.chatView(ws.id)).me.role, role, 'the admin menu');
+    assert.equal((await api.chatView(ws.id)).ws.role, role);
+    // The window hears of it without asking.
+    await until(
+      () => svc.events.slice(sent).some((e) => e.kind === 'state' && summaryRole(e.state) === role),
+      5000,
+      `a state event with ${role}`
+    );
+  };
+  await roleIs('admin');
+  await roleIs('member');
+});
+
 test('a sign-up with an invitation link sends workspaceInvite and leaves a pending join', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();

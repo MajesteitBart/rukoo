@@ -354,10 +354,22 @@ async function directory(svc, ws) {
       if (err && err.code === 'not_found' && err.scope === 'workspace') throw err;
     }
   };
+  // The caller's own row carries a role or name someone else changed, which GET / would only bring at the next restore
+  // check: the ws row takes them, so the workspace summary says the same as the member list.
+  let meChanged = false;
   await load('membersStale', async () => {
     const res = wire.checkMembers(await svc.call(ws, 'GET', '/members'));
     svc.guard(epoch);
-    if (store.getWs(ws)) store.replaceMembers(ws, res.members, res.more);
+    store.tx(() => {
+      const row = store.getWs(ws);
+      if (!row) return;
+      store.replaceMembers(ws, res.members, res.more);
+      const mine = row.me && res.members.find((m) => m.id === row.me);
+      if (mine && (mine.role !== row.role || mine.name !== row.myName)) {
+        store.updateWs(ws, { role: mine.role, myName: mine.name });
+        meChanged = true;
+      }
+    });
   });
   await load('channelsStale', async (row) => {
     if (row.role === 'guest') {
@@ -380,6 +392,7 @@ async function directory(svc, ws) {
     if (store.getWs(ws)) store.replaceBlocks(ws, res.blocks);
   });
   if (changed && store.getWs(ws)) svc.emitChat({ kind: 'directory', ws });
+  if (meChanged) svc.stateChanged();
   return changed;
 }
 
