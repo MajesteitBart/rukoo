@@ -59,6 +59,7 @@ import nl.bvdm.rukoo.workspaces.ChatState
 @Composable
 fun ChatCompactLayout(app: AppViewModel, nav: NavState, pane: ChatPane, modifier: Modifier = Modifier) {
     val chat by app.chatState.collectAsStateWithLifecycle()
+    ChatOverlays(app)
     val gate = ChatListModel.gate(chat)
     if (gate != null) return ChatGateView(app, gate, chat, modifier)
     ChatPaneContent(app, nav, pane, modifier, twoPane = false)
@@ -72,6 +73,7 @@ fun ChatCompactLayout(app: AppViewModel, nav: NavState, pane: ChatPane, modifier
 @Composable
 fun ChatTwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float) {
     val chat by app.chatState.collectAsStateWithLifecycle()
+    ChatOverlays(app)
     val gate = ChatListModel.gate(chat)
     if (gate != null) return ChatGateView(app, gate, chat, Modifier.fillMaxSize())
     val context = LocalContext.current

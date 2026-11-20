@@ -159,6 +159,10 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
             },
             actions = {
                 if (roomModel != null) {
+                    // A channel's members are one tap away, as desktop's header has them (desktop-ui 5.2).
+                    if (roomModel.kind == RoomKind.CHANNEL) {
+                        RkIconButton(RukooIcons.People, stringResource(R.string.chat_head_members_button), onClick = { app.openChatSheet(ChatSheet.MEMBERS, room) })
+                    }
                     RkIconButton(RukooIcons.Info, stringResource(R.string.chat_room_details), onClick = { app.openChatSheet(ChatSheet.DETAILS, room) })
                 }
             },

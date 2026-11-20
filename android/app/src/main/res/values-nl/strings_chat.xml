@@ -340,6 +340,7 @@
     <string name="chat_channel_remove_title">%1$s verwijderen uit #%2$s?</string>
     <string name="chat_channel_add_title">Mensen toevoegen aan #%1$s</string>
     <string name="chat_channel_add_guest_needs_admin">Alleen een eigenaar of beheerder kan een gast toevoegen.</string>
+    <string name="chat_channel_remove_body">%1$s zit daarna niet meer in #%2$s. Wat %1$s schreef, blijft staan.</string>
     <string name="chat_channel_add_failed">Kan %1$s niet toevoegen.</string>
 
     <!-- chat.members.* -->
@@ -352,6 +353,8 @@
     <string name="chat_members_remove_title">%1$s verwijderen uit %2$s?</string>
     <string name="chat_members_remove_body">%1$s verliest de toegang tot alle kanalen en directe berichten hier. Wat %1$s schreef, blijft staan.</string>
     <string name="chat_members_remove_confirm">Verwijderen</string>
+    <string name="chat_members_more">Meer acties voor %1$s</string>
+    <string name="chat_members_blocked">Geblokkeerd</string>
 
     <!-- chat.new.* -->
     <string name="chat_new_title">Nieuw bericht</string>
@@ -379,6 +382,7 @@
     <string name="chat_leave_body">Je verliest de toegang tot de kanalen en directe berichten. Berichten die je schreef, blijven staan.</string>
     <string name="chat_leave_submit">Verlaten</string>
     <string name="chat_leave_manager_first">Je bent de enige beheerder van deze kanalen. Draag elk kanaal over voordat je vertrekt.</string>
+    <string name="chat_leave_delete_instead">Er zit verder niemand in %1$s, dus je kunt de werkruimte in plaats daarvan verwijderen.</string>
     <string name="chat_leave_last_owner">Je bent de enige eigenaar. Maak eerst iemand anders eigenaar.</string>
 
     <!-- chat.name.* -->
@@ -468,6 +472,7 @@
     <string name="chat_invite_share">Link delen</string>
     <string name="chat_room_details">Details</string>
     <string name="chat_room_pick">Kies een gesprek</string>
+    <string name="chat_dm_new">Iemand een bericht sturen</string>
     <plurals name="chat_input_bytes_left">
         <item quantity="one">Nog %d byte over</item>
         <item quantity="other">Nog %d bytes over</item>

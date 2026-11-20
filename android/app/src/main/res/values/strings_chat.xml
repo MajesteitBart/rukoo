@@ -362,6 +362,7 @@
     <string name="chat_channel_remove_title">Remove %1$s from #%2$s?</string><!-- Confirmation. -->
     <string name="chat_channel_add_title">Add people to #%1$s</string><!-- Button and picker title. -->
     <string name="chat_channel_add_guest_needs_admin">Only an owner or admin can add a guest.</string><!-- Disabled guest row, and the cosign_required error. -->
+    <string name="chat_channel_remove_body">%1$s won\'t be in #%2$s anymore. What they wrote stays.</string><!-- Its text. Desktop chat.channel.removeBody. -->
     <string name="chat_channel_add_failed">Couldn\'t add %1$s.</string><!-- After a partly failed add. -->
 
     <!-- chat.members.* -->
@@ -374,6 +375,8 @@
     <string name="chat_members_remove_title">Remove %1$s from %2$s?</string><!-- Confirmation title. -->
     <string name="chat_members_remove_body">%1$s loses access to every channel and direct message here. What they wrote stays.</string><!-- Its text. -->
     <string name="chat_members_remove_confirm">Remove</string><!-- Its button. -->
+    <string name="chat_members_more">More actions for %1$s</string><!-- Accessible name of the button that opens one person's menu in the members sheets. Desktop chat.members.more. -->
+    <string name="chat_members_blocked">Blocked</string><!-- Tag after the name of someone the user blocked. Desktop chat.members.blocked. -->
 
     <!-- chat.new.* -->
     <string name="chat_new_title">New message</string><!-- Dialog title. -->
@@ -401,6 +404,7 @@
     <string name="chat_leave_body">You lose access to its channels and direct messages. Messages you wrote stay.</string><!-- Its text. -->
     <string name="chat_leave_submit">Leave</string><!-- Its button. -->
     <string name="chat_leave_manager_first">You\'re the only manager of these channels. Hand each one over before you leave.</string><!-- Dialog after 409 last_manager. -->
+    <string name="chat_leave_delete_instead">Nobody else is in %1$s, so you can delete it instead.</string><!-- Second line of the only-owner dialog when the user is its only member, above Delete workspace. Desktop chat.leave.deleteInstead. -->
     <string name="chat_leave_last_owner">You\'re the only owner. Make someone else an owner first.</string><!-- Dialog after 409 last_owner. -->
 
     <!-- chat.name.* -->
@@ -492,6 +496,7 @@
     <string name="chat_invite_share">Share link</string>
     <string name="chat_room_details">Details</string>
     <string name="chat_room_pick">Pick a conversation</string>
+    <string name="chat_dm_new">Message someone</string><!-- New message sheet: starts a direct message (android.md "Conversation list"). -->
     <!-- Quiet line over the composer above 15,000 bytes, until the 16,384 limit (android.md "Composer with mentions"). -->
     <plurals name="chat_input_bytes_left">
         <item quantity="one">%d byte left</item>

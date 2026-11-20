@@ -25,7 +25,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -39,15 +41,18 @@ import nl.bvdm.rukoo.ui.components.Hairline
 import nl.bvdm.rukoo.ui.components.Monogram
 import nl.bvdm.rukoo.ui.components.NewsDot
 import nl.bvdm.rukoo.ui.components.NewsTone
+import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkIconButton
 import nl.bvdm.rukoo.ui.components.StatusDot
 import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.root.AppViewModel
+import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.semibold
 import nl.bvdm.rukoo.workspaces.WorkspaceStatus
 import nl.bvdm.rukoo.workspaces.WorkspaceSummary
+import nl.bvdm.rukoo.workspaces.WorkspaceView
 
 /**
  * The workspace drawer, Chat's counterpart of the folder drawer (android.md "Workspace drawer and sheet"): the mode
@@ -57,7 +62,15 @@ import nl.bvdm.rukoo.workspaces.WorkspaceSummary
 @Composable
 fun WorkspaceDrawerContent(app: AppViewModel, modifier: Modifier = Modifier) {
     Column(modifier.background(Rk.colors.bg).windowInsetsPadding(WindowInsets.systemBars)) {
-        WorkspaceList(app, Modifier.weight(1f).verticalScroll(rememberScrollState()), pick = app::selectWorkspace)
+        WorkspaceList(
+            app,
+            Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            pick = app::selectWorkspace,
+            act = { then ->
+                app.closeDrawer()
+                then()
+            },
+        )
         Hairline()
         WorkspaceFooter(app)
     }
@@ -92,6 +105,12 @@ fun WorkspaceSheet(app: AppViewModel, onDismiss: () -> Unit) {
                 app,
                 Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 pick = { id -> scope.launch { sheetState.hide() }.invokeOnCompletion { app.selectWorkspace(id) } },
+                act = { then ->
+                    scope.launch { sheetState.hide() }.invokeOnCompletion {
+                        app.closeDrawer()
+                        then()
+                    }
+                },
             )
             Hairline()
             WorkspaceFooter(app)
@@ -99,12 +118,19 @@ fun WorkspaceSheet(app: AppViewModel, onDismiss: () -> Unit) {
     }
 }
 
-/** The mode switch and the workspaces; [pick] shows one. */
+/**
+ * The mode switch and the workspaces; [pick] shows one. Under them, what can be done in the workspace on screen
+ * (contract §5.10, §7.4): your name, Members, Invite people for owners and admins, Blocked people, Leave workspace and,
+ * for an owner, Delete workspace, which works only while they are its only member. Then Join and Make. [act] closes
+ * the drawer or the sheet before the action runs.
+ */
 @Composable
-private fun WorkspaceList(app: AppViewModel, modifier: Modifier, pick: (String) -> Unit) {
+private fun WorkspaceList(app: AppViewModel, modifier: Modifier, pick: (String) -> Unit, act: (() -> Unit) -> Unit) {
     val c = Rk.colors
     val nav by app.state.collectAsStateWithLifecycle()
     val chat by app.chatState.collectAsStateWithLifecycle()
+    val viewNow by app.chatView.collectAsStateWithLifecycle()
+    val view = viewNow?.takeIf { it.ws.id == nav.chat.workspaceId }
     Column(modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
         AppModeSwitch(app, Modifier.padding(bottom = 12.dp))
         if (chat.workspaces.isNotEmpty()) {
@@ -118,6 +144,63 @@ private fun WorkspaceList(app: AppViewModel, modifier: Modifier, pick: (String) 
         }
         for (w in chat.workspaces) {
             WorkspaceRow(w, chat.host, selected = w.id == nav.chat.workspaceId, onClick = { pick(w.id) })
+        }
+        if (chat.signedIn && chat.available) WorkspaceActions(app, view, act)
+    }
+}
+
+@Composable
+private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -> Unit) -> Unit) {
+    val ui = app.chatUi
+    Column {
+        if (view != null) {
+            val ws = view.ws.id
+            val role = view.me.role
+            Hairline(Modifier.padding(vertical = 8.dp))
+            DrawerAction(stringResource(R.string.chat_workspace_your_name), RukooIcons.Edit, hint = view.me.name) { act { ui.askRenameMe(ws, view.me.name) } }
+            DrawerAction(stringResource(R.string.chat_workspace_members), RukooIcons.People) { act { app.openChatSheet(ChatSheet.MEMBERS) } }
+            if (SheetRules.canInvite(role)) DrawerAction(stringResource(R.string.chat_workspace_invite), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.INVITE) } }
+            if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) {
+                DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
+            }
+            DrawerAction(stringResource(R.string.chat_workspace_leave), RukooIcons.Back, danger = true) {
+                act { ui.askLeaveWorkspace(ws, view) { app.openChatSheet(ChatSheet.MEMBERS) } }
+            }
+            if (role == "owner") {
+                val canDelete = SheetRules.canDelete(view)
+                DrawerAction(
+                    stringResource(R.string.chat_workspace_delete),
+                    RukooIcons.Trash,
+                    danger = true,
+                    enabled = canDelete,
+                    hint = if (canDelete) null else stringResource(R.string.chat_delete_only_you),
+                ) { act { ui.askDeleteWorkspace(ws) } }
+            }
+        }
+        Hairline(Modifier.padding(vertical = 8.dp))
+        DrawerAction(stringResource(R.string.chat_workspace_join), RukooIcons.Link) { act { app.openChatSheet(ChatSheet.JOIN) } }
+        DrawerAction(stringResource(R.string.chat_workspace_make), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.CREATE_WORKSPACE) } }
+    }
+}
+
+/** A row of the drawer's actions: icon and label, a quiet [hint] under it, red when it removes something. */
+@Composable
+private fun DrawerAction(label: String, icon: ImageVector, danger: Boolean = false, enabled: Boolean = true, hint: String? = null, onClick: () -> Unit) {
+    val c = Rk.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .alpha(if (enabled) 1f else 0.5f)
+            .rkClickable(Rk.shapes.control, enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RkIcon(icon, null, size = 18.dp, tint = if (danger) c.danger else c.text2)
+        Column(Modifier.weight(1f)) {
+            Text(label, style = Rk.type.text13, color = if (danger) c.danger else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (hint != null) Text(hint, style = Rk.type.text11_5, color = c.text3, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
 }

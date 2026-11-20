@@ -30,10 +30,12 @@ import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
+import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.ResendMode
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
 import nl.bvdm.rukoo.workspaces.WorkspaceError
+import nl.bvdm.rukoo.workspaces.WorkspaceView
 import nl.bvdm.rukoo.workspaces.Workspaces
 
 /** What Chat's actions need from navigation. AppViewModel implements it. */
@@ -211,11 +213,29 @@ class ChatUi(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                showError(e, ctx ?: context())
+                showError(e, named(w, e, ctx ?: context()))
             } finally {
                 if (key != null) busy = busy - key
             }
         }
+    }
+
+    /**
+     * [ctx] with the name of the person a `409 blocked` names (§3.12 "You blocked {name}"), from the selected
+     * workspace's directory, when the caller didn't know whom the server would name.
+     */
+    private suspend fun named(w: Workspaces, e: Exception, ctx: ErrorContext): ErrorContext {
+        val member = (e as? WorkspaceError)?.member ?: return ctx
+        if (ctx.member != null) return ctx
+        val ws = state().selected ?: return ctx
+        val view = try {
+            withTimeoutOrNull(NAME_WAIT_MS) { w.view(ws).firstOrNull() }
+        } catch (e2: CancellationException) {
+            throw e2
+        } catch (_: Exception) {
+            null
+        }
+        return ctx.copy(member = names().display(view?.members?.firstOrNull { it.id == member }))
     }
 
     /** Pull to refresh and the status line's sync button: runs the feed of [ws], or of every workspace. */
@@ -387,14 +407,350 @@ class ChatUi(
         }
     }
 
+    // ---- sheets and their questions (android.md "Sheets and dialogs", contract §3.3, §3.12, §5.10) ----
+
+    /**
+     * Runs [block] like [launch], but a failure goes to [failed] instead of a toast: a sheet shows it under the field
+     * it concerns and stays open (desktop-ui 6). Null when there is no team chat or [key] is busy.
+     */
+    fun attempt(key: String, failed: (Exception) -> Unit, block: suspend Workspaces.() -> Unit): Job? {
+        val w = workspaces ?: return null
+        if (key in busy) return null
+        busy = busy + key
+        return scope.launch {
+            try {
+                w.block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed(e)
+            } finally {
+                busy = busy - key
+            }
+        }
+    }
+
+    private fun wsName(ws: String): String = state().workspaces.firstOrNull { it.id == ws }?.name.orEmpty()
+
+    /** Channel and member names in the interface language's order. */
+    fun collator(): Comparator<String> {
+        val c = java.text.Collator.getInstance(strings.locale).apply { strength = java.text.Collator.PRIMARY }
+        return Comparator { a, b -> c.compare(a, b) }
+    }
+
+    /**
+     * After making or joining [ws] (§3.3): it shows, with its first channel by sidebar order open. The service already
+     * selected it and ran its first pass.
+     */
+    suspend fun arrive(ws: String) {
+        val view = workspaces?.let { w -> withTimeoutOrNull(VIEW_WAIT_MS) { w.view(ws).firstOrNull() } }
+        host.selectWorkspace(ws)
+        SheetRules.firstChannel(view?.rooms.orEmpty(), collator())?.let { host.openRoom(it.id) }
+    }
+
+    /**
+     * Opens the one-to-one DM with [member]: the open one when there is one, else a new one (§3.12 "New message", the
+     * Message item of member menus).
+     */
+    fun message(ws: String, member: String, rooms: List<Room>, me: String?) = launch("message:$member", context(ws)) {
+        val open = SheetRules.openDmFor(rooms, me, listOf(member))
+        host.openRoom(open?.id ?: startDm(ws, listOf(member)))
+    }
+
+    /** Mute or unmute a room, saying so (§3.10). */
+    fun mute(ws: String, room: String, title: String, muted: Boolean) = launch("mute:$room", context(ws)) {
+        setMuted(ws, room, muted)
+        toasts.showToast(strings.get(if (muted) R.string.chat_mute_done else R.string.chat_mute_undone, title))
+    }
+
+    fun markRead(ws: String, room: String) = launch("markRead:$room", context(ws)) { markAllRead(ws, room) }
+
+    /**
+     * A question with a name field that asks again, with what went wrong in place of its text, until the name is
+     * taken or the person cancels: a server error never closes it (desktop-ui 6). [save] gets the trimmed name.
+     */
+    private suspend fun askName(title: String, hint: String?, current: String, placeholder: String, ws: String, save: suspend (String) -> Unit) {
+        var text = current
+        var problem: String? = null
+        while (true) {
+            val answer = ask(
+                DialogRequest(
+                    title,
+                    problem ?: hint,
+                    strings.get(R.string.common_actions_save),
+                    strings.get(R.string.common_actions_cancel),
+                    input = text,
+                    inputPlaceholder = placeholder,
+                ),
+            )
+            if (answer.choice != DialogChoice.CONFIRM) return
+            text = answer.text
+            val name = text.trim()
+            if (!SheetRules.nameOk(name)) {
+                problem = strings.get(R.string.chat_errors_invalid_name)
+                continue
+            }
+            if (name == current.trim()) return
+            try {
+                save(name)
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                problem = errorText(e, context(ws))
+            }
+        }
+    }
+
+    /** Your name in [ws] (desktop-ui 6.16 "You"). */
+    fun askRenameMe(ws: String, current: String) = launch("renameMe:$ws", context(ws)) {
+        askName(strings.get(R.string.chat_name_title, wsName(ws)), strings.get(R.string.chat_name_hint), current, strings.get(R.string.chat_make_your_name), ws) {
+            renameMe(ws, it)
+        }
+    }
+
+    /** Rename a channel (desktop-ui 6.7): names per §3.16, `name_taken` asks again. */
+    fun askRenameChannel(ws: String, room: Room) = launch("rename:${room.id}", context(ws)) {
+        val name = room.name.orEmpty()
+        askName(strings.get(R.string.chat_channel_rename_title, name), null, name, strings.get(R.string.chat_channel_name), ws) {
+            renameChannel(ws, room.id, it)
+        }
+    }
+
+    /** Archive a channel (desktop-ui 6.8); the feed then brings the archived room. */
+    fun askArchive(ws: String, room: Room) = launch("archive:${room.id}", context(ws)) {
+        val name = room.name.orEmpty()
+        val ok = confirm(
+            strings.get(R.string.chat_channel_archive_title, name),
+            strings.get(R.string.chat_channel_archive_body),
+            strings.get(R.string.chat_channel_archive),
+            danger = true,
+        )
+        if (ok) archiveChannel(ws, room.id)
+    }
+
+    /** The question in front of the panes that a plain confirmation can't hold; ChatOverlays draws it. */
+    var prompt: ChatPrompt? by mutableStateOf(null)
+        private set
+
+    /** What went wrong in [prompt]; it stays open (desktop-ui 6). */
+    var promptError: String? by mutableStateOf(null)
+        private set
+
+    fun dismissPrompt() {
+        val p = prompt
+        prompt = null
+        promptError = null
+        // The channel stays, so its going would be news again.
+        if (p is ChatPrompt.Successor) wasExpected(p.room.id)
+    }
+
+    // The overlays on screen; the first draws, so a pane sliding in beside another shows each question once.
+    private val overlays = androidx.compose.runtime.mutableStateListOf<Any>()
+
+    /** Whether [owner] is the overlay that draws the prompts. */
+    fun drawsOverlay(owner: Any): Boolean = overlays.firstOrNull() === owner
+
+    fun claimOverlay(owner: Any) {
+        if (owner !in overlays) overlays += owner
+    }
+
+    fun releaseOverlay(owner: Any) {
+        overlays -= owner
+    }
+
+    /**
+     * Leave a channel (desktop-ui 6.9): asked first, with what leaving means here. The only manager of a channel with
+     * others in it then picks a successor from its full members ([members] is the directory), in [prompt].
+     */
+    fun askLeaveChannel(ws: String, room: Room, members: Map<String, Member>, me: String?) = launch("leave:${room.id}", context(ws)) {
+        val name = room.name.orEmpty()
+        val body = when (SheetRules.leaveBody(room)) {
+            LeaveBody.LAST -> strings.get(R.string.chat_channel_leave_body_last, name)
+            LeaveBody.PRIVATE -> strings.get(R.string.chat_channel_leave_body_private)
+            LeaveBody.PUBLIC -> strings.get(R.string.chat_channel_leave_body_public)
+        }
+        if (!confirm(strings.get(R.string.chat_channel_leave_title, name), body, strings.get(R.string.chat_channel_leave), danger = true)) return@launch
+        expectGone(room.id)
+        try {
+            leaveChannel(ws, room.id, null)
+        } catch (e: WorkspaceError) {
+            if (e.code != "last_manager") {
+                wasExpected(room.id)
+                throw e
+            }
+            val asking = ChatPrompt.Successor(ws, room, null)
+            promptError = null
+            prompt = asking
+            try {
+                val ids = roomMembers(ws, room.id).map { it.member }
+                if (prompt === asking) prompt = asking.copy(people = SheetRules.successors(ids, members, me, collator()))
+            } catch (e2: CancellationException) {
+                throw e2
+            } catch (e2: Exception) {
+                if (prompt === asking) {
+                    prompt = asking.copy(people = emptyList())
+                    promptError = errorText(e2, context(ws))
+                }
+            }
+        }
+    }
+
+    /** The successor [prompt]'s submit: leave, handing the channel to [successor]. */
+    fun handOver(successor: String) {
+        val p = prompt as? ChatPrompt.Successor ?: return
+        attempt("leave:${p.room.id}", failed = { e -> if (prompt === p) promptError = errorText(e, context(p.ws)) }) {
+            leaveChannel(p.ws, p.room.id, successor)
+            if (prompt === p) {
+                prompt = null
+                promptError = null
+            }
+        }
+    }
+
+    /**
+     * Leave a workspace (desktop-ui 6.10). The only manager of channels is shown them, each with its members to hand
+     * it over ([prompt]). The only owner is told to make someone else an owner, with [onMembers] to do it; with
+     * nobody else left, deleting the workspace is offered instead (§5.10).
+     */
+    fun askLeaveWorkspace(ws: String, view: WorkspaceView?, onMembers: () -> Unit) = launch("leaveWs:$ws", context(ws)) {
+        val name = wsName(ws)
+        if (!confirm(strings.get(R.string.chat_leave_title, name), strings.get(R.string.chat_leave_body), strings.get(R.string.chat_leave_submit), danger = true)) return@launch
+        expectGone(ws)
+        try {
+            leaveWorkspace(ws)
+        } catch (e: WorkspaceError) {
+            wasExpected(ws)
+            when (e.code) {
+                "last_manager" -> {
+                    promptError = null
+                    prompt = ChatPrompt.HandOver(ws, SheetRules.handOver(e.channels, view))
+                }
+                "last_owner" -> {
+                    val alone = view != null && SheetRules.alone(view)
+                    val text = strings.get(R.string.chat_leave_last_owner) + if (alone) "\n\n" + strings.get(R.string.chat_leave_delete_instead, name) else ""
+                    val answer = ask(
+                        DialogRequest(
+                            strings.get(R.string.chat_workspace_leave),
+                            text,
+                            strings.get(if (alone) R.string.chat_workspace_delete else R.string.chat_workspace_members),
+                            strings.get(R.string.common_actions_close),
+                            danger = alone,
+                        ),
+                    )
+                    if (answer.choice == DialogChoice.CONFIRM) if (alone) deleteAsked(this, ws) else onMembers()
+                }
+                else -> throw e
+            }
+        }
+    }
+
+    /** Delete a workspace as its only member (§2.14, desktop-ui 6.16): asked first, then said. */
+    fun askDeleteWorkspace(ws: String) = launch("deleteWs:$ws", context(ws)) { deleteAsked(this, ws) }
+
+    private suspend fun deleteAsked(w: Workspaces, ws: String) {
+        val name = wsName(ws)
+        if (!confirm(strings.get(R.string.chat_delete_title, name), strings.get(R.string.chat_delete_body), strings.get(R.string.chat_delete_submit), danger = true)) return
+        expectGone(ws)
+        try {
+            w.deleteWorkspace(ws)
+        } catch (e: Exception) {
+            wasExpected(ws)
+            throw e
+        }
+        toasts.showToast(strings.get(R.string.chat_delete_done, name))
+    }
+
+    /** Leave a DM (§3.12): an open one closes for everyone in it; a closed one leaves the list. */
+    fun askLeaveDm(ws: String, room: Room) = launch("leaveDm:${room.id}", context(ws)) {
+        val closed = room.closedReason != null || room.archived
+        val ok = confirm(
+            strings.get(R.string.chat_leave_dm_title),
+            strings.get(if (closed) R.string.chat_leave_dm_body_closed else R.string.chat_leave_dm_body),
+            strings.get(R.string.chat_leave_dm_submit),
+            danger = !closed,
+        )
+        if (!ok) return@launch
+        expectGone(room.id)
+        try {
+            leaveDm(ws, room.id)
+        } catch (e: Exception) {
+            wasExpected(room.id)
+            throw e
+        }
+    }
+
+    /** Block someone (desktop-ui 6.13): what a block does and that they may notice, then said. */
+    fun askBlock(ws: String, member: String, name: String) = launch("block:$member", context(ws, member = name)) {
+        val ok = confirm(strings.get(R.string.chat_block_title, name), strings.get(R.string.chat_block_body, name), strings.get(R.string.chat_block_confirm), danger = true)
+        if (!ok) return@launch
+        block(ws, member)
+        toasts.showToast(strings.get(R.string.chat_block_done, name))
+    }
+
+    /** Unblock: no question; closed DMs stay closed. */
+    fun unblockMember(ws: String, member: String, name: String) = launch("block:$member", context(ws, member = name)) {
+        unblock(ws, member)
+        toasts.showToast(strings.get(R.string.chat_block_unblocked, name))
+    }
+
+    fun changeRole(ws: String, member: String, role: String) = launch("role:$member", context(ws)) { setRole(ws, member, role) }
+
+    /** Remove someone from the workspace (desktop-ui 6.15), asked first. */
+    fun askRemoveMember(ws: String, member: String, name: String) = launch("remove:$member", context(ws)) {
+        val ok = confirm(
+            strings.get(R.string.chat_members_remove_title, name, wsName(ws)),
+            strings.get(R.string.chat_members_remove_body, name),
+            strings.get(R.string.chat_members_remove_confirm),
+            danger = true,
+        )
+        if (ok) removeMember(ws, member)
+    }
+
+    fun changeChannelRole(ws: String, channel: String, member: String, role: String) =
+        launch("channelRole:$member", context(ws)) { setChannelRole(ws, channel, member, role) }
+
+    /** Remove someone from a channel (desktop-ui 6.6), asked first. */
+    fun askRemoveFromChannel(ws: String, channel: Room, member: String, name: String) = launch("channelRemove:$member", context(ws)) {
+        val channelName = channel.name.orEmpty()
+        val ok = confirm(
+            strings.get(R.string.chat_channel_remove_title, name, channelName),
+            strings.get(R.string.chat_channel_remove_body, name, channelName),
+            strings.get(R.string.chat_members_remove_confirm),
+            danger = true,
+        )
+        if (ok) removeFromChannel(ws, channel.id, member)
+    }
+
     private companion object {
         // §3.19 DRAFT_SAVE_DELAY.
         const val DRAFT_SAVE_DELAY_MS = 500L
 
         // How long Undo waits for the cached draft; the cache answers at once unless it isn't open.
         const val DRAFT_READ_MS = 5_000L
+
+        // How long a new workspace's view may take to come from the cache after its first pass.
+        const val VIEW_WAIT_MS = 5_000L
+
+        // How long an error's toast waits for the directory to name the person it is about.
+        const val NAME_WAIT_MS = 2_000L
     }
 }
+
+/** Questions [ChatUi] puts in front of the panes that need more than a confirmation; ChatOverlays draws them. */
+sealed interface ChatPrompt {
+    /**
+     * The only manager of [room] picks who manages it next before leaving (desktop-ui 6.9): its active full members
+     * other than the person, [people] null while they load.
+     */
+    data class Successor(val ws: String, val room: Room, val people: List<Member>?) : ChatPrompt
+
+    /** Leaving [ws] as the only manager of [channels]: each opens its members, where it is handed over (6.10). */
+    data class HandOver(val ws: String, val channels: List<HandOverChannel>) : ChatPrompt
+}
+
+/** A channel the person has to hand over before leaving the workspace. */
+data class HandOverChannel(val id: String, val name: String, val private: Boolean)
 
 /** Members' names as [s] words them: Former member, Deleted member, " and N others" and the language's list. */
 fun chatNames(s: UiStrings): ChatNames = ChatNames(

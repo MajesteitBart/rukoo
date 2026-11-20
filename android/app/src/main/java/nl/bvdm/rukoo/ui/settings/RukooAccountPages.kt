@@ -62,6 +62,7 @@ import nl.bvdm.rukoo.ui.components.Spinner
 import nl.bvdm.rukoo.ui.components.popIn
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.mail.MailCheckbox
+import nl.bvdm.rukoo.ui.root.AppMode
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooMono
@@ -246,6 +247,7 @@ private fun SignedInPage(app: AppViewModel, model: RukooAccountModel, nav: Setti
     val res = context.resources
     var ask by remember { mutableStateOf(Ask.NONE) }
     var device by remember { mutableStateOf<AccountDevice?>(null) }
+    val chat by app.chatState.collectAsStateWithLifecycle()
     val failed: (String) -> Unit = { toast.showError(res.getString(accountErrorRes(it))) }
     val exportFile = stringResource(R.string.settings_rukoo_export_file)
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -363,9 +365,11 @@ private fun SignedInPage(app: AppViewModel, model: RukooAccountModel, nav: Setti
             ask = Ask.NONE
             model.newRecoveryKey(password, failed)
         }
+        // Signing out deletes the chat cache, and unsent chat messages with it, so the dialog counts them first (§3.4).
         Ask.SIGN_OUT -> RkDialog(
             title = stringResource(R.string.settings_rukoo_sign_out),
-            text = stringResource(R.string.settings_rukoo_sign_out_help),
+            text = stringResource(R.string.settings_rukoo_sign_out_help) +
+                if (chat.unsent > 0) "\n\n" + pluralStringResource(R.plurals.settings_rukoo_unsent_chat, chat.unsent, chat.unsent) else "",
             confirmLabel = stringResource(R.string.settings_rukoo_sign_out),
             onDismiss = { ask = Ask.NONE },
             onConfirm = {
@@ -375,7 +379,8 @@ private fun SignedInPage(app: AppViewModel, model: RukooAccountModel, nav: Setti
         )
         Ask.DELETE -> PasswordDialog(
             title = stringResource(R.string.settings_rukoo_delete),
-            help = stringResource(R.string.settings_rukoo_delete_help),
+            help = stringResource(R.string.settings_rukoo_delete_help) +
+                if (chat.available) "\n\n" + stringResource(R.string.settings_rukoo_delete_chat_note) else "",
             confirmLabel = stringResource(R.string.settings_rukoo_delete),
             danger = true,
             onDismiss = { ask = Ask.NONE },
@@ -540,11 +545,18 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
         }
     }
 
-    // The recovery key of a new account, then back to the account's page.
+    // The recovery key of a new account, then back to the account's page. A sign-up with a workspace invitation link
+    // closes Settings back to Chat instead, which opens the Join sheet with the link (contract §3.3, §5.10).
     ui.recoveryKey?.let {
         RecoveryKeyDialog(it) {
             model.recoveryKeyShown()
-            nav.pop()
+            if (ui.joinWithLink) {
+                model.joinShown()
+                app.closeOverlay()
+                app.setMode(AppMode.CHAT)
+            } else {
+                nav.pop()
+            }
             toast.showToast(res.getString(R.string.settings_rukoo_welcome))
         }
     }
@@ -600,10 +612,13 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
                 )
             }
             if (form == RukooAccountModel.Form.SIGN_UP && info?.signups == "invite") {
+                // A workspace invitation link works here too, where the server takes one (contract §2.12, §3.3).
+                val linkWorks = info?.let { it.teamChat && it.workspace?.inviteSignups == true } == true
                 RkTextField(
                     value = field("invite"),
                     onValueChange = { set("invite", it) },
                     label = stringResource(R.string.settings_rukoo_invite),
+                    help = if (linkWorks) stringResource(R.string.settings_rukoo_invite_chat_help) else null,
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
                     enabled = !working,
                 )
@@ -616,6 +631,7 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
                     when (e) {
                         is RukooAccountModel.FormError.Code -> stringResource(accountErrorRes(e.code))
                         is RukooAccountModel.FormError.Text -> stringResource(e.res)
+                        is RukooAccountModel.FormError.OtherServer -> stringResource(R.string.chat_join_other_host, e.host, hostOf(status.server))
                     },
                 )
             }
