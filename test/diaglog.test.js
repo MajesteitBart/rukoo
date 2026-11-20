@@ -54,10 +54,15 @@ test('long text without spaces scrubs in one pass', () => {
   const log = new DiagLog(tempDir('rukoo-diag-'));
   for (const unit of ['a', 'a.b', '/x', 'a@b', 'x@y.']) {
     const s = unit.repeat(Math.ceil(20000 / unit.length)).slice(0, 20000);
-    const started = process.hrtime.bigint();
-    log.fromWindow('main', { kind: 'error', message: s, stack: s, reason: s });
-    const ms = Number(process.hrtime.bigint() - started) / 1e6;
-    assert.ok(ms < 150, `${JSON.stringify(unit)} took ${Math.round(ms)} ms`);
+    // The fastest of three tries: a runner that stalls once (disk, antivirus, another process) doesn't count, and a
+    // scrub that takes too long takes too long every time.
+    let best = Infinity;
+    for (let i = 0; i < 3 && best >= 150; i++) {
+      const started = process.hrtime.bigint();
+      assert.equal(log.fromWindow('main', { kind: 'error', message: s, stack: s, reason: s }), true);
+      best = Math.min(best, Number(process.hrtime.bigint() - started) / 1e6);
+    }
+    assert.ok(best < 150, `${JSON.stringify(unit)} took ${Math.round(best)} ms`);
   }
 });
 

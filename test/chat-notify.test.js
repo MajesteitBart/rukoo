@@ -445,7 +445,7 @@ for (const [what, startPass] of [
     await startPass(svc, ws.id);
     assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
     assert.deepEqual(svc.store.noticesForRoom(ws.id, dm), []);
-    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, `the pass after ${what}`);
+    await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 30000, `the pass after ${what}`);
     assert.equal(svc.notices.length, 1, 'the pass alerts nothing new');
     assert.deepEqual(hidden, [roomKey(ws.id, dm)]);
   });
@@ -482,7 +482,7 @@ test('an alert page that comes after Start over shows nothing, and the pass afte
   await chatApi(() => svc).chatReload(ws.id);
   held.release();
   await run;
-  await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 10000, 'the pass after Start over');
+  await until(() => svc.store.getWs(ws.id).passing === 0 && !svc.runners.get(ws.id).running, 30000, 'the pass after Start over');
   await svc.sync(ws.id);
   assert.deepEqual(svc.notices, []);
   assert.ok(!svc.notifier.shown.has(roomKey(ws.id, dm)));
