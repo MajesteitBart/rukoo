@@ -1,5 +1,9 @@
 package nl.bvdm.rukoo.workspaces
 
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -371,6 +375,93 @@ class WorkspaceSocketTest {
         await("the first step again") { s.lastDelay == 40L }
         await("open again") { opened.get() == 2 }
         server.verify()
+    }
+
+    @Test
+    fun `a nudge leaves a ticket 429's Retry-After alone`() {
+        server.answerWith(refusal("start dm too fast", retryAfter = "60"))
+        val s = socket()
+        s.start()
+        await("the wait") { s.lastDelay == 60_000L }
+        s.nudge()
+        Thread.sleep(300)
+        assertEquals(SocketState.DOWN, s.state.value)
+        assertEquals("no second ticket before Retry-After", 1, tickets())
+    }
+
+    /** A listener on 127.0.0.1 that reads the upgrade request and never answers it. */
+    private fun silent(block: (ServerSocket, () -> java.io.BufferedReader) -> Unit) {
+        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { endpoint ->
+            endpoint.soTimeout = 5_000
+            block(endpoint) {
+                val peer = endpoint.accept()
+                peers += peer
+                val request = peer.getInputStream().bufferedReader()
+                assertEquals("GET /socket HTTP/1.1", request.readLine())
+                while (!request.readLine().isNullOrEmpty()) Unit
+                request
+            }
+        }
+    }
+
+    private val peers = CopyOnWriteArrayList<Socket>()
+
+    private fun silentSocket(endpoint: ServerSocket, timing: WorkspaceSocket.Timing = quick) = WorkspaceSocket(
+        okhttp, "ws://127.0.0.1:${endpoint.localPort}/socket", { SocketTicket("ticket") }, listener, scope, timing = timing,
+    ).also { sockets += it }
+
+    /** True when the phone closed its end: the read sees the end of the stream or a reset. */
+    private fun closedByPhone(request: java.io.BufferedReader, peer: Socket): Boolean {
+        peer.soTimeout = 2_000
+        return try {
+            request.read() < 0
+        } catch (_: SocketTimeoutException) {
+            false
+        } catch (_: java.io.IOException) {
+            true
+        }
+    }
+
+    @Test
+    fun `stopping a socket whose upgrade hangs ends the connection and the call`() {
+        silent { endpoint, accept ->
+            val s = silentSocket(endpoint)
+            s.start()
+            val request = accept()
+            assertEquals(SocketState.CONNECTING, s.state.value)
+            s.stop()
+            assertEquals(SocketState.OFF, s.state.value)
+            assertTrue("the phone closed the connection", closedByPhone(request, peers.last()))
+            await("no call left running") { okhttp.dispatcher.runningCallsCount() == 0 }
+        }
+        peers.forEach { it.close() }
+    }
+
+    @Test
+    fun `an upgrade nobody answers times out into the backoff, and an open socket outlives that timeout`() {
+        silent { endpoint, accept ->
+            val s = silentSocket(endpoint, quick.copy(backoff = listOf(60_000L), upgradeTimeout = 500))
+            s.start()
+            val request = accept()
+            await("the backoff after the timeout", timeoutMs = 3_000) { s.state.value == SocketState.DOWN }
+            assertTrue("the phone closed the connection", closedByPhone(request, peers.last()))
+            s.stop()
+        }
+        peers.forEach { it.close() }
+
+        // The upgrade's timeout ends with the upgrade: an open socket that hears nothing for longer stays open.
+        val side = ServerSide()
+        server.answer("ticket")
+        upgrade(side)
+        val open = socket(quick.copy(pingEvery = 60_000, upgradeTimeout = 300))
+        open.start()
+        val remote = side.next()
+        await("open") { open.state.value == SocketState.OPEN }
+        Thread.sleep(1_200)
+        assertEquals(SocketState.OPEN, open.state.value)
+        remote.send("""{"t":"wake"}""")
+        await("the wake") { wakes.get() == 1 }
+        assertEquals(1, opened.get())
     }
 
     @Test

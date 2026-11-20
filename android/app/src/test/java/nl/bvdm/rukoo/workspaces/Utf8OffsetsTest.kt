@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.workspaces
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -85,5 +86,11 @@ class Utf8OffsetsTest {
     @Test
     fun `a lone surrogate counts as the three bytes of its replacement character`() {
         assertEquals(1 + 3 + 1, Utf8Offsets.utf8Length("a\uD83Db"))
+    }
+
+    @Test
+    fun `text is well formed only when every surrogate has its other half`() {
+        for (ok in listOf("", "plain", "é ✓", "a😀b", "😀😀")) assertTrue(ok, Utf8Offsets.isWellFormed(ok))
+        for (bad in listOf("a\uD83Db", "\uDE00", "x\uD83D", "\uDE00\uD83D", "\uD83D😀")) assertFalse(bad, Utf8Offsets.isWellFormed(bad))
     }
 }

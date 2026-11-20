@@ -50,6 +50,25 @@ object Utf8Offsets {
     fun utf8Length(text: String): Int = byteOffsets(text)[text.length]
 
     /**
+     * True when every surrogate in [text] is half of a pair, as JavaScript's `isWellFormed`. Kotlin's UTF-8 encoder
+     * writes a lone one as `?`, one byte where [byteOffsets] counts three, so the outbox refuses such text as desktop
+     * does, and the counted bytes, the mentions and the wire always agree.
+     */
+    fun isWellFormed(text: String): Boolean {
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            if (c.isHighSurrogate() && i + 1 < text.length && text[i + 1].isLowSurrogate()) {
+                i += 2
+                continue
+            }
+            if (c.isSurrogate()) return false
+            i += 1
+        }
+        return true
+    }
+
+    /**
      * The composer's spans as wire mentions: sorted by start, and dropping a span that is empty, runs past the text,
      * splits a surrogate pair, overlaps the one before it or names no member. At most [MENTION_LIMIT] remain.
      */

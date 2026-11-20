@@ -292,35 +292,42 @@ class AccountService(
         secrets.encrypt("rukoo")
     }
 
-    /** The password's keys for the server this phone uses; its address is part of authKey (server/PROTOCOL.md, Keys). */
-    private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf) =
+    /**
+     * The password's keys for the server [at], by default the one this phone uses; its address is part of authKey
+     * (server/PROTOCOL.md, Keys).
+     */
+    private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf, at: String = server) =
         withContext(Dispatchers.Default) {
             try {
-                AccountKeys.passwordKeys(password, salt, kdf, server)
+                AccountKeys.passwordKeys(password, salt, kdf, at)
             } catch (e: OutOfMemoryError) {
                 // The hash's memory is one block that is freed again; the app carries on.
                 throw fail("heavy_kdf")
             }
         }
 
-    private fun recoveryKeys(key: ByteArray) = AccountKeys.recoveryKeys(key, server)
+    private fun recoveryKeys(key: ByteArray, at: String = server) = AccountKeys.recoveryKeys(key, at)
 
     /**
      * [invite] is the operator's invite code. [workspaceInvite] is a workspace invitation for this server, which an
      * invite-only server takes in its place (contract 2.12, 3.3): it goes as `workspaceInvite`, and [invite] doesn't
      * go at all. One for another server is refused here, so its secret never reaches this one.
+     *
+     * Sign-up, sign-in and recovery read the server once and use that address for every call and key, since the
+     * server can still change while they wait (only a session stops it). [attach] refuses the session when it did.
      */
     suspend fun signUp(email: String, password: String, invite: String = "", workspaceInvite: InviteLink? = null): SignUpResult {
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
-        if (workspaceInvite != null && workspaceInvite.server != server) throw fail("invalid")
-        serverInfo()
+        val at = server
+        if (workspaceInvite != null && workspaceInvite.server != at) throw fail("invalid")
+        serverInfo(at)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
-        val keys = passwordKeys(password, salt, kdf)
+        val keys = passwordKeys(password, salt, kdf, at)
         val dataKey = AccountKeys.randomBytes(32)
         val recoveryKey = AccountKeys.randomBytes(20)
-        val recovery = recoveryKeys(recoveryKey)
+        val recovery = recoveryKeys(recoveryKey, at)
         val res = call(
             "POST",
             "/v1/signup",
@@ -342,8 +349,9 @@ class AccountService(
                 put("recoveryWrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(recovery.recoveryWrap, dataKey)))
                 put("device", device())
             },
+            server = at,
         ) as? JsonObject
-        attach(address, tokenOf(res), dataKey)
+        attach(address, tokenOf(res), dataKey, at)
         return SignUpResult(AccountKeys.formatRecoveryKey(recoveryKey), detailsOf(res?.get("account")))
     }
 
@@ -352,9 +360,9 @@ class AccountService(
 
     private fun detailsOf(e: JsonElement?): AccountDetails? = (e as? JsonObject)?.let { runCatching { RukooJson.decodeFromJsonElement(AccountDetails.serializer(), it) }.getOrNull() }
 
-    /** authKey for the password, with the parameters the server keeps for the address. Refuses weak ones. */
-    private suspend fun authFor(email: String, password: String): AccountKeys.PasswordKeys {
-        val pre = call("POST", "/v1/prelogin", buildJsonObject { put("email", email) }) as? JsonObject
+    /** authKey for the password, with the parameters the server [at] keeps for the address. Refuses weak ones. */
+    private suspend fun authFor(email: String, password: String, at: String = server): AccountKeys.PasswordKeys {
+        val pre = call("POST", "/v1/prelogin", buildJsonObject { put("email", email) }, server = at) as? JsonObject
         val kdf = try {
             AccountKeys.checkKdf(pre?.get("kdf"))
         } catch (e: IllegalArgumentException) {
@@ -366,7 +374,7 @@ class AccountService(
         } catch (e: IllegalArgumentException) {
             throw fail("server")
         }
-        return passwordKeys(password, salt, kdf)
+        return passwordKeys(password, salt, kdf, at)
     }
 
     suspend fun signIn(email: String, password: String): AccountDetails? {
@@ -375,19 +383,20 @@ class AccountService(
         if (!validEmail(address)) throw fail("invalid_email")
         if (password.isEmpty()) throw fail("unauthorized")
         checkStorage()
-        serverInfo()
-        val keys = authFor(address, password)
+        val at = server
+        serverInfo(at)
+        val keys = authFor(address, password, at)
         val res = call("POST", "/v1/login", buildJsonObject {
             put("email", address)
             put("authKey", AccountKeys.b64u(keys.authKey))
             put("device", device())
-        }) as? JsonObject
+        }, server = at) as? JsonObject
         val dataKey = try {
             AccountKeys.unwrapDataKey(keys.wrapKey, AccountKeys.unb64u((res?.get("wrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
             throw fail("server")
         }
-        attach(address, tokenOf(res), dataKey)
+        attach(address, tokenOf(res), dataKey, at)
         return detailsOf(res?.get("account"))
     }
 
@@ -396,12 +405,13 @@ class AccountService(
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
         val key = AccountKeys.parseRecoveryKey(recoveryKey) ?: throw fail("recovery_key")
-        serverInfo()
-        val recovery = recoveryKeys(key)
+        val at = server
+        serverInfo(at)
+        val recovery = recoveryKeys(key, at)
         val start = call("POST", "/v1/recover/start", buildJsonObject {
             put("email", address)
             put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
-        }) as? JsonObject
+        }, server = at) as? JsonObject
         val dataKey = try {
             AccountKeys.unwrapDataKey(recovery.recoveryWrap, AccountKeys.unb64u((start?.get("recoveryWrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
@@ -409,7 +419,7 @@ class AccountService(
         }
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
-        val keys = passwordKeys(password, salt, kdf)
+        val keys = passwordKeys(password, salt, kdf, at)
         val res = call("POST", "/v1/recover/finish", buildJsonObject {
             put("email", address)
             put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
@@ -418,8 +428,8 @@ class AccountService(
             put("authKey", AccountKeys.b64u(keys.authKey))
             put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
             put("device", device())
-        }) as? JsonObject
-        attach(address, tokenOf(res), dataKey)
+        }, server = at) as? JsonObject
+        attach(address, tokenOf(res), dataKey, at)
         return detailsOf(res?.get("account"))
     }
 
@@ -550,14 +560,17 @@ class AccountService(
     }
 
     /**
-     * This phone joins the account. Everything it has goes up; what the account has comes down first, so an older
-     * value here doesn't overwrite a newer one there.
+     * This phone joins the account it signed in to at [at]. Everything it has goes up; what the account has comes
+     * down first, so an older value here doesn't overwrite a newer one there. When the server was changed while the
+     * sign-in waited, the session is refused and ended there: its token would otherwise go to the new address.
      */
-    private fun attach(email: String, token: String, dataKey: ByteArray) {
-        synchronized(lock) {
+    private suspend fun attach(email: String, token: String, dataKey: ByteArray, at: String) {
+        val attached = synchronized(lock) {
+            // Under the lock setServer takes too, and it refuses once the session below is set.
+            if ((state.server ?: defaultServer) != at) return@synchronized false
             state = state.copy(
                 email = email,
-                sessionServer = state.server ?: defaultServer,
+                sessionServer = at,
                 token = secrets.encrypt(token),
                 dataKey = secrets.encrypt(Base64.getEncoder().encodeToString(dataKey)),
                 cursor = 0,
@@ -582,6 +595,17 @@ class AccountService(
             }
             open(token, dataKey)
             saveState()
+            true
+        }
+        if (!attached) {
+            try {
+                http.request(at, "POST", "/v1/logout", null, token, null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The server ends the session when it expires.
+            }
+            throw fail("server")
         }
         changedStatus()
         startSync()

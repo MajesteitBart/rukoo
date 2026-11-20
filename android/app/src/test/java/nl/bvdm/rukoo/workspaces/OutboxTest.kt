@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.workspaces
 import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,6 +11,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -777,6 +780,254 @@ class OutboxTest {
         assertTrue(gone.redacted)
         assertNull(gone.text)
         assertTrue(store.read { hasTombstone(w, message) })
+    }
+
+    private suspend fun waitFor(what: String, ms: Long = 5_000, check: suspend () -> Boolean) {
+        val until = System.currentTimeMillis() + ms
+        while (!check()) {
+            if (System.currentTimeMillis() > until) throw AssertionError("timed out waiting for $what")
+            delay(10)
+        }
+    }
+
+    /** What the service's restore path does with the outbox (§3.6 "Restore"): a new generation, the old one's rows marked. */
+    private suspend fun restoreNow() = store.tx {
+        val before = getWs(w)!!.generation
+        updateWs(w, mapOf("generation" to "the restored generation"))
+        markLookup(w, before)
+    }
+
+    @Test
+    fun `a 201 that comes after a restore marked the row changes nothing, and the lookup decides`() = runBlocking {
+        seed()
+        val posted = CompletableDeferred<String>()
+        val answer = CompletableDeferred<Unit>()
+        val lookups = AtomicInteger()
+        val late = WorkspaceHttp { _, method, path, body, _ ->
+            when {
+                method == "POST" && path.endsWith("/messages") -> {
+                    val op = (body!!.jsonObject.getValue("operationId") as JsonPrimitive).content
+                    posted.complete(op)
+                    answer.await()
+                    WorkspaceAnswer(201, RukooJson.parseToJsonElement("""{"operationId":"$op","messageId":"e_${"Z".repeat(22)}","seq":8}"""))
+                }
+                path.contains("/operations/") -> {
+                    lookups.incrementAndGet()
+                    throw WorkspaceError("network")
+                }
+                else -> error("unexpected $method $path")
+            }
+        }
+        val box = outbox(client = client(late))
+        val sent = CopyOnWriteArrayList<Outbox.Sent>()
+        scope.launch { box.sent.collect { sent += it } }
+        val local = box.enqueue(w, general, null, text, mentions)
+        box.synced(w)
+        val op = withTimeout(5_000) { posted.await() }
+        restoreNow()
+        // The old generation's 201 arrives now.
+        answer.complete(Unit)
+        waitFor("the lookup") { lookups.get() == 1 && row(local).attempts == 1 }
+        delay(200)
+
+        val r = row(local)
+        assertEquals(Outbox.QUEUED to Outbox.LOOKUP, r.state to r.reason)
+        assertEquals(op, r.operationId)
+        assertEquals("one lookup, after the network failure it waits its backoff", 1, lookups.get())
+        assertNull(store.read { eventAt(w, general, 8) })
+        val room = store.read { getRoom(w, general) }!!
+        assertEquals(listOf(7L, 7L, 7L, 7L), listOf(room.head, room.hi, room.read, room.readLocal))
+        assertTrue(sent.isEmpty())
+        box.close()
+    }
+
+    @Test
+    fun `a network failure after a restore keeps the lookup mark, and the next attempt is the lookup`() = runBlocking {
+        seed()
+        val started = CompletableDeferred<Unit>()
+        val fail = CompletableDeferred<Unit>()
+        val requests = CopyOnWriteArrayList<String>()
+        val failing = WorkspaceHttp { _, method, path, _, _ ->
+            requests += "$method ${path.substringAfter("/conversations/$general")}"
+            if (requests.size == 1) {
+                started.complete(Unit)
+                fail.await()
+            }
+            throw WorkspaceError("network")
+        }
+        val box = outbox(client = client(failing))
+        val local = box.enqueue(w, general, null, text, mentions)
+        box.synced(w)
+        withTimeout(5_000) { started.await() }
+        val op = row(local).operationId
+        restoreNow()
+        fail.complete(Unit)
+        waitFor("the second request") { requests.size >= 2 && row(local).attempts == 1 }
+
+        assertTrue(requests[0], requests[0].startsWith("POST /messages"))
+        assertTrue("the lookup, not the old generation's POST: $requests", requests[1].startsWith("GET /operations/$op"))
+        val r = row(local)
+        assertEquals(Outbox.QUEUED to Outbox.LOOKUP, r.state to r.reason)
+        assertEquals(op, r.operationId)
+        box.close()
+    }
+
+    @Test
+    fun `an attempt that throws before it changed the row backs off instead of running again at once`() = runBlocking {
+        seed()
+        val tries = AtomicInteger()
+        val box = Outbox(store, client(), scope, now = { clock }, newId = {
+            tries.incrementAndGet()
+            // As Uuid7.next does for a time outside 48 bits.
+            throw IllegalArgumentException("milliseconds outside 48 bits")
+        })
+        val local = box.enqueue(w, general, null, text, mentions)
+        box.synced(w)
+        delay(1_000)
+        box.close()
+        assertTrue("tries=${tries.get()}", tries.get() in 1..3)
+        val r = row(local)
+        assertEquals(Outbox.QUEUED, r.state)
+        assertEquals(1, r.attempts)
+        assertEquals(clock + 2_000, r.nextAt)
+    }
+
+    @Test
+    fun `an attempt on a cache that takes no writes waits a backoff step before the next`() = runBlocking {
+        seed()
+        val tries = AtomicInteger()
+        val box = Outbox(store, client(), scope, now = { clock }, newId = { ms ->
+            tries.incrementAndGet()
+            Uuid7.next(ms)
+        })
+        box.enqueue(w, general, null, text, mentions)
+        // A full disk: the claim and the backoff's own write both fail.
+        store.read { sql.exec("PRAGMA query_only = 1") }
+        try {
+            box.synced(w)
+            delay(1_000)
+            assertEquals("one attempt in the first second, tries=${tries.get()}", 1, tries.get())
+        } finally {
+            box.close()
+            store.read { sql.exec("PRAGMA query_only = 0") }
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `a workspace parked while the clock is measured sends nothing`() = runBlocking {
+        seed(clockKnown = false)
+        val asked = CompletableDeferred<Unit>()
+        val details = CompletableDeferred<Unit>()
+        val posted = CompletableDeferred<Unit>()
+        val parked = WorkspaceHttp { _, method, _, _, _ ->
+            if (method == "GET") {
+                asked.complete(Unit)
+                details.await()
+                WorkspaceAnswer(200, v.exchange("workspace").body)
+            } else {
+                posted.complete(Unit)
+                throw WorkspaceError("network")
+            }
+        }
+        val box = outbox(client = client(parked))
+        val local = box.enqueue(w, general, null, text, mentions)
+        box.synced(w)
+        withTimeout(5_000) { asked.await() }
+        // A 409 history_regressed on the feed meanwhile.
+        store.tx { updateWs(w, mapOf("state" to "quarantined")) }
+        details.complete(Unit)
+        assertNull("no POST for a quarantined workspace", withTimeoutOrNull(1_000) { posted.await() })
+        val r = row(local)
+        assertEquals(Outbox.QUEUED, r.state)
+        assertNull(r.operationId)
+        box.close()
+    }
+
+    @Test
+    fun `a 429's Retry-After outlasts a restart, and a resume doesn't send early`() = runBlocking {
+        seed()
+        val calls = AtomicInteger()
+        val limited = WorkspaceHttp { _, _, _, _, _ ->
+            calls.incrementAndGet()
+            throw WorkspaceError("rate_limited", 429, retryAfterS = 120)
+        }
+        val first = outbox(client = client(limited))
+        val local = first.enqueue(w, general, null, text, mentions)
+        first.synced(w)
+        waitFor("the wait") { row(local).nextAt == clock + 120_000 }
+        first.close()
+
+        // The process was killed and started again: a new outbox on the same cache, then a resume.
+        val second = outbox(client = client(limited))
+        second.start()
+        second.synced(w)
+        second.kick(w, retryNow = true)
+        delay(500)
+        assertEquals(1, calls.get())
+        assertEquals(clock + 120_000, row(local).nextAt)
+
+        // Once the wait is over it goes, and the hold goes with the row.
+        clock += 120_000
+        second.kick(w, retryNow = true)
+        waitFor("the second POST") { calls.get() == 2 }
+        second.close()
+    }
+
+    @Test
+    fun `a 2xx that names no event keeps the row with its ID for the next attempt`() = runBlocking {
+        seed()
+        val answers = ArrayDeque(
+            listOf(
+                WorkspaceAnswer(201, RukooJson.parseToJsonElement("""{"messageId":"not-an-event-id","seq":8}""")),
+                WorkspaceAnswer(201, RukooJson.parseToJsonElement("""{"messageId":"e_${"Z".repeat(22)}","seq":0}""")),
+                WorkspaceAnswer(200, RukooJson.parseToJsonElement("""{"messageId":"e_${"Z".repeat(22)}","seq":-1,"visible":true}""")),
+            ),
+        )
+        val paths = CopyOnWriteArrayList<String>()
+        val odd = WorkspaceHttp { _, method, path, _, _ ->
+            paths += "$method ${path.substringAfter("/conversations/$general")}"
+            synchronized(answers) { answers.removeFirst() }
+        }
+        val box = outbox(client = client(odd))
+        val local = box.enqueue(w, general, null, text, mentions)
+        box.synced(w)
+        waitFor("the first answer") { row(local).attempts == 1 }
+        val op = row(local).operationId
+        assertNotNull(op)
+        assertEquals(Outbox.QUEUED, row(local).state)
+
+        clock += 2_000
+        box.kick(w)
+        waitFor("the second answer") { row(local).attempts == 2 }
+        assertEquals(op, row(local).operationId)
+
+        // A lookup's answer is checked the same way.
+        store.tx { updateOutbox(local, mapOf("reason" to Outbox.LOOKUP, "nextAt" to 0L)) }
+        box.kick(w)
+        waitFor("the lookup's answer") { row(local).attempts == 3 }
+        assertEquals(Outbox.QUEUED to Outbox.LOOKUP, row(local).let { it.state to it.reason })
+        assertTrue(paths.last(), paths.last().startsWith("GET /operations/$op"))
+        assertNull(store.read { eventAt(w, general, 8) })
+        assertEquals(7L, store.read { getRoom(w, general) }!!.read)
+        box.close()
+    }
+
+    @Test
+    fun `a message with half a surrogate pair is refused, as desktop does`() = runBlocking {
+        seed()
+        val box = outbox()
+        try {
+            box.enqueue(w, general, null, "a\uD83Db", emptyList())
+            fail("expected invalid")
+        } catch (e: WorkspaceError) {
+            assertEquals("invalid", e.code)
+            assertEquals("text", e.field)
+        }
+        assertTrue(rows().isEmpty())
+        // A whole pair is fine.
+        box.enqueue(w, general, null, "a😀b", emptyList())
+        assertEquals(1, rows().size)
     }
 
     @Test

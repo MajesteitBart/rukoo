@@ -39,8 +39,9 @@ import okio.ByteString
  * - **Upgrade refused.** A `401` to the upgrade means the ticket expired or was used: one new ticket at once, and the
  *   backoff after a second refusal in a row. A `404` parks it as a `4003` does, a `426` as the ticket's `426` does.
  *
- * [client] should come from the app's shared one; the socket derives its own without timeouts on reads, without
- * OkHttp's own pings and without redirects. Listener calls run on OkHttp's and [scope]'s threads, never under a lock.
+ * [client] should come from the app's shared one; the socket derives its own with [Timing.upgradeTimeout] for the
+ * upgrade only, without OkHttp's own pings and without redirects. Listener calls run on OkHttp's and [scope]'s
+ * threads, never under a lock.
  */
 class WorkspaceSocket(
     client: OkHttpClient,
@@ -80,13 +81,19 @@ class WorkspaceSocket(
         val quickReconnectGap: Long = 10_000,
         /** A ticket `429` without `Retry-After` waits this long. */
         val rateLimited: Long = 60_000,
+        /**
+         * How long the upgrade may take, as the call and read timeouts. OkHttp lifts both once the upgrade completes
+         * (the call timeout exits early, and a frame header is read without a timeout), so the open socket is
+         * unaffected; an upgrade nobody answers fails into the backoff.
+         */
+        val upgradeTimeout: Long = 20_000,
     )
 
     private val http: OkHttpClient = client.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(timing.upgradeTimeout, TimeUnit.MILLISECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
-        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(timing.upgradeTimeout, TimeUnit.MILLISECONDS)
         .pingInterval(0, TimeUnit.MILLISECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
@@ -115,6 +122,12 @@ class WorkspaceSocket(
     // A 401 to the upgrade gets one new ticket at once; a second in a row meets the backoff.
     private var refusedOnce = false
 
+    // Whether [socket] finished its upgrade. One that didn't is cancelled on close: a close frame only queues.
+    private var opened = false
+
+    // A ticket 429's Retry-After: no ticket is asked for before this time, whatever nudges.
+    private var limitedUntil = Long.MIN_VALUE
+
     /** The wait before the last scheduled attempt, for tests and debugging; null when none was scheduled. */
     @Volatile
     var lastDelay: Long? = null
@@ -136,13 +149,15 @@ class WorkspaceSocket(
 
     /**
      * Focus or resume: a socket waiting to try again tries now, from the first step of the backoff, and an open one
-     * pings at once, which finds a connection that died while the phone slept.
+     * pings at once, which finds a connection that died while the phone slept. A ticket `429` still waits its
+     * `Retry-After` (§3.11).
      */
     fun nudge() {
         synchronized(lock) {
             if (!wanted) return
             when (_state.value) {
                 SocketState.DOWN -> {
+                    if (now() < limitedUntil) return
                     attempt = 0
                     connectLocked()
                 }
@@ -188,6 +203,7 @@ class WorkspaceSocket(
                 parkLocked()
                 return
             }
+            opened = false
             socket = http.newWebSocket(request, Handler(mine))
         }
     }
@@ -203,7 +219,9 @@ class WorkspaceSocket(
                     true
                 }
                 "rate_limited" -> {
-                    laterLocked(e.retryAfterS?.times(1000) ?: timing.rateLimited)
+                    val wait = e.retryAfterS?.times(1000) ?: timing.rateLimited
+                    limitedUntil = now() + wait
+                    laterLocked(wait)
                     false
                 }
                 else -> {
@@ -225,6 +243,7 @@ class WorkspaceSocket(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             synchronized(lock) {
                 if (!current(webSocket)) return
+                opened = true
                 attempt = 0
                 refusedOnce = false
                 lastDelay = null
@@ -375,6 +394,7 @@ class WorkspaceSocket(
         token++
         val s = socket
         socket = null
+        opened = false
         runCatching { s?.cancel() }
         backoffLocked()
     }
@@ -421,10 +441,13 @@ class WorkspaceSocket(
         pongJob = null
     }
 
+    /** Closes an open socket with [code]; one still upgrading is cancelled, since its close frame would only queue. */
     private fun closeSocketLocked(code: Int) {
         val s = socket ?: return
+        val wasOpen = opened
         socket = null
-        runCatching { if (!s.close(code, null)) s.cancel() }
+        opened = false
+        runCatching { if (!wasOpen || !s.close(code, null)) s.cancel() }
     }
 
     private inline fun safe(block: () -> Unit) {

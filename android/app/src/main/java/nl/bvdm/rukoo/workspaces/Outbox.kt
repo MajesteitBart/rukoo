@@ -78,9 +78,6 @@ class Outbox(
     private val lock = Any()
     private val inFlight = HashSet<String>()
     private val synced = HashSet<String>()
-
-    // Rows a 429 holds until a time, so a wake doesn't send them early. Lost on a restart, when nextAt still holds.
-    private val limitedUntil = HashMap<String, Long>()
     private val busy = MutableStateFlow(0)
     private var wakeJob: Job? = null
 
@@ -162,9 +159,9 @@ class Outbox(
                 else -> throw WorkspaceError("invalid", field = "mode", message = "$mode doesn't answer ${r.state}/${r.reason}")
             }
             updateOutbox(local, fields + mapOf("state" to QUEUED, "reason" to null, "attempts" to 0, "nextAt" to 0L))
+            deleteMeta(limitKey(local))
             r
         }
-        synchronized(lock) { limitedUntil.remove(local) }
         kick(row.ws)
     }
 
@@ -176,9 +173,9 @@ class Outbox(
         val ws = store.tx {
             val r = getOutbox(local)
             deleteOutbox(local)
+            deleteMeta(limitKey(local))
             r?.ws
         }
-        synchronized(lock) { limitedUntil.remove(local) }
         if (ws != null) kick(ws)
     }
 
@@ -204,13 +201,18 @@ class Outbox(
 
     /**
      * At start, before anything sends: a row left `sending` by a process that ended mid-attempt goes back to
-     * `queued` with its operation ID, so the next attempt sends the same one.
+     * `queued` with its operation ID, so the next attempt sends the same one. A `429`'s hold on a row that is gone
+     * goes too.
      */
     suspend fun start() {
         store.tx {
             for (local in sql.query("SELECT local FROM outbox WHERE state = 'sending'") { it.text(0) }) {
                 updateOutbox(local, mapOf("state" to QUEUED))
             }
+            sql.exec(
+                "DELETE FROM meta WHERE key LIKE ? AND substr(key, ?) NOT IN (SELECT local FROM outbox)",
+                "$LIMITED%", LIMITED.length + 1,
+            )
         }
     }
 
@@ -265,14 +267,18 @@ class Outbox(
         }
     }
 
+    // A row a 429 holds keeps its wait: the hold is on disk, so it outlasts the process as its Retry-After does.
     private suspend fun retryNow(ws: String?) {
-        val limited = synchronized(lock) { limitedUntil.filterValues { it > now() }.keys }
         store.tx {
             val rows = sql.query(
                 "SELECT local FROM outbox WHERE state = 'queued' AND nextAt > ?${if (ws != null) " AND ws = ?" else ""}",
                 *(if (ws != null) arrayOf<Any?>(now(), ws) else arrayOf<Any?>(now())),
             ) { it.text(0) }
-            for (local in rows) if (local !in limited) updateOutbox(local, mapOf("nextAt" to 0L))
+            for (local in rows) {
+                val held = getMeta(limitKey(local))?.toLongOrNull()
+                if (held != null && held > now()) continue
+                updateOutbox(local, mapOf("nextAt" to 0L))
+            }
         }
     }
 
@@ -300,8 +306,10 @@ class Outbox(
                     } catch (e: Exception) {
                         // A cache that failed under the attempt, or a hook that threw. A row left `sending` would
                         // block its room until the next start, so it goes back to the queue with the next backoff.
+                        // When even that write fails (a full disk), the room waits one backoff step here, so the
+                        // next pump doesn't find the same row due and run it again at once.
                         AppLog.w(TAG, "A send stopped", e)
-                        unstick(row.local)
+                        if (!unstick(row.local)) delay(backoff(1))
                     } finally {
                         synchronized(lock) { inFlight -= key }
                         busy.update { it - 1 }
@@ -314,23 +322,26 @@ class Outbox(
     }
 
     /**
-     * After an attempt stopped on something other than an answer: a row it left `sending` becomes `queued` with the
-     * next backoff step, keeping its operation ID and bytes. The attempt still holds the room, so nothing else sends
-     * this row meanwhile. When the cache can't take even this, [start] repairs it at the next process start.
+     * After an attempt stopped on something other than an answer: a row it left `sending` or `queued` gets the next
+     * backoff step as `queued`, keeping its operation ID, reason and bytes, so an attempt that throws before it
+     * changed the row doesn't run again at once. The attempt still holds the room, so nothing else sends this row
+     * meanwhile. False when the cache couldn't take even this; [start] repairs a `sending` row at the next start.
      */
-    private suspend fun unstick(local: String) {
-        if (closed) return
-        try {
+    private suspend fun unstick(local: String): Boolean {
+        if (closed) return true
+        return try {
             store.tx {
                 val r = getOutbox(local) ?: return@tx
-                if (r.state == SENDING) {
+                if (r.state == SENDING || r.state == QUEUED) {
                     updateOutbox(local, mapOf("state" to QUEUED, "attempts" to r.attempts + 1, "nextAt" to now() + backoff(r.attempts + 1)))
                 }
             }
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             AppLog.w(TAG, "A stopped send stays as it was until the next start", e)
+            false
         }
     }
 
@@ -375,8 +386,11 @@ class Outbox(
         if (row.reason == LOOKUP) {
             // Marked for lookup before it ever got an ID: it never went out, so there is nothing to look up. It takes
             // the generation the workspace has now.
+            val marked = row
             row = store.tx {
-                val gen = getWs(row.ws)?.generation ?: row.generation
+                val r = getOutbox(local)
+                if (r == null || r.state != QUEUED || r.reason != LOOKUP || r.operationId != null) return@tx null
+                val gen = getWs(marked.ws)?.generation ?: marked.generation
                 updateOutbox(local, mapOf("reason" to null, "generation" to gen))
                 getOutbox(local)
             } ?: return
@@ -384,19 +398,25 @@ class Outbox(
         if (row.operationId == null) {
             val offset = clock(row, force = false) ?: return
             val id = newId(now() + offset)
-            row = claim(local, mapOf("operationId" to id)) ?: return
+            row = claim(row, mapOf("operationId" to id)) ?: return
         } else {
-            row = claim(local, emptyMap()) ?: return
+            row = claim(row, emptyMap()) ?: return
         }
         post(row, clockRetried = false)
     }
 
-    /** Saves the row as `sending`, with [fields], before the POST; null when it was discarded or answered meanwhile. */
-    private suspend fun claim(local: String, fields: Map<String, Any?>): OutboxRow? = store.tx {
-        val r = getOutbox(local)
-        if (r == null || (r.state != QUEUED && r.state != SENDING)) return@tx null
-        updateOutbox(local, fields + ("state" to SENDING))
-        getOutbox(local)
+    /**
+     * Saves the row as `sending`, with [fields], before the POST. Null, and the row left alone, when it isn't [row] any
+     * more (discarded, answered, or marked for lookup by a restore meanwhile) or its workspace stopped being `ok`
+     * while the clock was measured: a parked workspace sends nothing (§3.6, §3.8).
+     */
+    private suspend fun claim(row: OutboxRow, fields: Map<String, Any?>): OutboxRow? = store.tx {
+        val r = getOutbox(row.local)
+        if (r == null || r.state != row.state || r.operationId != row.operationId || r.reason != row.reason) return@tx null
+        if (r.state != QUEUED && r.state != SENDING) return@tx null
+        if (getWs(row.ws)?.state != "ok") return@tx null
+        updateOutbox(row.local, fields + ("state" to SENDING))
+        getOutbox(row.local)
     }
 
     private suspend fun post(row: OutboxRow, clockRetried: Boolean) {
@@ -409,6 +429,12 @@ class Outbox(
             return
         }
         if (closed) return
+        // A 2xx that doesn't name an event the way the feed would is no proof the message landed: the row keeps its ID
+        // and goes again after the backoff, and the replay answers properly.
+        if (!acked(ack.messageId, ack.seq)) {
+            waitOrPark(row, WorkspaceError("server", message = "the send answer isn't one"), reason = null)
+            return
+        }
         delivered(row, ack.messageId, ack.seq, visible = true)
     }
 
@@ -432,13 +458,10 @@ class Outbox(
                 "operationId" -> if (clockRetried) settle(row, FAILED, "invalid") else {
                     val offset = clock(row, force = true) ?: run {
                         // No new clock now. The refused ID never committed, so the next attempt makes a new one.
-                        store.tx {
-                            val r = getOutbox(row.local)
-                            if (r != null && (r.state == SENDING || r.state == QUEUED)) updateOutbox(row.local, mapOf("operationId" to null, "state" to QUEUED))
-                        }
+                        store.tx { if (still(row) != null) updateOutbox(row.local, mapOf("operationId" to null, "state" to QUEUED)) }
                         return
                     }
-                    val again = claim(row.local, mapOf("operationId" to newId(now() + offset))) ?: return
+                    val again = claim(row, mapOf("operationId" to newId(now() + offset))) ?: return
                     post(again, clockRetried = true)
                 }
                 else -> settle(row, FAILED, "invalid")
@@ -459,24 +482,24 @@ class Outbox(
      * What any call of an attempt does for the answers that aren't about the message: the removal path, the upgrade
      * state, `Retry-After`, and for a network failure, a 5xx or anything unknown, the row back to `queued` with the
      * next backoff step. [reason] is what the row keeps: null, or `lookup` for a lookup that still has to run.
+     * [asked] is the generation a request for a `queued` row went out under (see [still]).
      */
-    private suspend fun waitOrPark(row: OutboxRow, e: WorkspaceError, reason: String?) {
+    private suspend fun waitOrPark(row: OutboxRow, e: WorkspaceError, reason: String?, asked: String? = null) {
         when {
             e.code == "not_found" && e.scope == "workspace" -> {
-                requeue(row, reason, nextAt = now() + backoff(row.attempts + 1), attempts = row.attempts + 1)
+                requeue(row, reason, nextAt = now() + backoff(row.attempts + 1), attempts = row.attempts + 1, asked = asked)
                 hooks.removed(row.ws)
             }
-            e.code == "not_found" -> settle(row, FAILED, "no_access")
+            e.code == "not_found" -> settle(row, FAILED, "no_access", asked)
             e.code == "upgrade_required" -> {
-                requeue(row, reason, nextAt = row.nextAt, attempts = row.attempts)
+                requeue(row, reason, nextAt = row.nextAt, attempts = row.attempts, asked = asked)
                 workspaceAnswer(row.ws, e)
             }
             e.code == "rate_limited" -> {
                 val until = now() + (e.retryAfterS?.times(1000) ?: timing.rateLimited)
-                synchronized(lock) { limitedUntil[row.local] = until }
-                requeue(row, reason, nextAt = until, attempts = row.attempts)
+                requeue(row, reason, nextAt = until, attempts = row.attempts, asked = asked, limited = true)
             }
-            else -> requeue(row, reason, nextAt = now() + backoff(row.attempts + 1), attempts = row.attempts + 1)
+            else -> requeue(row, reason, nextAt = now() + backoff(row.attempts + 1), attempts = row.attempts + 1, asked = asked)
         }
     }
 
@@ -493,31 +516,45 @@ class Outbox(
 
     /**
      * `GET …/operations/{op}` for a row whose fate is unknown (§3.8 "Lookup"): found means sent; none means
-     * `held/unknown`, and the person decides whether to send it again.
+     * `held/unknown`, and the person decides whether to send it again. A workspace that isn't `ok` asks nothing: a row
+     * a `submission_expired` left `sending` waits as a lookup for when it is again.
      */
     private suspend fun lookup(row: OutboxRow) {
         val op = row.operationId ?: return
+        val ws = store.read { getWs(row.ws) }
+        if (ws?.state != "ok") {
+            if (row.state == SENDING) {
+                store.tx { if (still(row) != null) updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to LOOKUP, "nextAt" to 0L)) }
+            }
+            return
+        }
+        val asked = ws.generation
         val found = try {
             client.operation(row.ws, row.room, op)
         } catch (e: WorkspaceError) {
             if (closed) return
             when {
-                e.code == "not_found" && e.scope == "conversation" -> settle(row, FAILED, "no_access")
-                e.status == 403 -> settle(row, FAILED, "no_access")
+                e.code == "not_found" && e.scope == "conversation" -> settle(row, FAILED, "no_access", asked)
+                e.status == 403 -> settle(row, FAILED, "no_access", asked)
                 // The lookup can't tell, now or later: the person decides, as for an operation the server doesn't know.
-                permanent(e) -> settle(row, HELD, "unknown")
-                else -> waitOrPark(row, e, LOOKUP)
+                permanent(e) -> settle(row, HELD, "unknown", asked)
+                else -> waitOrPark(row, e, LOOKUP, asked)
             }
             return
         }
         if (closed) return
-        if (found == null) settle(row, HELD, "unknown") else delivered(row, found.messageId, found.seq, found.visible)
+        when {
+            found == null -> settle(row, HELD, "unknown", asked)
+            !acked(found.messageId, found.seq) ->
+                waitOrPark(row, WorkspaceError("server", message = "the lookup answer isn't one"), LOOKUP, asked)
+            else -> delivered(row, found.messageId, found.seq, found.visible, asked)
+        }
     }
 
     /**
      * `409 stale_generation`: `GET /` measures the clock and finds the new generation, the service's restore path
      * runs, and the row is looked up. It never committed under this request, but an earlier attempt with its ID
-     * might have, before the restore.
+     * might have, before the restore. A row the restore marked already is left as it marked it.
      */
     private suspend fun staleGeneration(row: OutboxRow) {
         val details = try {
@@ -529,10 +566,7 @@ class Outbox(
         }
         if (closed) return
         if (details.workspace.generation != store.read { getWs(row.ws)?.generation }) hooks.restored(row.ws, details)
-        store.tx {
-            val r = getOutbox(row.local) ?: return@tx
-            if (r.state == SENDING || r.state == QUEUED) updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to LOOKUP, "nextAt" to 0L))
-        }
+        store.tx { if (still(row) != null) updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to LOOKUP, "nextAt" to 0L)) }
     }
 
     /**
@@ -549,12 +583,13 @@ class Outbox(
             }
             if (known != null) return known
         }
+        val asked = store.read { getWs(row.ws)?.generation }
         val details = try {
             measure(row.ws)
         } catch (e: WorkspaceError) {
             if (!closed) {
                 // The row was never sent with this attempt: it stays queued with its reason.
-                waitOrPark(row, e, row.reason)
+                waitOrPark(row, e, row.reason, asked)
             }
             return null
         }
@@ -562,7 +597,7 @@ class Outbox(
         val stored = store.read { getWs(row.ws)?.generation }
         if (stored != null && details.workspace.generation != stored) {
             hooks.restored(row.ws, details)
-            store.tx { if (getOutbox(row.local)?.state == SENDING) updateOutbox(row.local, mapOf("state" to QUEUED)) }
+            store.tx { if (row.state == SENDING && still(row) != null) updateOutbox(row.local, mapOf("state" to QUEUED)) }
             return null
         }
         return store.read { getMeta(CLOCK_OFFSET)?.toLongOrNull() }
@@ -583,13 +618,29 @@ class Outbox(
     // ---- outcomes ----
 
     /**
-     * The server has the message: one transaction deletes the row, caches the event when it follows the cached range
-     * directly, and raises the read positions to at least its seq, as the server did. Then [sent] hears it.
+     * The row as it stands, when it is still the one the request left: the same state and operation ID, and for a
+     * `queued` row (a lookup, or the clock's `GET /` before a claim) the same reason and the workspace generation
+     * [asked] that request went out under. Null when a restore, Start over or the person changed it meanwhile: the
+     * late answer then changes nothing, and the lookup a restore marked decides (§3.6, §3.8).
      */
-    private suspend fun delivered(row: OutboxRow, messageId: String, seq: Long, visible: Boolean) {
-        store.tx {
+    private fun WorkspaceStore.StoreTx.still(row: OutboxRow, asked: String? = null): OutboxRow? {
+        val r = getOutbox(row.local) ?: return null
+        if (r.state != row.state || r.operationId != row.operationId) return null
+        if (r.state == QUEUED && (r.reason != row.reason || getWs(row.ws)?.generation != asked)) return null
+        return r
+    }
+
+    /**
+     * The server has the message: one transaction deletes the row, caches the event when it follows the cached range
+     * directly, and raises the read positions to at least its seq, as the server did. Then [sent] hears it. Nothing
+     * happens when the row isn't the one the request left any more ([still]).
+     */
+    private suspend fun delivered(row: OutboxRow, messageId: String, seq: Long, visible: Boolean, asked: String? = null) {
+        val done = store.tx {
+            if (still(row, asked) == null) return@tx false
             deleteOutbox(row.local)
-            val room = getRoom(row.ws, row.room) ?: return@tx
+            deleteMeta(limitKey(row.local))
+            val room = getRoom(row.ws, row.room) ?: return@tx true
             if (room.hi != null && seq == room.hi + 1) {
                 val at = now() + (getMeta(CLOCK_OFFSET)?.toLongOrNull() ?: 0L)
                 appendEvents(
@@ -610,29 +661,44 @@ class Outbox(
                 fields["mentions"] = 0
             }
             setRoomFields(row.ws, row.room, fields)
+            true
         }
-        synchronized(lock) { limitedUntil.remove(row.local) }
-        _sent.tryEmit(Sent(row.ws, row.room, row.local, messageId, seq))
+        if (done) _sent.tryEmit(Sent(row.ws, row.room, row.local, messageId, seq))
     }
 
-    /** `held` or `failed` with [reason]; the operation ID stays. */
-    private suspend fun settle(row: OutboxRow, state: String, reason: String) {
-        store.tx { if (getOutbox(row.local) != null) updateOutbox(row.local, mapOf("state" to state, "reason" to reason)) }
-    }
-
-    private suspend fun requeue(row: OutboxRow, reason: String?, nextAt: Long, attempts: Int) {
+    /** `held` or `failed` with [reason]; the operation ID stays. Only for the row the request left ([still]). */
+    private suspend fun settle(row: OutboxRow, state: String, reason: String, asked: String? = null) {
         store.tx {
-            if (getOutbox(row.local) != null) {
-                updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to reason, "nextAt" to nextAt, "attempts" to attempts))
+            if (still(row, asked) != null) {
+                updateOutbox(row.local, mapOf("state" to state, "reason" to reason))
+                deleteMeta(limitKey(row.local))
             }
         }
     }
+
+    /**
+     * Back to `queued` until [nextAt]; only for the row the request left ([still]). A [limited] wait is a `429`'s, kept
+     * on disk so a wake or a restart doesn't send the row before its `Retry-After`.
+     */
+    private suspend fun requeue(row: OutboxRow, reason: String?, nextAt: Long, attempts: Int, asked: String? = null, limited: Boolean = false) {
+        store.tx {
+            if (still(row, asked) != null) {
+                updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to reason, "nextAt" to nextAt, "attempts" to attempts))
+                if (limited) setMeta(limitKey(row.local), nextAt.toString()) else deleteMeta(limitKey(row.local))
+            }
+        }
+    }
+
+    /** An answer that names where the message landed as the feed would: an event ID and a seq from 1. */
+    private fun acked(messageId: String, seq: Long): Boolean = WorkspaceIds.isEvent(messageId) && seq >= 1
 
     /** The wait after the [attempts]th failure in a row: 2, 5, 15, 30, 60 s, then 60 s each time. */
     private fun backoff(attempts: Int): Long = sendDelay(attempts, timing.sendBackoff)
 
     private fun validate(text: String, mentions: List<Mention>, root: String?) {
         if (text.isBlank()) throw WorkspaceError("invalid", field = "text", message = "A message needs text.")
+        // A lone surrogate would go out as '?', one byte where the mentions counted three; desktop refuses it too.
+        if (!Utf8Offsets.isWellFormed(text)) throw WorkspaceError("invalid", field = "text", message = "The message has a broken character.")
         if (Utf8Offsets.utf8Length(text) > TEXT_BYTES) throw WorkspaceError("invalid", field = "text", message = "The message is too long.")
         if (!Utf8Offsets.isValid(text, mentions)) throw WorkspaceError("invalid", field = "mentions")
         if (root != null && !WorkspaceIds.isEvent(root)) throw WorkspaceError("invalid", field = "root")
@@ -652,6 +718,11 @@ class Outbox(
         /** `meta` keys: server time minus local time in ms, and the local time it was measured. */
         const val CLOCK_OFFSET = "clockOffset"
         const val CLOCK_AT = "clockAt"
+
+        /** The `meta` key prefix of a `429`'s hold on a row: until when, in local ms. */
+        private const val LIMITED = "outboxLimited:"
+
+        private fun limitKey(local: String) = LIMITED + local
 
         /** §3.19 `SEND_BACKOFF`. */
         val SEND_BACKOFF: List<Long> = listOf(2_000L, 5_000L, 15_000L, 30_000L, 60_000L)

@@ -1466,6 +1466,94 @@ class AccountServiceTest {
         assertFalse(srv.calls.any { it.body.contains(link.secret) && it.route != "POST /v1/signup" })
     }
 
+    /**
+     * An account http that records where each call went, and holds the call to [route] until [go] completes, so a
+     * test can change the server while a sign-in waits for it.
+     */
+    private class Gate(private val route: String) : AccountHttp {
+        val asked = CompletableDeferred<Unit>()
+        val go = CompletableDeferred<Unit>()
+        val sent = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
+        private val real = OkHttpAccountHttp(OkHttpClient())
+
+        override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement? {
+            sent += server to "$method $path"
+            if (path == route && !asked.isCompleted) {
+                asked.complete(Unit)
+                go.await()
+            }
+            return real.request(server, method, path, body, token, meter)
+        }
+    }
+
+    private suspend fun switchWhileWaiting(gate: Gate, device: AccountService, to: String, call: suspend () -> Unit): AccountError? {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val result = scope.async {
+            try {
+                call()
+                null
+            } catch (e: AccountError) {
+                e
+            }
+        }
+        withTimeout(30_000) { gate.asked.await() }
+        device.setServer(to)
+        gate.go.complete(Unit)
+        return withTimeout(30_000) { result.await() }
+    }
+
+    @Test
+    fun `a server changed while sign-up asks for its info gets nothing, and the invitation stays with its server`() = runBlocking {
+        val srv = server()
+        val gate = Gate("/v1/info")
+        val desk = device(srv, http = gate)
+        val link = InviteLink(srv.url, "w_" + "A".repeat(22), "b".repeat(43))
+        val elsewhere = "https://second.example"
+        val error = switchWhileWaiting(gate, desk, elsewhere) { desk.signUp("colleague@example.com", PASSWORD, workspaceInvite = link) }
+        assertEquals("server", error?.code)
+        assertEquals("every call went to the server the sign-up began at", emptyList<Pair<String, String>>(), gate.sent.filter { it.first != srv.url })
+        assertTrue(srv.calls.single { it.route == "POST /v1/signup" }.body.contains(link.secret))
+        assertNull(desk.borrowSession())
+        assertFalse(desk.status().signedIn)
+        assertEquals(elsewhere, desk.status().server)
+    }
+
+    @Test
+    fun `a session made at one server is never lent to the server changed to while it was made`() = runBlocking {
+        val srv = server()
+        val gate = Gate("/v1/signup")
+        val desk = device(srv, http = gate)
+        val error = switchWhileWaiting(gate, desk, "https://second.example") { desk.signUp("someone@example.com", PASSWORD) }
+        assertEquals("server", error?.code)
+        assertNull(desk.borrowSession())
+        assertFalse(desk.status().signedIn)
+        delay(300)
+        assertEquals(emptyList<Pair<String, String>>(), gate.sent.filter { it.first != srv.url })
+        // The session the first server made is ended there.
+        assertEquals(srv.url to "POST /v1/logout", gate.sent.last())
+    }
+
+    @Test
+    fun `a server changed while sign-in or recovery waits gets neither the proof nor the session`() = runBlocking {
+        val srv = server()
+        val recoveryKey = device(srv).signUp("moving@example.com", PASSWORD).recoveryKey
+
+        val signIn = Gate("/v1/login")
+        val laptop = device(srv, "laptop", http = signIn)
+        assertEquals("server", switchWhileWaiting(signIn, laptop, "https://second.example") { laptop.signIn("moving@example.com", PASSWORD) }?.code)
+        assertNull(laptop.borrowSession())
+        assertEquals(emptyList<Pair<String, String>>(), signIn.sent.filter { it.first != srv.url })
+
+        val recover = Gate("/v1/recover/finish")
+        val phone = device(srv, "phone", http = recover)
+        assertEquals(
+            "server",
+            switchWhileWaiting(recover, phone, "https://second.example") { phone.recover("moving@example.com", recoveryKey, "another long password") }?.code,
+        )
+        assertNull(phone.borrowSession())
+        assertEquals(emptyList<Pair<String, String>>(), recover.sent.filter { it.first != srv.url })
+    }
+
     @Test
     fun `a server without team chat reads as one without it`() = runBlocking {
         val desk = device(server())

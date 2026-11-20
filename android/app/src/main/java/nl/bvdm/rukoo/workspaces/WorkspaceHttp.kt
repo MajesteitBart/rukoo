@@ -40,7 +40,10 @@ fun interface WorkspaceHttp {
  * - Redirects aren't followed: a bearer token never goes to another address, or from https to http.
  * - Connect 15 s, read and write 30 s, the whole call 45 s.
  * - At most [MAX_BYTES] of body, counted after OkHttp undid any gzip, so a small compressed answer can't unpack into
- *   more. That fits a full events page: 100 messages of 16 KiB.
+ *   more. That fits the largest valid events page: 100 messages of 16,384 bytes each, which JSON writes as up to six
+ *   bytes per byte for control characters (9.8 MB), plus their mentions and fields.
+ * - The body is read on OkHttp's thread inside the call, so cancelling the caller cancels the call while the body
+ *   is still coming, and the connection and thread go at once instead of at the read timeout.
  * - Every request says `Authorization: Bearer <token>`, `Accept: application/json` and `Rukoo-Workspace-Version: 1`.
  */
 class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
@@ -69,25 +72,22 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
             .header(VERSION_HEADER, WORKSPACE_VERSION.toString())
             .method(method, payload)
             .build()
-        val response = try {
+        val res = try {
             client.newCall(request).await()
         } catch (e: IOException) {
             throw WorkspaceError("network", message = e.message, cause = e)
         }
-        response.use { res ->
-            val text = try {
-                read(res)
-            } catch (e: IOException) {
-                throw WorkspaceError("network", res.code, message = e.message, cause = e)
-            }
-            val json = text?.takeIf { it.isNotEmpty() }?.let { runCatching { RukooJson.parseToJsonElement(it) }.getOrNull() }
-            if (res.code in 200..299) {
-                if (text != null && text.isNotEmpty() && json == null) throw WorkspaceError("server", res.code, message = "the answer isn't JSON")
-                return WorkspaceAnswer(res.code, json)
-            }
-            throw WorkspaceError.fromAnswer(res.code, json as? JsonObject, res.header("Retry-After"))
+        val text = res.text
+        val json = text?.takeIf { it.isNotEmpty() }?.let { runCatching { RukooJson.parseToJsonElement(it) }.getOrNull() }
+        if (res.code in 200..299) {
+            if (text != null && text.isNotEmpty() && json == null) throw WorkspaceError("server", res.code, message = "the answer isn't JSON")
+            return WorkspaceAnswer(res.code, json)
         }
+        throw WorkspaceError.fromAnswer(res.code, json as? JsonObject, res.retryAfter)
     }
+
+    /** An answer read whole: its status, its body as text (null when it had none) and its `Retry-After`. */
+    private class Read(val code: Int, val text: String?, val retryAfter: String?)
 
     /** The body as text, or null when there is none; `server` when it is over [MAX_BYTES]. */
     private fun read(res: Response): String? {
@@ -97,11 +97,25 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
         return source.buffer.readUtf8()
     }
 
-    private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+    /**
+     * The call, with its body read on OkHttp's thread before the caller resumes. Cancelling the caller cancels the
+     * call at any point, the body's read included, which then fails at once and closes the connection.
+     */
+    private suspend fun Call.await(): Read = suspendCancellableCoroutine { cont ->
         enqueue(
             object : Callback {
-                // An answer that comes after the caller went away is closed, so its connection goes back to the pool.
-                override fun onResponse(call: Call, response: Response) = cont.resume(response) { _, value, _ -> value.close() }
+                override fun onResponse(call: Call, response: Response) {
+                    val read = try {
+                        response.use { Read(it.code, read(it), it.header("Retry-After")) }
+                    } catch (e: IOException) {
+                        if (!cont.isCancelled) cont.resumeWithException(WorkspaceError("network", response.code, message = e.message, cause = e))
+                        return
+                    } catch (e: WorkspaceError) {
+                        if (!cont.isCancelled) cont.resumeWithException(e)
+                        return
+                    }
+                    if (!cont.isCancelled) cont.resume(read)
+                }
 
                 override fun onFailure(call: Call, e: IOException) {
                     if (!cont.isCancelled) cont.resumeWithException(e)
@@ -125,8 +139,8 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
     }
 
     companion object {
-        /** The largest body read, after decompression. */
-        const val MAX_BYTES = 4L * 1024 * 1024
+        /** The largest body read, after decompression: room for the largest valid events page (see the class). */
+        const val MAX_BYTES = 16L * 1024 * 1024
         const val VERSION_HEADER = "Rukoo-Workspace-Version"
         private val JSON = "application/json".toMediaType()
     }

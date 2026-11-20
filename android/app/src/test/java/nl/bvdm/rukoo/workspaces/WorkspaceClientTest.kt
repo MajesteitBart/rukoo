@@ -1,14 +1,26 @@
 package nl.bvdm.rukoo.workspaces
 
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.long
 import nl.bvdm.rukoo.account.BorrowedSession
 import nl.bvdm.rukoo.core.RukooJson
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okio.Buffer
@@ -26,7 +38,7 @@ import org.junit.Test
 
 /**
  * The workspace client against the real server's recorded answers (contract 8.6): every route's method, path and
- * body, the headers, no redirect followed, the 4 MiB cap, how refusals decode, and what a 401 does.
+ * body, the headers, no redirect followed, the 16 MiB cap, how refusals decode, and what a 401 does.
  */
 class WorkspaceClientTest {
     private val server = RecordedWorkspaceServer()
@@ -370,7 +382,7 @@ class WorkspaceClientTest {
     }
 
     @Test
-    fun `answers are capped at 4 MiB after decompression`() = runBlocking {
+    fun `answers are capped at 16 MiB after decompression`() = runBlocking {
         val max = OkHttpWorkspaceHttp.MAX_BYTES.toInt()
         fun padded(size: Int): String {
             val head = """{"workspaces":[],"pad":""""
@@ -399,6 +411,52 @@ class WorkspaceClientTest {
             assertEquals("server", e.code)
         }
         server.verify()
+    }
+
+    @Test
+    fun `the largest valid events page is read whole`() = runBlocking {
+        // The server takes any well-formed text of 1 to 16,384 bytes, control characters included, and JSON writes
+        // each of those as six bytes: 50 such messages are 4.9 MB, 100 are 9.8 MB.
+        val text = "".repeat(TEXT_BYTES)
+        val olga = v.id("olga")
+        fun page(n: Int) = RukooJson.encodeToString(
+            EventPage.serializer(),
+            EventPage((1..n).map { WireEvent(it.toLong(), "e_" + it.toString().padStart(22, '0'), WireEvent.MESSAGE_POSTED, olga, 1, text = text) }, n.toLong(), 1),
+        )
+        for (n in listOf(50, 100)) {
+            val body = page(n)
+            assertTrue(body.length > n * TEXT_BYTES * 6)
+            server.answerWith(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
+            val got = client.events(w, v.id("general"), before = n + 1L, limit = n)
+            assertEquals(n, got.events.size)
+            assertEquals(text, got.events.last().text)
+        }
+    }
+
+    @Test
+    fun `cancelling a call stops it while its body is still coming`() = runBlocking {
+        val headers = CompletableDeferred<Unit>()
+        val base = OkHttpClient.Builder().eventListener(object : EventListener() {
+            override fun responseHeadersEnd(call: Call, response: Response) {
+                headers.complete(Unit)
+            }
+        }).build()
+        val slow = OkHttpWorkspaceHttp(base)
+        server.answerWith(MockResponse().setHeader("Content-Type", "application/json").setBody("[]").setBodyDelay(5, TimeUnit.SECONDS))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val job = scope.launch { runCatching { slow.request(server.url, "GET", "/v1/workspaces", null, "olga") } }
+            withTimeout(5_000) { headers.await() }
+            delay(200)
+            val t0 = System.nanoTime()
+            job.cancel()
+            job.join()
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            assertTrue("joined ${ms} ms after the cancel", ms < 1_000)
+            withTimeout(2_000) { while (base.dispatcher.runningCallsCount() > 0) delay(10) }
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test
