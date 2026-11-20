@@ -505,10 +505,18 @@ test('archived, quota and the mentions refusal, with Retry and Send without ment
 
 test('429 holds the message for Retry-After, and a kick does not send it sooner', async (t) => {
   if (skipWithoutServer(t)) return;
-  const { bart, ws, svc, api } = await setup(t);
+  const { ws, svc, api } = await setup(t);
+  // The first post is refused with 429 and Retry-After, as when Bart's send lane is used up from another device. The
+  // test makes that answer itself: on a slow machine a lane drained beforehand refills before the first try.
   const statuses = [];
+  let refused = false;
   watchCalls(svc.account, async (method, url, real) => {
     if (!isPost(method, url)) return undefined;
+    if (!refused) {
+      refused = true;
+      statuses.push(429);
+      throw new AccountError('rate_limited', 429, 'Too many requests.', { retryAfter: 1, scope: 'workspace' });
+    }
     try {
       const out = await real();
       statuses.push(200);
@@ -518,13 +526,6 @@ test('429 holds the message for Retry-After, and a kick does not send it sooner'
       throw err;
     }
   });
-  // Bart's send lane, which reads share with posts, used up from another device.
-  let limited = false;
-  for (let i = 0; i < 80 && !limited; i++) {
-    const r = await server.call('POST', route(ws.id, `/conversations/${ws.general}/read`), { token: bart.token, body: { seq: 0 } });
-    limited = r.status === 429;
-  }
-  assert.ok(limited, 'the lane ran out');
   const at = svc.now();
   const { local } = await api.chatSend(ws.id, ws.general, { text: 'after the wait', mentions: [], root: null });
   await until(() => statuses.length >= 1, 10000, 'the first answer');
