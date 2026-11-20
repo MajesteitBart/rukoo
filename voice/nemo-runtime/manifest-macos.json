@@ -18,6 +18,9 @@
   },
   "toolset": {
     "runner": "macos-15",
+    "xcode": "Xcode 16.4",
+    "clang": "Apple clang version 17.0.0 (clang-1700.0.13.5)",
+    "cmake": "cmake version 4.4.5",
     "deploymentTarget": "15.0"
   },
   "cpu": [
@@ -25,6 +28,76 @@
     "dotprod",
     "fp16"
   ],
-  "archive": null,
-  "files": []
+  "archive": {
+    "url": "https://github.com/MajesteitBart/rukoo/releases/download/nemo-runtime-97a15af-1/nemo-runtime-97a15af-1-macos-arm64.zip",
+    "size": 1415637,
+    "sha256": "168170ed194d54691052aaac73aa0764ec7f16f657027fdd3ca315f75a442423"
+  },
+  "files": [
+    {
+      "path": "libggml-base.dylib",
+      "size": 751456,
+      "sha256": "79af25eea2e29fada7d84596be94eafc6af6f04a54fc7fa2f1553cee938e4b5b"
+    },
+    {
+      "path": "libggml-blas.dylib",
+      "size": 76800,
+      "sha256": "816800490ad0c2d7f7c33946b77cfc6d763d984352226c038fc6cb55bf498364"
+    },
+    {
+      "path": "libggml-cpu.dylib",
+      "size": 830784,
+      "sha256": "d72875273b3620ded719e5e42c0647d5b3a227bf048bcb3d1b960329e23991ee"
+    },
+    {
+      "path": "libggml.dylib",
+      "size": 78112,
+      "sha256": "bce569aa10fe996b51ddc6c903d3b4e4b0463c0e9812ee3488ddcfffda911721"
+    },
+    {
+      "path": "libnemo_speech_asr.dylib",
+      "size": 2139328,
+      "sha256": "05a1ccba356edc3d4e79f0312f301a7e7653c2263fe6368d4ad3f50e70e7af89"
+    },
+    {
+      "path": "libnemo_speech_asr_c.dylib",
+      "size": 114336,
+      "sha256": "6a0055c60f5027ea0aec3e46afa68aed8891fecaab96ed74959fcaa827deaca9"
+    },
+    {
+      "path": "licenses/LICENSE",
+      "size": 12238,
+      "sha256": "eaaca34b26b27c7be5a5099a0b9ddf9913f2db0aa96f6d5854435f2916d6fdc3"
+    },
+    {
+      "path": "licenses/NOTICE",
+      "size": 233,
+      "sha256": "d5ea773d67035e676503579ecf7d5836a124649d7fe99d59ec3c50cd101e1a80"
+    },
+    {
+      "path": "licenses/THIRD_PARTY_NOTICES.md",
+      "size": 9171,
+      "sha256": "865dbd5bb2fb4e08811d2d6c90ebf260645b101ba8b0a9e6ba739b1d0222acf0"
+    },
+    {
+      "path": "licenses/sentencepiece/LICENSE",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "licenses/sentencepiece/absl-LICENSE",
+      "size": 11365,
+      "sha256": "d3e2f59e1d71176dfdb555ece6a41f7a5aa0f52ff21211010ace314f57695f6b"
+    },
+    {
+      "path": "licenses/sentencepiece/darts-clone-LICENSE",
+      "size": 1481,
+      "sha256": "155f59997298ee336602c49f9c1110f268ac394ca2197eb02647a3555935ad52"
+    },
+    {
+      "path": "licenses/sentencepiece/protobuf-lite-LICENSE",
+      "size": 1732,
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
+    }
+  ]
 }
