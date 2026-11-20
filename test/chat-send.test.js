@@ -594,16 +594,18 @@ test('redact marks the cached event removed at once and waits out a 429', async 
   const sent = await sentFor(svc, local);
   assert.equal(svc.store.eventById(ws.id, sent.messageId).text, 'take this back');
 
-  // Bart's control lane used up from another device: the removal waits Retry-After and goes again.
-  let limited = false;
-  for (let i = 0; i < 120 && !limited; i++) {
-    const r = await server.call('POST', route(ws.id, `/conversations/${ws.general}/messages/e_${'A'.repeat(22)}/redact`), { token: bart.token });
-    limited = r.status === 429;
-  }
-  assert.ok(limited, 'the lane ran out');
+  // The first removal is refused with 429 and Retry-After, as when Bart's control lane is used up from another device:
+  // the removal waits and goes again. The test makes that answer itself: on a slow machine a lane drained beforehand
+  // refills before the first try.
   const statuses = [];
+  let refused = false;
   watchCalls(svc.account, async (method, url, real) => {
     if (!url.endsWith('/redact')) return undefined;
+    if (!refused) {
+      refused = true;
+      statuses.push(429);
+      throw new AccountError('rate_limited', 429, 'Too many requests.', { retryAfter: 1, scope: 'workspace' });
+    }
     try {
       const out = await real();
       statuses.push(200);
