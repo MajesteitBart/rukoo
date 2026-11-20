@@ -16,6 +16,9 @@ import * as D from './chat-dialogs.js';
 
 // The conversation last open in each workspace, by ID only (contract 5.1 leaves it to the view, as meeting.js does).
 const SAVED = 'rukoo.chat.open';
+// Rukoo in a browser (src/web): a reload takes the place of an update, and the page keeps nothing on disk, so the texts
+// that say "this computer", "update" or "disk space" have a web version.
+const WEB = window.mail?.platform === 'web';
 const WS_ID = /^w_[A-Za-z0-9_-]{22}$/;
 const ROOM_ID = /^c_[A-Za-z0-9_-]{22}$/;
 // After this long reconnecting, the banner says so and offers Try now (desktop-ui 7).
@@ -187,7 +190,7 @@ export function chatErrorText(err, context = {}) {
     case 'signed_out':
       return t('chat.errors.signedOut');
     case 'upgrade_required':
-      return t('chat.errors.upgrade', { host });
+      return WEB ? t('chat.errors.webUpgrade', { host }) : t('chat.errors.upgrade', { host });
     case 'rate_limited':
       if (err.limit === 'uploads') return t('chat.errors.uploadsLimit');
       return err.limit === 'dailyDms' ? t('chat.errors.dailyDms') : t('chat.errors.rateLimited', { count: Math.max(1, Number(err.retryAfter) || 1) });
@@ -249,7 +252,7 @@ export function chatErrorText(err, context = {}) {
     case 'other_server':
       return t('chat.join.otherHost', { host: context.linkHost || '', own: host });
     case 'not_saved':
-      return t('chat.errors.notSaved');
+      return WEB ? t('chat.errors.webNotSaved') : t('chat.errors.notSaved');
     case 'paused':
       return t('chat.errors.paused', { workspace });
     default:
@@ -633,8 +636,12 @@ export function footStatus() {
   const s = CH.state;
   if (!s || !s.signedIn) return { cls: '', text: t('chat.status.signedOut'), title: '' };
   const w = summary();
-  if (w && w.status === 'quarantined') return { cls: 'error', text: t('chat.status.stopped'), title: t('chat.banner.paused', { workspace: w.name }) };
-  if (w && w.status === 'upgrade') return { cls: 'error', text: t('chat.status.update'), title: t('chat.errors.upgrade', { host: s.host }) };
+  if (w && w.status === 'quarantined') return { cls: 'error', text: t('chat.status.stopped'), title: pausedText(w.name) };
+  if (w && w.status === 'upgrade') {
+    return WEB
+      ? { cls: 'error', text: t('chat.status.webUpdate'), title: t('chat.errors.webUpgrade', { host: s.host }) }
+      : { cls: 'error', text: t('chat.status.update'), title: t('chat.errors.upgrade', { host: s.host }) };
+  }
   if (w && w.status === 'loading') return { cls: 'busy', text: t('chat.status.catchingUp'), title: '' };
   if (s.connection === 'online') return { cls: 'ok', text: t('chat.status.connected'), title: t('chat.status.connectedTitle', { host: s.host }) };
   if (s.connection === 'connecting') return { cls: 'busy', text: t(CH.wasOnline ? 'chat.status.reconnecting' : 'chat.status.connecting'), title: '' };
@@ -715,7 +722,10 @@ function applyState(state, { openFirst = true } = {}) {
 
 // A broken cache was made again and took unsent messages with it (contract 3.4, ChatState.lostUnsent): one toast says
 // how many. Main reports the count until a chatState call takes it, and a state event can bring it first, so the toast
-// shows once for it and the chatState call that follows takes it, as Android's takeLostUnsent() does.
+// shows once for it and the chatState call that follows takes it, as Android's takeLostUnsent() does. In a browser a
+// sign-out in another tab also ends this tab's session and its unsent messages (lostUnsentElsewhere, src/web/host.js).
+// The page reports those in every state, since any chatState call could come first, until the toast says it showed
+// them (webLostUnsentShown); one that still reports some after that is a loss that came since, and gets its own toast.
 function noticeLostUnsent(state) {
   const count = Number(state.lostUnsent) || 0;
   if (count <= 0) {
@@ -724,9 +734,20 @@ function noticeLostUnsent(state) {
   }
   if (CH.lostShown) return;
   CH.lostShown = true;
-  toast(t('chat.lostUnsent', { count }), 8000);
-  api('chatState')
-    .then(applyState)
+  const elsewhere = WEB ? Number(state.lostUnsentElsewhere) || 0 : 0;
+  toast(t(elsewhere > 0 ? 'chat.webLostUnsentSignedOut' : 'chat.lostUnsent', { count }), 8000);
+  if (elsewhere <= 0) {
+    api('chatState')
+      .then(applyState)
+      .catch(() => {});
+    return;
+  }
+  api('webLostUnsentShown', elsewhere)
+    .then(() => api('chatState'))
+    .then((next) => {
+      if (next && Number(next.lostUnsentElsewhere) > 0) CH.lostShown = false;
+      applyState(next);
+    })
     .catch(() => {});
 }
 
@@ -856,10 +877,12 @@ export async function selectWorkspace(ws, { openFirst = true } = {}) {
   }
 }
 
-// The conversation a workspace opens on: the one open last time, else the first in sidebar order.
+// The conversation a workspace opens on: the one open last time, else the first in sidebar order. None opens while
+// ctx.listOnly() says the list covers the conversation (a phone in the browser, web-shell.js): an open room holds back
+// its alerts, and nobody sees it there.
 function openDefault() {
   CH.preview = null;
-  if (!CH.open || !CH.ws || !CH.view) return renderPane();
+  if (!CH.open || !CH.ws || !CH.view || ctx?.listOnly?.()) return renderPane();
   const saved = readSaved()[CH.ws];
   const list = inOrder();
   const pick = (saved && CH.rooms.has(saved) && list.some((r) => r.id === saved) ? saved : null) || list[0]?.id || null;
@@ -886,9 +909,10 @@ const upgradeNeeded = () => summary()?.status === 'upgrade';
 
 // ---------- drawing ----------
 
-// Only once the window has its accounts: before that app.js has no sidebar to draw.
+// Only once the shell has its sidebar: app.js draws it once the window has its accounts. The browser's shell
+// (web-shell.js) has no mail accounts and says itself when its sidebar is there (ctx.sidebarReady).
 function redrawSide() {
-  if (!ctx || !ctx.S || !ctx.S.data || !ctx.S.data.accounts.length) return;
+  if (!ctx || !(ctx.sidebarReady ? ctx.sidebarReady() : ctx.S && ctx.S.data && ctx.S.data.accounts.length)) return;
   if (ctx.chatMode?.() && document.querySelector('.sidebar-main')) ctx.renderSidebar();
   else ctx.renderModeSwitch?.();
 }
@@ -1069,16 +1093,19 @@ function renderPane() {
   // The gone conversation stays until OK; drawn again only when its text changed (a language change).
   if (kind === 'goneRoom') view.goneConversation(roomName(CH.goneRoom.room), { focus: false });
   else if (kind === 'preview') view.preview(CH.preview, { join: () => joinPreview(CH.preview) });
-  else if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups) });
+  else if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups), invitation: Boolean(s && s.invitation) });
   view.setBanner(bannerFor());
   view.stateChanged();
 }
+
+// A stopped workspace (contract 3.6), for the banner and the foot's tooltip.
+const pausedText = (workspace) => (WEB ? t('chat.banner.webPaused', { workspace }) : t('chat.banner.paused', { workspace }));
 
 function bannerFor() {
   const s = CH.state;
   if (!s || !s.signedIn) return null;
   const w = summary();
-  if (w && w.status === 'quarantined') return { icon: 'warning', text: t('chat.banner.paused', { workspace: w.name }), action: { label: t('chat.banner.startOver'), run: () => startOver() } };
+  if (w && w.status === 'quarantined') return { icon: 'warning', text: pausedText(w.name), action: { label: t('chat.banner.startOver'), run: () => startOver() } };
   // Offline means the chat server is out of reach, which says nothing about the computer's network: name the server.
   if (s.connection === 'offline') return { icon: 'info', text: t('chat.banner.offline', { host: s.host || '' }), action: { label: t('chat.banner.tryNow'), run: () => reconnect() } };
   if (s.connection === 'connecting' && CH.connectingSince && Date.now() - CH.connectingSince >= RECONNECT_BANNER_MS) {
@@ -1130,7 +1157,16 @@ function maybeTakeJoin() {
   }
   takingJoin = true;
   api('chatTakePendingJoin')
-    .then((r) => (r && r.link ? D.joinWorkspace(r.link) : null))
+    .then(async (r) => {
+      if (!r || !r.link) return null;
+      try {
+        return await D.joinWorkspace(r.link);
+      } finally {
+        // The browser keeps the invitation it was opened with through reloads (src/web/join.js) until the person
+        // chose in this dialog: joined, opened a workspace they were in, or cancelled.
+        if (WEB) api('webForgetInvitation', r.link).catch(() => {});
+      }
+    })
     .catch(() => {})
     .finally(() => {
       takingJoin = false;

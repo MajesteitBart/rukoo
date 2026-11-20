@@ -8,15 +8,21 @@
     "changelog:images": "node tools/changelog-images.mjs",
     "changelog": "node tools/build-changelog.mjs",
     "serve": "npx --yes serve site -l 4321",
-    "deploy": "npx --yes wrangler@4 deploy",
-    "test": "node --test \"cloudflare/*.test.mjs\" \"tools/*.test.mjs\""
+    "app:build": "node tools/build-app.mjs",
+    "app:dev": "node tools/build-app.mjs --watch -- node ../server/node_modules/wrangler/bin/wrangler.js dev -c wrangler.jsonc -c ../server/wrangler.jsonc --local --ip 127.0.0.1 --infer-origin-from-routes=false",
+    "deploy": "npm run app:build && npx --yes wrangler@4 deploy",
+    "test": "node --test \"cloudflare/*.test.mjs\" \"tools/*.test.mjs\"",
+    "test:browser": "node --test --test-concurrency=1 \"test/browser/*.e2e.mjs\""
   },
   "devDependencies": {
     "@phosphor-icons/core": "^2.1.1",
+    "esbuild": "0.28.2",
     "gray-matter": "^4.0.3",
+    "hash-wasm": "4.12.0",
     "js-yaml": "^4.3.2",
     "marked": "^17.0.6",
     "playwright": "^1.63.0",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "sql.js": "1.15.2"
   }
 }

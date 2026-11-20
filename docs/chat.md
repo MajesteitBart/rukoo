@@ -28,7 +28,10 @@ Owners and admins invite people with **Invite people** in the workspace menu.
 
 A link looks like `https://your-server/join#w=…&i=…` and works once. The part after `#` stays in the browser, so the server never sees it in its logs. **Open invitations** in the same dialog, and in Workspace settings, lists the links that still work, and **Withdraw** stops one.
 
-Rukoo doesn't open these links itself yet. Opened in a browser, a link shows a page on the server that explains what to do: install Rukoo, then paste the page's address into Chat's Join dialog.
+Rukoo for desktop and Android doesn't open these links itself yet, so a link opens in a browser. What it shows there depends on the server:
+
+- Where the account server runs behind Rukoo's website (`website/`), as rukoo.io does, the website sends the link on to Chat in the browser at `/app/`. The person creates a Rukoo account or signs in there, and the Join dialog opens with the link filled in, without installing anything. [In a browser](account.md#in-a-browser) says what the browser keeps. On rukoo.io this starts once team chat is on there.
+- A server you run from `server/` alone, without the website in front of it, shows a page that explains what to do: install Rukoo, then paste the page's address into Chat's Join dialog.
 
 **A colleague without a Rukoo account** can use the link to sign up. On a server where new accounts need an invite code, an invitation link works as the code: paste it into the invite code field when you create the account. Each link makes one account. After the sign-up, Settings closes and Chat opens the Join dialog with the link filled in. If you restart Rukoo in between, paste the link again. The server's operator can turn this off, and then only their own invite codes work.
 

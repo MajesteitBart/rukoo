@@ -95,6 +95,9 @@ async function handle(request, env, ctx) {
   if (path === '/join' && reading && workspacesOn(env) && !bookingHere) {
     const cfg = { ...config(env, url), host: url.host, inviteSignups: inviteSignups(env) };
     const response = html(joinPage(cfg, privacyLanguage(url, request.headers.get('accept-language'))), method);
+    // Tells the rukoo.io site Worker this is the invitation page, so it can send the browser to the web app; a booking
+    // page under the handle join never carries it (website/cloudflare/web-app.js).
+    response.headers.set('x-rukoo-workspace-invite', '1');
     response.headers.set('referrer-policy', 'no-referrer');
     for (const [name, value] of Object.entries(NOINDEX)) response.headers.set(name, value);
     return response;

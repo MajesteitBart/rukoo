@@ -4,7 +4,9 @@
 // endpoint for assistants (/mcp), llms.txt and /privacy. The site's one form, early access, is answered here.
 // The account API under /v1 has no site file, so it goes to the account server without looking for one: a sync or
 // chat request then costs one hop less, and a WebSocket upgrade reaches the server that answers it.
+// Rukoo in the browser lives under /app, and a workspace invitation link at /join leads there (web-app.js).
 import { PATH as EARLY_ACCESS, earlyAccess } from './early-access.js';
+import { appResponse, isAppPath, joinResponse } from './web-app.js';
 
 export default {
   async fetch(request, env) {
@@ -18,7 +20,10 @@ export default {
       return new Response('Method not allowed', { status: 405, headers: { Allow: 'POST' } });
     }
     if (url.pathname === '/v1' || url.pathname.startsWith('/v1/')) return env.ACCOUNT.fetch(request);
-    if (request.method === 'GET' || request.method === 'HEAD') {
+    if (isAppPath(url.pathname)) return appResponse(request, env, url);
+    const reading = request.method === 'GET' || request.method === 'HEAD';
+    if (url.pathname === '/join' && reading) return joinResponse(request, env);
+    if (reading) {
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;
     }

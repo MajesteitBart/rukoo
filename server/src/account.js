@@ -134,6 +134,13 @@ function failure(status, error, message, headers) {
 
 const UNAUTHORIZED = failure(401, 'unauthorized', 'Sign in again.');
 
+// A session made in a browser, known by its device platform (PROTOCOL.md, Sessions made in a browser). Rukoo in the
+// browser keeps the token in the site's local storage, where any script running on the site can read it, and uses
+// only the account and team chat. So such a session can't reach the records or the booking page. The platform is
+// written once, when the session is made, so what a session may do never changes.
+const BROWSER = 'web';
+const BROWSER_SESSION = failure(403, 'browser_session', "A session made in a browser can't use this. Use the Rukoo app.");
+
 function locked(until, now) {
   return failure(429, 'locked', 'Too many failed attempts. Try again later.', {
     'retry-after': String(Math.ceil((until - now) / 1000))
@@ -198,7 +205,7 @@ export class Account extends DurableObject {
   // passwordLock is the 429 to send while this session's password checks are locked (#withPassword), else null; only
   // DELETE /v1/booking uses it.
   async bookingAuth(token) {
-    return this.#signedIn(token, (session, now) => {
+    return this.#fromApp(token, (session, now) => {
       const row = this.#booking();
       const devices = {};
       for (const d of this.sql.exec('SELECT id, name FROM sessions')) devices[d.id] = d.name;
@@ -218,7 +225,7 @@ export class Account extends DurableObject {
   // Sets the account's one handle. Taking a first handle, or giving it up (null), isn't a change; replacing one is,
   // and the fourth within 30 days is refused.
   async bookingSetHandle(token, handle) {
-    return this.#signedIn(token, (session, now) => {
+    return this.#fromApp(token, (session, now) => {
       const row = this.#booking();
       const changes = recentChanges(row.changes, now);
       if (handle === row.handle) return reply(200, { handle, changes: changes.length });
@@ -573,7 +580,7 @@ export class Account extends DurableObject {
   }
 
   async pull(token, since, limit) {
-    return this.#signedIn(token, () => {
+    return this.#fromApp(token, () => {
       const rows = this.sql
         .exec('SELECT id, seq, data FROM records WHERE seq > ? ORDER BY seq LIMIT ?', since, limit + 1)
         .toArray();
@@ -593,7 +600,7 @@ export class Account extends DurableObject {
   }
 
   async push(token, items, limits) {
-    return this.#signedIn(token, (session, now) => {
+    return this.#fromApp(token, (session, now) => {
       try {
         return reply(
           200,
@@ -677,7 +684,7 @@ export class Account extends DurableObject {
     const hash = await sha256(utf8(token));
     if (!this.present) return UNAUTHORIZED;
     let session = null;
-    for (const row of this.sql.exec('SELECT id, tokenHash, lastSeenAt, failures, failedAt, lockedUntil FROM sessions')) {
+    for (const row of this.sql.exec('SELECT id, tokenHash, platform, lastSeenAt, failures, failedAt, lockedUntil FROM sessions')) {
       if (sameBytes(new Uint8Array(row.tokenHash), hash)) session = row;
     }
     if (!session) return UNAUTHORIZED;
@@ -686,6 +693,12 @@ export class Account extends DurableObject {
       this.sql.exec('UPDATE sessions SET lastSeenAt = ? WHERE id = ?', now, session.id);
     }
     return fn(session, now);
+  }
+
+  // #signedIn for the routes only an app's session may use: the records and the booking page. A browser's session
+  // gets 403 browser_session and changes nothing; a dead one still gets 401 first.
+  async #fromApp(token, fn) {
+    return this.#signedIn(token, (session, now) => (session.platform === BROWSER ? BROWSER_SESSION : fn(session, now)));
   }
 
   // For signed-in calls that ask for the password again. A wrong one is 403, not 401, so the app can tell it apart

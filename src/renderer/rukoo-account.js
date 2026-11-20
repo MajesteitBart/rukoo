@@ -20,7 +20,11 @@ const hostOf = (url) => {
     return url || '';
   }
 };
-const platformName = (p) => (['win32', 'darwin', 'linux', 'android'].includes(p) ? t(`settings.rukoo.platform.${p}`) : esc(p || ''));
+const platformName = (p) => (['win32', 'darwin', 'linux', 'android', 'web'].includes(p) ? t(`settings.rukoo.platform.${p}`) : esc(p || ''));
+// Rukoo in a browser (src/web): there the account only signs in to team chat. The page keeps no records to sync, has
+// no file to export and talks to the server it came from, so those rows stay out, and the texts about "this computer"
+// syncing categories have a web version.
+const WEB = () => window.mail?.platform === 'web';
 const whereText = (info) => {
   const j = info && info.hosting && info.hosting.jurisdiction;
   return t(`settings.rukoo.where.${['eu', 'us', 'fedramp'].includes(j) ? j : 'any'}`);
@@ -50,9 +54,10 @@ function showRecoveryKey(key) {
   });
 }
 
-// Asks for the password before something that needs it again; null when cancelled. note: a second paragraph, such as
-// what becomes of team chat messages when the account goes.
+// Asks for the password before something that needs it again; null when cancelled. note: a further paragraph, or a
+// list of them, such as what becomes of team chat messages when the account goes.
 function passwordDialog(title, help, okLabel = t('settings.rukoo.continue'), danger = false, note = '') {
+  const notes = (Array.isArray(note) ? note : [note]).filter(Boolean);
   return dialog({
     title,
     buttons: [
@@ -73,7 +78,7 @@ function passwordDialog(title, help, okLabel = t('settings.rukoo.continue'), dan
     render(body) {
       body.innerHTML = `<div class="form" style="padding:0">
         ${help ? `<p>${esc(help)}</p>` : ''}
-        ${note ? `<p data-note>${esc(note)}</p>` : ''}
+        ${notes.map((n) => `<p data-note>${esc(n)}</p>`).join('')}
         <label>${esc(t('setup.fields.password'))}<input type="password" name="password" autocomplete="current-password"/></label></div>`;
       body.querySelector('input').addEventListener('keydown', (e) => {
         if (e.key === 'Enter') body.closest('.dialog').querySelector('.buttons button:last-child').click();
@@ -128,17 +133,37 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
   let infoFailed = false;
   let details = null;
   let detailsFailed = false;
+  // Goes up with every change of accountKey, so an answer to an earlier ask is dropped, also one for the same key again.
+  let generation = 0;
   let filled = { view: null, at: 0 };
   // What the overview last drew of the status (rowHtml).
   let drawnRow = null;
 
   const signedIn = () => Boolean(status && status.signedIn);
+  // Whose details the pages show: the server, email and session signed in to, or null while signed out. In a browser
+  // another tab can sign in to another account, or to another session of this one, without this one signing out first,
+  // and the status names the session (src/web/host.js); the devices mark the session as this device. On desktop the
+  // status has no session, and the key changes only with a sign-in or a sign-out.
+  const accountKey = (s) => (s && s.signedIn ? JSON.stringify([s.server || '', s.email || '', s.session || '']) : null);
   // What the overview shows of the status: its row (who is signed in, an error) and, through chatState, whether the
   // server has team chat. A sync's start and end change only the sync line, which the overview doesn't show.
   const rowShown = (s) => JSON.stringify(s ? [Boolean(s.signedIn), s.email || null, s.error || null, s.errorText || null, chatIn(s.info)] : null);
 
+  // The status from now on. Another account, or none, drops the details of the one before, and whether they failed to
+  // load; fill() asks for them again.
+  function take(next) {
+    const was = accountKey(status);
+    status = next;
+    if (was !== accountKey(status)) {
+      generation += 1;
+      details = null;
+      detailsFailed = false;
+      filled = { view: null, at: 0 };
+    }
+  }
+
   async function prepare(view) {
-    status = await api('accountStatus').catch(() => status);
+    take(await api('accountStatus').catch(() => status));
     if (status && status.info) info = status.info;
     if (status && !status.server) info = null;
     // The sign-up form depends on the server (invite-only, closed), and a redraw later would lose what was typed.
@@ -161,23 +186,26 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       );
     }
     if (signedIn() && (view === 'rukoo' || view === 'rukoo-privacy')) {
+      // An answer for a session signed in before is dropped: take() has the pages ask for the one signed in now.
+      const asked = generation;
       jobs.push(
         api('accountDetails')
-          .then((d) => ((details = d), (detailsFailed = false)))
-          .catch(() => (detailsFailed = true))
+          .then((d) => {
+            if (generation !== asked) return;
+            details = d;
+            detailsFailed = false;
+          })
+          .catch(() => {
+            if (generation === asked) detailsFailed = true;
+          })
       );
     }
     if (jobs.length) Promise.all(jobs).then(() => current() === view && rerender());
   }
 
   function onStatus(next) {
-    const wasSignedIn = signedIn();
-    status = next;
+    take(next);
     if (next && next.info) info = next.info;
-    if (wasSignedIn !== signedIn()) {
-      details = null;
-      filled = { view: null, at: 0 };
-    }
     // The overview redraws only when its row would change: every sync sends two statuses, and a redraw replaces the
     // row under the pointer and the rows of everything else on it.
     const view = current();
@@ -202,28 +230,41 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     return row({ title: esc(server ? hostOf(server) : t('settings.rukoo.serverNone')), desc, action: 'rukoo-server' });
   };
 
+  // The server on the web: the one the page came from, which the page can't change.
+  const webServerRow = () => {
+    const server = status && status.server;
+    let desc = '';
+    if (server && infoFailed && !info) desc = esc(t('settings.rukoo.serverUnreachable'));
+    else if (server && info) desc = esc(`${t('settings.rukoo.serverRunBy', { operator: (info.operator && info.operator.name) || hostOf(server) })} · ${whereText(info)}`);
+    return staticRow(esc(server ? hostOf(server) : t('settings.rukoo.serverNone')), desc);
+  };
+
   // The row on the Settings overview.
   function rowHtml() {
     drawnRow = rowShown(status);
-    const desc = signedIn() ? esc(t('settings.rukoo.rowSignedIn', { email: status.email })) : esc(t('settings.rukoo.rowSignedOut'));
+    const desc = signedIn() ? esc(t('settings.rukoo.rowSignedIn', { email: status.email })) : esc(WEB() ? t('settings.rukoo.webRowSignedOut') : t('settings.rukoo.rowSignedOut'));
     const error = signedIn() && status.error ? ` · <span class="error">${esc(status.errorText || '')}</span>` : '';
     return row({ title: esc(t('settings.rukoo.title')), desc: desc + error, action: 'rukoo' });
   }
 
   function signedOutPage() {
     return `
-      <p class="settings-text">${esc(t('settings.rukoo.intro'))}</p>
+      <p class="settings-text">${esc(WEB() ? t('settings.rukoo.webIntro') : t('settings.rukoo.intro'))}</p>
       ${status && status.error === 'signed_out' ? `<p class="settings-text error">${esc(status.errorText || '')}</p>` : ''}
       <div class="settings-group-title">${esc(t('settings.rukoo.server'))}</div>
-      <div class="card">${serverRow()}</div>
+      <div class="card">${WEB() ? webServerRow() : serverRow()}</div>
       <div class="settings-group-title"></div>
       <div class="card">
         ${row({ title: esc(t('settings.rukoo.signUp')), action: 'rukoo-go:rukoo-signup' })}
         ${row({ title: esc(t('settings.rukoo.signIn')), action: 'rukoo-go:rukoo-signin' })}
         ${row({ title: esc(t('settings.rukoo.forgot')), action: 'rukoo-go:rukoo-recover' })}
       </div>
-      <div class="settings-group-title"></div>
-      <div class="card">${row({ title: esc(t('settings.rukoo.privacy')), desc: esc(t('settings.rukoo.privacyHelp')), action: 'rukoo-go:rukoo-privacy' })}</div>`;
+      ${
+        WEB()
+          ? ''
+          : `<div class="settings-group-title"></div>
+      <div class="card">${row({ title: esc(t('settings.rukoo.privacy')), desc: esc(t('settings.rukoo.privacyHelp')), action: 'rukoo-go:rukoo-privacy' })}</div>`
+      }`;
   }
 
   function devicesHtml() {
@@ -246,14 +287,27 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
   function signedInPage() {
     const server = status.server;
     const by = info && info.operator && info.operator.name ? ` · ${t('settings.rukoo.serverRunBy', { operator: info.operator.name })}` : '';
+    const web = WEB();
     return `
       <div class="settings-group-title">${esc(t('settings.rukoo.account'))}</div>
       <div class="card">
         ${staticRow(esc(status.email), esc(hostOf(server) + by))}
-        ${row({ title: esc(t('settings.rukoo.syncNow')), desc: syncLine(), action: 'rukoo-sync' })}
+        ${web ? '' : row({ title: esc(t('settings.rukoo.syncNow')), desc: syncLine(), action: 'rukoo-sync' })}
       </div>
       <div class="settings-group-title">${esc(t('settings.rukoo.devices'))}</div>
       <div class="card">${devicesHtml()}</div>
+      ${web ? '' : securityAndData()}
+      <div class="settings-group-title"></div>
+      <div class="card">
+        ${row({ title: esc(t('settings.rukoo.signOut')), desc: esc(web ? t('settings.rukoo.webSignOutHelp') : t('settings.rukoo.signOutHelp')), action: 'rukoo-signout' })}
+        ${row({ title: esc(t('settings.rukoo.delete')), desc: esc(t('settings.rukoo.deleteHelp')), action: 'rukoo-delete', cls: 'danger' })}
+      </div>`;
+  }
+
+  // Security and Your data: change password, a new recovery key, the privacy page and the export. The web leaves them
+  // out.
+  function securityAndData() {
+    return `
       <div class="settings-group-title">${esc(t('settings.rukoo.security'))}</div>
       <div class="card">
         ${row({ title: esc(t('settings.rukoo.changePassword')), desc: esc(t('settings.rukoo.changePasswordHelp')), action: 'rukoo-password' })}
@@ -263,11 +317,6 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       <div class="card">
         ${row({ title: esc(t('settings.rukoo.privacy')), desc: esc(t('settings.rukoo.privacyHelp')), action: 'rukoo-go:rukoo-privacy' })}
         ${row({ title: esc(t('settings.rukoo.export')), desc: esc(t('settings.rukoo.exportHelp')), action: 'rukoo-export' })}
-      </div>
-      <div class="settings-group-title"></div>
-      <div class="card">
-        ${row({ title: esc(t('settings.rukoo.signOut')), desc: esc(t('settings.rukoo.signOutHelp')), action: 'rukoo-signout' })}
-        ${row({ title: esc(t('settings.rukoo.delete')), desc: esc(t('settings.rukoo.deleteHelp')), action: 'rukoo-delete', cls: 'danger' })}
       </div>`;
   }
 
@@ -275,17 +324,22 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     <label>${esc(label)}<input type="password" name="password" autocomplete="new-password"/>
       <span class="field-help">${esc(t('settings.rukoo.passwordHelp'))}</span></label>
     <label>${esc(t('settings.rukoo.repeat'))}<input type="password" name="repeat" autocomplete="new-password"/></label>`;
-  const submitRow = (label) => `<div class="error" data-error></div><div><button class="btn" type="submit">${esc(label)}</button></div>`;
+  const submitRow = (label) => `<div class="error" data-error></div><div><button class="btn primary" type="submit">${esc(label)}</button></div>`;
   const emailField = () => `<label>${esc(t('setup.fields.email'))}<input type="email" name="email" autocomplete="username" spellcheck="false"/></label>`;
 
   function signUpPage() {
-    if (info && info.signups === 'closed') return `<p class="settings-text">${esc(t('settings.rukoo.closed'))}</p>`;
+    if (info && info.signups === 'closed') return `<p class="settings-text">${esc(WEB() ? t('settings.rukoo.webClosed') : t('settings.rukoo.closed'))}</p>`;
+    // A page opened from an invitation link holds it (src/web/join.js, status.invitation), and the bridge signs up
+    // with it, so the form says so instead of asking for the link again. A server that needs a code the invitation
+    // can't stand in for keeps the field; the field also comes back when the server refuses the invitation (submit).
+    const invitation = WEB() && Boolean(status && status.invitation) && !(info && info.signups === 'invite' && !inviteSignups(info));
     return `<div class="card"><form class="form" data-form="rukoo-signup">
       ${emailField()}
       ${passwordFields(t('setup.fields.password'))}
+      ${invitation ? `<div class="field-help" data-invitation>${esc(t('settings.rukoo.webInvitation'))}</div>` : ''}
       ${
         info && info.signups === 'invite'
-          ? `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"${inviteSignups(info) ? ' aria-describedby="rukoo-invite-help"' : ''}/>${
+          ? `<label${invitation ? ' hidden data-invite-field' : ''}>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"${inviteSignups(info) ? ' aria-describedby="rukoo-invite-help"' : ''}/>${
               inviteSignups(info) ? `<span class="field-help" id="rukoo-invite-help">${esc(t('settings.rukoo.inviteChatHelp'))}</span>` : ''
             }</label>`
           : ''
@@ -396,15 +450,15 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       if (kind === 'rukoo-signup') {
         const res = await api('accountSignUp', { email, password, invite: String(f.get('invite') || '') });
         await showRecoveryKey(res.recoveryKey);
-        toast(t('settings.rukoo.welcome'));
+        toast(WEB() ? t('settings.rukoo.webWelcome') : t('settings.rukoo.welcome'));
       } else if (kind === 'rukoo-signin') {
         await api('accountSignIn', { email, password });
-        toast(t('settings.rukoo.signedIn'));
+        toast(WEB() ? t('settings.rukoo.webSignedIn') : t('settings.rukoo.signedIn'));
       } else {
         await api('accountRecover', { email, recoveryKey: String(f.get('recoveryKey') || ''), password });
-        toast(t('settings.rukoo.signedIn'));
+        toast(WEB() ? t('settings.rukoo.webSignedIn') : t('settings.rukoo.signedIn'));
       }
-      status = await api('accountStatus').catch(() => status);
+      take(await api('accountStatus').catch(() => status));
       filled = { view: null, at: 0 };
       // A sign-up with an invitation link left a pending join: Settings closes back to Chat, which opens the Join
       // dialog with the link (contract 3.3, 5.10).
@@ -416,7 +470,16 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       }
       back();
     } catch (ex) {
-      stop(ex.message);
+      // The server refused the page's invitation (used, expired or withdrawn), which the bridge sends while the invite
+      // code field it stands in for is empty: the field shows after all, and the error says the link stopped working
+      // instead of asking for a code the person most likely never had. Only the web's account errors carry a code.
+      const field = kind === 'rukoo-signup' && ex.code === 'invite_required' ? form.querySelector('[data-invite-field]') : null;
+      const refused = Boolean(field) && !String(f.get('invite') || '').trim();
+      if (field) {
+        field.hidden = false;
+        form.querySelector('[data-invitation]')?.remove();
+      }
+      stop(refused ? t('settings.rukoo.webInvitationGone') : ex.message, field ? 'invite' : undefined);
       btn.disabled = false;
       btn.textContent = label;
     }
@@ -485,18 +548,26 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
         return true;
       }
       case 'rukoo-signout': {
-        // Unsent chat messages live in the chat cache, which goes with the session (contract 3.4).
+        // Unsent chat messages live in the chat cache, which goes with the session (contract 3.4). In a browser every
+        // tab shares the session, so the messages the other tabs hold (unsentElsewhere, src/web/host.js) go too.
         const chat = await chatState();
-        const unsent = chat && Number(chat.unsent) > 0 ? ` ${t('settings.rukoo.unsentChat', { count: Number(chat.unsent) })}` : '';
-        const ok = await confirmDialog(t('settings.rukoo.signOut'), `${t('settings.rukoo.signOutHelp')}${unsent}`, t('settings.rukoo.signOut'));
-        if (ok) await run(() => api('accountSignOut'), t('settings.rukoo.signedOut'));
+        const web = WEB();
+        const count = chat ? (Number(chat.unsent) || 0) + (web ? Number(chat.unsentElsewhere) || 0 : 0) : 0;
+        const unsent = count > 0 ? ` ${t(web ? 'settings.rukoo.webUnsentChat' : 'settings.rukoo.unsentChat', { count })}` : '';
+        // In a browser another tab can sign in to another account while this asks; the bridge then stops instead.
+        const expect = web ? [{ email: status && status.email }] : [];
+        const ok = await confirmDialog(t('settings.rukoo.signOut'), `${web ? t('settings.rukoo.webSignOutHelp') : t('settings.rukoo.signOutHelp')}${unsent}`, t('settings.rukoo.signOut'));
+        if (ok) await run(() => api('accountSignOut', ...expect), t('settings.rukoo.signedOut'));
         return true;
       }
       case 'rukoo-delete': {
         const chat = await chatState();
-        const note = chat && chat.available ? t('settings.rukoo.deleteChatNote') : '';
+        // The browser keeps no key for the booking page's handle (docs/account.md, In a browser), so a deletion here
+        // also gives the handle up for good; the desktop app keeps one for a new account.
+        const note = [chat && chat.available ? t('settings.rukoo.deleteChatNote') : '', WEB() ? t('settings.rukoo.webDeleteBooking') : ''];
+        const expect = WEB() ? [{ email: status && status.email }] : [];
         const password = await passwordDialog(t('settings.rukoo.delete'), t('settings.rukoo.deleteHelp'), t('settings.rukoo.delete'), true, note);
-        if (password) await run(() => api('accountDelete', password), t('settings.rukoo.deleted'));
+        if (password) await run(() => api('accountDelete', password, ...expect), t('settings.rukoo.deleted'));
         return true;
       }
     }

@@ -89,7 +89,7 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 |---|---|
 | 400 | `invalid` (the request's shape or values are wrong) |
 | 401 | `unauthorized` (no session or an ended session; on `login` and `recover/*`, a wrong password or recovery key) |
-| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required` (also for a code that has been used up, and for a workspace invitation that can't stand in for one), `wrong_password` (a signed-in request whose `authKey` doesn't match) |
+| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required` (also for a code that has been used up, and for a workspace invitation that can't stand in for one), `wrong_password` (a signed-in request whose `authKey` doesn't match), `browser_session` (a session made in a browser, on a route it can't use: [Sessions made in a browser](#sessions-made-in-a-browser)) |
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account) |
 | 413 | `too_large`, `quota` |
@@ -118,7 +118,7 @@ Who runs this server and where it keeps data. No session needed. The app shows t
 
 ### `GET /join`
 
-The page a workspace invitation link opens in a browser (`GET` and `HEAD`), only while team chat is on. With team chat off the path is answered as before: `404`, or a booking page at the root of `BOOKING_ORIGIN`. The link is `<server>/join#w=<workspace>&i=<secret>`. The fragment holds the invitation and never reaches the server. The page explains, in English or in Dutch by `Accept-Language` or `?lang=`, how to use the link: install Rukoo, then paste the page's address into Chat's Join dialog, or, without an account, into the invite code field of the sign-up form when `workspace.inviteSignups` is true. It is plain HTML under the same policy as `/` and `/privacy` (no scripts, forms or frames), with `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex`. On an address whose root once held booking pages it is still answered here, never redirected, and `join` can't be claimed as a booking handle. A page someone made under that handle before it was reserved keeps it: its owner goes on publishing, and with team chat on only the bare `/join` path answers the invitation page.
+The page a workspace invitation link opens in a browser (`GET` and `HEAD`), only while team chat is on. With team chat off the path is answered as before: `404`, or a booking page at the root of `BOOKING_ORIGIN`. The link is `<server>/join#w=<workspace>&i=<secret>`. The fragment holds the invitation and never reaches the server. The page explains, in English or in Dutch by `Accept-Language` or `?lang=`, how to use the link: install Rukoo, then paste the page's address into Chat's Join dialog, or, without an account, into the invite code field of the sign-up form when `workspace.inviteSignups` is true. It is plain HTML under the same policy as `/` and `/privacy` (no scripts, forms or frames), with `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `X-Rukoo-Workspace-Invite: 1`. That last header marks the invitation page for a site in front of the server: on rukoo.io the site Worker answers a `GET` or `HEAD` that gets it with `302 Location: /app/`, Rukoo in the browser, which reads the invitation from the fragment the browser carries along. Without such a site, as on a self-hosted server, the plain page is what the browser shows. On an address whose root once held booking pages it is still answered here, never redirected, and `join` can't be claimed as a booking handle. A page someone made under that handle before it was reserved keeps it: its owner goes on publishing, and with team chat on only the bare `/join` path answers the invitation page.
 
 ### `POST /v1/prelogin`
 
@@ -135,7 +135,7 @@ The page a workspace invitation link opens in a browser (`GET` and `HEAD`), only
 }
 ```
 
-→ `201 { "token", "account" }`, where `account` is what `GET /v1/account` returns. `invite` is needed only when `signups` is `invite`.
+→ `201 { "token", "account" }`, where `account` is what `GET /v1/account` returns. `invite` is needed only when `signups` is `invite`. `device.platform` is up to 32 characters, such as `win32`, `darwin`, `linux` or `android`; `web` makes the session a browser's ([Sessions made in a browser](#sessions-made-in-a-browser)). The same holds for `device` in `POST /v1/login` and `POST /v1/recover/finish`.
 
 On a server with team chat on, an invitation into a workspace there can stand in for the invite code. The request then carries `"workspaceInvite": { "workspace": "w_…", "invite": "<the invitation's secret, 43 base64url characters>" }`, which the apps take from an invitation link (`<server>/join#w=<workspace>&i=<secret>`). The server looks at it only when `signups` is `invite`, the operator hasn't set `WORKSPACE_SIGNUPS` to `off`, and `invite` is missing or wrong; `workspace.inviteSignups` in `GET /v1/info` says whether that is so. The invitation must still be open: not used, withdrawn or expired, and issued by someone who may still invite. Each invitation makes one account, a full one. Signing up doesn't use the invitation up: the new account joins with it afterwards ([WORKSPACES.md](WORKSPACES.md#workspaces-members-and-invitations)). An invitation that can't be used, a second sign-up with the same invitation, and any other shape all get `403 invite_required`, as a wrong invite code does. With `open` sign-ups the field is ignored, and `closed` refuses as always.
 
@@ -146,6 +146,15 @@ On a server with team chat on, an invitation into a workspace there can stand in
 Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
 
 An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
+
+### Sessions made in a browser
+
+A session whose `device.platform` is `web` is a browser's. Rukoo in the browser makes these, and keeps the token in the site's local storage, where any script that runs on the site can read it. The browser uses only the account and team chat, so that is all such a session can do:
+
+- The records (`GET` and `POST /v1/records`) and every route under `/v1/booking` answer `403 browser_session` and change nothing. A session that ended still gets `401 unauthorized` first.
+- Everything else works as for any session: `GET /v1/account`, `POST /v1/logout`, `DELETE /v1/devices/:id`, the calls that check the password again (`POST /v1/password`, `POST /v1/recovery`, `POST /v1/password/check`) and `DELETE /v1/account`, which need the password as well as the token, and every route under `/v1/workspaces`, the socket ticket included. Deleting the account from a browser's session wipes its booking page as from any other.
+
+The platform is set when the session is made, by sign-up, sign-in or recovery, and never changes, so neither does what the session can do. The account's other sessions aren't affected. The apps send their system's name as the platform, never `web`.
 
 ### `POST /v1/logout`
 
@@ -202,6 +211,8 @@ Records changed after `since`, oldest first, at most `limit` (default and maximu
 
 `seq` is the newest change on the server. Keep asking with the last record's `seq` while `more` is true.
 
+A session made in a browser gets `403 browser_session` here and on `POST /v1/records` ([Sessions made in a browser](#sessions-made-in-a-browser)).
+
 A device checks each page: every record's `seq` comes after `since`, in rising order, and not past `seq`, and every `id` is 43 characters of base64url. It refuses a page that doesn't, without moving its cursor. When `seq` is lower than the device's cursor, the server lost changes or an earlier answer was false; the device starts again from `since=0`. A pull stops asking for more after 500 pages, or once 256 MiB of answers have come in, counting every byte of each response as it comes off the connection, headers and chunk framing included, rather than only `data`. A device stops reading a single response once about 32 MiB of it has come in, framing included. The device checks between pages, so the page that crosses 256 MiB is the last one taken. A page with more records than the device asked for is refused. What is left comes with the next sync, so a server can't keep a device busy.
 
 ### `POST /v1/records`
@@ -236,7 +247,7 @@ A booking page lets other people, and their AI assistants, book time with an acc
 
 Only the host's Rukoo on one computer, the booking device, talks to mail and calendar providers. The server never holds provider tokens or passwords and never sends mail. It offers times from what the booking device published, takes bookings, and keeps each guest's name, email, notes and assistant name sealed to a key only the host's devices hold. The server reads those details once, at booking time, to seal them; after that a copy of its storage doesn't reveal them. The operator, or a server that was broken into, can still read new bookings as they arrive.
 
-Owner routes are under `/v1/booking`, need a session and use the same JSON style as the rest of this document: camelCase, times in milliseconds. Public routes are at the root of `BOOKING_ORIGIN` or under `/meet`, need no session and use snake_case with ISO 8601 times. No GET or HEAD request changes anything on either side.
+Owner routes are under `/v1/booking`, need a session that an app made (a browser's gets `403 browser_session`, see [Sessions made in a browser](#sessions-made-in-a-browser)) and use the same JSON style as the rest of this document: camelCase, times in milliseconds. Public routes are at the root of `BOOKING_ORIGIN` or under `/meet`, need no session and use snake_case with ISO 8601 times. No GET or HEAD request changes anything on either side.
 
 ### Handles and meeting types
 
@@ -248,7 +259,7 @@ Owner routes are under `/v1/booking`, need a session and use the same JSON style
 
 ### One booking device
 
-The device that turns the page on handles it: it publishes open times and processes bookings. The page stores that device's session id. A publish or a booking action from another session of the same account gets `409 other_device`, unless a `PUT /v1/booking` carries `takeover: true`, which makes the caller the booking device. Other devices can read the page and its bookings. `DELETE /v1/booking` works from any session of the account, so turning the page off and deleting the account always work. There are no claims or leases beyond this.
+The device that turns the page on handles it: it publishes open times and processes bookings. The page stores that device's session id. A publish or a booking action from another session of the same account gets `409 other_device`, unless a `PUT /v1/booking` carries `takeover: true`, which makes the caller the booking device. Other devices can read the page and its bookings. `DELETE /v1/booking` works from any of the account's sessions that an app made, so turning the page off and deleting the account always work. There are no claims or leases beyond this.
 
 A page turned off from another session has no booking device, but the device that had it doesn't know yet and may still publish what it had, which would turn the page back on. So until that device's session reads `GET /v1/booking`, its `PUT /v1/booking` without `takeover`, a rename included, gets `409 other_device`. Reading the page clears this; the device then knows the page is off, and turning it on again is its user's choice. A `takeover: true` publish always goes through. The device that turned the page off itself, any other session, and a new session on the same computer (a new sign-in) publish as usual.
 
@@ -258,6 +269,7 @@ A page turned off from another session has no booking device, but the device tha
 |---|---|
 | 400 | `invalid`, with `field` naming the first field that was refused |
 | 401 | `unauthorized`, only for a missing or ended session |
+| 403 | `browser_session`: the session was made in a browser ([Sessions made in a browser](#sessions-made-in-a-browser)) |
 | 404 | `not_found`: no such booking |
 | 409 | `handle_taken`, `handle_reserved`, `handle_lost` (the page's handle no longer belongs to this account), `handle_changes` (more than 3 in 30 days), `has_bookings` (a rename while future bookings exist, or a change to one, such as a guest's cancellation, isn't handled yet), `other_device`, `slot_taken`, `stale_version`, `not_active` (a cancel of a booking that is over) |
 | 413 | `too_large` |

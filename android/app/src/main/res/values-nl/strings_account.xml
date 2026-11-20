@@ -90,6 +90,7 @@
     <string name="settings_rukoo_platform_darwin">macOS</string>
     <string name="settings_rukoo_platform_linux">Linux</string>
     <string name="settings_rukoo_platform_android">Android</string>
+    <string name="settings_rukoo_platform_web">Browser</string>
     <string name="settings_rukoo_security">Beveiliging</string>
     <string name="settings_rukoo_change_password">Wachtwoord wijzigen</string>
     <string name="settings_rukoo_change_password_help">Je andere apparaten worden uitgelogd en hebben het nieuwe wachtwoord nodig.</string>

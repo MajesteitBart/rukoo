@@ -1,0 +1,235 @@
+/* Rukoo in the browser (src/web/index.html, web-shell.js). Loaded after styles.css, which draws everything; these rules
+   only change what a browser page needs differently from the desktop window. Every rule is scoped under
+   html[data-platform='web'] or the web shell's own classes, so nothing here reaches the Electron window. */
+
+/* ---------- the page ---------- */
+
+/* The dynamic viewport: with interactive-widget=resizes-content the page shrinks above a phone's on-screen keyboard,
+   so the composer at the bottom of the conversation stays in view. */
+html[data-platform='web'],
+html[data-platform='web'] body {
+  height: 100dvh;
+}
+html[data-platform='web'] {
+  --web-top: env(safe-area-inset-top, 0px);
+}
+/* The title bar's height: the desktop's 40px, and 48px on a phone, around its 44px Back and Settings. */
+html[data-platform='web'] body {
+  --web-bar: 40px;
+}
+html[data-platform='web'] body.web-phone {
+  --web-bar: 48px;
+}
+
+/* No window buttons to make room for (styles.css reserves about 150px on Windows and Linux), and nothing to drag. */
+html[data-platform='web'] .titlebar {
+  -webkit-app-region: no-drag;
+  height: calc(var(--web-bar) + var(--web-top));
+  padding-top: var(--web-top);
+  padding-right: calc(8px + env(safe-area-inset-right, 0px));
+}
+html[data-platform='web'] #app,
+html[data-platform='web'] .page {
+  top: calc(var(--web-bar) + var(--web-top));
+  left: env(safe-area-inset-left, 0px);
+  right: env(safe-area-inset-right, 0px);
+}
+
+/* The state that stands in for chat while it isn't there (web-shell.js gate): the chat pane's empty state. */
+.web-gate {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  --text-3: var(--ch-text-3);
+}
+.web-gate .ch-empty > svg {
+  width: 44px;
+  height: 44px;
+}
+
+/* ---------- title bar: Back and Settings on a phone ---------- */
+
+.web-back {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  height: 44px;
+  margin-left: 4px;
+  padding: 0 12px 0 6px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+.web-back:hover {
+  background: var(--hover);
+}
+.web-back:active {
+  background: var(--active);
+}
+.web-back svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.7;
+  flex: none;
+}
+/* A thread over the conversation has its own Back in its header, which leads to the conversation. */
+body.web-can-back:not(:has(.page, .chat[data-thread='open'])) .web-back {
+  display: inline-flex;
+}
+body.web-can-back:not(:has(.page, .chat[data-thread='open'])) .titlebar-brand {
+  display: none;
+}
+.web-bar-settings {
+  display: none;
+}
+body.web-phone .web-bar-settings {
+  display: inline-grid;
+}
+
+/* ---------- a phone: the list or the conversation ---------- */
+
+body.web-phone .titlebar-brand {
+  width: auto;
+  padding-left: calc(16px + env(safe-area-inset-left, 0px));
+}
+.web-shell.web-phone .sidebar {
+  width: 100%;
+  padding: 4px 16px calc(8px + env(safe-area-inset-bottom, 0px));
+}
+.web-shell.web-phone[data-pane='main'] .sidebar,
+.web-shell.web-phone[data-pane='list'] .workspace {
+  display: none;
+}
+.web-shell.web-phone .workspace {
+  border-left: 0;
+  border-top-left-radius: 0;
+}
+/* The gear and the rail button are the desktop's; a phone has Settings in the title bar and no rail. */
+body.web-phone .web-foot-settings,
+body.web-phone .web-foot-collapse {
+  display: none;
+}
+.web-shell.web-phone .ch-compose,
+.web-shell.web-phone .ch-thread-compose {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
+/* Notices go above the composer, or the list's status line, instead of over it: web-shell.js (placeToast) measures the
+   one that shows into --web-toast-bottom, and leaves it unset where neither shows. */
+body.web-phone .toast {
+  bottom: var(--web-toast-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
+  max-width: calc(100vw - 32px);
+}
+body.web-phone .dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
+/* Touch targets of at least 44 by 44px (WCAG 2.5.5, Apple's guideline). The plus beside Channels and Direct messages
+   shows without a hover, which a touch screen doesn't have; negative margins keep the headings as tall as they were. */
+body.web-phone .nav-item,
+body.web-phone .sync-status,
+body.web-phone .compose-btn,
+body.web-phone .btn,
+body.web-phone .btn.sm,
+body.web-phone .tbtn,
+body.web-phone .dialog .buttons button {
+  height: 44px;
+}
+body.web-phone .icon-btn,
+body.web-phone .icon-btn.sm,
+body.web-phone .icon-btn.xs,
+body.web-phone .ch-tools .icon-btn.sm {
+  width: 44px;
+  height: 44px;
+}
+body.web-phone .nav-section .icon-btn {
+  opacity: 1;
+  margin: -14px -10px -14px 0;
+}
+body.web-phone .menu button {
+  min-height: 44px;
+}
+body.web-phone .radio-row,
+body.web-phone .ch-new-row,
+body.web-phone .ch-browse-row,
+body.web-phone .ch-person,
+body.web-phone .ch-suggest [role='option'] {
+  min-height: 44px;
+}
+body.web-phone .ch-send {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+body.web-phone .ch-jump {
+  height: 44px;
+  padding: 0 16px 0 12px;
+}
+/* The banner's action (Try now, Start over: a 24px .link-btn, chat-view.js setBanner) keeps its size, so the strip
+   and its text stay where they are. An invisible area around it, half of what it lacks of 44px on each side, makes
+   the touch target 44px; it reaches 6px past the 32px strip above and below. */
+body.web-phone .ch-banner [data-ch-banner] {
+  position: relative;
+}
+body.web-phone .ch-banner [data-ch-banner]::after {
+  content: '';
+  position: absolute;
+  inset: min(0px, calc((100% - 44px) / 2));
+}
+body.web-phone .form input[type='text'],
+body.web-phone .form input[type='email'],
+body.web-phone .form input[type='password'],
+body.web-phone .form-input,
+body.web-phone .form .inline,
+body.web-phone .ch-browse-open {
+  min-height: 44px;
+}
+body.web-phone .ch-search {
+  height: 44px;
+}
+/* 16px text in fields keeps mobile browsers from zooming in when one takes the focus. */
+body.web-phone .form input[type='text'],
+body.web-phone .form input[type='email'],
+body.web-phone .form input[type='password'],
+body.web-phone .form textarea,
+body.web-phone .form-input,
+body.web-phone .ch-search,
+body.web-phone .ch-input {
+  font-size: 16px;
+}
+body.web-phone .page-scroll {
+  padding: 4px 16px calc(32px + env(safe-area-inset-bottom, 0px));
+}
+body.web-phone .page-bar {
+  padding: 6px 8px;
+}
+body.web-phone .tbtn {
+  min-width: 44px;
+  justify-content: center;
+}
+/* The thread summary under a message and its "replied to" line keep their 24px in the log; their touch area reaches
+   44px above and below without moving the rows. */
+body.web-phone .ch-replies,
+body.web-phone .ch-context {
+  position: relative;
+}
+body.web-phone .ch-replies::after,
+body.web-phone .ch-context::after {
+  content: '';
+  position: absolute;
+  inset: -10px 0;
+}
+/* A touch screen keeps :hover on whatever was tapped last, so on a phone the sidebar's rows and the buttons don't keep
+   that grey after the finger is gone. The open conversation keeps its own. */
+@media (hover: none) {
+  body.web-phone .nav-item:not(.active):hover,
+  body.web-phone .account-switch:hover,
+  body.web-phone .sync-status:hover,
+  body.web-phone .icon-btn:not(.on):hover,
+  body.web-phone .web-back:hover {
+    background: transparent;
+  }
+}

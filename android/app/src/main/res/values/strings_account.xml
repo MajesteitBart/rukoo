@@ -97,6 +97,8 @@
     <string name="settings_rukoo_platform_darwin">macOS</string>
     <string name="settings_rukoo_platform_linux">Linux</string>
     <string name="settings_rukoo_platform_android">Android</string>
+    <!-- A session made at rukoo.io/app (the browser signs in with device platform "web"); the desktop's settings.rukoo.platform.web. -->
+    <string name="settings_rukoo_platform_web">Browser</string>
     <string name="settings_rukoo_security">Security</string>
     <string name="settings_rukoo_change_password">Change password</string>
     <string name="settings_rukoo_change_password_help">Your other devices sign out and need the new password.</string>

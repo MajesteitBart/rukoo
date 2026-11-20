@@ -5464,6 +5464,26 @@
     "message": "Direct messages and mentions in your workspaces.",
     "description": "settings > general. Settings > General: explanation below Team chat notifications. src/renderer/settings.js (render)"
   },
+  "settings.web.groupAccount": {
+    "message": "Account",
+    "description": "Settings in the browser: group title above the Rukoo account row. src/renderer/web-shell.js (settings)"
+  },
+  "settings.web.notificationsUnsupported": {
+    "message": "This browser doesn't show notifications. The tab's title counts new messages instead.",
+    "description": "Settings in the browser: description under Team chat notifications when the browser has no notifications. src/renderer/web-shell.js (settings)"
+  },
+  "settings.web.notificationsBlocked": {
+    "message": "Your browser blocks notifications from this page, so the tab's title counts new messages instead. Allow notifications in the browser's site settings to get them.",
+    "description": "Settings in the browser: description under Team chat notifications when the browser blocks notifications for the page. src/renderer/web-shell.js (settings)"
+  },
+  "settings.web.notificationsAllow": {
+    "message": "Allow browser notifications",
+    "description": "Settings in the browser: row under Team chat notifications, shown while notifications are on and the browser hasn't been asked yet; it asks the browser. src/renderer/web-shell.js (settings)"
+  },
+  "settings.web.notificationsAllowHelp": {
+    "message": "So direct messages and mentions reach you while this tab is in the background.",
+    "description": "Settings in the browser: description under settings.web.notificationsAllow. src/renderer/web-shell.js (settings)"
+  },
   "settings.general.notificationsUnavailable": {
     "message": "This computer doesn't offer notifications to Rukoo.",
     "description": "settings > general. Settings > General: below Send a test notification when the system has no notifications for Rukoo, such as a Linux desktop without a notification service. src/renderer/settings.js (noticesDesc)"
@@ -7260,6 +7280,10 @@
     "message": "You were signed out because your password changed or this device was removed. Sign in again.",
     "description": "Rukoo account error, shown in Settings > Rukoo account when the account server answers signed_out or the input is refused. src/main/account/index.js (fail)."
   },
+  "account.errors.account_changed": {
+    "message": "This browser is now signed in to another account, so nothing changed. Check which account this is and try again.",
+    "description": "Rukoo in the browser: error in Settings > Rukoo account and on the chat-off page when another tab signed this browser in to another account while the Sign out or Delete account dialog was open, or while this tab's sign-out was on its way to the server. Nothing was signed out or deleted. src/web/host.js (sameAccount, accountSignOut)"
+  },
   "account.errors.handle_taken": {
     "message": "Another account uses this address. Pick another one.",
     "description": "Rukoo account error from the booking routes: the booking page address (handle) belongs to another account. Settings > Booking page. src/main/account/index.js (fail)."
@@ -7772,6 +7796,10 @@
     "message": "Keep your categories the same on all your devices",
     "description": "Settings > Rukoo account: description of the Rukoo account row on the Settings overview while signed out. src/renderer/settings.js."
   },
+  "settings.rukoo.webRowSignedOut": {
+    "message": "Sign in to use team chat",
+    "description": "Settings in the browser: description of the Rukoo account row while signed out; the browser version of settings.rukoo.rowSignedOut. src/renderer/rukoo-account.js (rowHtml)."
+  },
   "settings.rukoo.rowSignedIn": {
     "message": "Signed in as {email}",
     "description": "Settings > Rukoo account: description of the Rukoo account row while signed in. {email}: the account email address. src/renderer/settings.js."
@@ -7779,6 +7807,10 @@
   "settings.rukoo.intro": {
     "message": "A Rukoo account keeps Rukoo's own data the same on your phone and computers: your inbox categories, the category each email got and your corrections. Rukoo encrypts it on this device before it leaves, and only your devices have the key. Your mail and your mail passwords never go to the account.",
     "description": "Settings > Rukoo account: explanation at the top of the page while signed out. src/renderer/settings.js."
+  },
+  "settings.rukoo.webIntro": {
+    "message": "Your Rukoo account signs you in to team chat. This browser keeps your sign-in, your settings and which conversation you last had open. Your messages load from the server each time you open the page.",
+    "description": "Settings > Rukoo account in the browser: explanation at the top of the page while signed out; the browser version of settings.rukoo.intro. src/renderer/rukoo-account.js (signedOutPage)."
   },
   "settings.rukoo.server": {
     "message": "Server",
@@ -7860,6 +7892,14 @@
     "message": "An invitation link to a team chat workspace works as an invite code too.",
     "description": "Settings > Rukoo account: hint under the invite code field of the sign-up form, while team chat is available and the server accepts sign-ups with an invitation. src/renderer/rukoo-account.js"
   },
+  "settings.rukoo.webInvitation": {
+    "message": "Your invitation link is used to create the account and then to join the workspace.",
+    "description": "Settings > Rukoo account in the browser: line on the sign-up form when the page was opened from a team chat invitation link. It takes the place of the invite code field, which the link stands in for. src/renderer/rukoo-account.js (signUpPage)."
+  },
+  "settings.rukoo.webInvitationGone": {
+    "message": "This invitation link no longer works. Ask the person who sent it for a new one, or enter an invite code.",
+    "description": "Settings > Rukoo account in the browser: error on the sign-up form when the server refused the invitation link the page was opened with (used, withdrawn or expired) and the invite code field comes back. Takes the place of account.errors.invite_required there. src/renderer/rukoo-account.js (submit)."
+  },
   "settings.rukoo.understand": {
     "message": "I understand that if I forget my password, only my recovery key gets me back in.",
     "description": "Settings > Rukoo account: checkbox on the sign-up form. src/renderer/settings.js."
@@ -7896,6 +7936,10 @@
     "message": "This server doesn't take new accounts. Sign in with an existing account, or choose another server.",
     "description": "Settings > Rukoo account: note on the sign-up page when the server has sign-ups closed. src/renderer/settings.js."
   },
+  "settings.rukoo.webClosed": {
+    "message": "This server doesn't take new accounts. Sign in with an existing account.",
+    "description": "Settings > Rukoo account in the browser: the sign-up page when the server takes no new accounts. The browser can't choose another server, so unlike settings.rukoo.closed it doesn't offer that. src/renderer/rukoo-account.js (signUpPage)."
+  },
   "settings.rukoo.keyTitle": {
     "message": "Save your recovery key",
     "description": "Settings > Rukoo account: title of the dialog that shows the recovery key once. src/renderer/settings.js."
@@ -7920,9 +7964,17 @@
     "message": "Account created. This computer now syncs.",
     "description": "Settings > Rukoo account: toast after signing up. src/renderer/settings.js."
   },
+  "settings.rukoo.webWelcome": {
+    "message": "Account created. You're signed in.",
+    "description": "Settings > Rukoo account in the browser: toast after signing up; the browser version of settings.rukoo.welcome. src/renderer/rukoo-account.js (submit)."
+  },
   "settings.rukoo.signedIn": {
     "message": "Signed in. This computer now syncs.",
     "description": "Settings > Rukoo account: toast after signing in or recovering. src/renderer/settings.js."
+  },
+  "settings.rukoo.webSignedIn": {
+    "message": "Signed in.",
+    "description": "Settings > Rukoo account in the browser: toast after signing in or recovering; the browser version of settings.rukoo.signedIn. src/renderer/rukoo-account.js (submit)."
   },
   "settings.rukoo.account": {
     "message": "Account",
@@ -7996,6 +8048,10 @@
     "message": "Android",
     "description": "Settings > Rukoo account: platform name in a device row. src/renderer/settings.js."
   },
+  "settings.rukoo.platform.web": {
+    "message": "Browser",
+    "description": "Settings > Rukoo account: platform name in a device row, for a session in a web browser (Rukoo in the browser at rukoo.io/app). src/renderer/rukoo-account.js (platformName)."
+  },
   "settings.rukoo.security": {
     "message": "Security",
     "description": "Settings > Rukoo account: group title above password and recovery key rows. src/renderer/settings.js."
@@ -8056,9 +8112,17 @@
     "message": "This computer stops syncing and keeps its own copy of your categories.",
     "description": "Settings > Rukoo account: description of the sign out row. src/renderer/settings.js."
   },
+  "settings.rukoo.webSignOutHelp": {
+    "message": "This browser forgets your sign-in.",
+    "description": "Settings > Rukoo account in the browser: description of the sign out row and text of its confirmation; the browser version of settings.rukoo.signOutHelp. src/renderer/rukoo-account.js."
+  },
   "settings.rukoo.unsentChat": {
     "message": { "one": "{count} chat message hasn't been sent yet and is lost when you sign out.", "other": "{count} chat messages haven't been sent yet and are lost when you sign out." },
     "description": "Settings > Rukoo account: line added to the sign-out confirmation while team chat messages wait to be sent. {count}: those messages. src/renderer/rukoo-account.js"
+  },
+  "settings.rukoo.webUnsentChat": {
+    "message": { "one": "{count} chat message in this browser hasn't been sent yet and is lost when you sign out.", "other": "{count} chat messages in this browser haven't been sent yet and are lost when you sign out." },
+    "description": "Settings > Rukoo account in the browser: line added to the sign-out confirmation while team chat messages wait to be sent in this tab or another tab of the browser, which all share the sign-in. The browser version of settings.rukoo.unsentChat. {count}: those messages. src/renderer/rukoo-account.js"
   },
   "settings.rukoo.signedOut": {
     "message": "Signed out",
@@ -8075,6 +8139,10 @@
   "settings.rukoo.deleteChatNote": {
     "message": "Messages you wrote in team chat stay in their workspaces under a deleted member, until each workspace's retention removes them.",
     "description": "Settings > Rukoo account: note in the delete-account dialog while team chat is available. src/renderer/rukoo-account.js"
+  },
+  "settings.rukoo.webDeleteBooking": {
+    "message": "If you have a booking page, deleting your account here also turns it off and deletes its bookings, and nobody can use its link again, a new account of yours included. To keep the link, delete your account in the Rukoo app on your computer.",
+    "description": "Settings > Rukoo account in the browser: note in the delete-account dialog. The browser keeps no key for the booking page's link (its handle), so a deletion here gives the link up for good; the desktop app keeps a key that lets a new account take it back. src/renderer/rukoo-account.js"
   },
   "settings.rukoo.deleted": {
     "message": "Account deleted",
@@ -10359,6 +10427,10 @@
     "message": "Update needed",
     "description": "Chat sidebar foot: short status while the server needs a newer Rukoo for the workspace on screen; its tooltip says to update. src/renderer/chat.js (footStatus)"
   },
+  "chat.status.webUpdate": {
+    "message": "Reload needed",
+    "description": "Chat sidebar foot in the browser: short status while the server needs a newer Rukoo for the workspace on screen, which a reload brings; the browser version of chat.status.update. src/renderer/chat.js (footStatus)"
+  },
   "chat.empty.loading": {
     "message": "Loading team chat",
     "description": "Chat view: accessible name of the spinner while team chat loads. src/renderer/chat.js"
@@ -10383,6 +10455,14 @@
     "message": "Got an invitation link? Paste it where Rukoo asks for an invite code.",
     "description": "Chat view, signed out: hint under the buttons when the server accepts sign-ups with an invitation. src/renderer/chat.js"
   },
+  "chat.empty.webInvitedHint": {
+    "message": "You opened an invitation link. Create an account or sign in, and you can join the workspace right after.",
+    "description": "Chat view in the browser, signed out: hint under the buttons when the page was opened from a team chat invitation link, which it keeps for after the sign-up or sign-in. Takes the place of chat.empty.inviteHint there. src/renderer/chat-view.js (showState)."
+  },
+  "chat.empty.webInvitedBody": {
+    "message": "Team chat runs on your Rukoo account at {host}.",
+    "description": "Chat view in the browser, signed out, when the page was opened from a team chat invitation link: text under the title, in place of chat.empty.signedOutBody. chat.empty.webInvitedHint under the buttons asks to create an account or sign in, so this text only says where team chat runs. {host}: the host name of the Rukoo account server. src/renderer/chat-view.js (showState)."
+  },
   "chat.empty.storageTitle": {
     "message": "Team chat can't start",
     "description": "Chat view: title of the empty state when Rukoo can't open the chat cache on disk. src/renderer/chat.js"
@@ -10391,17 +10471,33 @@
     "message": "Rukoo couldn't open its chat storage on this computer. Restart Rukoo to try again.",
     "description": "Chat view: text of the empty state when Rukoo can't open the chat cache on disk. src/renderer/chat.js"
   },
+  "chat.empty.webStorageBody": {
+    "message": "Rukoo couldn't start team chat in this browser. Reload the page to try again.",
+    "description": "Chat view in the browser: text of the empty state when the page couldn't start team chat: its chat storage didn't open, or the chat engine failed to start, for example because its WebAssembly didn't load. Shown with chat.empty.storageTitle and a Reload page button (chat.web.reload), and as the tooltip of the sidebar's status line then. The browser version of chat.empty.storageBody. src/renderer/chat-view.js (showState), src/renderer/web-shell.js (drawGate, gateStatus)."
+  },
   "chat.empty.upgradeTitle": {
     "message": "Update Rukoo to use team chat",
     "description": "Chat view: title of the empty state when the server needs a newer Rukoo. src/renderer/chat.js"
+  },
+  "chat.empty.webUpgradeTitle": {
+    "message": "Reload to use team chat",
+    "description": "Chat view in the browser: title of the empty state when the server needs a newer Rukoo, which a reload of the page brings; the browser version of chat.empty.upgradeTitle. src/renderer/chat-view.js (showState)"
   },
   "chat.empty.upgradeBody": {
     "message": "{host} uses a newer version of team chat than this Rukoo knows.",
     "description": "Chat view: text of the empty state when the server needs a newer Rukoo. {host}: the server's host name. src/renderer/chat.js"
   },
+  "chat.empty.webUpgradeBody": {
+    "message": "{host} uses a newer version of team chat than this page. Reloading the page gets the newer version.",
+    "description": "Chat view in the browser: text of the empty state when the server needs a newer Rukoo; the browser version of chat.empty.upgradeBody. {host}: the server's host name. src/renderer/chat-view.js (showState)"
+  },
   "chat.empty.upgradeAction": {
     "message": "Check for updates",
     "description": "Chat view: button on the newer-Rukoo empty state that checks for an update. src/renderer/chat.js"
+  },
+  "chat.empty.webUpgradeAction": {
+    "message": "Reload page",
+    "description": "Chat view in the browser: button on the newer-Rukoo empty state that reloads the page; the browser version of chat.empty.upgradeAction. src/renderer/chat-view.js (showState)"
   },
   "chat.empty.noWorkspaceTitle": {
     "message": "No workspace yet",
@@ -10435,6 +10531,10 @@
     "message": "Rukoo stopped syncing {workspace} because its server is behind what this computer saw. Start over to load it again from the server.",
     "description": "Conversation pane: banner while Rukoo stopped a workspace because the server's history is older than what this computer cached. {workspace}: the workspace name. src/renderer/chat-view.js"
   },
+  "chat.banner.webPaused": {
+    "message": "Rukoo stopped syncing {workspace} because its server is behind what this page saw. Start over to load it again from the server.",
+    "description": "Conversation pane in the browser: banner while Rukoo stopped a workspace because the server's history is older than what the page loaded; the browser version of chat.banner.paused. {workspace}: the workspace name. src/renderer/chat.js (bannerFor, footStatus)"
+  },
   "chat.banner.startOver": {
     "message": "Start over",
     "description": "Conversation pane: button on the paused banner that drops the workspace's cache and loads it from the server again. src/renderer/chat-view.js"
@@ -10447,6 +10547,10 @@
     "message": "You were taken out of this conversation, or it no longer exists. Rukoo removed its messages from this computer.",
     "description": "Conversation pane: text under the title after the user lost access to the open conversation. src/renderer/chat-view.js"
   },
+  "chat.gone.webConversationBody": {
+    "message": "You were taken out of this conversation, or it no longer exists. Its messages no longer show here.",
+    "description": "Conversation pane in the browser: text under the title after the user lost access to the open conversation; the browser version of chat.gone.conversationBody. src/renderer/chat-view.js (goneConversation)"
+  },
   "chat.gone.workspaceTitle": {
     "message": "You're no longer in {workspace}",
     "description": "Chat view: title after the user lost access to the open workspace. {workspace}: the workspace name. src/renderer/chat.js"
@@ -10454,6 +10558,10 @@
   "chat.gone.workspaceBody": {
     "message": "Rukoo removed its messages from this computer.",
     "description": "Chat view: text under the title after the user lost access to the open workspace. src/renderer/chat.js"
+  },
+  "chat.gone.webWorkspaceBody": {
+    "message": "Its messages no longer show here.",
+    "description": "Chat view in the browser: text under the title after the user lost access to the open workspace; the browser version of chat.gone.workspaceBody. src/renderer/chat-view.js (goneWorkspace)"
   },
   "chat.head.members": {
     "message": { "one": "{count} member", "other": "{count} members" },
@@ -11167,6 +11275,10 @@
     "message": "Older replies aren't on this computer yet.",
     "description": "Thread panel: line above a thread Rukoo could only partly load. src/renderer/chat-view.js"
   },
+  "chat.thread.webPartial": {
+    "message": "Older replies haven't loaded yet.",
+    "description": "Thread panel in the browser: line above a thread Rukoo could only partly load; the browser version of chat.thread.partial. src/renderer/chat-view.js"
+  },
   "chat.thread.loadEarlier": {
     "message": "Load earlier replies",
     "description": "Thread panel: link under the partial-thread line that loads earlier replies. src/renderer/chat-view.js"
@@ -11875,6 +11987,10 @@
     "message": { "one": "{count} chat message hadn't been sent yet and was lost when Rukoo had to repair its chat storage.", "other": "{count} chat messages hadn't been sent yet and were lost when Rukoo had to repair its chat storage." },
     "description": "Team chat: toast, shown once, after a damaged chat cache was made again with unsent messages in it (contract 3.4, ChatState.lostUnsent). {count}: the messages lost. Same wording as Android's chat_lost_unsent. src/renderer/chat.js (noticeLostUnsent)"
   },
+  "chat.webLostUnsentSignedOut": {
+    "message": { "one": "{count} chat message hadn't been sent yet and was lost because this browser was signed out.", "other": "{count} chat messages hadn't been sent yet and were lost because this browser was signed out." },
+    "description": "Team chat in the browser: toast, shown once, after this tab's sign-in ended without this tab asking (a sign-out or a sign-in to another account in another tab, or the server ending the session) and took its unsent messages with it. Also after this tab's own sign-out for messages sent while it ran, which its confirmation didn't count. Takes the place of chat.lostUnsent then. {count}: the messages lost. src/renderer/chat.js (noticeLostUnsent), src/web/host.js (settleEnding)"
+  },
   "chat.errors.notFound": {
     "message": "That no longer exists.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: what the action was about no longer exists (404 without a scope). src/renderer/chat.js (chatErrorText)"
@@ -11943,6 +12059,10 @@
     "message": "Update Rukoo to keep using team chat on {host}.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server needs a newer Rukoo (426). {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
   },
+  "chat.errors.webUpgrade": {
+    "message": "Reload the page to keep using team chat on {host}.",
+    "description": "Team chat error in the browser, shown in the dialog, message row or toast of the failed action: the server needs a newer Rukoo (426); the browser version of chat.errors.upgrade. {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
+  },
   "chat.errors.rateLimited": {
     "message": { "one": "Too many requests. Rukoo tries again in {count} second.", "other": "Too many requests. Rukoo tries again in {count} seconds." },
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server asked Rukoo to slow down (429). {count}: seconds until Rukoo tries again. src/renderer/chat.js (chatErrorText)"
@@ -11958,6 +12078,10 @@
   "chat.errors.notSaved": {
     "message": "Rukoo couldn't save this message on this computer, so it wasn't sent. Free up disk space and try again.",
     "description": "Team chat error, shown under an unsent message: Rukoo couldn't store it on disk, so it didn't send it. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.errors.webNotSaved": {
+    "message": "Rukoo couldn't keep this message in the browser, so it wasn't sent. Copy its text, reload the page and send it again.",
+    "description": "Team chat error in the browser, shown under an unsent message: the page couldn't store it, so it didn't send it; the browser version of chat.errors.notSaved. A reload empties the page, hence copying the text first. src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.paused": {
     "message": "{workspace} is stopped. Start over to use it again.",
@@ -12010,6 +12134,50 @@
   "chat.errors.failed": {
     "message": "Something went wrong. Try again.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action, for anything the other chat.errors keys don't cover. src/renderer/chat.js (chatErrorText)"
+  },
+  "chat.web.offTitle": {
+    "message": "Team chat isn't turned on",
+    "description": "Rukoo in the browser: title of the page when the account server has no team chat; the text under it (chat.web.offBody) names the server. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.offBody": {
+    "message": "The Rukoo account server at {host} doesn't run team chat. Once it does, your workspaces show here.",
+    "description": "Rukoo in the browser: text under chat.web.offTitle. {host}: the server's host name. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.unreachableTitle": {
+    "message": "Rukoo can't reach {host}",
+    "description": "Rukoo in the browser: title of the page when the account server didn't answer, so the page can't tell whether it has team chat. {host}: the server's host name. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.unreachableBody": {
+    "message": "Check your connection, then try again.",
+    "description": "Rukoo in the browser: text under chat.web.unreachableTitle. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.tryAgain": {
+    "message": "Try again",
+    "description": "Rukoo in the browser: button under chat.web.unreachableTitle that asks the server again. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.reload": {
+    "message": "Reload page",
+    "description": "Rukoo in the browser: button on the page that says team chat couldn't start; it reloads the page. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.signOut": {
+    "message": "Sign out",
+    "description": "Rukoo in the browser: button on the page that says the server has no team chat, while signed in. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.settings": {
+    "message": "Settings",
+    "description": "Rukoo in the browser: button on the page that says the server has no team chat or can't be reached; it opens Settings. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.statusOff": {
+    "message": "Team chat off",
+    "description": "Rukoo in the browser: status line in the sidebar foot while the server has no team chat. src/renderer/web-shell.js (footStatus)"
+  },
+  "chat.web.statusFailed": {
+    "message": "Can't start",
+    "description": "Rukoo in the browser: short status line in the sidebar foot when team chat couldn't start in this browser (for example a file it needs didn't load); the page beside it says so and offers Reload page. src/renderer/web-shell.js (gateStatus)"
+  },
+  "chat.web.backTitle": {
+    "message": "Back to conversations",
+    "description": "Rukoo in the browser on a phone: tooltip and accessible name of the Back button in the title bar that goes from a conversation to the list of channels and direct messages. src/renderer/web-shell.js"
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;
