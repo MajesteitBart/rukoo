@@ -18,8 +18,8 @@
 //
 // Given expect (position() of the ws row the request was built from) and rev (svc.revision(ws) when the request went
 // out), each returns null instead and changes nothing when the row no longer has that position or the workspace's
-// cache revision moved on: a reset, Start over, restore, new key or park happened while the page was on its way, and
-// the page belongs to the feed as it stood before.
+// cache revision moved on: a reset, Start over, restore, new key, park, or a room's cache dropped for removedMore or a
+// new grant happened while the page was on its way, and the page belongs to the feed as it stood before.
 //
 // The cache revision (svc.revision(ws), shared with the history, outbox and alert modules): it goes up inside every
 // transaction here that resets, restores, starts over, re-keys or quarantines a workspace, or drops a room's cache for
