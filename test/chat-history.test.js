@@ -776,6 +776,9 @@ test('a thread root kept outside the cache loses its text when removed and goes 
   assert.equal(again.root.text, null);
   assert.deepEqual(again.root.mentions, []);
   assert.equal(again.replies.length, 2);
+  // A run takes the removal from the feed first, so the page that brings the floor lists no removed IDs and the cache
+  // has nothing below the floor: the memory must still be checked against it.
+  await svc.sync(ws.id);
 
   // Retention passes the root and its replies (one field of a real feed answer, as retention can't be made on demand).
   await postMany(olga, ws.id, ws.general, 1, { prefix: 'after' });

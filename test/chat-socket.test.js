@@ -158,7 +158,10 @@ test('an upgrade for a workspace deleted after its ticket removes the workspace 
     const answer = await real();
     const out = await server.call('DELETE', route(ws.id), { token: owner.token });
     assert.equal(out.status, 204, out.text);
-    deleted = { tickets: tickets.length, upgrades: upgrades.length, refusal: await rawUpgrade(ws.id, answer.ticket) };
+    // Recorded before the raw upgrade: under load a feed run can meet the deleted workspace's 404 and remove it while
+    // that upgrade is still on its way.
+    deleted = { tickets: tickets.length, upgrades: upgrades.length, refusal: null };
+    deleted.refusal = await rawUpgrade(ws.id, answer.ticket);
     return answer;
   });
   const svc = chatService(account, dir, { timing: FAST, WebSocket: Spy });
@@ -173,6 +176,7 @@ test('an upgrade for a workspace deleted after its ticket removes the workspace 
   svc.sockets.get(ws.id).socket.close(1000);
   await until(() => svc.events.some((e) => e.kind === 'removed' && e.ws === ws.id), 10000, 'the removal');
   assert.ok(deleted, 'the workspace was deleted between a ticket and its upgrade');
+  await until(() => deleted.refusal, 10000, 'the raw upgrade with the old ticket');
   // What the server answers that ticket's upgrade, which Node's WebSocket doesn't show.
   assert.equal(deleted.refusal.status, 404);
   assert.equal(deleted.refusal.body.error, 'not_found');

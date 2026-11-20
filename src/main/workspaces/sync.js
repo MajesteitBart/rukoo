@@ -367,10 +367,13 @@ async function afterPage(svc, ws, result) {
     if (ids.length) svc.emitChat({ kind: 'redacted', ws, conversation: room, ids });
   }
   if (!result.partial) await hook(svc, () => svc.history.afterPage(ws, result));
-  for (const [room, ids] of Object.entries(result.removed)) {
-    if (!ids.length) continue;
+  // Every changed room goes to the history module, also without removed IDs: a page can raise a room's floor past
+  // events it holds outside the cache (a thread's memory, an opening's detached events) when no cached event was
+  // below it, and those are checked against the floor and the tombstones there.
+  for (const room of new Set([...result.changed, ...Object.keys(result.removed)])) {
+    const ids = result.removed[room] || [];
     await hook(svc, () => svc.history.onRemoved(ws, room, ids));
-    await hook(svc, () => svc.notifier.onRemoved(ws, room, ids));
+    if (ids.length) await hook(svc, () => svc.notifier.onRemoved(ws, room, ids));
   }
   for (const room of result.evicted) {
     await hook(svc, () => svc.notifier.onEvicted(ws, room));
