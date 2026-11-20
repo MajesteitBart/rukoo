@@ -165,12 +165,12 @@ class WorkspaceServiceTest {
             listing = ids.toList()
         }
 
-        /** A workspace whose routes answer: GET /, a feed of [rooms], and empty directories. */
+        /** A workspace whose routes answer: GET /, a feed of [rooms], me and Olga as members (me in my [roles] role), and empty directories. */
         fun workspace(w: String = Ids.WS, vararg rooms: Change) {
             http.on("GET", route(w)) { ok(WorkspaceDetails.serializer(), details(ws = w)) }
             http.on("GET", route(w, "/changes")) { ok(FeedPage.serializer(), feed(*rooms, next = "c1")) }
             http.on("GET", route(w, "/members")) {
-                ok(MembersPage.serializer(), MembersPage(listOf(Member(Ids.ME, name = "Me", role = "member", state = "active"), Member(Ids.OLGA, name = "Olga", role = "member", state = "active"))))
+                ok(MembersPage.serializer(), MembersPage(listOf(Member(Ids.ME, name = "Me", role = roles[w] ?: "member", state = "active"), Member(Ids.OLGA, name = "Olga", role = "member", state = "active"))))
             }
             http.on("GET", route(w, "/channels")) { ok(ChannelsPage.serializer(), ChannelsPage()) }
             http.on("GET", route(w, "/blocks")) { ok(BlocksPage.serializer(), BlocksPage()) }
@@ -464,6 +464,32 @@ class WorkspaceServiceTest {
         s.nudge()
         runCurrent()
         assertEquals(2, h.http.calls("GET", "/v1/workspaces").size)
+    }
+
+    @Test
+    fun `a role someone gives me reaches the workspace list with the members reload`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until("the workspace synced") { st -> st.connection == Connection.ONLINE && st.workspaces.singleOrNull()?.status == WorkspaceStatus.OK }
+        assertEquals("member", s.state.value.workspaces.single().role)
+
+        // An admin makes me admin: my feed marks the members directory stale; no GET / is due.
+        h.http.once("GET", h.route(ws, "/changes")) { ok(FeedPage.serializer(), feed(room(), directory = Directory(members = true), next = "c2")) }
+        h.http.once("GET", h.route(ws, "/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(Member(Ids.ME, name = "Me", role = "admin", state = "active"), Member(Ids.OLGA, name = "Olga", role = "owner", state = "active"))))
+        }
+        val gets = h.http.calls("GET", h.route(ws)).size
+        s.refresh(ws)
+        assertEquals("admin", s.state.until("my new role in the workspace list") { st -> st.workspaces.singleOrNull()?.role == "admin" }.workspaces.single().role)
+        val view = s.view(ws).first()
+        assertEquals("admin", view.ws.role)
+        assertEquals("admin", view.me.role)
+        assertEquals("no GET / brought it", gets, h.http.calls("GET", h.route(ws)).size)
+        h.http.verify()
     }
 
     // ---- making and joining ----

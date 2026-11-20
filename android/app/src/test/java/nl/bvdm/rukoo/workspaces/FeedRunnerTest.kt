@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.workspaces
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -259,6 +260,35 @@ class FeedRunnerTest {
             assertEquals(emptyList<Block>(), listBlocks(ws))
         }
         assertTrue(h.http.calls("GET", h.route("/channels")).isEmpty())
+    }
+
+    @Test
+    fun `a members reload that changes my role sets the workspace's role and my name`() = runTest {
+        val h = SyncHarness(this, db).start(seed = false)
+        h.seedWs(role = "member")
+        // Someone made me admin: my feed marks the members directory stale, and GET / isn't due.
+        h.feedPages(feed(room(head = 2), directory = Directory(members = true), next = "cursor1"))
+        h.http.on("GET", h.route("/members")) {
+            ok(MembersPage.serializer(), MembersPage(listOf(
+                Member(Ids.ME, name = "Me Renamed", role = "admin", state = "active"),
+                Member(Ids.OLGA, name = "Olga", role = "owner", state = "active"),
+            )))
+        }
+        val seen = CopyOnWriteArrayList<DbChange>()
+        backgroundScope.launch { h.store.changes.collect { seen += it } }
+        runCurrent()
+        h.sync.now()
+        val row = h.ws()
+        assertEquals("admin", row.role)
+        assertEquals("Me Renamed", row.myName)
+        assertFalse(row.membersStale)
+        assertTrue("the workspace list hears the change", seen.any { it.affects(ws) })
+        assertTrue("no GET / was needed", h.http.calls("GET", h.route()).isEmpty())
+        // A page that leaves me out (a long directory) keeps what the row had.
+        h.store.tx { replaceMembers(ws, listOf(Member(Ids.OLGA, name = "Olga", role = "owner", state = "active")), more = true) }
+        assertEquals("admin", h.ws().role)
+        assertEquals("Me Renamed", h.ws().myName)
+        h.http.verify()
     }
 
     @Test

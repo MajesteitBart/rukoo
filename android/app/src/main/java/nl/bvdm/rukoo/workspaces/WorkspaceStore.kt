@@ -459,7 +459,10 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
         // ---- directory ----
 
-        /** Each replace swaps the workspace's rows and clears its stale flag. */
+        /**
+         * Each replace swaps the workspace's rows and clears its stale flag. The caller's own row also sets the
+         * workspace's role and name, so a role someone else gave me reaches the workspace list before the next `GET /`.
+         */
         fun replaceMembers(ws: String, rows: List<Member>, more: Boolean = false) {
             sql.exec("DELETE FROM member WHERE ws = ?", ws)
             for (m in rows) {
@@ -469,6 +472,8 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
                 )
             }
             sql.exec("UPDATE ws SET membersStale = 0, membersMore = ? WHERE id = ?", more, ws)
+            val me = getWs(ws)?.me
+            rows.firstOrNull { it.id == me }?.let { sql.exec("UPDATE ws SET role = ?, myName = ? WHERE id = ?", it.role, it.name, ws) }
             sql.touch(ws)
         }
 
