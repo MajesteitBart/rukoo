@@ -17,6 +17,7 @@ use common::*;
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::Diarizer;
+use voice_meetings::transcript::SPLIT_SENT_KEY;
 use voice_meetings::{
     catch_up_split, microphone_end, split_microphone, split_voices, FollowerTiming, Labels,
     Library, MeetingDir, Pipeline, PipelineOptions, PipelineState, SplitError, Timing, Transcript,
@@ -408,6 +409,74 @@ fn a_split_whose_events_never_went_out_sends_them_at_the_next_start_or_before_do
     let untouched = recorded(&lib, &pieces, &[]);
     assert_eq!(catch_up_split(&untouched.dir, &log).unwrap(), 0);
     assert!(!untouched.dir.path().join("transcript.db").exists());
+}
+
+/// Runs SQL on the event log's `bridge.db`, as a Voice that stopped halfway would leave it.
+fn log_sql(log: &EventLog, statement: &str) {
+    let conn = rusqlite::Connection::open(log.path()).unwrap();
+    conn.execute_batch(statement).unwrap();
+}
+
+#[test]
+fn a_start_reads_only_the_mark_of_a_split_whose_events_all_went_out() {
+    let tmp = TempDir::new("split-sent");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    transcribe(&rec, &log, timed());
+    assert_eq!(
+        split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        3
+    );
+    let sent = events(&log, &rec.id()).len();
+
+    // Every microphone passage moves to a revision the log never got, so a start that read the
+    // passages would send all six. The mark says the split's events went out: it sends none.
+    sql(
+        &rec,
+        "UPDATE passages SET revision = revision + 1 WHERE track = 'mic'",
+    );
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+    assert_eq!(events(&log, &rec.id()).len(), sent);
+
+    // A log whose head is below the mark lost the split's last events, as to a power cut: the
+    // start reads the split again and sends what the log lacks, then marks it again.
+    let ahead = format!("{}:{}", log.instance(), log.head() + 100);
+    sql(
+        &rec,
+        &format!("UPDATE meta SET value = '{ahead}' WHERE key = '{SPLIT_SENT_KEY}'"),
+    );
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 6);
+    assert_no_repeats(&events(&log, &rec.id()));
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
+}
+
+#[test]
+fn a_split_that_stopped_halfway_through_its_events_sends_the_rest_at_the_next_start() {
+    let tmp = TempDir::new("split-halfway");
+    let lib = Library::open(tmp.path()).unwrap();
+    let log = EventLog::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    transcribe(&rec, &log, timed());
+    let before = events(&log, &rec.id());
+    assert_eq!(
+        split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+        3
+    );
+
+    // Voice stopped after the split's first event: the log lacks the other three, and the split
+    // has no mark.
+    let first = events(&log, &rec.id())[before.len()].seq;
+    log_sql(&log, &format!("DELETE FROM events WHERE seq > {first}"));
+    sql(
+        &rec,
+        &format!("DELETE FROM meta WHERE key = '{SPLIT_SENT_KEY}'"),
+    );
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 3);
+    assert_split_sent(&log, &rec, &before, &pieces);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
 }
 
 /// Nothing a split wrote: no voices, no microphone turns, no epoch, passages as they were.

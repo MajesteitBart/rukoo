@@ -49,8 +49,8 @@ use crate::segmentation::{
 use crate::speakers::follower::{pad_with, FollowerTiming, Labeller};
 use crate::speakers::turns::{passage_speaker, word_speakers, Turn};
 use crate::transcript::{
-    mic_number, stored_split_voices, LabelBatch, SplitWrite, StoredPassage, Transcript,
-    LABELLED_KEY, SETTLED_KEY,
+    mic_number, split_sent_mark, stored_split, LabelBatch, SplitWrite, StoredPassage, Transcript,
+    LABELLED_KEY, SETTLED_KEY, SPLIT_SENT_KEY,
 };
 use crate::watcher::{Stretch, TimelineWatcher};
 
@@ -322,16 +322,18 @@ pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
     Ok(send_owed(dir, log, false)?.map_or(0, |(voices, _)| voices))
 }
 
-/// At Voice's start: sends what a split stored by an earlier run still owes Rukoo
-/// ([`send_split`]), as when Voice quit between storing the split and sending its events.
-/// Returns how many events went out. A meeting that wasn't split costs one read of its
-/// `transcript.db`, and none is created; a meeting the log has no events of is left alone, since
-/// Rukoo doesn't know it from this log. No diarizer runs.
+/// At Voice's start, before the bridge serves: sends what a split stored by an earlier run still
+/// owes Rukoo ([`send_split`]), as when Voice quit between storing the split and sending its
+/// events. Returns how many events went out. A meeting that wasn't split, or whose split's
+/// events all went to this log ([`SPLIT_SENT_KEY`]), costs one read of its `transcript.db`, and
+/// none is created; only a split without that mark is read again in full. A meeting the log has
+/// no events of is left alone, since Rukoo doesn't know it from this log. No diarizer runs.
 pub fn catch_up_split(dir: &MeetingDir, log: &EventLog) -> Result<usize, SplitError> {
-    if stored_split_voices(dir.path()).is_none() {
-        return Ok(0);
+    match stored_split(dir.path()) {
+        None => Ok(0),
+        Some(split) if split.sent_to(log.instance(), log.head()) => Ok(0),
+        Some(_) => Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent)),
     }
-    Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent))
 }
 
 /// [`send_split`]'s work: the voices on the track and how many events went out. `None` when
@@ -402,6 +404,12 @@ fn send_owed(
             events::PASSAGE,
             to_data(passage),
         )?;
+    }
+    // Every event of the split is in the log now, at or below its head. Without the mark the
+    // next start only reads the split again.
+    let mark = split_sent_mark(log.instance(), log.head());
+    if let Err(e) = transcript.meta_set(SPLIT_SENT_KEY, &mark) {
+        eprintln!("voice-meetings: {meeting}: couldn't note that the split's events went out: {e}");
     }
     Ok(Some((voices, emitted.len() - known)))
 }

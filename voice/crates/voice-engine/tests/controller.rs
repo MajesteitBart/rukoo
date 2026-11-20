@@ -9,8 +9,9 @@ mod support;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -46,6 +47,10 @@ fn main() {
     std::env::set_var(ROLE, "recorder");
     let tests: Vec<(&str, fn())> = vec![
         ("commands_reach_the_recorder", commands_reach_the_recorder),
+        (
+            "changes_reach_the_engine_one_at_a_time_in_order",
+            changes_reach_the_engine_one_at_a_time_in_order,
+        ),
         (
             "the_watchdog_resumes_a_killed_recorder",
             the_watchdog_resumes_a_killed_recorder,
@@ -355,6 +360,90 @@ fn commands_reach_the_recorder() {
         .iter()
         .any(|l| matches!(l, Line::Dictation { state, .. } if state == "end")));
     assert!(matches!(lines.last(), Some(Line::Stop { reason, .. }) if reason == "user"));
+    c.shutdown();
+}
+
+/// The engine hears of a meeting's changes one at a time and in the order the meeting changed,
+/// also when it takes its time over one: the watchdog's first clock, which can take the lock the
+/// moment the start releases it, follows `Started`, and `Ended` follows a clock the watchdog read
+/// before the stop (#336).
+fn changes_reach_the_engine_one_at_a_time_in_order() {
+    let dir = TempDir::new("order");
+    let data = dir.join("data");
+    let changes: Changes = Arc::default();
+    let overlapped = Arc::new(AtomicBool::new(false));
+    // Takes the next clock: the engine says it has it, then takes 500 ms over it.
+    let hold_clock: Arc<Mutex<Option<mpsc::Sender<()>>>> = Arc::default();
+    let c = Controller::new(
+        ControllerOptions {
+            data_dir: data.clone(),
+            recorder_exe: recorder_exe(),
+            sources: sources(),
+            timing: timing(),
+        },
+        {
+            let changes = Arc::clone(&changes);
+            let overlapped = Arc::clone(&overlapped);
+            let hold_clock = Arc::clone(&hold_clock);
+            let inside = AtomicBool::new(false);
+            move |change| {
+                if inside.swap(true, Ordering::SeqCst) {
+                    overlapped.store(true, Ordering::SeqCst);
+                }
+                match &change {
+                    // Long enough for the watchdog, every 100 ms, to read the recorder's clock.
+                    Change::Started { .. } => thread::sleep(Duration::from_millis(500)),
+                    Change::Clock { .. } => {
+                        if let Some(arrived) = lock(&hold_clock).take() {
+                            let _ = arrived.send(());
+                            thread::sleep(Duration::from_millis(500));
+                        }
+                    }
+                    _ => {}
+                }
+                lock(&changes).push(change);
+                inside.store(false, Ordering::SeqCst);
+            }
+        },
+    )
+    .unwrap();
+    let id = c.start(StartArgs::default(), StartedBy::Voice).unwrap();
+    {
+        let heard = lock(&changes);
+        assert!(
+            matches!(&heard[0], Change::Started { id: started, at_ms: 0 } if *started == id),
+            "{heard:?}"
+        );
+    }
+    wait_change(&changes, "a clock tick", |c| {
+        matches!(c, Change::Clock { .. })
+    });
+
+    // The stop comes while the engine is over a clock.
+    let (arrived, clock) = mpsc::channel();
+    *lock(&hold_clock) = Some(arrived);
+    clock
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the watchdog reads the clock");
+    c.stop(Some(&id), "user").unwrap();
+    {
+        let heard = lock(&changes);
+        assert!(
+            matches!(heard.last(), Some(Change::Ended { reason, .. }) if reason == "user"),
+            "{heard:?}"
+        );
+        assert_eq!(
+            heard
+                .iter()
+                .filter(|c| matches!(c, Change::Started { .. }))
+                .count(),
+            1
+        );
+    }
+    assert!(
+        !overlapped.load(Ordering::SeqCst),
+        "two changes reached the engine at once"
+    );
     c.shutdown();
 }
 

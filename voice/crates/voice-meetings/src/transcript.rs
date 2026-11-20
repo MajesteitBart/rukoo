@@ -39,6 +39,11 @@ pub const LABELLED_KEY: &str = "speakers.finished.call";
 /// it again. Set in the transaction that stores the microphone's turns and cuts and moves its
 /// passages.
 pub const SPLIT_KEY: &str = "speakers.split.mic";
+/// Where the event log stood once every event of the microphone split was in it, as
+/// `<instance>:<head>`: the log's instance id and its head right after the last of them. Set
+/// after [`SPLIT_KEY`] once the split's events went out; Voice's next start skips the split when
+/// its log is that instance and reaches that head ([`StoredSplit::sent_to`]).
+pub const SPLIT_SENT_KEY: &str = "speakers.split.sent.mic";
 /// The `reason` of a microphone split's epoch in `speaker_epochs`; its engine is `nemotron`.
 pub const SPLIT_REASON: &str = "split";
 
@@ -992,9 +997,35 @@ pub fn stored_outcome(meeting_dir: &Path) -> Option<Outcome> {
     read_outcome(&conn).ok().flatten()
 }
 
-/// The voices a microphone split left ([`SPLIT_KEY`]), read without creating the file: `None`
-/// before a split, and for a meeting without a readable `transcript.db`.
-pub fn stored_split_voices(meeting_dir: &Path) -> Option<u64> {
+/// The [`SPLIT_SENT_KEY`] value for a log with this instance id once its head is `head`.
+pub fn split_sent_mark(instance: &str, head: u64) -> String {
+    format!("{instance}:{head}")
+}
+
+/// A microphone split as Voice's start reads it ([`stored_split`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredSplit {
+    /// The voices it left on the track ([`SPLIT_KEY`]).
+    pub voices: u64,
+    /// The log's instance and head once its events were all sent ([`SPLIT_SENT_KEY`]).
+    pub sent: Option<(String, u64)>,
+}
+
+impl StoredSplit {
+    /// Whether the split's events are all in the event log with this instance id and head. A log
+    /// that started again has another instance, and one that lost its last events to a power cut
+    /// has a head below the mark, so the split's events go out again. Ask before the start
+    /// appends much: the numbers a power cut lost are given out again.
+    pub fn sent_to(&self, instance: &str, head: u64) -> bool {
+        self.sent
+            .as_ref()
+            .is_some_and(|(sent, at)| sent == instance && *at <= head)
+    }
+}
+
+/// The microphone split ([`SPLIT_KEY`] and [`SPLIT_SENT_KEY`]) in one read, without creating the
+/// file: `None` before a split, and for a meeting without a readable `transcript.db`.
+pub fn stored_split(meeting_dir: &Path) -> Option<StoredSplit> {
     let path = meeting_dir.join(FILE_NAME);
     if !path.is_file() {
         return None;
@@ -1005,15 +1036,22 @@ pub fn stored_split_voices(meeting_dir: &Path) -> Option<u64> {
     )
     .ok()?;
     conn.busy_timeout(Duration::from_secs(2)).ok()?;
-    let value: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = ?1",
-            [SPLIT_KEY],
-            |row| row.get(0),
-        )
-        .optional()
-        .ok()??;
-    value.parse().ok()
+    let mut statement = conn
+        .prepare("SELECT key, value FROM meta WHERE key IN (?1, ?2)")
+        .ok()?;
+    let rows: HashMap<String, String> = statement
+        .query_map([SPLIT_KEY, SPLIT_SENT_KEY], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .ok()?
+        .collect::<rusqlite::Result<_>>()
+        .ok()?;
+    let voices = rows.get(SPLIT_KEY)?.parse().ok()?;
+    let sent = rows.get(SPLIT_SENT_KEY).and_then(|mark| {
+        let (instance, head) = mark.rsplit_once(':')?;
+        Some((instance.to_owned(), head.parse().ok()?))
+    });
+    Some(StoredSplit { voices, sent })
 }
 
 fn read_outcome(conn: &Connection) -> rusqlite::Result<Option<Outcome>> {
