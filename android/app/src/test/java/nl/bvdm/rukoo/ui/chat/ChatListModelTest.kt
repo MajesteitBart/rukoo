@@ -144,6 +144,11 @@ class ChatListModelTest {
         val guestWithClosed = ChatListModel.sections(rooms + dm("d", with = listOf("sanne"), closedReason = "ineligible"), ChatFilter.ALL, guest, people, names)
         assertTrue(guestWithClosed.showDms)
         assertTrue(guestWithClosed.dms.single().badge.dim)
+        // A workspace that needs a newer Rukoo makes nothing: no plus buttons, Browse or New message, the DMs still listed.
+        val upgrade = ChatListModel.sections(rooms, ChatFilter.ALL, me, people, names, writable = false)
+        assertFalse(upgrade.canCreate)
+        assertTrue(upgrade.showDms)
+        assertEquals(member.channels, upgrade.channels)
         for (role in listOf("owner", "admin", "member")) assertTrue(role, ChatListModel.isFullMember(role))
         assertFalse(ChatListModel.isFullMember("guest"))
         assertFalse(ChatListModel.isFullMember(null))

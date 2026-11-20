@@ -156,7 +156,7 @@ private fun ChatPaneContent(app: AppViewModel, nav: NavState, pane: ChatPane, mo
         ws == null || room == null -> RoomPick(tracked)
         pane == ChatPane.ROOM -> RoomPane(app, ws, room, tracked, twoPane = twoPane)
         root == null -> RoomPick(tracked)
-        else -> ThreadPane(app, ws, room, root, tracked, twoPane = twoPane)
+        else -> ThreadPane(app, ws, room, root, tracked, twoPane = twoPane, at = nav.chat.threadAt)
     }
 }
 

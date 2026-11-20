@@ -334,21 +334,27 @@ class ChatUi(
         mentionIds.clear()
     }
 
-    // Who can be mentioned in a channel, by room and member count: `GET /channels/{c}/members` once per open room.
-    private val mentionIds = HashMap<String, List<String>>()
+    // Who can be mentioned in each channel, with the member count it was loaded at: `GET /channels/{c}/members`.
+    private val mentionIds = HashMap<String, Pair<Int, List<String>>>()
 
-    /** The member IDs of [room], for the mention picker; null when they couldn't load (offline). */
-    suspend fun mentionMembers(ws: String, room: Room): List<String>? {
+    /**
+     * The member IDs of [room], for the mention picker; null when they couldn't load (offline). A channel's list is
+     * kept while its member count stays, and loaded again when it changes or with [fresh], which the picker asks for
+     * each time it opens: someone replaced in the channel leaves the count as it was (§3.17). When that load fails,
+     * the kept list stands in.
+     */
+    suspend fun mentionMembers(ws: String, room: Room, fresh: Boolean = false): List<String>? {
         if (room.kind == RoomKind.DM) return room.participants.orEmpty()
-        val key = "$ws/${room.id}/${room.members}"
-        mentionIds[key]?.let { return it }
-        val w = workspaces ?: return null
+        val key = "$ws/${room.id}"
+        val kept = mentionIds[key]
+        if (!fresh && kept != null && kept.first == room.members) return kept.second
+        val w = workspaces ?: return kept?.second
         return try {
-            w.roomMembers(ws, room.id).map { it.member }.also { mentionIds[key] = it }
+            w.roomMembers(ws, room.id).map { it.member }.also { mentionIds[key] = room.members to it }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            null
+            kept?.second
         }
     }
 

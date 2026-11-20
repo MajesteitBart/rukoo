@@ -93,6 +93,9 @@ sealed interface ComposerSlot {
     /** The workspace stopped syncing (quarantine); its banner has Start over. */
     data object Paused : ComposerSlot
 
+    /** The server needs a newer Rukoo (426, §3.6): the history stays readable, nothing can be written. */
+    data object Upgrade : ComposerSlot
+
     /** A thread whose first message was removed. */
     data object RootRemoved : ComposerSlot
 }
@@ -103,9 +106,13 @@ enum class ClosedText { YOU_BLOCKED, LEFT, INELIGIBLE, CLOSED }
 /** A closed DM's bar: its line, the person you blocked in it (Unblock), and whether a new conversation can start. */
 data class ClosedBar(val text: ClosedText, val blocked: String?, val startNew: Boolean)
 
-/** Which [ComposerSlot] a room or thread gets, pure for the tests. A stopped workspace wins, as on desktop. */
+/**
+ * Which [ComposerSlot] a room or thread gets, pure for the tests. A workspace that needs a newer Rukoo ([upgrade])
+ * takes every write away, Join included; a stopped workspace wins over the room's own state, as on desktop.
+ */
 object ComposerSlots {
-    fun of(room: Room?, notJoined: Channel? = null, paused: Boolean = false, rootRemoved: Boolean = false): ComposerSlot = when {
+    fun of(room: Room?, notJoined: Channel? = null, paused: Boolean = false, rootRemoved: Boolean = false, upgrade: Boolean = false): ComposerSlot = when {
+        upgrade -> ComposerSlot.Upgrade
         room == null && notJoined != null -> ComposerSlot.NotJoined(notJoined)
         paused -> ComposerSlot.Paused
         room == null -> ComposerSlot.Composer
@@ -196,7 +203,8 @@ fun ChatComposer(
     LaunchedEffect(token == null) { if (token == null) dismissed = null }
     val picking = token?.takeIf { it.start != dismissed }
     val open = picking != null
-    val ids by produceState<List<String>?>(null, ws, room.id, room.members, room.participants) { value = ui.mentionMembers(ws, room) }
+    // Loaded again each time the picker opens, so someone who left or joined the channel meanwhile is (or isn't) offered.
+    val ids by produceState<List<String>?>(null, ws, room.id, room.members, room.participants, open) { value = ui.mentionMembers(ws, room, fresh = open) }
     // Offline, a channel's members can't load: the people who wrote in it stand in.
     val people = remember(ids, members, recent) { (ids ?: recent).distinct().mapNotNull { members[it] } }
     val query = picking?.query
@@ -407,6 +415,7 @@ internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room
     val c = Rk.colors
     val ui = app.chatUi
     val chatView by app.chatView.collectAsStateWithLifecycle()
+    val chatNow by app.chatState.collectAsStateWithLifecycle()
     val view = chatView?.takeIf { it.ws.id == ws }
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
     val names = rememberChatNames()
@@ -428,6 +437,7 @@ internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room
             ClosedText.CLOSED -> stringResource(R.string.chat_input_closed_blocked)
         }
         ComposerSlot.Paused -> stringResource(R.string.chat_input_paused, workspace)
+        ComposerSlot.Upgrade -> stringResource(R.string.chat_errors_upgrade, chatNow.host)
         ComposerSlot.RootRemoved -> stringResource(R.string.chat_thread_root_removed)
         ComposerSlot.Composer -> return
     }

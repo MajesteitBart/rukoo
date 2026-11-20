@@ -47,6 +47,10 @@ class ChatComposerRulesTest {
         assertEquals(ComposerSlot.RootRemoved, ComposerSlots.of(room(), rootRemoved = true))
         assertEquals(ComposerSlot.Composer, ComposerSlots.of(room()))
         assertEquals(ComposerSlot.Composer, ComposerSlots.of(room(RoomKind.DM)))
+        // A workspace that needs a newer Rukoo takes every write away, also from a thread and before joining (426, §3.6).
+        assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(room(), upgrade = true))
+        assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(room(), rootRemoved = false, upgrade = true))
+        assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(null, browse, upgrade = true))
     }
 
     @Test

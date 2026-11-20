@@ -38,7 +38,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -146,6 +145,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
     val title = roomModel?.let { if (it.kind == RoomKind.DM) names.title(it, members, me) else "#${it.name.orEmpty()}" }
         ?: notJoined?.let { "#${it.name}" }.orEmpty()
     val paused = summary?.status == WorkspaceStatus.QUARANTINED
+    val upgrade = summary?.status == WorkspaceStatus.UPGRADE
     // The newest message fully in view counts as read while the room is on screen in the resumed app and nothing
     // covers it (§3.9).
     val canRead = screen.foreground && nav.chat.sheet == null && !nav.drawerOpen && nav.overlay == null && !app.chatUi.covered
@@ -171,6 +171,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
             },
         )
         if (paused) PausedBanner(summary.name, busy = app.chatUi.isBusy("reload:$ws")) { app.chatUi.reload(ws) }
+        else if (upgrade) UpgradeBanner(chat.host)
         else if (chat.connection == Connection.OFFLINE) OfflineBanner(chat.host, busy = app.chatUi.isBusy("refresh:$ws")) { app.chatUi.refresh(ws) }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val t = timeline
@@ -198,7 +199,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                 )
             }
         }
-        val slot = ComposerSlots.of(roomModel, notJoined, paused)
+        val slot = ComposerSlots.of(roomModel, notJoined, paused, upgrade = upgrade)
         val t = timeline
         when {
             slot != ComposerSlot.Composer -> ComposerBar(app, ws, slot, roomModel, me, summary?.name.orEmpty(), inThread = false)
@@ -350,8 +351,11 @@ private fun RoomLog(
     // The opening a notification asked for: the message at [at], once its history reached it.
     val at = opening.at
     val reached = opening.reached
-    val rows = remember(t, me, blocked) {
-        ChatTimeline.rows(t.events, t.pending, me, t.readAtOpen, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies)
+    // The read position this opening placed its New divider from, which stays while the service's loader closes and
+    // opens again behind it (the app in the background, the room folded behind the list).
+    val readAt = opening.readPosition(t)
+    val rows = remember(t, me, blocked, readAt) {
+        ChatTimeline.rows(t.events, t.pending, me, readAt, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies)
     }
     // Bottom up: the newest row is item 0.
     val items = remember(rows) { rows.asReversed() }
@@ -363,7 +367,8 @@ private fun RoomLog(
     val scope = rememberCoroutineScope()
     var older by remember(ws, room) { mutableStateOf(Older.IDLE) }
     var lastReported by remember(ws, room) { mutableLongStateOf(0L) }
-    var seen by remember(count) { mutableLongStateOf(t.readAtOpen) }
+    // The newest message seen in this opening, for the Latest pill's count; kept with the opening across folding.
+    var seen by rememberSaveable(count) { mutableLongStateOf(readAt) }
     // At the bottom, following new messages; a scroll position kept across a fold may be elsewhere.
     var pinned by remember(listState) { mutableStateOf(listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < STICK_PX) }
     var viewport by remember(listState) { mutableStateOf(0) }
@@ -469,11 +474,13 @@ private fun RoomLog(
                 pinned = false
             }
             placed = count
+            app.roomPlaced(count, readAt)
             return@LaunchedEffect
         }
         val i = items.indexOfFirst { it is ChatTimeline.New }
         if (i > 0 && i > (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0)) showDivider(listState, i, viewport, animate = false)
         placed = count
+        app.roomPlaced(count, readAt)
     }
 
     // Follow the user's own scrolling: near the bottom the timeline sticks to new messages, else the Latest pill shows.
@@ -691,13 +698,7 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
     Row(
         Modifier
             .fillMaxWidth()
-            .then(
-                if (longPress != null) {
-                    Modifier.rkClickable(RectangleShape, role = null, onLongClickLabel = stringResource(R.string.chat_msg_actions), onLongClick = { longPress(row) }, onClick = {})
-                } else {
-                    Modifier
-                },
-            )
+            .then(if (longPress != null) messageActions(stringResource(R.string.chat_msg_actions)) { longPress(row) } else Modifier)
             .then(if (row.mentionsMe) Modifier.drawBehind { drawLine(accent, Offset(1.dp.toPx(), 0f), Offset(1.dp.toPx(), size.height), 2.dp.toPx()) } else Modifier)
             .padding(start = 16.dp, end = 16.dp, top = if (row.head) 8.dp else 1.dp, bottom = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),

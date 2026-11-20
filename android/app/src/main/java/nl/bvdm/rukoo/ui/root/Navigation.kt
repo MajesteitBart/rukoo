@@ -38,6 +38,8 @@ data class ChatNav(
     val roomId: String? = null,
     /** The `e_` ID of the thread's top-level message. */
     val threadRoot: String? = null,
+    /** The seq of the reply a notification opened the thread at, which the thread shows once; null for its latest replies. */
+    val threadAt: Long? = null,
     val stack: List<ChatPane> = listOf(ChatPane.HOME),
     /** Updated on tap, scroll and focus; decides which pane stays when the phone folds. */
     val lastInteracted: ChatPane = ChatPane.HOME,
@@ -179,7 +181,11 @@ data class NavState(
         return if (s.openMessageId != id) s else s.copy(openMessageId = null, chatLeft = Pane.LIST).drop(Pane.READER)
     }
 
-    fun openChat(conversationId: String?, emailId: String?): NavState = copy(
+    /**
+     * Opens an agent chat, which lives in Mail: from team Chat (an approval toast's Show, a notification) the app goes
+     * to Mail with it, as only Mail shows the agent chat.
+     */
+    fun openChat(conversationId: String?, emailId: String?): NavState = setMode(AppMode.MAIL).copy(
         chatOpen = true,
         chatConversationId = conversationId,
         chatEmailId = emailId,
@@ -247,6 +253,14 @@ data class NavState(
     fun shown(chatAvailable: Boolean): NavState = if (mode == AppMode.CHAT && !chatAvailable) copy(mode = AppMode.MAIL) else this
 
     /**
+     * Chat while a state of all of Chat fills the window (signed out after a 401, the cache that couldn't open, no
+     * workspace yet): that screen is Chat's root, so Back leaves for Mail at once instead of walking through the room
+     * and thread under it. The workspace stays selected for when Chat comes back, and a sheet over it still closes first.
+     */
+    fun chatGated(): NavState =
+        withChat(chat.copy(roomId = null, threadRoot = null, threadAt = null, stack = listOf(ChatPane.HOME), lastInteracted = ChatPane.HOME))
+
+    /**
      * The room open beside the conversation list, which the list marks as selected and keeps listing under the Unread
      * filter and among Channels while archived. Only two panes have one: on one pane the room stays selected after
      * Back (for unfolding) but the list stands alone.
@@ -266,6 +280,7 @@ data class NavState(
         chat = chat.copy(
             roomId = id,
             threadRoot = null,
+            threadAt = null,
             stack = listOf(ChatPane.HOME, ChatPane.ROOM),
             lastInteracted = ChatPane.ROOM,
             sheet = null,
@@ -273,12 +288,16 @@ data class NavState(
         ),
     )
 
-    /** Opens the thread of the top-level message [root] in the open room; without a room there is nothing to open. */
-    fun openThread(root: String): NavState {
+    /**
+     * Opens the thread of the top-level message [root] in the open room; without a room there is nothing to open. [at]
+     * is the seq of the reply a notification showed, which the thread scrolls to (§7.5).
+     */
+    fun openThread(root: String, at: Long? = null): NavState {
         if (chat.roomId == null) return this
         return withChat(
             chat.copy(
                 threadRoot = root,
+                threadAt = at,
                 stack = listOf(ChatPane.HOME, ChatPane.ROOM, ChatPane.THREAD),
                 lastInteracted = ChatPane.THREAD,
                 sheet = null,
@@ -290,13 +309,17 @@ data class NavState(
     fun closeThread(): NavState {
         if (chat.threadRoot == null && ChatPane.THREAD !in chat.stack) return this
         val stack = chat.stack.filterNot { it == ChatPane.THREAD }.ifEmpty { listOf(ChatPane.HOME) }
-        return withChat(chat.copy(threadRoot = null, stack = stack, lastInteracted = if (chat.roomId != null) ChatPane.ROOM else ChatPane.HOME))
+        return withChat(chat.copy(threadRoot = null, threadAt = null, stack = stack, lastInteracted = if (chat.roomId != null) ChatPane.ROOM else ChatPane.HOME))
     }
+
+    /** The thread of [root] showed the reply it was opened at: later showings open at its latest replies. */
+    fun threadTargetShown(root: String): NavState =
+        if (chat.threadRoot != root || chat.threadAt == null) this else withChat(chat.copy(threadAt = null))
 
     /** The room [id] is gone (evicted, deleted, left elsewhere): back to the list. A sheet about it closes too. */
     fun roomGone(id: String): NavState {
         val sheetGone = chat.sheetTarget == id
-        val next = if (chat.roomId != id) chat else chat.copy(roomId = null, threadRoot = null, stack = listOf(ChatPane.HOME), lastInteracted = ChatPane.HOME)
+        val next = if (chat.roomId != id) chat else chat.copy(roomId = null, threadRoot = null, threadAt = null, stack = listOf(ChatPane.HOME), lastInteracted = ChatPane.HOME)
         return withChat(if (sheetGone) next.copy(sheet = null, sheetTarget = null) else next)
     }
 

@@ -404,5 +404,14 @@ class ChatSheetRulesTest {
         assertFalse(SheetRules.inviteCloseAsks(made = true, kept = true, withdrawn = false))
         assertFalse(SheetRules.inviteCloseAsks(made = true, kept = false, withdrawn = true))
     }
-}
 
+    @Test
+    fun theSheetStaysWhileItsLinkIsBeingMade() {
+        // Dismissing while the request runs would leave an open invitation whose one-time link nobody saw.
+        assertTrue(SheetRules.inviteCloseHeld(making = true, made = false, kept = false, withdrawn = false))
+        assertFalse(SheetRules.inviteCloseHeld(making = false, made = false, kept = false, withdrawn = false))
+        // Once made, the question about an unshared link holds it, as before.
+        assertTrue(SheetRules.inviteCloseHeld(making = false, made = true, kept = false, withdrawn = false))
+        assertFalse(SheetRules.inviteCloseHeld(making = false, made = true, kept = true, withdrawn = false))
+    }
+}

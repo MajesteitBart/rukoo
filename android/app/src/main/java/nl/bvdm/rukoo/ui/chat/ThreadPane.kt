@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,10 +15,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -28,6 +31,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.RkIconButton
@@ -41,6 +46,7 @@ import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.lineHeight
 import nl.bvdm.rukoo.workspaces.Connection
 import nl.bvdm.rukoo.workspaces.RoomKind
+import nl.bvdm.rukoo.workspaces.ThreadTimeline
 import nl.bvdm.rukoo.workspaces.WorkspaceStatus
 
 /**
@@ -51,14 +57,28 @@ import nl.bvdm.rukoo.workspaces.WorkspaceStatus
  * on a message opens its menu. Threads never report reads (§3.9), and opening one leaves the room's timeline as it is.
  */
 @Composable
-fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifier: Modifier = Modifier, twoPane: Boolean = app.twoPane) {
+fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifier: Modifier = Modifier, twoPane: Boolean = app.twoPane, at: Long? = null) {
+    // Everything below belongs to one thread: opening another starts its collector, composer and scroll state afresh,
+    // so the last thread's value can't seed the next one's composer for a frame (§3.13).
+    key(ws, room, root) { ThreadContent(app, ws, room, root, modifier, twoPane, at) }
+}
+
+/** A thread's timeline with the thread it is of, so a value collected for another thread is never taken for this one. */
+internal data class KeyedThread(val ws: String, val room: String, val root: String, val timeline: ThreadTimeline) {
+    /** [timeline] when it is the thread of [root] in [room] of [ws], else null. */
+    fun of(ws: String, room: String, root: String): ThreadTimeline? = timeline.takeIf { this.ws == ws && this.room == room && this.root == root }
+}
+
+@Composable
+private fun ThreadContent(app: AppViewModel, ws: String, room: String, root: String, modifier: Modifier, twoPane: Boolean, at: Long?) {
     val c = Rk.colors
     val workspaces = app.services.workspaces ?: return
     val viewNow by app.chatView.collectAsStateWithLifecycle()
     val chat by app.chatState.collectAsStateWithLifecycle()
     val view = viewNow?.takeIf { it.ws.id == ws }
-    val flow = remember(ws, room, root) { workspaces.thread(ws, room, root).catch { } }
-    val thread by flow.collectAsStateWithLifecycle(initialValue = null)
+    val flow = remember(ws, room, root) { workspaces.thread(ws, room, root).map { KeyedThread(ws, room, root, it) }.catch { } }
+    val collected by flow.collectAsStateWithLifecycle(initialValue = null)
+    val thread = collected?.of(ws, room, root)
     val scope = rememberCoroutineScope()
     var loadingEarlier by remember(ws, room, root) { mutableStateOf(false) }
     // The first message may be older than the cache: page back towards it, at most 10 pages (§3.7 "Threads").
@@ -69,6 +89,7 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
     val roomModel = view?.rooms?.firstOrNull { it.id == room }
     val summary = chat.workspaces.firstOrNull { it.id == ws }
     val paused = summary?.status == WorkspaceStatus.QUARANTINED
+    val upgrade = summary?.status == WorkspaceStatus.UPGRADE
     val roomTitle = roomModel?.let { if (it.kind == RoomKind.DM) names.title(it, members, me) else "#${it.name.orEmpty()}" }.orEmpty()
     val where = when {
         roomModel == null -> null
@@ -89,7 +110,8 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
                 if (twoPane) RkIconButton(RukooIcons.Close, stringResource(R.string.chat_thread_close), onClick = app::closeThread)
             },
         )
-        if (!paused && chat.connection == Connection.OFFLINE) OfflineBanner(chat.host, busy = app.chatUi.isBusy("refresh:$ws")) { app.chatUi.refresh(ws) }
+        if (upgrade) UpgradeBanner(chat.host)
+        else if (!paused && chat.connection == Connection.OFFLINE) OfflineBanner(chat.host, busy = app.chatUi.isBusy("refresh:$ws")) { app.chatUi.refresh(ws) }
         val t = thread
         if (t == null || roomModel == null || (t.loading && t.root == null && t.replies.isEmpty())) {
             ChatLoading(stringResource(R.string.chat_thread_loading), Modifier.weight(1f).fillMaxWidth())
@@ -171,6 +193,19 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
                 }
             }
         }
+        // Opened from a notification for a reply: that reply comes to the middle once it is loaded (§7.5), then the
+        // thread behaves as usual.
+        if (at != null) {
+            LaunchedEffect(items, at, t.loading) {
+                if (t.loading) return@LaunchedEffect
+                val target = ChatTimeline.openingTarget(items, at, complete = true) ?: return@LaunchedEffect
+                val viewport = snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+                listState.scrollToItem(target)
+                // Bottom up, scrolling back moves towards newer rows: the reply goes from the bottom edge to the middle.
+                if (target > 0) listState.scrollBy(-(viewport * 0.5f))
+                app.threadTargetShown(root)
+            }
+        }
         // Your own reply goes to the bottom, as in the room.
         val bottom = items.firstOrNull()
         var lastBottom by remember(ws, room, root) { mutableStateOf(bottom?.key) }
@@ -181,7 +216,7 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
             if (own || listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
         }
         val rootRemoved = t.root != null && (t.root.redacted || t.root.text == null)
-        val slot = ComposerSlots.of(roomModel, paused = paused, rootRemoved = rootRemoved)
+        val slot = ComposerSlots.of(roomModel, paused = paused, rootRemoved = rootRemoved, upgrade = upgrade)
         if (slot == ComposerSlot.Composer) {
             ChatComposer(
                 app = app,

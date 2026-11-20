@@ -207,7 +207,9 @@ object ChatListModel {
     /**
      * The sections for [rooms]. [me] is the person in this workspace (their role decides [ChatSections.canCreate]),
      * [members] the directory by ID, [open] the room open beside the list, which an Unread filter keeps listing and
-     * which stays among Channels while archived. [compare] orders channel names in the interface language.
+     * which stays among Channels while archived. [compare] orders channel names in the interface language. [writable]
+     * is false while the workspace needs a newer Rukoo (426): nothing new can be made, so the plus buttons, Browse and
+     * New message go.
      */
     fun sections(
         rooms: List<Room>,
@@ -217,6 +219,7 @@ object ChatListModel {
         names: ChatNames,
         open: String? = null,
         compare: Comparator<String> = String.CASE_INSENSITIVE_ORDER,
+        writable: Boolean = true,
     ): ChatSections {
         val myId = me?.id
         fun row(room: Room) = RoomRow(
@@ -237,13 +240,13 @@ object ChatListModel {
                 .thenByDescending { it.lastAt ?: 0L }
                 .thenBy { it.id },
         )
-        val canCreate = isFullMember(me?.role)
+        val full = isFullMember(me?.role)
         return ChatSections(
             channels = channels.map(::row),
             dms = dms.map(::row),
             archived = archived.map(::row),
-            showDms = canCreate || rooms.any { it.kind == RoomKind.DM },
-            canCreate = canCreate,
+            showDms = full || rooms.any { it.kind == RoomKind.DM },
+            canCreate = full && writable,
             unreadCount = rooms.count { !it.muted && it.unread > 0 },
         )
     }

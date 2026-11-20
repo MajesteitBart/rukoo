@@ -275,6 +275,13 @@ object SheetRules {
     /** Whether closing the Invite sheet asks first: a link is on screen that nobody shared, copied or withdrew. */
     fun inviteCloseAsks(made: Boolean, kept: Boolean, withdrawn: Boolean): Boolean = made && !kept && !withdrawn
 
+    /**
+     * Whether the Invite sheet stays when the person tries to close it: while its link is being made ([making]), as the
+     * server may already hold an invitation whose one-time link only this sheet can show, and when [inviteCloseAsks].
+     */
+    fun inviteCloseHeld(making: Boolean, made: Boolean, kept: Boolean, withdrawn: Boolean): Boolean =
+        making || inviteCloseAsks(made, kept, withdrawn)
+
     /** Whether [view]'s person is its only active member, as far as the directory knows. */
     fun alone(view: WorkspaceView): Boolean = !view.membersMore && view.members.count { it.state == "active" && it.id != view.me.id } == 0
 
@@ -598,7 +605,7 @@ private fun Primary(label: String, busy: Boolean, enabled: Boolean = true, dange
 }
 
 @Composable
-private fun Secondary(label: String, onClick: () -> Unit) = RkButton(label, onClick, kind = RkButtonKind.SECONDARY)
+private fun Secondary(label: String, enabled: Boolean = true, onClick: () -> Unit) = RkButton(label, onClick, kind = RkButtonKind.SECONDARY, enabled = enabled)
 
 /**
  * The host disclosure (desktop-ui 6, desktop chat.js `hostNote`): who hosts the workspace and where, how long messages
@@ -1946,11 +1953,12 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
     val copied = stringResource(R.string.chat_invite_copied)
     val shareTitle = stringResource(R.string.chat_invite_share)
     val asks = SheetRules.inviteCloseAsks(made != null, kept, withdrawn)
-    // A swipe, a tap outside, Back or Done before the link was shared or copied asks first.
+    // A swipe, a tap outside, Back or Done before the link was shared or copied asks first. While the link is being
+    // made the sheet stays put: closing it then would lose a link the server already made.
     val holdClose: () -> Boolean = {
-        val ask = SheetRules.inviteCloseAsks(made != null, kept, withdrawn)
-        if (ask) asking = true
-        ask
+        val making = ui.isBusy(KEY_INVITE)
+        if (!making && SheetRules.inviteCloseAsks(made != null, kept, withdrawn)) asking = true
+        SheetRules.inviteCloseHeld(making, made != null, kept, withdrawn)
     }
 
     fun submit() {
@@ -1979,7 +1987,7 @@ private fun InviteSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Un
                     Primary(stringResource(R.string.chat_invite_done), busy = false) { close() }
                 }
             } else {
-                Secondary(stringResource(R.string.common_actions_cancel)) { close() }
+                Secondary(stringResource(R.string.common_actions_cancel), enabled = !busy) { close() }
                 Primary(stringResource(R.string.chat_invite_make), busy = busy, enabled = SheetRules.inviteReady(role, chosen.size), onClick = ::submit)
             }
         },

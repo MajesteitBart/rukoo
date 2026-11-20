@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -41,6 +42,7 @@ import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.ui.root.AppMode
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.theme.Rk
+import nl.bvdm.rukoo.ui.theme.RukooColors
 import nl.bvdm.rukoo.ui.theme.RukooDurations
 import nl.bvdm.rukoo.ui.theme.RukooEasing
 import nl.bvdm.rukoo.ui.theme.medium
@@ -68,7 +70,7 @@ fun ModeSwitch(mode: AppMode, chatBadge: ChatBadge?, onSelect: (AppMode) -> Unit
         modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .background(c.border.copy(alpha = c.border.alpha * 0.7f), track)
+            .background(segmentTrack(c), track)
             .padding(2.dp)
             .semantics { contentDescription = label },
     ) {
@@ -111,6 +113,15 @@ fun ModeSwitch(mode: AppMode, chatBadge: ChatBadge?, onSelect: (AppMode) -> Unit
     }
 }
 
+/**
+ * A segment's label color: the text color on the thumb, text2 on the track. Mail's text3 is too light on the track
+ * (about 2.9:1 in light), and the switch shows in Mail's drawer as well as Chat's.
+ */
+internal fun segmentLabel(selected: Boolean, c: RukooColors): Color = if (selected) c.text else c.text2
+
+/** The track behind the segments, over the drawer's [surface]. */
+internal fun segmentTrack(c: RukooColors): Color = c.border.copy(alpha = c.border.alpha * 0.7f)
+
 @Composable
 private fun Segment(
     text: String,
@@ -134,7 +145,7 @@ private fun Segment(
         Text(
             text,
             style = Rk.type.text12_5.medium,
-            color = if (selected) c.text else c.text3,
+            color = segmentLabel(selected, c),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             // With a description, which already names the segment ("Chat, unread messages"), the label isn't read twice.

@@ -40,6 +40,7 @@ import nl.bvdm.rukoo.ui.composer.DraftStore
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.Draft
+import nl.bvdm.rukoo.workspaces.Event
 import nl.bvdm.rukoo.workspaces.Invite
 import nl.bvdm.rukoo.workspaces.InviteLink
 import nl.bvdm.rukoo.workspaces.InvitePreview
@@ -266,6 +267,60 @@ class ChatNavTest {
         assertEquals(Pane.READER, s.back(twoPane = false)!!.top)
         assertEquals(ViewKind.SENT, s.selectView(MailView(ViewKind.SENT)).view.kind)
         assertEquals(Pane.CHAT, s.folded(composerDirty = false, chatFocused = false).top)
+    }
+
+    @Test
+    fun `an agent chat opened from team Chat goes to Mail with it, and Chat keeps its room`() {
+        val s = inChat.openRoom("c1").openChat("conv1", null)
+        assertEquals(AppMode.MAIL, s.mode)
+        assertTrue(s.chatOpen)
+        assertEquals("conv1", s.chatConversationId)
+        assertEquals("c1", s.chat.roomId)
+        // In Mail it is as it was.
+        assertEquals(AppMode.MAIL, start.openChat("conv1", null).mode)
+        assertEquals(listOf(Pane.LIST, Pane.CHAT), start.openChat("conv1", null).stack)
+    }
+
+    @Test
+    fun `a state of all of Chat is its root, one Back to Mail with the workspace kept`() {
+        val s = inChat.openRoom("c1").openThread("e1", at = 7).openChatSheet(ChatSheet.JOIN)
+        val gated = s.chatGated()
+        assertEquals(listOf(ChatPane.HOME), gated.chat.stack)
+        assertNull(gated.chat.roomId)
+        assertNull(gated.chat.threadRoot)
+        assertNull(gated.chat.threadAt)
+        assertEquals("w1", gated.chat.workspaceId)
+        // A sheet over it closes first, then Back leaves for Mail.
+        val sheetClosed = gated.back(twoPane = false)!!
+        assertEquals(AppMode.CHAT, sheetClosed.mode)
+        assertNull(sheetClosed.chat.sheet)
+        val mail = sheetClosed.back(twoPane = false)!!
+        assertEquals(AppMode.MAIL, mail.mode)
+        assertEquals("w1", mail.chat.workspaceId)
+    }
+
+    @Test
+    fun `a thread opened at a reply holds that reply until it showed it, and only for that thread`() {
+        val s = inChat.openRoom("c1").openThread("e1", at = 7)
+        assertEquals(7L, s.chat.threadAt)
+        assertSame(s, s.threadTargetShown("e2"))
+        assertNull(s.threadTargetShown("e1").chat.threadAt)
+        assertNull(s.closeThread().chat.threadAt)
+        assertNull(s.openRoom("c2").chat.threadAt)
+        assertNull(s.roomGone("c1").chat.threadAt)
+        assertNull(inChat.openRoom("c1").openThread("e1").chat.threadAt)
+        assertEquals(s, RukooJson.decodeFromString(NavState.serializer(), RukooJson.encodeToString(NavState.serializer(), s)))
+    }
+
+    @Test
+    fun `the New divider keeps the read position it was placed from`() {
+        val opening = RoomOpening("w1", "c1", 3)
+        val loaded = timeline("c1", readAtOpen = 5)
+        assertEquals(5L, opening.readPosition(loaded))
+        val placed = opening.copy(readAt = 5)
+        // The service's loader closed in the background (or while folded behind the list) and opened again with the
+        // newest read position: the divider stays where it was placed (§3.18).
+        assertEquals(5L, placed.readPosition(timeline("c1", readAtOpen = 9)))
     }
 
     // ---- the view model ----
@@ -549,7 +604,131 @@ class ChatNavTest {
         assertTrue(vm.state.value.composerOpen)
     }
 
+    @Test
+    fun `an agent chat left open in Mail isn't on screen in team Chat`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        val (s, vm) = vm(w)
+        s.screen.setForeground(true)
+        vm.onLayout(twoPane = false)
+        vm.openChat("conv1")
+        assertEquals("conv1", s.screen.state.value.chatConversationId)
+        // Team Chat hides it: the hub has to mark its finished turns unread and toast its approvals.
+        vm.setMode(AppMode.CHAT)
+        assertTrue(vm.state.value.chatOpen)
+        assertNull(s.screen.state.value.chatConversationId)
+        // An approval toast's Show opens it in Mail.
+        vm.openChat("conv1")
+        assertEquals(AppMode.MAIL, vm.state.value.mode)
+        assertEquals("conv1", s.screen.state.value.chatConversationId)
+        // Two panes too.
+        vm.onLayout(twoPane = true)
+        vm.setMode(AppMode.CHAT)
+        assertNull(s.screen.state.value.chatConversationId)
+    }
+
+    @Test
+    fun `signed out with a thread open, Back goes to Mail at once and keeps the workspace`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        val (_, vm) = vm(w)
+        vm.onLayout(twoPane = false)
+        vm.setMode(AppMode.CHAT)
+        vm.openRoom("c1")
+        vm.openThread("e1")
+        // A 401 ends the session: the signed-out screen fills Chat.
+        w.state.value = w.state.value.copy(signedIn = false, workspaces = emptyList())
+        assertEquals(AppMode.CHAT, vm.state.value.mode)
+        assertTrue(vm.back())
+        assertEquals(AppMode.MAIL, vm.state.value.mode)
+        assertEquals("w1", vm.state.value.chat.workspaceId)
+    }
+
+    @Test
+    fun `folding a room behind the list and unfolding keeps its opening and the read position its divider came from`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        w.views["w1"] = MutableStateFlow(view("w1", room("c1"), room("c2")))
+        val (s, vm) = vm(w)
+        s.screen.setForeground(true)
+        vm.onLayout(twoPane = true)
+        vm.setMode(AppMode.CHAT)
+        vm.openRoom("c1")
+        val first = vm.roomOpening.value!!
+        vm.roomPlaced(first.count, 5)
+        assertEquals(5L, vm.roomOpening.value!!.readAt)
+        // Touch the list, fold: the cover shows the list, the room stays selected behind it.
+        vm.chatInteracted(ChatPane.HOME)
+        vm.onLayout(twoPane = false)
+        assertEquals(ChatPane.HOME, vm.state.value.chat.top)
+        assertEquals(first.copy(readAt = 5), vm.roomOpening.value)
+        // Unfolding shows the same opening, so the room's saved scroll position and divider come back with it.
+        vm.onLayout(twoPane = true)
+        assertEquals(first.copy(readAt = 5), vm.roomOpening.value)
+        // The app in the background and back: the same opening, its read position kept.
+        s.screen.setForeground(false)
+        s.screen.setForeground(true)
+        assertEquals(first.copy(readAt = 5), vm.roomOpening.value)
+        assertEquals(listOf("w1/c1/null"), w.opened)
+        // A placement reported for an opening that is over changes nothing.
+        vm.roomPlaced(first.count - 1, 9)
+        assertEquals(5L, vm.roomOpening.value!!.readAt)
+        // Another room is another opening, without a read position until its divider is placed.
+        vm.openRoom("c2")
+        val other = vm.roomOpening.value!!
+        assertTrue(other.count > first.count)
+        assertNull(other.readAt)
+        // On the cover, Back to the list leaves the room: its next showing is a new opening.
+        vm.chatInteracted(ChatPane.ROOM)
+        vm.onLayout(twoPane = false)
+        assertEquals(other, vm.roomOpening.value)
+        vm.back()
+        assertNull(vm.roomOpening.value)
+        vm.openRoom("c2")
+        assertTrue(vm.roomOpening.value!!.count > other.count)
+    }
+
+    @Test
+    fun `a reply's notification opens its thread at that reply, unless the person left the room meanwhile`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1")))
+        w.views["w1"] = MutableStateFlow(view("w1", room("c1")))
+        w.timelines["c1"] = timeline("c1", events = listOf(event(8, "e1"), event(9, "e2", root = "e1")))
+        val (_, vm) = vm(w)
+        vm.onLayout(twoPane = false)
+        vm.setMode(AppMode.CHAT)
+        vm.openRoute(NotificationRoute.Room("w1", "c1", 9))
+        assertEquals("w1/c1/9", w.opened.last())
+        assertEquals("e1", vm.state.value.chat.threadRoot)
+        assertEquals(9L, vm.state.value.chat.threadAt)
+        assertEquals(ChatPane.THREAD, vm.state.value.chat.top)
+        // The thread showed the reply: it opens at its latest replies from now on.
+        vm.threadTargetShown("e1")
+        assertNull(vm.state.value.chat.threadAt)
+
+        // Back to the list while the room still pages back: its answer opens no thread over the list.
+        vm.back()
+        vm.back()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        w.openGate = gate
+        vm.openRoute(NotificationRoute.Room("w1", "c1", 9))
+        assertEquals(ChatPane.ROOM, vm.state.value.chat.top)
+        vm.back()
+        assertEquals(listOf(ChatPane.HOME), vm.state.value.chat.stack)
+        gate.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        assertNull(vm.state.value.chat.threadRoot)
+        assertEquals(listOf(ChatPane.HOME), vm.state.value.chat.stack)
+    }
+
     // ---- fakes ----
+
+    private fun timeline(room: String, readAtOpen: Long = 0, events: List<Event> = emptyList()) = RoomTimeline(
+        room(room), events, emptyList(), emptyMap(), readAtOpen = readAtOpen, hasOlder = false, complete = true, loading = false, draft = null,
+    )
+
+    private fun event(seq: Long, id: String, root: String? = null) =
+        Event(seq = seq, id = id, kind = "message.posted", actor = "u_ann", at = seq, root = root, text = "hi", mentions = emptyList(), redacted = false)
 
     private fun ready(list: List<WorkspaceSummary>, selected: String? = null) =
         ChatState(available = true, signedIn = true, host = "chat.test", selected = selected, workspaces = list)
@@ -573,12 +752,16 @@ class ChatNavTest {
         val views = HashMap<String, MutableStateFlow<WorkspaceView>>()
         val shown = ArrayList<Triple<String?, String?, String?>>()
         val opened = ArrayList<String>()
+        val timelines = HashMap<String, RoomTimeline>()
+
+        /** When set, open() waits for it, like a backfill still paging. */
+        var openGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         override fun view(ws: String): Flow<WorkspaceView> = views[ws] ?: MutableStateFlow(WorkspaceView(
             WorkspaceSummary(ws, ws, "member"), Member("u_me", name = "Me", role = "member", state = "active"),
             emptyList(), emptyList(), false, emptyList(), emptyList(),
         ))
-        override fun timeline(ws: String, room: String): Flow<RoomTimeline> = emptyFlow()
+        override fun timeline(ws: String, room: String): Flow<RoomTimeline> = timelines[room]?.let { kotlinx.coroutines.flow.flowOf(it) } ?: emptyFlow()
         override fun thread(ws: String, room: String, root: String): Flow<ThreadTimeline> = emptyFlow()
         override suspend fun select(ws: String?) {}
         override fun onScreen(ws: String?, room: String?, thread: String?) {
@@ -588,6 +771,7 @@ class ChatNavTest {
         override suspend fun reload(ws: String) {}
         override suspend fun open(ws: String, room: String, at: Long?) {
             opened += "$ws/$room/$at"
+            openGate?.await()
         }
         override suspend fun loadOlder(ws: String, room: String) {}
         override suspend fun loadThread(ws: String, room: String, root: String) {}

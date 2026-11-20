@@ -15,6 +15,7 @@ import nl.bvdm.rukoo.workspaces.Mention
 import nl.bvdm.rukoo.workspaces.MentionSpan
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
+import nl.bvdm.rukoo.workspaces.RoomMember
 import nl.bvdm.rukoo.workspaces.RoomTimeline
 import nl.bvdm.rukoo.workspaces.ThreadTimeline
 import nl.bvdm.rukoo.workspaces.Workspaces
@@ -160,5 +161,52 @@ class ChatUiTest {
         ui.join("w1", "c2")
         advanceUntilIdle()
         assertEquals(listOf("join c2", "open c2"), w.calls)
+    }
+
+    @Test
+    fun `the mention picker loads a channel's people again when it opens, so someone replaced isn't offered`() = runTest {
+        val roster = ArrayList(listOf("u_ann", "u_bob"))
+        var loads = 0
+        val w = object : Workspaces by UNUSED {
+            override suspend fun roomMembers(ws: String, room: String): List<RoomMember> {
+                loads += 1
+                return roster.map { RoomMember(it, "member") }
+            }
+        }
+        val ui = ui(w)
+        val channel = Room(
+            id = "c1", kind = RoomKind.CHANNEL, name = "plans", visibility = "workspace", archived = false, closedReason = null,
+            participants = null, startedBy = null, role = "member", members = 2, head = 5, floor = 1, lastAt = null, read = 5,
+            unread = 0, mentions = 0, attention = 0, muted = false, hasCache = true,
+        )
+        assertEquals(listOf("u_ann", "u_bob"), ui.mentionMembers("w1", channel))
+        // The composer coming back with the same count keeps what it loaded.
+        assertEquals(listOf("u_ann", "u_bob"), ui.mentionMembers("w1", channel))
+        assertEquals(1, loads)
+        // Bob was removed and Cas added: the count stays 2. The picker opening asks the server again.
+        roster[1] = "u_cas"
+        assertEquals(listOf("u_ann", "u_cas"), ui.mentionMembers("w1", channel, fresh = true))
+        // A changed count loads again too, without the picker asking.
+        roster += "u_dee"
+        assertEquals(listOf("u_ann", "u_cas", "u_dee"), ui.mentionMembers("w1", channel.copy(members = 3)))
+        assertEquals(3, loads)
+        // Offline, the people it knew stand in.
+        val offline = object : Workspaces by UNUSED {
+            override suspend fun roomMembers(ws: String, room: String): List<RoomMember> = throw nl.bvdm.rukoo.workspaces.WorkspaceError("network")
+        }
+        val off = ui(offline)
+        assertNull(off.mentionMembers("w1", channel, fresh = true))
+    }
+
+    @Test
+    fun `a thread's collected value is only taken for that thread`() {
+        val a = ThreadTimeline(root = null, replies = emptyList(), pending = emptyList(), complete = true, expired = false, draft = Draft("Reply for A"))
+        val keyed = KeyedThread("w1", "c1", "e_a", a)
+        assertEquals(a, keyed.of("w1", "c1", "e_a"))
+        // Thread B opened while A's value is still the collected one: B shows loading, and its composer waits for B's
+        // own draft instead of starting from A's.
+        assertNull(keyed.of("w1", "c1", "e_b"))
+        assertNull(keyed.of("w1", "c2", "e_a"))
+        assertNull(keyed.of("w2", "c1", "e_a"))
     }
 }

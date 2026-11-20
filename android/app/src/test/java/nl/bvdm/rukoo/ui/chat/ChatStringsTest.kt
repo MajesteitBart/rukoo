@@ -152,7 +152,7 @@ class ChatStringsTest {
         assertEquals("%d members", en.plurals["chat_head_members"]?.get("other"))
         assertEquals("This invitation is for %1\$s. Rukoo joins workspaces on %2\$s, the server of your Rukoo account.", en.strings["chat_join_other_host"])
         assertEquals("%1\$s ziet de teamchat niet", nl.strings["agent_empty_title_chat"])
-        assertTrue(en.strings.getValue("chat_block_body").split("%1\$s").size == 3)
+        assertEquals(4, en.strings.getValue("chat_block_body").split("%1\$s").size)
     }
 
     @Test
@@ -172,6 +172,9 @@ class ChatStringsTest {
         assertTrue(block.startsWith("%1\$s can\\'t start conversations with you in %2\$s. "))
         assertTrue(block.contains("group ones too, and stays closed if you unblock"))
         assertTrue(block.endsWith("Unblock in Blocked people."))
+        // That the other person isn't told but may notice (§3.12), as desktop's chat.block.body says it.
+        assertTrue(block.contains("and stays closed if you unblock. %1\$s isn\\'t told, but may notice that your conversations closed. Mentions"))
+        assertTrue(nl.strings.getValue("chat_block_body").contains("%1\$s krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten."))
         assertTrue(en.strings.getValue("chat_leave_body").contains("the group conversations you\\'re in close for the others too"))
         assertTrue(nl.strings.getValue("chat_leave_body").contains("groepsgesprekken waarin je zit, worden ook voor de anderen gesloten"))
     }

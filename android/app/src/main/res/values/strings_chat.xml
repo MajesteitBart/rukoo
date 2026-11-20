@@ -430,7 +430,7 @@
     <string name="chat_block_unblocked">Unblocked %1$s. Start a new conversation to talk again.</string><!-- Toast. -->
     <string name="chat_block_list">Blocked people</string><!-- Settings section. -->
     <string name="chat_block_none">You haven\'t blocked anyone.</string><!-- Empty section. -->
-    <string name="chat_block_body">%1$s can\'t start conversations with you in %2$s. Every conversation you\'re both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from %1$s stop notifying you. You still see each other\'s posts in shared channels. Unblock in Blocked people.</string><!-- Block confirmation text. %1$s: that person. %2$s: the workspace name. Desktop chat.block.body, whose last sentence names Workspace settings; on Android unblocking is in the drawer's Blocked people. -->
+    <string name="chat_block_body">%1$s can\'t start conversations with you in %2$s. Every conversation you\'re both in closes for everyone in it, group ones too, and stays closed if you unblock. %1$s isn\'t told, but may notice that your conversations closed. Mentions from %1$s stop notifying you. You still see each other\'s posts in shared channels. Unblock in Blocked people.</string><!-- Block confirmation text. %1$s: that person. %2$s: the workspace name. Desktop chat.block.body, whose last sentence names Workspace settings; on Android unblocking is in the drawer's Blocked people. -->
 
     <!-- chat.leave.* -->
     <string name="chat_leave_title">Leave %1$s?</string><!-- Confirmation title. -->

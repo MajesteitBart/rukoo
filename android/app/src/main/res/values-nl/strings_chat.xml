@@ -408,7 +408,7 @@
     <string name="chat_block_unblocked">%1$s gedeblokkeerd. Begin een nieuw gesprek om weer te praten.</string>
     <string name="chat_block_list">Geblokkeerde mensen</string>
     <string name="chat_block_none">Je hebt niemand geblokkeerd.</string>
-    <string name="chat_block_body">%1$s kan in %2$s geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. Vermeldingen door %1$s geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je bij Geblokkeerde mensen.</string>
+    <string name="chat_block_body">%1$s kan in %2$s geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. %1$s krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten. Vermeldingen door %1$s geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je bij Geblokkeerde mensen.</string>
 
     <!-- chat.leave.* -->
     <string name="chat_leave_title">%1$s verlaten?</string>

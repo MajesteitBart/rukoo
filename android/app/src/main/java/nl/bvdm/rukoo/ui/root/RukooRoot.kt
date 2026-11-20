@@ -198,7 +198,7 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
             // No accounts yet: first run. Onboarding is about mail, so it stays out of Chat.
             val setup = loaded && accounts.isEmpty() && nav.overlay != Overlay.SETTINGS && !chatMode
             // Back starts from what the screen shows, as the view model's back() does.
-            val shown = nav.shown(chatAvailable)
+            val shown = nav.shown(chatAvailable).let { if (chatMode && nl.bvdm.rukoo.ui.chat.ChatListModel.gate(chatState) != null) it.chatGated() else it }
             val canBack = shown.back(twoPane) != null && !setup
             var backProgress by remember { mutableFloatStateOf(0f) }
             val scope = rememberCoroutineScope()

@@ -3,10 +3,28 @@ package nl.bvdm.rukoo.ui.chat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.SemanticsPropertyReceiver
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 import nl.bvdm.rukoo.R
+import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.components.RkBottomSheet
 import nl.bvdm.rukoo.ui.components.SheetDivider
 import nl.bvdm.rukoo.ui.components.SheetRow
@@ -18,6 +36,50 @@ import nl.bvdm.rukoo.workspaces.Mention
 import nl.bvdm.rukoo.workspaces.PendingState
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
+
+/**
+ * A sent message's menu for screen readers: one action named [label] ("Message actions") that opens it, offered as the
+ * row's long press and in the actions list. The row has no tap of its own, so it offers no click that would do nothing.
+ */
+internal fun SemanticsPropertyReceiver.messageActionsSemantics(label: String, open: () -> Unit) {
+    onLongClick(label) {
+        open()
+        true
+    }
+    customActions = listOf(
+        CustomAccessibilityAction(label) {
+            open()
+            true
+        },
+    )
+}
+
+/**
+ * A message row's way into its menu: a long press on touch, with Rukoo's pressed fill and the long press buzz, and
+ * [messageActionsSemantics] for screen readers. A tap does nothing, so taps on its links still open them.
+ */
+@Composable
+internal fun messageActions(label: String, open: () -> Unit): Modifier {
+    val source = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
+    val current by rememberUpdatedState(open)
+    return Modifier
+        .indication(source, Rk.indication(RectangleShape))
+        .pointerInput(source) {
+            detectTapGestures(
+                onPress = { offset ->
+                    val press = PressInteraction.Press(offset)
+                    source.emit(press)
+                    source.emit(if (tryAwaitRelease()) PressInteraction.Release(press) else PressInteraction.Cancel(press))
+                },
+                onLongPress = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    current()
+                },
+            )
+        }
+        .semantics { messageActionsSemantics(label) { current() } }
+}
 
 /** What the person can do with a message that isn't sent (contract §3.8 "Answers" and "Resend modes"). */
 enum class PendingAction { SEND, SEND_AGAIN, RETRY, SEND_WITHOUT_MENTIONS, COPY, DISCARD }

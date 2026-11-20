@@ -110,8 +110,9 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
     // Only two panes show a room beside the list; on one pane the room read last mustn't stay under Unread.
     val beside = nav.chatRoomBesideList(app.twoPane)
-    val sections = remember(view, nav.chat.filter, beside, names, compare) {
-        view?.let { ChatListModel.sections(it.rooms, nav.chat.filter, it.me, members, names, open = beside, compare = compare) }
+    val writable = summary?.status != WorkspaceStatus.UPGRADE
+    val sections = remember(view, nav.chat.filter, beside, names, compare, writable) {
+        view?.let { ChatListModel.sections(it.rooms, nav.chat.filter, it.me, members, names, open = beside, compare = compare, writable = writable) }
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -249,9 +250,12 @@ internal fun PausedBanner(workspace: String, busy: Boolean, onStartOver: () -> U
     }
 }
 
-/** The server speaks a newer version of team chat than this Rukoo: the list stays readable. */
+/**
+ * The server speaks a newer version of team chat than this Rukoo: the list, the room and the thread stay readable, and
+ * their write controls go.
+ */
 @Composable
-private fun UpgradeBanner(host: String) {
+internal fun UpgradeBanner(host: String) {
     val c = Rk.colors
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).background(c.field, Rk.shapes.card).padding(12.dp),
