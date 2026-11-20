@@ -268,10 +268,11 @@ class FeedApplier(
 
     /**
      * Stores the answer of `GET /`, with [t0] and [t1] the local times before and after it (§3.6 "Restore", §3.8 the
-     * clock). A generation other than the stored one is a restore: in the same transaction the cached events go, the
-     * next fetch starts a pass, and unsent messages written under the old generation are marked for a lookup. A new
-     * `keyId` starts a pass too, as cursors sealed with the old key are no good; that pass lists no removals, so the
-     * cached events and notice rows go as for a 410. The clock offset is server time minus local time.
+     * clock). A generation other than the stored one is a restore: in the same transaction the cached events and notice
+     * rows go, as a restored backup may lack messages this phone saw, the next fetch starts a pass, and unsent messages
+     * written under the old generation are marked for a lookup. A new `keyId` starts a pass too, as cursors sealed with
+     * the old key are no good; that pass lists no removals, so the cached events and notice rows go as for a 410. Either
+     * way [RestoreResult.dropped] carries the alerts to take back. The clock offset is server time minus local time.
      */
     suspend fun restore(ws: String, details: WorkspaceDetails, t0: Long, t1: Long): RestoreResult = store.tx {
         val row = getWs(ws) ?: return@tx RestoreResult(restored = false, keyChanged = false, marked = 0)
@@ -281,7 +282,7 @@ class FeedApplier(
         var marked = 0
         var dropped: PageResult? = null
         if (restored) {
-            deleteWsEvents(ws)
+            dropped = dropBodies(ws)
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true, "generation" to w.generation))
             marked = markLookup(ws, row.generation)

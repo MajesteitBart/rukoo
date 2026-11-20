@@ -327,7 +327,7 @@ class WorkspaceSync(
 
     /**
      * `GET /`: name, role, generation, key, limits, retention and the clock. A new generation runs the restore path
-     * (§3.6), a new key a pass whose cached events and alerts went first. Outside a run ([inRun] false) a new key asks
+     * (§3.6), a new key a pass; before either, the cached events and alerts go. Outside a run ([inRun] false) a new key asks
      * for a run, so the pass and the open room's reload don't wait for the catch-up timer.
      */
     suspend fun details(inRun: Boolean = false): WorkspaceDetails {

@@ -11,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Start over and a new `keyId` both start a pass from the start, and the server's pass from the start lists no
+ * Start over, a new `keyId` and a new generation all start a pass from the start, and the server's pass from the start lists no
  * removals (server/src/workspace.js `#changes` answers `removed: []` without a cursor). So, as for a `410`, the
  * workspace's cached bodies and notice rows go first: a message removed on the server meanwhile must leave the
  * timeline, the preview and its notification (contract §3.6, §3.10, §3.14). Each case runs the real alert engine on
@@ -62,8 +62,8 @@ class StartOverTest {
     }
 
     // What the server answers once the message was removed: the pass from the start lists the room, removed: [].
-    private fun SyncHarness.serverAfterRemoval(keyId: String? = Ids.KEY): EventsRoute {
-        http.on("GET", route()) { ok(WorkspaceDetails.serializer(), details(keyId = keyId)) }
+    private fun SyncHarness.serverAfterRemoval(keyId: String? = Ids.KEY, generation: String = Ids.GEN): EventsRoute {
+        http.on("GET", route()) { ok(WorkspaceDetails.serializer(), details(generation = generation, keyId = keyId)) }
         http.on("GET", route("/changes")) { call ->
             assertNull("a pass from the start", call.query("after"))
             ok(FeedPage.serializer(), feed(dm, next = "fresh"))
@@ -152,6 +152,28 @@ class StartOverTest {
         assertEquals("key2", h.ws().keyId)
         assertEquals(emptyList<Event>(), h.events(Ids.DM))
         assertTrue("the notification went with the key change", s.sink.activeKeys().isEmpty())
+        val outcome = h.sync.now()
+        assertTrue(outcome.pass)
+        s.assertSecretGone()
+        assertNull(h.store.read { eventById(ws, secret) })
+        assertEquals("half a reply", h.store.read { getDraft(ws, Ids.DM, null)!!.text })
+        assertEquals(5L, h.room(Ids.DM)!!.notified)
+        h.http.verify()
+    }
+
+    // A restored backup may lack messages this phone saw, so a new generation drops bodies, notice rows and alerts in
+    // the restore's transaction, as the desktop does (src/main/workspaces/sync.js restore()).
+    @Test
+    fun `a new generation drops a removed message's body, preview and notification before its pass`() = runTest {
+        val s = setup()
+        val h = s.h
+        h.store.tx { putDraft(ws, Ids.DM, null, Draft("half a reply")) }
+        h.serverAfterRemoval(generation = Ids.GEN2)
+        h.sync.details()
+        assertEquals(Ids.GEN2, h.ws().generation)
+        assertEquals(emptyList<Event>(), h.events(Ids.DM))
+        assertEquals(emptyList<Notice>(), h.store.read { noticesForRoom(ws, Ids.DM) })
+        assertTrue("the shown alert went with the restore", s.sink.activeKeys().isEmpty())
         val outcome = h.sync.now()
         assertTrue(outcome.pass)
         s.assertSecretGone()
