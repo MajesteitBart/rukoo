@@ -864,7 +864,12 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
                         state = ThreadLoad(complete = false)
                         return
                     }
-                    val page = backward(room, row, timing.eventsPage) ?: return
+                    // A page dropped because the cache moved on (a reset, or another room's removedMore) left the
+                    // root unreached: the thread stays incomplete, so Load earlier or the next opening tries again.
+                    val page = backward(room, row, timing.eventsPage) ?: run {
+                        state = ThreadLoad(complete = false)
+                        return
+                    }
                     pages += 1
                     if (page.events.isEmpty()) {
                         state = ThreadLoad(expired = true)
@@ -985,7 +990,11 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
                 complete = false
                 break
             }
-            val page = backward(room, row, timing.eventsPage) ?: break
+            // A dropped page didn't reach the target: the opening isn't complete.
+            val page = backward(room, row, timing.eventsPage) ?: run {
+                complete = false
+                null
+            } ?: break
             pages += 1
             if (page.events.isEmpty()) {
                 olderDone(room)

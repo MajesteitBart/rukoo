@@ -150,6 +150,31 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `a thread whose backfill page the cache revision dropped stays incomplete`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val root = Ids.event(10)
+        val route = h.withRoom(head = 400, events = (1L..400L).map { if (it >= 395) msg(it, root = root) else msg(it) })
+        h.sync.loader.open(general)
+        val started = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        h.http.once("GET", h.route("/conversations/$general/events")) {
+            started.complete(Unit)
+            gate.await()
+            route.answer(it)
+        }
+        val backfill = launch { h.sync.loader.ensureThread(general, root) }
+        started.await()
+        // Something else moved the cache on while the page was on its way, such as another room's removedMore.
+        h.store.tx { bumpRevision(ws) }
+        gate.complete(Unit)
+        backfill.join()
+        val load = h.sync.loader.threads.value.getValue(ThreadKey(general, root))
+        assertFalse(load.complete)
+        assertFalse(load.expired)
+        assertFalse(load.loading)
+    }
+
+    @Test
     fun `a thread whose root went with retention shows as expired`() = runTest {
         val h = SyncHarness(this, db).start()
         val root = Ids.event(3)
