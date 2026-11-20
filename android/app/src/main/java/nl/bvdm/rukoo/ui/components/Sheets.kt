@@ -27,6 +27,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -144,14 +145,14 @@ fun SheetRow(
     }
 }
 
-/** A heading inside a sheet or menu: 11.5/600 `text3`. */
+/** A heading inside a sheet or menu: 11.5/600 `text3`, or [color] where the heading carries information. */
 @Composable
-fun SheetHeading(text: String, modifier: Modifier = Modifier) {
+fun SheetHeading(text: String, modifier: Modifier = Modifier, color: Color = Rk.colors.text3) {
     Text(
         text,
         modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 4.dp),
         style = Rk.type.text11_5.semibold,
-        color = Rk.colors.text3,
+        color = color,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )

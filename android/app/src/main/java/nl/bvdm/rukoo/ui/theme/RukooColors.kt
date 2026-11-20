@@ -33,6 +33,8 @@ data class RukooColors(
     val text: Color,
     val text2: Color,
     val text3: Color,
+    /** Team chat's caption grey (styles.css --ch-text-3): times and counts in chat pass 4.5:1; mail keeps [text3]. */
+    val chatText3: Color,
     // Accent marks unread mail, links, focus and "on" controls.
     val accent: Color,
     val accentSoft: Color,
@@ -89,6 +91,19 @@ data class RukooColors(
     val scrim: Color get() = Color(0x730A0C12)
     val knob: Color get() = Color.White
     val onAccent: Color get() = Color.White
+
+    /**
+     * The label of a filled [danger] button: white on light's red, the dark ink on dark's lighter red, so it keeps
+     * 4.5:1 in both (styles.css .dialog .buttons button.danger:last-child uses --on-primary the same way).
+     */
+    val onDanger: Color get() = onPrimary
+
+    /** The digits of the accent count pill: the panel color, as desktop's .ch-badge draws them (dark on dark's light accent). */
+    val onCountPill: Color get() = panel
+
+    /** These colors with chat's caption grey as [text3], for the surfaces of team chat (styles.css `.chat { --text-3 }`). */
+    fun forChat(): RukooColors = copy(text3 = chatText3)
+
     val logoBackground: Color get() = Color.White
     val logoRing: Color get() = Color(0x14000000)
     /** Bars that sit on the canvas: the system bars follow it, like the desktop title bar (main.js:46-47). */
@@ -146,6 +161,7 @@ data class RukooColors(
             text = Color(0xFFECEDF1),
             text2 = Color(0xFFA7ADBA),
             text3 = Color(0xFF7A808E),
+            chatText3 = Color(0xFF8A909E),
             accent = Color(0xFF7AA5F5),
             accentSoft = Color(0x267AA5F5),
             link = Color(0xFF8AB0FF),
@@ -185,6 +201,7 @@ data class RukooColors(
             text = Color(0xFF16181D),
             text2 = Color(0xFF565C69),
             text3 = Color(0xFF868B98),
+            chatText3 = Color(0xFF666B7A),
             accent = Color(0xFF2F66D6),
             accentSoft = Color(0x1A2F66D6),
             link = Color(0xFF2F63C8),

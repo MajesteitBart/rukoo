@@ -146,7 +146,7 @@ private fun Segment(
 
 /**
  * The accent pill with a count (§3.10): on the Chat segment, and on a conversation row with unread messages (a DM) or
- * mentions (a channel). 18dp, accent fill, white tabular figures.
+ * mentions (a channel). 18dp, accent fill, tabular figures in the panel color (white in light, dark in dark).
  */
 @Composable
 fun ChatCountPill(text: String, modifier: Modifier = Modifier) {
@@ -159,7 +159,7 @@ fun ChatCountPill(text: String, modifier: Modifier = Modifier) {
             .padding(horizontal = 5.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = Rk.type.text11.semibold.tabular, color = c.onAccent, maxLines = 1)
+        Text(text, style = Rk.type.text11.semibold.tabular, color = c.onCountPill, maxLines = 1)
     }
 }
 

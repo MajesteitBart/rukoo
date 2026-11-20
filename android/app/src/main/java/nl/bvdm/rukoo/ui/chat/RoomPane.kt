@@ -155,6 +155,8 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
         RkTopBar(
             title = title,
             subtitle = roomModel?.let { roomSubtitle(it, chat.host) } ?: notJoined?.let { channelSubtitle(it.members, it.visibility) },
+            // Who hosts a DM and can read it, or who is in a channel: read, so text2 (desktop .ch-meta).
+            subtitleColor = c.text2,
             navigation = if (twoPane) null else {
                 { RkIconButton(RukooIcons.Back, stringResource(R.string.common_actions_back), onClick = { app.back() }) }
             },
@@ -632,7 +634,7 @@ private fun IntroRow(ctx: RowContext) {
                 style = Rk.type.text16.title,
                 color = c.text,
             )
-            Text(stringResource(R.string.chat_log_host_note, ctx.host), style = Rk.type.text12_5, color = c.text3)
+            Text(stringResource(R.string.chat_log_host_note, ctx.host), style = Rk.type.text12_5, color = c.text2)
         } else {
             Box(Modifier.size(40.dp).background(c.field, Rk.shapes.card), contentAlignment = Alignment.Center) {
                 RkIcon(if (room.visibility == "private") ChatIcons.Lock else ChatIcons.Hash, null, size = 20.dp, tint = c.text2)
@@ -648,7 +650,7 @@ private fun IntroRow(ctx: RowContext) {
             Text(
                 if (room.visibility == "private") stringResource(R.string.chat_log_start_private) else stringResource(R.string.chat_log_start_public, ctx.workspace),
                 style = Rk.type.text12_5,
-                color = c.text3,
+                color = c.text2,
             )
         }
     }
@@ -694,8 +696,8 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
             }
             if (row.removed) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RkIcon(RukooIcons.Trash, null, size = 14.dp, tint = c.text3)
-                    Text(stringResource(R.string.chat_log_removed), style = Rk.type.text13_5.copy(fontStyle = FontStyle.Italic), color = c.text3)
+                    RkIcon(RukooIcons.Trash, null, size = 14.dp, tint = c.text2)
+                    Text(stringResource(R.string.chat_log_removed), style = Rk.type.text13_5.copy(fontStyle = FontStyle.Italic), color = c.text2)
                 }
             } else {
                 val text = row.text.orEmpty()
@@ -765,7 +767,7 @@ private fun ReplyContext(context: ChatTimeline.Context, ctx: RowContext) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RkIcon(RukooIcons.Reply, null, size = 14.dp, tint = c.text3)
-        Text(text, style = Rk.type.text12, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(text, style = Rk.type.text12, color = c.text2, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -839,7 +841,7 @@ private fun PendingLine(row: ChatTimeline.Message, state: PendingState, ctx: Row
                 else -> RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
             }
         }
-        Text(text, style = Rk.type.text12.lineHeight(1.4f), color = if (danger) c.danger else c.text3)
+        Text(text, style = Rk.type.text12.lineHeight(1.4f), color = if (danger) c.danger else c.text2)
     }
     val on = ctx.onPending ?: return
     val actions = MessageRules.pendingActions(state, reason)

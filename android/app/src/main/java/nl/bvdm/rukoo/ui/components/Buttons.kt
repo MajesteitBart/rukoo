@@ -69,7 +69,7 @@ enum class RkButtonKind {
     /** No fill, `text`; fills on press. */
     QUIET,
 
-    /** A destructive last button in a dialog: `danger` fill, white text. */
+    /** A destructive last button in a dialog: `danger` fill, `onDanger` text (white in light, the dark ink in dark). */
     DANGER,
 }
 
@@ -102,7 +102,7 @@ fun RkButton(
         RkButtonKind.SECONDARY -> Fill(c.panel, c.text, e.shadowSm, c.borderStrong, c.hover)
         RkButtonKind.GHOST -> Fill(Color.Transparent, c.text2, null, null, c.active)
         RkButtonKind.QUIET -> Fill(Color.Transparent, c.text, null, null, c.hover)
-        RkButtonKind.DANGER -> Fill(c.danger, Color.White, null, null, Color.Black.copy(alpha = 0.10f))
+        RkButtonKind.DANGER -> Fill(c.danger, c.onDanger, null, null, Color.Black.copy(alpha = 0.10f))
     }
     val shape = Rk.shapes.control
     val style = if (size == RkButtonSize.SMALL) Rk.type.text12_5.semibold else Rk.type.text13.semibold

@@ -49,6 +49,7 @@ import nl.bvdm.rukoo.ui.root.PaneDivider
 import nl.bvdm.rukoo.ui.root.PaneWidths
 import nl.bvdm.rukoo.ui.root.layoutPrefs
 import nl.bvdm.rukoo.ui.settings.SettingsRoutes
+import nl.bvdm.rukoo.ui.theme.ChatInk
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.workspaces.ChatState
 
@@ -58,6 +59,11 @@ import nl.bvdm.rukoo.workspaces.ChatState
  */
 @Composable
 fun ChatCompactLayout(app: AppViewModel, nav: NavState, pane: ChatPane, modifier: Modifier = Modifier) {
+    ChatInk { CompactLayout(app, nav, pane, modifier) }
+}
+
+@Composable
+private fun CompactLayout(app: AppViewModel, nav: NavState, pane: ChatPane, modifier: Modifier) {
     val chat by app.chatState.collectAsStateWithLifecycle()
     ChatOverlays(app)
     val gate = ChatListModel.gate(chat)
@@ -72,6 +78,11 @@ fun ChatCompactLayout(app: AppViewModel, nav: NavState, pane: ChatPane, modifier
  */
 @Composable
 fun ChatTwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float) {
+    ChatInk { TwoPaneLayout(app, nav, holder, backProgress) }
+}
+
+@Composable
+private fun TwoPaneLayout(app: AppViewModel, nav: NavState, holder: SaveableStateHolder, backProgress: Float) {
     val chat by app.chatState.collectAsStateWithLifecycle()
     ChatOverlays(app)
     val gate = ChatListModel.gate(chat)

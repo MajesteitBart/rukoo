@@ -95,6 +95,7 @@ import nl.bvdm.rukoo.ui.settings.NoteTone
 import nl.bvdm.rukoo.ui.settings.formatDate
 import nl.bvdm.rukoo.ui.settings.formatTime
 import nl.bvdm.rukoo.ui.settings.hostOf
+import nl.bvdm.rukoo.ui.theme.ChatInk
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooDurations
 import nl.bvdm.rukoo.ui.theme.lineHeight
@@ -324,6 +325,11 @@ object SheetRules {
 @Composable
 fun ChatSheetHost(app: AppViewModel, sheet: ChatSheet, target: String?, twoPane: Boolean) {
     val close: () -> Unit = app::closeChatSheet
+    ChatInk { SheetFor(app, sheet, target, twoPane, close) }
+}
+
+@Composable
+private fun SheetFor(app: AppViewModel, sheet: ChatSheet, target: String?, twoPane: Boolean, close: () -> Unit) {
     key(sheet, target) {
         when (sheet) {
             ChatSheet.NEW -> NewSheet(app, twoPane, close)
@@ -389,7 +395,8 @@ private fun SheetFrame(
     fun ColumnScope.Body(close: () -> Unit) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 10.dp)) {
             Text(title, style = Rk.type.dialogTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (subtitle != null) Text(subtitle, style = Rk.type.text12_5, color = c.text3, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // The subtitle can be the host disclosure ("Direct message · hosted by …"), so it is read: text2.
+            if (subtitle != null) Text(subtitle, style = Rk.type.text12_5, color = c.text2, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Column(
             Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -437,9 +444,10 @@ private fun SheetText(text: String, modifier: Modifier = Modifier, color: Color 
     Text(text, modifier, style = Rk.type.text13.lineHeight(1.5f), color = color)
 }
 
+/** A line that says what a choice does ("You can't change this later.", what an invitation link gives): read, so text2. */
 @Composable
 private fun Help(text: String, warn: Boolean = false) {
-    Text(text, style = Rk.type.text12, color = if (warn) Rk.colors.warn else Rk.colors.text3)
+    Text(text, style = Rk.type.text12, color = if (warn) Rk.colors.warn else Rk.colors.text2)
 }
 
 /** The primary button with a spinner beside it while the work runs. */
@@ -500,7 +508,7 @@ private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit, hint
         if (icon != null) RkIcon(icon, null, size = 16.dp, tint = c.text2)
         Column(Modifier.weight(1f)) {
             Text(label, style = Rk.type.text13, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (hint != null) Text(hint, style = Rk.type.text12, color = c.text3)
+            if (hint != null) Text(hint, style = Rk.type.text12, color = c.text2)
         }
     }
 }
@@ -1398,6 +1406,8 @@ private fun WorkspaceMembers(app: AppViewModel, view: WorkspaceView, twoPane: Bo
                         },
                     ),
                     Modifier.padding(start = 4.dp),
+                    // The only place this sheet shows anyone's role, so in text2 like desktop's .ch-group.
+                    color = Rk.colors.text2,
                 )
                 for (m in people) {
                     val name = names.display(m)
