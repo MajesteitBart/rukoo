@@ -1428,12 +1428,15 @@ const nameable = (s) => Boolean(s) && !s.you;
 // Which voices have something to hear: the People card is drawn again when that changes.
 const hearableSig = () => {
   if (!M.data) return '';
-  const voices = new Set(M.data.passages.filter((p) => !p.dictation && p.end > p.start && p.text.trim()).map((p) => voiceOf(p).id));
+  const voices = new Set(heardIn(M.data).filter((p) => !p.dictation && p.end > p.start && p.text.trim()).map((p) => voiceOf(p).id));
   return M.data.speakers
     .filter((s) => voices.has(s.id))
     .map((s) => s.id)
     .join(' ');
 };
+
+// Everything a voice said: the transcript's passages and the pieces of a cut passage that a correction hides.
+const heardIn = (d) => (d.pieces && d.pieces.length ? d.passages.concat(d.pieces) : d.passages);
 
 // The longest part of [start, end) that none of the busy stretches covers: Voice mixes both tracks into a clip, so
 // another voice talking over this one would be heard too.
@@ -1464,15 +1467,17 @@ function clipsOf(s) {
   return clipMemo.byVoice.get(s.id);
 }
 function findClips(d, s) {
-  const own = d.passages.filter((p) => !p.dictation && p.end > p.start && p.text.trim() && voiceOf(p).id === s.id);
-  const others = d.passages
+  const heard = heardIn(d);
+  const own = heard.filter((p) => !p.dictation && p.end > p.start && p.text.trim() && voiceOf(p).id === s.id);
+  const others = heard
     .filter((p) => p.end > p.start && voiceOf(p).id !== s.id)
     .map((p) => [p.start, p.end])
     .sort((a, b) => a[0] - b[0]);
   const clips = own.map((p) => {
     const free = freeStretch(p.start, p.end, others);
     const [start, end] = free || [p.start, p.end];
-    return { passage: p.id, start, end: Math.min(end, start + CLIP_MAX_MS), text: p.text, rank: !free ? 2 : end - start >= CLIP_MIN_MS ? 0 : 1 };
+    // A piece a correction hides plays its own words and marks the correction in the transcript.
+    return { passage: p.under || p.id, start, end: Math.min(end, start + CLIP_MAX_MS), text: p.text, rank: !free ? 2 : end - start >= CLIP_MIN_MS ? 0 : 1 };
   });
   return clips.sort((a, b) => a.rank - b.rank || a.start - b.start).map(({ rank, ...c }) => c);
 }

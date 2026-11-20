@@ -469,6 +469,7 @@ class VoiceService extends EventEmitter {
       // Each with the guests of the linked event the meeting view offers as names.
       speakers: this.speakers(id),
       passages: full.passages,
+      pieces: full.pieces,
       marks: full.marks,
       frames: full.frames,
       notes: full.notes,

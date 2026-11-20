@@ -1438,6 +1438,51 @@ test('the microphone splits into the voices of the people next to you, who can b
   expect(asked).toBe(asks);
 });
 
+test('a voice whose words a correction hides after a split can still be heard, and other clips leave its speech out', async () => {
+  test.setTimeout(120000);
+  await linkEvents();
+  await openMeetings();
+  const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
+  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  voice.append('speaker', id, callVoice(1));
+  say(id, 'mic', 1000, 'Thanks, Pieter. I can do that.', { end: 6000 });
+  say(id, 'call', 4500, 'Great. Then the launch checklist.', { end: 9000 });
+  voice.append('meeting.state', id, { state: 'done', at: 10000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(rows()).toHaveCount(2);
+  // The user corrects their passage, then splits the microphone: someone next to them said its second half.
+  await rows().first().locator('.mt-text').dblclick();
+  await view().locator('.mt-edit').fill('Thanks, Pieter! I can do that.');
+  await view().locator('.mt-edit').press('Enter');
+  await expect(rows().first().locator('.mt-corrected')).toHaveText('Corrected by you');
+  voice.handlers['speakers.split'] = function (args) {
+    this.append('speaker', args.meeting, { id: 'mic-2', track: 'mic', label: 'Microphone 2' });
+    this.append('passage', args.meeting, { id: pid('mic', 1000), track: 'mic', speaker: 'mic', start: 1000, end: 3000, text: 'Thanks, Pieter.', revision: 2, dictation: false, language: 'en' });
+    this.append('passage', args.meeting, { id: pid('mic', 3000), track: 'mic', speaker: 'mic-2', start: 3000, end: 6000, text: 'I can do that.', revision: 1, dictation: false, language: 'en' });
+    return { state: 'done', voices: 2 };
+  };
+  await view().locator('.mt-split [data-mt="split"]').click({ timeout: 10000 });
+  await expect(peopleNames()).toHaveText(['You', 'Speaker A', 'Speaker 1'], { timeout: 15000 });
+  // The correction stays whole, so Speaker A's words show only inside it.
+  await expect(rows()).toHaveCount(2);
+  await expect(rows().first().locator('.mt-text')).toHaveText('Thanks, Pieter! I can do that.');
+
+  // Speaker A can still be heard: the clip plays their own words where nobody else speaks, and marks the correction.
+  await hear('mic-2').click();
+  await expect(player()).toContainText('I can do that.');
+  await expect(player().locator('.mt-pcount')).toHaveText('1 of 1');
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  expect(audioAsked()).toContainEqual([3000, 4500]);
+  await expect(rows().first()).toHaveClass(/is-clip/);
+  await shot('voices-hidden-piece-en');
+
+  // Speaker 1 talked over Speaker A: their clip starts where Speaker A stopped.
+  await hear('call-1').click();
+  await expect(player()).toContainText('Then the launch checklist.');
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  expect(audioAsked()).toContainEqual([6000, 9000]);
+});
+
 test("a 1:1's guessed name stays when a second voice joins, and the People card asks to check it", async () => {
   await linkEvents();
   await openMeetings();

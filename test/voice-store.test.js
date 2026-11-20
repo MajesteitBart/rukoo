@@ -648,6 +648,11 @@ test('after a split, dictation follows the voice that is the user, and a correct
     ]
   );
   assert.equal(s.hidesPieces(M, 'mic-000005000'), true);
+  // The hidden piece is still the user's speech for the player, with its own words, under the correction.
+  assert.deepEqual(
+    m.pieces.map((p) => [p.id, p.speaker, p.text, p.start, p.end, p.under]),
+    [['mic-000006500', 'mic', 'Thanks, Pieter.', 6500, 9000, 'mic-000005000']]
+  );
   // Editing the correction again keeps what it covered.
   s.correct(M, 'mic-000005000', 'I can do that. Thanks a lot, Pieter!');
   assert.deepEqual(s.meeting(M).passages.map((p) => p.id), ['mic-000001000', 'mic-000005000']);
@@ -655,10 +660,12 @@ test('after a split, dictation follows the voice that is the user, and a correct
   s.setYou(M, 'mic-2');
   m = s.meeting(M);
   assert.equal(m.passages[0].speaker, 'mic-2');
+  assert.equal(m.pieces[0].speaker, 'mic');
   // Going back to Voice's text shows the pieces again.
   s.correct(M, 'mic-000005000', null);
   assert.equal(s.hidesPieces(M, 'mic-000005000'), false);
   assert.deepEqual(s.meeting(M).passages.map((p) => p.id), ['mic-000001000', 'mic-000005000', 'mic-000006500']);
+  assert.deepEqual(s.meeting(M).pieces, []);
   s.close();
 });
 
