@@ -5,6 +5,7 @@ import { h } from './agent/bui.js';
 import { timeline, displayName, memberTag, canRemove, closedBar } from './chat-model.js';
 import { segments, toParts, appendToDraft } from './chat-text.js';
 import { mountChatInput } from './chat-input.js';
+import { draftSlotKey, draftWritten } from './chat-drafts.js';
 
 // Team chat's pane (contract 5.4 to 5.6, desktop-ui 5.2 to 5.7 and 7): the open conversation's header, the banner,
 // the log with its reading, jump pills and older history, the composer and the bars that replace it, unsent messages
@@ -590,7 +591,8 @@ export function mountView(section, H) {
         focusLog();
         return true;
       },
-      onDraft: (draft) => api('chatSaveDraft', ws, c, null, draft).catch(() => {})
+      onDraft: (draft) => api('chatSaveDraft', ws, c, null, draft).catch(() => {}),
+      draftKey: draftSlotKey(ws, c, null)
     });
     updateBars();
   }
@@ -1256,7 +1258,10 @@ export function mountView(section, H) {
       }
       // The room may have opened meanwhile, its composer loaded from the draft as it was.
       if (!shown()) {
-        api('chatSaveDraft', ws, c, root, appendToDraft(kept, p.text, p.mentions)).catch(() => {});
+        // A send still in flight from the room's composer learns that its draft changed (chat-drafts.js).
+        const merged = appendToDraft(kept, p.text, p.mentions);
+        draftWritten(draftSlotKey(ws, c, root), toParts(merged.text, merged.mentions));
+        api('chatSaveDraft', ws, c, root, merged).catch(() => {});
         return;
       }
     }
@@ -1598,7 +1603,8 @@ export function mountView(section, H) {
         closeThread();
         return true;
       },
-      onDraft: (draft) => api('chatSaveDraft', ws, c, rootId, draft).catch(() => {})
+      onDraft: (draft) => api('chatSaveDraft', ws, c, rootId, draft).catch(() => {}),
+      draftKey: draftSlotKey(ws, c, rootId)
     });
     renderThread({ position: seq ? 'at' : 'bottom' });
     syncCover();

@@ -440,6 +440,67 @@ test('a send main refuses after a switch to another room puts its text back in t
   expect(await serverMessages(server, olga, ws.id, ws.general, 'Keep this message, please')).toHaveLength(0);
 });
 
+test('a late send answer for a composer that left keeps the draft written in the room since, taken or refused', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  // Test hook: main's chatSend waits for the spec, then takes the message (sends it as usual) or refuses it.
+  const hold = () =>
+    app.evaluate(() => {
+      const outbox = global.__semChat.outbox;
+      delete global.__answerSend;
+      const real = outbox.send;
+      outbox.send = (...args) =>
+        new Promise((resolve, reject) => {
+          global.__answerSend = (ok) => {
+            delete outbox.send;
+            if (ok) resolve(real.apply(outbox, args));
+            else reject(Object.assign(new Error('not saved'), { code: 'not_saved' }));
+          };
+        });
+    });
+  const waiting = () => expect.poll(() => app.evaluate(() => typeof global.__answerSend)).toBe('function');
+  const draftOf = () => win.evaluate(([w, c]) => window.mail.call('chatDraft', w, c, null).then((d) => (d ? d.text : null)), [ws.id, ws.general]);
+  // Bart writes a draft that gets saved, sends it while main holds the send, goes to review and back, and writes a new
+  // draft over the one the send left behind before main answers.
+  const sendAndRewrite = async (sent, next) => {
+    await hold();
+    await write(sent, { send: false });
+    await expect.poll(draftOf, { timeout: 10000 }).toBe(sent);
+    await win.keyboard.press('Enter');
+    await expect(composer(win)).toHaveJSProperty('value', '');
+    await waiting();
+    await roomRow(win, 'review').click();
+    await expect(pane().locator('.ch-title')).toHaveText('review');
+    await roomRow(win, 'general').click();
+    await expect(pane().locator('.ch-title')).toHaveText('general');
+    await expect(composer(win)).toHaveJSProperty('value', sent, { timeout: 10000 });
+    await composer(win).click();
+    await win.keyboard.press('ControlOrMeta+a');
+    await win.keyboard.type(next);
+    await expect.poll(draftOf, { timeout: 10000 }).toBe(next);
+  };
+
+  // Taken: the message goes and the newer draft stays, in the composer and on disk.
+  await sendAndRewrite('First message', 'Newer draft');
+  await app.evaluate(() => global.__answerSend(true));
+  await expect.poll(() => serverMessages(server, olga, ws.id, ws.general, 'First message').then((l) => l.length), { timeout: 15000 }).toBe(1);
+  await expect(message(log(), 'First message')).toHaveAttribute('data-seq', /^\d+$/, { timeout: 15000 });
+  await expect(composer(win)).toHaveJSProperty('value', 'Newer draft');
+  expect(await draftOf()).toBe('Newer draft');
+
+  // Refused: the refused text comes back before the newer draft, and both are saved.
+  await composer(win).click();
+  await win.keyboard.press('ControlOrMeta+a');
+  await win.keyboard.press('Backspace');
+  await sendAndRewrite('Second message', 'Latest draft');
+  await app.evaluate(() => global.__answerSend(false));
+  await expect(composer(win)).toHaveJSProperty('value', 'Second message\nLatest draft', { timeout: 10000 });
+  await expect.poll(draftOf, { timeout: 10000 }).toBe('Second message\nLatest draft');
+  expect(await serverMessages(server, olga, ws.id, ws.general, 'Second message')).toHaveLength(0);
+});
+
 test('Enter on a link in a message with replies opens the link, and Enter on the message opens its thread', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   const root = await server.post(olga, ws.id, ws.general, 'The agenda is at https://example.com/agenda');

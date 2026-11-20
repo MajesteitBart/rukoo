@@ -4,6 +4,7 @@ import { hue, initials } from './ui.js';
 import { h } from './agent/bui.js';
 import { toWire, sendProblem, byteLength } from './chat-text.js';
 import { mentionToken, rankMembers } from './mention-match.js';
+import { draftSlotKey, attachDraft, detachDraft, draftWritten, sendStarted, sendSettled } from './chat-drafts.js';
 
 // Team chat's composer (contract 3.16, 3.17, 5.5; desktop-ui 5.5 and 5.6): a plain-text editable with mentions as
 // locked chips, the mention picker, Enter to send, the limits line and drafts. chat-view.js mounts one under the log
@@ -107,6 +108,8 @@ const draftKey = (d) => (d ? JSON.stringify(d) : '');
 //   onSend(wire)           { text, mentions, bytes } to send; a promise. A rejected one puts the text back.
 //   onEscape()             Escape with no picker open; true when it did something
 //   onDraft(draft)         { text, mentions } or null, DRAFT_DELAY after the last change
+//   draftKey               the draft's workspace, room and thread (draftSlotKey in chat-drafts.js): a send's answer is
+//                          reconciled against that draft as every composer for it left it, this one or a later one
 //   parts                  what the input starts with
 // Returns { el, input, focus, parts, setParts, setMembers, setBar, setPlaceholder, flush, dispose, hasFocus }.
 export function mountChatInput(container, opts = {}) {
@@ -137,10 +140,12 @@ export function mountChatInput(container, opts = {}) {
   let pickSeq = 0;
   let draftTimer = null;
   let savedDraft = '';
-  // The draft on disk as this composer last wrote or loaded it (parts, or null for none), and how many times it wrote
-  // one: a send in flight compares the count to know whether the draft it leaves behind is still the one on disk.
-  let diskParts = null;
-  let draftWrites = 0;
+  // The saved draft the input was last loaded with (setParts), until the next send.
+  let loadedKey = '';
+  // The draft's slot in chat-drafts.js, shared with the composers mounted before and after this one for the same
+  // workspace, room and thread: its version tells a send in flight whether the draft it left behind is still the one on
+  // disk. Without a key the composer has a slot of its own.
+  const slotKey = opts.draftKey || draftSlotKey(null, listId, null);
   const history = { list: [{ parts: [], caret: 0 }], at: 0, type: '', last: 0, from: null };
 
   function setPlaceholder(placeholder, label = placeholder) {
@@ -327,8 +332,7 @@ export function mountChatInput(container, opts = {}) {
   function writeDraft(parts) {
     const d = parts ? draftOf(parts) : null;
     savedDraft = draftKey(d);
-    diskParts = d ? parts : null;
-    draftWrites++;
+    draftWritten(slotKey, d ? parts : null);
     if (opts.onDraft) opts.onDraft(d);
   }
 
@@ -339,9 +343,10 @@ export function mountChatInput(container, opts = {}) {
   }
 
   // Enter and Ctrl+Enter: the message goes. The input empties at once, and the saved draft stays until main has the
-  // message on disk (contract 3.8): then it goes, unless a newer draft was saved meanwhile. When main can't take it (it
-  // couldn't be saved, say), the text comes back: in the input, before what was typed since, or in the saved draft when
-  // the composer is gone, so it is never lost.
+  // message on disk (contract 3.8): then it goes, unless a newer draft was saved meanwhile, by this composer or one
+  // mounted for the same draft after it. When main can't take it (it couldn't be saved, say), the text comes back: in
+  // the composer on screen for the draft, before what was typed since, or in the saved draft when there is none, so it
+  // is never lost (chat-drafts.js sendSettled).
   function submit() {
     if (state.composing || state.disposed) return;
     const parts = current();
@@ -356,29 +361,46 @@ export function mountChatInput(container, opts = {}) {
     draftTimer = null;
     // An empty input is the draft from now on, so a draft of nothing isn't written; the old one waits for the answer.
     savedDraft = '';
+    loadedKey = '';
     updateSend();
-    const writes = draftWrites;
+    const ticket = sendStarted(slotKey, { from: live, caret });
+    // The draft as the send's answer leaves it, written with this composer's onDraft: its workspace, room and thread
+    // are the slot's.
+    const save = (p) => {
+      if (opts.onDraft) opts.onDraft(p ? draftOf(mergedParts(p)) : null);
+    };
     Promise.resolve()
       .then(() => opts.onSend && opts.onSend(wire))
       .then(
-        () => {
-          // Nothing written since the send: the draft on disk is the one from before it, this message, so it goes.
-          if (draftWrites === writes) writeDraft(null);
-        },
-        () => {
-          // What was written since the send: still in the input, or on disk once the composer went.
-          const since = state.disposed ? (draftWrites === writes ? null : diskParts) : current();
-          const back = since && since.length ? mergedParts([...parts, '\n', ...since]) : parts;
-          if (state.disposed) {
-            if (opts.onDraft) opts.onDraft(draftOf(back));
-            return;
-          }
-          render(back, since && since.length ? partsText(back).length : caret);
-          resetHistory();
-          changed();
-        }
+        () => sendSettled(ticket, true, parts, save),
+        () => sendSettled(ticket, false, parts, save)
       );
   }
+
+  // For chat-drafts.js, while this composer is the one on screen for its draft.
+  const live = {
+    // A refused send's text: before what the input holds, or in place of nothing with the caret where it was sent from.
+    // A composer mounted after the send may have loaded it as the draft the send left behind; while the input still
+    // starts with it, it is there already.
+    takeBack(sent, ticket) {
+      const since = current();
+      if (loadedKey && loadedKey === draftKey(draftOf(sent)) && partsText(since).startsWith(partsText(sent))) return;
+      const back = since.length ? mergedParts([...sent, '\n', ...since]) : mergedParts(sent);
+      render(back, since.length || !ticket || ticket.from !== live ? partsText(back).length : ticket.caret);
+      resetHistory();
+      changed();
+    },
+    // A send taken after this composer loaded the draft it left behind: that draft is gone from disk now. The input
+    // empties when it still holds it unedited; an edited one is saved again like typed text.
+    dropSent(sent) {
+      const key = draftKey(draftOf(sent));
+      if (!key || savedDraft !== key) return;
+      savedDraft = '';
+      if (draftKey(draftOf(current())) === key) setParts([]);
+      else scheduleDraft();
+    }
+  };
+  attachDraft(slotKey, live);
 
   // Backspace right after a chip and Delete right before one take it off whole.
   function deleteChip(forward) {
@@ -668,10 +690,7 @@ export function mountChatInput(container, opts = {}) {
     render(list, partsText(list).length);
     resetHistory();
     if (dirty) scheduleDraft();
-    else {
-      savedDraft = draftKey(draftOf(list));
-      diskParts = draftOf(list) ? list : null;
-    }
+    else loadedKey = savedDraft = draftKey(draftOf(list));
     updateSend();
   }
 
@@ -724,6 +743,7 @@ export function mountChatInput(container, opts = {}) {
       if (state.disposed) return;
       if (draftTimer) flushDraft();
       state.disposed = true;
+      detachDraft(slotKey, live);
       closePicker();
       document.removeEventListener('selectionchange', onSelection);
       window.removeEventListener('resize', onResize);
