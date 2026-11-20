@@ -113,6 +113,10 @@ class WorkspaceLiveTest {
         suspend fun signUp(link: InviteLink? = null) {
             if (link != null) account.signUp(email(), PASSWORD, workspaceInvite = link) else account.signUp(email(), PASSWORD, invite)
             chat.start()
+            // The app is open, as MainActivity and ChatBackground mark it: outside the foreground and the worker's
+            // window the service neither lists, runs nor retries on its own.
+            screen.setForeground(true)
+            chat.resumed()
             chat.state.until("$name's chat") { it.signedIn && it.available && it.connection == Connection.ONLINE }
         }
 
@@ -127,11 +131,15 @@ class WorkspaceLiveTest {
         }
     }
 
-    private suspend fun <T> Flow<T>.until(what: String, timeoutMs: Long = 20_000, test: (T) -> Boolean): T = try {
-        withTimeout(timeoutMs) { first(test) }
-    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-        fail("timed out waiting for $what")
-        throw e
+    private suspend fun <T> Flow<T>.until(what: String, timeoutMs: Long = 20_000, test: (T) -> Boolean): T {
+        var last: T? = null
+        return try {
+            withTimeout(timeoutMs) { first { last = it; test(it) } }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            // The last value seen says which part of the wait never came true.
+            fail("timed out waiting for $what; last seen: $last")
+            throw e
+        }
     }
 
     private fun <T : Any> present(value: T?, what: String): T {
