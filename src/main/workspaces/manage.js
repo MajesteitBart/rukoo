@@ -525,11 +525,14 @@ class Manage {
   // ---- direct messages (contract 3.12) ----
 
   // chatStartDm: POST /dms with the other people. 201 and 200 alike open the room the server answered with, which goes
-  // into the cache at once (it is the room's feed row), unless a pass is under way: then the run brings it.
+  // into the cache at once (it is the room's feed row), unless the cache moved while the POST was on its way: a pass
+  // under way or begun, or a feed page applied, may have taken the room out after the server answered (a 200 for a DM
+  // left on another device). Then the run decides: the room it brings, or not_found with scope conversation when a
+  // run that read the feed to its end left the room out.
   async startDm(ws, members) {
     const svc = this.svc;
     const epoch = svc.epoch;
-    this.row(ws);
+    const before = this.row(ws);
     let answer;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -545,7 +548,11 @@ class Manage {
     const { dm } = answer;
     const store = svc.store;
     const row = store.getWs(ws);
-    if (row && !row.passing) {
+    const unmoved = Boolean(
+      row && !before.passing && !row.passing && row.cursor === before.cursor && row.generation === before.generation
+    );
+    let outcome = null;
+    if (unmoved) {
       store.tx(() => {
         store.upsertRoom(ws, dm);
         sync.recount(store, ws, dm.conversation);
@@ -553,10 +560,15 @@ class Manage {
       svc.roomsChanged(ws, [dm.conversation]);
       this.confirm(epoch, ws);
     } else {
-      await this.confirm(epoch, ws, true);
+      outcome = await svc.sync(ws, 'write');
+      svc.guard(epoch);
     }
     const cached = svc.store.getRoom(ws, dm.conversation);
-    return { room: cached ? wire.toRoom(cached) : roomOfFeed(dm) };
+    if (cached) return { room: wire.toRoom(cached) };
+    const after = svc.store.getWs(ws);
+    const complete = outcome && !outcome.error && !outcome.skipped && !outcome.stale && !outcome.more;
+    if (complete && after && !after.passing) throw new ChatError('not_found', { scope: 'conversation' });
+    return { room: roomOfFeed(dm) };
   }
 
   // chatLeaveDm: POST /dms/{c}/leave. It closes an open DM for the others; a closed one leaves the list.

@@ -76,8 +76,6 @@ class Outbox {
         epoch: svc.epoch,
         // Rooms with a send in flight, as `${ws}\n${room}`.
         busy: new Set(),
-        // Per row: the earliest a 429's Retry-After lets it go again.
-        holds: new Map(),
         // Per row: when its last attempt failed for the network ({ at, back }), for timing.retryDelay.
         netFailed: new Map(),
         // pump() runs one at a time; a call during it asks for another round.
@@ -98,22 +96,26 @@ class Outbox {
   // ---- hooks ----
 
   // Sends what is due: after each run, on focus, resume and socket open, and after a restore or Start over, whose
-  // transaction already ran store.markLookup. Each of those retries at once a row that waits after a network failure,
-  // except as long as a 429's Retry-After (or the test knob retryDelay) holds it. ws: only that workspace's rows are
-  // retried at once; the queue itself always runs for every workspace.
+  // transaction already ran store.markLookup. Each of those retries at once a row that waits after a network failure
+  // or a 5xx (attempts > 0), except as long as the test knob retryDelay holds it. A 429's Retry-After is kept: its row
+  // waits with attempts 0 and nextAt at the end of the wait, both on disk, so a restart keeps it too. ws: only that
+  // workspace's rows are retried at once; the queue itself always runs for every workspace.
+  //
+  // A row left sending while no send of its room is in flight is an orphan: the answer to its POST came but couldn't
+  // be written (acked), or the job stopped. It is looked up with its saved operation ID, which decides it.
   kick(ws) {
     const svc = this.svc;
     if (this.closed || !svc.store || !svc.live()) return;
     const q = this.current();
     const now = svc.now();
-    const rows = svc.store.all(
-      `SELECT local, ws, nextAt FROM outbox WHERE state = 'queued' AND nextAt > ?${ws ? ' AND ws = ?' : ''}`,
-      ...(ws ? [now, ws] : [now])
-    );
-    for (const row of rows) {
-      const at = Math.max(now, q.holds.get(row.local) || 0);
-      if (at < row.nextAt) svc.store.updateOutbox(row.local, { nextAt: at });
+    const only = ws ? ' AND ws = ?' : '';
+    const args = ws ? [ws] : [];
+    for (const row of svc.store.all(`SELECT local, ws, room FROM outbox WHERE state = 'sending'${only}`, ...args)) {
+      if (q.busy.has(`${row.ws}\n${row.room}`)) continue;
+      svc.store.updateOutbox(row.local, { state: 'queued', reason: 'lookup', nextAt: 0 });
+      this.emitPending(row.ws, row.room);
     }
+    svc.store.run(`UPDATE outbox SET nextAt = ? WHERE state = 'queued' AND attempts > 0 AND nextAt > ?${only}`, now, now, ...args);
     this.pump();
   }
 
@@ -214,10 +216,16 @@ class Outbox {
     let { room } = this.writable(row.ws, row.room);
     // The grant this device last saw is the one the server refused: the feed knows the new one.
     if (mode === 'send' && row.reason === 'stale_grant' && room.grantId === row.grantId) {
+      const confirmed = row;
       await svc.sync(row.ws, 'resend');
       svc.guard(epoch);
       row = store.getOutbox(local);
       if (!row) throw new ChatError('not_found');
+      // Meanwhile another Send went ahead with it, or a restore marked it for lookup: what the person confirmed is no
+      // longer the row, which stays as that left it.
+      if (row.state !== confirmed.state || row.reason !== confirmed.reason || row.operationId !== confirmed.operationId) {
+        return { pending: this.pendingFor(row.ws, row.room).find((p) => p.local === local) };
+      }
       ({ room } = this.writable(row.ws, row.room));
     }
     const fields = { state: 'queued', reason: null, attempts: 0, nextAt: 0 };
@@ -364,7 +372,6 @@ class Outbox {
 
   forget(local) {
     if (!this.queue) return;
-    this.queue.holds.delete(local);
     this.queue.netFailed.delete(local);
   }
 
@@ -453,7 +460,7 @@ class Outbox {
         }
         return this.failed(q, row, operationId, err);
       }
-      return this.acked(q, row, operationId, answer, { visible: true });
+      return this.acked(q, row, operationId, answer, { visible: true, states: ['sending'] });
     }
   }
 
@@ -473,7 +480,7 @@ class Outbox {
       return this.failed(q, row, operationId, err, { states: ['queued'], keep: { reason: 'lookup' } });
     }
     if (!this.still(q, row, operationId, ['queued', 'sending'])) return;
-    return this.acked(q, row, operationId, answer, { visible: answer.visible });
+    return this.acked(q, row, operationId, answer, { visible: answer.visible, states: ['queued', 'sending'] });
   }
 
   // A refused or failed attempt (or lookup), by the table of contract 3.8. states: what the row must still be for this
@@ -491,10 +498,9 @@ class Outbox {
       return;
     }
     if (err.code === 'rate_limited') {
-      const until = now + (err.retryAfter || 1) * 1000;
-      this.settle(q, row, { state: 'queued', nextAt: until, ...keep });
-      q.holds.set(row.local, until);
-      return;
+      // attempts 0 marks the wait as the server's own, which kick() doesn't cut short. The server answered, so a
+      // network failure after it backs off from the start again.
+      return this.settle(q, row, { state: 'queued', attempts: 0, nextAt: now + (err.retryAfter || 1) * 1000, ...keep });
     }
     // The workspace waits for a newer Rukoo (call() parked it), or the session ended: the row waits as it is.
     if (err.code === 'upgrade_required' || err.code === 'signed_out' || err.code === 'paused') {
@@ -531,14 +537,47 @@ class Outbox {
 
   // The message committed: one transaction deletes the row, caches the event when it follows the cached range at once,
   // and moves the read positions to at least its seq, as the server moved the sender's. Then sent goes out.
-  acked(q, row, operationId, answer, { visible }) {
+  //
+  // states: what the row must still be under operationId for this answer to count. A POST's answer counts only while
+  // its row is sending: a restore or Start over that marked the row for lookup meanwhile leaves the decision to the
+  // lookup, as the generation the POST went out under may be gone. When the transaction fails (a disk error), the row
+  // waits for a lookup with its saved ID after the backoff, so the room's queue doesn't stall until a restart.
+  acked(q, row, operationId, answer, { visible, states }) {
     const svc = this.svc;
     const store = svc.store;
     if (this.queue !== q || !store) return;
     const { ws, room } = row;
-    const done = store.tx(() => {
+    let done;
+    try {
+      done = this.ackTx(row, operationId, answer, { visible, states });
+    } catch (err) {
+      const current = this.still(q, row, operationId, states);
+      if (current) {
+        const table = svc.timing.sendBackoff;
+        const attempts = current.attempts + 1;
+        try {
+          this.settle(q, row, { state: 'queued', reason: 'lookup', attempts, nextAt: svc.now() + table[Math.min(attempts - 1, table.length - 1)] });
+        } catch (_) {
+          // The disk refuses this too: the row stays sending, and the next kick() takes it up as an orphan.
+        }
+      }
+      throw err;
+    }
+    this.forget(row.local);
+    if (!done) return;
+    svc.emitChat({ kind: 'sent', ws, conversation: room, local: row.local, messageId: answer.messageId, seq: answer.seq });
+    this.emitPending(ws, room);
+    svc.roomsChanged(ws, [room]);
+    svc.sync(ws, 'sent');
+  }
+
+  ackTx(row, operationId, answer, { visible, states }) {
+    const svc = this.svc;
+    const store = svc.store;
+    const { ws, room } = row;
+    return store.tx(() => {
       const current = store.getOutbox(row.local);
-      if (!current || current.operationId !== operationId) return null;
+      if (!current || current.operationId !== operationId || !states.includes(current.state)) return null;
       store.deleteOutbox(row.local);
       const r = store.getRoom(ws, room);
       if (!r) return { current };
@@ -571,12 +610,6 @@ class Outbox {
       this.badges(ws, room);
       return { current };
     });
-    this.forget(row.local);
-    if (!done) return;
-    svc.emitChat({ kind: 'sent', ws, conversation: room, local: row.local, messageId: answer.messageId, seq: answer.seq });
-    this.emitPending(ws, room);
-    svc.roomsChanged(ws, [room]);
-    svc.sync(ws, 'sent');
   }
 
   // The server's badges count after its read position, which just moved to the sender's message: nothing when that

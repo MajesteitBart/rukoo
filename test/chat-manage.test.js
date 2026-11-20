@@ -367,6 +367,41 @@ test('DMs: start (201 and 200), groups, leave, dm_unavailable and blocked; block
   assert.equal(svc.store.getRoom(ws.id, one.room.id), null);
 });
 
+test('a Start DM answer that arrives after the feed took the room out opens nothing and keeps it out', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const { svc, api, account } = await device(t, bart);
+  await settled(svc, ws.id);
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  await svc.sync(ws.id);
+  assert.ok(svc.store.getRoom(ws.id, dm.conversation));
+  // The server's 200 for the open DM waits while Bart leaves it on another device and this one's feed evicts it.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let reached;
+  const arrived = new Promise((resolve) => (reached = resolve));
+  watchCalls(account, async (method, url, real) => {
+    if (method !== 'POST' || !url.endsWith('/dms')) return undefined;
+    const answer = await real();
+    reached(answer);
+    await held;
+    return answer;
+  });
+  const start = api.chatStartDm(ws.id, [ws.me.id]);
+  assert.equal((await arrived).dm.conversation, dm.conversation);
+  const left = await server.call('POST', route(ws.id, `/dms/${dm.conversation}/leave`), { token: bart.token });
+  assert.equal(left.status, 204, left.text);
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, dm.conversation), null);
+  release();
+  await assert.rejects(start, fails('not_found', { scope: 'conversation' }));
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, dm.conversation), null, 'the next run keeps it out');
+});
+
 test('the twenty-first new DM of a day fails with dailyDms, and an open DM still opens', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();

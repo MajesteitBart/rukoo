@@ -639,3 +639,161 @@ test('redact marks the cached event removed at once and waits out a 429', async 
   const hers = await server.post(olga, ws.id, ws.general, 'mine to keep');
   await rejects(api.chatRedact(ws.id, ws.general, hers.messageId), 'forbidden');
 });
+
+// A gate a watched call waits at until the test releases it.
+function gate() {
+  const g = {};
+  g.wait = new Promise((resolve) => (g.release = resolve));
+  g.reached = new Promise((resolve) => (g.reach = resolve));
+  return g;
+}
+
+test('two Sends of a held/stale_grant row at once post it once, with its operation ID', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, bartMe, ws, svc, api } = await setup(t);
+  // Taken out of general and back in on another device: the cache still has the old grant.
+  let r = await server.call('DELETE', route(ws.id, `/channels/${ws.general}/members/${bartMe.id}`), { token: olga.token });
+  assert.equal(r.status, 204, r.text);
+  r = await server.call('POST', route(ws.id, `/channels/${ws.general}/join`), { token: bart.token });
+  assert.equal(r.status, 200, r.text);
+  const ids = [];
+  watchCalls(svc.account, async (method, url, real, body) => {
+    if (isPost(method, url)) ids.push(body.operationId);
+    return undefined;
+  });
+  const text = 'confirmed once, sent once';
+  const { local } = await api.chatSend(ws.id, ws.general, { text, mentions: [], root: null });
+  const held = await rowIs(svc, local, 'held', 'stale_grant');
+  // A double click: both wait for the feed's new grant, and only the first may change the row.
+  const results = await Promise.all([api.chatResend(local, { mode: 'send' }), api.chatResend(local, { mode: 'send' })]);
+  assert.ok(results.every((x) => x.pending && x.pending.local === local));
+  await sentFor(svc, local);
+  await settled(svc, ws.id);
+  assert.ok(ids.length >= 2);
+  assert.deepEqual([...new Set(ids)], [held.operationId], 'every POST carried the ID the person confirmed');
+  assert.equal((await serverMessages(bart, ws.id, ws.general)).filter((m) => m.text === text).length, 1);
+});
+
+test('a POST answer that arrives after a restore marked its row leaves the row to the lookup', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, api } = await setup(t);
+  const home = route(ws.id);
+  const newGeneration = 'G'.repeat(22);
+  const post = gate();
+  const calls = watchCalls(svc.account, async (method, url, real, body) => {
+    if (isPost(method, url)) {
+      // An answer from the old life of the workspace; the restored one never saw this operation.
+      post.reach();
+      await post.wait;
+      return { operationId: body.operationId, messageId: `e_${'A'.repeat(22)}`, seq: svc.store.getRoom(ws.id, ws.general).head + 1 };
+    }
+    if (method === 'GET' && url === home) {
+      const answer = await real();
+      return { ...answer, workspace: { ...answer.workspace, generation: newGeneration } };
+    }
+    return undefined;
+  });
+  const { local } = await api.chatSend(ws.id, ws.general, { text: 'written before the restore', mentions: [], root: null });
+  await post.reached;
+  await svc.details(ws.id);
+  assert.equal(svc.store.getOutbox(local).reason, 'lookup');
+  post.release();
+  // The lookup decides: the restored workspace doesn't know the operation.
+  const row = await rowIs(svc, local, 'held', 'unknown');
+  assert.equal(row.text, 'written before the restore');
+  assert.ok(calls.some((c) => c.route.endsWith(`/operations/${row.operationId}`)), 'the lookup ran');
+  assert.equal(ofKind(svc, 'sent').filter((e) => e.local === local).length, 0);
+});
+
+test('a POST answer that arrives after Start over leaves the row to the lookup, which finds the message', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, svc, api } = await setup(t);
+  const post = gate();
+  let committed = null;
+  const calls = watchCalls(svc.account, async (method, url, real) => {
+    if (!isPost(method, url)) return undefined;
+    committed = await real();
+    post.reach();
+    await post.wait;
+    return committed;
+  });
+  const { local } = await api.chatSend(ws.id, ws.general, { text: 'sent before Start over', mentions: [], root: null });
+  await post.reached;
+  await api.chatReload(ws.id);
+  assert.equal(svc.store.getOutbox(local).reason, 'lookup');
+  post.release();
+  const sent = await sentFor(svc, local);
+  assert.equal(sent.messageId, committed.messageId);
+  assert.ok(calls.some((c) => c.route.endsWith(`/operations/${committed.operationId}`)), 'the lookup decided');
+  assert.equal(svc.store.getOutbox(local), null);
+  assert.equal((await serverMessages(bart, ws.id, ws.general)).filter((m) => m.text === 'sent before Start over').length, 1);
+});
+
+test('an answer the disk refuses to record is looked up later, and a row left sending is taken up by a kick', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, svc, api } = await setup(t, { timing: { sendBackoff: [60000] } });
+  const store = svc.store;
+  // The ack's transaction fails: the row's DELETE is refused.
+  store.run(`CREATE TEMP TRIGGER no_delete BEFORE DELETE ON outbox BEGIN SELECT RAISE(ABORT, 'disk trouble'); END`);
+  const one = await api.chatSend(ws.id, ws.general, { text: 'committed, not recorded', mentions: [], root: null });
+  const waiting = await rowIs(svc, one.local, 'queued', 'lookup');
+  assert.equal(svc.hookError.code, 'not_saved');
+  assert.match(waiting.operationId, wire.patterns.UUID_V7);
+  assert.ok(waiting.nextAt > svc.now(), 'after the backoff');
+  store.run('DROP TRIGGER no_delete');
+  svc.outbox.kick(ws.id);
+  const a = await sentFor(svc, one.local);
+  assert.equal(store.getOutbox(one.local), null);
+
+  // The disk refuses the way back to queued as well: the row stays sending until a kick finds it without a send.
+  const calls = watchCalls(svc.account, async (method, url, real) => {
+    if (!isPost(method, url)) return undefined;
+    const answer = await real();
+    store.run(`CREATE TEMP TRIGGER no_delete BEFORE DELETE ON outbox BEGIN SELECT RAISE(ABORT, 'disk trouble'); END`);
+    store.run(`CREATE TEMP TRIGGER no_update BEFORE UPDATE ON outbox BEGIN SELECT RAISE(ABORT, 'disk trouble'); END`);
+    return answer;
+  });
+  const hookErrors = svc.hookError;
+  const two = await api.chatSend(ws.id, ws.general, { text: 'committed, stuck sending', mentions: [], root: null });
+  await until(() => svc.hookError !== hookErrors && svc.hookError?.code === 'not_saved', 10000, 'the refused ack');
+  await sleep(50);
+  assert.equal(store.getOutbox(two.local).state, 'sending');
+  store.run('DROP TRIGGER no_delete');
+  store.run('DROP TRIGGER no_update');
+  svc.outbox.kick(ws.id);
+  const b = await sentFor(svc, two.local);
+  assert.ok(calls.some((c) => c.route.includes('/operations/')), 'the orphan was looked up');
+  const texts = (await serverMessages(bart, ws.id, ws.general)).map((m) => m.text);
+  assert.equal(texts.filter((x) => x === 'committed, not recorded').length, 1);
+  assert.equal(texts.filter((x) => x === 'committed, stuck sending').length, 1);
+  assert.ok(a.seq < b.seq);
+});
+
+test('a 429 Retry-After survives a restart: the new service and its kicks wait it out', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, api, account, dir } = await setup(t);
+  watchCalls(account, async (method, url) => {
+    if (isPost(method, url)) throw new AccountError('rate_limited', 429, 'Wait', { retryAfter: 30 });
+    return undefined;
+  });
+  const { local } = await api.chatSend(ws.id, ws.general, { text: 'rate limited', mentions: [], root: null });
+  const row = await until(() => {
+    const r = svc.store.getOutbox(local);
+    return r && r.state === 'queued' && r.nextAt > svc.now() + 20000 ? r : null;
+  }, 10000, 'the 429');
+  assert.equal(row.attempts, 0);
+  svc.close();
+  const posts = [];
+  watchCalls(account, async (method, url) => {
+    if (isPost(method, url)) posts.push(url);
+    return undefined;
+  });
+  const again = chatService(account, dir);
+  t.after(() => again.close());
+  await settled(again, ws.id);
+  again.outbox.kick(ws.id);
+  again.nudge('resume');
+  await sleep(300);
+  assert.deepEqual(posts, [], 'nothing went before Retry-After');
+  assert.equal(again.store.getOutbox(local).nextAt, row.nextAt);
+});
