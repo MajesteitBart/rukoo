@@ -11,10 +11,15 @@
 // reads or writes. Every change runs in one synchronous transaction that checks the caller's rights again, so a
 // removal and a send can never pass each other. Devices are woken after the transaction has committed, with a frame
 // that says nothing: a device learns what changed from GET /changes, under its own access.
+//
+// A message can carry files, reactions and link cards (WORKSPACES.md, Rich messages). The files' bytes live in the
+// WORKSPACE_FILES bucket and never pass through this object: the Worker streams them (files.js) and makes link cards
+// (previews.js). This object keeps what they are, who may have them, and every bucket key it ever handed out, until the
+// key is deleted from the bucket again.
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { accountObject, workspaceLimits } from './config.js';
+import { accountObject, filesOn, workspaceLimits } from './config.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 // An operation id older than this is refused even when its retry receipt is gone; one further ahead than the second
@@ -45,6 +50,22 @@ const SWEEP_BATCH = 2000;
 const PROTOCOL = 'rukoo.workspace.v1';
 // Direct messages: how many DMs one member starts in a rolling day. A DM holds 2 to 8 people, which the Worker checks.
 const DM_DAILY = 20;
+// Different emoji one message holds.
+const REACTIONS = 20;
+// Files: uploads one member holds open (reserved, under way or ready, and not sent yet), how long a reservation lasts,
+// how many attempts at one upload may be under way at once, and after how long an attempt that never reported back
+// counts as dead.
+const OPEN_UPLOADS = 20;
+const UPLOAD_TIME = 60 * 60 * 1000;
+const ATTEMPTS = 2;
+const ATTEMPT_TIME = 2 * 60 * 60 * 1000;
+// Keys deleted from the bucket in one call, the most R2 takes at once; how soon the alarm comes for new trash, and
+// how long it waits after a delete failed.
+const TRASH_BATCH = 1000;
+const TRASH_SOON = 10 * 1000;
+const TRASH_RETRY = 5 * 60 * 1000;
+// Events that are no activity of their own: they never count as unread and don't move a room's lastAt.
+const QUIET = new Set(['reaction.added', 'reaction.removed', 'message.previewed']);
 
 const FULL = new Set(['owner', 'admin', 'member']);
 const ADMIN = new Set(['owner', 'admin']);
@@ -57,6 +78,64 @@ const ADMIN = new Set(['owner', 'admin']);
 // A direct message is a conversation too, of kind 'dm'. Its dmSet is the participants' member keys, ascending and
 // joined with commas, and the partial unique index lets one set have one open DM. closedWhy says why a DM closed,
 // next to its archivedAt. A block is one person's, and dm_start keeps a row per DM someone started, for the daily cap.
+//
+// The tables of rich messages, which a new workspace makes with the rest and an older one adds in #upgrade().
+const RICH_TABLES = `
+  CREATE TABLE IF NOT EXISTS reaction (
+    conversation INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    member INTEGER NOT NULL,
+    ord INTEGER NOT NULL,
+    PRIMARY KEY (conversation, seq, emoji, member)
+  ) WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS upload (
+    n INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    member INTEGER NOT NULL,
+    conversation INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    state TEXT NOT NULL,
+    key TEXT,
+    createdAt INTEGER NOT NULL,
+    expiresAt INTEGER NOT NULL,
+    seq INTEGER,
+    pos INTEGER,
+    preview INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS upload_open ON upload (member, expiresAt) WHERE seq IS NULL;
+  CREATE INDEX IF NOT EXISTS upload_expiry ON upload (expiresAt) WHERE seq IS NULL;
+  CREATE INDEX IF NOT EXISTS upload_message ON upload (conversation, seq);
+  CREATE TABLE IF NOT EXISTS attempt (
+    key TEXT PRIMARY KEY,
+    upload INTEGER,
+    size INTEGER NOT NULL,
+    charge INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS attempt_upload ON attempt (upload);
+  CREATE INDEX IF NOT EXISTS attempt_at ON attempt (at);
+  CREATE TABLE IF NOT EXISTS trash (
+    key TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS trash_at ON trash (at);
+`;
+
+// Rich messages: conversation.last is the sequence of the newest event that counts as activity (lastAt in the feed),
+// and grants.readMark counts how often the member marked something unread there. A reaction row is one person's
+// emoji on one message, ord the sequence of the reaction.added that made it, which orders who reacted. event.previews
+// holds a message's link cards once they are made; noPreviews says its author took one away, so none come again.
+// An upload is a file from reservation to the end of its message: reserved, uploading, ready, then bound to a message
+// (seq, pos), or a link card's image (preview). attempt holds the bucket keys of writes under way, trash the keys
+// waiting to be deleted from the bucket. workspace.fileBytes counts the bytes all of those stand for, apart from the
+// message text bytes counts.
 const SCHEMA = `
   CREATE TABLE workspace (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -68,7 +147,8 @@ const SCHEMA = `
     feedFloor INTEGER NOT NULL,
     membersRev INTEGER NOT NULL,
     channelsRev INTEGER NOT NULL,
-    bytes INTEGER NOT NULL
+    bytes INTEGER NOT NULL,
+    fileBytes INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE member (
     n INTEGER PRIMARY KEY,
@@ -99,7 +179,8 @@ const SCHEMA = `
     rev INTEGER NOT NULL,
     roster INTEGER NOT NULL DEFAULT 0,
     dmSet TEXT,
-    closedWhy TEXT
+    closedWhy TEXT,
+    last INTEGER NOT NULL DEFAULT 0
   );
   CREATE UNIQUE INDEX conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
   CREATE TABLE block (
@@ -119,6 +200,7 @@ const SCHEMA = `
     startSeq INTEGER NOT NULL,
     readSeq INTEGER NOT NULL,
     rev INTEGER NOT NULL,
+    readMark INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (member, conversation)
   ) WITHOUT ROWID;
   CREATE INDEX grants_conversation ON grants (conversation);
@@ -143,11 +225,14 @@ const SCHEMA = `
     op BLOB,
     opHash BLOB,
     redactedAt INTEGER,
+    previews TEXT,
+    noPreviews INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (conversation, seq)
   ) WITHOUT ROWID;
   CREATE UNIQUE INDEX event_id ON event (id);
   CREATE UNIQUE INDEX event_op ON event (actor, op) WHERE op IS NOT NULL;
   CREATE INDEX event_at ON event (at);
+${RICH_TABLES}
   CREATE TABLE receipt (
     actor INTEGER NOT NULL,
     op BLOB NOT NULL,
@@ -216,8 +301,14 @@ const OPERATIONS = {
   changes: 'fetch',
   operation: 'fetch',
   'blocks.list': 'fetch',
+  'file.download': 'fetch',
   post: 'send',
   read: 'send',
+  react: 'send',
+  unread: 'send',
+  'upload.reserve': 'send',
+  'upload.cancel': 'send',
+  'previews.remove': 'send',
   join: 'send',
   'invite.preview': 'send',
   'invite.create': 'send',
@@ -262,6 +353,15 @@ const FORBIDDEN = (message) => new Refusal(403, 'forbidden', message);
 // active member, or someone who blocked someone else in the set (WORKSPACES.md, Direct messages).
 const DM_UNAVAILABLE = () =>
   new Refusal(403, 'dm_unavailable', "You can't start a conversation with these people.", { field: 'members' });
+// Nothing new goes into an archived channel or a closed DM.
+const ARCHIVED = (c) =>
+  new Refusal(409, 'archived', c.kind === 'dm' ? 'This conversation is closed.' : 'This channel is archived.', { scope: 'conversation' });
+const NO_MESSAGE = () => new Refusal(404, 'not_found', 'There is no message with this id here.');
+const NO_FILE = () => new Refusal(404, 'not_found', 'There is no file with this id here.');
+// An upload a PUT can't go to: sent with a message already, cancelled, expired or never made.
+const INVALID_STATE = () => new Refusal(409, 'invalid_state', 'This upload was sent, cancelled or has expired. Attach the file again.');
+const FILES_QUOTA = () =>
+  new Refusal(413, 'quota', 'This workspace has no room for more files. Remove some first.', { scope: 'workspace', limit: 'files' });
 
 function newId(prefix) {
   return `${prefix}_${toBase64url(randomBytes(16))}`;
@@ -279,6 +379,18 @@ function eventBytes(id) {
 
 function memberOut(row) {
   return { id: row.id, kind: 'human', name: row.name, role: row.role, state: row.state, joinedAt: row.joinedAt };
+}
+
+// A file as a message carries it. Width and height only for an image that gave them.
+function fileOut(row) {
+  const out = { id: row.id, name: row.name, type: row.type, size: row.size };
+  if (row.width && row.height) Object.assign(out, { width: row.width, height: row.height });
+  return out;
+}
+
+// A new bucket key, under the workspace's own prefix: a deleted workspace's leftovers can be found by it.
+function fileKey(wid) {
+  return `ws/${wid}/${toBase64url(randomBytes(16))}`;
 }
 
 class Bucket {
@@ -320,7 +432,11 @@ export class Workspace extends DurableObject {
     const now = Date.now();
     this.buckets = new Map();
     this.strangers = new Bucket(STRANGER_LANE, now);
+    // A PUT carries no session, only its upload link: each upload gets a stranger's allowance of its own.
+    this.uploadLanes = new Map();
     this.ceiling = new Bucket(WORKSPACE_LANE, now);
+    // The earliest time a change asked the alarm to come by: for new trash, or for a reservation's expiry.
+    this.alarmAt = null;
     this.lastWake = new Map();
     this.trailing = new Map();
     this.wakes = new Set();
@@ -330,14 +446,28 @@ export class Workspace extends DurableObject {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
-  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks. They
-  // are added before the object answers anything. Each step can run again, so an object stopped halfway finishes the
-  // next time it starts, and one already up to date only reads its table definitions.
+  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks, and
+  // one made before rich messages none for reactions, files and link cards. They are added before the object answers
+  // anything. Each step can run again, so an object stopped halfway finishes the next time it starts, and one already
+  // up to date only reads its table definitions.
   #upgrade() {
     const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
     if (!has('member', 'blocksRev')) this.sql.exec('ALTER TABLE member ADD COLUMN blocksRev INTEGER NOT NULL DEFAULT 0');
     if (!has('conversation', 'dmSet')) this.sql.exec('ALTER TABLE conversation ADD COLUMN dmSet TEXT');
     if (!has('conversation', 'closedWhy')) this.sql.exec('ALTER TABLE conversation ADD COLUMN closedWhy TEXT');
+    // Every event of an older workspace counts as activity, so a room's newest is its head. The column and its values
+    // come in one step, or a restart in between would leave every room with lastAt null.
+    if (!has('conversation', 'last')) {
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec('ALTER TABLE conversation ADD COLUMN last INTEGER NOT NULL DEFAULT 0');
+        this.sql.exec('UPDATE conversation SET last = head');
+      });
+    }
+    if (!has('grants', 'readMark')) this.sql.exec('ALTER TABLE grants ADD COLUMN readMark INTEGER NOT NULL DEFAULT 0');
+    if (!has('event', 'previews')) this.sql.exec('ALTER TABLE event ADD COLUMN previews TEXT');
+    if (!has('event', 'noPreviews')) this.sql.exec('ALTER TABLE event ADD COLUMN noPreviews INTEGER NOT NULL DEFAULT 0');
+    if (!has('workspace', 'fileBytes')) this.sql.exec('ALTER TABLE workspace ADD COLUMN fileBytes INTEGER NOT NULL DEFAULT 0');
+    this.sql.exec(RICH_TABLES);
     this.sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
       CREATE TABLE IF NOT EXISTS block (
@@ -403,11 +533,50 @@ export class Workspace extends DurableObject {
       const me = this.#actor(who);
       if (!me) throw NO_WORKSPACE();
       this.#renew(who.session);
-      return await this.#dispatch(op, me, who, args);
+      const result = await this.#dispatch(op, me, who, args);
+      await this.#settle();
+      return result;
     } catch (err) {
       if (err instanceof Refusal) return err.reply;
       throw err;
     }
+  }
+
+  // ---- Called by the Worker for files and link cards ----
+
+  // A PUT to an upload link, before any byte is written: whether the upload takes one now, and the fresh bucket key
+  // this attempt writes to, recorded here first so that no key the bucket holds is ever unknown. length is the PUT's
+  // Content-Length. The answer's attempt is for the Worker: { key, size, type, name, sha256 }.
+  async startAttempt(id, length) {
+    const wait = this.#admitUpload(id, Date.now());
+    if (wait) {
+      return reply(429, { error: 'rate_limited', message: 'Too many requests. Try again shortly.', scope: 'workspace' }, { 'retry-after': String(wait) });
+    }
+    return this.#run(() => this.#write(() => this.#startAttempt(id, length, Date.now())));
+  }
+
+  // The end of a PUT: ok when the bucket took the bytes and their digest. The first attempt that ends well makes the
+  // upload ready with its key; every other key goes to the trash. size is the attempt's, for a key this object had
+  // already given up on. gone: true when the workspace was deleted meanwhile, and the Worker deletes the key itself.
+  async finishAttempt(id, key, size, ok) {
+    if (!this.present) return { status: 404, body: NO_WORKSPACE().reply.body, gone: true };
+    return this.#run(() => this.#write(() => this.#finishAttempt(id, key, size, ok, Date.now())));
+  }
+
+  // A bucket key for the image of a link card on a message, recorded before the image is written, or null when the
+  // workspace has no room for size more bytes or the message can't get cards.
+  async previewKey(conversation, message, size) {
+    if (!this.present || !filesOn(this.env)) return null;
+    const key = await this.#run(() => this.#write(() => this.#previewKey(conversation, message, size, Date.now())));
+    return typeof key === 'string' ? key : null;
+  }
+
+  // The link cards the Worker made for a message, published once: stored on the message and announced with a
+  // message.previewed event. A message removed meanwhile, or whose author took cards away, gets none, and the images
+  // go to the trash, as do the keys in discard, images whose write failed. gone: true when the workspace was deleted.
+  async publishPreviews(conversation, message, previews, discard = []) {
+    if (!this.present) return { published: false, gone: true };
+    return this.#run(() => this.#write(() => this.#publishPreviews(conversation, message, previews, discard, Date.now())));
   }
 
   // Whether this workspace was made. The Worker and the registry ask when an answer to making it got lost.
@@ -471,6 +640,8 @@ export class Workspace extends DurableObject {
       return member;
     });
     if (gone) this.#forget(gone);
+    // A DM that closed with the account before anyone wrote in it is deleted, with any upload that waited for it.
+    await this.#settle();
     return true;
   }
 
@@ -536,7 +707,9 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // Once a day: what retention removes, what the feed no longer needs to remember, and spent tickets and invitations.
+  // At least once a day: what retention removes, what the feed no longer needs to remember, spent tickets and
+  // invitations, and uploads that expired unsent. Then the trash is deleted from the bucket. The alarm comes sooner
+  // when there is trash, when an upload is about to expire, or when a sweep left more for later.
   async alarm() {
     if (!this.present) return;
     const now = Date.now();
@@ -550,13 +723,22 @@ export class Workspace extends DurableObject {
         this.sql.exec('DELETE FROM receipt WHERE at <= ?', now - RECEIPT_TIME);
         this.sql.exec('DELETE FROM dm_start WHERE at <= ?', now - DAY);
         this.#trimFeed(now - FEED_DAYS * DAY);
-        return this.#expire(now - limits.retentionDays * DAY, now);
+        const files = this.#expireUploads(now);
+        return this.#expire(now - limits.retentionDays * DAY, now) || files;
       });
     } catch (err) {
       // A sweep that fails is tried again tomorrow. Without the next alarm, retention would stop for good.
       console.error('A workspace could not run its daily sweep:', err?.stack || err);
     }
-    await this.ctx.storage.setAlarm(now + (more ? 60 * 1000 : DAY));
+    let failed = false;
+    try {
+      more = (await this.#emptyTrash()) || more;
+    } catch (err) {
+      failed = true;
+      console.error('A workspace could not delete files from its bucket:', err?.message || err);
+    }
+    this.alarmAt = null;
+    if (this.present) await this.ctx.storage.setAlarm(this.#nextAlarm(now, more, failed));
   }
 
   // ---- Load shedding and sockets ----
@@ -603,6 +785,46 @@ export class Workspace extends DurableObject {
     this.wakes = new Set();
     this.#wake(wakes);
     return result;
+  }
+
+  // Runs one of the Worker's own calls: a Refusal becomes its answer, and an alarm a change asked for is set.
+  async #run(fn) {
+    try {
+      const result = await fn();
+      await this.#settle();
+      return result;
+    } catch (err) {
+      if (err instanceof Refusal) return err.reply;
+      throw err;
+    }
+  }
+
+  // Asks the alarm to come by at: for trash, or a reservation that expires then. A transaction can't wait on the
+  // alarm, so the time is kept until #settle() sets it. A change that rolled back may have asked too, which costs an
+  // early alarm and nothing else.
+  #alarmBy(at) {
+    this.alarmAt = this.alarmAt === null ? at : Math.min(this.alarmAt, at);
+  }
+
+  async #settle() {
+    const at = this.alarmAt;
+    this.alarmAt = null;
+    if (at === null || !this.present) return;
+    const set = await this.ctx.storage.getAlarm();
+    if (set === null || set > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  // A PUT's allowance: per upload, as a stranger's, and then the workspace's ceiling.
+  #admitUpload(id, now) {
+    let bucket = this.uploadLanes.get(id);
+    if (!bucket) {
+      // Old entries go first. An upload that comes back after this gets a full allowance, which a PUT every half
+      // second at most can't turn into a flood.
+      if (this.uploadLanes.size >= 1000) this.uploadLanes.delete(this.uploadLanes.keys().next().value);
+      bucket = new Bucket(STRANGER_LANE, now);
+      this.uploadLanes.set(id, bucket);
+    }
+    return bucket.take(now) || this.ceiling.take(now);
   }
 
   #wake(members) {
@@ -798,7 +1020,13 @@ export class Workspace extends DurableObject {
       generation: ws.generation,
       keyId: (await this.#cursorKey()).id,
       time: Date.now(),
-      limits: { members: limits.members, conversations: limits.conversations, textBytes: limits.textBytes },
+      limits: {
+        members: limits.members,
+        conversations: limits.conversations,
+        textBytes: limits.textBytes,
+        fileBytes: limits.fileBytes,
+        filesBytes: limits.filesBytes
+      },
       retention: { contentDays: limits.retentionDays, feedDays: FEED_DAYS }
     };
   }
@@ -857,6 +1085,18 @@ export class Workspace extends DurableObject {
         return this.#write(() => this.#redact(me, a.conversation, a.message));
       case 'read':
         return this.#write(() => this.#read(me, a.conversation, a.seq));
+      case 'unread':
+        return this.#write(() => this.#unread(me, a.conversation, a.message));
+      case 'react':
+        return this.#write(() => this.#react(me, a.conversation, a.message, a.emoji, a.on));
+      case 'upload.reserve':
+        return this.#write(() => this.#reserve(me, a));
+      case 'upload.cancel':
+        return this.#write(() => this.#cancelUpload(me, a.conversation, a.upload));
+      case 'file.download':
+        return this.#download(me, a.conversation, a.file);
+      case 'previews.remove':
+        return this.#write(() => this.#removePreview(me, a.conversation, a.message, a.remove));
       case 'events':
         return this.#events(me, a);
       case 'operation':
@@ -1241,17 +1481,23 @@ export class Workspace extends DurableObject {
   // ---- Deleting the workspace ----
 
   // An owner who is the workspace's only member deletes it. One transaction checks that and withdraws the open
-  // invitations; then the sockets close and the database goes. The answer carries the caller's account reference,
-  // which the Worker gives back, as #ticket's answer carries a ticket for the Worker to sign.
+  // invitations; then the sockets close and the database goes, and with it every file in the bucket. The answer
+  // carries the caller's account reference, which the Worker gives back, as #ticket's answer carries a ticket for the
+  // Worker to sign.
   async #deleteWorkspace(me, who) {
     const now = Date.now();
-    const owner = this.#write(() => {
+    const { self: owner, keys } = this.#write(() => {
       const self = this.#member(me.id);
       if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
       const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
       this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
-      return self;
+      // Every key this workspace ever recorded that may still be in the bucket.
+      const keys = this.sql
+        .exec('SELECT key FROM upload WHERE key IS NOT NULL UNION SELECT key FROM attempt UNION SELECT key FROM trash')
+        .toArray()
+        .map((row) => row.key);
+      return { self, keys };
     });
     // From here every request, and every join still waiting on its account, finds no workspace.
     this.present = false;
@@ -1267,9 +1513,31 @@ export class Workspace extends DurableObject {
     this.accounts.clear();
     this.buckets.clear();
     this.key = null;
+    this.alarmAt = null;
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    await this.#forgetFiles(this.wid, keys);
     return { status: 204, body: null, account: who.name, incarnation: who.incarnation, ref: owner.ref };
+  }
+
+  // A deleted workspace's files leave the bucket at once: every key it recorded, then whatever else is under its
+  // prefix, such as a write that was still landing. The database that would retry is gone, so a delete that fails is
+  // only logged; what it leaves is under ws/<workspace id>/, for the operator. An upload that ends after this finds no
+  // workspace, and the Worker deletes its key itself.
+  async #forgetFiles(wid, keys) {
+    const bucket = this.env.WORKSPACE_FILES;
+    if (!bucket || !wid) return;
+    try {
+      for (let i = 0; i < keys.length; i += TRASH_BATCH) await bucket.delete(keys.slice(i, i + TRASH_BATCH));
+      let cursor;
+      do {
+        const page = await bucket.list({ prefix: `ws/${wid}/`, cursor, limit: TRASH_BATCH });
+        if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+    } catch (err) {
+      console.error('Could not delete the files of a deleted workspace:', err?.message || err);
+    }
   }
 
   // ---- Channels ----
@@ -1625,6 +1893,7 @@ export class Workspace extends DurableObject {
     this.sql.exec('DELETE FROM grants WHERE conversation = ?', c.n);
     this.sql.exec('DELETE FROM mention WHERE conversation = ?', c.n);
     this.sql.exec('DELETE FROM removal WHERE conversation = ?', c.n);
+    this.#dropRich('conversation = ?', c.n);
     this.sql.exec('DELETE FROM event WHERE conversation = ?', c.n);
     this.sql.exec('DELETE FROM conversation WHERE n = ?', c.n);
   }
@@ -1714,7 +1983,7 @@ export class Workspace extends DurableObject {
   // ---- Messages ----
 
   // Appends one event to a conversation and gives it the next sequence. c is updated in place, so a transaction that
-  // appends twice gets consecutive sequences.
+  // appends twice gets consecutive sequences. A quiet event, such as a reaction, moves head but not last.
   #append(c, kind, actor, now, { text = null, data = null, root = null, size = 0, op = null, opHash = null }) {
     const seq = c.head + 1;
     const id = randomBytes(16);
@@ -1735,9 +2004,11 @@ export class Workspace extends DurableObject {
       op ? blob(op) : null,
       opHash ? blob(opHash) : null
     );
-    this.sql.exec('UPDATE conversation SET head = ?, rev = ? WHERE n = ?', seq, rev, c.n);
+    const loud = !QUIET.has(kind);
+    this.sql.exec('UPDATE conversation SET head = ?, rev = ?, last = CASE WHEN ? THEN ? ELSE last END WHERE n = ?', seq, rev, loud ? 1 : 0, seq, c.n);
     c.head = seq;
     c.rev = rev;
+    if (loud) c.last = seq;
     return { seq, id, rev };
   }
 
@@ -1754,8 +2025,13 @@ export class Workspace extends DurableObject {
   // message whose answer was lost is never posted twice: the id stays on the message's row for as long as the message
   // is kept, and on a receipt after that for as long as a retry could still come. The device also says under which
   // grant it wrote the message: one written before the member lost the channel is not sent because they got back in.
+  // Files come uploaded and ready beforehand; the message names them, and binding them to it is part of the post.
   async #post(me, a) {
-    const hash = (await sha256(utf8(JSON.stringify([a.conversation, a.text, a.mentions, a.root])))).slice(0, 16);
+    // A message with files covers their ids too. One without hashes as before, so the retry of a message sent before
+    // files existed still matches what it sent.
+    const covered = [a.conversation, a.text, a.mentions, a.root];
+    if (a.attachments.length) covered.push(a.attachments);
+    const hash = (await sha256(utf8(JSON.stringify(covered)))).slice(0, 16);
     const now = Date.now();
     return this.#write(() => {
       const { c, grant } = this.#room(me, a.conversation);
@@ -1776,9 +2052,7 @@ export class Workspace extends DurableObject {
         throw new Refusal(409, 'submission_expired', 'This message waited too long to be sent. Check whether it arrived.');
       }
       if (a.opTime > now + OPERATION_AHEAD) throw new Refusal(400, 'invalid', "operationId is ahead of the server's time.", { field: 'operationId' });
-      if (c.archivedAt) {
-        throw new Refusal(409, 'archived', c.kind === 'dm' ? 'This conversation is closed.' : 'This channel is archived.', { scope: 'conversation' });
-      }
+      if (c.archivedAt) throw ARCHIVED(c);
       const limits = workspaceLimits(this.env);
       if (this.#ws().bytes + a.size > limits.contentBytes) {
         throw new Refusal(413, 'quota', 'This workspace is full. An admin can lower retention or remove content.', { scope: 'workspace', limit: 'bytes' });
@@ -1801,6 +2075,16 @@ export class Workspace extends DurableObject {
           throw new Refusal(400, 'invalid', 'root must be a top-level message in this conversation.', { field: 'root' });
         }
       }
+      // Each file must be the caller's own upload for this conversation, ready, unsent and unexpired. The refusal names
+      // every one that isn't, and nothing is posted.
+      const files = a.attachments.map((id) => this.sql.exec('SELECT * FROM upload WHERE id = ?', id).toArray()[0]);
+      const missing = a.attachments.filter((id, i) => {
+        const row = files[i];
+        return !row || row.member !== me.n || row.conversation !== c.n || row.state !== 'ready' || row.expiresAt <= now;
+      });
+      if (missing.length) {
+        throw new Refusal(409, 'files_unavailable', 'A file in this message is no longer available. Attach it again.', { files: missing });
+      }
       const { seq, id } = this.#append(c, 'message.posted', me, now, {
         text: a.text,
         data: a.mentions.length ? a.mentions : null,
@@ -1808,6 +2092,9 @@ export class Workspace extends DurableObject {
         size: a.size,
         op: a.op,
         opHash: hash
+      });
+      files.forEach((row, pos) => {
+        this.sql.exec("UPDATE upload SET state = 'bound', seq = ?, pos = ? WHERE n = ?", seq, pos, row.n);
       });
       // Someone who blocked the sender isn't called by their mentions. The mention stays in the text, as written.
       const blockers = new Set(this.sql.exec('SELECT blocker FROM block WHERE blocked = ?', me.n).toArray().map((row) => row.blocker));
@@ -1832,7 +2119,8 @@ export class Workspace extends DurableObject {
   }
 
   // Removes a message's text for everyone: its author can, and so can a manager of the channel. The message's place
-  // in the order stays, a later event says it was removed, and the feed tells every device to drop its copy.
+  // in the order stays, a later event says it was removed, and the feed tells every device to drop its copy. Its
+  // reactions and link cards go with the text, without events of their own, and its files go to the trash.
   #redact(me, conversation, message) {
     const { c, grant } = this.#room(me, conversation);
     const id = eventBytes(message);
@@ -1844,12 +2132,21 @@ export class Workspace extends DurableObject {
     if (target.redactedAt) return reply(200, { messageId: message, redacted: true });
     const now = Date.now();
     this.sql.exec(
-      'UPDATE event SET text = NULL, data = NULL, size = 0, redactedAt = ? WHERE conversation = ? AND seq = ?',
+      'UPDATE event SET text = NULL, data = NULL, size = 0, previews = NULL, redactedAt = ? WHERE conversation = ? AND seq = ?',
       now,
       c.n,
       target.seq
     );
     this.sql.exec('DELETE FROM mention WHERE conversation = ? AND seq = ?', c.n, target.seq);
+    this.#dropRich('conversation = ? AND seq = ?', c.n, target.seq);
+    // Its cards also went out in message.previewed events, with the addresses from its text. Those events keep their
+    // place in the order and lose the cards.
+    const scrubbed = JSON.stringify({ target: message, targetSeq: target.seq, previews: [] });
+    for (const row of this.sql
+      .exec("SELECT seq, data FROM event WHERE conversation = ? AND seq > ? AND kind = 'message.previewed'", c.n, target.seq)
+      .toArray()) {
+      if (JSON.parse(row.data).target === message) this.sql.exec('UPDATE event SET data = ? WHERE conversation = ? AND seq = ?', scrubbed, c.n, row.seq);
+    }
     this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', target.size);
     const { rev } = this.#append(c, 'message.redacted', me, now, { data: { target: message, targetSeq: target.seq } });
     this.sql.exec('INSERT INTO removal (conversation, rev, id, at) VALUES (?, ?, ?, ?)', c.n, rev, blob(id), now);
@@ -1869,6 +2166,392 @@ export class Workspace extends DurableObject {
     return reply(200, { read: next });
   }
 
+  // Marking a message unread: the read position goes back to just before it, and never below what the room still
+  // holds. It never moves forward here. readMark counts these moves, so the member's other devices take the lower
+  // position from the feed instead of keeping their own higher one.
+  #unread(me, conversation, message) {
+    const { c, grant } = this.#room(me, conversation);
+    const bytes = eventBytes(message);
+    const target =
+      bytes && this.sql.exec("SELECT seq FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted'", blob(bytes), c.n).toArray()[0];
+    if (!target) throw NO_MESSAGE();
+    const next = Math.max(target.seq - 1, c.floor - 1, 0);
+    if (next >= grant.readSeq) return reply(200, { read: grant.readSeq, readMark: grant.readMark });
+    this.sql.exec(
+      'UPDATE grants SET readSeq = ?, readMark = readMark + 1, rev = ? WHERE member = ? AND conversation = ?',
+      next,
+      this.#rev(),
+      me.n,
+      c.n
+    );
+    this.wakes.add(me.n);
+    return reply(200, { read: next, readMark: grant.readMark + 1 });
+  }
+
+  // A message of this conversation that is still there, or the 404 of one that isn't.
+  #message(c, id) {
+    const bytes = eventBytes(id);
+    const row =
+      bytes &&
+      this.sql
+        .exec("SELECT seq, actor, previews, noPreviews FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted' AND redactedAt IS NULL", blob(bytes), c.n)
+        .toArray()[0];
+    if (!row) throw NO_MESSAGE();
+    return row;
+  }
+
+  // ---- Reactions ----
+
+  // Someone who can read a message reacts to it with an emoji, once per emoji, and can take it back. Each change is an
+  // event in the conversation's order, so a device's cache follows it like anything else, but it is no activity: it
+  // isn't unread, mentions nobody, alerts nobody and leaves lastAt alone. A change to nothing appends nothing.
+  #react(me, conversation, message, emoji, on) {
+    const { c } = this.#room(me, conversation);
+    const target = this.#message(c, message);
+    if (c.archivedAt) throw ARCHIVED(c);
+    const mine = this.sql
+      .exec('SELECT 1 FROM reaction WHERE conversation = ? AND seq = ? AND emoji = ? AND member = ?', c.n, target.seq, emoji, me.n)
+      .toArray().length > 0;
+    if (mine === on) return reply(200, { messageId: message, emoji, on, changed: false });
+    const now = Date.now();
+    const data = { target: message, targetSeq: target.seq, emoji };
+    if (on) {
+      const kinds = this.sql
+        .exec('SELECT COUNT(DISTINCT emoji) AS n, MAX(emoji = ?) AS here FROM reaction WHERE conversation = ? AND seq = ?', emoji, c.n, target.seq)
+        .one();
+      if (!kinds.here && kinds.n >= REACTIONS) {
+        throw new Refusal(409, 'reaction_limit', `A message holds at most ${REACTIONS} different reactions.`);
+      }
+      const { seq } = this.#append(c, 'reaction.added', me, now, { data });
+      this.sql.exec('INSERT INTO reaction (conversation, seq, emoji, member, ord) VALUES (?, ?, ?, ?, ?)', c.n, target.seq, emoji, me.n, seq);
+    } else {
+      this.sql.exec('DELETE FROM reaction WHERE conversation = ? AND seq = ? AND emoji = ? AND member = ?', c.n, target.seq, emoji, me.n);
+      this.#append(c, 'reaction.removed', me, now, { data });
+    }
+    this.#wakeRoom(c);
+    return reply(200, { messageId: message, emoji, on, changed: true });
+  }
+
+  // ---- Files ----
+  //
+  // An upload's bytes are counted in workspace.fileBytes from its reservation until its key is deleted from the
+  // bucket: as a reservation while it waits, then as a stored file once a message has it. A bound file's key goes to
+  // the trash with its message, and the trash keeps the bytes counted until the bucket confirms the delete. Each
+  // attempt at writing an upload gets a key of its own. The upload's own count covers one attempt that is under way;
+  // any other is counted by itself (attempt.charge), so whatever the bucket may hold is always counted.
+
+  #fileBytes(delta) {
+    if (delta) this.sql.exec('UPDATE workspace SET fileBytes = MAX(0, fileBytes + ?) WHERE id = 1', delta);
+  }
+
+  // A key whose object goes from the bucket. Counted until the alarm has deleted it.
+  #toTrash(key, size, now) {
+    const added = this.sql.exec('INSERT OR IGNORE INTO trash (key, size, at) VALUES (?, ?, ?) RETURNING key', key, size, now).toArray().length > 0;
+    if (added) this.#fileBytes(size);
+    this.#alarmBy(now + TRASH_SOON);
+  }
+
+  // The attempts at an upload that its own count covered get counts of their own, for when it stops covering them:
+  // it got a key, or it went.
+  #uncover(n) {
+    for (const row of this.sql.exec('UPDATE attempt SET charge = size WHERE upload = ? AND charge = 0 RETURNING size', n).toArray()) {
+      this.#fileBytes(row.size);
+    }
+  }
+
+  // An upload goes, in any state: its key to the trash, its count with it.
+  #dropUpload(row, now) {
+    this.#uncover(row.n);
+    if (row.key) this.#toTrash(row.key, row.size, now);
+    this.sql.exec('DELETE FROM upload WHERE n = ?', row.n);
+    this.#fileBytes(-row.size);
+  }
+
+  // The reactions and files of the messages a condition on conversation and seq picks, when those messages go: the
+  // reactions with them, the files' keys to the trash. Without seq in the condition, unsent uploads go too.
+  #dropRich(where, ...args) {
+    const now = Date.now();
+    this.sql.exec(`DELETE FROM reaction WHERE ${where}`, ...args);
+    for (const row of this.sql.exec(`SELECT * FROM upload WHERE ${where}`, ...args).toArray()) this.#dropUpload(row, now);
+  }
+
+  // Reserves an upload of a file to send in this conversation. The Worker signs the PUT link (files.js).
+  #reserve(me, a) {
+    const { c } = this.#room(me, a.conversation);
+    if (c.archivedAt) throw ARCHIVED(c);
+    const now = Date.now();
+    const open = this.sql
+      .exec('SELECT COUNT(*) AS n, MIN(expiresAt) AS first FROM upload WHERE member = ? AND seq IS NULL AND expiresAt > ?', me.n, now)
+      .one();
+    if (open.n >= OPEN_UPLOADS) {
+      const wait = Math.max(1, Math.ceil((open.first - now) / 1000));
+      throw new Refusal(429, 'rate_limited', `You have ${OPEN_UPLOADS} files waiting to be sent. Send or remove some first.`, { limit: 'uploads' }, { 'retry-after': String(wait) });
+    }
+    if (this.#ws().fileBytes + a.size > workspaceLimits(this.env).filesBytes) throw FILES_QUOTA();
+    const id = newId('f');
+    const expiresAt = now + UPLOAD_TIME;
+    this.sql.exec(
+      `INSERT INTO upload (id, member, conversation, name, type, size, sha256, width, height, state, createdAt, expiresAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)`,
+      id,
+      me.n,
+      c.n,
+      a.name,
+      a.type,
+      a.size,
+      a.sha256,
+      a.width,
+      a.height,
+      now,
+      expiresAt
+    );
+    this.#fileBytes(a.size);
+    // The alarm frees it once it expires, if no message took it.
+    this.#alarmBy(expiresAt + 1000);
+    return { status: 201, body: { upload: { id, expiresAt } }, file: { id, expiresAt } };
+  }
+
+  // Cancels the caller's own upload that no message has. Nothing to cancel is fine too.
+  #cancelUpload(me, conversation, id) {
+    const c = this.#conversation(conversation);
+    const row = c && this.sql.exec('SELECT * FROM upload WHERE id = ? AND member = ? AND conversation = ? AND seq IS NULL', id, me.n, c.n).toArray()[0];
+    if (row) this.#dropUpload(row, Date.now());
+    return reply(204);
+  }
+
+  // What a download link needs, for a file of a message the caller can read: one that wasn't removed and that
+  // retention still keeps, or the image of one of its link cards. The Worker signs the link with key (files.js).
+  #download(me, conversation, id) {
+    const { c } = this.#room(me, conversation);
+    const row = this.sql
+      .exec(
+        `SELECT u.*, e.redactedAt FROM upload u JOIN event e ON e.conversation = u.conversation AND e.seq = u.seq
+         WHERE u.id = ? AND u.conversation = ? AND u.state = 'bound'`,
+        id,
+        c.n
+      )
+      .toArray()[0];
+    if (!row || row.redactedAt || row.seq < c.floor || !row.key) throw NO_FILE();
+    return { status: 200, body: { name: row.name, type: row.type, size: row.size, sha256: row.sha256 }, file: { id, key: row.key } };
+  }
+
+  #startAttempt(id, length, now) {
+    const upload = this.sql.exec('SELECT * FROM upload WHERE id = ?', id).toArray()[0];
+    if (!upload || !(upload.state === 'reserved' || upload.state === 'uploading') || upload.expiresAt <= now) throw INVALID_STATE();
+    if (length !== upload.size) {
+      throw new Refusal(400, 'invalid', `This upload takes exactly ${upload.size} bytes, the size it was reserved with.`, { field: 'size' });
+    }
+    const flying = this.sql.exec('SELECT COUNT(*) AS n FROM attempt WHERE upload = ? AND at > ?', upload.n, now - ATTEMPT_TIME).one().n;
+    if (flying >= ATTEMPTS) {
+      throw new Refusal(429, 'rate_limited', 'This file is being uploaded already. Try again shortly.', { limit: 'attempts' }, { 'retry-after': '60' });
+    }
+    // The upload's own count covers one attempt at a time. A second one under way is counted by itself, and only
+    // starts when the workspace has room for it.
+    const taken = this.sql.exec('SELECT 1 FROM attempt WHERE upload = ? AND charge = 0', upload.n).toArray().length > 0;
+    const charge = taken ? upload.size : 0;
+    if (charge && this.#ws().fileBytes + charge > workspaceLimits(this.env).filesBytes) throw FILES_QUOTA();
+    const key = fileKey(this.wid);
+    this.sql.exec('INSERT INTO attempt (key, upload, size, charge, at) VALUES (?, ?, ?, ?, ?)', key, upload.n, upload.size, charge, now);
+    this.#fileBytes(charge);
+    this.sql.exec("UPDATE upload SET state = 'uploading' WHERE n = ?", upload.n);
+    this.#alarmBy(now + ATTEMPT_TIME + 1000);
+    return {
+      status: 200,
+      body: null,
+      attempt: { key, size: upload.size, type: upload.type, name: upload.name, sha256: upload.sha256 }
+    };
+  }
+
+  // The answers here are returned, never thrown: a thrown refusal would roll back the key's way to the trash.
+  #finishAttempt(id, key, size, ok, now) {
+    const READY = () => reply(200, { upload: { id, ready: true } });
+    const GONE = () => INVALID_STATE().reply;
+    const upload = this.sql.exec('SELECT * FROM upload WHERE id = ?', id).toArray()[0];
+    const attempt = this.sql.exec('SELECT * FROM attempt WHERE key = ?', key).toArray()[0];
+    if (!attempt) {
+      // The same end told twice: the key won, and stays.
+      if (this.sql.exec('SELECT 1 FROM upload WHERE key = ?', key).toArray().length > 0) return READY();
+      // Given up on as dead, its key in the trash and maybe deleted already, before this write landed. The key goes to
+      // the trash again, so nothing it wrote stays behind.
+      this.#toTrash(key, size, now);
+      if (ok && upload?.key) return READY();
+      if (ok) return GONE();
+      return reply(200, null);
+    }
+    this.sql.exec('DELETE FROM attempt WHERE key = ?', key);
+    this.#fileBytes(-attempt.charge);
+    const mine = upload && upload.n === attempt.upload;
+    const open = mine && (upload.state === 'reserved' || upload.state === 'uploading') && !upload.key && upload.expiresAt > now;
+    if (ok && open) {
+      this.sql.exec("UPDATE upload SET state = 'ready', key = ? WHERE n = ?", key, upload.n);
+      this.#uncover(upload.n);
+      return READY();
+    }
+    this.#toTrash(key, attempt.size, now);
+    if (!ok) return reply(200, null);
+    // Another attempt won meanwhile: this one's key goes, and the answer is the same.
+    if (mine && upload.key) return READY();
+    return GONE();
+  }
+
+  // Uploads that expired before a message took them, and attempts that never reported back. Returns whether more is
+  // due than one sweep takes.
+  #expireUploads(now) {
+    const uploads = this.sql.exec('SELECT * FROM upload WHERE seq IS NULL AND expiresAt <= ? LIMIT ?', now, SWEEP_BATCH).toArray();
+    for (const row of uploads) this.#dropUpload(row, now);
+    const dead = this.sql.exec('SELECT * FROM attempt WHERE at <= ? LIMIT ?', now - ATTEMPT_TIME, SWEEP_BATCH).toArray();
+    for (const row of dead) {
+      this.sql.exec('DELETE FROM attempt WHERE key = ?', row.key);
+      this.#fileBytes(-row.charge);
+      this.#toTrash(row.key, row.size, now);
+    }
+    return uploads.length >= SWEEP_BATCH || dead.length >= SWEEP_BATCH;
+  }
+
+  // Deletes the trash from the bucket, a batch at a time, and only then stops counting its bytes. A delete that fails
+  // throws and leaves the keys for the next alarm. Returns whether more is waiting.
+  async #emptyTrash() {
+    const bucket = this.env.WORKSPACE_FILES;
+    if (!bucket) return false;
+    const rows = this.sql.exec('SELECT key FROM trash ORDER BY at LIMIT ?', TRASH_BATCH + 1).toArray();
+    if (!rows.length) return false;
+    const batch = rows.slice(0, TRASH_BATCH).map((row) => row.key);
+    await bucket.delete(batch);
+    if (!this.present) return false;
+    this.#write(() => {
+      for (const key of batch) {
+        const gone = this.sql.exec('DELETE FROM trash WHERE key = ? RETURNING size', key).toArray()[0];
+        if (gone) this.#fileBytes(-gone.size);
+      }
+    });
+    return rows.length > TRASH_BATCH;
+  }
+
+  // When the alarm comes next: in a minute while a sweep left work or the trash isn't empty, five minutes after a delete
+  // failed, at the next expiry of an upload or an attempt, and in a day at the latest.
+  #nextAlarm(now, more, failed) {
+    if (failed) return now + TRASH_RETRY;
+    if (more) return now + 60 * 1000;
+    let next = now + DAY;
+    if (filesOn(this.env) && this.sql.exec('SELECT 1 FROM trash LIMIT 1').toArray().length > 0) next = now + 60 * 1000;
+    const upload = this.sql.exec('SELECT MIN(expiresAt) AS t FROM upload WHERE seq IS NULL').one().t;
+    if (upload !== null) next = Math.min(next, upload + 1000);
+    const attempt = this.sql.exec('SELECT MIN(at) AS t FROM attempt').one().t;
+    if (attempt !== null) next = Math.min(next, attempt + ATTEMPT_TIME + 1000);
+    return Math.max(next, now + 1000);
+  }
+
+  // ---- Link cards ----
+
+  // The message link cards are for, when it can still get them: there, not removed, never given cards before and
+  // never had one taken away by its author.
+  #unfurlable(conversation, message) {
+    const c = this.#conversation(conversation);
+    const bytes = eventBytes(message);
+    const target =
+      c &&
+      bytes &&
+      this.sql
+        .exec("SELECT seq, actor, previews, noPreviews, redactedAt FROM event WHERE id = ? AND conversation = ? AND kind = 'message.posted'", blob(bytes), c.n)
+        .toArray()[0];
+    if (!target || target.redactedAt || target.noPreviews || target.previews !== null) return null;
+    return { c, target };
+  }
+
+  #previewKey(conversation, message, size, now) {
+    if (!this.#unfurlable(conversation, message)) return null;
+    if (this.#ws().fileBytes + size > workspaceLimits(this.env).filesBytes) return null;
+    const key = fileKey(this.wid);
+    this.sql.exec('INSERT INTO attempt (key, upload, size, charge, at) VALUES (?, NULL, ?, ?, ?)', key, size, size, now);
+    this.#fileBytes(size);
+    this.#alarmBy(now + ATTEMPT_TIME + 1000);
+    return key;
+  }
+
+  #publishPreviews(conversation, message, previews, discard, now) {
+    // An image's key, taken from the attempts it was recorded in: false when this object had given up on it already.
+    const take = (key) => {
+      const row = this.sql.exec('DELETE FROM attempt WHERE key = ? AND upload IS NULL RETURNING charge', key).toArray()[0];
+      if (row) this.#fileBytes(-row.charge);
+      return Boolean(row);
+    };
+    const drop = (image) => {
+      take(image.key);
+      this.#toTrash(image.key, image.size, now);
+    };
+    for (const image of discard) drop(image);
+    const found = this.#unfurlable(conversation, message);
+    if (!found || previews.length === 0) {
+      for (const p of previews) if (p.image) drop(p.image);
+      return { published: false };
+    }
+    const { c, target } = found;
+    const out = previews.map((p, pos) => {
+      let image = null;
+      if (p.image && take(p.image.key)) {
+        const row = {
+          id: newId('f'),
+          name: `preview.${p.image.ext}`,
+          type: p.image.type,
+          size: p.image.size,
+          width: p.image.width ?? null,
+          height: p.image.height ?? null
+        };
+        this.sql.exec(
+          `INSERT INTO upload (id, member, conversation, name, type, size, sha256, width, height, state, key, createdAt, expiresAt, seq, pos, preview)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'bound', ?, ?, ?, ?, ?, 1)`,
+          row.id,
+          target.actor,
+          c.n,
+          row.name,
+          row.type,
+          row.size,
+          p.image.sha256,
+          row.width,
+          row.height,
+          p.image.key,
+          now,
+          now,
+          target.seq,
+          pos
+        );
+        this.#fileBytes(row.size);
+        image = fileOut(row);
+      } else if (p.image) {
+        this.#toTrash(p.image.key, p.image.size, now);
+      }
+      return { url: p.url, title: p.title, description: p.description, site: p.site, image, video: p.video };
+    });
+    this.sql.exec('UPDATE event SET previews = ? WHERE conversation = ? AND seq = ?', JSON.stringify(out), c.n, target.seq);
+    this.#append(c, 'message.previewed', { n: target.actor }, now, { data: { target: message, targetSeq: target.seq, previews: out } });
+    this.#wakeRoom(c);
+    return { published: true, previews: out };
+  }
+
+  // The author takes a link card off their message: the card goes, its image to the trash, and message.previewed
+  // carries the cards left. Asking at all also means the message never gets cards again, so cards still being made
+  // for it are dropped when they arrive.
+  #removePreview(me, conversation, message, url) {
+    const { c } = this.#room(me, conversation);
+    const target = this.#message(c, message);
+    if (target.actor !== me.n) throw FORBIDDEN('Only its author removes a link card from a message.');
+    const previews = target.previews ? JSON.parse(target.previews) : [];
+    const kept = previews.filter((p) => p.url !== url);
+    this.sql.exec('UPDATE event SET noPreviews = 1 WHERE conversation = ? AND seq = ?', c.n, target.seq);
+    if (kept.length !== previews.length) {
+      const now = Date.now();
+      for (const p of previews) {
+        if (p.url !== url || !p.image) continue;
+        const row = this.sql.exec('SELECT * FROM upload WHERE id = ? AND conversation = ? AND seq = ?', p.image.id, c.n, target.seq).toArray()[0];
+        if (row) this.#dropUpload(row, now);
+      }
+      this.sql.exec('UPDATE event SET previews = ? WHERE conversation = ? AND seq = ?', JSON.stringify(kept), c.n, target.seq);
+      this.#append(c, 'message.previewed', me, now, { data: { target: message, targetSeq: target.seq, previews: kept } });
+      this.#wakeRoom(c);
+    }
+    return reply(200, { previews: kept });
+  }
+
   // A page of a conversation's events, oldest first: after a sequence, or the newest ones before a sequence.
   #events(me, a) {
     const { c } = this.#room(me, a.conversation);
@@ -1879,17 +2562,53 @@ export class Workspace extends DurableObject {
     const more = rows.length > a.limit;
     const page = rows.slice(0, a.limit);
     if (a.before !== null) page.reverse();
-    return reply(200, { events: page.map(eventOut), head: c.head, floor: c.floor, more });
+    return reply(200, { events: this.#eventsOut(c.n, page), head: c.head, floor: c.floor, more });
   }
 
   #eventRows(where, ...args) {
     return this.sql
       .exec(
-        `SELECT e.seq, e.id, e.kind, e.at, e.root, e.text, e.data, e.redactedAt, m.id AS actor
+        `SELECT e.seq, e.id, e.kind, e.at, e.root, e.text, e.data, e.redactedAt, e.previews, m.id AS actor
          FROM event e JOIN member m ON m.n = e.actor WHERE ${where}`,
         ...args
       )
       .toArray();
+  }
+
+  // Events as devices get them, with what a message carries besides its text: its files and its reactions as they are
+  // now, read for the whole page at once. Its link cards are on its own row.
+  #eventsOut(conversation, rows) {
+    const seqs = rows.filter((row) => row.kind === 'message.posted' && !row.redactedAt).map((row) => row.seq);
+    if (!seqs.length) return rows.map((row) => eventOut(row));
+    const from = Math.min(...seqs);
+    const to = Math.max(...seqs);
+    const files = new Map();
+    for (const row of this.sql.exec(
+      'SELECT * FROM upload WHERE conversation = ? AND seq BETWEEN ? AND ? AND preview = 0 ORDER BY seq, pos',
+      conversation,
+      from,
+      to
+    )) {
+      if (!files.has(row.seq)) files.set(row.seq, []);
+      files.get(row.seq).push(fileOut(row));
+    }
+    // Who reacted, in the order they did; each emoji's group in the order of its first reaction.
+    const reactions = new Map();
+    for (const row of this.sql.exec(
+      'SELECT r.seq, r.emoji, m.id AS actor FROM reaction r JOIN member m ON m.n = r.member WHERE r.conversation = ? AND r.seq BETWEEN ? AND ? ORDER BY r.seq, r.ord',
+      conversation,
+      from,
+      to
+    )) {
+      if (!reactions.has(row.seq)) reactions.set(row.seq, new Map());
+      const groups = reactions.get(row.seq);
+      if (!groups.has(row.emoji)) groups.set(row.emoji, []);
+      groups.get(row.emoji).push(row.actor);
+    }
+    return rows.map((row) => {
+      const groups = reactions.get(row.seq);
+      return eventOut(row, files.get(row.seq) ?? [], groups ? [...groups].map(([emoji, actors]) => ({ emoji, actors })) : []);
+    });
   }
 
   // ---- The feed ----
@@ -1953,7 +2672,7 @@ export class Workspace extends DurableObject {
       const c = this.#conversation(a.active);
       if (c && this.#grant(me, c)) {
         const from = a.roomAfter ?? Math.max(c.head - INLINE_EVENTS, 0);
-        body.inlineEvents = this.#eventRows('e.conversation = ? AND e.seq > ? ORDER BY e.seq LIMIT ?', c.n, from, INLINE_EVENTS).map(eventOut);
+        body.inlineEvents = this.#eventsOut(c.n, this.#eventRows('e.conversation = ? AND e.seq > ? ORDER BY e.seq LIMIT ?', c.n, from, INLINE_EVENTS));
       }
     }
     body.next = more
@@ -1991,8 +2710,9 @@ export class Workspace extends DurableObject {
 
   // One room as the feed shows it. after is the cursor's base, or null on the first page of a pass from the start,
   // which builds the room's cache from history that already leaves out what was removed. members is how many people
-  // hold the room now, lastAt when its newest event happened, or null once retention took that event. A DM has no
-  // name: it names its people instead, who started it, and why it closed.
+  // hold the room now, lastAt when its newest event that is activity happened (reactions and link cards aren't), or
+  // null once retention took that event. readMark counts the member's marks of unread here. A DM has no name: it names
+  // its people instead, who started it, and why it closed.
   #roomOut(me, id, after) {
     const c = this.#conversation(id);
     const grant = this.#grant(me, c);
@@ -2014,7 +2734,7 @@ export class Workspace extends DurableObject {
         ? []
         : this.sql.exec('SELECT id FROM removal WHERE conversation = ? AND rev > ? ORDER BY rev LIMIT ?', c.n, after, REMOVED_IDS + 1).toArray();
     const members = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n;
-    const last = this.sql.exec('SELECT at FROM event WHERE conversation = ? AND seq = ?', c.n, c.head).toArray()[0];
+    const last = this.sql.exec('SELECT at FROM event WHERE conversation = ? AND seq = ?', c.n, c.last).toArray()[0];
     const dm = c.kind === 'dm';
     const people = dm ? this.#dmPeople(c) : null;
     return {
@@ -2031,6 +2751,7 @@ export class Workspace extends DurableObject {
       floor: c.floor,
       lastAt: last ? last.at : null,
       read: grant.readSeq,
+      readMark: grant.readMark,
       unread,
       mentions,
       removed: removed.slice(0, REMOVED_IDS).map((row) => eventId(row.id)),
@@ -2086,6 +2807,7 @@ export class Workspace extends DurableObject {
       );
       this.sql.exec('DELETE FROM event WHERE conversation = ? AND seq <= ?', conversation, upto);
       this.sql.exec('DELETE FROM mention WHERE conversation = ? AND seq <= ?', conversation, upto);
+      this.#dropRich('conversation = ? AND seq <= ?', conversation, upto);
       this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', freed.bytes);
       this.sql.exec('UPDATE conversation SET floor = ?, rev = ? WHERE n = ?', upto + 1, this.#rev(), conversation);
       this.#wakeRoom({ n: conversation });
@@ -2099,6 +2821,7 @@ export class Workspace extends DurableObject {
       this.sql.exec('DELETE FROM grants WHERE conversation = ?', c.n);
       this.sql.exec('DELETE FROM mention WHERE conversation = ?', c.n);
       this.sql.exec('DELETE FROM removal WHERE conversation = ?', c.n);
+      this.#dropRich('conversation = ?', c.n);
       this.sql.exec('DELETE FROM conversation WHERE n = ?', c.n);
     }
     return count >= SWEEP_BATCH;
@@ -2149,11 +2872,19 @@ function channelRow(row) {
   };
 }
 
-// An event as devices get it. A redacted message keeps its place, its author and its time, and nothing else.
-function eventOut(row) {
+// An event as devices get it. A message carries its files in the order it named them, its link cards and its
+// reactions, each [] when it has none. A redacted message keeps its place, its author and its time, and nothing else.
+function eventOut(row, attachments = [], reactions = []) {
   const out = { seq: row.seq, id: eventId(row.id), kind: row.kind, actor: row.actor, at: row.at };
   if (row.kind !== 'message.posted') return { ...out, ...(row.data ? JSON.parse(row.data) : {}) };
   if (row.root) out.root = eventId(row.root);
   if (row.redactedAt) return { ...out, redacted: true };
-  return { ...out, text: row.text, mentions: row.data ? JSON.parse(row.data) : [] };
+  return {
+    ...out,
+    text: row.text,
+    mentions: row.data ? JSON.parse(row.data) : [],
+    attachments,
+    previews: row.previews ? JSON.parse(row.previews) : [],
+    reactions
+  };
 }

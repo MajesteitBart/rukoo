@@ -1,15 +1,16 @@
 'use strict';
 
 // The real account server for tests outside Node, such as Android's AccountLiveTest and WorkspaceLiveTest, or an
-// emulator check by hand. It starts the server through real-server.js, writes { url, invite, pid } to --ready-file
-// once the Worker answers, and runs until SIGINT, SIGTERM or the deletion of the ready file. Deleting the file is the
-// stop signal that also works for a Windows process started without a console. Then it disposes of workerd and
-// removes its storage.
+// emulator check by hand. It starts the server through real-server.js, writes { url, invite, pid, previews } to
+// --ready-file once the Worker answers, and runs until SIGINT, SIGTERM or the deletion of the ready file. Deleting the
+// file is the stop signal that also works for a Windows process started without a console. Then it disposes of workerd
+// and removes its storage. previews is the origin of the page server link cards may fetch.
 //
-//   node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json
+//   node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json [--no-files]
 //
-// Without --port it picks a free port from 38800 to 38899. It needs only server/node_modules: it never seeds, so it
-// doesn't load the desktop's crypto code. Seed against it with connectRealServer(url) from real-server.js.
+// Without --port it picks a free port from 38800 to 38899. --no-files starts it without a files bucket. It needs only
+// server/node_modules: it never seeds, so it doesn't load the desktop's crypto code. Seed against it with
+// connectRealServer(url, { previews }) from real-server.js.
 const fs = require('fs');
 const path = require('path');
 const { startRealServer } = require('./real-server');
@@ -29,8 +30,9 @@ async function main() {
   const port = portText === null ? null : Number(portText);
   if (port !== null && !(Number.isInteger(port) && port > 0 && port < 65536)) throw new Error(`Not a port: ${portText}`);
   const readyFile = arg('--ready-file') && path.resolve(arg('--ready-file'));
+  const files = !process.argv.includes('--no-files');
 
-  const server = await startRealServer({ port });
+  const server = await startRealServer({ port, files });
   // The Worker reports ready before its first request is served; a waiter that reads the file may call at once.
   const info = await server.call('GET', '/v1/info').catch((err) => ({ status: err.message }));
   if (info.status !== 200) {
@@ -38,7 +40,7 @@ async function main() {
     throw new Error(`The server answered GET /v1/info with ${info.status}`);
   }
 
-  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid };
+  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid, previews: server.previewOrigin };
   if (readyFile) {
     // Written whole and then renamed, so a waiter never reads half of it.
     fs.mkdirSync(path.dirname(readyFile), { recursive: true });

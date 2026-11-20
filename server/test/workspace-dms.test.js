@@ -80,6 +80,7 @@ describe('starting a direct message', () => {
       floor: 1,
       lastAt: expect.any(Number),
       read: 1,
+      readMark: 0,
       unread: 0,
       mentions: 0,
       removed: [],

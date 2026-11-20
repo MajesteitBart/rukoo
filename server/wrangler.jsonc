@@ -83,8 +83,29 @@
     "WORKSPACE_SOCKETS": 200,
     "WORKSPACE_CONVERSATIONS": 8192,
     "WORKSPACE_BYTES": 1073741824,
-    "WORKSPACE_RETENTION_DAYS": 90
+    "WORKSPACE_RETENTION_DAYS": 90,
+    // Files in team chat, once the WORKSPACE_FILES bucket below is bound: the largest file in bytes (25 MiB), and the
+    // bytes of files one workspace may keep, stored and reserved together (5 GiB). These are counted apart from
+    // WORKSPACE_BYTES, which stays message text only.
+    "WORKSPACE_FILE_BYTES": 26214400,
+    "WORKSPACE_FILES_BYTES": 5368709120,
+    // "on" or "off": whether the server makes link cards for addresses in messages. It fetches those pages itself,
+    // so the linked sites see this server and never a member's own address.
+    "WORKSPACE_PREVIEWS": "on",
+    // An address of its own for upload and download links, such as "https://files.rukoo.example", routed to this
+    // Worker as well. "" for the workspace's own address.
+    "WORKSPACE_FILES_ORIGIN": "",
+    // For tests only: host:port pairs, comma-separated, that link cards may fetch although they are local. Leave empty.
+    "WORKSPACE_PREVIEW_HOSTS": ""
   },
+
+  // Files in team chat live in a private R2 bucket. Without this binding the server offers no files, and every file
+  // route answers 403 files_off. To turn files on, make a bucket in the jurisdiction JURISDICTION names and remove the
+  // comment marks below, keeping "jurisdiction" equal to it ("eu" here; leave the field out for a bucket without one):
+  //   npx wrangler r2 bucket create rukoo-workspace-files --jurisdiction eu
+  // The bucket stays private, with no public access: devices upload and download through this Worker, with links it
+  // signs.
+  // "r2_buckets": [{ "binding": "WORKSPACE_FILES", "bucket_name": "rukoo-workspace-files", "jurisdiction": "eu" }],
 
   // Limits prelogin, signup, login and recovery to 30 requests a minute per client address in each Cloudflare
   // location. namespace_id is any number of your choosing that no other rate limiter in your account uses. Remove

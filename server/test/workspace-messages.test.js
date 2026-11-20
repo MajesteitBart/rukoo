@@ -44,7 +44,18 @@ describe('sending', () => {
       [4, 'two']
     ]);
     expect(log).toMatchObject({ head: 4, floor: 1, more: false });
-    expect(log.events[2]).toEqual({ seq: 3, id: first.body.messageId, kind: 'message.posted', actor: ws.me.id, at: expect.any(Number), text: 'one', mentions: [] });
+    expect(log.events[2]).toEqual({
+      seq: 3,
+      id: first.body.messageId,
+      kind: 'message.posted',
+      actor: ws.me.id,
+      at: expect.any(Number),
+      text: 'one',
+      mentions: [],
+      attachments: [],
+      previews: [],
+      reactions: []
+    });
 
     // The same id with other words is a conflict, not a second message.
     const changed = await send(ws.person, ws.id, ws.general, { operationId, text: 'one, edited' });
@@ -311,6 +322,7 @@ describe('the feed', () => {
         floor: 1,
         lastAt: expect.any(Number),
         read: 3,
+        readMark: 0,
         unread: 0,
         mentions: 0,
         removed: [],

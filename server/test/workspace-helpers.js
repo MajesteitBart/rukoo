@@ -1,11 +1,11 @@
 // Shared by the workspace tests: requests with team chat turned on, and the steps most tests start with. Team chat is
 // off in wrangler.jsonc, as on a server that hasn't enabled it, so every request here sets WORKSPACE_MODE itself.
 
-import { createExecutionContext, runInDurableObject } from 'cloudflare:test';
+import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { toBase64url } from '../src/bytes.js';
 import worker from '../src/index.js';
-import { call, random, signup, withVars } from './helpers.js';
+import { call, random, randomIp, signup, withVars } from './helpers.js';
 
 export const ON = { WORKSPACE_MODE: 'on' };
 export const ORIGIN = 'https://accounts.example';
@@ -212,6 +212,86 @@ export async function openSocket(person, id, { via = 'header', ticket = null } =
     });
   }
   return state;
+}
+
+// ---- Rich messages ----
+
+export function react(person, id, conversation, message, emoji, on = true) {
+  return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/messages/${message}/react`, { token: person.token, body: { emoji, on } });
+}
+
+export function markUnread(person, id, conversation, message) {
+  return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/unread`, { token: person.token, body: { message } });
+}
+
+export async function sha256hex(bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Reserves an upload. fields may give anything the route takes; name, type, size and sha256 default to those of bytes.
+export async function reserve(person, id, conversation, { bytes = new TextEncoder().encode('hello'), ...fields } = {}, vars = {}) {
+  const body = { name: 'hello.txt', type: 'text/plain', size: bytes.length, sha256: await sha256hex(bytes), ...fields };
+  return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/uploads`, { token: person.token, body, vars });
+}
+
+// A request to a file link, as a device makes it: no Authorization header. It waits until the Worker is done with it.
+// A request made here has no Content-Length unless it is given, as a device's would: bytes get theirs, and a stream's
+// is length.
+export async function fileRequest(url, { method = 'GET', body, length, headers = {}, vars = {} } = {}) {
+  const ctx = createExecutionContext();
+  const size = length ?? (ArrayBuffer.isView(body) ? body.byteLength : undefined);
+  const sized = size === undefined ? {} : { 'content-length': String(size) };
+  const request = new Request(url, { method, body, headers: { 'cf-connecting-ip': randomIp(), ...sized, ...headers } });
+  const response = await worker.fetch(request, withVars({ ...ON, ...vars }), ctx);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await waitOnExecutionContext(ctx);
+  let json = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    json = null;
+  }
+  return { status: response.status, headers: response.headers, bytes, body: json };
+}
+
+// Reserves and uploads bytes: the reservation's answer, with the PUT's status.
+export async function upload(person, id, conversation, { bytes = new TextEncoder().encode('hello'), ...fields } = {}) {
+  const reserved = await reserve(person, id, conversation, { bytes, ...fields });
+  if (reserved.status !== 201) throw new Error(`Could not reserve: ${reserved.status} ${reserved.text}`);
+  const put = await fileRequest(reserved.body.put.url, { method: 'PUT', body: bytes });
+  if (put.status !== 200) throw new Error(`Could not upload: ${put.status} ${JSON.stringify(put.body)}`);
+  return { id: reserved.body.upload.id, expiresAt: reserved.body.upload.expiresAt, put: reserved.body.put };
+}
+
+export function askDownload(person, id, conversation, file, vars = {}) {
+  return api('POST', `/v1/workspaces/${id}/conversations/${conversation}/files/${file}/download`, { token: person.token, vars });
+}
+
+// Sends a message as send() does and waits for what the Worker does after answering, such as making link cards.
+export async function sendAndWait(person, id, conversation, body, vars = {}) {
+  const known = await access(person, id, conversation);
+  const ctx = createExecutionContext();
+  const request = new Request(`${ORIGIN}/v1/workspaces/${id}/conversations/${conversation}/messages`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${person.token}`, 'content-type': 'application/json', 'cf-connecting-ip': randomIp() },
+    body: JSON.stringify({ ...known, operationId: uuidv7(), ...body })
+  });
+  const response = await worker.fetch(request, withVars({ ...ON, ...vars }), ctx);
+  const text = await response.text();
+  await waitOnExecutionContext(ctx);
+  return { status: response.status, body: text ? JSON.parse(text) : null };
+}
+
+// Every object in the files bucket under a workspace's prefix.
+export async function bucketKeys(id) {
+  const keys = [];
+  let cursor;
+  do {
+    const page = await env.WORKSPACE_FILES.list({ prefix: `ws/${id}/`, cursor });
+    keys.push(...page.objects.map((object) => object.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return keys;
 }
 
 // Waits until check() is true, for what arrives a moment after the request that caused it. check may be async.
