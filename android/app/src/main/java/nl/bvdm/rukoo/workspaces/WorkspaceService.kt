@@ -1492,17 +1492,19 @@ class WorkspaceService internal constructor(
     override suspend fun startDm(ws: String, members: List<String>): String = onWs(ws) { l, s ->
         val dm = startDmOnce(s, ws, members)
         FeedApplier.check(dm, "dm")
-        val cached = l.store.tx {
+        // Null when a pass is under way; else whether the DM came back under a new grant, which emptied its cache.
+        val grantChanged = l.store.tx {
             val row = getWs(ws)
             if (row == null || row.passing) {
-                false
+                null
             } else {
-                upsertRoom(ws, dm)
+                val up = upsertRoom(ws, dm)
                 recount(ws, dm.conversation)
-                true
+                up.grantChanged
             }
         }
-        confirm(s, wait = !cached)
+        if (grantChanged == true) s.loader.onCacheDropped(listOf(dm.conversation))
+        confirm(s, wait = grantChanged == null)
         dm.conversation
     }
 

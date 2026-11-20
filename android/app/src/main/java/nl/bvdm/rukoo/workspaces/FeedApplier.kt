@@ -13,12 +13,15 @@ import nl.bvdm.rukoo.core.RukooJson
  * - [appendedRoom] and [appended]: the open room's inline events as stored.
  * - [removed]: per room, the message IDs whose alerts go (`removed`, `removedMore`, a floor, a reset).
  * - [redacted]: per room, cached messages that lost their text.
+ * - [cacheDropped]: rooms whose cached events went whole, by a new grant (left and joined again) or `removedMore`;
+ *   the room loader starts what it knew of them over.
  * - [pass]: a pass installed. [partial]: a page of a pass in progress, whose rooms wait in `pass_room`.
  * - [reset]: a `410` reset, Start over or a new key, which takes back every alert of the workspace (§3.10).
  */
 data class PageResult(
     val changed: Set<String> = emptySet(),
     val evicted: List<String> = emptyList(),
+    val cacheDropped: Set<String> = emptySet(),
     val droppedSends: Map<String, Int> = emptyMap(),
     val appendedRoom: String? = null,
     val appended: List<Event> = emptyList(),
@@ -153,6 +156,7 @@ class FeedApplier(
     private fun WorkspaceStore.StoreTx.applyRoom(ws: String, c: Change, out: Collect) {
         val below = noticesBelow(ws, c.conversation, c.floor)
         val up = upsertRoom(ws, c)
+        if (up.grantChanged) out.cacheDropped += c.conversation
         applyRemovals(ws, c, out, below + up.dropped)
         recount(ws, c.conversation)
         out.changed += c.conversation
@@ -172,6 +176,7 @@ class FeedApplier(
             gone += cachedMessages(ws, room)
             gone += noticesForRoom(ws, room).map { it.message }
             dropRoomCache(ws, room)
+            out.cacheDropped += room
         }
         out.removed(room, gone)
     }
@@ -372,6 +377,7 @@ class FeedApplier(
     private class Collect {
         val changed = LinkedHashSet<String>()
         val evicted = ArrayList<String>()
+        val cacheDropped = LinkedHashSet<String>()
         val dropped = LinkedHashMap<String, Int>()
         var appendedRoom: String? = null
         var appended: List<Event> = emptyList()
@@ -391,6 +397,7 @@ class FeedApplier(
         fun result() = PageResult(
             changed = changed.toSet(),
             evicted = evicted.toList(),
+            cacheDropped = cacheDropped.toSet(),
             droppedSends = dropped.toMap(),
             appendedRoom = appendedRoom,
             appended = appended,

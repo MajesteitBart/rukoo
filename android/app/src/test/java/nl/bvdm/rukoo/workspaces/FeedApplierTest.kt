@@ -74,12 +74,17 @@ class FeedApplierTest {
         h.sync.applier.page(feed(room(head = 5), next = "cursor1"))
         h.cache(general, (1L..5L).map { msg(it) })
         h.store.tx { insertOutbox(outbox("AAAAAAAAAAAAAAAAAAAAAA")) }
-        h.sync.applier.page(feed(room(head = 6, grant = Ids.grant(2)), next = "cursor2"), sent = "cursor1")
+        val result = h.sync.applier.page(
+            feed(room(head = 6, grant = Ids.grant(2)), room(Ids.RANDOM, Ids.grant(3), head = 2, name = "random"), next = "cursor2"),
+            sent = "cursor1",
+        )
         val r = h.room()!!
         assertEquals(Ids.grant(2), r.grantId)
         assertNull(r.lo)
         assertNull(r.hi)
         assertEquals(emptyList<Event>(), h.events())
+        // The room loader hears of it; a new room had no cache to drop.
+        assertEquals(setOf(general), result.cacheDropped)
         // The server's 409 stale_grant decides about the unsent message, not this phone.
         val row = h.store.read { getOutbox("AAAAAAAAAAAAAAAAAAAAAA")!! }
         assertEquals(Ids.grant(1), row.grantId)
@@ -134,6 +139,7 @@ class FeedApplierTest {
         assertNull(h.room()!!.lo)
         assertEquals(emptyList<Event>(), h.events())
         assertEquals(setOf(Ids.event(1), Ids.event(2), Ids.event(3), Ids.event(30)), result.removed.getValue(general).toSet())
+        assertEquals(setOf(general), result.cacheDropped)
     }
 
     @Test

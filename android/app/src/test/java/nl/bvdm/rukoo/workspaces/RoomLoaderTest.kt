@@ -233,6 +233,64 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `leaving and joining an open room twice keeps its whole history within reach`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val route = h.withRoom(head = 120, read = 120)
+        h.sync.loader.open(general)
+        h.sync.loader.older(general)
+        h.sync.loader.older(general)
+        assertEquals(1L to 120L, h.range())
+        assertFalse(h.sync.loader.hasOlder(h.room()!!))
+        var head = 120L
+        for (cycle in 1..2) {
+            // Left and joined again while the room stayed open: a new grant, and the two events inline after the old
+            // roomAfter, which refill the emptied cache.
+            head += 2
+            route.events = (1L..head).map { msg(it) }
+            route.head = head
+            h.feedPages(feed(room(head = head, grant = Ids.grant(cycle + 1), read = head - 2), inline = listOf(msg(head - 1), msg(head)), next = "cursor${cycle + 1}"))
+            h.sync.now()
+            assertEquals(Ids.grant(cycle + 1), h.room()!!.grantId)
+            assertEquals(head - 1 to head, h.range())
+            assertTrue("cycle $cycle: the earlier history is within reach", h.sync.loader.hasOlder(h.room()!!))
+            val load = h.sync.loader.rooms.value.getValue(general)
+            assertEquals("cycle $cycle: the New divider follows the new row", head - 2, load.readAtOpen)
+            assertTrue(load.complete)
+            // The server gives the whole history back, and it loads to the floor again.
+            h.sync.loader.older(general)
+            assertEquals("before=${head - 1}&limit=50", h.eventCalls().last())
+            h.sync.loader.older(general)
+            h.sync.loader.older(general)
+            assertEquals(1L to head, h.range())
+            assertEquals((1L..head).toList(), h.events().map { it.seq })
+            assertFalse(h.sync.loader.hasOlder(h.room()!!))
+        }
+        h.http.verify()
+    }
+
+    @Test
+    fun `an open room whose cache removedMore dropped loads its older history again`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val route = h.withRoom(head = 80, read = 80)
+        h.sync.loader.open(general)
+        h.sync.loader.older(general)
+        assertEquals(1L to 80L, h.range())
+        assertFalse(h.sync.loader.hasOlder(h.room()!!))
+        // More messages were removed than the feed can list: the cache goes whole and the inline event refills it.
+        route.events = ((1L..39L) + (80L..81L)).map { msg(it) }
+        route.head = 81
+        h.feedPages(feed(room(head = 81, read = 80, removedMore = true), inline = listOf(msg(81)), next = "cursor2"))
+        h.sync.now()
+        assertEquals(81L to 81L, h.range())
+        assertTrue(h.sync.loader.hasOlder(h.room()!!))
+        h.sync.loader.older(general)
+        assertEquals("before=81&limit=50", h.eventCalls().last())
+        assertEquals(((1L..39L) + (80L..81L)).toList(), h.events().map { it.seq })
+        assertFalse(h.sync.loader.hasOlder(h.room()!!))
+        h.http.verify()
+    }
+
+    @Test
     fun `the open room is named in the feed and catches up after each run`() = runTest {
         val h = SyncHarness(this, db).start()
         val route = h.withRoom(head = 10)

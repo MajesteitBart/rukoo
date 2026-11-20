@@ -416,6 +416,7 @@ class WorkspaceSync(
             changed += result.changed
             if (result.pass) installed = true
             if (result.evicted.isNotEmpty()) loader.onEvicted(result.evicted)
+            if (result.cacheDropped.isNotEmpty()) loader.onCacheDropped(result.cacheDropped)
             hook { events.page(ws, result) }
             if (!page.more) break
         }
@@ -546,8 +547,8 @@ data class ActiveQuery(val room: String, val after: Long?)
 
 /**
  * What the loader knows of a room on screen, beyond the cache: the read position when it opened (for the New
- * divider, kept until the person leaves the room), whether a load runs, whether an open at a seq got there, and
- * whether an older page found nothing more.
+ * divider, kept until the person leaves the room or its cache is dropped), whether a load runs, whether an open at a
+ * seq got there, and whether an older page found nothing more.
  */
 data class RoomLoad(
     val readAtOpen: Long = 0,
@@ -774,6 +775,23 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
     internal fun onReset() {
         _rooms.update { m -> m.mapValues { it.value.copy(complete = true, olderDone = false) } }
         _threads.value = emptyMap()
+    }
+
+    /**
+     * These rooms' cached events went whole: a new grant (the person left and joined again) or `removedMore`. What the
+     * loader knew of them belongs to the old range: a room on screen starts over as if just opened, with its read
+     * position from the new row, and the end of the run catches the open room up again.
+     */
+    internal suspend fun onCacheDropped(rooms: Collection<String>) {
+        val ids = rooms.toSet()
+        val rows = store.read { ids.mapNotNull { getRoom(ws, it) } }.associateBy { it.id }
+        _rooms.update { m ->
+            m.mapValues { (id, load) ->
+                val row = rows[id] ?: return@mapValues load
+                load.copy(readAtOpen = row.readLocal, complete = true, olderDone = false)
+            }
+        }
+        _threads.update { m -> m.filterKeys { it.room !in ids } }
     }
 
     internal fun onEvicted(rooms: Collection<String>) {
