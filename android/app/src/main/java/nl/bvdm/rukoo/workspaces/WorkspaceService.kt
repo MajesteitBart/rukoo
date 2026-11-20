@@ -199,6 +199,9 @@ class WorkspaceService internal constructor(
     @Volatile private var followed: String? = null
     @Volatile private var pending: PendingJoin? = null
     @Volatile private var foreground = false
+
+    // ChatSyncWorker's catch-ups under way: while one is, runs nobody waits for may start in the background too.
+    private val workerWindows = AtomicInteger()
     @Volatile private var onScreenNow = OnScreen()
     @Volatile private var started = false
 
@@ -251,7 +254,7 @@ class WorkspaceService internal constructor(
         scope.launch {
             while (true) {
                 delay(timing.listEvery)
-                if (isLive()) quietly { list() }
+                if (isLive() && automatic()) quietly { list() }
             }
         }
         scope.launch {
@@ -289,6 +292,13 @@ class WorkspaceService internal constructor(
         val l = live
         return l != null && !l.closed && signedIn && available
     }
+
+    /**
+     * Whether requests nobody waits for may go out: feed runs and their retries, the timed listing. Only while the app
+     * is in the foreground or ChatSyncWorker's window is open (§3.11, android.md "Foreground, background and resume"),
+     * so a process started in the background for something else doesn't sync and retry outside WorkManager's budget.
+     */
+    private fun automatic(): Boolean = foreground || workerWindows.get() > 0
 
     // The account said something: a sign-in, a sign-out, another server, new server info. Only the signature of
     // signed in, server and session tag changes the cache; availability starts or stops the network.
@@ -395,7 +405,8 @@ class WorkspaceService internal constructor(
     private suspend fun startNetwork() {
         val l = live ?: return
         if (!isLive()) return
-        l.scope.launch { quietly { list() } }
+        // In the background, the worker lists and runs within its window; resumed() does it in the foreground.
+        if (automatic()) l.scope.launch { quietly { list() } }
         for (row in quietly { l.store.read { listWs() } }.orEmpty()) {
             if (row.state == FeedApplier.STATE_OK) l.sync(row.id)?.request()
         }
@@ -477,7 +488,7 @@ class WorkspaceService internal constructor(
             }
             if (!exists || closed) return null
             return synchronized(syncs) {
-                syncs[ws]?.takeIf { !it.closed } ?: WorkspaceSync(ws, store, client, scope, clock, Events(this), timing.sync).also { s ->
+                syncs[ws]?.takeIf { !it.closed } ?: WorkspaceSync(ws, store, client, scope, clock, Events(this), timing.sync, ::automatic).also { s ->
                     syncs[ws] = s
                     s.scope.launch { s.runner.state.collect { stateChanged() } }
                     syncVersion.update { it + 1 }
@@ -733,7 +744,10 @@ class WorkspaceService internal constructor(
         nudge()
     }
 
-    /** The app left the foreground: the socket closes. Runs and read reports already under way go on. */
+    /**
+     * The app left the foreground: the socket closes. Runs and read reports already under way go on; no run, retry or
+     * timed listing starts on its own until the next resume or ChatSyncWorker's window.
+     */
     fun paused() {
         foreground = false
         updateSockets()
@@ -796,7 +810,8 @@ class WorkspaceService internal constructor(
      * ChatSyncWorker's catch-up (android.md "Foreground, background and resume"): list, then the most recently active
      * workspaces, at most [ChatTiming.workerWorkspaces], each run until its feed has no more pages, then the outbox, all
      * within [budgetMs]. Alerts follow each run. Returns how many workspaces ran, or null when signed out, team chat is
-     * off or there is no cache.
+     * off or there is no cache. Runs nobody waits for, and the feed's retries, may start only within this window: once
+     * it closes, a retry a failed run scheduled waits for the next worker or the foreground.
      */
     suspend fun backgroundCatchUp(budgetMs: Long): Int? {
         awaitReady()
@@ -804,24 +819,29 @@ class WorkspaceService internal constructor(
         if (!isLive()) return null
         val started = clock.now()
         var ran = 0
-        withTimeoutOrNull(budgetMs) {
-            quietly { list() }
-            val rows = quietly { l.store.read { listWs() } }.orEmpty()
-                .filter { it.state == FeedApplier.STATE_OK }
-                .sortedByDescending { it.activeAt ?: 0 }
-                .take(timing.workerWorkspaces)
-            for (row in rows) {
-                val s = l.sync(row.id) ?: continue
-                var runs = 0
-                while (runs++ < WORKER_RUNS) {
-                    val outcome = quietly { guarded(l, s) { s.now(reset = true) } } ?: break
-                    if (!outcome.more) break
+        workerWindows.incrementAndGet()
+        try {
+            withTimeoutOrNull(budgetMs) {
+                quietly { list() }
+                val rows = quietly { l.store.read { listWs() } }.orEmpty()
+                    .filter { it.state == FeedApplier.STATE_OK }
+                    .sortedByDescending { it.activeAt ?: 0 }
+                    .take(timing.workerWorkspaces)
+                for (row in rows) {
+                    val s = l.sync(row.id) ?: continue
+                    var runs = 0
+                    while (runs++ < WORKER_RUNS) {
+                        val outcome = quietly { guarded(l, s) { s.now(reset = true) } } ?: break
+                        if (!outcome.more) break
+                    }
+                    ran += 1
                 }
-                ran += 1
             }
+            val left = budgetMs - (clock.now() - started)
+            if (left > 0 && !l.closed) quietly { l.outbox.flush(left) }
+        } finally {
+            workerWindows.decrementAndGet()
         }
-        val left = budgetMs - (clock.now() - started)
-        if (left > 0 && !l.closed) quietly { l.outbox.flush(left) }
         return ran
     }
 

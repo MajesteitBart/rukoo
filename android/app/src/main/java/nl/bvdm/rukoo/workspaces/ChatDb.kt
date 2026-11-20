@@ -290,14 +290,17 @@ class ChatDb private constructor(
 
         /**
          * Whether an existing file can be kept: null when it can, else the number of unsent messages it held (0 when
-         * they can't be counted). A file another connection holds locked (one not closed yet, a checkpoint) is kept:
-         * busy says nothing about the file, and deleting it would take its unsent messages along.
+         * they can't be counted). A failure that says nothing about the file keeps it, so its unsent messages and
+         * drafts stay: another connection holding it locked (one not closed yet, a checkpoint), a disk I/O error, a
+         * full disk, a file that can't be opened just now ([isTransient]). [open] then fails with `not_saved`, and the
+         * service tries again at the next start or sign-in. Damage replaces it: `quick_check` reporting a fault,
+         * SQLite refusing it as corrupt or not a database, or a schema this build doesn't know.
          */
         internal fun inspect(file: File, driver: SQLiteDriver): Int? {
             val c = try {
                 driver.open(file.path)
             } catch (e: Throwable) {
-                return if (isBusy(e)) null else 0
+                return if (isBusy(e) || isTransient(e)) null else 0
             }
             try {
                 runCatching { run(c, "PRAGMA busy_timeout = $INSPECT_BUSY_MS") }
@@ -305,14 +308,14 @@ class ChatDb private constructor(
                 val sound = try {
                     quickCheck(c)
                 } catch (e: Throwable) {
-                    if (isBusy(e) || waitedOut(started)) return null
+                    if (isBusy(e) || isTransient(e) || waitedOut(started)) return null
                     false
                 }
                 started = System.nanoTime()
                 val schema = try {
                     schemaOf(c)
                 } catch (e: Throwable) {
-                    if (isBusy(e) || waitedOut(started)) return null
+                    if (isBusy(e) || isTransient(e) || waitedOut(started)) return null
                     null
                 }
                 val keep = sound && schema == SCHEMA_VERSION
@@ -354,6 +357,36 @@ class ChatDb private constructor(
 
         private val BUSY_TEXT = listOf("SQLITE_BUSY", "SQLITE_LOCKED", "database is locked", "database table is locked")
         private val BUSY_CODE = Regex("""(?i)\b(?:error )?code:? ?(5|6|261|262|517)\b""")
+
+        /**
+         * A failure that may pass and says nothing about the file, from either driver: SQLITE_PERM (3), SQLITE_NOMEM
+         * (7), SQLITE_READONLY (8), SQLITE_IOERR (10) with its extended codes, SQLITE_FULL (13), SQLITE_CANTOPEN (14)
+         * or SQLITE_PROTOCOL (15). Corruption (11) and not a database (26) aren't among them.
+         */
+        internal fun isTransient(e: Throwable): Boolean {
+            var t: Throwable? = e
+            var depth = 0
+            while (t != null && depth++ < 8) {
+                val name = t.javaClass.simpleName
+                if (TRANSIENT_CLASSES.any { name.contains(it) }) return true
+                val m = t.message.orEmpty()
+                if (TRANSIENT_TEXT.any { m.contains(it, ignoreCase = true) }) return true
+                val code = CODE.find(m)?.groupValues?.get(1)?.toIntOrNull()
+                if (code != null && (code and 0xFF) in TRANSIENT_CODES) return true
+                t = t.cause
+            }
+            return false
+        }
+
+        // The platform's SQLiteDiskIOException, SQLiteFullException, SQLiteCantOpenDatabaseException,
+        // SQLiteOutOfMemoryException, SQLiteReadOnlyDatabaseException and SQLiteAccessPermException.
+        private val TRANSIENT_CLASSES = listOf("DiskIO", "Full", "CantOpen", "OutOfMemory", "ReadOnly", "AccessPerm")
+        private val TRANSIENT_TEXT = listOf(
+            "SQLITE_IOERR", "SQLITE_FULL", "SQLITE_CANTOPEN", "SQLITE_NOMEM", "SQLITE_READONLY", "SQLITE_PERM",
+            "disk I/O error", "database or disk is full", "unable to open database file", "out of memory",
+        )
+        private val TRANSIENT_CODES = setOf(3, 7, 8, 10, 13, 14, 15)
+        private val CODE = Regex("""(?i)\bcode:? ?(\d+)\b""")
 
         private fun pragmas(c: SQLiteConnection) {
             for (pragma in PRAGMAS) run(c, pragma)

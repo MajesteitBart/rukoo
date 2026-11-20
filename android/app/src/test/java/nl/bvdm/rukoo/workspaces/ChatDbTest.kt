@@ -1,5 +1,8 @@
 package nl.bvdm.rukoo.workspaces
 
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.SQLiteDriver
+import androidx.sqlite.SQLiteStatement
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -336,6 +339,77 @@ class ChatDbTest {
         val again = t.open()
         assertEquals(0, again.lostUnsent)
         assertEquals(2L, again.read { long("SELECT COUNT(*) FROM outbox") })
+    }
+
+    /** A driver whose connections fail [failing] with [error] while [on] is true, as a passing I/O fault would. */
+    private class FlakyDriver(val real: SQLiteDriver, val failing: String, val error: String) : SQLiteDriver {
+        @Volatile var on = true
+        @Volatile var failOpen = false
+
+        override fun open(fileName: String): SQLiteConnection {
+            if (on && failOpen) throw RuntimeException(error)
+            val c = real.open(fileName)
+            return object : SQLiteConnection by c {
+                override fun prepare(sql: String): SQLiteStatement {
+                    if (on && sql.startsWith(failing)) throw RuntimeException(error)
+                    return c.prepare(sql)
+                }
+            }
+        }
+    }
+
+    private suspend fun seedUnsent(count: Int) {
+        val db = t.open()
+        db.transaction {
+            exec("INSERT INTO ws (id, name, role) VALUES ('w_1', 'Team', 'owner')")
+            exec(
+                "INSERT INTO room (ws, id, kind, visibility, archived, grantId, members, head, floor, read, readLocal, readSent, unread, mentions) " +
+                    "VALUES ('w_1', 'c_1', 'channel', 'workspace', 0, 'g_1', 2, 0, 1, 0, 0, 0, 0, 0)",
+            )
+            for (i in 0 until count) {
+                exec(
+                    "INSERT INTO outbox (local, ws, room, actor, grantId, generation, text, mentions, state, createdAt) " +
+                        "VALUES (?, 'w_1', 'c_1', 'u_1', 'g_1', 'gen', 'hi', '[]', 'queued', 1)",
+                    "l$i",
+                )
+            }
+            exec("INSERT INTO draft (ws, room, root, text, mentions, at) VALUES ('w_1', 'c_1', '', 'draft', '[]', 1)")
+        }
+        db.close()
+    }
+
+    @Test
+    fun `a passing I-O error while checking the file keeps it with its unsent messages and draft`() = runTest {
+        seedUnsent(2)
+        for ((failing, error, failOpen) in listOf(
+            Triple("PRAGMA quick_check", "Error code: 10, message: disk I/O error", false),
+            Triple("SELECT value FROM meta", "Error code: 10, message: disk I/O error", false),
+            Triple("", "Error code: 14, message: unable to open database file", true),
+        )) {
+            val flaky = FlakyDriver(t.driver, failing, error).also { it.failOpen = failOpen }
+            assertNull("$error at $failing confirms nothing", ChatDb.inspect(t.file, flaky))
+            assertTrue(t.file.exists())
+            // The I/O passed: the file opens with everything in it.
+            flaky.on = false
+            val again = ChatDb.open(t.file, flaky, kotlinx.coroutines.Dispatchers.Unconfined)
+            assertEquals(0, again.lostUnsent)
+            assertEquals(2L, again.read { long("SELECT COUNT(*) FROM outbox") })
+            assertEquals(1L, again.read { long("SELECT COUNT(*) FROM draft") })
+            again.close()
+        }
+    }
+
+    @Test
+    fun `passing I-O errors are told apart from a broken file in both drivers' words`() {
+        assertTrue(ChatDb.isTransient(RuntimeException("Error code: 10, message: disk I/O error")))
+        assertTrue(ChatDb.isTransient(RuntimeException("disk I/O error (code 266 SQLITE_IOERR_READ)")))
+        assertTrue(ChatDb.isTransient(IllegalStateException("wrapped", RuntimeException("Error code: 14, message: unable to open database file"))))
+        assertTrue(ChatDb.isTransient(RuntimeException("Error code: 13, message: database or disk is full")))
+        assertFalse(ChatDb.isTransient(RuntimeException("Error code: 11, message: database disk image is malformed")))
+        assertFalse(ChatDb.isTransient(RuntimeException("Error code: 26, message: file is not a database")))
+        assertFalse(ChatDb.isTransient(RuntimeException("file is not a database (code 26 SQLITE_NOTADB)")))
+        assertFalse(ChatDb.isTransient(RuntimeException("(code 779 SQLITE_CORRUPT_INDEX)")))
+        assertFalse(ChatDb.isTransient(RuntimeException()))
     }
 
     @Test

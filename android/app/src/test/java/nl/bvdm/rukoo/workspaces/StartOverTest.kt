@@ -179,7 +179,10 @@ class StartOverTest {
         s.assertSecretGone()
         assertNull(h.store.read { eventById(ws, secret) })
         assertEquals("half a reply", h.store.read { getDraft(ws, Ids.DM, null)!!.text })
-        assertEquals(5L, h.room(Ids.DM)!!.notified)
+        // The old generation's positions say nothing of the new one's seqs: its pass takes them from the restored feed
+        // (read 0), so the unread message alerts again as after any later pass.
+        val row = h.room(Ids.DM)!!
+        assertEquals(listOf(0L, 0L, 0L), listOf(row.readLocal, row.readSent, row.notified))
         h.http.verify()
     }
 }

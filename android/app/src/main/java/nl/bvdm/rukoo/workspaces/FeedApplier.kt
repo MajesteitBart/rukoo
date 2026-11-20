@@ -36,7 +36,14 @@ data class PageResult(
  * What `GET /` changed: a new [restored] generation or a new key both start a pass; [marked] unsent rows await a lookup.
  * [dropped] is what a new key dropped, a reset for the alerts (null without one).
  */
-data class RestoreResult(val restored: Boolean, val keyChanged: Boolean, val marked: Int, val dropped: PageResult? = null)
+data class RestoreResult(
+    val restored: Boolean,
+    val keyChanged: Boolean,
+    val marked: Int,
+    val dropped: PageResult? = null,
+    /** The cache's revision changed while `GET /` was on its way: the answer was dropped, nothing written. */
+    val stale: Boolean = false,
+)
 
 /** What Start over did: [marked] unsent rows await a lookup; [dropped] is the reset the alerts hear. */
 data class StartOverResult(val marked: Int, val dropped: PageResult)
@@ -75,12 +82,15 @@ class FeedApplier(
      * a pass in progress, or the page that installs a pass, as the workspace row says. [active] is the open room the
      * request named, whose inline events the page carries.
      *
-     * Returns null, applying nothing, when the workspace is gone, isn't `ok`, or its cursor moved since the request
-     * went out (a reset, a restore or Start over came in between): that answer belongs to a feed that no longer is.
+     * Returns null, applying nothing, when the workspace is gone, isn't `ok`, its cursor moved since the request went
+     * out, or its cache [revision] (recorded before the request; null skips the check) changed: a reset, a restore or
+     * Start over came in between, and the answer belongs to a feed that no longer is. The revision catches what the
+     * cursor can't: a pass from the start sends no cursor before and after a Start over alike.
      */
-    suspend fun apply(ws: String, page: FeedPage, sentCursor: String?, active: String? = null): PageResult? = store.tx {
+    suspend fun apply(ws: String, page: FeedPage, sentCursor: String?, active: String? = null, revision: Long? = null): PageResult? = store.tx {
         val row = getWs(ws) ?: return@tx null
         if (row.state != STATE_OK || row.cursor != sentCursor) return@tx null
+        if (revision != null && revision(ws) != revision) return@tx null
         val out = Collect()
         when {
             !row.passing -> incremental(ws, page, active, out)
@@ -110,10 +120,12 @@ class FeedApplier(
     }
 
     // A page of a pass with more to come. Its rooms wait in pass_room; what it removed and its floors already apply to
-    // cached events, because removals are always safe to apply early. Evictions wait for the install, which deletes
-    // every room the pass didn't list.
+    // cached events, because removals are always safe to apply early. Evictions leave the visible room list alone until
+    // the install, which deletes every room the pass didn't list; they do take an evicted room out of pass_room, as an
+    // earlier page may have staged it and the install would otherwise bring it back past its eviction.
     private fun WorkspaceStore.StoreTx.passPage(ws: String, page: FeedPage, sentCursor: String?, out: Collect) {
         if (sentCursor == null) clearPass(ws)
+        dropEvictedPassRooms(ws, page)
         for (c in page.changes) {
             putPassRoom(ws, c)
             if (getRoom(ws, c.conversation) != null) {
@@ -130,9 +142,12 @@ class FeedApplier(
 
     // The page of a pass that says more: false. The pass's rooms replace the workspace's: a room the pass didn't list
     // is deleted, the others are upserted with the rules of an incremental page, keeping notified and muted. The pass
-    // that first fills a workspace alerts nothing, so every room counts as notified up to its head.
+    // that first fills a workspace alerts nothing, so every room counts as notified up to its head. The first install
+    // after a restore takes read, readLocal, readSent and notified from the restored feed: the old generation's seqs say
+    // nothing about the new one's, and kept they would hide its new messages. Mute and drafts stay.
     private fun WorkspaceStore.StoreTx.install(ws: String, page: FeedPage, sentCursor: String?, fresh: Boolean, out: Collect) {
         if (sentCursor == null) clearPass(ws)
+        dropEvictedPassRooms(ws, page)
         for (c in page.changes) putPassRoom(ws, c)
         val rooms = listPassRooms(ws)
         val keep = rooms.mapTo(HashSet()) { it.conversation }
@@ -141,7 +156,18 @@ class FeedApplier(
             out.dropped[r.id] = deleteRoom(ws, r.id)
             out.evicted += r.id
         }
-        for (c in rooms) applyRoom(ws, c, out)
+        val rebase = getMeta(rebaseKey(ws)) != null
+        for (c in rooms) {
+            applyRoom(ws, c, out)
+            // applyRoom recounted the badges from the old readLocal; with readLocal back at read the server's stand.
+            if (rebase) {
+                setRoomFields(
+                    ws, c.conversation,
+                    mapOf("readLocal" to c.read, "readSent" to c.read, "notified" to c.read, "unread" to c.unread, "mentions" to c.mentions),
+                )
+            }
+        }
+        if (rebase) deleteMeta(rebaseKey(ws))
         if (fresh) {
             for (r in listRooms(ws)) if (r.notified < r.head) setRoomFields(ws, r.id, mapOf("notified" to r.head))
         }
@@ -150,6 +176,13 @@ class FeedApplier(
         clearPass(ws)
         pruneTombstones(ws, clock.now() - timing.tombstoneMs)
         out.pass = true
+    }
+
+    // A pass page's evictions: out of pass_room, unless the same page lists the room again.
+    private fun WorkspaceStore.StoreTx.dropEvictedPassRooms(ws: String, page: FeedPage) {
+        if (page.evictions.isEmpty()) return
+        val listed = page.changes.mapTo(HashSet()) { it.conversation }
+        for (id in page.evictions) if (id !in listed) deletePassRoom(ws, id)
     }
 
     // One room row: the store's grant, field, read and floor rules, then its removals and badges.
@@ -217,6 +250,7 @@ class FeedApplier(
      * outbox stay. The result lists every room as changed and, per room, the alerts to take back.
      */
     suspend fun reset(ws: String): PageResult = store.tx {
+        bumpRevision(ws)
         val dropped = dropBodies(ws)
         clearPass(ws)
         updateWs(ws, mapOf("cursor" to null, "passing" to true))
@@ -244,6 +278,7 @@ class FeedApplier(
      */
     suspend fun quarantine(ws: String): Boolean = store.tx {
         if (getWs(ws) == null) return@tx false
+        bumpRevision(ws)
         updateWs(ws, mapOf("state" to STATE_QUARANTINED))
         deleteWsEvents(ws)
         for (r in listRooms(ws)) {
@@ -260,6 +295,7 @@ class FeedApplier(
      */
     suspend fun startOver(ws: String): StartOverResult = store.tx {
         if (getWs(ws) == null) throw WorkspaceError("not_found", scope = "workspace")
+        bumpRevision(ws)
         val dropped = dropBodies(ws)
         updateWs(ws, mapOf("state" to STATE_OK, "cursor" to null, "passing" to true))
         clearPass(ws)
@@ -272,21 +308,31 @@ class FeedApplier(
      * rows go, as a restored backup may lack messages this phone saw, the next fetch starts a pass, and unsent messages
      * written under the old generation are marked for a lookup. A new `keyId` starts a pass too, as cursors sealed with
      * the old key are no good; that pass lists no removals, so the cached events and notice rows go as for a 410. Either
-     * way [RestoreResult.dropped] carries the alerts to take back. The clock offset is server time minus local time.
+     * way [RestoreResult.dropped] carries the alerts to take back, and the cache's revision goes up. The clock offset is
+     * server time minus local time.
+     *
+     * With [revision], the one recorded before `GET /` went out, an answer that arrives after the revision changed is
+     * dropped ([RestoreResult.stale]): a later answer already installed a restore or a new key, or the workspace was
+     * reset, started over or parked, and the old answer would put the previous generation back.
      */
-    suspend fun restore(ws: String, details: WorkspaceDetails, t0: Long, t1: Long): RestoreResult = store.tx {
+    suspend fun restore(ws: String, details: WorkspaceDetails, t0: Long, t1: Long, revision: Long? = null): RestoreResult = store.tx {
         val row = getWs(ws) ?: return@tx RestoreResult(restored = false, keyChanged = false, marked = 0)
+        if (revision != null && revision(ws) != revision) return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, stale = true)
         val w = details.workspace
         val restored = row.generation != null && row.generation != w.generation
         val keyChanged = !restored && row.keyId != null && row.keyId != w.keyId
         var marked = 0
         var dropped: PageResult? = null
         if (restored) {
+            bumpRevision(ws)
             dropped = dropBodies(ws)
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true, "generation" to w.generation))
             marked = markLookup(ws, row.generation)
+            // The pass that installs the restored generation takes read positions from its feed (install()).
+            setMeta(rebaseKey(ws), "1")
         } else if (keyChanged) {
+            bumpRevision(ws)
             dropped = dropBodies(ws)
             clearPass(ws)
             updateWs(ws, mapOf("cursor" to null, "passing" to true))
@@ -314,19 +360,28 @@ class FeedApplier(
      * is checkpointed so deleted pages don't linger. Returns whether there was a row.
      */
     suspend fun removeWorkspace(ws: String): Boolean {
-        val gone = store.tx { deleteWs(ws) }
+        val gone = store.tx {
+            bumpRevision(ws)
+            deleteMeta(rebaseKey(ws))
+            deleteWs(ws)
+        }
         if (gone) runCatching { store.checkpoint() }
         return gone
     }
 
     /** `426 upgrade_required`: the workspace waits, socket parked, until Rukoo is updated. */
-    suspend fun park(ws: String): Boolean = store.tx { updateWs(ws, mapOf("state" to STATE_UPGRADE)) }
+    suspend fun park(ws: String): Boolean = store.tx {
+        bumpRevision(ws)
+        updateWs(ws, mapOf("state" to STATE_UPGRADE))
+    }
 
     /**
      * One events page of [room] into its range, as [mode] says (§3.7), in one transaction that first checks the room's
-     * grant is still [grant], the one its request started with. A page from before a grant change, or one that no
-     * longer joins the range (it moved meanwhile), is discarded: null. The page raises `head`, applies its `floor`,
-     * and stores a tombstoned message removed. [max] caps the range on an append.
+     * grant is still [grant], the one its request started with, and, with [revision], that the workspace's cache
+     * revision is still the one recorded before the request. A page from before a grant change, a reset, a restore,
+     * Start over or a new key, or one that no longer joins the range (it moved meanwhile), is discarded: null. The
+     * page raises `head`, applies its `floor`, and stores a tombstoned message removed. [max] caps the range on an
+     * append.
      */
     suspend fun applyHistory(
         ws: String,
@@ -335,7 +390,9 @@ class FeedApplier(
         page: EventPage,
         mode: HistoryMode,
         max: Int = Int.MAX_VALUE,
+        revision: Long? = null,
     ): HistoryResult? = store.tx {
+        if (revision != null && revision(ws) != revision) return@tx null
         val r = getRoom(ws, room) ?: return@tx null
         if (r.grantId != grant) return@tx null
         val head = maxOf(r.head, page.head)
@@ -417,6 +474,9 @@ class FeedApplier(
         /** `meta` keys: server time minus local time in ms, and the local time it was measured (§3.5). */
         const val META_CLOCK_OFFSET = "clockOffset"
         const val META_CLOCK_AT = "clockAt"
+
+        /** `meta` key: a restore waits for its pass to take read positions from the restored feed. */
+        fun rebaseKey(ws: String) = "rebase:$ws"
 
         // ---- Checking answers: the whole answer is refused when one field isn't what the protocol says ----
 

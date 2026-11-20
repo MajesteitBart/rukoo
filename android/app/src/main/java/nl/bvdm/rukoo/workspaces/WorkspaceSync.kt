@@ -103,11 +103,17 @@ interface SyncEvents {
  * second; a failed run by the `SYNC_BACKOFF` steps, a 429 by its `Retry-After`. A wake, focus, resume or the
  * person's own refresh resets the backoff; the catch-up timer passes `reset = false` and waits it out. A good run
  * schedules nothing: the service's timers and the socket ask for the next.
+ *
+ * A run nobody waits for (a request, a retry after a failure, the next batch, the run after `again`) starts only while
+ * [automatic] says so: while the app is in the foreground or a background worker's window is open (§3.11, android.md
+ * "Foreground, background and resume"). Outside them it is dropped, its backoff kept; the next resume or worker asks
+ * again. A [now] caller always gets its run, and one that stops waiting takes its wait back.
  */
 class FeedRunner(
     private val scope: CoroutineScope,
     private val clock: Clock,
     private val timing: SyncTiming = SyncTiming(),
+    private val automatic: () -> Boolean = { true },
     private val work: suspend () -> RunOutcome,
 ) {
     private val lock = Any()
@@ -146,7 +152,13 @@ class FeedRunner(
             if (reset) clearBackoff()
             schedule(0)
         }
-        return waiter.await()
+        try {
+            return waiter.await()
+        } catch (e: CancellationException) {
+            // The caller stopped waiting (a worker's budget ran out): a run not started yet isn't owed to it.
+            synchronized(lock) { waiters -= waiter }
+            throw e
+        }
     }
 
     /** No more runs: a pending one is dropped and its waiters hear `skipped`. A run in progress finishes. */
@@ -195,6 +207,8 @@ class FeedRunner(
         synchronized(lock) {
             if (timer !== job || stopped || running) return
             timer = null
+            // Nobody waits: an automatic run, which waits for the foreground or a worker's window.
+            if (waiters.isEmpty() && !automatic()) return
             running = true
             again = false
             lastStart = clock.now()
@@ -276,12 +290,14 @@ class WorkspaceSync(
     val clock: Clock = Clock.System,
     internal val events: SyncEvents = SyncEvents.None,
     val timing: SyncTiming = SyncTiming(),
+    /** Whether runs nobody waits for may start: the app in the foreground or a worker's window open ([FeedRunner]). */
+    automatic: () -> Boolean = { true },
 ) {
     private val job = SupervisorJob(scope.coroutineContext[Job])
     internal val scope: CoroutineScope = CoroutineScope(scope.coroutineContext + job)
 
     val applier = FeedApplier(store, clock, timing)
-    val runner = FeedRunner(this.scope, clock, timing) { runFeed() }
+    val runner = FeedRunner(this.scope, clock, timing, automatic) { runFeed() }
     val loader = RoomLoader(this)
     val reads = ReadFlusher(this)
 
@@ -331,12 +347,15 @@ class WorkspaceSync(
      * for a run, so the pass and the open room's reload don't wait for the catch-up timer.
      */
     suspend fun details(inRun: Boolean = false): WorkspaceDetails {
+        val revision = store.revision(ws)
         val t0 = clock.now()
         val answer = call { get(ws) }
         val t1 = clock.now()
         FeedApplier.check(answer, ws)
-        val result = applier.restore(ws, answer, t0, t1)
+        val result = applier.restore(ws, answer, t0, t1, revision)
         guard()
+        // A reset, a restore or a park came in between: this answer is dropped, and the next run asks again.
+        if (result.stale) detailsDue = true
         if (result.restored || result.keyChanged) loader.onReset()
         result.dropped?.let { hook { events.page(ws, it) } }
         if (result.restored) hook { events.restored(ws) }
@@ -383,10 +402,16 @@ class WorkspaceSync(
             if (row.state != FeedApplier.STATE_OK) return RunOutcome(changed = changed, skipped = true)
             if (pages >= timing.pagesPerRun) return RunOutcome(changed = changed, pass = installed, more = true)
             val sent = row.cursor
+            val revision = store.revision(ws)
             val active = if (row.passing) null else loader.activeQuery()
             val page = try {
                 call { changes(ws, after = sent, limit = timing.feedLimit, active = active?.room, roomAfter = active?.after) }
             } catch (e: WorkspaceError) {
+                // Start over or a restore found elsewhere came in between: this refusal speaks of the cache before it,
+                // so a late 409 doesn't quarantine and a late 410 doesn't reset the new one. The loop starts from the
+                // new state. (A 404 for the workspace, a 426 and a 401 already took their path in call(): they hold
+                // whatever the cache is.)
+                if (store.revision(ws) != revision && !holds(e)) continue
                 when (e.code) {
                     "reset_required" -> {
                         if (resets++ > 0) throw WorkspaceError("server", 410, message = "The feed asked for a second reset in one run.")
@@ -410,8 +435,8 @@ class WorkspaceSync(
             }
             FeedApplier.check(page)
             pages += 1
-            // Null when the cursor moved meanwhile (Start over, a restore): the loop starts from the new one.
-            val result = applier.apply(ws, page, sent, active?.room) ?: continue
+            // Null when the cursor or the revision moved meanwhile (Start over, a restore): the loop starts from the new one.
+            val result = applier.apply(ws, page, sent, active?.room, revision) ?: continue
             guard()
             changed += result.changed
             if (result.pass) installed = true
@@ -435,39 +460,45 @@ class WorkspaceSync(
      * a guest has none), `GET /blocks`. Each answer replaces the workspace's rows in one transaction and clears its
      * flag; a failure leaves the flag for the next run. A server from before blocks (`404` without a scope) has none.
      * Each flag reads the row afresh, as the desktop does: the members reload can change my role and mark the
-     * channels stale, and the channels load must follow the role it just wrote. Returns whether anything was replaced.
+     * channels stale, and the channels load must follow the role it just wrote. An answer that arrives after the
+     * cache's revision changed is dropped and its flag stays. Returns whether anything was replaced.
      */
     suspend fun directory(): Boolean {
         var changed = false
         if (store.read { getWs(ws) }?.membersStale == true) {
             changed = load {
+                val revision = store.revision(ws)
                 val page = call { members(ws) }
-                store.tx { if (getWs(ws) != null) replaceMembers(ws, page.members, page.more) }
+                store.tx { current(revision) && run { replaceMembers(ws, page.members, page.more); true } }
             } || changed
         }
         val row = store.read { getWs(ws) } ?: return changed
         if (row.channelsStale) {
             changed = load {
+                val revision = store.revision(ws)
                 val list = if (row.role == "guest") emptyList() else call { channels(ws) }
-                store.tx { if (getWs(ws) != null) replaceChannels(ws, list) }
+                store.tx { current(revision) && run { replaceChannels(ws, list); true } }
             } || changed
         }
         if (store.read { getWs(ws) }?.blocksStale == true) {
             changed = load {
+                val revision = store.revision(ws)
                 val list = try {
                     call { blocks(ws) }
                 } catch (e: WorkspaceError) {
                     if (e.code == "not_found" && e.scope == null) emptyList() else throw e
                 }
-                store.tx { if (getWs(ws) != null) replaceBlocks(ws, list) }
+                store.tx { current(revision) && run { replaceBlocks(ws, list); true } }
             } || changed
         }
         return changed
     }
 
-    private suspend fun load(block: suspend () -> Unit): Boolean = try {
+    // Inside a transaction: the workspace is still there under the revision a request recorded.
+    private fun WorkspaceStore.StoreTx.current(revision: Long) = getWs(ws) != null && revision(ws) == revision
+
+    private suspend fun load(block: suspend () -> Boolean): Boolean = try {
         block()
-        true
     } catch (e: WorkspaceError) {
         if (e.code == "signed_out" || e.code == "upgrade_required" || (e.code == "not_found" && e.scope == "workspace")) throw e
         false
@@ -517,6 +548,10 @@ class WorkspaceSync(
     internal fun guard() {
         if (closed) throw CancellationException("This workspace's sync was closed.")
     }
+
+    // Refusals that hold whatever the cache is: the session ended, the workspace went or waits for a newer Rukoo.
+    internal fun holds(e: WorkspaceError) =
+        e.code == "signed_out" || e.code == "upgrade_required" || (e.code == "not_found" && e.scope == "workspace")
 
     // Another module's hook. Its failure doesn't stop the feed.
     internal suspend fun hook(block: suspend () -> Unit) {
@@ -857,8 +892,11 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
 
     private suspend fun backward(room: String, row: RoomRow, limit: Int): EventPage? = page(room, row, HistoryMode.BACKWARD, limit)
 
-    // One events page and its transaction. Null when the page was discarded: another grant, or a range that moved.
+    // One events page and its transaction. Null when the page was discarded: another grant, a range that moved, or a
+    // cache revision other than the one recorded before the request (a reset, restore, new key or Start over came in
+    // between, and the page would put back what that dropped).
     private suspend fun page(room: String, row: RoomRow, mode: HistoryMode, limit: Int = 0): EventPage? {
+        val revision = store.revision(ws)
         val page = try {
             sync.call {
                 when (mode) {
@@ -868,13 +906,16 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
                 }
             }
         } catch (e: WorkspaceError) {
+            // A refusal from before a reset or restore says nothing of the room now: dropped, not shown. The refusals
+            // that hold whatever the cache is go on.
+            if (store.revision(ws) != revision && !sync.holds(e)) return null
             // The room went: the feed's eviction deletes it.
             if (e.code == "not_found" && e.scope == "conversation") sync.request()
             throw e
         }
         FeedApplier.check(page)
         val max = if (room == openRoom) Int.MAX_VALUE else timing.roomCacheMax
-        sync.applier.applyHistory(ws, room, row.grantId, page, mode, max) ?: return null
+        sync.applier.applyHistory(ws, room, row.grantId, page, mode, max, revision) ?: return null
         sync.guard()
         return page
     }
@@ -986,6 +1027,8 @@ class ReadFlusher internal constructor(private val sync: WorkspaceSync) {
 
     // One POST /read for the room when its gap has passed; else a timer for when it has.
     private suspend fun flush(room: String): Boolean {
+        // Before the row: the position this reports belongs to this revision of the cache.
+        val revision = store.revision(ws)
         val row = store.read { if (getWs(ws)?.state == FeedApplier.STATE_OK) getRoom(ws, room) else null } ?: return false
         if (row.readLocal <= row.readSent) return false
         synchronized(lock) {
@@ -1001,6 +1044,8 @@ class ReadFlusher internal constructor(private val sync: WorkspaceSync) {
         try {
             val ack = sync.call { read(ws, room, row.readLocal) }
             store.tx {
+                // An answer from before a restore names a read position of the old generation: dropped.
+                if (revision(ws) != revision) return@tx
                 val r = getRoom(ws, room) ?: return@tx
                 setRoomFields(ws, room, mapOf("readSent" to maxOf(r.readSent, ack.read), "read" to maxOf(r.read, ack.read)))
                 recount(ws, room)

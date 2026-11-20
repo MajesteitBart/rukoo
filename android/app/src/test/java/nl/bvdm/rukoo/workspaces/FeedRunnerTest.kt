@@ -3,11 +3,16 @@ package nl.bvdm.rukoo.workspaces
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.junit.After
@@ -16,6 +21,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -210,6 +216,124 @@ class FeedRunnerTest {
         assertEquals(7L, h.room()!!.head)
         assertEquals("good", h.ws().cursor)
         assertNull(h.sync.runner.state.value.error)
+    }
+
+    @Test
+    fun `a page missing a field the protocol always sends is refused and commits no cursor`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.sync.applier.apply(ws, feed(room(head = 3), next = "cursor1"), "cursor0")
+        val before = h.room()
+        val good = Json.parseToJsonElement(
+            """{"changes":[],"evictions":[],"directory":{"members":false,"channels":false},"next":"newcursor","more":false}""",
+        ).jsonObject
+        val broken = listOf(
+            JsonObject(good - "evictions"),
+            JsonObject(good - "changes"),
+            JsonObject(good - "more"),
+            JsonObject(good - "directory"),
+            JsonObject(good + ("directory" to Json.parseToJsonElement("""{"channels":false}"""))),
+            JsonObject(good + ("evictions" to JsonNull)),
+        )
+        for (page in broken) {
+            h.http.once("GET", h.route("/changes")) { WorkspaceAnswer(200, page) }
+            try {
+                h.sync.runFeed()
+                fail("accepted $page")
+            } catch (e: WorkspaceError) {
+                assertEquals("server", e.code)
+            }
+            assertEquals("no cursor past $page", "cursor1", h.ws().cursor)
+            assertEquals(before, h.room())
+        }
+        // The same page with every field, and without the later blocks flag, goes in.
+        h.http.once("GET", h.route("/changes")) { WorkspaceAnswer(200, good) }
+        assertTrue(h.sync.runFeed().ok)
+        assertEquals("newcursor", h.ws().cursor)
+        h.http.verify()
+    }
+
+    @Test
+    fun `an events page without its events is refused`() {
+        val raw = Json.parseToJsonElement("""{"head":3,"floor":1}""")
+        try {
+            decodeWire<EventPage>(raw)
+            fail("an events page needs events")
+        } catch (e: IllegalArgumentException) {
+            // MissingFieldException, which the client turns into `server`.
+        }
+        val room = nl.bvdm.rukoo.core.RukooJson.encodeToJsonElement(Change.serializer(), room()).jsonObject
+        assertTrue(decodeWire<Change>(room).conversation == Ids.GENERAL)
+        try {
+            decodeWire<Change>(JsonObject(room - "archived"))
+            fail("a room row needs archived")
+        } catch (e: IllegalArgumentException) {
+            // As above.
+        }
+    }
+
+    @Test
+    fun `runs nobody waits for start only while automatic runs are allowed, and a now caller always gets one`() = runTest {
+        var allowed = false
+        var requests = 0
+        val clock = nl.bvdm.rukoo.core.Clock { TestDb.NOW + testScheduler.currentTime }
+        val runner = FeedRunner(backgroundScope, clock, SyncTiming(), { allowed }) {
+            requests++
+            RunOutcome()
+        }
+        runner.request()
+        advanceTimeBy(10_000)
+        assertEquals("a request in the background starts nothing", 0, requests)
+        assertTrue(runner.now().ok)
+        assertEquals("a waiter's run starts anyway", 1, requests)
+        allowed = true
+        runner.request()
+        advanceTimeBy(1_000)
+        assertEquals(2, requests)
+        runner.stop()
+    }
+
+    @Test
+    fun `a worker's window that closes stops the retries of the run it timed out on`() = runTest {
+        var window = true
+        var requests = 0
+        val clock = nl.bvdm.rukoo.core.Clock { TestDb.NOW + testScheduler.currentTime }
+        val runner = FeedRunner(backgroundScope, clock, SyncTiming(), { window }) {
+            requests++
+            delay(100)
+            throw WorkspaceError("network")
+        }
+        val result = withTimeoutOrNull(25) { runner.now() }
+        window = false
+        assertNull(result)
+        assertEquals(1, requests)
+        advanceTimeBy(600_000)
+        runCurrent()
+        assertEquals("no retry after the window closed", 1, requests)
+        // The next window, or the foreground, runs it.
+        window = true
+        runner.request()
+        advanceTimeBy(1_000)
+        assertEquals(2, requests)
+        runner.stop()
+    }
+
+    @Test
+    fun `a now caller that stops waiting before its run starts takes its wait back`() = runTest {
+        var allowed = true
+        var requests = 0
+        val clock = nl.bvdm.rukoo.core.Clock { TestDb.NOW + testScheduler.currentTime }
+        val runner = FeedRunner(backgroundScope, clock, SyncTiming(), { allowed }) {
+            requests++
+            RunOutcome()
+        }
+        runner.now()
+        assertEquals(1, requests)
+        // The gap holds the next run back 500 ms; the caller gives up at 100 ms, and the window closes.
+        assertNull(withTimeoutOrNull(100) { runner.now() })
+        allowed = false
+        advanceTimeBy(10_000)
+        assertEquals("nobody waits for the run any more", 1, requests)
+        runner.stop()
     }
 
     @Test

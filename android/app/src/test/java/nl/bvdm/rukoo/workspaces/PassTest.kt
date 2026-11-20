@@ -94,6 +94,83 @@ class PassTest {
     }
 
     @Test
+    fun `a room an earlier page staged and a later page evicted isn't installed, on the last page or before it`() = runTest {
+        for (evictOnLast in listOf(true, false)) {
+            val own = TestDb()
+            try {
+                val h = SyncHarness(this, own).start()
+                h.store.tx { upsertRoom(ws, room(head = 4).copy(visibility = "private")) }
+                h.sync.applier.reset(ws)
+                h.sync.applier.apply(ws, feed(room(head = 4).copy(visibility = "private"), next = "p1", more = true), null)
+                if (evictOnLast) {
+                    h.sync.applier.apply(ws, feed(room(Ids.RANDOM, Ids.grant(2), name = "random"), evictions = listOf(Ids.GENERAL), next = "p2"), "p1")
+                } else {
+                    h.sync.applier.apply(ws, feed(evictions = listOf(Ids.GENERAL), next = "p2", more = true), "p1")
+                    // Until the install the room list shows what it showed.
+                    assertNotNull(h.room())
+                    h.sync.applier.apply(ws, feed(room(Ids.RANDOM, Ids.grant(2), name = "random"), next = "p3"), "p2")
+                }
+                assertNull("evicted on the ${if (evictOnLast) "last" else "middle"} page", h.room())
+                assertNotNull(h.room(Ids.RANDOM))
+                assertFalse(h.ws().passing)
+                h.sync.close()
+                h.store.close()
+            } finally {
+                own.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a pass page that evicts a room and lists it again keeps it`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.startPass(fresh = false)
+        h.sync.applier.apply(ws, feed(room(head = 4), next = "p1", more = true), null)
+        h.sync.applier.apply(ws, feed(room(head = 6), evictions = listOf(Ids.GENERAL), next = "p2"), "p1")
+        assertEquals(6L, h.room()!!.head)
+    }
+
+    @Test
+    fun `the pass after a restore takes read positions and notified from the restored feed, keeping mute and drafts`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.store.tx {
+            upsertRoom(ws, room(Ids.DM, head = 10, read = 10, dm = true))
+            setRoomFields(ws, Ids.DM, mapOf("notified" to 10L, "muted" to true))
+            putDraft(ws, Ids.DM, null, Draft("half a thought"))
+        }
+        h.sync.applier.restore(ws, details(generation = Ids.GEN2), TestDb.NOW, TestDb.NOW)
+        h.sync.applier.apply(ws, feed(room(Ids.DM, head = 5, read = 5, dm = true), next = "restored"), null)
+        var r = h.room(Ids.DM)!!
+        assertEquals(listOf(5L, 5L, 5L, 5L), listOf(r.read, r.readLocal, r.readSent, r.notified))
+        assertTrue(r.muted)
+        assertEquals("half a thought", h.store.read { getDraft(ws, Ids.DM, null) }!!.text)
+        // A message after the restore counts as unread and is due for an alert.
+        h.sync.applier.apply(ws, feed(room(Ids.DM, head = 6, read = 5, unread = 1, dm = true), next = "one_new"), "restored")
+        r = h.room(Ids.DM)!!
+        assertEquals(1, r.unread)
+        assertTrue(r.head > r.notified)
+        // Only that one pass: a later pass keeps what this phone read.
+        h.store.tx { setRoomFields(ws, Ids.DM, mapOf("readLocal" to 6L)) }
+        h.startPass(fresh = false)
+        h.sync.applier.apply(ws, feed(room(Ids.DM, head = 6, read = 5, unread = 1, dm = true), next = "again"), null)
+        assertEquals(6L, h.room(Ids.DM)!!.readLocal)
+    }
+
+    @Test
+    fun `a 410 or a new key keeps read positions, as the generation is the same`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.store.tx {
+            upsertRoom(ws, room(head = 10, read = 4))
+            setRoomFields(ws, Ids.GENERAL, mapOf("readLocal" to 8L, "notified" to 10L))
+        }
+        h.sync.applier.restore(ws, details(keyId = "key2"), TestDb.NOW, TestDb.NOW)
+        h.sync.applier.apply(ws, feed(room(head = 10, read = 4), next = "rekeyed"), null)
+        val r = h.room()!!
+        assertEquals(8L, r.readLocal)
+        assertEquals(10L, r.notified)
+    }
+
+    @Test
     fun `removals and floors on a page of the pass apply to cached events at once`() = runTest {
         val h = SyncHarness(this, db).start()
         h.sync.applier.apply(ws, feed(room(head = 6), next = "cursor1"), "cursor0")

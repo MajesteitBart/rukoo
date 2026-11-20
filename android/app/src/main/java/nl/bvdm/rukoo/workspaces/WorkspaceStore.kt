@@ -105,11 +105,22 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
     val changes: SharedFlow<DbChange> get() = db.changes
     val lostUnsent: Int get() = db.lostUnsent
 
+    // Each workspace's cache revision, in memory: a fetch can't outlive the process, so neither need its revision.
+    private val revisions = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * The workspace's cache revision (§3.6). It goes up in the transaction of a `410` reset, Start over, a new key, a
+     * restore, a quarantine, a park and the removal. A fetch records it before its request goes out, and its answer
+     * or error is dropped (not written, not shown, not alerted) when it changed meanwhile: that answer belongs to a
+     * cache that no longer is. Check it again inside the transaction that writes the answer ([StoreTx.revision]).
+     */
+    fun revision(ws: String): Long = revisions[ws] ?: 0L
+
     /** One write transaction (`BEGIN IMMEDIATE`); a write SQLite refuses throws `not_saved`. */
-    suspend fun <T> tx(block: StoreTx.() -> T): T = db.transaction { StoreTx(this, now).block() }
+    suspend fun <T> tx(block: StoreTx.() -> T): T = db.transaction { StoreTx(this, now, revisions).block() }
 
     /** One read transaction: a consistent view. The block must not write. */
-    suspend fun <T> read(block: StoreTx.() -> T): T = db.read { StoreTx(this, now).block() }
+    suspend fun <T> read(block: StoreTx.() -> T): T = db.read { StoreTx(this, now, revisions).block() }
 
     /** Closes the database and deletes the file with its `-wal` and `-shm` files. */
     suspend fun wipe() = db.wipe()
@@ -121,7 +132,25 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
     suspend fun close() = db.close()
 
-    class StoreTx internal constructor(val sql: Sql, private val now: () -> Long) {
+    class StoreTx internal constructor(
+        val sql: Sql,
+        private val now: () -> Long,
+        private val revisions: MutableMap<String, Long>,
+    ) {
+        // ---- the cache revision ----
+
+        /** [WorkspaceStore.revision], read where transactions are serialized, so no bump slips in before the write. */
+        fun revision(ws: String): Long = revisions[ws] ?: 0L
+
+        /**
+         * Raises the workspace's revision, from inside the transaction that resets, restores, re-keys, starts over,
+         * quarantines, parks or removes it. A transaction that rolls back afterwards leaves the bump, which only drops
+         * an answer that could have stayed.
+         */
+        fun bumpRevision(ws: String) {
+            revisions.merge(ws, 1L, Long::plus)
+        }
+
         // ---- meta ----
 
         fun getMeta(key: String): String? = sql.one("SELECT value FROM meta WHERE key = ?", key) { it.text(0) }
@@ -245,6 +274,11 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
                 "INSERT INTO pass_room (ws, id, row) VALUES (?, ?, ?) ON CONFLICT (ws, id) DO UPDATE SET row = excluded.row",
                 ws, row.conversation, RukooJson.encodeToString(Change.serializer(), row),
             )
+        }
+
+        /** A room a later page of the pass evicted: the install must not bring it back. */
+        fun deletePassRoom(ws: String, id: String) {
+            sql.exec("DELETE FROM pass_room WHERE ws = ? AND id = ?", ws, id)
         }
 
         fun listPassRooms(ws: String): List<Change> =

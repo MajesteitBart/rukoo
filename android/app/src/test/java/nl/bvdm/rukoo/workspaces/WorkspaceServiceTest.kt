@@ -128,7 +128,11 @@ class WorkspaceServiceTest {
 
         fun name(id: String) = if (id == Ids.WS) "Team" else "Other"
 
-        fun start(): WorkspaceService {
+        /**
+         * Starts the service, by default as an app in the foreground ([WorkspaceService.resumed] before the account is
+         * followed); [foreground] false starts it as a process the system started in the background.
+         */
+        fun start(foreground: Boolean = true): WorkspaceService {
             service = WorkspaceService(
                 account = account,
                 http = http,
@@ -145,6 +149,7 @@ class WorkspaceServiceTest {
                 io = Dispatchers.Unconfined,
                 random = { 0.5 },
             ).start()
+            if (foreground) service.resumed()
             return service
         }
 
@@ -637,7 +642,7 @@ class WorkspaceServiceTest {
         h.workspace(ws)
         h.workspace(Ids.WS2)
         h.account.signIn("mine")
-        val s = h.start()
+        val s = h.start(foreground = false)
         s.state.until { it.workspaces.size == 2 }
         s.onScreen(ws, null, null)
         runCurrent()
@@ -769,6 +774,32 @@ class WorkspaceServiceTest {
         h.account.signOut()
         s.state.until { !it.signedIn }
         assertNull(s.backgroundCatchUp(60_000))
+    }
+
+    @Test
+    fun `a process started in the background syncs only inside the worker's window, and its retries end with it`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.http.on("GET", h.route(ws, "/changes")) { throw WorkspaceError("network") }
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        advanceTimeBy(ChatTiming.HOUR)
+        assertTrue("no feed request without the foreground or a worker", h.http.calls("GET", h.route(ws, "/changes")).isEmpty())
+        assertTrue("no listing either", h.http.calls("GET", "/v1/workspaces").isEmpty())
+
+        assertEquals(1, s.backgroundCatchUp(60_000))
+        val feeds = h.http.calls("GET", h.route(ws, "/changes")).size
+        assertEquals(1, feeds)
+        assertEquals(1, h.http.calls("GET", "/v1/workspaces").size)
+        advanceTimeBy(ChatTiming.HOUR)
+        assertEquals("the failed run's retries waited for the next window", feeds, h.http.calls("GET", h.route(ws, "/changes")).size)
+
+        s.resumed()
+        advanceTimeBy(1_000)
+        assertTrue("the foreground runs it", h.http.calls("GET", h.route(ws, "/changes")).size > feeds)
+        s.paused()
     }
 
     @Test

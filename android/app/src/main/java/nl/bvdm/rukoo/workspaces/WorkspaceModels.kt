@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.workspaces
 
+import kotlinx.serialization.Required
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
@@ -211,9 +212,9 @@ data class WireEvent(
     }
 }
 
-/** `GET /conversations/{c}/events`. */
+/** `GET /conversations/{c}/events`. `events` is [Required], as on desktop: an answer without it isn't an empty page. */
 @Serializable
-data class EventPage(val events: List<WireEvent> = emptyList(), val head: Long, val floor: Long, val more: Boolean = false)
+data class EventPage(@Required val events: List<WireEvent> = emptyList(), val head: Long, val floor: Long, val more: Boolean = false)
 
 /**
  * A room in the feed (`GET /changes`, contract §2.4), and the `dm` a `POST /dms` answers. A DM has `name` null,
@@ -229,7 +230,7 @@ data class Change(
     val name: String? = null,
     /** workspace | private | dm */
     val visibility: String,
-    val archived: Boolean = false,
+    @Required val archived: Boolean = false,
     val participants: List<String>? = null,
     val startedBy: String? = null,
     val closedReason: String? = null,
@@ -249,19 +250,25 @@ data class Change(
     val removedMore: Boolean = false,
 )
 
-/** Which directories to load again (§3.6): `GET /members`, `GET /channels`, `GET /blocks`. */
+/**
+ * Which directories to load again (§3.6): `GET /members`, `GET /channels`, `GET /blocks`. The server always sends
+ * `members` and `channels`; `blocks` came later and may be missing. The defaults serve the code, never the wire.
+ */
 @Serializable
-data class Directory(val members: Boolean = false, val channels: Boolean = false, val blocks: Boolean = false)
+data class Directory(@Required val members: Boolean = false, @Required val channels: Boolean = false, val blocks: Boolean = false)
 
-/** One page of `GET /changes`. */
+/**
+ * One page of `GET /changes`. The fields the protocol always sends are [Required], as desktop's `wire.checkChanges`
+ * requires them: a page without `evictions` would otherwise read as one with none, and commit its cursor past them.
+ */
 @Serializable
 data class FeedPage(
-    val changes: List<Change> = emptyList(),
-    val evictions: List<String> = emptyList(),
+    @Required val changes: List<Change> = emptyList(),
+    @Required val evictions: List<String> = emptyList(),
     val inlineEvents: List<WireEvent> = emptyList(),
-    val directory: Directory = Directory(),
+    @Required val directory: Directory = Directory(),
     val next: String,
-    val more: Boolean = false,
+    @Required val more: Boolean = false,
 )
 
 /** `POST /dms`: 201 for a new DM, 200 for the open one of the same set. */
