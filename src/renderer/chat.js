@@ -865,7 +865,7 @@ async function startDm(others) {
   }
 }
 
-// A closed DM's Remove from list, and Leave conversation: asked first, then the DM leaves the list and the next
+// A closed DM's Remove from list, and Close conversation: asked first, then the DM leaves the list and the next
 // conversation opens (chat-dialogs.js).
 function leaveDm(room) {
   return D.leaveConversation(room);

@@ -1324,12 +1324,13 @@ export async function changeName() {
   return me;
 }
 
-// Block someone (desktop-ui 6.13, contract 3.12): what a block does, and that they may notice.
+// Block someone (desktop-ui 6.13, contract 3.12): what a block does in this workspace, that the conversations it
+// closes stay closed, and where to undo it.
 export async function blockMember(member) {
   const ws = K.CH.ws;
   if (!ws || !member || member === K.me()) return false;
   const name = nameOf(member);
-  const ok = await confirmDialog(t('chat.block.title', { name }), t('chat.block.body', { name }), t('chat.block.confirm'), true);
+  const ok = await confirmDialog(t('chat.block.title', { name }), t('chat.block.body', { name, workspace: wsName() }), t('chat.block.confirm'), true);
   if (!ok || ws !== K.CH.ws) return false;
   try {
     const res = await api('chatBlock', ws, member);
@@ -1837,11 +1838,16 @@ export async function newMessage(prefill = []) {
   return res.room;
 }
 
-// Leave a conversation (contract 3.12, 5.10): an open DM closes for everyone in it; a closed one leaves the list.
+// Leave a conversation (contract 3.12, 5.10): an open DM closes for everyone in it, so its dialog says Close and names
+// the others; a closed one leaves the list, so its dialog says Remove.
 export async function leaveConversation(room) {
   const ws = K.CH.ws;
   if (!ws || !room) return false;
-  const ok = await confirmDialog(t('chat.leaveDm.title'), t(room.closedReason ? 'chat.leaveDm.bodyClosed' : 'chat.leaveDm.body'), t('chat.leaveDm.submit'), true);
+  const others = [...new Set(room.participants || [])].filter((id) => id !== K.me()).map(nameOf);
+  const names = new Intl.ListFormat(getLocale(), { type: 'conjunction' }).format(others);
+  const ok = room.closedReason
+    ? await confirmDialog(t('chat.leaveDm.removeTitle'), t('chat.leaveDm.bodyClosed'), t('chat.leaveDm.removeSubmit'), true)
+    : await confirmDialog(t('chat.leaveDm.title'), t('chat.leaveDm.body', { names }), t('chat.leaveDm.submit'), true);
   if (!ok || ws !== K.CH.ws) return false;
   K.expectLeave(room.id);
   try {

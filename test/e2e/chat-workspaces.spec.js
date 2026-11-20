@@ -248,7 +248,7 @@ test('leaving a workspace as the only manager of channels picks a successor for 
   await expect(win.locator('.scrim')).toHaveCount(1);
   await expect(dialog.locator('.dialog-body > p:not(.error)')).toHaveText([
     "You're the only manager of these channels. Choose who manages each one after you.",
-    'You lose access to its channels and direct messages. Messages you wrote stay.'
+    "You lose access to its channels and direct messages, and the group conversations you're in close for the others too. Messages you wrote stay."
   ]);
   await expect(dialog.locator('.ch-handover-name')).toHaveText(['ads', 'design']);
   await expect(dialog.locator('input[type="radio"]:checked')).toHaveCount(0);

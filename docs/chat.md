@@ -52,8 +52,8 @@ Channel names are 1 to 80 characters on one line, shown as typed with `#` in fro
 
 - Direct messages are for owners, admins and members. Guests can't start one or be added to one; they talk in channels.
 - A conversation keeps its people. To talk with a different group, start a new one.
-- **Leave conversation** in the More menu closes it for everyone in it. They can still read it but no longer post.
-- A conversation also closes when someone in it leaves or is removed from the workspace, deletes their Rukoo account or becomes a guest. A closed conversation keeps its history, dimmed at the bottom of the list. Its bar offers **Start a new conversation** with the same people, and **Remove from list**, which takes it off your list.
+- **Close conversation** in the More menu closes it for everyone in it. They can still read it but nobody can post in it again. To stop notifications only, use **Mute**.
+- A conversation also closes when someone in it leaves or is removed from the workspace, deletes their Rukoo account or becomes a guest. A closed conversation keeps its history, dimmed at the bottom of the list. Its bar offers **Start a new conversation** with the same people, and **Remove from list**, which takes it off your list; you can't read it after that.
 - You can start 20 new conversations a day. Opening one you already have doesn't count.
 
 ## Messages, threads and mentions
@@ -79,7 +79,7 @@ Rukoo shows messages as plain text with links. There's no formatting, editing, r
 
 In a direct message with one person, or from their menu in **Members**, choose **Block**. After a block:
 
-- that person can't start direct messages with you, and your conversations that include both of you close;
+- that person can't start direct messages with you, and every conversation that includes both of you, group ones too, closes for everyone in it;
 - their mentions of you stop notifying you, and earlier ones no longer count as mentions;
 - you still see each other's posts in shared channels, and their posts there still count as unread.
 

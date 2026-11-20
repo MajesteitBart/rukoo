@@ -10496,8 +10496,8 @@
     "description": "Conversation header More menu: item that asks to leave the channel. src/renderer/chat-view.js"
   },
   "chat.head.leaveDm": {
-    "message": "Leave conversation",
-    "description": "Conversation header More menu: item in an open direct message that asks to leave it. src/renderer/chat-view.js"
+    "message": "Close conversation",
+    "description": "Conversation header More menu: item in an open direct message that asks to close it for everyone in it; the server calls this leaving the DM. Android chat_head_leave_dm. src/renderer/chat.js"
   },
   "chat.head.block": {
     "message": "Block {name}",
@@ -11308,8 +11308,8 @@
     "description": "Block a person: confirmation title. {name}: that person. src/renderer/chat-dialogs.js"
   },
   "chat.block.body": {
-    "message": "{name} can't start direct messages with you, and your direct messages with {name} close. Mentions from {name} stop notifying you. You still see each other's posts in shared channels. {name} isn't told, but may notice that your conversation closed.",
-    "description": "Block a person: confirmation text with what a block does. {name}: that person. src/renderer/chat-dialogs.js"
+    "message": "{name} can't start conversations with you in {workspace}. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from {name} stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings.",
+    "description": "Block a person: confirmation text with what a block does: it applies to this workspace only, closes every direct message both people are in (group ones too) for everyone in it for good, and is undone in Workspace settings. {name}: that person. {workspace}: the workspace name. Android chat_block_body. src/renderer/chat-dialogs.js"
   },
   "chat.block.confirm": {
     "message": "Block",
@@ -11336,20 +11336,28 @@
     "description": "Workspace settings dialog: line when the user blocked nobody. src/renderer/chat-dialogs.js"
   },
   "chat.leaveDm.title": {
-    "message": "Leave this conversation?",
-    "description": "Leave a direct message: confirmation title. src/renderer/chat-dialogs.js"
+    "message": "Close this conversation for everyone?",
+    "description": "Close conversation in an open direct message: confirmation title. Android chat_leave_dm_title. src/renderer/chat-dialogs.js"
   },
   "chat.leaveDm.body": {
-    "message": "It closes for everyone in it. They can still read it.",
-    "description": "Leave a direct message: confirmation text for an open conversation. src/renderer/chat-dialogs.js"
-  },
-  "chat.leaveDm.bodyClosed": {
-    "message": "It disappears from your list.",
-    "description": "Leave a direct message: confirmation text for a closed conversation, from Remove from list. src/renderer/chat-dialogs.js"
+    "message": "{names} can still read it, but nobody can write in it again. To stop notifications only, use Mute.",
+    "description": "Close conversation in an open direct message: confirmation text. {names}: the other people in it, joined as the language lists them (\"Mila and Sanne\"). Mute is the header menu item chat.head.mute. Android chat_leave_dm_body. src/renderer/chat-dialogs.js"
   },
   "chat.leaveDm.submit": {
-    "message": "Leave",
-    "description": "Leave a direct message: confirmation button. src/renderer/chat-dialogs.js"
+    "message": "Close for everyone",
+    "description": "Close conversation in an open direct message: confirmation button. Android chat_leave_dm_submit. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.removeTitle": {
+    "message": "Remove from your list?",
+    "description": "Remove from list on a closed direct message: confirmation title. Android chat_leave_dm_remove_title. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.bodyClosed": {
+    "message": "You can't read it anymore after this.",
+    "description": "Remove from list on a closed direct message: confirmation text. Android chat_leave_dm_body_closed. src/renderer/chat-dialogs.js"
+  },
+  "chat.leaveDm.removeSubmit": {
+    "message": "Remove",
+    "description": "Remove from list on a closed direct message: confirmation button. Android chat_leave_dm_remove_submit. src/renderer/chat-dialogs.js"
   },
   "chat.mute.done": {
     "message": "Muted {name}. No notifications or counts, even for mentions.",
@@ -11364,8 +11372,8 @@
     "description": "Leave a workspace: confirmation title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
   },
   "chat.leave.body": {
-    "message": "You lose access to its channels and direct messages. Messages you wrote stay.",
-    "description": "Leave a workspace: confirmation text. src/renderer/chat-dialogs.js"
+    "message": "You lose access to its channels and direct messages, and the group conversations you're in close for the others too. Messages you wrote stay.",
+    "description": "Leave a workspace: confirmation text; leaving closes every direct message the person is in, group ones too, for everyone in it. Android chat_leave_body. src/renderer/chat-dialogs.js"
   },
   "chat.leave.submit": {
     "message": "Leave",

@@ -233,10 +233,20 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   await ready(bart);
   await roomRow(win, 'Olga Owner').click();
   await expect(title()).toHaveText('Olga Owner');
-  await roomMenu(win, 'Block Olga Owner');
+  // Close conversation in a one-to-one DM names Olga and that it closes for everyone; Cancel keeps it open.
+  await roomMenu(win, 'Close conversation');
   const dialog = dialogBox(win);
+  await expect(dialog.locator('h2')).toHaveText('Close this conversation for everyone?');
+  await expect(dialog.locator('p')).toHaveText('Olga Owner can still read it, but nobody can write in it again. To stop notifications only, use Mute.');
+  await expect(dialog.locator('.buttons button')).toHaveText(['Cancel', 'Close for everyone']);
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  await roomMenu(win, 'Block Olga Owner');
   await expect(dialog.locator('h2')).toHaveText('Block Olga Owner?');
-  await expect(dialog.locator('p')).toContainText("Olga Owner isn't told, but may notice that your conversation closed.");
+  await expect(dialog.locator('p')).toHaveText(
+    "Olga Owner can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from Olga Owner stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
+  );
   await dialog.locator('.buttons button').last().click();
   await expect(toast()).toHaveText('Blocked Olga Owner', { timeout: 15000 });
   await expect(bar().locator('.ch-bar-text')).toHaveText('This conversation is closed. You can still read it.', { timeout: 15000 });
@@ -256,6 +266,14 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   expect((await serverGet(server, bart, ws.id, '/blocks')).blocks).toEqual([]);
   await dialog.locator('.buttons button').last().click();
   await expect(bar().locator('.ch-bar-text')).toHaveText('This conversation is closed. You can still read it.');
+
+  // Remove from list asks with the same name and says it can't be read afterwards; Remove takes it off the list.
+  await bar().locator('[data-ch-bar]', { hasText: 'Remove from list' }).click();
+  await expect(dialog.locator('h2')).toHaveText('Remove from your list?');
+  await expect(dialog.locator('p')).toHaveText("You can't read it anymore after this.");
+  await expect(dialog.locator('.buttons button')).toHaveText(['Cancel', 'Remove']);
+  await dialog.locator('.buttons button').last().click();
+  await expect(roomRow(win, 'Olga Owner')).toHaveCount(0, { timeout: 15000 });
 });
 
 test('leaving a group conversation closes it for Olga', async () => {
@@ -267,10 +285,13 @@ test('leaving a group conversation closes it for Olga', async () => {
   await expect(row).toBeVisible({ timeout: 15000 });
   await row.click();
   await expect(pane().locator('.ch-main .ch-log .ch-text', { hasText: 'Plans for Friday' })).toBeVisible({ timeout: 15000 });
-  await roomMenu(win, 'Leave conversation');
+  await roomMenu(win, 'Close conversation');
   const dialog = dialogBox(win);
-  await expect(dialog.locator('h2')).toHaveText('Leave this conversation?');
-  await expect(dialog.locator('p')).toHaveText('It closes for everyone in it. They can still read it.');
+  await expect(dialog.locator('h2')).toHaveText('Close this conversation for everyone?');
+  await expect(dialog.locator('p')).toHaveText(
+    /^(Olga Owner and Sanne|Sanne and Olga Owner) can still read it, but nobody can write in it again\. To stop notifications only, use Mute\.$/
+  );
+  await expect(dialog.locator('.buttons button').last()).toHaveText('Close for everyone');
   await dialog.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
   // It leaves Bart's list and the next conversation opens, without the gone state.
