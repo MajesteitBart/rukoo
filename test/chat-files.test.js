@@ -97,7 +97,8 @@ test('image headers give the type and the size the picture shows as', () => {
 // The Worker's links on 127.0.0.1. put: what each upload received; behave: per upload or download, what to do
 // instead of answering normally.
 async function linkServer(t) {
-  const state = { put: new Map(), files: new Map(), behave: new Map(), aborted: [], slow: 0 };
+  // got: the token of each download asked for; held: what answers a download held by 'hold'.
+  const state = { put: new Map(), files: new Map(), behave: new Map(), aborted: [], slow: 0, got: [], held: [] };
   const server = http.createServer(async (req, res) => {
     const [, kind, key] = req.url.split('/');
     // What this request does instead of answering normally, as many times as asked.
@@ -132,6 +133,8 @@ async function linkServer(t) {
       return reply(res, 200, { upload: { id: key, ready: true } });
     }
     if (kind === 'get') {
+      state.got.push(key);
+      if (act === 'hold') await new Promise((resolve) => state.held.push(resolve));
       if (act === 'redirect') {
         res.writeHead(302, { location: `${state.base}/get/other` });
         return res.end();
@@ -329,7 +332,8 @@ test('pasted bytes go to a file in the profile first, and an image takes the typ
 test('progress goes out at most every 100 ms, and Remove cancels the upload on its way and on the server', async (t) => {
   const { svc, links, calls, uploads, pick, dir } = await setup(t);
   links.slow = 25;
-  const bytes = crypto.randomBytes(1024 * 1024);
+  // Larger than the socket buffers of Linux and macOS together, which take a 1 MiB body whole before the server reads.
+  const bytes = crypto.randomBytes(16 * 1024 * 1024);
   const [p] = await pick(writeFile(dir, 'large.bin', bytes));
   const s = await svc.files.stage(W, C, null, { path: p.path });
   // A progress event: uploading with part of the file.
@@ -348,6 +352,34 @@ test('progress goes out at most every 100 ms, and Remove cancels the upload on i
   assert.equal(links.put.has(fileId), false);
   await sleep(150);
   assert.equal(svc.files.staged.has(s.stage), false, 'nothing brings it back');
+});
+
+test('cancelling an upload on its way closes the file it reads, and its temporary file can be deleted', async (t) => {
+  const { svc, links, store } = await setup(t);
+  links.slow = 25;
+  // The upload's own read of the file; measuring reads it without a range.
+  const real = fs.createReadStream;
+  t.after(() => (fs.createReadStream = real));
+  const reads = [];
+  fs.createReadStream = (file, options) => {
+    const stream = real(file, options);
+    if (options && options.start === 0) reads.push(stream);
+    return stream;
+  };
+  // Larger than what the sockets on the way buffer, so the upload is still reading it when Remove comes.
+  const s = await svc.files.stage(W, C, null, { name: 'large.bin', type: 'application/octet-stream', bytes: crypto.randomBytes(16 * 1024 * 1024) });
+  const temp = svc.files.staged.get(s.stage).path;
+  assert.ok(temp.startsWith(uploadsDir(store.file)));
+  await until(() => stagedEvents(svc).some((e) => e.staged.some((x) => x.stage === s.stage && x.loaded > 0 && x.loaded < x.size)), 10000, 'part of the file on its way');
+  assert.equal(reads.length, 1);
+  const [source] = reads;
+  assert.equal(source.readableEnded, false, 'the file is still being read');
+  svc.files.unstage(s.stage);
+  await until(() => source.closed, 2000, 'the upload to close its file');
+  assert.equal(source.readableEnded, false, 'closed, not read to the end');
+  await until(() => !fs.existsSync(temp), 2000, 'the temporary file to go');
+  fs.rmSync(uploadsDir(store.file), { recursive: true });
+  assert.equal(fs.existsSync(uploadsDir(store.file)), false);
 });
 
 test('progress events of one upload are spaced by 100 ms', async (t) => {
@@ -687,6 +719,45 @@ test('a download whose file can not be opened fails without crashing main', asyn
   await assert.rejects(svc.files.file(W, C, a.fileId, 'view'), (err) => err instanceof ChatError);
   assert.equal(store.getCachedFile(W, a.fileId), null);
   assert.deepEqual(cacheNames(store), []);
+});
+
+test('signing out cancels downloads waiting for a turn and stops those running, and leaves no file of the old session', async (t) => {
+  const { svc, store, downloads, links, calls } = await setup(t);
+  const dir = filesDir(store.file);
+  // Three downloads take every turn; the server holds their answers.
+  const running = ['a', 'b', 'c'].map((label, i) => withFile(store, downloads, label, i + 1, png(10 + i, 10)));
+  for (const f of running) downloads.get(f.fileId).behave = { act: 'hold', times: 1 };
+  const waiting = withFile(store, downloads, 'd', 4, png(40, 40));
+  const asked = () => calls.filter((c) => c.route.endsWith('/download')).length;
+  const all = running.map((f) => svc.files.file(W, C, f.fileId, 'view'));
+  await until(() => links.held.length === 3, 5000, 'three downloads on their way');
+  all.push(svc.files.file(W, C, waiting.fileId, 'view'));
+  await until(() => asked() === 4, 2000, 'the fourth link');
+  await sleep(50);
+  assert.equal(links.got.length, 3, 'the fourth waits for a turn');
+  // Sign-out, as the service does it: the session ends, then its cache is wiped.
+  svc.epoch += 1;
+  svc.files.clear();
+  store.wipe();
+  svc.store = null;
+  for (const release of links.held) release();
+  const results = await Promise.allSettled(all);
+  assert.deepEqual(results.map((r) => r.status === 'rejected' && r.reason.stale === true), [true, true, true, true]);
+  await sleep(100);
+  assert.equal(links.got.length, 3, 'the waiting download never started');
+  assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], [], 'nothing of the old session is on disk');
+
+  // A download that lands just after the session ended: its file goes.
+  const late = await setup(t);
+  const e = withFile(late.store, late.downloads, 'e', 1, png(50, 50));
+  const download = late.svc.files.download.bind(late.svc.files);
+  late.svc.files.download = async (...args) => {
+    await download(...args);
+    late.svc.epoch += 1;
+  };
+  await assert.rejects(late.svc.files.file(W, C, e.fileId, 'view'), (err) => err.stale === true);
+  assert.deepEqual(cacheNames(late.store), []);
+  assert.equal(late.store.getCachedFile(W, e.fileId), null);
 });
 
 test('the cache keeps its limit, least recently used first, and removed messages and leftovers go', async (t) => {

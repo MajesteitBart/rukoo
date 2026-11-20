@@ -6,7 +6,9 @@
 // Fetching on behalf of people is a way into places they couldn't reach themselves, so every address is checked
 // before it is fetched, the redirects too: http and https on their default ports only, no user names or passwords, no
 // local or internal host names, no IP literal in a private, loopback, link-local, shared or multicast range, and none
-// of this server's own hosts. WORKSPACE_PREVIEW_HOSTS lets tests reach a fixture server past these rules.
+// of this server's own hosts. A host name is looked up through DNS over HTTPS first, and refused when any address it
+// leads to is in one of those ranges or the lookup finds none. WORKSPACE_PREVIEW_HOSTS lets tests reach a fixture
+// server past these rules.
 
 import { filesOn, ownHosts, previewHosts, previewsOn, workspaceObject } from './config.js';
 
@@ -21,6 +23,12 @@ const PAGE_BYTES = 512 * 1024;
 const IMAGE_BYTES = 2 * 1024 * 1024;
 const AGENT = 'Mozilla/5.0 (compatible; RukooBot/1.0; +https://rukoo.io)';
 const IMAGES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+// Where a host name is looked up before it is fetched, the record types asked for, and how many CNAME answers a lookup
+// follows to the addresses.
+const DOH = 'https://cloudflare-dns.com/dns-query';
+const RECORDS = { A: 1, AAAA: 28 };
+const CNAME = 5;
+const ALIASES = 8;
 
 // ---- Which addresses ----
 
@@ -46,7 +54,8 @@ export function trimAddress(text) {
   return text.slice(0, end);
 }
 
-// The rules a fetch is held to on this request: { own: host names of this server, exempt: "host:port" pairs }.
+// The rules a fetch is held to on this request: { own: host names of this server, exempt: "host:port" pairs }. Tests
+// may add dns: a stand-in for fetch that answers the DNS-over-HTTPS queries.
 export function previewRules(env, url) {
   return { own: ownHosts(env, url), exempt: previewHosts(env) };
 }
@@ -133,6 +142,64 @@ function publicIpv6(text) {
   return true;
 }
 
+// Whether url's host name, looked up through DNS over HTTPS, leads only to addresses that allowed() takes as IP
+// literals. An IP literal or an exempt host needs no lookup. Fails closed: a query that fails or runs out of time, or a
+// name without an A or AAAA address, refuses the host. signal: the fetch's own, so the lookup spends its time. The
+// fetch after it resolves the name again, which this can't pin (WORKSPACES.md, Link cards).
+export async function resolvesPublic(url, rules, signal) {
+  const host = url.hostname.toLowerCase();
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
+  if (rules.exempt.has(`${host}:${port}`)) return true;
+  const name = host.replace(/\.$/, '');
+  if (name.startsWith('[') || ipv4(name)) return true;
+  try {
+    const found = (await Promise.all(Object.keys(RECORDS).map((type) => lookup(name, type, rules, signal)))).flat();
+    return found.length > 0 && found.every(publicAddress);
+  } catch {
+    return false;
+  }
+}
+
+// The A or AAAA records of name, through the CNAME answers that lead to them: [{ type, data }], [] when the name has
+// none of that type. Every record of the type in an answer counts, whichever name in the chain holds it. An answer
+// that stops at an alias is followed with a query for that alias, at most ALIASES times. Throws when a query fails.
+async function lookup(name, type, rules, signal) {
+  const dns = rules.dns ?? fetch;
+  let query = name;
+  for (let hop = 0; hop <= ALIASES; hop++) {
+    const res = await dns(`${DOH}?name=${encodeURIComponent(query)}&type=${type}`, { headers: { accept: 'application/dns-json' }, signal });
+    if (!res.ok) {
+      await res.body?.cancel();
+      throw new Error(`DNS lookup answered ${res.status}`);
+    }
+    const answer = await res.json();
+    if (answer?.Status !== 0) throw new Error(`DNS lookup status ${answer?.Status}`);
+    const records = Array.isArray(answer.Answer) ? answer.Answer : [];
+    const found = records.filter((r) => r?.type === RECORDS[type]).map((r) => ({ type, data: String(r.data) }));
+    if (found.length) return found;
+    const bare = (text) => String(text ?? '').toLowerCase().replace(/\.$/, '');
+    let at = query;
+    for (let step = 0; step < records.length; step++) {
+      const alias = records.find((r) => r?.type === CNAME && bare(r.name) === at);
+      if (!alias) break;
+      at = bare(alias.data);
+    }
+    if (at === query) return [];
+    query = at;
+  }
+  throw new Error('DNS lookup followed too many aliases');
+}
+
+function publicAddress({ type, data }) {
+  if (type === 'A') {
+    const v4 = ipv4(data);
+    return Boolean(v4) && publicIpv4(v4);
+  }
+  // The URL parser writes every IPv6 form, a dotted IPv4-mapped one too, as the hex groups publicIpv6 reads.
+  const parsed = URL.parse(`http://[${data}]/`);
+  return Boolean(parsed) && publicIpv6(parsed.hostname.slice(1, -1));
+}
+
 // ---- Making the cards ----
 
 // Makes the cards of a message that just committed, in ctx.waitUntil of the request that posted it. ids: workspace,
@@ -188,11 +255,12 @@ async function card(env, stub, ids, address, rules, deadline, discard) {
 }
 
 // A fetch held to the rules on every hop: redirects are followed by hand, three at most, each to an address that
-// passes the rules too. No cookies or credentials go along: a Worker's fetch keeps none.
+// passes the rules too, its host name's addresses included. No cookies or credentials go along: a Worker's fetch keeps
+// none.
 async function fetchChecked(start, rules, signal, accept) {
   let target = start;
   for (let hop = 0; hop <= REDIRECTS; hop++) {
-    if (!allowed(target, rules)) return null;
+    if (!allowed(target, rules) || !(await resolvesPublic(target, rules, signal))) return null;
     const response = await fetch(target.href, { method: 'GET', redirect: 'manual', headers: { accept, 'user-agent': AGENT }, signal });
     const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
     if (location === null) return { response, url: target };

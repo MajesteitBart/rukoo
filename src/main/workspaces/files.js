@@ -226,9 +226,12 @@ function transfer(url, { method, headers = {}, body = null, sink = null, onChunk
   const lib = u.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
     let settled = false;
+    let onAbort = null;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
+      // A signal that outlives the request, as a session's does, keeps no listener of it.
+      if (onAbort) signal.removeEventListener('abort', onAbort);
       fn(value);
     };
     const req = lib.request(u, { method, headers: { 'accept-encoding': 'identity', ...headers }, agent: false, timeout: IDLE_TIMEOUT }, (res) => {
@@ -283,13 +286,17 @@ function transfer(url, { method, headers = {}, body = null, sink = null, onChunk
     req.on('error', (err) => finish(reject, err && err.cancelled ? err : new AccountError('network', 0, err && err.message)));
     if (signal) {
       if (signal.aborted) return req.destroy(cancelled());
-      signal.addEventListener('abort', () => req.destroy(cancelled()), { once: true });
+      onAbort = () => req.destroy(cancelled());
+      signal.addEventListener('abort', onAbort, { once: true });
     }
     if (!body) return req.end();
     body.on('data', (chunk) => {
       if (onChunk) onChunk(chunk);
     });
     body.on('error', (err) => req.destroy(err));
+    // pipe() leaves the source open when the request ends before all of it went: failed, cancelled, or answered early.
+    // Its file would stay open, which can keep a staged temporary file from being deleted on Windows.
+    req.once('close', () => body.destroy());
     body.pipe(req);
   });
 }
@@ -300,14 +307,16 @@ function cancelled() {
   return err;
 }
 
-// A simple gate: at most n jobs at once, the rest waiting in order.
+// A simple gate: at most n jobs at once, the rest waiting in order. A job whose signal aborts while it waits leaves
+// the queue, cancelled.
 function gate(n) {
   let running = 0;
   const waiting = [];
   const next = () => {
     if (running >= n || !waiting.length) return;
     running += 1;
-    const { fn, resolve, reject } = waiting.shift();
+    const { fn, resolve, reject, signal, drop } = waiting.shift();
+    if (signal) signal.removeEventListener('abort', drop);
     Promise.resolve()
       .then(fn)
       .then(resolve, reject)
@@ -316,9 +325,19 @@ function gate(n) {
         next();
       });
   };
-  return (fn) =>
+  return (fn, signal = null) =>
     new Promise((resolve, reject) => {
-      waiting.push({ fn, resolve, reject });
+      if (signal && signal.aborted) return reject(cancelled());
+      const job = { fn, resolve, reject, signal, drop: null };
+      if (signal) {
+        job.drop = () => {
+          const at = waiting.indexOf(job);
+          if (at >= 0) waiting.splice(at, 1);
+          reject(cancelled());
+        };
+        signal.addEventListener('abort', job.drop, { once: true });
+      }
+      waiting.push(job);
       next();
     });
 }
@@ -374,6 +393,8 @@ class Files {
     this.emits = new Map();
     this.uploads = gate(TRANSFERS);
     this.fetches = gate(TRANSFERS);
+    // Aborts when the session ends: downloads waiting for a turn go, and those running stop.
+    this.session = new AbortController();
     this.closed = false;
   }
 
@@ -965,6 +986,7 @@ class Files {
   async fetchOnce(ws, c, fileId) {
     const svc = this.svc;
     const epoch = svc.epoch;
+    const session = this.session.signal;
     const store = this.store();
     const dir = this.dir();
     const grant = store.getRoom(ws, c).grantId;
@@ -991,19 +1013,32 @@ class Files {
       if (link.size > this.cacheMax) throw new ChatError('too_large', { status: 413 });
       this.landing.add(link.sha256);
       let kept = false;
+      let landed = false;
       try {
         if (!(await this.intact(path.join(dir, link.sha256), link.size, link.sha256))) {
           try {
-            await this.fetches(() => this.download(link, dir));
+            await this.fetches(() => this.download(link, dir, session), session);
+            landed = true;
           } catch (raw) {
+            // Cancelled because the session ended: as anything else of an ended session fails.
+            svc.guard(epoch);
             const err = chatError(raw);
             // The 60-second link ran out before the request got there: a fresh one, once.
             if (attempt === 0 && err.code === 'expired') continue;
             throw err;
           }
         }
-        svc.guard(epoch);
-        const now = this.store();
+        if (svc.epoch !== epoch || svc.store !== store) {
+          // The session ended while the file came: the cache it was for is wiped, so a file this download put there
+          // goes too.
+          if (landed) {
+            this.landing.delete(link.sha256);
+            await this.unland(dir, link.sha256);
+          }
+          svc.guard(epoch);
+          throw new ChatError('signed_out');
+        }
+        const now = store;
         kept = now.tx(() => {
           const r = now.getRoom(ws, c);
           if (!r || r.grantId !== grant) return false;
@@ -1040,8 +1075,18 @@ class Files {
     }
   }
 
-  // Streams the link's file to dir/<sha256>, checked for size and digest on the way; nothing is left on a failure.
-  async download(link, dir) {
+  // A file a download of an ended session put in dir. It stays only when the session open now keeps the same bytes
+  // in the same folder, or is putting them there.
+  async unland(dir, sha256) {
+    const store = this.svc.store;
+    if (store && filesDir(store.file) === dir && (store.hasCachedSha(sha256) || this.landing.has(sha256))) return;
+    await removeQuietly(path.join(dir, sha256));
+  }
+
+  // Streams the link's file to dir/<sha256>, checked for size and digest on the way; nothing is left on a failure, and
+  // nothing is started once signal aborts.
+  async download(link, dir, signal = null) {
+    if (signal && signal.aborted) throw cancelled();
     await fsp.mkdir(dir, { recursive: true });
     const target = path.join(dir, link.sha256);
     const part = path.join(dir, `.${crypto.randomBytes(8).toString('hex')}.part`);
@@ -1054,6 +1099,7 @@ class Files {
         headers: { accept: '*/*' },
         sink: () => (sink = fs.createWriteStream(part)),
         limit: link.size,
+        signal,
         onChunk: (chunk) => {
           hash.update(chunk);
           size += chunk.length;
@@ -1142,8 +1188,11 @@ class Files {
     this.sweep();
   }
 
-  // The session ended: transfers stop, staged files and links go. The cache's wipe deletes the folders.
+  // The session ended: transfers stop, waiting downloads go, staged files and links go. The cache's wipe deletes the
+  // folders.
   clear() {
+    this.session.abort();
+    this.session = new AbortController();
     for (const e of [...this.staged.values()]) this.forgetEntry(e, { cancel: false });
     for (const e of this.emits.values()) if (e.timer) this.svc.timers.clearTimeout(e.timer);
     this.emits.clear();

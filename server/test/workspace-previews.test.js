@@ -4,7 +4,7 @@
 
 import { env } from 'cloudflare:workers';
 import { describe, expect, inject, it } from 'vitest';
-import { allowed, clean, decodeEntities, imageInfo, previewAddresses, trimAddress, unfurl } from '../src/previews.js';
+import { allowed, clean, decodeEntities, imageInfo, previewAddresses, resolvesPublic, trimAddress, unfurl } from '../src/previews.js';
 import {
   api,
   askDownload,
@@ -30,6 +30,54 @@ async function page(spec) {
 }
 
 const hits = async (url) => (await (await fetch(`${ORIGIN}/hits?path=${encodeURIComponent(new URL(url).pathname)}`)).json()).hits;
+
+// A stand-in for the DNS-over-HTTPS service, as rules.dns takes it. zone: each name's records, { A, AAAA } or
+// { CNAME }, answered as a resolver does: an alias with the records of the name it leads to, or only the alias when
+// stop is set. A name the zone doesn't hold is NXDOMAIN, and 'fail' answers 503. asked gets "name type" per query.
+function dnsStandIn(zone, asked = []) {
+  return async (address, init) => {
+    const u = new URL(address);
+    expect(`${u.origin}${u.pathname}`).toBe('https://cloudflare-dns.com/dns-query');
+    expect(init.headers.accept).toBe('application/dns-json');
+    const type = u.searchParams.get('type');
+    let name = u.searchParams.get('name');
+    asked.push(`${name} ${type}`);
+    const Answer = [];
+    for (let hop = 0; hop < 10; hop++) {
+      const entry = zone[name];
+      if (entry === 'fail') return new Response('busy', { status: 503 });
+      if (entry === undefined) return Response.json({ Status: 3, Answer });
+      if (!entry.CNAME) {
+        for (const data of entry[type] ?? []) Answer.push({ name, type: type === 'A' ? 1 : 28, TTL: 60, data });
+        break;
+      }
+      Answer.push({ name, type: 5, TTL: 60, data: `${entry.CNAME}.` });
+      if (entry.stop) break;
+      name = entry.CNAME;
+    }
+    return Response.json({ Status: 0, Answer });
+  };
+}
+
+const ZONE = {
+  'public.example': { A: ['93.184.215.14'], AAAA: ['2606:4700::1111'] },
+  'v4only.example': { A: ['93.184.215.14'] },
+  'loopback.example': { A: ['127.0.0.1'] },
+  'private.example': { A: ['10.20.30.40'] },
+  'mapped.example': { A: ['93.184.215.14'], AAAA: ['::ffff:127.0.0.1'] },
+  'mapped-hex.example': { AAAA: ['::ffff:7f00:1'] },
+  'mixed.example': { A: ['93.184.215.14', '192.168.1.10'] },
+  'alias.example': { CNAME: 'hop.example' },
+  'hop.example': { CNAME: 'inside.example' },
+  'inside.example': { A: ['172.16.5.5'] },
+  'cut.example': { CNAME: 'inside.example', stop: true },
+  'cut-public.example': { CNAME: 'public.example', stop: true },
+  'broken.example': 'fail',
+  'empty.example': {},
+  'garbled.example': { A: ['not an address'] }
+};
+
+const page200 = (html) => new Response(html, { headers: { 'content-type': 'text/html' } });
 
 // Posts text with the fixture reachable and waits until the cards are made: the message and its cards.
 async function postLinks(ws, text, vars = {}, person = ws.person) {
@@ -127,6 +175,44 @@ describe('which addresses', () => {
   });
 });
 
+describe('host names', () => {
+  const check = (address, dns) => resolvesPublic(new URL(address), { ...RULES, dns }, AbortSignal.timeout(2000));
+
+  it('refuses a host name that leads to a loopback, private or mapped address, through aliases too', async () => {
+    const asked = [];
+    const dns = dnsStandIn(ZONE, asked);
+    for (const name of ['loopback', 'private', 'mapped', 'mapped-hex', 'mixed', 'alias', 'cut']) {
+      expect(await check(`https://${name}.example/page`, dns), name).toBe(false);
+    }
+    // An answer that stops at an alias is followed with a query for it.
+    expect(asked).toEqual(expect.arrayContaining(['cut.example A', 'inside.example A', 'cut.example AAAA', 'inside.example AAAA']));
+  });
+
+  it('refuses a host name whose lookup fails, runs out of time or finds no address', async () => {
+    const dns = dnsStandIn(ZONE);
+    for (const name of ['broken', 'missing', 'empty', 'garbled']) expect(await check(`https://${name}.example/`, dns), name).toBe(false);
+    expect(await check('https://public.example/', async () => new Response('<html>', { headers: { 'content-type': 'text/html' } }))).toBe(false);
+    expect(await check('https://public.example/', async () => Promise.reject(new TypeError('network down')))).toBe(false);
+    const never = (address, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+    const started = Date.now();
+    expect(await resolvesPublic(new URL('https://public.example/'), { ...RULES, dns: never }, AbortSignal.timeout(50))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('takes a host name with only public addresses, and looks up no IP literal or exempt host', async () => {
+    const asked = [];
+    const dns = dnsStandIn(ZONE, asked);
+    for (const name of ['public', 'v4only', 'cut-public']) expect(await check(`https://${name}.example/`, dns), name).toBe(true);
+    expect(asked.filter((q) => q.startsWith('public.example '))).toEqual(expect.arrayContaining(['public.example A', 'public.example AAAA']));
+    asked.length = 0;
+    expect(await check('https://93.184.215.14/', dns)).toBe(true);
+    expect(await check('http://[2606:4700::1111]/', dns)).toBe(true);
+    const exempt = { own: RULES.own, exempt: new Set(['fixture.example:8080']), dns };
+    expect(await resolvesPublic(new URL('http://fixture.example:8080/'), exempt, AbortSignal.timeout(2000))).toBe(true);
+    expect(asked).toEqual([]);
+  });
+});
+
 describe('reading a page', () => {
   it('decodes character references and keeps text short and on one line', () => {
     expect(decodeEntities('A &amp; B &lt;b&gt; &quot;q&quot; &#39;s &#x1F600; &eacute;t&eacute; &bogus; &#0;')).toBe('A & B <b> "q" \'s 😀 été &bogus; \ufffd');
@@ -219,7 +305,8 @@ describe('making cards', () => {
     const real = globalThis.fetch;
     globalThis.fetch = async () => new Response('<title>Far away</title>', { headers: { 'content-type': 'text/html' } });
     try {
-      await unfurl(env, { workspace: ws.id, conversation: ws.general, message: sent.messageId }, [`https://www.${host}/`], { own: new Set(), exempt: new Set() });
+      const dns = dnsStandIn({ [`www.${host}`]: { A: ['93.184.215.14'] } });
+      await unfurl(env, { workspace: ws.id, conversation: ws.general, message: sent.messageId }, [`https://www.${host}/`], { own: new Set(), exempt: new Set(), dns });
     } finally {
       globalThis.fetch = real;
     }
@@ -227,6 +314,31 @@ describe('making cards', () => {
     expect(card.title).toBe('Far away');
     expect(Array.from(card.site)).toHaveLength(100);
     expect(card.site).toBe(`${host.slice(0, 99)}…`);
+  });
+
+  it('fetches no page, redirect target or image whose host name leads to a private address, and still makes the public card', async () => {
+    const ws = await newWorkspace();
+    const sent = (await sendAndWait(ws.person, ws.id, ws.general, { text: 'cards come' })).body;
+    const zone = { ...ZONE, 'news.example': { A: ['93.184.215.14'] }, 'img-inside.example': { CNAME: 'private.example' } };
+    // The pages come from a stand-in for fetch, which notes every address asked for.
+    const fetched = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const address = typeof input === 'string' ? input : input.url;
+      fetched.push(address);
+      if (address === 'https://news.example/moved') return new Response(null, { status: 302, headers: { location: 'http://loopback.example/admin' } });
+      if (address === 'https://news.example/story') return page200('<title>The story</title><meta property="og:image" content="https://img-inside.example/x.png">');
+      return page200('<title>Inside</title>');
+    };
+    try {
+      const addresses = ['https://alias.example/', 'https://news.example/moved', 'https://news.example/story'];
+      await unfurl(env, { workspace: ws.id, conversation: ws.general, message: sent.messageId }, addresses, { own: new Set(), exempt: new Set(), dns: dnsStandIn(zone) });
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(fetched.sort()).toEqual(['https://news.example/moved', 'https://news.example/story']);
+    const message = (await events(ws.person, ws.id, ws.general)).body.events.find((e) => e.id === sent.messageId);
+    expect(message.previews).toEqual([{ url: 'https://news.example/story', title: 'The story', description: '', site: 'news.example', image: null, video: false }]);
   });
 
   it('makes no card of a page without a title, a page that is no HTML, or a page that failed', async () => {
