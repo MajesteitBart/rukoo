@@ -11587,6 +11587,24 @@ button.ch-replies .ch-replies-n {
 .dialog.ch-settings {
   max-height: calc(100vh - 48px);
 }
+/* A long dialog, such as Workspace settings in a short window or at 200 percent zoom, keeps its title and buttons in
+ * view; the body scrolls between them (desktop-ui 10). The 4px inset keeps focus rings whole. */
+.dialog.ch-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dialog.ch-dialog > h2,
+.dialog.ch-dialog > .buttons {
+  flex: none;
+}
+.dialog.ch-dialog > .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+}
 /* A dialog's error line in danger color (.dialog p would make it grey), and a button that can't be pressed yet looks
  * it, such as Make link before a guest has a channel. */
 .dialog p.error {
@@ -11693,6 +11711,11 @@ button.ch-replies .ch-replies-n {
   max-height: 168px;
   overflow-y: auto;
   margin: 0 -6px;
+}
+/* The rows reach into the margin for their hover fill; a note in their place lines up with the label above. */
+.ch-checks > p {
+  margin: 0;
+  padding: 0 6px;
 }
 /* .form label lays fields out as a grid; these rows stay a line. */
 .ch-check-row,

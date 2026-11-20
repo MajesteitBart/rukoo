@@ -93,6 +93,7 @@ function wsDialog(opts) {
       timer = setInterval(() => {
         if (K.CH.generation !== gen || !body.isConnected) done(null);
       }, 250);
+      body.closest('.dialog').classList.add('ch-dialog');
       if (opts.quietClose) body.closest('.dialog').classList.add('ch-quiet-close');
       if (opts.cls) body.closest('.dialog').classList.add(...opts.cls.split(' '));
       if (opts.render) opts.render(body, done);
@@ -169,6 +170,7 @@ export async function makeWorkspace() {
     buttons: [cancelButton(), { label: t('chat.make.submit'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
     render(body, done) {
       finish = done;
+      body.closest('.dialog').classList.add('ch-dialog');
       body.innerHTML = `<div class="form ch-form">
         <label>${esc(t('chat.make.name'))}<input type="text" name="name" autocomplete="off" spellcheck="false" maxlength="200" placeholder="${esc(t('chat.make.namePlaceholder'))}"/></label>
         <p class="error" data-error="name" hidden></p>
@@ -317,6 +319,7 @@ export async function joinWorkspace(link = '') {
     buttons: [cancelButton(), { label: t('chat.join.check'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
     render(body, done) {
       finish = done;
+      body.closest('.dialog').classList.add('ch-dialog');
       body.innerHTML = `<div class="form ch-form">
         <label>${esc(t('chat.join.link'))}<input type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#w=…" value="${esc(link)}"/></label>
         <p class="error" data-error="link" hidden></p>
