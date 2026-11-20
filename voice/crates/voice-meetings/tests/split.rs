@@ -623,6 +623,7 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
         ("audio in passages", untimed()),
         ("audio", untimed()),
         ("audio, no words", untimed()),
+        ("audio, labelled without turns", untimed()),
     ] {
         let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
         rec.session(0, 1);
@@ -639,10 +640,17 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
                  DELETE FROM progress WHERE track = 'call';",
             );
         }
-        if gate == "audio, no words" {
+        if gate.starts_with("audio, ") {
             // A recognizer that returned no text for every window: the call is transcribed to
             // its end, without a passage.
             sql(&rec, "DELETE FROM passages WHERE track = 'call';");
+        }
+        if gate == "audio, labelled without turns" {
+            // And labels that heard the whole call without a turn.
+            sql(
+                &rec,
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('speakers.finished.call', '1');",
+            );
         }
         let stored = Transcript::open(rec.dir.path()).unwrap();
         let call_turns = stored.turns(Track::Call, 0, u64::MAX).unwrap();
@@ -661,7 +669,9 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
                 matches!(call_passages[..], [(start, 12_000.., true)] if start < 7_500),
                 "{call_passages:?}"
             ),
-            "audio" | "audio, no words" => assert!(call_passages.is_empty(), "{call_passages:?}"),
+            "audio" | "audio, no words" | "audio, labelled without turns" => {
+                assert!(call_passages.is_empty(), "{call_passages:?}")
+            }
             _ => assert!(
                 call_passages.iter().all(|p| !p.2),
                 "word timings: {call_passages:?}"

@@ -756,18 +756,22 @@ impl Session {
         // Whether the last pass read a frame or a reply: then an owed page goes first, so a
         // client that keeps sending commands can't hold back the pages its replies wait for.
         let mut page_next = false;
+        // Whether the last pass read a frame: then the next one leaves input out, so replies and
+        // live events get a turn between two frames of a client that never stops sending.
+        let mut read_last = false;
         loop {
             if behind && std::mem::take(&mut page_next) {
                 behind = self.next_page().await?;
                 continue;
             }
+            let skip_input = std::mem::take(&mut read_last);
             // In order, with the log's pages last: a command that comes while events keep
             // arriving is read after at most the page in hand, and a reply goes out once the
             // events stored before its command finished are out, however long the run of pages.
             tokio::select! {
                 biased;
                 _ = self.quit.changed() => return Ok(End::Quit),
-                frame = source.next() => { page_next = true; match frame {
+                frame = source.next(), if !skip_input => { page_next = true; read_last = true; match frame {
                     Some(Ok(Frame::Text(text))) => {
                         // Stamped before the job waits in the queue, so a command's deadline
                         // counts the time it spends behind earlier ones.
@@ -830,6 +834,8 @@ impl Session {
                 },
                 // Only when nothing above is ready.
                 _ = std::future::ready(()), if behind => behind = self.next_page().await?,
+                // A pass without input that found nothing else to do: read input again.
+                _ = std::future::ready(()), if skip_input => {}
             }
         }
     }

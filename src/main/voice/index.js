@@ -450,7 +450,8 @@ class VoiceService extends EventEmitter {
         // With the guests of the linked event to pick from, as meetingGet gives them.
         if (d.speakers) payload.speakers = this.speakers(id);
         if (d.notes) payload.notes = full.notes;
-        if (d.mic) payload.mic = this.micState(id);
+        // A new voice at the microphone can come from a split this Rukoo didn't ask for: the card's split row follows.
+        if (d.mic || d.speakers) payload.mic = this.micState(id);
       }
       this.emit('meeting', payload);
     }

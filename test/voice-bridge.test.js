@@ -911,6 +911,8 @@ test('the pieces a correction hides reach an open meeting view when a split arri
   // The correction shows once, whole, and the piece only under it.
   assert.deepEqual(s.get(M1).passages.map((p) => [p.id, p.text]), [['mic-000005000', 'I can do that. Thanks, Pieter!']]);
   assert.ok(deltas.every((d) => !(d.passages || []).some((p) => p.id === 'mic-000006500')));
+  // The People card learns that the microphone is split, so it stops offering the split.
+  await until(() => deltas.some((d) => d.mic && d.mic.split), 'a delta with the split microphone');
 });
 
 test("Voice's screen default reaches the state, and a change of it alone tells the renderer", async (t) => {

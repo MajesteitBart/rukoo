@@ -435,23 +435,27 @@ fn to_data(value: &impl serde::Serialize) -> serde_json::Value {
 /// without turns or passages.
 fn call_speech(transcript: &Transcript, call: &TrackReader) -> Result<Vec<(u64, u64)>, SplitError> {
     let turns = transcript.turns(Track::Call, 0, u64::MAX)?;
-    let until = if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
-        u64::MAX
-    } else if turns.is_empty() {
-        0
-    } else {
-        transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0)
-    };
     let passages: Vec<(u64, u64, bool)> = transcript
         .passages()?
         .into_iter()
         .filter(|p| p.passage.track == Track::Call)
         .map(|p| (p.passage.start, p.passage.end, !p.tokens.is_empty()))
         .collect();
-    // In meeting samples, as the call's audio. A call with neither turns nor passages says
-    // nothing about where it spoke, also when its transcription ran to the end and heard no
-    // words: its sound counts from the start.
-    let transcribed = if turns.is_empty() && passages.is_empty() {
+    // A call with neither turns nor passages says nothing about where it spoke, also when its
+    // labels or its transcription ran to the end without finding any: its sound counts from the
+    // start.
+    let silent = turns.is_empty() && passages.is_empty();
+    let until = if silent {
+        0
+    } else if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
+        u64::MAX
+    } else if turns.is_empty() {
+        0
+    } else {
+        transcript.meta_u64(SETTLED_KEY)?.unwrap_or(0)
+    };
+    // In meeting samples, as the call's audio.
+    let transcribed = if silent {
         0
     } else {
         transcript.cursor(Track::Call)?
