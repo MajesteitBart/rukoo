@@ -293,6 +293,9 @@ class FeedApplier(
             out.changed += r.id
         }
         deleteWsEvents(ws)
+        // Until the alert engine took back the workspace's alerts, a process that dies here leaves them up: the
+        // marker, with the revision this reset made, has the next start take them back (ChatAlertEngine.reconcile).
+        setMeta(alertsResetKey(ws), revision(ws).toString())
         return out.result().copy(reset = true)
     }
 
@@ -541,6 +544,11 @@ class FeedApplier(
 
         /** `meta` key: a restore waits for its pass to take read positions from the restored feed. */
         fun rebaseKey(ws: String) = "rebase:$ws"
+
+        /** `meta` key: a reset of the workspace whose alerts weren't taken back yet; its value is the reset's revision. */
+        const val META_ALERTS_RESET = "alertsReset:"
+
+        fun alertsResetKey(ws: String) = "$META_ALERTS_RESET$ws"
 
         // ---- Checking answers: the whole answer is refused when one field isn't what the protocol says ----
 

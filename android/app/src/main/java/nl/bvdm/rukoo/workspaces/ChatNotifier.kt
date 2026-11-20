@@ -221,9 +221,19 @@ class ChatAlertEngine(
      * At the cache's opening, before any run: Android keeps a process's alerts after it ended, also those whose
      * take-back never ran (a reset, a read or a removal committed just before the process died). A room's alert stands
      * for its notice rows, so one whose room has none goes, and so does any alert of a workspace the cache no longer
-     * has. A summary of a workspace still there is left to [settleSummary], as it has no notice rows.
+     * has. A summary of a workspace still there is left to [settleSummary], as it has no notice rows. A reset whose
+     * take-back never ran left a marker in its transaction ([FeedApplier.alertsResetKey]): every alert of that
+     * workspace goes here, the summary too, as [onReset] would have done.
      */
     suspend fun reconcile(store: WorkspaceStore) {
+        val resets = store.read {
+            sql.query("SELECT key, value FROM meta WHERE key LIKE ?", FeedApplier.META_ALERTS_RESET + "%") { it.text(0) to it.text(1) }
+        }
+        for ((key, value) in resets) {
+            val ws = key.removePrefix(FeedApplier.META_ALERTS_RESET)
+            dropWorkspace(ws)
+            clearResetMarker(store, ws, value)
+        }
         val keys = sink.active(ChatAlertRules.PREFIX)
         if (keys.isEmpty()) return
         val (workspaces, noticed) = store.read {
@@ -345,7 +355,9 @@ class ChatAlertEngine(
      */
     suspend fun onPage(ws: String, result: PageResult, store: WorkspaceStore) {
         if (result.reset) {
+            val marker = store.read { getMeta(FeedApplier.alertsResetKey(ws)) }
             onReset(ws)
+            if (marker != null) clearResetMarker(store, ws, marker)
             return
         }
         for ((room, ids) in result.removed) onRemoved(ws, room, ids, store)
@@ -377,6 +389,15 @@ class ChatAlertEngine(
         dropPreview(ws, room)
         forget(ws, room)
         sink.hide(ChatAlertRules.roomKey(ws, room))
+    }
+
+    // The alerts of the reset that left [value] are taken back: its marker goes, unless a newer reset replaced it.
+    private suspend fun clearResetMarker(store: WorkspaceStore, ws: String, value: String) {
+        try {
+            store.tx { if (getMeta(FeedApplier.alertsResetKey(ws)) == value) deleteMeta(FeedApplier.alertsResetKey(ws)) }
+        } catch (e: WorkspaceError) {
+            // Not saved: the next start takes the workspace's alerts back again, which shows nothing new.
+        }
     }
 
     private fun dropPreview(ws: String, room: String) {

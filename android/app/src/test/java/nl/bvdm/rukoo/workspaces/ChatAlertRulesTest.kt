@@ -10,6 +10,7 @@ import nl.bvdm.rukoo.ui.chat.ChatNames
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -408,6 +409,45 @@ class ChatAlertRulesTest {
             setOf(kept, summary),
             s.sink.activeKeys(),
         )
+    }
+
+    @Test
+    fun `a reset whose take-back a dead process never ran takes the workspace's alerts back at the next start`() = runTest {
+        val s = setup()
+        // An announced DM still unread: the summary that counted it has no notice rows to say it's done.
+        s.room(room(Ids.DM, dm = true, head = 2, read = 1, unread = 1))
+        s.store.tx { setRoomFields(ws, Ids.DM, mapOf("notified" to 2L)) }
+        val summary = ChatAlertRules.summaryKey(ws)
+        val room = ChatAlertRules.roomKey(ws, Ids.DM)
+        s.sink.posted(summary)
+        s.sink.posted(room)
+        val other = ChatAlertRules.summaryKey(Ids.WS2)
+        s.store.tx { insertWs(WsRow(id = Ids.WS2, name = "Other", role = "member", me = Ids.ME, passing = false, fresh = false)) }
+        s.sink.posted(other)
+        // The reset commits; the process dies before onPage takes the alerts back.
+        FeedApplier(s.store, Clock { TestDb.NOW }).reset(ws)
+
+        val next = ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false })
+        next.reconcile(s.store)
+        assertEquals("every alert of the reset workspace went, the summary too", setOf(other), s.sink.activeKeys())
+        assertNull("the marker is spent", s.store.read { getMeta(FeedApplier.alertsResetKey(ws)) })
+        // The first pass after it doesn't bring the summary back.
+        next.afterRun(ws, s.store) { throw WorkspaceError("network") }
+        assertEquals(setOf(other), s.sink.activeKeys())
+    }
+
+    @Test
+    fun `a reset whose take-back ran leaves no marker, so a later start keeps the alerts posted after it`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, read = 1, unread = 1))
+        val reset = FeedApplier(s.store, Clock { TestDb.NOW }).reset(ws)
+        assertNotNull(s.store.read { getMeta(FeedApplier.alertsResetKey(ws)) })
+        s.engine.onPage(ws, reset, s.store)
+        assertNull(s.store.read { getMeta(FeedApplier.alertsResetKey(ws)) })
+        val summary = ChatAlertRules.summaryKey(ws)
+        s.sink.posted(summary)
+        ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false }).reconcile(s.store)
+        assertEquals(setOf(summary), s.sink.activeKeys())
     }
 
     @Test
