@@ -100,7 +100,21 @@ test('the modes are tabs in the title bar, with a highlight on the chosen one', 
   await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
   await expect.poll(off).toBeLessThan(1);
 
-  // A count on a tab leaves the search where it is, and the bar between the tabs and the search still moves the window.
+  // At 1100 px the tabs fill their side of the bar. A count on a tab still leaves the search where it is, and the bar
+  // between the tabs and the search still moves the window.
+  // The window buttons' area follows the window a moment after its width does, and the bar with it: the bar has
+  // settled when that area reaches to within the buttons' width of the window's edge and the actions end 12px before it.
+  const settled = () =>
+    win.evaluate(() => {
+      const o = navigator.windowControlsOverlay;
+      const right = o && o.visible ? o.getTitlebarAreaRect().right : innerWidth;
+      const actions = document.querySelector('.titlebar-actions').getBoundingClientRect().right;
+      return right > innerWidth - 200 && Math.round(right - actions) === 12;
+    });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1100, 800));
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThan(1120);
+  await expect.poll(settled).toBe(true);
+  await expect.poll(off).toBeLessThan(1);
   const searchLeft = () => win.evaluate(() => Math.round(document.querySelector('.titlebar-search').getBoundingClientRect().left));
   const before = await searchLeft();
   await win.evaluate(async () => {
@@ -111,19 +125,24 @@ test('the modes are tabs in the title bar, with a highlight on the chosen one', 
   await expect(tab('calendar').locator('.mode-badge')).toHaveText('1');
   await expect.poll(off).toBeLessThan(1);
   expect(await searchLeft()).toBe(before);
+  // The region the window manager sees there: the nearest element that sets one.
   const between = await win.evaluate(() => {
-    const [m, s] = ['.titlebar-modes', '.titlebar-search'].map((x) => document.querySelector(x).getBoundingClientRect());
-    const el = document.elementFromPoint((m.right + s.left) / 2, m.top + m.height / 2);
-    return getComputedStyle(el).webkitAppRegion;
+    const [m, s] = ['.mode-tabs', '.titlebar-search'].map((x) => document.querySelector(x).getBoundingClientRect());
+    let el = document.elementFromPoint((m.right + s.left) / 2, m.top + m.height / 2);
+    while (el && getComputedStyle(el).webkitAppRegion === 'none') el = el.parentElement;
+    return el && getComputedStyle(el).webkitAppRegion;
   });
   expect(between).toBe('drag');
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1500, 950));
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeGreaterThan(1400);
+  await expect.poll(settled).toBe(true);
 
   // Folding the sidebar moves neither the tabs nor the search.
   const lefts = () => win.evaluate(() => ['.titlebar-modes', '.titlebar-search'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().left)));
   const wide = await lefts();
   await win.click('[data-action="collapse"]');
   await expect(win.locator('body')).toHaveClass(/collapsed-sidebar/);
-  expect(await lefts()).toEqual(wide);
+  await expect.poll(lefts).toEqual(wide);
   await win.click('[data-action="collapse"]');
   await expect(win.locator('body')).not.toHaveClass(/collapsed-sidebar/);
 

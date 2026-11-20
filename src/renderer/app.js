@@ -920,6 +920,7 @@ function renderModeSwitch() {
         .join('')}</div>`;
     el = box.querySelector('.mode-tabs');
     el.dataset.shape = shape;
+    watchModeTabs(el);
   }
   renderModeBadges(box);
   // The highlight glides when the same tabs get another choice; new tabs, and a badge that came or went, place it.
@@ -972,14 +973,16 @@ function tabBadge(tab, badge) {
   tab.setAttribute('aria-label', badge.label);
 }
 
-// The pill behind the chosen tab: --x and --w on the tabs. The chosen tab opens its icon and the one before folds its
-// own, so the tabs change width while the pill moves. The pill goes straight to where the chosen tab settles,
+// The fill behind the chosen tab: --x and --w on the tabs. The chosen tab opens its icon and the one before folds its
+// own, so the tabs change width while the fill moves. The fill goes straight to where the chosen tab settles,
 // measured on a copy of the tabs that has no transition running. glide: slide there, for another choice among the same
-// tabs; without it the pill is put there, as when a count, the language or the window's width changed a tab's size. A
+// tabs; without it the fill is put there, as when a count, the language or the window's width changed a tab's size. A
 // measurement that changes nothing leaves a glide under way alone.
+// The same copy, with every count at its widest, gives the room the tabs keep, so a count that comes or goes doesn't
+// move the search beside them.
 function placeModeThumb(glide = false) {
   const tabs = $('.titlebar-modes .mode-tabs');
-  // Hidden behind a page such as Settings, the tabs have no size: the next measurement places the pill.
+  // Hidden behind a page such as Settings, the tabs have no size: the next measurement places the fill.
   if (!tabs || !tabs.offsetWidth) return;
   const copy = tabs.cloneNode(true);
   copy.classList.add('is-measure');
@@ -988,7 +991,15 @@ function placeModeThumb(glide = false) {
   tabs.after(copy);
   const on = copy.querySelector('[aria-selected="true"]')?.getBoundingClientRect();
   const left = copy.getBoundingClientRect().left;
+  for (const tab of copy.querySelectorAll('[data-mode="calendar"], [data-mode="chat"]')) {
+    tab.querySelector('.mode-dot')?.remove();
+    const count = tab.querySelector('.mode-badge') || tab.appendChild(document.createElement('span'));
+    count.className = 'mode-badge';
+    count.textContent = '99+';
+  }
+  const widest = `${copy.getBoundingClientRect().width}px`;
   copy.remove();
+  if (tabs.parentElement.style.minWidth !== widest) tabs.parentElement.style.minWidth = widest;
   if (!on || !on.width) return;
   const place = `${(on.left - left).toFixed(2)}|${on.width.toFixed(2)}`;
   if (tabs.dataset.place === place) return;
@@ -1008,7 +1019,15 @@ function bindModeTabs() {
     const tab = e.target.closest('[data-mode]');
     if (tab) setMode(tab.dataset.mode);
   });
-  new ResizeObserver(() => placeModeThumb()).observe(box);
+}
+
+// Places the fill again when the tabs change size: a narrow window turns them into icons, a page such as Settings
+// hides them. It watches the tabs themselves, since their box keeps its room whatever they measure.
+let modeTabsResize = null;
+function watchModeTabs(tabs) {
+  modeTabsResize ||= new ResizeObserver(() => placeModeThumb());
+  modeTabsResize.disconnect();
+  modeTabsResize.observe(tabs);
 }
 
 function setMode(mode) {

@@ -134,6 +134,40 @@ test('the rail at 200 percent keeps three rows, scrolls as a column and shows th
   await expect.poll(async () => (await railState(last)).sideOver).toBeLessThanOrEqual(0);
 });
 
+// The fullest title bar in the smallest one: four mode tabs and a screen recording's indicator at 200 percent in a
+// 760x560 window. Nothing runs off the bar, and the actions end at least 12px before the window buttons.
+test('four mode tabs and a recording at 200 percent in the smallest window keep the title bar clear of the window buttons', async () => {
+  test.skip(process.platform === 'darwin', 'macOS has traffic lights, without a window controls overlay');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, await server.seedAccount({ password: PASSWORD }));
+  await expect(win.locator('.titlebar-modes [data-mode]')).toHaveCount(4, { timeout: 15000 });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 560));
+  await win.evaluate(() => window.mail.call('setZoom', 200));
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThan(400);
+  // What a recording with the screen hidden from it shows: the dot, the clock and the eye.
+  await win.evaluate(() => {
+    const b = document.querySelector('[data-meeting-indicator]');
+    b.hidden = false;
+    b.classList.add('is-hidden');
+    b.querySelector('.rec-time').textContent = '1:23:45';
+  });
+  const fit = () =>
+    win.evaluate(() => {
+      const bar = document.querySelector('.titlebar');
+      const area = navigator.windowControlsOverlay.getTitlebarAreaRect();
+      const box = (s) => document.querySelector(s).getBoundingClientRect();
+      const [tabs, search, actions] = [box('.mode-tabs'), box('.titlebar-search'), box('.titlebar-actions')];
+      return {
+        overflow: bar.scrollWidth - bar.clientWidth,
+        clear: Math.round(area.x + area.width - actions.right),
+        apart: tabs.right <= search.left + 0.5 && search.right <= actions.left + 0.5
+      };
+    });
+  await expect.poll(fit).toEqual({ overflow: 0, clear: 12, apart: true });
+  await expect(win.locator('.titlebar-actions .rec-dot')).toBeVisible();
+  await win.evaluate(() => window.mail.call('setZoom', 100));
+});
+
 test('a chat dialog that scrolls at 200 percent shows a hairline and a fade until its end', async () => {
   const s = await seed();
   await ready(s);
