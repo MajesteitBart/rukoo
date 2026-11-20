@@ -22,8 +22,9 @@
 // the page belongs to the feed as it stood before.
 //
 // The cache revision (svc.revision(ws), shared with the history, outbox and alert modules): it goes up inside every
-// transaction here that resets, restores, starts over, re-keys or quarantines a workspace, and when the service parks
-// or removes one. A fetch records the revision it started under; its answer or error is dropped when it changed.
+// transaction here that resets, restores, starts over, re-keys or quarantines a workspace, or drops a room's cache for
+// removedMore or a new grant, and when the service parks or removes one. A fetch records the revision it started
+// under; its answer or error is dropped when it changed.
 const wire = require('./wire');
 const { ChatError } = wire;
 
@@ -71,7 +72,13 @@ function cachedMessages(store, ws, room) {
 // What a feed row removed from the cache: the IDs in removed get a tombstone and lose their text, and removedMore
 // drops the room's cache whole, as more than the feed can list were removed. Alerts for any of them go, and for every
 // alert of the room after removedMore.
-function applyRemovals(store, ws, room, result, alsoGone = []) {
+//
+// removedMore also raises the workspace's cache revision in the same transaction: a history page or an alert fetch
+// already on its way may carry the text of messages the feed couldn't list, and no tombstone keeps it out. Every fetch
+// started before is dropped by its revision check; the run that applies the page reads the revision again before its
+// next request.
+function applyRemovals(svc, ws, room, result, alsoGone = []) {
+  const store = svc.store;
   const id = room.conversation;
   const gone = [...alsoGone];
   if (room.removed.length) {
@@ -82,6 +89,7 @@ function applyRemovals(store, ws, room, result, alsoGone = []) {
   if (room.removedMore && store.getRoom(ws, id)) {
     gone.push(...cachedMessages(store, ws, id), ...store.noticesForRoom(ws, id).map((n) => n.message));
     store.dropRoomCache(ws, id);
+    svc.bumpRevision(ws);
   }
   addRemoved(result, id, gone);
 }
@@ -107,10 +115,14 @@ function recount(store, ws, room) {
 }
 
 // One room row from the feed, outside a pass or when a pass installs: the row with the grant, field, read and floor
-// rules of the store's upsertRoom, then its removals and badges.
-function applyRoom(store, ws, room, result) {
-  const { dropped } = store.upsertRoom(ws, room);
-  applyRemovals(store, ws, room, result, dropped);
+// rules of the store's upsertRoom, then its removals and badges. A new grant (left and joined again elsewhere) empties
+// the cache as removedMore does, as the feed can't list what was removed while the person was out, so it raises the
+// cache revision too: pages loaded under the old grant (a thread's memory, an opening's detached events) go with it.
+function applyRoom(svc, ws, room, result) {
+  const store = svc.store;
+  const { dropped, grantChanged } = store.upsertRoom(ws, room);
+  if (grantChanged) svc.bumpRevision(ws);
+  applyRemovals(svc, ws, room, result, dropped);
   recount(store, ws, room.conversation);
   if (!result.changed.includes(room.conversation)) result.changed.push(room.conversation);
 }
@@ -153,7 +165,7 @@ function applyPage(svc, ws, page, { active = null, expect = null, rev = null } =
     const result = emptyResult();
     const listed = new Set();
     for (const room of page.changes) {
-      applyRoom(store, ws, room, result);
+      applyRoom(svc, ws, room, result);
       listed.add(room.conversation);
     }
     for (const id of page.evictions) {
@@ -189,7 +201,7 @@ function applyPassPage(svc, ws, page, { expect = null, rev = null } = {}) {
     for (const room of page.changes) {
       store.putPassRoom(ws, room);
       if (store.getRoom(ws, room.conversation)) {
-        applyRemovals(store, ws, room, result, store.applyFloor(ws, room.conversation, room.floor));
+        applyRemovals(svc, ws, room, result, store.applyFloor(ws, room.conversation, room.floor));
       } else if (room.removed.length) {
         store.addTombstones(ws, room.removed);
       }
@@ -218,7 +230,7 @@ function installPass(svc, ws, page, { expect = null, rev = null } = {}) {
       result.droppedSends[r.id] = store.deleteRoom(ws, r.id);
       result.evicted.push(r.id);
     }
-    for (const room of rooms) applyRoom(store, ws, room, result);
+    for (const room of rooms) applyRoom(svc, ws, room, result);
     const row = store.getWs(ws);
     if (row.fresh) store.run('UPDATE room SET notified = MAX(notified, head) WHERE ws = ?', ws);
     markStale(store, ws, page.directory);

@@ -563,7 +563,8 @@ class Manage {
     let outcome = null;
     if (unmoved) {
       store.tx(() => {
-        store.upsertRoom(ws, dm);
+        // A new grant empties the room's cache and raises the cache revision, as the feed's does (sync.js applyRoom).
+        if (store.upsertRoom(ws, dm).grantChanged) svc.bumpRevision(ws);
         sync.recount(store, ws, dm.conversation);
       });
       svc.roomsChanged(ws, [dm.conversation]);

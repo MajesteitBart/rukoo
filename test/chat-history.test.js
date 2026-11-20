@@ -689,6 +689,66 @@ test('a history page that comes after Start over is dropped, and the text it car
   assert.ok(pushes(svc, ws.general).slice(-1)[0].events.some((e) => e.id === removed.messageId && e.redacted));
 });
 
+// Contract 3.6: removedMore says more messages went than the feed can list, so no tombstone keeps their text out. A
+// history page asked for before it carries that text; the feed page drops the room's cache and raises the cache
+// revision, so the page is dropped and the one asked again is cached. removedMore is synthetic (see chat-sync).
+test('a history page held across a removedMore page writes nothing', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, api, account } = await setup(t);
+  const [secret] = await postMany(olga, ws.id, ws.general, 1, { prefix: 'secret plan' });
+  await postMany(olga, ws.id, ws.general, 2, { prefix: 'other' });
+  await svc.sync(ws.id);
+  const old = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(old.hi, null);
+
+  // Every event written into the room's cache.
+  const written = [];
+  const write = svc.store.writeEvents.bind(svc.store);
+  svc.store.writeEvents = (w, room, events) => {
+    if (room === ws.general) written.push(...events);
+    return write(w, room, events);
+  };
+
+  const held = holdNext(account, (url) => url.includes(`/conversations/${ws.general}/events?before=`));
+  await api.chatOpen(ws.id, ws.general);
+  await until(() => held.waiting, 10000, 'the held page');
+  await api.chatClose();
+  // Olga removes the message; the feed says only that more went than it can list.
+  await server.redact(olga, ws.id, ws.general, secret.messageId);
+  let rewrite = true;
+  watchCalls(account, async (method, url, real) => {
+    if (!rewrite || !url.startsWith(route(ws.id, '/changes'))) return undefined;
+    rewrite = false;
+    const page = await real();
+    const room = page.changes.find((c) => c.conversation === ws.general);
+    assert.ok(room, 'the redaction lists the room');
+    room.removed = [];
+    room.removedMore = true;
+    return page;
+  });
+  const revision = svc.revision(ws.id);
+  const outcome = await svc.sync(ws.id);
+  assert.ok(outcome.changed.includes(ws.general), 'the run that applied the page got through');
+  assert.ok(svc.revision(ws.id) > revision, 'removedMore raised the cache revision');
+  assert.equal(svc.store.hasTombstone(ws.id, secret.messageId), false, 'nothing lists the removed message');
+  const now = svc.store.getRoom(ws.id, ws.general);
+  const mark = svc.events.length;
+  held.release();
+
+  await until(() => !svc.history.loads.size, 15000, 'the catch-up to finish');
+  assert.ok(!written.some((e) => typeof e.text === 'string' && e.text.startsWith('secret plan')), 'the held page was written');
+  const calls = eventCalls(held.calls, ws.general);
+  assert.equal(calls[0], `before=${old.head + 1}&limit=50`);
+  assert.equal(calls[1], `before=${now.head + 1}&limit=50`, 'the newest page was asked again');
+  const row = svc.store.eventById(ws.id, secret.messageId);
+  assert.equal(row.redacted, 1);
+  assert.equal(row.text, null);
+  const view = await api.chatOpen(ws.id, ws.general);
+  assert.ok(view.events.some((e) => e.id === secret.messageId && e.redacted && e.text === null));
+  assert.ok(!JSON.stringify(svc.events.slice(mark)).includes('secret plan'), 'no push carried the removed text');
+  assert.ok(!JSON.stringify(view).includes('secret plan'));
+});
+
 // Contract 3.7, 3.13, 3.14: a thread root the cache couldn't keep lives in the thread's memory. Removing it takes its
 // text out of that memory at once, and a floor past it expires the thread.
 test('a thread root kept outside the cache loses its text when removed and goes below the floor', async (t) => {
@@ -781,6 +841,54 @@ test('opening at a seq returns detached events as they stand, and tells the rend
     svc.events.some((e) => e.kind === 'redacted' && e.conversation === ws.general && e.ids.includes(later.messageId)),
     'the renderer heard of the removal'
   );
+});
+
+// Contract 3.6: a new grant empties the room's cache, as the feed can't list what was removed while the person was out.
+// Detached events an opening at a seq loaded under the old grant go with it: the new grant raises the cache revision.
+// The removal is kept out of the feed page (synthetic), as for removedMore.
+test('an opening at a seq drops the detached events it loaded under the old grant', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, svc, api, account } = await setup(t, { timing: { ...SMALL, roomCacheMax: 3 } });
+  const notes = await postMany(olga, ws.id, ws.general, 30, { prefix: 'note' });
+  await svc.sync(ws.id);
+  const at = notes[1].seq;
+  // The third events request is the backfill's second page: it waits while Bart leaves and joins again elsewhere.
+  let count = 0;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let waiting = false;
+  watchCalls(account, async (method, url, real) => {
+    if (!url.includes(`/conversations/${ws.general}/events?before=`)) return undefined;
+    count += 1;
+    if (count !== 3) return undefined;
+    const answer = await real();
+    waiting = true;
+    await gate;
+    return answer;
+  });
+  const old = svc.store.getRoom(ws.id, ws.general);
+  const opening = api.chatOpen(ws.id, ws.general, { at });
+  await until(() => waiting, 10000, 'the held backfill page');
+  const early = notes[24];
+  assert.ok(early.seq < svc.store.getRoom(ws.id, ws.general).lo, 'the removed note is outside the cache');
+  await server.redact(olga, ws.id, ws.general, early.messageId);
+  assert.equal((await server.call('DELETE', route(ws.id, `/channels/${ws.general}/members/me`), { token: bart.token })).status, 204);
+  assert.equal((await server.call('POST', route(ws.id, `/channels/${ws.general}/join`), { token: bart.token })).status, 200);
+  let strip = true;
+  watchCalls(account, async (method, url, real) => {
+    if (!strip || !url.startsWith(route(ws.id, '/changes'))) return undefined;
+    strip = false;
+    const page = await real();
+    for (const room of page.changes) room.removed = [];
+    if (page.inlineEvents) page.inlineEvents = page.inlineEvents.filter((e) => e.kind !== 'message.redacted');
+    return page;
+  });
+  await svc.sync(ws.id);
+  assert.notEqual(svc.store.getRoom(ws.id, ws.general).grantId, old.grantId, 'the feed brought the new grant');
+  assert.equal(svc.store.hasTombstone(ws.id, early.messageId), false, 'nothing lists the removed note');
+  release();
+  const view = await opening;
+  assert.ok(!JSON.stringify(view).includes('note 25'), 'a detached event from the old grant came back');
 });
 
 // Follow-up 206 item 4: a thread or an opening at a seq whose pages were on their way when the workspace was revoked

@@ -441,6 +441,41 @@ test('a Start DM answer that arrives after a 426 parked the workspace writes not
   assert.equal(svc.store.getWs(ws.id).state, 'upgrade');
 });
 
+// Contract 3.6: a Start DM answer that carries a new grant for a cached DM empties its cache as the feed's would, and
+// raises the cache revision, so pages loaded under the old grant (a thread's memory, an opening's detached events) go.
+// The new grant is synthetic: the real server's answer with that one field changed.
+test('a Start DM answer with a new grant drops the room cache and raises the cache revision', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  const bartMe = await server.seedMember(ws, bart, 'Bart');
+  const { svc, api, account } = await device(t, bart);
+  await settled(svc, ws.id);
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  await server.post(olga, ws.id, dm.conversation, 'Hoi Bart');
+  await svc.sync(ws.id);
+  const cached = svc.store.getRoom(ws.id, dm.conversation);
+  const page = wire.checkEvents(await svc.call(ws.id, 'GET', `/conversations/${dm.conversation}/events?before=${cached.head + 1}&limit=50`));
+  svc.store.appendEvents(ws.id, dm.conversation, page.events);
+  assert.notEqual(svc.store.getRoom(ws.id, dm.conversation).lo, null);
+  const grant = `g_${crypto.randomBytes(16).toString('base64url').slice(0, 22)}`;
+  assert.match(grant, wire.patterns.GRANT_ID);
+  watchCalls(account, async (method, url, real) => {
+    if (method !== 'POST' || !url.endsWith('/dms')) return undefined;
+    const answer = await real();
+    answer.dm.grant = grant;
+    return answer;
+  });
+  const revision = svc.revision(ws.id);
+  const started = await api.chatStartDm(ws.id, [ws.me.id]);
+  assert.equal(started.room.id, dm.conversation);
+  const after = svc.store.getRoom(ws.id, dm.conversation);
+  assert.equal(after.grantId, grant);
+  assert.equal(after.lo, null, 'the new grant emptied the cache');
+  assert.ok(svc.revision(ws.id) > revision, 'and raised the cache revision');
+});
+
 test('the twenty-first new DM of a day fails with dailyDms, and an open DM still opens', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();
