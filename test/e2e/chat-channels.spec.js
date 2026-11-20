@@ -4,7 +4,7 @@
 const { test, expect } = require('@playwright/test');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
-const { skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, roomRow, dialogBox, menuItem, roomMenu, serverGet, connected } = require('./chat-helpers');
+const { skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, roomRow, dialogBox, expectBodyFits, menuItem, roomMenu, serverGet, connected } = require('./chat-helpers');
 
 skipWithoutServer();
 
@@ -98,6 +98,7 @@ test('browsing finds a channel, previews it with a Join bar, and joining opens i
   await expect(dialog.locator('h2')).toHaveText('Channels in Acme');
   await expect(dialog.locator('[data-list] .ch-browse-name')).toHaveText(['design', 'general', 'ops']);
   await expect(dialog.locator('.ch-browse-row', { hasText: 'general' }).locator('.ch-pill')).toHaveText('Joined');
+  await expectBodyFits(dialog, '[name="search"]');
   await dialog.locator('[name="search"]').fill('zzz');
   await expect(dialog.locator('.ch-browse-none')).toHaveText('No channels match.');
   await dialog.locator('[name="search"]').fill('DES');

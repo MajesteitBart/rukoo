@@ -16,6 +16,7 @@ const {
   notices,
   roomRow,
   dialogBox,
+  expectBodyFits,
   roomMenu,
   workspaceMenu,
   serverDms,
@@ -83,6 +84,7 @@ test('New message starts a conversation with one person and with a group of thre
   await expect(primary).toBeDisabled();
   // Everyone else who is a full member, and nobody else: not Bart himself.
   await expect(dialog.locator('.ch-new-row .ch-person-name')).toHaveText(['Olga Owner', 'Sanne']);
+  await expectBodyFits(dialog, '[name="to"]');
   await dialog.locator('[name="to"]').fill('olg');
   await expect(dialog.locator('.ch-new-row .ch-person-name')).toHaveText(['Olga Owner']);
   await win.keyboard.press('Enter');

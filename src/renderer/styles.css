@@ -11588,7 +11588,10 @@ button.ch-replies .ch-replies-n {
   max-height: calc(100vh - 48px);
 }
 /* A long dialog, such as Workspace settings in a short window or at 200 percent zoom, keeps its title and buttons in
- * view; the body scrolls between them (desktop-ui 10). The 4px inset keeps focus rings whole. */
+ * view; the body scrolls between them (desktop-ui 10). The body reaches 8px into the dialog's padding on the sides and
+ * 4px at the top and pads that back: the lists that run 8px into the margin (.ch-browse, .ch-people, .ch-new-list)
+ * stay inside it without a sideways scrollbar, and a field's 3px focus halo stays whole at the top. The -4px top margin
+ * keeps the gap under the title unchanged; overflow-x hidden keeps the body from scrolling sideways. */
 .dialog.ch-dialog {
   display: flex;
   flex-direction: column;
@@ -11601,9 +11604,9 @@ button.ch-replies .ch-replies-n {
 .dialog.ch-dialog > .dialog-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
-  margin: 0 -4px;
-  padding: 0 4px 4px;
+  overflow: hidden auto;
+  margin: -4px -8px 0;
+  padding: 4px 8px;
 }
 /* A dialog's error line in danger color (.dialog p would make it grey), and a button that can't be pressed yet looks
  * it, such as Make link before a guest has a channel. */

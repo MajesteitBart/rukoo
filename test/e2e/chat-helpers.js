@@ -174,6 +174,28 @@ async function holdRuns(app) {
 
 // The dialog on top, and a menu item by its text.
 const dialogBox = (win) => win.locator('.scrim .dialog').last();
+
+// A chat dialog's scrolling body holds its lists without a sideways scrollbar or a clipped row edge, and keeps the
+// whole 3px focus halo of its first field (`field`), which the body would otherwise cut off at the top. Hidden children
+// have no box and are left out.
+async function expectBodyFits(dialog, field) {
+  await dialog.locator(field).focus();
+  const fit = await dialog.locator('.dialog-body').evaluate((body, sel) => {
+    const box = body.getBoundingClientRect();
+    const kids = [...body.children].filter((k) => k.getClientRects().length).map((k) => k.getBoundingClientRect());
+    return {
+      sideways: body.scrollWidth - body.clientWidth,
+      overflowX: getComputedStyle(body).overflowX,
+      outside: kids.filter((k) => k.left < box.left - 0.5 || k.right > box.right + 0.5).length,
+      // Measured at the body's child holding the field: a field inside a chip box draws its halo around that box.
+      haloRoom: [...body.children].find((k) => k.contains(body.querySelector(sel))).getBoundingClientRect().top - box.top
+    };
+  }, field);
+  expect(fit.sideways, 'no sideways overflow').toBeLessThanOrEqual(0);
+  expect(fit.overflowX, 'no sideways scrolling').toBe('hidden');
+  expect(fit.outside, 'every list inside the body').toBe(0);
+  expect(fit.haloRoom, 'room for the focus halo above the first field').toBeGreaterThanOrEqual(3);
+}
 const menuItem = (win, text) => win.locator('.menu [role^="menuitem"]', { hasText: text });
 
 // The workspace menu (desktop-ui 6.17), then one of its items.
@@ -229,6 +251,7 @@ async function serverGet(server, person, wsId, route) {
 module.exports = {
   PASSWORD,
   dialogBox,
+  expectBodyFits,
   menuItem,
   workspaceMenu,
   roomMenu,
