@@ -43,6 +43,8 @@ const INLINE_EVENTS = 20;
 const FEED_DAYS = 14;
 const SWEEP_BATCH = 2000;
 const PROTOCOL = 'rukoo.workspace.v1';
+// Direct messages: how many DMs one member starts in a rolling day. A DM holds 2 to 8 people, which the Worker checks.
+const DM_DAILY = 20;
 
 const FULL = new Set(['owner', 'admin', 'member']);
 const ADMIN = new Set(['owner', 'admin']);
@@ -51,6 +53,10 @@ const ADMIN = new Set(['owner', 'admin']);
 // names its channel and its author, and at 16 KiB of text or less the keys are a real share of what a workspace
 // stores. Event and operation ids are 16 random bytes for the same reason. A conversation's key is never used again
 // after the conversation is collected, because receipts outlive it.
+//
+// A direct message is a conversation too, of kind 'dm'. Its dmSet is the participants' member keys, ascending and
+// joined with commas, and the partial unique index lets one set have one open DM. closedWhy says why a DM closed,
+// next to its archivedAt. A block is one person's, and dm_start keeps a row per DM someone started, for the daily cap.
 const SCHEMA = `
   CREATE TABLE workspace (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -75,7 +81,8 @@ const SCHEMA = `
     name TEXT NOT NULL,
     joinedAt INTEGER NOT NULL,
     endedAt INTEGER,
-    rev INTEGER NOT NULL DEFAULT 0
+    rev INTEGER NOT NULL DEFAULT 0,
+    blocksRev INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS retired (incarnation TEXT PRIMARY KEY, at INTEGER NOT NULL);
   CREATE TABLE conversation (
@@ -90,8 +97,20 @@ const SCHEMA = `
     head INTEGER NOT NULL,
     floor INTEGER NOT NULL,
     rev INTEGER NOT NULL,
-    roster INTEGER NOT NULL DEFAULT 0
+    roster INTEGER NOT NULL DEFAULT 0,
+    dmSet TEXT,
+    closedWhy TEXT
   );
+  CREATE UNIQUE INDEX conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
+  CREATE TABLE block (
+    blocker INTEGER NOT NULL,
+    blocked INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (blocker, blocked)
+  ) WITHOUT ROWID;
+  CREATE INDEX block_blocked ON block (blocked);
+  CREATE TABLE dm_start (member INTEGER NOT NULL, at INTEGER NOT NULL);
+  CREATE INDEX dm_start_member ON dm_start (member, at);
   CREATE TABLE grants (
     member INTEGER NOT NULL,
     conversation INTEGER NOT NULL,
@@ -174,10 +193,12 @@ const SCHEMA = `
 
 // Which bucket an operation draws from. fetch and send are a person's ordinary reading and writing. control holds
 // what takes access away, which must still go through while the workspace is busy, so it skips the workspace-wide
-// ceiling. Numbers are tokens held at most, and tokens added per second.
+// ceiling. dm is starting a direct message: one every ten seconds, so a retry storm is shed before it costs a query.
+// Numbers are tokens held at most, and tokens added per second.
 const LANES = {
   fetch: { burst: 60, rate: 8 },
   send: { burst: 30, rate: 3 },
+  dm: { burst: 10, rate: 0.1 },
   ticket: { burst: 6, rate: 0.2 },
   control: { burst: 60, rate: 5 }
 };
@@ -194,6 +215,7 @@ const OPERATIONS = {
   events: 'fetch',
   changes: 'fetch',
   operation: 'fetch',
+  'blocks.list': 'fetch',
   post: 'send',
   read: 'send',
   join: 'send',
@@ -204,6 +226,8 @@ const OPERATIONS = {
   'channel.rename': 'send',
   'channel.join': 'send',
   'channel.admit': 'send',
+  unblock: 'send',
+  'dm.start': 'dm',
   ticket: 'ticket',
   'member.role': 'control',
   'channel.role': 'control',
@@ -211,7 +235,10 @@ const OPERATIONS = {
   'invite.revoke': 'control',
   'channel.archive': 'control',
   'channel.remove': 'control',
-  redact: 'control'
+  'dm.leave': 'control',
+  block: 'control',
+  redact: 'control',
+  'workspace.delete': 'control'
 };
 
 // A refusal thrown inside a transaction: the transaction rolls back and the caller gets this answer.
@@ -231,6 +258,10 @@ const NO_WORKSPACE = () => new Refusal(404, 'not_found', 'There is no such works
 // The same for a channel the caller isn't in: a private channel must look like one that was never made.
 const NO_CONVERSATION = () => new Refusal(404, 'not_found', 'There is no such conversation.', { scope: 'conversation' });
 const FORBIDDEN = (message) => new Refusal(403, 'forbidden', message);
+// One answer for every DM that can't be started for a reason the caller mustn't learn: a guest, someone who isn't an
+// active member, or someone who blocked someone else in the set (WORKSPACES.md, Direct messages).
+const DM_UNAVAILABLE = () =>
+  new Refusal(403, 'dm_unavailable', "You can't start a conversation with these people.", { field: 'members' });
 
 function newId(prefix) {
   return `${prefix}_${toBase64url(randomBytes(16))}`;
@@ -277,6 +308,10 @@ export class Workspace extends DurableObject {
     // Tables are made when the workspace is: a request for an id nobody made leaves its object empty.
     this.present =
       this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace'").toArray().length > 0;
+    // The workspace's id, kept in memory too: a join still waiting on its account when the workspace is deleted needs
+    // it to give the account's reference back, and by then the database is empty.
+    this.wid = this.present ? this.#ws().wid : null;
+    if (this.present) this.#upgrade();
     // The accounts of the people in this workspace, so a request can be given its own bucket before any query runs.
     this.accounts = new Set();
     if (this.present) {
@@ -293,6 +328,28 @@ export class Workspace extends DurableObject {
     this.checking = new Set();
     // A device's keepalive is answered without waking this object, and renews nothing.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks. They
+  // are added before the object answers anything. Each step can run again, so an object stopped halfway finishes the
+  // next time it starts, and one already up to date only reads its table definitions.
+  #upgrade() {
+    const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
+    if (!has('member', 'blocksRev')) this.sql.exec('ALTER TABLE member ADD COLUMN blocksRev INTEGER NOT NULL DEFAULT 0');
+    if (!has('conversation', 'dmSet')) this.sql.exec('ALTER TABLE conversation ADD COLUMN dmSet TEXT');
+    if (!has('conversation', 'closedWhy')) this.sql.exec('ALTER TABLE conversation ADD COLUMN closedWhy TEXT');
+    this.sql.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
+      CREATE TABLE IF NOT EXISTS block (
+        blocker INTEGER NOT NULL,
+        blocked INTEGER NOT NULL,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (blocker, blocked)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS block_blocked ON block (blocked);
+      CREATE TABLE IF NOT EXISTS dm_start (member INTEGER NOT NULL, at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS dm_start_member ON dm_start (member, at);
+    `);
   }
 
   // ---- Called by the Worker ----
@@ -320,6 +377,7 @@ export class Workspace extends DurableObject {
       this.#newChannel(me, { name: 'general', visibility: 'workspace' }, now);
     });
     this.present = true;
+    this.wid = input.id;
     this.accounts.add(who.name);
     await this.ctx.storage.setAlarm(now + DAY);
     return reply(201, { workspace: await this.#workspaceOut(), me: memberOut(me) });
@@ -357,6 +415,20 @@ export class Workspace extends DurableObject {
     return this.present;
   }
 
+  // Whether an invitation secret can still be used, for a sign-up that offers it in place of an invite code. false
+  // when the workspace isn't there, or the invitation is unknown, used, withdrawn or expired, or its issuer can no
+  // longer invite (#usable).
+  async inviteOpen(secret) {
+    if (!this.present || typeof secret !== 'string') return false;
+    try {
+      this.#usable(await sha256(utf8(secret)), Date.now());
+      return this.present;
+    } catch (err) {
+      if (err instanceof Refusal) return false;
+      throw err;
+    }
+  }
+
   // What an account incarnation is here, for GET /v1/workspaces: an active member with what the list shows, a
   // former member, or nobody this workspace knows.
   async membership(incarnation) {
@@ -390,6 +462,11 @@ export class Workspace extends DurableObject {
         now,
         member.n
       );
+      // Nothing of the account's blocks is kept, in either direction. Whoever had blocked it loads their list again.
+      for (const row of this.sql.exec('DELETE FROM block WHERE blocked = ? RETURNING blocker', member.n).toArray()) {
+        this.#blocksChanged(row.blocker);
+      }
+      this.sql.exec('DELETE FROM block WHERE blocker = ?', member.n);
       this.#memberChanged(member);
       return member;
     });
@@ -400,9 +477,9 @@ export class Workspace extends DurableObject {
   // The socket a device waits on. The Worker has checked the ticket's signature and passes its nonce; the ticket
   // itself was issued here, to one session, and works once.
   async fetch(request) {
-    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket' || !this.present) {
-      return new Response(null, { status: 426 });
-    }
+    if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response(null, { status: 426 });
+    // A workspace deleted after it issued the ticket: the Worker answers its 404.
+    if (!this.present) return new Response(null, { status: 404 });
     const now = Date.now();
     const nonce = request.headers.get('x-ticket') || '';
     const active = (n) => this.sql.exec("SELECT incarnation, account FROM member WHERE n = ? AND state = 'active'", n).toArray()[0];
@@ -418,6 +495,8 @@ export class Workspace extends DurableObject {
     } finally {
       this.checking.delete(nonce);
     }
+    // The workspace may have been deleted while the account answered; its database is gone with it.
+    if (!this.present) return new Response(null, { status: 404 });
     if (!alive) {
       this.sql.exec('DELETE FROM ticket WHERE nonce = ?', nonce);
       return new Response(null, { status: 401 });
@@ -469,6 +548,7 @@ export class Workspace extends DurableObject {
         this.sql.exec('DELETE FROM invite WHERE expiresAt <= ?', now - 30 * DAY);
         this.sql.exec('DELETE FROM retired WHERE at <= ?', now - 30 * DAY);
         this.sql.exec('DELETE FROM receipt WHERE at <= ?', now - RECEIPT_TIME);
+        this.sql.exec('DELETE FROM dm_start WHERE at <= ?', now - DAY);
         this.#trimFeed(now - FEED_DAYS * DAY);
         return this.#expire(now - limits.retentionDays * DAY, now);
       });
@@ -514,7 +594,11 @@ export class Workspace extends DurableObject {
   // it has committed.
   #write(fn) {
     this.wakes = new Set();
-    const result = this.ctx.storage.transactionSync(fn);
+    // A request that was waiting when the workspace was deleted finds nothing to write to.
+    const result = this.ctx.storage.transactionSync(() => {
+      if (!this.present) throw NO_WORKSPACE();
+      return fn();
+    });
     const wakes = this.wakes;
     this.wakes = new Set();
     this.#wake(wakes);
@@ -639,6 +723,19 @@ export class Workspace extends DurableObject {
     return { c, grant };
   }
 
+  // The same for the channel routes, to which a DM is a conversation that doesn't exist.
+  #channel(me, id) {
+    const room = this.#room(me, id);
+    if (room.c.kind !== 'channel') throw NO_CONVERSATION();
+    return room;
+  }
+
+  // A member's own list of blocks changed: their devices load it again (directory.blocks in the feed).
+  #blocksChanged(n) {
+    this.sql.exec('UPDATE member SET blocksRev = ? WHERE n = ?', this.#rev(), n);
+    this.wakes.add(n);
+  }
+
   #owners() {
     return this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND role = 'owner'").one().n;
   }
@@ -744,6 +841,16 @@ export class Workspace extends DurableObject {
         return this.#write(() => this.#channelRole(me, a.conversation, a.member, a.role));
       case 'channel.remove':
         return this.#write(() => this.#leaveChannel(me, a.conversation, a.member, a.successor));
+      case 'dm.start':
+        return this.#write(() => this.#startDm(me, a.members));
+      case 'dm.leave':
+        return this.#write(() => this.#leaveDm(me, a.conversation));
+      case 'blocks.list':
+        return this.#blocks(me);
+      case 'block':
+        return this.#write(() => this.#block(me, a.member));
+      case 'unblock':
+        return this.#write(() => this.#unblock(me, a.member));
       case 'post':
         return this.#post(me, a);
       case 'redact':
@@ -758,6 +865,8 @@ export class Workspace extends DurableObject {
         return this.#changes(me, a);
       case 'ticket':
         return this.#ticket(me, who.session);
+      case 'workspace.delete':
+        return this.#deleteWorkspace(me, who);
     }
     throw new Refusal(404, 'not_found', 'There is nothing here.');
   }
@@ -828,7 +937,8 @@ export class Workspace extends DurableObject {
   }
 
   // Owners appoint owners and change anyone. Admins move people between member and guest. Whether the caller may do
-  // this at all is settled before the member is looked up, so the answer says nothing about ids they can't see.
+  // this at all is settled before the member is looked up, so the answer says nothing about ids they can't see. A
+  // guest is in no DM, so someone who becomes one leaves every open DM closed behind them.
   #setRole(me, id, role) {
     if (!ADMIN.has(me.role)) throw FORBIDDEN('Your role in this workspace does not allow this change.');
     const target = this.#member(id);
@@ -840,6 +950,10 @@ export class Workspace extends DurableObject {
       throw new Refusal(409, 'last_owner', 'A workspace needs an owner. Appoint another one first.');
     }
     this.sql.exec('UPDATE member SET role = ? WHERE n = ?', role, target.n);
+    if (role === 'guest' && target.role !== 'guest') {
+      const now = Date.now();
+      for (const c of this.#openDms(target.n)) this.#closeDm(c, 'ineligible', now);
+    }
     this.#memberChanged(target);
     return reply(200, { member: memberOut({ ...target, role }) });
   }
@@ -917,7 +1031,7 @@ export class Workspace extends DurableObject {
     // An admin who isn't in a private channel learns that an invitation leads into one, not which.
     const out = rows.map((row) => {
       const issuer = this.sql.exec("SELECT * FROM member WHERE n = ? AND state = 'active'", row.issuer).toArray()[0];
-      const rooms = this.#invited(row, issuer);
+      const rooms = this.#leadsInto(row, issuer);
       const mine = rooms.filter((c) => c.visibility === 'workspace' || this.#grant(me, c));
       return inviteOut(row, mine.map((c) => c.id), rooms.length);
     });
@@ -937,14 +1051,17 @@ export class Workspace extends DurableObject {
         .exec('SELECT COUNT(*) AS n FROM invite WHERE redeemedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?', now)
         .one().n;
       if (pending >= PENDING_INVITES) {
-        throw new Refusal(413, 'quota', 'This workspace has too many open invitations. Revoke some first.', { scope: 'workspace' });
+        throw new Refusal(413, 'quota', 'This workspace has too many open invitations. Revoke some first.', {
+          scope: 'workspace',
+          limit: 'invites'
+        });
       }
       // Each channel is kept with the grant the issuer manages it under. An issuer who loses that grant and gets
       // another later has to invite again.
       const channels = [];
       for (const id of a.channels) {
         const c = this.#conversation(id);
-        const grant = c && this.#grant(issuer, c);
+        const grant = c && c.kind === 'channel' && this.#grant(issuer, c);
         if (!grant) throw NO_CONVERSATION();
         if (grant.role !== 'manager') throw FORBIDDEN('You can only invite into channels you manage.');
         channels.push({ c: id, g: grant.id });
@@ -967,10 +1084,9 @@ export class Workspace extends DurableObject {
         row.createdAt,
         row.expiresAt
       );
-      return row;
+      return { row, ids: this.#leadsInto(row, issuer).map((c) => c.id) };
     });
-    const ids = JSON.parse(invite.channels).map((entry) => entry.c);
-    return reply(201, { invite: inviteOut(invite, ids, ids.length), secret });
+    return reply(201, { invite: inviteOut(invite.row, invite.ids, invite.ids.length), secret });
   }
 
   #revoke(me, id) {
@@ -1003,7 +1119,7 @@ export class Workspace extends DurableObject {
     return reply(200, {
       workspace: { id: ws.wid, name: ws.name },
       role: invite.role,
-      channels: this.#invited(invite, issuer).length,
+      channels: this.#leadsInto(invite, issuer).length,
       issuer: { name: issuer.name },
       expiresAt: invite.expiresAt
     });
@@ -1021,10 +1137,16 @@ export class Workspace extends DurableObject {
     if (already) return reply(200, { workspace: await this.#workspaceOut(), me: memberOut(already) });
     this.#usable(hash, Date.now());
     const most = workspaceLimits(this.env).memberships;
-    const ref = await accountObject(this.env, who.name).addWorkspace(token, this.#ws().wid, { most });
+    const ref = await accountObject(this.env, who.name).addWorkspace(token, this.wid, { most });
     if (ref.status !== 200) return reply(ref.status, { ...ref.body, scope: ref.status === 401 ? 'account' : undefined });
-    if (ref.incarnation !== who.incarnation) throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
     who = { ...who, ref: ref.ref };
+    // The workspace was deleted while the account recorded its reference: the reference goes back, and the join finds
+    // what anyone finds at a workspace that isn't there.
+    if (!this.present) {
+      await this.#giveBack(who);
+      throw NO_WORKSPACE();
+    }
+    if (ref.incarnation !== who.incarnation) throw new Refusal(401, 'unauthorized', 'Sign in again.', { scope: 'account' });
     const now = Date.now();
     let joined;
     try {
@@ -1040,20 +1162,21 @@ export class Workspace extends DurableObject {
   }
 
   // The reference of a join that was refused. Someone who was a member before keeps it as a workspace they left, so
-  // their name can still be taken off it later. Anyone else gets it back.
+  // their name can still be taken off it later. Anyone else gets it back, and so does everyone once the workspace is
+  // deleted.
   async #giveBack(who) {
-    const known = this.sql.exec('SELECT 1 FROM member WHERE incarnation = ?', who.incarnation).toArray().length > 0;
+    const known = this.present && this.sql.exec('SELECT 1 FROM member WHERE incarnation = ?', who.incarnation).toArray().length > 0;
     const account = accountObject(this.env, who.name);
     try {
-      if (known) await account.leftWorkspace(who.incarnation, this.#ws().wid, who.ref);
-      else await account.dropWorkspace(who.incarnation, this.#ws().wid, who.ref);
+      if (known) await account.leftWorkspace(who.incarnation, this.wid, who.ref);
+      else await account.dropWorkspace(who.incarnation, this.wid, who.ref);
     } catch (err) {
       console.error('Could not settle a workspace reference after a refused join:', err?.message || err);
     }
   }
 
-  // The channels an invitation leads into right now: the ones its issuer still manages under the grant they had
-  // when they invited, and that aren't archived. Joining, the preview and the list of invitations all count these.
+  // The channels an invitation names that still hold: the ones its issuer still manages under the grant they had
+  // when they invited, and that aren't archived. Joining grants these; #leadsInto adds the default channel.
   #invited(invite, issuer) {
     const rooms = [];
     for (const { c: id, g } of JSON.parse(invite.channels)) {
@@ -1061,6 +1184,23 @@ export class Workspace extends DurableObject {
       const grant = c && !c.archivedAt && issuer ? this.#grant(issuer, c) : null;
       if (grant?.role === 'manager' && grant.id === g) rooms.push(c);
     }
+    return rooms;
+  }
+
+  // The workspace's default channel: its oldest open channel that everyone can see, normally general. A member
+  // invitation leads into it as well as into the channels it names.
+  #defaultChannel() {
+    return this.sql
+      .exec("SELECT * FROM conversation WHERE kind = 'channel' AND visibility = 'workspace' AND archivedAt IS NULL ORDER BY n LIMIT 1")
+      .toArray()[0];
+  }
+
+  // Every channel a person joining with this invitation would be in right now: the invited ones and, for a member,
+  // the default channel. The preview and the list of invitations count these, so they match what joining does.
+  #leadsInto(invite, issuer) {
+    const rooms = this.#invited(invite, issuer);
+    const first = invite.role === 'member' ? this.#defaultChannel() : null;
+    if (first && !rooms.some((c) => c.id === first.id)) rooms.push(first);
     return rooms;
   }
 
@@ -1081,23 +1221,70 @@ export class Workspace extends DurableObject {
       const { invite, issuer } = this.#usable(hash, now);
       const members = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active'").one().n;
       if (members >= workspaceLimits(this.env).members) {
-        throw new Refusal(413, 'quota', 'This workspace is full.', { scope: 'workspace' });
+        throw new Refusal(413, 'quota', 'This workspace is full.', { scope: 'workspace', limit: 'members' });
       }
       const member = this.#addMember(who, invite.role, a.name, now);
       this.sql.exec('UPDATE invite SET redeemedBy = ?, redeemedAt = ? WHERE id = ?', member.n, now, invite.id);
       // A channel the issuer stopped managing since, or that was archived, is left out; the rest still holds.
       for (const c of this.#invited(invite, issuer)) this.#grantTo(member, c, 'member', issuer, now);
+      // A member also gets the workspace's default channel, its oldest open one that everyone can see (normally
+      // general), so nobody joins a team and finds themselves in no room. They let themselves in, as with a join of
+      // their own. A guest gets only what the invitation names.
+      if (invite.role === 'member') {
+        const first = this.#defaultChannel();
+        if (first && !this.#grant(member, first)) this.#grantTo(member, first, 'member', member, now);
+      }
       return { member, made: true };
     });
   }
 
+  // ---- Deleting the workspace ----
+
+  // An owner who is the workspace's only member deletes it. One transaction checks that and withdraws the open
+  // invitations; then the sockets close and the database goes. The answer carries the caller's account reference,
+  // which the Worker gives back, as #ticket's answer carries a ticket for the Worker to sign.
+  async #deleteWorkspace(me, who) {
+    const now = Date.now();
+    const owner = this.#write(() => {
+      const self = this.#member(me.id);
+      if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
+      const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
+      if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
+      this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
+      return self;
+    });
+    // From here every request, and every join still waiting on its account, finds no workspace.
+    this.present = false;
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(4003, 'deleted');
+      } catch {
+        // Already closed.
+      }
+    }
+    for (const timer of this.trailing.values()) clearTimeout(timer);
+    this.trailing.clear();
+    this.accounts.clear();
+    this.buckets.clear();
+    this.key = null;
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
+    return { status: 204, body: null, account: who.name, incarnation: who.incarnation, ref: owner.ref };
+  }
+
   // ---- Channels ----
 
-  #newChannel(me, { name, visibility }, now) {
+  // A channel and a DM each take one of the workspace's conversation slots, until retention collects them or a DM that
+  // closed before anyone wrote in it is deleted.
+  #roomForAnother() {
     const count = this.sql.exec('SELECT COUNT(*) AS n FROM conversation').one().n;
     if (count >= workspaceLimits(this.env).conversations) {
-      throw new Refusal(413, 'quota', 'This workspace has no room for another channel.', { scope: 'workspace' });
+      throw new Refusal(413, 'quota', 'This workspace has no room for another conversation.', { scope: 'workspace', limit: 'conversations' });
     }
+  }
+
+  #newChannel(me, { name, visibility }, now) {
+    this.#roomForAnother();
     // Names are unique among the channels everyone can see. A private channel's name is never compared, or the
     // refusal would tell an outsider that it exists.
     if (visibility === 'workspace' && this.#nameTaken(name, null)) {
@@ -1139,13 +1326,14 @@ export class Workspace extends DurableObject {
     return reply(201, { channel: this.#channelOut(me, c) });
   }
 
-  // The directory: every channel the caller is in, and for full members every channel the workspace can see.
+  // The directory: every channel the caller is in, and for full members every channel the workspace can see. DMs are
+  // never in it: the feed is where a member finds their own.
   #channels(me) {
     const rows = this.sql
       .exec(
         `SELECT c.*, g.role AS grantRole, (SELECT COUNT(*) FROM grants WHERE conversation = c.n) AS members
          FROM conversation c LEFT JOIN grants g ON g.conversation = c.n AND g.member = ?
-         WHERE g.member IS NOT NULL OR (? AND c.visibility = 'workspace' AND c.archivedAt IS NULL)
+         WHERE c.kind = 'channel' AND (g.member IS NOT NULL OR (? AND c.visibility = 'workspace' AND c.archivedAt IS NULL))
          ORDER BY c.name COLLATE NOCASE, c.n`,
         me.n,
         FULL.has(me.role) ? 1 : 0
@@ -1162,7 +1350,7 @@ export class Workspace extends DurableObject {
   }
 
   #renameChannel(me, id, name) {
-    const { c, grant } = this.#room(me, id);
+    const { c, grant } = this.#channel(me, id);
     if (grant.role !== 'manager') throw FORBIDDEN('Only a channel manager renames it.');
     if (c.archivedAt) throw new Refusal(409, 'archived', 'This channel is archived.', { scope: 'conversation' });
     if (c.visibility === 'workspace' && this.#nameTaken(name, c.n)) {
@@ -1182,7 +1370,8 @@ export class Workspace extends DurableObject {
   #archive(me, id) {
     const c = this.#conversation(id);
     const grant = c && this.#grant(me, c);
-    const visible = c && (grant || (FULL.has(me.role) && c.visibility === 'workspace'));
+    // A DM is no channel: without this, an admin in one could archive it here.
+    const visible = c && c.kind === 'channel' && (grant || (FULL.has(me.role) && c.visibility === 'workspace'));
     if (!visible) throw NO_CONVERSATION();
     if (!(grant?.role === 'manager' || ADMIN.has(me.role))) throw FORBIDDEN('Only a channel manager or an admin archives it.');
     if (!c.archivedAt) this.#archiveChannel(c, me, Date.now());
@@ -1200,8 +1389,9 @@ export class Workspace extends DurableObject {
   // A full member lets themselves into a channel the workspace can see. To a guest such a channel doesn't exist.
   #joinChannel(me, id) {
     const c = this.#conversation(id);
-    if (!c || c.visibility !== 'workspace' || !FULL.has(me.role)) {
-      if (c && this.#grant(me, c)) return reply(200, { channel: this.#channelOut(me, c) });
+    if (!c || c.kind !== 'channel') throw NO_CONVERSATION();
+    if (c.visibility !== 'workspace' || !FULL.has(me.role)) {
+      if (this.#grant(me, c)) return reply(200, { channel: this.#channelOut(me, c) });
       throw NO_CONVERSATION();
     }
     if (!this.#grant(me, c)) {
@@ -1213,7 +1403,7 @@ export class Workspace extends DurableObject {
 
   #channelMembers(me, id) {
     const c = this.#conversation(id);
-    const visible = c && (this.#grant(me, c) || (FULL.has(me.role) && c.visibility === 'workspace'));
+    const visible = c && c.kind === 'channel' && (this.#grant(me, c) || (FULL.has(me.role) && c.visibility === 'workspace'));
     if (!visible) throw NO_CONVERSATION();
     const rows = this.sql
       .exec('SELECT m.id AS member, g.role FROM grants g JOIN member m ON m.n = g.member WHERE g.conversation = ? ORDER BY m.n', c.n)
@@ -1224,7 +1414,7 @@ export class Workspace extends DurableObject {
   // A manager lets a member into their channel. For a guest the manager must also be an admin, who signs off on
   // letting someone from outside the team in. Two different people signing isn't built yet.
   #admitToChannel(me, id, memberId) {
-    const { c, grant } = this.#room(me, id);
+    const { c, grant } = this.#channel(me, id);
     if (grant.role !== 'manager') throw FORBIDDEN('Only a channel manager adds people.');
     if (c.archivedAt) throw new Refusal(409, 'archived', 'This channel is archived.', { scope: 'conversation' });
     const target = this.#member(memberId);
@@ -1237,7 +1427,7 @@ export class Workspace extends DurableObject {
   }
 
   #channelRole(me, id, memberId, role) {
-    const { c, grant } = this.#room(me, id);
+    const { c, grant } = this.#channel(me, id);
     if (grant.role !== 'manager') throw FORBIDDEN('Only a channel manager changes roles.');
     const target = this.#member(memberId);
     const theirs = target && this.#grant(target, c);
@@ -1273,7 +1463,7 @@ export class Workspace extends DurableObject {
   // Leaving a channel, or a manager taking someone out. A channel's last manager names who takes over before they
   // leave; the last person in a channel archives it by leaving.
   #leaveChannel(me, id, memberId, successorId) {
-    const { c, grant } = this.#room(me, id);
+    const { c, grant } = this.#channel(me, id);
     const now = Date.now();
     const target = memberId === 'me' ? me : this.#member(memberId);
     const theirs = target && this.#grant(target, c);
@@ -1295,9 +1485,10 @@ export class Workspace extends DurableObject {
   }
 
   // Lets a member into a conversation. The join is an event in the conversation's own order: its sequence is where the
-  // grant starts, and where its read position starts.
-  #grantTo(member, c, role, by, now) {
-    const { seq } = this.#append(c, 'member.joined', by, now, { data: { member: member.id } });
+  // grant starts, and where its read position starts. A DM's people all start at its dm.started event, given as seq,
+  // so it opens with one marker instead of one per person.
+  #grantTo(member, c, role, by, now, seq = null) {
+    if (seq === null) seq = this.#append(c, 'member.joined', by, now, { data: { member: member.id } }).seq;
     this.sql.exec(
       'INSERT INTO grants (member, conversation, id, role, startSeq, readSeq, rev) VALUES (?, ?, ?, ?, ?, ?, ?)',
       member.n,
@@ -1329,11 +1520,195 @@ export class Workspace extends DurableObject {
     this.sql.exec('UPDATE conversation SET roster = ? WHERE n = ?', this.#rev(), c.n);
     this.#wakeRoom(c);
     this.wakes.add(member.n);
+    const left = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n;
+    // A DM's set is fixed: one person going closes it for the rest. A closed one that nobody holds any more goes.
+    if (c.kind === 'dm') {
+      if (!c.archivedAt) this.#closeDm(c, 'left', now);
+      else if (left === 0) this.#dropDm(c, now);
+      return;
+    }
     // A channel nobody is in can't be reached by anyone, so it is archived, whichever way its last member went.
     // Retention then collects it and its place is free again.
-    if (!c.archivedAt && this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n === 0) {
-      this.#archiveChannel(c, by, now);
+    if (!c.archivedAt && left === 0) this.#archiveChannel(c, by, now);
+  }
+
+  // ---- Direct messages ----
+
+  // The member keys of a DM's people, ascending and joined: what makes one set one DM.
+  #dmSet(ns) {
+    return [...ns].sort((a, b) => a - b).join(',');
+  }
+
+  // Starts a DM with the people named, or answers the open DM their set already has. The refusals come in a fixed
+  // order, because the order is what keeps them from telling the caller more than their own blocks: everything a
+  // caller mustn't tell apart gets one answer first, then the open DM, so a retry never meets a limit, then the
+  // caller's own blocks, and only then the limits.
+  #startDm(me, ids) {
+    if (ids.includes(me.id)) throw new Refusal(400, 'invalid', 'members lists the other people, not you.', { field: 'members' });
+    const rows = [me];
+    for (const id of ids) {
+      const member = this.#member(id);
+      if (!member) throw DM_UNAVAILABLE();
+      rows.push(member);
     }
+    if (rows.some((row) => !FULL.has(row.role))) throw DM_UNAVAILABLE();
+    rows.sort((a, b) => a.n - b.n);
+    const set = this.#dmSet(rows.map((row) => row.n));
+    const open = this.sql.exec('SELECT * FROM conversation WHERE dmSet = ? AND archivedAt IS NULL', set).toArray()[0];
+    if (open) return reply(200, { dm: this.#roomOut(me, open.id, null) });
+
+    const ns = rows.map((row) => row.n);
+    const marks = ns.map(() => '?').join(', ');
+    const blocks = this.sql.exec(`SELECT blocker, blocked FROM block WHERE blocker IN (${marks}) AND blocked IN (${marks})`, ...ns, ...ns).toArray();
+    const mine = rows.find((row) => blocks.some((b) => b.blocker === me.n && b.blocked === row.n));
+    if (mine) {
+      throw new Refusal(409, 'blocked', 'You blocked someone in this conversation. Unblock them first.', { member: mine.id });
+    }
+    if (blocks.length > 0) throw DM_UNAVAILABLE();
+
+    const now = Date.now();
+    const started = this.sql
+      .exec('SELECT COUNT(*) AS n, MIN(at) AS oldest FROM dm_start WHERE member = ? AND at > ?', me.n, now - DAY)
+      .one();
+    if (started.n >= DM_DAILY) {
+      const wait = Math.max(1, Math.ceil((started.oldest + DAY - now) / 1000));
+      throw new Refusal(429, 'rate_limited', 'You started many conversations today. Try again later.', { limit: 'dailyDms' }, { 'retry-after': String(wait) });
+    }
+    const c = this.#newDm(me, rows, now);
+    return reply(201, { dm: this.#roomOut(me, c.id, null) });
+  }
+
+  // Opens a DM at once: the conversation, one dm.started event, and a grant for each person that starts there.
+  #newDm(me, rows, now) {
+    this.#roomForAnother();
+    const id = newId('c');
+    this.sql.exec(
+      `INSERT INTO conversation (id, kind, visibility, name, createdBy, createdAt, head, floor, rev, dmSet)
+       VALUES (?, 'dm', 'dm', '', ?, ?, 0, 1, ?, ?)`,
+      id,
+      me.n,
+      now,
+      this.#rev(),
+      this.#dmSet(rows.map((row) => row.n))
+    );
+    const c = this.#conversation(id);
+    const { seq } = this.#append(c, 'dm.started', me, now, { data: { members: rows.map((row) => row.id) } });
+    for (const member of rows) this.#grantTo(member, c, 'member', me, now, seq);
+    this.sql.exec('INSERT INTO dm_start (member, at) VALUES (?, ?)', me.n, now);
+    return c;
+  }
+
+  // Closes a DM for good, saying why: left, ineligible or closed. Those who still hold it keep reading it. A DM nobody
+  // wrote in, or that nobody holds any more, has nothing worth keeping and is deleted instead.
+  #closeDm(c, why, now) {
+    const fresh = this.#conversation(c.id);
+    if (!fresh || fresh.archivedAt) return;
+    const written = this.sql.exec("SELECT 1 FROM event WHERE conversation = ? AND kind = 'message.posted' LIMIT 1", fresh.n).toArray().length > 0;
+    const held = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', fresh.n).one().n;
+    if (!written || held === 0) {
+      this.#dropDm(fresh, now);
+    } else {
+      this.sql.exec('UPDATE conversation SET archivedAt = ?, closedWhy = ?, rev = ? WHERE n = ?', now, why, this.#rev(), fresh.n);
+      this.#wakeRoom(fresh);
+    }
+    c.archivedAt = now;
+  }
+
+  // Deletes a DM and everything in it. Whoever still held it gets an eviction, and its slot is free at once.
+  #dropDm(c, now) {
+    for (const row of this.sql.exec('SELECT member FROM grants WHERE conversation = ?', c.n).toArray()) {
+      this.sql.exec('INSERT OR REPLACE INTO evicted (member, conversation, rev, at) VALUES (?, ?, ?, ?)', row.member, c.id, this.#rev(), now);
+      this.wakes.add(row.member);
+    }
+    const bytes = this.sql.exec('SELECT COALESCE(SUM(size), 0) AS n FROM event WHERE conversation = ?', c.n).one().n;
+    this.sql.exec('UPDATE workspace SET bytes = MAX(0, bytes - ?) WHERE id = 1', bytes);
+    this.sql.exec('DELETE FROM grants WHERE conversation = ?', c.n);
+    this.sql.exec('DELETE FROM mention WHERE conversation = ?', c.n);
+    this.sql.exec('DELETE FROM removal WHERE conversation = ?', c.n);
+    this.sql.exec('DELETE FROM event WHERE conversation = ?', c.n);
+    this.sql.exec('DELETE FROM conversation WHERE n = ?', c.n);
+  }
+
+  // The open DMs member n is in.
+  #openDms(n) {
+    return this.sql
+      .exec(
+        `SELECT c.* FROM grants g JOIN conversation c ON c.n = g.conversation
+         WHERE g.member = ? AND c.kind = 'dm' AND c.archivedAt IS NULL ORDER BY c.n`,
+        n
+      )
+      .toArray();
+  }
+
+  // Leaving a DM closes it for the others. Leaving one that is closed already only takes it off the caller's list.
+  #leaveDm(me, id) {
+    const { c } = this.#room(me, id);
+    if (c.kind !== 'dm') throw NO_CONVERSATION();
+    this.#endGrant(me, c, me, Date.now());
+    return reply(204);
+  }
+
+  // ---- Blocks ----
+
+  // The active member an id names, as the caller may see them: a full member sees everyone who is active, a guest the
+  // people they share a room with. Anyone else is undefined, like an id nobody has.
+  #visibleMember(me, id) {
+    if (FULL.has(me.role)) return this.#member(id);
+    return this.sql
+      .exec(
+        `SELECT * FROM member WHERE id = ? AND state = 'active' AND n IN (
+           SELECT member FROM grants WHERE conversation IN (SELECT conversation FROM grants WHERE member = ?)
+         )`,
+        id,
+        me.n
+      )
+      .toArray()[0];
+  }
+
+  // The caller's own blocks, newest first. Nobody else's list ever names them.
+  #blocks(me) {
+    const rows = this.sql
+      .exec('SELECT m.id AS member, b.at FROM block b JOIN member m ON m.n = b.blocked WHERE b.blocker = ? ORDER BY b.at DESC, b.blocked DESC', me.n)
+      .toArray();
+    return reply(200, { blocks: rows.map((row) => ({ member: row.member, at: row.at })) });
+  }
+
+  // A block closes every open DM the two are in, and keeps them out of new ones. The blocked person's mentions of the
+  // blocker stop counting, those already made too. Their messages in shared channels stay, and nobody is told.
+  #block(me, id) {
+    if (id === me.id) throw new Refusal(400, 'invalid', 'You cannot block yourself.', { field: 'member' });
+    const target = this.#visibleMember(me, id);
+    if (!target) throw new Refusal(404, 'not_found', 'There is no member with this id.');
+    const old = this.sql.exec('SELECT at FROM block WHERE blocker = ? AND blocked = ?', me.n, target.n).toArray()[0];
+    if (old) return reply(200, { block: { member: target.id, at: old.at } });
+    const now = Date.now();
+    this.sql.exec('INSERT INTO block (blocker, blocked, at) VALUES (?, ?, ?)', me.n, target.n, now);
+    for (const c of this.#openDms(me.n)) {
+      if (c.dmSet.split(',').map(Number).includes(target.n)) this.#closeDm(c, 'closed', now);
+    }
+    const rooms = this.sql
+      .exec(
+        `DELETE FROM mention WHERE member = ? AND EXISTS (
+           SELECT 1 FROM event e WHERE e.conversation = mention.conversation AND e.seq = mention.seq AND e.actor = ?
+         ) RETURNING conversation`,
+        me.n,
+        target.n
+      )
+      .toArray();
+    // Each room that lost a mention comes back in the blocker's feed with its count put right.
+    for (const conversation of new Set(rooms.map((row) => row.conversation))) {
+      this.sql.exec('UPDATE grants SET rev = ? WHERE member = ? AND conversation = ?', this.#rev(), me.n, conversation);
+    }
+    this.#blocksChanged(me.n);
+    return reply(201, { block: { member: target.id, at: now } });
+  }
+
+  // Unblocking takes the block away and nothing else: a closed DM stays closed, and mentions that went stay gone.
+  #unblock(me, id) {
+    const target = this.sql.exec('SELECT n FROM member WHERE id = ?', id).toArray()[0];
+    const gone = target && this.sql.exec('DELETE FROM block WHERE blocker = ? AND blocked = ? RETURNING at', me.n, target.n).toArray().length > 0;
+    if (gone) this.#blocksChanged(me.n);
+    return reply(204);
   }
 
   // ---- Messages ----
@@ -1401,10 +1776,12 @@ export class Workspace extends DurableObject {
         throw new Refusal(409, 'submission_expired', 'This message waited too long to be sent. Check whether it arrived.');
       }
       if (a.opTime > now + OPERATION_AHEAD) throw new Refusal(400, 'invalid', "operationId is ahead of the server's time.", { field: 'operationId' });
-      if (c.archivedAt) throw new Refusal(409, 'archived', 'This channel is archived.', { scope: 'conversation' });
+      if (c.archivedAt) {
+        throw new Refusal(409, 'archived', c.kind === 'dm' ? 'This conversation is closed.' : 'This channel is archived.', { scope: 'conversation' });
+      }
       const limits = workspaceLimits(this.env);
       if (this.#ws().bytes + a.size > limits.contentBytes) {
-        throw new Refusal(413, 'quota', 'This workspace is full. An admin can lower retention or remove content.', { scope: 'workspace' });
+        throw new Refusal(413, 'quota', 'This workspace is full. An admin can lower retention or remove content.', { scope: 'workspace', limit: 'bytes' });
       }
       const mentioned = [];
       for (const mention of a.mentions) {
@@ -1432,8 +1809,10 @@ export class Workspace extends DurableObject {
         op: a.op,
         opHash: hash
       });
+      // Someone who blocked the sender isn't called by their mentions. The mention stays in the text, as written.
+      const blockers = new Set(this.sql.exec('SELECT blocker FROM block WHERE blocked = ?', me.n).toArray().map((row) => row.blocker));
       for (const n of new Set(mentioned)) {
-        if (n !== me.n) this.sql.exec('INSERT INTO mention (member, conversation, seq) VALUES (?, ?, ?)', n, c.n, seq);
+        if (n !== me.n && !blockers.has(n)) this.sql.exec('INSERT INTO mention (member, conversation, seq) VALUES (?, ?, ?)', n, c.n, seq);
       }
       this.sql.exec('UPDATE workspace SET bytes = bytes + ? WHERE id = 1', a.size);
       // Whoever posts has the conversation in front of them, so it is read up to their own message.
@@ -1561,11 +1940,12 @@ export class Workspace extends DurableObject {
       changes: page.filter((row) => !row.gone).map((row) => this.#roomOut(me, row.id, cursor ? base : null)),
       evictions: page.filter((row) => row.gone).map((row) => row.id),
       inlineEvents: [],
-      // Whether to load the member list and the channel directory again. A guest has no channel directory, and
-      // hears of members only when someone they share a room with changed, came or went.
+      // Whether to load the member list, the channel directory and the caller's own blocks again. A guest has no
+      // channel directory, and hears of members only when someone they share a room with changed, came or went.
       directory: {
         members: !cursor || (full ? ws.membersRev > base : this.#peersChanged(me, base)),
-        channels: full && (!cursor || ws.channelsRev > base)
+        channels: full && (!cursor || ws.channelsRev > base),
+        blocks: !cursor || me.blocksRev > base
       },
       more
     };
@@ -1610,7 +1990,9 @@ export class Workspace extends DurableObject {
   }
 
   // One room as the feed shows it. after is the cursor's base, or null on the first page of a pass from the start,
-  // which builds the room's cache from history that already leaves out what was removed.
+  // which builds the room's cache from history that already leaves out what was removed. members is how many people
+  // hold the room now, lastAt when its newest event happened, or null once retention took that event. A DM has no
+  // name: it names its people instead, who started it, and why it closed.
   #roomOut(me, id, after) {
     const c = this.#conversation(id);
     const grant = this.#grant(me, c);
@@ -1631,22 +2013,38 @@ export class Workspace extends DurableObject {
       after === null
         ? []
         : this.sql.exec('SELECT id FROM removal WHERE conversation = ? AND rev > ? ORDER BY rev LIMIT ?', c.n, after, REMOVED_IDS + 1).toArray();
+    const members = this.sql.exec('SELECT COUNT(*) AS n FROM grants WHERE conversation = ?', c.n).one().n;
+    const last = this.sql.exec('SELECT at FROM event WHERE conversation = ? AND seq = ?', c.n, c.head).toArray()[0];
+    const dm = c.kind === 'dm';
+    const people = dm ? this.#dmPeople(c) : null;
     return {
       conversation: c.id,
       kind: c.kind,
-      name: c.name,
+      name: dm ? null : c.name,
       visibility: c.visibility,
       archived: c.archivedAt !== null,
+      ...(dm ? { participants: people.ids, startedBy: people.startedBy, closedReason: c.closedWhy ?? null } : {}),
       grant: grant.id,
       role: grant.role,
+      members,
       head: c.head,
       floor: c.floor,
+      lastAt: last ? last.at : null,
       read: grant.readSeq,
       unread,
       mentions,
       removed: removed.slice(0, REMOVED_IDS).map((row) => eventId(row.id)),
       removedMore: removed.length > REMOVED_IDS
     };
+  }
+
+  // A DM's people as member ids, in the order of their keys, and the id of whoever started it. Member rows outlive a
+  // membership, so someone who left or was deleted is still named.
+  #dmPeople(c) {
+    const ns = c.dmSet.split(',').map(Number);
+    const rows = this.sql.exec(`SELECT n, id FROM member WHERE n IN (${ns.map(() => '?').join(', ')}) ORDER BY n`, ...ns).toArray();
+    const starter = this.sql.exec('SELECT id FROM member WHERE n = ?', c.createdBy).toArray()[0];
+    return { ids: rows.map((row) => row.id), startedBy: starter ? starter.id : null };
   }
 
   // A socket ticket: 30 seconds, one use, for the session that asked. The Worker signs it (workspaces.js).

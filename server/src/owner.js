@@ -111,7 +111,7 @@ async function checkKey(profile) {
 export async function putBooking(request, env, url) {
   const { account, token, auth } = await signedIn(request, env);
   const body = await input.readJson(request, input.PUBLISH_BODY_MAX);
-  const data = input.bookingPut(body, Date.now(), blockedHandles(env));
+  const data = input.bookingPut(body, Date.now(), blockedHandles(env), auth.handle || null);
   await checkKey(data.profile);
   if (data.reclaim) data.reclaim = toBase64url(await sha256(data.reclaim));
   const times = bookingTimes(env);
@@ -191,7 +191,7 @@ export async function checkHandle(request, env, raw) {
   }
   handle = Array.from(handle).slice(0, 64).join('');
   const answer = (available, reason) => json(200, { handle, available, reason });
-  const problem = input.handleCheck(handle, blockedHandles(env));
+  const problem = input.handleCheck(handle, blockedHandles(env), handle === auth.handle);
   if (problem) return answer(false, problem);
   if (handle === auth.handle) return answer(false, 'yours');
   const claim = await bookingObject(env, handle).claim(auth.name);

@@ -276,15 +276,21 @@ export class Account extends DurableObject {
     });
   }
 
-  // The workspaces this account has a reference to and hasn't left. stale says which are old enough to give back when
-  // their workspace doesn't know the account.
+  // The workspaces this account has a reference to and hasn't left, and, marked former, the ones it made and left:
+  // those count against the limit on making workspaces until the workspace is gone. stale says which are old enough to
+  // give back when their workspace doesn't know the account.
   async workspaces(token) {
     return this.#signedIn(token, (session, now) => {
       const identity = this.#identity();
       const list = this.sql
-        .exec('SELECT id, version, addedAt FROM workspaces WHERE former = 0 ORDER BY addedAt, id')
+        .exec('SELECT id, version, addedAt, former FROM workspaces WHERE former = 0 OR created = 1 ORDER BY addedAt, id')
         .toArray()
-        .map((row) => ({ id: row.id, version: row.version, stale: now - row.addedAt > REFERENCE_GRACE }));
+        .map((row) => ({
+          id: row.id,
+          version: row.version,
+          stale: now - row.addedAt > REFERENCE_GRACE,
+          former: row.former === 1
+        }));
       return { status: 200, body: null, ...identity, workspaces: list };
     });
   }

@@ -3,15 +3,17 @@
 // do what. Making a workspace and listing an account's workspaces happen here, because they span the account, the
 // registry and the workspace.
 
-import { fromBase64url, hmac, randomBytes, sameBytes, toBase64url, utf8 } from './bytes.js';
+import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import {
   ACCOUNT_NAME,
   accountObject,
   limitRate,
   registryObject,
+  signups,
   workspaceLimits,
   workspaceObject,
   workspaceOrigin,
+  workspaceSignups,
   workspacesOn
 } from './config.js';
 import { json, send } from './http.js';
@@ -38,6 +40,8 @@ const NAME_LENGTH = 80;
 const TEXT_BYTES = 16384;
 const MENTIONS = 32;
 const INVITE_CHANNELS = 20;
+// The other people in a DM: a DM holds 2 to 8, the one starting it included.
+const DM_OTHERS = 7;
 
 const encoder = new TextEncoder();
 
@@ -55,6 +59,8 @@ export async function workspaceInfo(env, url) {
     // files, runner, mcp, protected-recovery and push-wake are named here once this server has them.
     capabilities: [],
     recovery: 'basic',
+    // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite).
+    inviteSignups: inviteSignups(env),
     limits: {
       workspacesPerAccount: limits.perAccount,
       membershipsPerAccount: limits.memberships,
@@ -68,6 +74,26 @@ export async function workspaceInfo(env, url) {
     // which includes messages that were removed since.
     retention: { contentDays: limits.retentionDays, feedDays: 14, platformHistoryDays: 30 }
   };
+}
+
+// A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
+// code, with team chat on and WORKSPACE_SIGNUPS not off. Without the registry nothing would hold an invitation to one
+// account, so none counts.
+export function inviteSignups(env) {
+  return workspacesOn(env) && signups(env) === 'invite' && workspaceSignups(env) && Boolean(env.REGISTRY);
+}
+
+// For POST /v1/signup without a good invite code: the code under which the registry counts a sign-up with this
+// workspace invitation, or null when it can't be used. The registry lets each such code make one account. Any shape
+// that isn't { workspace, invite } is null too, so a sign-up learns only what a wrong invite code tells it.
+export async function signupInvite(env, value) {
+  if (!inviteSignups(env) || typeof value !== 'object' || value === null) return null;
+  const { workspace, invite } = value;
+  if (typeof workspace !== 'string' || !WORKSPACE_ID.test(workspace) || typeof invite !== 'string') return null;
+  const bytes = fromBase64url(invite);
+  if (!bytes || bytes.length !== 32) return null;
+  if (!(await workspaceObject(env, workspace).inviteOpen(invite))) return null;
+  return `workspace:${toBase64url(await sha256(utf8(invite)))}`;
 }
 
 export async function workspaces(request, env, url) {
@@ -99,6 +125,8 @@ export async function workspaces(request, env, url) {
   switch (route) {
     case 'GET /':
       return ask('workspace.get');
+    case 'DELETE /':
+      return remove(env, id, await stub.request(token, 'workspace.delete'));
     case 'POST /join': {
       await limitRate(request, env.RATE_LIMITER);
       const b = await body();
@@ -124,6 +152,12 @@ export async function workspaces(request, env, url) {
       return ask('changes', changesQuery(url));
     case 'POST /socket-ticket':
       return ticket(env, id, await stub.request(token, 'ticket'));
+    case 'POST /dms':
+      return ask('dm.start', { members: dmMembers((await body()).members) });
+    case 'GET /blocks':
+      return ask('blocks.list');
+    case 'POST /blocks':
+      return ask('block', { member: match((await body()).member, MEMBER_ID, 'member') });
   }
 
   const [area, a, b, c, d] = rest;
@@ -162,6 +196,12 @@ export async function workspaces(request, env, url) {
       }
     }
   }
+  if (area === 'dms' && rest.length === 3 && b === 'leave' && method === 'POST') {
+    return ask('dm.leave', { conversation: match(a, CONVERSATION_ID) });
+  }
+  if (area === 'blocks' && rest.length === 2 && method === 'DELETE') {
+    return ask('unblock', { member: match(a, MEMBER_ID) });
+  }
   if (area === 'conversations' && rest.length >= 3) {
     const conversation = match(a, CONVERSATION_ID);
     if (rest.length === 3 && b === 'messages' && method === 'POST') return ask('post', message(conversation, await body()));
@@ -190,12 +230,17 @@ function scoped(result) {
 // workspace says whether it is. A reference old enough to be settled is put right here: one whose workspace doesn't
 // know the account, left by a join that failed, is given back, and one whose workspace knows it as a former member
 // is marked as left. Both name the version they saw, so a join that recorded the reference again meanwhile keeps it.
+// A workspace the account made and left is never listed; its reference goes once the workspace is gone (settleMade).
 async function list(request, env) {
   const { stub, token } = session(request, env);
   const mine = await stub.workspaces(token);
   if (mine.status !== 200) return send(scoped(mine));
   const found = await Promise.all(
     mine.workspaces.map(async (ref) => {
+      if (ref.former) {
+        await settleMade(env, stub, mine.incarnation, ref);
+        return null;
+      }
       const here = await workspaceObject(env, ref.id).membership(mine.incarnation);
       if (here.state === 'active') return { id: here.id, name: here.name, role: here.role };
       if (ref.stale && here.state === 'former') await stub.leftWorkspace(mine.incarnation, ref.id, ref.version);
@@ -204,6 +249,18 @@ async function list(request, env) {
     })
   );
   return json(200, { workspaces: found.filter(Boolean) });
+}
+
+// A workspace the account made and then left keeps its reference, so the workspace hears when the account is deleted,
+// and the reference counts against the limit on making workspaces. Once the workspace no longer knows the account, as
+// after someone else deleted it, the reference is given back. A failure leaves it for the next time.
+async function settleMade(env, stub, incarnation, ref) {
+  try {
+    const here = await workspaceObject(env, ref.id).membership(incarnation);
+    if (here.state === 'none') await stub.dropWorkspace(incarnation, ref.id, ref.version);
+  } catch (err) {
+    console.error('Could not settle the reference of a workspace this account made:', err?.message || err);
+  }
 }
 
 // Makes a workspace. Its place under MAX_WORKSPACES and the account's reference come first. They are given back
@@ -228,7 +285,18 @@ async function create(request, env) {
   };
   let ref;
   try {
-    ref = await stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
+    const add = () => stub.addWorkspace(token, fields.id, { created: true, max: limits.perAccount, most: limits.memberships });
+    ref = await add();
+    // At the limit, a workspace the account made, left and someone else deleted may still count. Its reference is
+    // settled, and the account tries once more.
+    if (ref.status === 403 && ref.body?.error === 'workspace_limit') {
+      const mine = await stub.workspaces(token);
+      if (mine.status === 200) {
+        const made = mine.workspaces.filter((r) => r.former);
+        await Promise.all(made.map((r) => settleMade(env, stub, mine.incarnation, r)));
+        if (made.length) ref = await add();
+      }
+    }
   } catch (err) {
     await release();
     throw err;
@@ -268,6 +336,27 @@ async function create(request, env) {
   }
   if (result.status === 201) await confirm();
   else await undo();
+  return send(result);
+}
+
+// A workspace its owner deleted: the owner's account gives its reference back, which frees the slot the account's
+// limit on making workspaces counts, and the registry frees its place under MAX_WORKSPACES. Either can fail without
+// undoing the delete: the account's list settles the reference the next time it asks, and the registry asks the
+// workspace about its place once the server is full.
+async function remove(env, id, result) {
+  if (result.status === 204) {
+    try {
+      await accountObject(env, result.account).dropWorkspace(result.incarnation, id, result.ref);
+    } catch (err) {
+      console.error('Could not give back the reference of a deleted workspace:', err?.message || err);
+    }
+    const registry = registryObject(env);
+    try {
+      if (registry) await registry.forgetWorkspace(id);
+    } catch (err) {
+      console.error('Could not free the place of a deleted workspace:', err?.message || err);
+    }
+  }
   return send(result);
 }
 
@@ -314,6 +403,7 @@ async function socket(request, env, id) {
     })
   );
   if (response.status === 101) return response;
+  if (response.status === 404) throw new HttpError(404, 'not_found', 'There is no such workspace.', {}, { scope: 'workspace' });
   if (response.status === 429) {
     throw new HttpError(429, 'rate_limited', 'This workspace has too many open connections.', { 'retry-after': '60' }, { scope: 'workspace' });
   }
@@ -394,6 +484,19 @@ function invite(body) {
     channels: [...new Set(channels.map((id) => match(id, CONVERSATION_ID, 'channels')))],
     expiresIn
   };
+}
+
+// The people a DM is started with, besides the caller: 1 to 7 member ids, each once. Who they are, and whether the
+// caller is among them, is the workspace's to check.
+function dmMembers(list) {
+  const ok =
+    Array.isArray(list) &&
+    list.length >= 1 &&
+    list.length <= DM_OTHERS &&
+    list.every((id) => typeof id === 'string' && MEMBER_ID.test(id)) &&
+    new Set(list).size === list.length;
+  if (!ok) throw invalid(`members must be a list of 1 to ${DM_OTHERS} member ids, each named once.`, 'members');
+  return list;
 }
 
 // The 16 bytes and the time of a UUIDv7, which a device makes once per message and sends again on every retry.

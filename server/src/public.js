@@ -47,9 +47,10 @@ export function links(env, url, handle) {
   };
 }
 
-// The handle in a path, or a 404 that looks the same for unknown, reserved and blocked handles.
+// The handle in a path, or a 404 that looks the same for unknown, reserved and blocked handles. A handle reserved
+// after it could be claimed still reaches the page someone made under it.
 export function pathHandle(env, text) {
-  if (input.handleCheck(text, blockedHandles(env))) throw notFound();
+  if (input.handleCheck(text, blockedHandles(env), true)) throw notFound();
   return text;
 }
 

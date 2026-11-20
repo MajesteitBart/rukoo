@@ -3,6 +3,7 @@
 
 import { createExecutionContext, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import { toBase64url } from '../src/bytes.js';
 import worker from '../src/index.js';
 import { call, random, signup, withVars } from './helpers.js';
 
@@ -52,8 +53,66 @@ export async function newMember(ws, displayName = 'Mila Member', options = {}) {
   return { person, me: joined.body.me };
 }
 
+// A guest who joined with an invitation into channels: { person, me }.
+export function guest(ws, displayName = 'Gita Guest', channels = []) {
+  return newMember(ws, displayName, { role: 'guest', channels });
+}
+
 export async function channels(person, id) {
   return (await api('GET', `/v1/workspaces/${id}/channels`, { token: person.token })).body.channels;
+}
+
+// ---- Direct messages and blocks ----
+
+// Starts a DM with members, a list of member ids of the other people. Answers as the route does.
+export function startDm(person, id, members) {
+  return api('POST', `/v1/workspaces/${id}/dms`, { token: person.token, body: { members } });
+}
+
+export function leaveDm(person, id, conversation) {
+  return api('POST', `/v1/workspaces/${id}/dms/${conversation}/leave`, { token: person.token });
+}
+
+export function block(person, id, member) {
+  return api('POST', `/v1/workspaces/${id}/blocks`, { token: person.token, body: { member } });
+}
+
+export function unblock(person, id, member) {
+  return api('DELETE', `/v1/workspaces/${id}/blocks/${member}`, { token: person.token });
+}
+
+export function blocks(person, id) {
+  return api('GET', `/v1/workspaces/${id}/blocks`, { token: person.token });
+}
+
+// Adds count active full members straight to the database, for limits that need many people: their ids, which a DM
+// can name. None of them can sign in.
+export async function fillers(id, count) {
+  return runInDurableObject(workspaceStub(id), (instance, state) => {
+    const ids = [];
+    for (let i = 0; i < count; i++) {
+      const member = `u_${toBase64url(random(16))}`;
+      state.storage.sql.exec(
+        "INSERT INTO member (id, incarnation, account, role, state, name, joinedAt) VALUES (?, ?, ?, 'member', 'active', 'Filler', 0)",
+        member,
+        `filler-${member}`,
+        `filler-${member}`
+      );
+      ids.push(member);
+    }
+    return ids;
+  });
+}
+
+// Lets a person start as many DMs at once as a test needs. The dm lane sheds starts in memory, before the daily cap a
+// test means to reach, so it is opened here instead of waiting ten seconds a start.
+export async function openDmLane(person, id) {
+  const name = person.token.slice(0, person.token.indexOf('.'));
+  await runInDurableObject(workspaceStub(id), (instance) => {
+    const mine = instance.buckets.get(name) ?? {};
+    mine.dm = { take: () => 0 };
+    instance.buckets.set(name, mine);
+  });
 }
 
 // What a device knows when it writes a message: the grant it holds in the conversation and the workspace's

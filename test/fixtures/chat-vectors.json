@@ -1,0 +1,1372 @@
+{
+  "about": "Shared test vectors for team chat, read by desktop (test/chat-vectors.test.js and the chat-wire and chat-text tests) and Android (Utf8OffsetsTest, InviteLinkTest, Uuid7Test) where the file is. Every ID, secret and name is made up. mentions: text with the same mentions as UTF-16 code unit ranges (utf16, what the editors hold) and UTF-8 byte ranges (bytes, the wire form); bytes[k].start equals the UTF-8 length of text.slice(0, utf16[k].start). badMentions: byte ranges that break exactly one wire rule, named in rule: split_character (a start or end inside a character), out_of_order (starts before the previous mention starts), overlap (starts before the previous one ends), past_end, empty (end not after start), too_many (more than 32), bad_actor (not u_ plus 22 base64url characters). Touching ranges are allowed. inviteLinks: text pasted by the person and server, the configured account server; expect is { server, workspace, secret } or null, error is null, bad_link or other_server. Characters that can't end a link (. , ; : ! ? ) ] } > ' \" and the typographic quotes) are dropped from its end, and a link without https:// or http:// is read as https (contract section 3.2). android, when present, replaces expect and error on Android in the named build. uuidv7: ms and 10 random bytes as hex give id with the layout of contract section 3.8.",
+  "mentions": [
+    {
+      "name": "ASCII",
+      "text": "Hi @Ann, can you look at this?",
+      "utf16": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 3,
+          "end": 7
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 3,
+          "end": 7
+        }
+      ]
+    },
+    {
+      "name": "Zoë with a two-byte character",
+      "text": "Hoi @Zoë, kijk je even?",
+      "utf16": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 4,
+          "end": 8
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 4,
+          "end": 9
+        }
+      ]
+    },
+    {
+      "name": "Joël with a two-byte character",
+      "text": "Thanks @Joël for the notes",
+      "utf16": [
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 7,
+          "end": 12
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 7,
+          "end": 13
+        }
+      ]
+    },
+    {
+      "name": "two names with accents",
+      "text": "Hoi @Zoë en @Joël!",
+      "utf16": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 4,
+          "end": 8
+        },
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 12,
+          "end": 17
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 4,
+          "end": 9
+        },
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 13,
+          "end": 19
+        }
+      ]
+    },
+    {
+      "name": "CJK name and text",
+      "text": "请 @王小明 看一下这个",
+      "utf16": [
+        {
+          "actor": "u_ApReV90YjcW5iYKWdqZ97P",
+          "start": 2,
+          "end": 6
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_ApReV90YjcW5iYKWdqZ97P",
+          "start": 4,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "name": "emoji with a skin tone modifier before the mention",
+      "text": "Great work 👏🏽 @Kai!",
+      "utf16": [
+        {
+          "actor": "u_ijmb4Wwk8G8tEXg0_tx8CG",
+          "start": 16,
+          "end": 20
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_ijmb4Wwk8G8tEXg0_tx8CG",
+          "start": 20,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "name": "ZWJ family emoji before the mention",
+      "text": "👨‍👩‍👧‍👦 @Mia is bringing everyone",
+      "utf16": [
+        {
+          "actor": "u_wOJk3Pdb7vKLO_2bYphAzj",
+          "start": 12,
+          "end": 16
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_wOJk3Pdb7vKLO_2bYphAzj",
+          "start": 26,
+          "end": 30
+        }
+      ]
+    },
+    {
+      "name": "combining marks inside the name",
+      "text": "Ask @Renée or @Zoë about it",
+      "utf16": [
+        {
+          "actor": "u_hB0rKzQCFsJN2EB4ORWSYO",
+          "start": 4,
+          "end": 11
+        },
+        {
+          "actor": "u_wdv0stCRfVwDkM4hJ9vfL3",
+          "start": 15,
+          "end": 20
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_hB0rKzQCFsJN2EB4ORWSYO",
+          "start": 4,
+          "end": 12
+        },
+        {
+          "actor": "u_wdv0stCRfVwDkM4hJ9vfL3",
+          "start": 16,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "name": "two adjacent chips separated by a space",
+      "text": "Over to @Ann @Bob now",
+      "utf16": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 8,
+          "end": 12
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 13,
+          "end": 17
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 8,
+          "end": 12
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 13,
+          "end": 17
+        }
+      ]
+    },
+    {
+      "name": "mention at the start and at the end",
+      "text": "@Ann see you tomorrow, @Bob",
+      "utf16": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 23,
+          "end": 27
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 23,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "name": "the whole text is one mention",
+      "text": "@Zoë",
+      "utf16": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 0,
+          "end": 4
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 0,
+          "end": 5
+        }
+      ]
+    },
+    {
+      "name": "text with line breaks",
+      "text": "Morning all ☀\n@Ann can you check?\r\n@Joël too",
+      "utf16": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 14,
+          "end": 18
+        },
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 35,
+          "end": 40
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 16,
+          "end": 20
+        },
+        {
+          "actor": "u_pJoqX6o8E0D-jRyGv70hGZ",
+          "start": 37,
+          "end": 43
+        }
+      ]
+    },
+    {
+      "name": "emoji inside the name",
+      "text": "Ping @Lou 🌻 when ready",
+      "utf16": [
+        {
+          "actor": "u__jdO-ZQaVGhHGFxVAcTuZh",
+          "start": 5,
+          "end": 12
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u__jdO-ZQaVGhHGFxVAcTuZh",
+          "start": 5,
+          "end": 14
+        }
+      ]
+    },
+    {
+      "name": "two chips touching without a space",
+      "text": "@Ann@Bob",
+      "utf16": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 4,
+          "end": 8
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 4
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 4,
+          "end": 8
+        }
+      ]
+    },
+    {
+      "name": "no mentions",
+      "text": "Nothing to see here ✓",
+      "utf16": [],
+      "bytes": []
+    },
+    {
+      "name": "32 mentions",
+      "text": "@Zoë01 @Zoë02 @Zoë03 @Zoë04 @Zoë05 @Zoë06 @Zoë07 @Zoë08 @Zoë09 @Zoë10 @Zoë11 @Zoë12 @Zoë13 @Zoë14 @Zoë15 @Zoë16 @Zoë17 @Zoë18 @Zoë19 @Zoë20 @Zoë21 @Zoë22 @Zoë23 @Zoë24 @Zoë25 @Zoë26 @Zoë27 @Zoë28 @Zoë29 @Zoë30 @Zoë31 @Zoë32",
+      "utf16": [
+        {
+          "actor": "u_Y7Jmt67CuTDIFkUHB2aIPQ",
+          "start": 0,
+          "end": 6
+        },
+        {
+          "actor": "u_qB06FDSjxy3CQ6KG2wVCGe",
+          "start": 7,
+          "end": 13
+        },
+        {
+          "actor": "u_9vLXPaLpsUqNt4QGhxmb2o",
+          "start": 14,
+          "end": 20
+        },
+        {
+          "actor": "u_luKkGqqHWBO3WsE-0-wI5h",
+          "start": 21,
+          "end": 27
+        },
+        {
+          "actor": "u_VpROUgMqGDS7cEuFfLuSys",
+          "start": 28,
+          "end": 34
+        },
+        {
+          "actor": "u_OPtD0srCD7mpfZr3_WuJSL",
+          "start": 35,
+          "end": 41
+        },
+        {
+          "actor": "u_baZ3WuPdeEZUBGUaEQH2uz",
+          "start": 42,
+          "end": 48
+        },
+        {
+          "actor": "u_2mwaOVPRAnTjcKQo8RAB5r",
+          "start": 49,
+          "end": 55
+        },
+        {
+          "actor": "u_HA6Gqe-STjVs-R5GFHT-ch",
+          "start": 56,
+          "end": 62
+        },
+        {
+          "actor": "u_UrgteT2-YAEVL6GBDIv-dB",
+          "start": 63,
+          "end": 69
+        },
+        {
+          "actor": "u_I6pYR4CMafeV287FEmyPGj",
+          "start": 70,
+          "end": 76
+        },
+        {
+          "actor": "u_cxOUaQgxMIpqJdgVpEEDds",
+          "start": 77,
+          "end": 83
+        },
+        {
+          "actor": "u_E07LhZABogX8Zg27jP37nB",
+          "start": 84,
+          "end": 90
+        },
+        {
+          "actor": "u_VkMTxrlR6ObiBZ_xUmKDuc",
+          "start": 91,
+          "end": 97
+        },
+        {
+          "actor": "u_8jS34k2xyGNE8injTyxLQ1",
+          "start": 98,
+          "end": 104
+        },
+        {
+          "actor": "u_lx8K32V7lDvqEx4fzq67NH",
+          "start": 105,
+          "end": 111
+        },
+        {
+          "actor": "u_0QtxJtmmG_dNlHahLqgUxm",
+          "start": 112,
+          "end": 118
+        },
+        {
+          "actor": "u_EHW8oZPrFNeaoLGr5qfn1H",
+          "start": 119,
+          "end": 125
+        },
+        {
+          "actor": "u_GQGgohhQkmlXP3DfK1kUim",
+          "start": 126,
+          "end": 132
+        },
+        {
+          "actor": "u_sk7dzDA-c6RXGl50n0pcJE",
+          "start": 133,
+          "end": 139
+        },
+        {
+          "actor": "u_eOE8J-9-lIf60F1KwwsHQB",
+          "start": 140,
+          "end": 146
+        },
+        {
+          "actor": "u_N5Dt4QxmImho9kEp1hLNdn",
+          "start": 147,
+          "end": 153
+        },
+        {
+          "actor": "u_byRSnSc2BzoBgmuReES07B",
+          "start": 154,
+          "end": 160
+        },
+        {
+          "actor": "u_7bMEvZxbaCHlzcEMKVF5b5",
+          "start": 161,
+          "end": 167
+        },
+        {
+          "actor": "u_vVsGH46Tx7Aearn3qvJlhm",
+          "start": 168,
+          "end": 174
+        },
+        {
+          "actor": "u_mrEbS6zvgfCXZyjRXFjGWD",
+          "start": 175,
+          "end": 181
+        },
+        {
+          "actor": "u_1oGoc_EPXYuT_hZC8P1PrT",
+          "start": 182,
+          "end": 188
+        },
+        {
+          "actor": "u_IZaXm7sPxxhEp_7pXskod9",
+          "start": 189,
+          "end": 195
+        },
+        {
+          "actor": "u_fnuSeb9gAu0uIxtUTJ-ROP",
+          "start": 196,
+          "end": 202
+        },
+        {
+          "actor": "u_8WOvvsVNuKeJgnkTXvAsr3",
+          "start": 203,
+          "end": 209
+        },
+        {
+          "actor": "u_Ssx9ePcjEALokAstwzFB8P",
+          "start": 210,
+          "end": 216
+        },
+        {
+          "actor": "u_BSQwj6EG3UeYF31VkuD_0H",
+          "start": 217,
+          "end": 223
+        }
+      ],
+      "bytes": [
+        {
+          "actor": "u_Y7Jmt67CuTDIFkUHB2aIPQ",
+          "start": 0,
+          "end": 7
+        },
+        {
+          "actor": "u_qB06FDSjxy3CQ6KG2wVCGe",
+          "start": 8,
+          "end": 15
+        },
+        {
+          "actor": "u_9vLXPaLpsUqNt4QGhxmb2o",
+          "start": 16,
+          "end": 23
+        },
+        {
+          "actor": "u_luKkGqqHWBO3WsE-0-wI5h",
+          "start": 24,
+          "end": 31
+        },
+        {
+          "actor": "u_VpROUgMqGDS7cEuFfLuSys",
+          "start": 32,
+          "end": 39
+        },
+        {
+          "actor": "u_OPtD0srCD7mpfZr3_WuJSL",
+          "start": 40,
+          "end": 47
+        },
+        {
+          "actor": "u_baZ3WuPdeEZUBGUaEQH2uz",
+          "start": 48,
+          "end": 55
+        },
+        {
+          "actor": "u_2mwaOVPRAnTjcKQo8RAB5r",
+          "start": 56,
+          "end": 63
+        },
+        {
+          "actor": "u_HA6Gqe-STjVs-R5GFHT-ch",
+          "start": 64,
+          "end": 71
+        },
+        {
+          "actor": "u_UrgteT2-YAEVL6GBDIv-dB",
+          "start": 72,
+          "end": 79
+        },
+        {
+          "actor": "u_I6pYR4CMafeV287FEmyPGj",
+          "start": 80,
+          "end": 87
+        },
+        {
+          "actor": "u_cxOUaQgxMIpqJdgVpEEDds",
+          "start": 88,
+          "end": 95
+        },
+        {
+          "actor": "u_E07LhZABogX8Zg27jP37nB",
+          "start": 96,
+          "end": 103
+        },
+        {
+          "actor": "u_VkMTxrlR6ObiBZ_xUmKDuc",
+          "start": 104,
+          "end": 111
+        },
+        {
+          "actor": "u_8jS34k2xyGNE8injTyxLQ1",
+          "start": 112,
+          "end": 119
+        },
+        {
+          "actor": "u_lx8K32V7lDvqEx4fzq67NH",
+          "start": 120,
+          "end": 127
+        },
+        {
+          "actor": "u_0QtxJtmmG_dNlHahLqgUxm",
+          "start": 128,
+          "end": 135
+        },
+        {
+          "actor": "u_EHW8oZPrFNeaoLGr5qfn1H",
+          "start": 136,
+          "end": 143
+        },
+        {
+          "actor": "u_GQGgohhQkmlXP3DfK1kUim",
+          "start": 144,
+          "end": 151
+        },
+        {
+          "actor": "u_sk7dzDA-c6RXGl50n0pcJE",
+          "start": 152,
+          "end": 159
+        },
+        {
+          "actor": "u_eOE8J-9-lIf60F1KwwsHQB",
+          "start": 160,
+          "end": 167
+        },
+        {
+          "actor": "u_N5Dt4QxmImho9kEp1hLNdn",
+          "start": 168,
+          "end": 175
+        },
+        {
+          "actor": "u_byRSnSc2BzoBgmuReES07B",
+          "start": 176,
+          "end": 183
+        },
+        {
+          "actor": "u_7bMEvZxbaCHlzcEMKVF5b5",
+          "start": 184,
+          "end": 191
+        },
+        {
+          "actor": "u_vVsGH46Tx7Aearn3qvJlhm",
+          "start": 192,
+          "end": 199
+        },
+        {
+          "actor": "u_mrEbS6zvgfCXZyjRXFjGWD",
+          "start": 200,
+          "end": 207
+        },
+        {
+          "actor": "u_1oGoc_EPXYuT_hZC8P1PrT",
+          "start": 208,
+          "end": 215
+        },
+        {
+          "actor": "u_IZaXm7sPxxhEp_7pXskod9",
+          "start": 216,
+          "end": 223
+        },
+        {
+          "actor": "u_fnuSeb9gAu0uIxtUTJ-ROP",
+          "start": 224,
+          "end": 231
+        },
+        {
+          "actor": "u_8WOvvsVNuKeJgnkTXvAsr3",
+          "start": 232,
+          "end": 239
+        },
+        {
+          "actor": "u_Ssx9ePcjEALokAstwzFB8P",
+          "start": 240,
+          "end": 247
+        },
+        {
+          "actor": "u_BSQwj6EG3UeYF31VkuD_0H",
+          "start": 248,
+          "end": 255
+        }
+      ]
+    }
+  ],
+  "badMentions": [
+    {
+      "name": "splits a two-byte character",
+      "rule": "split_character",
+      "text": "@Zoë",
+      "bytes": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 0,
+          "end": 4
+        }
+      ]
+    },
+    {
+      "name": "starts inside a two-byte character",
+      "rule": "split_character",
+      "text": "Hoi ë @Zoë",
+      "bytes": [
+        {
+          "actor": "u_jAe5XrvrzG2GbgA7Ezx5zV",
+          "start": 5,
+          "end": 12
+        }
+      ]
+    },
+    {
+      "name": "splits a three-byte character",
+      "rule": "split_character",
+      "text": "@王小明",
+      "bytes": [
+        {
+          "actor": "u_ApReV90YjcW5iYKWdqZ97P",
+          "start": 0,
+          "end": 3
+        }
+      ]
+    },
+    {
+      "name": "splits a four-byte character",
+      "rule": "split_character",
+      "text": "@Sam 👍",
+      "bytes": [
+        {
+          "actor": "u_a63VtoWZUQS2H-Cixjx__0",
+          "start": 0,
+          "end": 7
+        }
+      ]
+    },
+    {
+      "name": "out of order",
+      "rule": "out_of_order",
+      "text": "@Ann and @Bob",
+      "bytes": [
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 9,
+          "end": 13
+        },
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 4
+        }
+      ]
+    },
+    {
+      "name": "overlapping",
+      "rule": "overlap",
+      "text": "@Ann Bob and more",
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 8
+        },
+        {
+          "actor": "u_1Sw3x5RkUNDzTu7h42PrUD",
+          "start": 5,
+          "end": 8
+        }
+      ]
+    },
+    {
+      "name": "past the end",
+      "rule": "past_end",
+      "text": "@Ann",
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 0,
+          "end": 5
+        }
+      ]
+    },
+    {
+      "name": "starts past the end",
+      "rule": "past_end",
+      "text": "@Ann",
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 6,
+          "end": 9
+        }
+      ]
+    },
+    {
+      "name": "empty",
+      "rule": "empty",
+      "text": "Hi @Ann",
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 3,
+          "end": 3
+        }
+      ]
+    },
+    {
+      "name": "end before start",
+      "rule": "empty",
+      "text": "Hi @Ann",
+      "bytes": [
+        {
+          "actor": "u_TSZouSPGbcL97eX33zpRL2",
+          "start": 7,
+          "end": 3
+        }
+      ]
+    },
+    {
+      "name": "33 mentions",
+      "rule": "too_many",
+      "text": "@a1 @a2 @a3 @a4 @a5 @a6 @a7 @a8 @a9 @a10 @a11 @a12 @a13 @a14 @a15 @a16 @a17 @a18 @a19 @a20 @a21 @a22 @a23 @a24 @a25 @a26 @a27 @a28 @a29 @a30 @a31 @a32 @a33",
+      "bytes": [
+        {
+          "actor": "u_2P2gZeZFinBXcU8sBeDeUk",
+          "start": 0,
+          "end": 3
+        },
+        {
+          "actor": "u_0Mmfa4a51VBeaxx9NUoZ1v",
+          "start": 4,
+          "end": 7
+        },
+        {
+          "actor": "u_IOGhXZ6laFMqLYbS5pRKFu",
+          "start": 8,
+          "end": 11
+        },
+        {
+          "actor": "u_3l0sl4uaHJ7LJebMyUWR5I",
+          "start": 12,
+          "end": 15
+        },
+        {
+          "actor": "u_aAw81zeVLsJ8y-J48TkeXs",
+          "start": 16,
+          "end": 19
+        },
+        {
+          "actor": "u_8ktf5k0KLO9ob8hDEZCU4y",
+          "start": 20,
+          "end": 23
+        },
+        {
+          "actor": "u_ON0sjZ8PGP996dDg7hfem-",
+          "start": 24,
+          "end": 27
+        },
+        {
+          "actor": "u_6PWgsp-D8kavhgdgHoYIY8",
+          "start": 28,
+          "end": 31
+        },
+        {
+          "actor": "u_M-4fgzYhYkA59ZgXsV81EU",
+          "start": 32,
+          "end": 35
+        },
+        {
+          "actor": "u_AI6gXEh1iC--95ncaKtBhl",
+          "start": 36,
+          "end": 40
+        },
+        {
+          "actor": "u_XzFFK3QU8AT3e9GaKKsQ6A",
+          "start": 41,
+          "end": 45
+        },
+        {
+          "actor": "u_1SKP_B8TnjeOeOT954BJIA",
+          "start": 46,
+          "end": 50
+        },
+        {
+          "actor": "u_lFf3Ymuf0qVZ_6h6Cf09Fh",
+          "start": 51,
+          "end": 55
+        },
+        {
+          "actor": "u_6C1mJXccSCG7Q_JOKNg4vc",
+          "start": 56,
+          "end": 60
+        },
+        {
+          "actor": "u_SXQOSh59HsE1VeoWwcsHG_",
+          "start": 61,
+          "end": 65
+        },
+        {
+          "actor": "u_-okjyGVheF1rtSxYhF1wZB",
+          "start": 66,
+          "end": 70
+        },
+        {
+          "actor": "u_cKBYIFmmu7UxbjSmPSxIDT",
+          "start": 71,
+          "end": 75
+        },
+        {
+          "actor": "u_EpeSgp9aT-FUO9xYSA4tTo",
+          "start": 76,
+          "end": 80
+        },
+        {
+          "actor": "u_y8G7R1HDoy_FrO18DC4PYP",
+          "start": 81,
+          "end": 85
+        },
+        {
+          "actor": "u_XbLIBJwLUMn8sbqvh3c68a",
+          "start": 86,
+          "end": 90
+        },
+        {
+          "actor": "u_Cd06Wx12dXQT1qsZjvfr9U",
+          "start": 91,
+          "end": 95
+        },
+        {
+          "actor": "u_LBz_oSTgsiwPeCxKpPHYTC",
+          "start": 96,
+          "end": 100
+        },
+        {
+          "actor": "u_4YILwxGExNDh9aRWHuXyVK",
+          "start": 101,
+          "end": 105
+        },
+        {
+          "actor": "u_7lj16QDoXLRSJRaFtxuMYO",
+          "start": 106,
+          "end": 110
+        },
+        {
+          "actor": "u_MLW7QHU7nQHViqVJ6WYH0W",
+          "start": 111,
+          "end": 115
+        },
+        {
+          "actor": "u_rUiXBQvIxafeezTcPCvbOH",
+          "start": 116,
+          "end": 120
+        },
+        {
+          "actor": "u_2KUBljnGpFaop5Myn4P020",
+          "start": 121,
+          "end": 125
+        },
+        {
+          "actor": "u_Rg9N1qkoB0mNTdTf1j25sx",
+          "start": 126,
+          "end": 130
+        },
+        {
+          "actor": "u_5MSy3cgMnpyFx3O1qujOCn",
+          "start": 131,
+          "end": 135
+        },
+        {
+          "actor": "u_8KvsbEqA4O72iaoHsZcDeC",
+          "start": 136,
+          "end": 140
+        },
+        {
+          "actor": "u_yrsZW_anTSULlR5h2gGwgv",
+          "start": 141,
+          "end": 145
+        },
+        {
+          "actor": "u_vQw7NP2rc1kfgynpbg3g-2",
+          "start": 146,
+          "end": 150
+        },
+        {
+          "actor": "u_rhZekFX9e5Qofty_mQs7-e",
+          "start": 151,
+          "end": 155
+        }
+      ]
+    },
+    {
+      "name": "actor ID too short",
+      "rule": "bad_actor",
+      "text": "@Ann",
+      "bytes": [
+        {
+          "actor": "u_short",
+          "start": 0,
+          "end": 4
+        }
+      ]
+    },
+    {
+      "name": "actor ID with a workspace prefix",
+      "rule": "bad_actor",
+      "text": "@Ann",
+      "bytes": [
+        {
+          "actor": "w_g8jslu1N347lX-kapbTJUV",
+          "start": 0,
+          "end": 4
+        }
+      ]
+    },
+    {
+      "name": "actor ID with a character outside base64url",
+      "rule": "bad_actor",
+      "text": "@Ann",
+      "bytes": [
+        {
+          "actor": "u_AAAAAAAAAAAAAAAAAAAAA+",
+          "start": 0,
+          "end": 4
+        }
+      ]
+    }
+  ],
+  "inviteLinks": [
+    {
+      "name": "plain link",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "inside longer text",
+      "text": "Join us on Rukoo: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8 See you there!",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "surrounded by white space",
+      "text": "  \n\thttps://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8 \r\n ",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "keys in reverse order",
+      "text": "https://rukoo.io/join#i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8&w=w_pr-N6-Je9-yzFeJW__KZ4t",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "host in capitals and the default port",
+      "text": "https://Rukoo.IO:443/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "local http on 127.0.0.1",
+      "text": "http://127.0.0.1:38811/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "http://127.0.0.1:38811",
+      "expect": {
+        "server": "http://127.0.0.1:38811",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "local http on localhost",
+      "text": "http://localhost:38811/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "http://localhost:38811",
+      "expect": {
+        "server": "http://localhost:38811",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "local http on [::1]",
+      "text": "http://[::1]:38811/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "http://[::1]:38811",
+      "expect": {
+        "server": "http://[::1]:38811",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "server with a base path",
+      "text": "https://chat.example.com/rukoo/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://chat.example.com/rukoo",
+      "expect": {
+        "server": "https://chat.example.com/rukoo",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "http on 10.0.2.2, the emulator host, accepted by Android debug builds only",
+      "text": "http://10.0.2.2:38850/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "http://10.0.2.2:38850",
+      "expect": null,
+      "error": "bad_link",
+      "android": {
+        "build": "debug",
+        "expect": {
+          "server": "http://10.0.2.2:38850",
+          "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+          "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+        },
+        "error": null
+      }
+    },
+    {
+      "name": "http on a public host",
+      "text": "http://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "missing w",
+      "text": "https://rukoo.io/join#i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "malformed w",
+      "text": "https://rukoo.io/join#w=w_tooShort&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "w with a member prefix",
+      "text": "https://rukoo.io/join#w=u_9KD0OGepP33jFRRSWmMrAg&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "short secret",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a full stop after the link is dropped",
+      "text": "Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8.",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a closing bracket after the link",
+      "text": "(Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8)",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "angle brackets around the link, as plain text mail writes it",
+      "text": "Join here <https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8>",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a quote after the link",
+      "text": "Ann wrote \"https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8\"",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "typographic quotes and a full stop after a link that ends in w",
+      "text": "Klik op „https://rukoo.io/join#i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8&w=w_pr-N6-Je9-yzFeJW__KZ4t”.",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a comma after the link",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8, see you there",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme",
+      "text": "Join us at rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme in brackets, with a full stop",
+      "text": "(rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8).",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme to a server with a base path",
+      "text": "chat.example.com/rukoo/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://chat.example.com/rukoo",
+      "expect": {
+        "server": "https://chat.example.com/rukoo",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a short secret with a full stop after it stays bad",
+      "text": "Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj.",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a full stop inside the secret stays",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-F.knjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme with user info",
+      "text": "ann@rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme after a link with one",
+      "text": "See https://rukoo.io/help and rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme to another server",
+      "text": "chat.example.net/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "other_server"
+    },
+    {
+      "name": "an extra fragment key",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8&x=1",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a repeated key",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8&w=w_pr-N6-Je9-yzFeJW__KZ4t",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a path other than /join",
+      "text": "https://rukoo.io/invite#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a trailing slash after /join",
+      "text": "https://rukoo.io/join/#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "user info",
+      "text": "https://ann@rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "only the first link counts",
+      "text": "See https://rukoo.io/help and https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "no link at all",
+      "text": "Ask Ann for the invitation",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "another server",
+      "text": "https://chat.example.net/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "other_server"
+    },
+    {
+      "name": "the configured server with a base path, link without it",
+      "text": "https://chat.example.com/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://chat.example.com/rukoo",
+      "expect": null,
+      "error": "other_server"
+    }
+  ],
+  "uuidv7": [
+    {
+      "name": "counting bytes",
+      "ms": 1763550000000,
+      "random": "00112233445566778899",
+      "id": "019a9bc5-7380-7011-a233-445566778899"
+    },
+    {
+      "name": "all random bits set, so only the version and variant bits change",
+      "ms": 1763550000000,
+      "random": "ffffffffffffffffffff",
+      "id": "019a9bc5-7380-7fff-bfff-ffffffffffff"
+    },
+    {
+      "name": "zero time and zero random bytes",
+      "ms": 0,
+      "random": "00000000000000000000",
+      "id": "00000000-0000-7000-8000-000000000000"
+    },
+    {
+      "name": "the last millisecond 48 bits hold",
+      "ms": 281474976710655,
+      "random": "a5c3e1f00f1e3c5a9687",
+      "id": "ffffffff-ffff-75c3-a1f0-0f1e3c5a9687"
+    },
+    {
+      "name": "a later millisecond with mixed bytes",
+      "ms": 1795000123456,
+      "random": "8f4e2d1c0b0a99887766",
+      "id": "01a1ee58-4040-7f4e-ad1c-0b0a99887766"
+    }
+  ]
+}

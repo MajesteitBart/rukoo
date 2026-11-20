@@ -200,6 +200,9 @@ export const RESERVED_HANDLES = new Set(
     .join(' ')
     .split(' ')
 );
+// Handles reserved after accounts could claim them: join is the path of team chat's invitation links (join.js). Nobody
+// claims one any more, and an account that already holds one keeps its page and goes on publishing it.
+export const LATER_RESERVED_HANDLES = new Set(['join']);
 export const RESERVED_SLUGS = new Set('api mcp booking bookings llms openapi ics assets manage prepare'.split(' '));
 export const BOOKING_ID = /^[A-Za-z0-9_-]{22}$/;
 export const LOCATION_KINDS = ['googleMeet', 'phone', 'inPerson', 'link', 'none'];
@@ -220,9 +223,12 @@ const NOT_IN_LINE = /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/u;
 const NOT_IN_TEXT = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/;
 
 // null when a handle can be used, else why not: 'invalid' or 'reserved'. blocked is the operator's BLOCKED_HANDLES.
-export function handleCheck(text, blocked = []) {
+// held: the handle is already someone's page (reading it) or the caller's own (publishing it again), which a handle in
+// LATER_RESERVED_HANDLES stays.
+export function handleCheck(text, blocked = [], held = false) {
   if (typeof text !== 'string' || !HANDLE.test(text)) return 'invalid';
   if (RESERVED_HANDLES.has(text) || blocked.includes(text)) return 'reserved';
+  if (!held && LATER_RESERVED_HANDLES.has(text)) return 'reserved';
   return null;
 }
 
@@ -278,8 +284,9 @@ export function isObjectValue(value) {
 }
 
 // A handle in a request body. Reserved handles are a 409, like a taken one, so the app can say so next to the field.
-export function handle(value, blocked = []) {
-  const problem = handleCheck(value, blocked);
+// held: the caller's account already holds this handle.
+export function handle(value, blocked = [], held = false) {
+  const problem = handleCheck(value, blocked, held);
   if (problem === 'invalid') {
     throw invalid('handle must be 3 to 32 lowercase letters, digits and single hyphens inside.', 'handle');
   }
@@ -426,8 +433,9 @@ export function intervals(value, field, { max, from, to, align = 0 }) {
 }
 
 // PUT /v1/booking, apart from the key id check, which needs a hash (owner.js does it).
-export function bookingPut(body, now, blocked = []) {
-  const h = handle(body.handle, blocked);
+// current: the handle the caller's account holds now, if any.
+export function bookingPut(body, now, blocked = [], current = null) {
+  const h = handle(body.handle, blocked, current !== null && body.handle === current);
   const enabled = bool(body.enabled, 'enabled');
   const takeover = body.takeover === undefined ? false : bool(body.takeover, 'takeover');
   if (!isObject(body.windows)) throw invalid('windows must be an object such as { "default": [...] }.', 'windows');

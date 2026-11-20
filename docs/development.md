@@ -38,6 +38,45 @@ In the Electron tests (`SEM_HIDDEN=1`) Send goes out at once, so the suites don'
 
 Headless Electron tests on Linux need an X display and a window manager, so minimize and restore events work. The CI workflows show the Xvfb and Openbox setup with a 1920×1200 display. CI tests and builds on Ubuntu 22.04, Windows and macOS. On macOS it runs the unit tests and only the Mac-specific Electron tests in `test/e2e/macos.spec.js`, on both Intel and Apple Silicon, from source and again against the built app. On Windows and Ubuntu it splits the Electron tests over three runners with `--shard=N/3 --fully-parallel`, so a run takes about a third of the time and a failed shard can be rerun on its own. When you run the whole Electron suite on a Mac yourself, the cases written for Windows or Linux behavior skip themselves, and `macos.spec.js` checks the Mac side. The demo suite doesn't verify real mail synchronization, native tray availability or live agent authentication on every Linux desktop.
 
+## Team chat tests
+
+The chat tests run the real account server from `server/` in the local Workers runtime, through `test/fixtures/real-server.js`. Neither the desktop's fake account server nor Android's knows the workspace routes. The helper needs the server's own dependencies, once per checkout and again when `server/package-lock.json` changes:
+
+```bash
+npm ci --prefix server
+```
+
+Without them the chat tests skip with "run npm ci in server/ to test chat against the real server". With `CI` or `RUKOO_REQUIRE_REAL_SERVER=1` set they fail instead, so a missing install can't pass for a green run.
+
+```bash
+node --test test/real-server.test.js test/chat-*.test.js   # Node tests of the helper and the main process's chat code
+npx playwright test test/e2e/chat*.spec.js                 # the chat specs in the Electron app
+```
+
+Each test file starts its own server with its own storage in a temporary folder, and stops it when the file ends; nothing has to run first. A server starts in about a second and binds 127.0.0.1 on a port from 38800 to 38899, trying them from a random place in the range. Before it binds, it takes a lock on the port: a file named `rukoo-real-server-<port>.lock` in the system's temporary folder that holds its process ID. A test process skips a port whose lock belongs to a living process, takes over a lock whose process has ended, and removes its own on `close()` or when it exits. A fixed port that another test server holds fails with an error naming the lock file. Team chat is on, sign-ups take the invite code `test-invite` any number of times, and the rate limiters are off unless a test asks for them. A developer's `server/.dev.vars` isn't read, and no `.wrangler` folder appears in the checkout.
+
+The rest of that range has fixed uses: Android's live tests and the emulator use 38850, and `wrangler dev` by hand uses 38811.
+
+### The server for Android
+
+Android's live tests (`AccountLiveTest`, `WorkspaceLiveTest`) and an emulator reach the server through `test/fixtures/real-server-cli.js`, which needs only `server/node_modules`:
+
+```bash
+node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json
+```
+
+Once the server answers, it writes `{"url":"http://127.0.0.1:38850","invite":"test-invite","pid":…}` to the ready file. It stops on Ctrl+C, SIGTERM or when the ready file is deleted, which also works for a process started without a console on Windows. Then, from `android/`:
+
+```bash
+RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:38850 RUKOO_ACCOUNT_TEST_INVITE=test-invite ./gradlew testDebugUnitTest --tests '*LiveTest'
+```
+
+The emulator reaches the same server at `http://10.0.2.2:38850`. A script that seeds people or workspaces into a running server uses `connectRealServer(url)` from the helper. CI's `android` job starts the server this way before the Gradle step.
+
+### On another machine
+
+A remote or CI clone that runs the chat specs needs `npm ci --prefix server` too, and again after every change to `server/package-lock.json`. A chat spec run counts only when its log shows no skipped chat tests.
+
 ## Screenshots
 
 `npm run screenshots` takes the documentation screenshots again in `docs/screenshots/`, in light and dark mode. The capture script always uses English with a fresh demo profile. For screenshots you don't mean to commit, run `node scripts/screenshots.js tmp/screenshots`.

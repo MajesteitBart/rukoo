@@ -12,6 +12,10 @@ import { workspaceObject } from './config.js';
 // A place taken for a workspace that was never confirmed made or called off is settled after this long, by asking
 // the workspace.
 const SETTLE_AFTER = 5 * 60 * 1000;
+// When the server is full, how many made workspaces one new workspace asks whether they still exist, and how long a
+// workspace that answered yes isn't asked again.
+const RECHECK_BATCH = 25;
+const RECHECK_AFTER = 60 * 60 * 1000;
 
 export class Registry extends DurableObject {
   constructor(ctx, env) {
@@ -22,8 +26,13 @@ export class Registry extends DurableObject {
     this.sql.exec('CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, used INTEGER NOT NULL)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS host (id INTEGER PRIMARY KEY CHECK (id = 1), installation TEXT NOT NULL)');
     // One row per workspace: its place under MAX_WORKSPACES. made is 0 from the moment the place is taken until the
-    // workspace is known to exist.
-    this.sql.exec('CREATE TABLE IF NOT EXISTS workspace (id TEXT PRIMARY KEY, at INTEGER NOT NULL, made INTEGER NOT NULL DEFAULT 0)');
+    // workspace is known to exist. checked is when a made workspace was last asked whether it still exists.
+    this.sql.exec(
+      'CREATE TABLE IF NOT EXISTS workspace (id TEXT PRIMARY KEY, at INTEGER NOT NULL, made INTEGER NOT NULL DEFAULT 0, checked INTEGER NOT NULL DEFAULT 0)'
+    );
+    if (!this.sql.exec('PRAGMA table_info(workspace)').toArray().some((c) => c.name === 'checked')) {
+      this.sql.exec('ALTER TABLE workspace ADD COLUMN checked INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   // Made the first time workspaces are used, and never changed.
@@ -36,7 +45,11 @@ export class Registry extends DurableObject {
   // so taking, confirming and giving it back can each be repeated without counting twice.
   async reserveWorkspace(id, max) {
     await this.#settle();
-    if (max > 0 && this.sql.exec('SELECT COUNT(*) AS n FROM workspace').one().n >= max) return 'full';
+    const full = () => max > 0 && this.sql.exec('SELECT COUNT(*) AS n FROM workspace').one().n >= max;
+    if (full()) {
+      await this.#recheck();
+      if (full()) return 'full';
+    }
     this.sql.exec('INSERT OR IGNORE INTO workspace (id, at, made) VALUES (?, ?, 0)', id, Date.now());
     return 'ok';
   }
@@ -49,6 +62,40 @@ export class Registry extends DurableObject {
   // The workspace was not made. A place that was confirmed stays.
   async releaseWorkspace(id) {
     this.sql.exec('DELETE FROM workspace WHERE id = ? AND made = 0', id);
+  }
+
+  // The workspace was deleted: its place is free again, confirmed or not. When this call doesn't arrive, #recheck
+  // finds the place once the server is full.
+  async forgetWorkspace(id) {
+    this.sql.exec('DELETE FROM workspace WHERE id = ?', id);
+  }
+
+  // The server is full: made workspaces not asked in the past hour, those asked longest ago first, are asked whether
+  // they still exist, RECHECK_BATCH at a time, and the place of one deleted without telling the registry is free
+  // again. A server that really is full asks each workspace at most once an hour. The batch is marked asked before
+  // anyone answers, so a workspace that can't answer waits its hour like the others, and a reservation made meanwhile
+  // asks the next batch.
+  async #recheck() {
+    const now = Date.now();
+    const asked = this.sql
+      .exec(
+        `UPDATE workspace SET checked = ? WHERE id IN
+           (SELECT id FROM workspace WHERE made = 1 AND checked < ? ORDER BY checked, at LIMIT ?)
+         RETURNING id`,
+        now,
+        now - RECHECK_AFTER,
+        RECHECK_BATCH
+      )
+      .toArray();
+    await Promise.all(
+      asked.map(async ({ id }) => {
+        try {
+          if (!(await workspaceObject(this.env, id).exists())) this.sql.exec('DELETE FROM workspace WHERE id = ? AND made = 1', id);
+        } catch {
+          // Asked again in an hour, the next time the server is full.
+        }
+      })
+    );
   }
 
   // When the answer to making a workspace got lost, nobody confirmed or gave back its place. The workspace itself
@@ -75,10 +122,13 @@ export class Registry extends DurableObject {
   }
 
   // Takes a place for a new account, and a use of its invite code (a hash) when it has one: 'ok', 'full' or 'used'.
-  // max 0 means no cap; uses 0 means a code works any number of times.
-  async reserve(max, code = null, uses = 0) {
+  // max 0 means no cap; uses 0 means a code works any number of times. usedFirst: a used code says so even when the
+  // server is full, as a workspace invitation that made its account must (WORKSPACES.md, Signing up with an invitation).
+  async reserve(max, code = null, uses = 0, usedFirst = false) {
+    const used = () => code && uses > 0 && this.used(code) >= uses;
+    if (usedFirst && used()) return 'used';
     if (max > 0 && this.count() >= max) return 'full';
-    if (code && uses > 0 && this.used(code) >= uses) return 'used';
+    if (used()) return 'used';
     this.sql.exec('UPDATE counts SET accounts = accounts + 1 WHERE id = 1');
     if (code) this.sql.exec('INSERT INTO invites (code, used) VALUES (?, 1) ON CONFLICT (code) DO UPDATE SET used = used + 1', code);
     return 'ok';

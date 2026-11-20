@@ -9,15 +9,19 @@ import { accountStub, call, signup } from './helpers.js';
 import {
   access,
   api,
+  block,
   changes,
   channels,
   events,
+  fillers,
   invite,
   newMember,
   newWorkspace,
+  openDmLane,
   openSocket,
   post,
   send,
+  startDm,
   sync,
   until,
   uuidv7,
@@ -223,31 +227,33 @@ describe('a message and the access it was written under', () => {
 describe('invitations and the channels they lead into', () => {
   it('drops a channel its issuer stopped managing, also when they manage it again', async () => {
     const ws = await newWorkspace();
-    const ada = await newMember(ws, 'Ada', { channels: [ws.general] });
+    // Not general: every member gets that one on joining, whatever the invitation says.
+    const project = await channel(ws, 'project');
+    const ada = await newMember(ws, 'Ada', { channels: [project] });
     await api('PATCH', `/v1/workspaces/${ws.id}/members/${ada.me.id}`, { token: ws.person.token, body: { role: 'admin' } });
-    const role = (value) => api('PATCH', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/${ada.me.id}`, { token: ws.person.token, body: { role: value } });
+    const role = (value) => api('PATCH', `/v1/workspaces/${ws.id}/channels/${project}/members/${ada.me.id}`, { token: ws.person.token, body: { role: value } });
     await role('manager');
-    const demoted = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
-    const left = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
+    const demoted = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
+    const left = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
     const join = async (secret) => {
       const person = await signup();
       const res = await api('POST', `/v1/workspaces/${ws.id}/join`, { token: person.token, body: { invite: secret, name: 'P' } });
       expect(res.status).toBe(201);
-      return (await channels(person, ws.id)).map((c) => c.joined);
+      return (await channels(person, ws.id)).map((c) => [c.name, c.joined]);
     };
 
     // Demoted and promoted again.
     await role('member');
     await role('manager');
-    expect(await join(demoted.secret)).toEqual([false]);
+    expect(await join(demoted.secret)).toEqual([['general', true], ['project', false]]);
     // Out of the channel and back in as its manager, under a new grant.
-    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: ada.person.token });
-    await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: ada.person.token });
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${project}/members/me`, { token: ada.person.token });
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${project}/join`, { token: ada.person.token });
     await role('manager');
-    expect(await join(left.secret)).toEqual([false]);
+    expect(await join(left.secret)).toEqual([['general', true], ['project', false]]);
     // One issued now does lead in.
-    const fresh = await invite(ada.person, ws.id, { role: 'member', channels: [ws.general] });
-    expect(await join(fresh.secret)).toEqual([true]);
+    const fresh = await invite(ada.person, ws.id, { role: 'member', channels: [project] });
+    expect(await join(fresh.secret)).toEqual([['general', true], ['project', true]]);
   });
 
   it('shows an admin outside a private channel that an invitation leads into one, not which', async () => {
@@ -277,6 +283,31 @@ describe('what an invitation and a guest are told, kept current', () => {
     expect(await count()).toEqual([2, 2, 2]);
     await api('PATCH', `/v1/workspaces/${ws.id}/channels/${side}`, { token: ws.person.token, body: { archived: true } });
     expect(await count()).toEqual([1, 1, 1]);
+  });
+
+  it('counts the default channel a member invitation leads into, as joining does', async () => {
+    const ws = await newWorkspace();
+    const side = await channel(ws, 'side');
+    const told = async (made) => {
+      const listed = (await api('GET', `/v1/workspaces/${ws.id}/invites`, { token: ws.person.token })).body.invites.find(
+        (i) => i.id === made.invite.id
+      );
+      const preview = await api('POST', `/v1/workspaces/${ws.id}/invites/preview`, { token: (await signup()).token, body: { invite: made.secret } });
+      return [made.invite.channelCount, listed.channelCount, listed.channels, preview.body.channels];
+    };
+    // A member invitation that names no channel still leads into general.
+    expect(await told(await invite(ws.person, ws.id, { role: 'member' }))).toEqual([1, 1, [ws.general], 1]);
+    // One that names another channel leads into both, and general isn't counted twice when it's named.
+    expect(await told(await invite(ws.person, ws.id, { role: 'member', channels: [side] }))).toEqual([2, 2, [side, ws.general], 2]);
+    expect(await told(await invite(ws.person, ws.id, { role: 'member', channels: [ws.general] }))).toEqual([1, 1, [ws.general], 1]);
+    // A guest gets only what the invitation names.
+    expect(await told(await invite(ws.person, ws.id, { role: 'guest', channels: [side] }))).toEqual([1, 1, [side], 1]);
+    // And joining puts the member where the count said.
+    const made = await invite(ws.person, ws.id, { role: 'member', channels: [side] });
+    const mila = await signup();
+    await api('POST', `/v1/workspaces/${ws.id}/join`, { token: mila.token, body: { invite: made.secret, name: 'Mila' } });
+    const rooms = (await api('GET', `/v1/workspaces/${ws.id}/channels`, { token: mila.token })).body.channels;
+    expect(rooms.filter((c) => c.joined).length).toBe(made.invite.channelCount);
   });
 
   it('tells a guest who lost their only room that the people they could see are gone', async () => {
@@ -613,6 +644,31 @@ describe('sockets and sessions', () => {
     mine.socket.close(1000);
   });
 
+  it('answers a socket whose workspace was deleted while its session was checked as a missing workspace', async () => {
+    const ws = await newWorkspace();
+    await api('POST', `/v1/workspaces/${ws.id}/socket-ticket`, { token: ws.person.token });
+    const status = await runInDurableObject(workspaceStub(ws.id), async (instance, state) => {
+      const nonce = state.storage.sql.exec('SELECT nonce FROM ticket').one().nonce;
+      // The account answers only once the workspace is gone.
+      let answer;
+      const held = new Promise((resolve) => (answer = resolve));
+      const real = instance.env;
+      const accounts = { idFromName: (name) => name, get: () => ({ session: () => held }) };
+      instance.env = Object.assign(Object.create(real), { ACCOUNTS: accounts });
+      try {
+        const upgrade = instance.fetch(new Request('https://accounts.example/socket', { headers: { upgrade: 'websocket', 'x-ticket': nonce } }));
+        instance.present = false;
+        await state.storage.deleteAll();
+        answer(true);
+        return (await upgrade).status;
+      } finally {
+        instance.env = real;
+      }
+    });
+    // The Worker answers it with the workspace's 404.
+    expect(status).toBe(404);
+  });
+
   it('takes nothing from what members share when a stranger is over their own allowance', async () => {
     const ws = await newWorkspace();
     const stranger = await signup();
@@ -738,5 +794,120 @@ describe('account deletion, twice over', () => {
     const other = await runInDurableObject(stub, (instance) => instance.create({ ...who, incarnation: 'alive' }, { id, name: 'Fine', displayName: 'Owner' }));
     expect(other.status).toBe(201);
     await runDurableObjectAlarm(stub);
+  });
+});
+
+describe('direct messages, in an awkward order', () => {
+  // Open DMs whose people include both sides of a block. There must never be one.
+  const blockedOpen = (ws) =>
+    workspaceSql(
+      ws.id,
+      `SELECT COUNT(*) AS n FROM conversation c JOIN block b
+       WHERE c.kind = 'dm' AND c.archivedAt IS NULL
+         AND (',' || c.dmSet || ',') LIKE ('%,' || b.blocker || ',%')
+         AND (',' || c.dmSet || ',') LIKE ('%,' || b.blocked || ',%')`
+    );
+
+  // A DM with a message in it, so that closing it keeps it.
+  async function talking(ws, person, members) {
+    const dm = (await startDm(person, ws.id, members)).body.dm.conversation;
+    expect((await post(person, ws.id, dm, 'first')).status).toBe(201);
+    return dm;
+  }
+
+  it('opens one DM when both people start it at once', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const both = await Promise.all([startDm(ws.person, ws.id, [mila.me.id]), startDm(mila.person, ws.id, [ws.me.id])]);
+    expect(both.map((res) => res.status).sort()).toEqual([200, 201]);
+    expect(both[0].body.dm.conversation).toBe(both[1].body.dm.conversation);
+    expect(await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM conversation WHERE kind = 'dm'")).toEqual([{ n: 1 }]);
+  });
+
+  it('never leaves an open DM between two people when a start and a block cross', async () => {
+    const ws = await newWorkspace();
+    const people = [];
+    for (const name of ['Mila', 'Tess', 'Una']) people.push(await newMember(ws, name));
+    // Each person starts a DM with the owner while the owner blocks them, in both directions.
+    await Promise.all(
+      people.flatMap((person, i) =>
+        i % 2 === 0
+          ? [startDm(person.person, ws.id, [ws.me.id]), block(ws.person, ws.id, person.me.id)]
+          : [startDm(ws.person, ws.id, [person.me.id]), block(person.person, ws.id, ws.me.id)]
+      )
+    );
+    expect(await workspaceSql(ws.id, 'SELECT COUNT(*) AS n FROM block')).toEqual([{ n: 3 }]);
+    expect(await blockedOpen(ws)).toEqual([{ n: 0 }]);
+  });
+
+  it('puts no message in a DM after a block closed it', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const dm = await talking(ws, ws.person, [mila.me.id]);
+    const [sent] = await Promise.all([post(mila.person, ws.id, dm, 'crossing'), block(ws.person, ws.id, mila.me.id)]);
+    const [row] = await workspaceSql(ws.id, 'SELECT archivedAt, closedWhy FROM conversation WHERE id = ?', dm);
+    expect(row.closedWhy).toBe('closed');
+    if (sent.status === 201) {
+      // It committed first, so it is in the history the block closed.
+      const log = (await events(ws.person, ws.id, dm)).body.events;
+      expect(log.at(-1)).toMatchObject({ seq: sent.body.seq, text: 'crossing' });
+    } else {
+      expect(sent.status).toBe(409);
+      expect(sent.body).toMatchObject({ error: 'archived', scope: 'conversation' });
+    }
+  });
+
+  it('closes the DM when a role change to guest and a post cross', async () => {
+    const ws = await newWorkspace();
+    const mila = await newMember(ws, 'Mila');
+    const dm = await talking(ws, ws.person, [mila.me.id]);
+    const [, sent] = await Promise.all([
+      api('PATCH', `/v1/workspaces/${ws.id}/members/${mila.me.id}`, { token: ws.person.token, body: { role: 'guest' } }),
+      post(mila.person, ws.id, dm, 'crossing')
+    ]);
+    expect(await workspaceSql(ws.id, 'SELECT closedWhy FROM conversation WHERE id = ?', dm)).toEqual([{ closedWhy: 'ineligible' }]);
+    if (sent.status === 201) {
+      expect((await events(ws.person, ws.id, dm)).body.events.at(-1)).toMatchObject({ seq: sent.body.seq, text: 'crossing' });
+    } else {
+      expect(sent.status).toBe(409);
+      expect(sent.body.error).toBe('archived');
+    }
+  });
+
+  it('holds one initiator to twenty new DMs a day when twenty-two start at once', async () => {
+    const ws = await newWorkspace();
+    const people = await fillers(ws.id, 22);
+    await openDmLane(ws.person, ws.id);
+    const all = await Promise.all(people.map((id) => startDm(ws.person, ws.id, [id])));
+    const statuses = all.map((res) => res.status);
+    expect(statuses.filter((status) => status === 201)).toHaveLength(20);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(2);
+    expect(await workspaceSql(ws.id, "SELECT COUNT(*) AS n FROM conversation WHERE kind = 'dm'")).toEqual([{ n: 20 }]);
+  });
+});
+
+describe('deleting a workspace, in an awkward order', () => {
+  it('lets a delete and a join at once end one way or the other, never both', async () => {
+    for (let round = 0; round < 3; round++) {
+      const ws = await newWorkspace();
+      const { secret } = await invite(ws.person, ws.id);
+      const joiner = await signup();
+      const [deleted, joined] = await Promise.all([
+        api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token }),
+        api('POST', `/v1/workspaces/${ws.id}/join`, { token: joiner.token, body: { invite: secret, name: 'P' } })
+      ]);
+      const mine = (await api('GET', '/v1/workspaces', { token: joiner.token })).body.workspaces;
+      if (joined.status === 201) {
+        // The join won: the workspace stays, with its new member.
+        expect(deleted.status).toBe(409);
+        expect(deleted.body.error).toBe('members_remain');
+        expect(mine.map((w) => w.id)).toEqual([ws.id]);
+      } else {
+        expect(deleted.status).toBe(204);
+        expect(joined.status).toBe(404);
+        expect(joined.body.scope).toBe('workspace');
+        expect(mine).toEqual([]);
+      }
+    }
   });
 });
