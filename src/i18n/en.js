@@ -10416,8 +10416,8 @@
     "description": "Chat view: text of the empty state in a workspace when no conversation is open. src/renderer/chat.js"
   },
   "chat.banner.offline": {
-    "message": "You're offline. Messages you send wait until Rukoo reconnects.",
-    "description": "Conversation pane: banner above the messages while Rukoo is offline. src/renderer/chat-view.js"
+    "message": "Rukoo can't reach {host}. Messages you send wait until it reconnects.",
+    "description": "Conversation pane: banner above the messages while Rukoo can't reach the chat server, with Try now. Mail can still work, so it names the server instead of saying the computer is offline. {host}: the server's host name. src/renderer/chat.js (bannerFor)"
   },
   "chat.banner.reconnecting": {
     "message": "Reconnecting to {host}…",
@@ -10552,8 +10552,8 @@
     "description": "Message list: intro line of a channel the whole workspace can see. {workspace}: the workspace name. src/renderer/chat-view.js"
   },
   "chat.log.startPrivate": {
-    "message": "Only people who are added can see it.",
-    "description": "Message list: intro line of a private channel. src/renderer/chat-view.js"
+    "message": "Only people who are added, and {host}, which hosts this workspace, can read it.",
+    "description": "Message list: intro line of a private channel, which also says the host can read it. {host}: who runs the server (the operator's name, else the server's host name). src/renderer/chat-view.js"
   },
   "chat.log.startDirect": {
     "message": "This is the start of your conversation with {names}.",
@@ -11187,6 +11187,10 @@
     "message": "Join #{name} to read its messages and post in it.",
     "description": "Conversation pane: text in place of the log in a channel opened from Browse channels that the user hasn't joined. {name}: the channel name, after #. src/renderer/chat-view.js"
   },
+  "chat.channel.previewTitle": {
+    "message": "#{name}",
+    "description": "Conversation pane: title in place of the log in a channel opened from Browse channels that the user hasn't joined; the channel name only, as its messages are hidden until joining. {name}: the channel name, after #. src/renderer/chat-view.js"
+  },
   "chat.members.title": {
     "message": "Members of {workspace}",
     "description": "Workspace members dialog: title. {workspace}: the workspace name. src/renderer/chat-dialogs.js"
@@ -11348,8 +11352,8 @@
     "description": "Leave a direct message: confirmation button. src/renderer/chat-dialogs.js"
   },
   "chat.mute.done": {
-    "message": "Muted {name}",
-    "description": "Conversation pane: toast after Mute in the header's More menu. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
+    "message": "Muted {name}. No notifications or counts, even for mentions.",
+    "description": "Conversation pane: toast after Mute in the header's More menu; it says that mute silences mentions too. {name}: the channel or the people in the conversation. src/renderer/chat-view.js"
   },
   "chat.mute.undone": {
     "message": "Unmuted {name}",

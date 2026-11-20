@@ -508,8 +508,30 @@ test('the server going away shows the offline banner, and coming back clears it'
   await server.stop();
   try {
     await expect(banner).toBeVisible({ timeout: 20000 });
-    await expect(banner).toContainText("You're offline");
+    // It names the server Rukoo can't reach, since mail may still work, and offers the reconnecting banner's Try now.
+    const host = await win.evaluate(() => window.mail.call('chatState').then((s) => s.host));
+    await expect(banner.locator('.ch-banner-text')).toHaveText(`Rukoo can't reach ${host}. Messages you send wait until it reconnects.`);
     await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Offline');
+    // Try now runs a sync at once (chatSync), as on the reconnecting banner; the server is still down, so it stays.
+    await app.evaluate(() => {
+      const svc = global.__semChat;
+      const syncNow = svc.syncNow.bind(svc);
+      svc.tries = [];
+      svc.syncNow = (ws) => {
+        svc.tries.push(ws || null);
+        return syncNow(ws);
+      };
+    });
+    const tryNow = banner.locator('[data-ch-banner]');
+    await expect(tryNow).toHaveText('Try now');
+    await tryNow.click();
+    await expect.poll(() => app.evaluate(() => global.__semChat.tries.length)).toBe(1);
+    expect(await app.evaluate(() => global.__semChat.tries[0])).toBe(ws.id);
+    await app.evaluate(() => {
+      delete global.__semChat.syncNow;
+      delete global.__semChat.tries;
+    });
+    await expect(banner).toBeVisible();
   } finally {
     await server.start();
   }

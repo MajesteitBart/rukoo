@@ -80,6 +80,9 @@ test("making a visible and a private channel; the private one asks who to add an
   await expect(members.locator('[data-pick] .ch-check-row', { hasText: 'Olga Owner' })).toBeVisible();
   await members.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
+  // Its intro says who can read it: the people added, and the host, by its operator's name.
+  await expect(pane().locator('.ch-main .ch-intro-title')).toHaveText('This is the start of #secret plans', { timeout: 15000 });
+  await expect(pane().locator('.ch-main .ch-intro-line')).toContainText('Only people who are added, and Test operator, which hosts this workspace, can read it.');
 
   // Olga's directory has roadmap and not the private channel.
   const { channels } = await serverGet(server, olga, ws.id, '/channels');
@@ -110,7 +113,9 @@ test('browsing finds a channel, previews it with a Join bar, and joining opens i
   await expect(title()).toHaveText('design');
   await expect(bar().locator('.ch-bar-text')).toHaveText("You're not in #design yet.");
   await expect(pane().locator('.ch-main .ch-box')).toBeHidden();
-  await expect(pane().locator('.ch-empty-title')).toHaveText('This is the start of #design');
+  // Its history is only withheld, so the title names the channel instead of calling this its start.
+  await expect(pane().locator('.ch-empty-title')).toHaveText('#design');
+  await expect(pane().locator('.ch-empty-body')).toHaveText('Join #design to read its messages and post in it.');
   await bar().locator('[data-ch-bar="join"]').click();
   await expect(roomRow(win, 'design')).toHaveAttribute('aria-current', 'page', { timeout: 15000 });
   await expect(pane().locator('.ch-main .ch-log li.ch-msg .ch-text', { hasText: 'Mockups are up' })).toBeVisible({ timeout: 15000 });
@@ -314,7 +319,7 @@ test('muting a conversation dims its row and silences the mode badge', async () 
   await row.click();
   await expect(title()).toHaveText('Olga Owner');
   await roomMenu(win, 'Mute');
-  await expect(toast()).toHaveText('Muted Olga Owner');
+  await expect(toast()).toHaveText('Muted Olga Owner. No notifications or counts, even for mentions.');
   await expect(row).toHaveClass(/is-muted/, { timeout: 10000 });
   await expect(row).toHaveAttribute('aria-label', 'Olga Owner, muted');
   await expect(pane().locator('.ch-head-muted')).toBeVisible();

@@ -943,7 +943,8 @@ function bannerFor() {
   if (!s || !s.signedIn) return null;
   const w = summary();
   if (w && w.status === 'quarantined') return { icon: 'warning', text: t('chat.banner.paused', { workspace: w.name }), action: { label: t('chat.banner.startOver'), run: () => startOver() } };
-  if (s.connection === 'offline') return { icon: 'info', text: t('chat.banner.offline') };
+  // Offline means the chat server is out of reach, which says nothing about the computer's network: name the server.
+  if (s.connection === 'offline') return { icon: 'info', text: t('chat.banner.offline', { host: s.host || '' }), action: { label: t('chat.banner.tryNow'), run: () => reconnect() } };
   if (s.connection === 'connecting' && CH.connectingSince && Date.now() - CH.connectingSince >= RECONNECT_BANNER_MS) {
     return { icon: 'sync', text: t('chat.banner.reconnecting', { host: s.host }), action: { label: t('chat.banner.tryNow'), run: () => reconnect() } };
   }

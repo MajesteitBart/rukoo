@@ -358,7 +358,8 @@ export function mountView(section, H) {
     const ic = h('span', { class: 'ch-head-ic', 'aria-hidden': 'true' }, svg(channel.visibility === 'private' ? 'lock' : 'hash'));
     const meta = [t('chat.head.members', { count: channel.members || 0 }), channel.visibility === 'private' ? t('chat.head.private') : ''].filter(Boolean).join(' · ');
     head.append(h('div', { class: 'ch-titles' }, h('div', { class: 'ch-title-row' }, ic, h('h1', { class: 'ch-title sel', title: name, text: name })), h('div', { class: 'ch-meta', text: meta })));
-    emptyBox({ icon: 'hash', title: t('chat.log.startChannel', { name }), body: t('chat.channel.previewBody', { name }) });
+    // Its history is only withheld, so the title names the channel; "This is the start of" is for joined channels.
+    emptyBox({ icon: 'hash', title: t('chat.channel.previewTitle', { name }), body: t('chat.channel.previewBody', { name }) });
     input = mountChatInput(compose, { placeholder: '', members: () => Promise.resolve([]), recent: () => [], onSend: () => Promise.resolve(true), onEscape: () => false });
     input.setBar({ icon: 'hash', text: t('chat.input.notJoined', { name }), actions: [{ id: 'join', label: t('chat.input.join', { name }), primary: true, run: () => join() }] });
   }
@@ -489,7 +490,8 @@ export function mountView(section, H) {
     const ws = V.ws;
     const c = V.c;
     api('chatMute', ws, c, on)
-      .then(() => toast(t(on ? 'chat.mute.done' : 'chat.mute.undone', { name })))
+      // The Mute item can't hold a help line, so the toast says that mute silences mentions too; it stays long enough to read.
+      .then(() => (on ? toast(t('chat.mute.done', { name }), 5000) : toast(t('chat.mute.undone', { name }))))
       .catch((err) => H.goneError(err, ws, c) || toast(H.errorText(err), 5000));
   }
 
@@ -937,7 +939,10 @@ export function mountView(section, H) {
     const intro = row.intro;
     const lines = [];
     if (intro) lines.push(t('chat.log.startChannelBy', { name: nameOf(intro.actor), date: dayOf(intro.at) }));
-    lines.push(room.visibility === 'private' ? t('chat.log.startPrivate') : t('chat.log.startPublic', { workspace: H.workspaceName() }));
+    // The host can read every room, private channels included, so their intro names it (desktop-ui 6).
+    const s = H.state() || {};
+    const host = (s.operator && s.operator.name) || s.host || '';
+    lines.push(room.visibility === 'private' ? t('chat.log.startPrivate', { host }) : t('chat.log.startPublic', { workspace: H.workspaceName() }));
     li.append(h('p', { class: 'ch-intro-line', text: lines.join(' ') }));
     return li;
   }

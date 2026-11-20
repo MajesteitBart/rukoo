@@ -218,3 +218,21 @@ test('Dutch team chat says Inloggen like the account pages and names the Start o
   // Android's chat_errors_paused says the same, with %1$s for {workspace}.
   assert.equal(nl['chat.errors.paused'], '{workspace} is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.');
 });
+
+test('team chat says the host can read private channels, names the server it cannot reach, and that mute silences mentions', () => {
+  // Android's strings_chat.xml carries the same English and Dutch, with %1$s for the placeholder.
+  i18n.setLanguage('en');
+  assert.equal(i18n.t('chat.log.startPrivate', { host: 'Acme' }), 'Only people who are added, and Acme, which hosts this workspace, can read it.');
+  assert.equal(i18n.t('chat.banner.offline', { host: 'chat.example' }), "Rukoo can't reach chat.example. Messages you send wait until it reconnects.");
+  assert.equal(i18n.t('chat.channel.previewTitle', { name: 'roadmap' }), '#roadmap');
+  assert.equal(i18n.t('chat.channel.previewBody', { name: 'roadmap' }), 'Join #roadmap to read its messages and post in it.');
+  assert.equal(i18n.t('chat.log.startChannel', { name: 'roadmap' }), 'This is the start of #roadmap');
+  assert.equal(i18n.t('chat.mute.done', { name: 'Sanne' }), 'Muted Sanne. No notifications or counts, even for mentions.');
+  i18n.setLanguage('nl');
+  assert.equal(i18n.t('chat.log.startPrivate', { host: 'Acme' }), 'Alleen mensen die zijn toegevoegd, en Acme, die deze werkruimte host, kunnen het lezen.');
+  assert.equal(i18n.t('chat.banner.offline', { host: 'chat.example' }), 'Rukoo kan chat.example niet bereiken. Berichten die je verstuurt, wachten tot er weer verbinding is.');
+  assert.equal(i18n.t('chat.channel.previewTitle', { name: 'roadmap' }), '#roadmap');
+  assert.equal(i18n.t('chat.mute.done', { name: 'Sanne' }), 'Sanne gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.');
+  // The offline banner's button is the reconnecting banner's Try now.
+  assert.equal(nl['chat.banner.tryNow'], 'Nu proberen');
+});
