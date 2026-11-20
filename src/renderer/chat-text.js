@@ -10,6 +10,11 @@ import { findUrls } from './linkify.js';
 // The server's limits: 1 to 16,384 bytes of UTF-8 after trimming, and at most 32 mentions.
 export const TEXT_LIMIT = 16384;
 export const MENTION_LIMIT = 32;
+// A draft may hold more than a message may send (main's wire.js DRAFT_BYTES and DRAFT_MENTIONS): it keeps what the
+// person typed, and the composer turns Send off until it fits the limits above.
+export const DRAFT_TEXT_LIMIT = 4 * TEXT_LIMIT;
+export const DRAFT_MENTION_LIMIT = 100;
+const DRAFT = { maxBytes: DRAFT_TEXT_LIMIT, maxMentions: DRAFT_MENTION_LIMIT };
 
 // A member ID: u_ and 22 base64url characters.
 const MEMBER_ID = /^u_[A-Za-z0-9_-]{22}$/;
@@ -114,16 +119,17 @@ export function sendProblem(wire) {
 // The mentions of text that hold, each with its UTF-16 range: { actor, start, end, from, to }, where start and end
 // are the byte offsets and from and to the UTF-16 indexes. A range is dropped when it starts or ends inside a
 // character or past the end, is empty, starts before the previous kept one ends, names no member, or comes after
-// the 32nd. A text over TEXT_LIMIT keeps none: the server never accepts one, so its ranges mean nothing.
-export function validMentions(text, mentions) {
+// the 32nd. A text over TEXT_LIMIT keeps none: the server never accepts one, so its ranges mean nothing. A draft is
+// read with its own, wider limits (maxBytes, maxMentions).
+export function validMentions(text, mentions, { maxBytes = TEXT_LIMIT, maxMentions = MENTION_LIMIT } = {}) {
   const s = typeof text === 'string' ? text : '';
   if (!s || !Array.isArray(mentions) || !mentions.length) return [];
-  if (byteLength(s) > TEXT_LIMIT) return [];
+  if (byteLength(s) > maxBytes) return [];
   const at = boundaries(s);
   const kept = [];
   let prevEnd = 0;
   for (const m of mentions) {
-    if (kept.length >= MENTION_LIMIT) break;
+    if (kept.length >= maxMentions) break;
     if (!m || typeof m.actor !== 'string' || !MEMBER_ID.test(m.actor)) continue;
     const { start, end } = m;
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end || start < prevEnd) continue;
@@ -135,12 +141,13 @@ export function validMentions(text, mentions) {
 }
 
 // A saved draft or a message back as the composer's parts: strings and locked chips { member, label }, where the
-// label is the text the chip covers. Ranges that don't hold come back as plain text.
+// label is the text the chip covers. Ranges that don't hold come back as plain text. The draft limits apply, so a
+// draft over the send limits comes back whole, its chips included, with Send off until it fits.
 export function toParts(text, mentions) {
   const s = typeof text === 'string' ? text : '';
   const parts = [];
   let i = 0;
-  for (const m of validMentions(s, mentions)) {
+  for (const m of validMentions(s, mentions, DRAFT)) {
     if (m.from > i) parts.push(s.slice(i, m.from));
     parts.push({ member: m.actor, label: s.slice(m.from, m.to) });
     i = m.to;
@@ -157,7 +164,7 @@ export function appendToDraft(kept, text, mentions) {
   const after = typeof text === 'string' ? text : '';
   const glue = before ? '\n' : '';
   const shift = byteLength(before + glue);
-  const moved = (s, list, by) => validMentions(s, list).map(({ actor, start, end }) => ({ actor, start: start + by, end: end + by }));
+  const moved = (s, list, by) => validMentions(s, list, DRAFT).map(({ actor, start, end }) => ({ actor, start: start + by, end: end + by }));
   return { text: before + glue + after, mentions: [...moved(before, kept && kept.mentions, 0), ...moved(after, mentions, shift)] };
 }
 

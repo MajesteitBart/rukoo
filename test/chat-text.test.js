@@ -190,6 +190,34 @@ test('16,384 bytes fit the text limit and 16,385 do not; 32 mentions fit and 33 
   assert.equal(sendProblem(toWire([' \n'])), 'empty');
 });
 
+test('a draft over the send limits comes back whole, its chips included, with Send off', async () => {
+  const { toParts, toWire, sendProblem, appendToDraft, DRAFT_TEXT_LIMIT, DRAFT_MENTION_LIMIT } = await loading;
+  // The same limits main's wire.js takes a draft with.
+  const { limits } = require('../src/main/workspaces/wire');
+  assert.equal(DRAFT_TEXT_LIMIT, limits.DRAFT_BYTES);
+  assert.equal(DRAFT_MENTION_LIMIT, limits.DRAFT_MENTIONS);
+  const chips = (n) => Array.from({ length: n }, (_, i) => [{ member: ann, label: `@A${i}` }, ' ']).flat();
+
+  // 33 mentions: saved as a draft, opened again with all 33 chips, and Send says why it is off.
+  const many = toWire(chips(33));
+  const back = toParts(many.text, many.mentions);
+  assert.equal(back.filter((p) => typeof p !== 'string').length, 33);
+  assert.equal(sendProblem(toWire(back)), 'tooManyMentions');
+
+  // Over 16,384 bytes with a mention: the chip stays, and Send says the text is too long.
+  const long = toWire([{ member: bob, label: '@Bob' }, ` ${'x'.repeat(17000)}`]);
+  const longBack = toParts(long.text, long.mentions);
+  assert.deepEqual(longBack[0], { member: bob, label: '@Bob' });
+  assert.equal(sendProblem(toWire(longBack)), 'tooLong');
+
+  // Undo of Discard into such a draft keeps its chips too.
+  assert.equal(appendToDraft({ text: many.text, mentions: many.mentions }, 'Hoi', []).mentions.length, 33);
+
+  // Past the draft limits main never saves, so nothing there holds.
+  const tooMany = toWire(chips(DRAFT_MENTION_LIMIT + 1));
+  assert.equal(toParts(tooMany.text, tooMany.mentions).filter((p) => typeof p !== 'string').length, DRAFT_MENTION_LIMIT);
+});
+
 test('Undo of Discard puts the message after a kept draft on a new line, its ranges moved by the bytes before it', async () => {
   const { appendToDraft, toWire, toParts } = await loading;
   // A draft with a non-ASCII word before its mention, so UTF-16 and byte offsets differ.

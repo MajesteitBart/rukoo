@@ -345,6 +345,12 @@ function int(v, where, min = 0, max = Number.MAX_SAFE_INTEGER) {
   if (!Number.isSafeInteger(v) || v < min || v > max) throw refused(where);
   return v;
 }
+// A time in milliseconds since 1970 that a JavaScript Date can hold (8.64e15, the year 275760): the renderer turns
+// every time it shows into a Date, and a later one would throw there.
+const TIME_MAX = 8.64e15;
+function time(v, where) {
+  return int(v, where, 0, TIME_MAX);
+}
 function intOrNull(v, where, min = 0) {
   return v === null || v === undefined ? null : int(v, where, min);
 }
@@ -393,7 +399,7 @@ function checkRoom(v, where = 'room') {
     members: v.members === undefined ? 0 : int(v.members, `${where}.members`),
     head: int(v.head, `${where}.head`),
     floor: int(v.floor, `${where}.floor`),
-    lastAt: intOrNull(v.lastAt, `${where}.lastAt`),
+    lastAt: v.lastAt === null || v.lastAt === undefined ? null : time(v.lastAt, `${where}.lastAt`),
     read: int(v.read, `${where}.read`),
     unread: int(v.unread, `${where}.unread`, 0, BADGE_CAP),
     mentions: int(v.mentions, `${where}.mentions`, 0, BADGE_CAP),
@@ -424,7 +430,7 @@ function checkEvent(v, where = 'event') {
     id: id(v.id, EVENT_ID, `${where}.id`),
     kind,
     actor: id(v.actor, MEMBER_ID, `${where}.actor`),
-    at: int(v.at, `${where}.at`)
+    at: time(v.at, `${where}.at`)
   };
   switch (kind) {
     case 'message.posted':
@@ -525,7 +531,7 @@ function checkMember(v, where = 'member') {
     name: str(v.name, `${where}.name`),
     role: oneOf(v.role, MEMBER_ROLES, `${where}.role`),
     state: oneOf(v.state, MEMBER_STATES, `${where}.state`),
-    joinedAt: int(v.joinedAt, `${where}.joinedAt`)
+    joinedAt: time(v.joinedAt, `${where}.joinedAt`)
   };
 }
 
@@ -536,10 +542,10 @@ function checkWorkspaceRow(v, where) {
   return {
     id: id(v.id, WORKSPACE_ID, `${where}.id`),
     name: str(v.name, `${where}.name`, NAME_UNITS, 1),
-    createdAt: int(v.createdAt, `${where}.createdAt`),
+    createdAt: time(v.createdAt, `${where}.createdAt`),
     generation: id(v.generation, GENERATION, `${where}.generation`),
     keyId: id(v.keyId, KEY_ID, `${where}.keyId`),
-    time: int(v.time, `${where}.time`),
+    time: time(v.time, `${where}.time`),
     limits: {
       members: int(limits.members, `${where}.limits.members`),
       conversations: int(limits.conversations, `${where}.limits.conversations`),
@@ -618,7 +624,7 @@ function checkRoomMembers(v) {
 // GET /blocks: { blocks: [{ member, at }] }; POST /blocks answers one { block }.
 function checkBlock(v, where = 'block') {
   obj(v, where);
-  return { member: id(v.member, MEMBER_ID, `${where}.member`), at: int(v.at, `${where}.at`) };
+  return { member: id(v.member, MEMBER_ID, `${where}.member`), at: time(v.at, `${where}.at`) };
 }
 function checkBlocks(v) {
   obj(v, 'blocks');
@@ -643,8 +649,8 @@ function checkInviteRow(v, where) {
     channels: ids(v.channels, CONVERSATION_ID, `${where}.channels`, INVITE_CHANNELS),
     channelCount: int(v.channelCount, `${where}.channelCount`),
     issuer: id(v.issuer, MEMBER_ID, `${where}.issuer`),
-    createdAt: int(v.createdAt, `${where}.createdAt`),
-    expiresAt: int(v.expiresAt, `${where}.expiresAt`)
+    createdAt: time(v.createdAt, `${where}.createdAt`),
+    expiresAt: time(v.expiresAt, `${where}.expiresAt`)
   };
 }
 

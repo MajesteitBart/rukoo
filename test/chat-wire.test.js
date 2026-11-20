@@ -271,6 +271,17 @@ test('checkEvents takes every event kind in order and refuses a page out of orde
   refusedAt(() => wire.checkEvents({ events: [], head: -1, floor: 1 }), 'events.head');
 });
 
+test('a time a JavaScript Date cannot hold is refused, so the renderer never draws one', () => {
+  // 8.64e15 ms is the last moment a Date holds; one past it is a safe integer whose toISOString() throws.
+  const last = 8.64e15;
+  assert.throws(() => new Date(last + 1).toISOString(), RangeError);
+  const ev = (at) => ({ seq: 1, id: id('e', '1'), kind: 'message.posted', actor: U, at, text: 'Hoi', mentions: [] });
+  assert.equal(wire.checkEvents({ events: [ev(last)], head: 1, floor: 1 }).events[0].at, last);
+  refusedAt(() => wire.checkEvents({ events: [ev(last + 1)], head: 1, floor: 1 }), 'events.events[0].at');
+  refusedAt(() => wire.checkEvents({ events: [ev(Number.MAX_SAFE_INTEGER)], head: 1, floor: 1 }), 'events.events[0].at');
+  refusedAt(() => wire.checkBlocks({ blocks: [{ member: U, at: last + 1 }] }), 'blocks.blocks[0].at');
+});
+
 test('the directory, workspace and other answers are checked whole', () => {
   const member = { id: U, kind: 'human', name: 'Zoë', role: 'owner', state: 'active', joinedAt: 1 };
   const workspace = {
