@@ -185,13 +185,9 @@ impl ScriptedStream {
         let first = self.committed;
         let upto = upto.max(first);
         let mut values = Vec::with_capacity((upto - first) * SCRIPTED_SPEAKERS);
-        for f in first..upto {
+        for frame in &self.frames[first..upto] {
             for s in 0..SCRIPTED_SPEAKERS {
-                values.push(if self.frames[f] == Some(s) {
-                    0.95
-                } else {
-                    0.02
-                });
+                values.push(if *frame == Some(s) { 0.95 } else { 0.02 });
             }
         }
         self.committed = upto;

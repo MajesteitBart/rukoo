@@ -146,13 +146,15 @@ fn nemotron(assets: &Assets, data: &Path, exe_dir: PathBuf) -> Labels {
 /// `tests/live.rs` builds the recorder.
 fn workspace_exe(package: &str, bin: &str) -> PathBuf {
     let name = format!("{bin}{}", std::env::consts::EXE_SUFFIX);
-    // target/<profile>/deps/speakers_ami-<hash>.exe
-    let deps = std::env::current_exe()
+    // target/<profile>/deps/speakers_ami-<hash>.exe up to cargo 1.99, and
+    // target/<profile>/build/voice-meetings/<hash>/out/speakers_ami-<hash>.exe from 1.100.
+    let profile = std::env::current_exe()
         .unwrap()
-        .parent()
-        .unwrap()
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|n| n == "deps" || n == "build"))
+        .and_then(Path::parent)
+        .expect("the test runs from cargo's target folder")
         .to_owned();
-    let profile = deps.parent().unwrap().to_owned();
     let exe = profile.join(&name);
     if exe.is_file() {
         return exe;
