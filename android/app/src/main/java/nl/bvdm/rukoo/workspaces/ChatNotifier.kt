@@ -195,6 +195,15 @@ class ChatAlertEngine(
 
     private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?)
 
+    // The newest message a fetch for a DM's alert loaded, by "ws/room": the DM row's preview while the cache doesn't
+    // hold it yet (§7.4). It stays out of the cache, whose range the room loader owns.
+    private val fetchedNewest = HashMap<String, Event>()
+
+    private fun previewKey(ws: String, room: String) = "$ws/$room"
+
+    /** The newest message an alert's fetch loaded for the DM [room] of [ws], for its row's preview; null when none did. */
+    fun fetchedPreview(ws: String, room: String): Event? = synchronized(lock) { fetchedNewest[previewKey(ws, room)] }
+
     /**
      * The end of a run of [ws]: alerts that a read here or elsewhere took back go, then the due rooms alert. [fetch]
      * loads a room's newest events (`events?before=<head + 1>&limit=20`); its failure leaves the room due.
@@ -253,6 +262,7 @@ class ChatAlertEngine(
                     // Not now: the room stays due for the next run.
                     continue
                 }
+                if (room.kind == RoomKind.DM.wire) keepNewest(store, ws, room, page)
                 // Meanwhile the person may have read it, muted it or opened it.
                 room = store.read { getRoom(ws, d.id) } ?: continue
                 if (!ChatAlertRules.due(room)) continue
@@ -299,6 +309,11 @@ class ChatAlertEngine(
      */
     suspend fun onRemoved(ws: String, room: String, ids: Collection<String>, store: WorkspaceStore) {
         if (ids.isEmpty()) return
+        // A kept preview that was removed shows as removed, as a cached one does.
+        synchronized(lock) {
+            val key = previewKey(ws, room)
+            fetchedNewest[key]?.takeIf { it.id in ids }?.let { fetchedNewest[key] = it.copy(text = null, mentions = emptyList(), redacted = true) }
+        }
         val noticed = store.read { if (getRoom(ws, room) != null) noticesForRoom(ws, room).map { it.message }.toSet() else emptySet() }
         val entry = synchronized(lock) { shown[ChatAlertRules.roomKey(ws, room)] }
         if (ids.any { it in noticed || (entry != null && it in entry.messages) }) takeBack(ws, room, store, summary = false)
@@ -306,6 +321,7 @@ class ChatAlertEngine(
 
     /** The person lost the room: its alert goes, and the summary stops counting it. Its notice rows went with the room. */
     fun onEvicted(ws: String, room: String) {
+        synchronized(lock) { fetchedNewest.remove(previewKey(ws, room)) }
         forget(ws, room)
         sink.hide(ChatAlertRules.roomKey(ws, room))
     }
@@ -324,6 +340,7 @@ class ChatAlertEngine(
         synchronized(lock) {
             shown.clear()
             settled.clear()
+            fetchedNewest.clear()
         }
         sink.hideAll(ChatAlertRules.PREFIX)
     }
@@ -332,6 +349,7 @@ class ChatAlertEngine(
         synchronized(lock) {
             shown.entries.removeAll { it.value.ws == ws }
             settled += ws
+            fetchedNewest.keys.removeAll { it.startsWith(previewKey(ws, "")) }
         }
         sink.hideAll(ChatAlertRules.workspacePrefix(ws))
     }
@@ -373,6 +391,18 @@ class ChatAlertEngine(
         if (shownEvents.isNotEmpty()) return shownEvents
         val reached = !page.more || (page.events.isNotEmpty() && page.events.first().seq <= after + 1)
         return if (reached) emptyList() else null
+    }
+
+    // Keeps the page's newest message that still exists as the DM's preview, when it is newer than the one kept.
+    private suspend fun keepNewest(store: WorkspaceStore, ws: String, room: RoomRow, page: EventPage) {
+        val newest = page.events.filter { it.kind == WireEvent.MESSAGE_POSTED && it.seq <= room.head }.maxByOrNull { it.seq } ?: return
+        if (store.read { hasTombstone(ws, newest.id) }) return
+        val event = Event(newest.seq, newest.id, newest.kind, newest.actor, newest.at, newest.root, newest.text, newest.mentions, newest.redacted)
+        synchronized(lock) {
+            val key = previewKey(ws, room.id)
+            val kept = fetchedNewest[key]
+            if (kept == null || kept.seq < event.seq) fetchedNewest[key] = event
+        }
     }
 
     private fun title(room: RoomRow, ctx: Context, w: ChatAlertWords): String {

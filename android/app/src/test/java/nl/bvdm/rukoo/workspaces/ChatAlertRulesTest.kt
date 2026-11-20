@@ -8,6 +8,7 @@ import nl.bvdm.rukoo.ui.chat.ChatNames
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -264,6 +265,34 @@ class ChatAlertRulesTest {
         s.run()
         assertEquals(listOf(Ids.DM), s.fetched.toList())
         assertEquals("only the message after notified shows", listOf(6L), s.sink.shown.single().lines.map { it.seq })
+    }
+
+    @Test
+    fun `a DM's newest message that an alert loaded is kept as its preview, outside the cache`() = runTest {
+        val s = setup()
+        // Nothing of the DM is cached: its new messages came through the feed only.
+        s.room(room(Ids.DM, dm = true, head = 6, read = 4, unread = 2))
+        s.pages = mapOf(Ids.DM to EventPage((1L..6L).map { msg(it, room = 4, actor = if (it == 6L) Ids.ME else Ids.OLGA) }, head = 6, floor = 1))
+        s.run()
+        assertEquals(listOf(Ids.DM), s.fetched.toList())
+        val kept = s.engine.fetchedPreview(ws, Ids.DM)!!
+        assertEquals(6L, kept.seq)
+        assertEquals("message 6", kept.text)
+        assertTrue("the room's cache range stays the loader's", s.store.read { eventsFrom(ws, Ids.DM, 0, Int.MAX_VALUE) }.isEmpty())
+        assertNull(s.row(Ids.DM).hi)
+
+        // The cache's newest wins once it holds that message; a newer fetched one wins over an older cached one.
+        val cached = s.store.read { lastMessage(ws, Ids.DM) }
+        assertEquals(kept, newestOf(cached, kept))
+        assertEquals(kept, newestOf(kept.copy(seq = 3), kept))
+        assertEquals(kept.copy(text = "cached"), newestOf(kept.copy(text = "cached"), kept))
+
+        // A removal turns it into a removed message; an eviction, the workspace going and the session's end drop it.
+        s.engine.onRemoved(ws, Ids.DM, listOf(kept.id), s.store)
+        assertTrue(s.engine.fetchedPreview(ws, Ids.DM)!!.redacted)
+        assertNull(s.engine.fetchedPreview(ws, Ids.DM)!!.text)
+        s.engine.onEvicted(ws, Ids.DM)
+        assertNull(s.engine.fetchedPreview(ws, Ids.DM))
     }
 
     @Test

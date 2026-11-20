@@ -171,6 +171,7 @@
 
     <!-- chat.msg.* -->
     <string name="chat_msg_actions">Berichtacties</string>
+    <string name="chat_msg_actions_title">%1$s: %2$s</string>
     <string name="chat_msg_reply">Antwoorden in thread</string>
     <string name="chat_msg_copy">Tekst kopiëren</string>
     <string name="chat_msg_copied">Gekopieerd</string>
@@ -200,6 +201,8 @@
     <string name="chat_remove_body">Het verdwijnt voor iedereen in %1$s. Dit kun je niet ongedaan maken.</string>
     <string name="chat_remove_body_other">Het verdwijnt voor iedereen in %1$s, en %2$s ziet dat het is verwijderd.</string>
     <string name="chat_remove_confirm">Verwijderen</string>
+    <string name="chat_remove_quote">“%1$s”</string>
+    <string name="chat_remove_replies">De antwoorden erop blijven staan.</string>
 
     <!-- chat.input.* -->
     <string name="chat_input_placeholder_channel">Bericht in #%1$s</string>
@@ -467,6 +470,7 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string>
+    <string name="chat_list_you">Jij: %1$s</string>
     <string name="chat_notify_summary_title">Teamchat</string>
     <plurals name="chat_notify_summary_body">
         <item quantity="one">Nieuwe berichten in %d gesprek</item>

@@ -33,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -124,6 +125,60 @@ fun RkTextField(
             error != null -> Text(error, style = Rk.type.text13, color = c.danger)
             help != null -> Text(help, style = Rk.type.text12, color = c.text3)
         }
+    }
+}
+
+/**
+ * [RkTextField] for a single line whose selection the caller sets, such as a name that opens selected so typing
+ * replaces it. The same frame, focus halo and [error] line.
+ */
+@Composable
+fun RkTextField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+    error: String? = null,
+    enabled: Boolean = true,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    focusRequester: FocusRequester? = null,
+) {
+    val c = Rk.colors
+    val shape = Rk.shapes.control
+    val source = remember { MutableInteractionSource() }
+    val focused by source.collectIsFocusedAsState()
+    val edge = when {
+        error != null -> c.danger
+        focused -> c.accent
+        else -> c.borderStrong
+    }
+    var field = Modifier.fillMaxWidth()
+    if (focused) field = field.dropShadow(shape, Shadow(radius = 0.dp, spread = 3.dp, color = if (error != null) c.redTint else c.accentSoft))
+    field = field.background(c.panel, shape).border(1.dp, edge, shape)
+    val style = Rk.type.text13_5.copy(color = c.text)
+    Column(modifier.alpha(if (enabled) 1f else 0.55f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = (if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier).fillMaxWidth(),
+            enabled = enabled,
+            textStyle = style,
+            singleLine = true,
+            keyboardOptions = keyboardOptions,
+            keyboardActions = keyboardActions,
+            interactionSource = source,
+            cursorBrush = SolidColor(c.accent),
+            decorationBox = { inner ->
+                Box(field.heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp), contentAlignment = Alignment.CenterStart) {
+                    if (value.text.isEmpty() && placeholder != null) {
+                        Text(placeholder, style = style, color = c.text3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    inner()
+                }
+            },
+        )
+        if (error != null) Text(error, style = Rk.type.text13, color = c.danger)
     }
 }
 

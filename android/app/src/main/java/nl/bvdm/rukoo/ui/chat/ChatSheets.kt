@@ -70,7 +70,6 @@ import nl.bvdm.rukoo.ui.components.RkBottomSheet
 import nl.bvdm.rukoo.ui.components.RkButton
 import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkButtonSize
-import nl.bvdm.rukoo.ui.components.RkChipButton
 import nl.bvdm.rukoo.ui.components.RkDropdownMenu
 import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkIconButton
@@ -861,13 +860,14 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
                 keyboardActions = KeyboardActions(onGo = { submit(close) }),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                RkChipButton(stringResource(R.string.chat_join_paste), icon = PanelIcons.Copy, enabled = !joining, onClick = {
+                // A small secondary button, like Copy link, so it gets Android's 48dp touch target.
+                RkButton(stringResource(R.string.chat_join_paste), {
                     val pasted = readClipboard(context)
                     if (!pasted.isNullOrBlank()) {
                         text = pasted.trim()
                         check(text)
                     }
-                })
+                }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = ChatIcons.Clipboard, enabled = !joining)
                 if (checking) {
                     Spinner(size = 14.dp)
                     Text(stringResource(R.string.chat_join_checking), style = Rk.type.text12_5, color = Rk.colors.text3)

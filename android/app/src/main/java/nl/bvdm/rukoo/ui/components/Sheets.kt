@@ -227,7 +227,7 @@ private class MenuPositionProvider(private val dx: Int, private val gap: Int, pr
 }
 
 /**
- * A row in an [RkDropdownMenu] (bui.js `glideMenu` rows): 40dp on touch, 6dp corners inside the menu's 4dp
+ * A row in an [RkDropdownMenu] (bui.js `glideMenu` rows): 48dp on touch (Android's touch target), 6dp corners inside the menu's 4dp
  * inset, icon 16 in `ink2`, label 12.5/500, a [tag] in `ink3` and a check on the [checked] row. [leading]
  * replaces the icon, for a status dot.
  */
@@ -248,7 +248,7 @@ fun RkMenuItem(
         modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp)
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .alpha(if (enabled) 1f else 0.45f)
             .rkClickable(Rk.shapes.chip, enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp),

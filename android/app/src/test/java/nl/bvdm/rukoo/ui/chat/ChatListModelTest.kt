@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.ui.chat
 
+import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.Connection
 import nl.bvdm.rukoo.workspaces.Event
@@ -154,13 +155,29 @@ class ChatListModelTest {
         assertEquals(RoomPreview(null, "Lunch at 12?", removed = false), ChatListModel.preview(one, people, me.id, names))
         val group = dm("d_2", with = listOf("sanne", "mila"), preview = event(u("mila"), "Done"))
         assertEquals(RoomPreview("Mila", "Done", removed = false), ChatListModel.preview(group, people, me.id, names))
-        // Your own message in a group carries no name; a removed one says so.
+        // Your own message carries no name but is marked as yours ("You: "), in a group and one to one; a removed one
+        // says so.
         val mine = dm("d_3", with = listOf("sanne", "mila"), preview = event(me.id, "Mine"))
-        assertNull(ChatListModel.preview(mine, people, me.id, names)!!.author)
+        assertEquals(RoomPreview(null, "Mine", removed = false, mine = true), ChatListModel.preview(mine, people, me.id, names))
+        val mineOne = dm("d_6", with = listOf("sanne"), preview = event(me.id, "Sure"))
+        assertEquals(RoomPreview(null, "Sure", removed = false, mine = true), ChatListModel.preview(mineOne, people, me.id, names))
+        assertFalse(ChatListModel.preview(one, people, me.id, names)!!.mine)
         val removed = dm("d_4", with = listOf("sanne"), preview = event(u("sanne"), null, redacted = true))
         assertTrue(ChatListModel.preview(removed, people, me.id, names)!!.removed)
         assertNull(ChatListModel.preview(dm("d_5", with = listOf("sanne")), people, me.id, names))
         assertNull(ChatListModel.preview(channel("c", "x"), people, me.id, names))
+    }
+
+    @Test
+    fun `the workspace button gets a dot when another workspace asks for attention, a warning when that one is stopped`() {
+        val acme = WorkspaceSummary("w1", "Acme", "member", status = WorkspaceStatus.OK, attention = 2)
+        val studio = WorkspaceSummary("w2", "Studio", "member", status = WorkspaceStatus.OK)
+        // Only the selected workspace has news: the list itself shows it.
+        assertNull(ChatListModel.othersNews(listOf(acme, studio), "w1"))
+        assertEquals(NewsTone.UNREAD, ChatListModel.othersNews(listOf(acme, studio), "w2"))
+        assertEquals(NewsTone.UNREAD, ChatListModel.othersNews(listOf(acme.copy(attention = 0, unread = true), studio), "w2"))
+        assertEquals(NewsTone.WAITING, ChatListModel.othersNews(listOf(acme.copy(status = WorkspaceStatus.QUARANTINED), studio), "w2"))
+        assertNull(ChatListModel.othersNews(listOf(acme.copy(attention = 0), studio), "w2"))
     }
 
     @Test

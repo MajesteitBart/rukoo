@@ -733,9 +733,18 @@ private fun FoldersButton(onClick: () -> Unit, modifier: Modifier = Modifier, ne
     }
 }
 
-/** A 48dp raised button in a bottom corner of a list, holding [content]; [news] adds the news dot at its top right. */
+/**
+ * A 48dp raised button in a bottom corner of a list, holding [content]; [news] adds the news dot at its top right, in
+ * [newsTone].
+ */
 @Composable
-internal fun CornerButton(onClick: () -> Unit, modifier: Modifier = Modifier, news: Boolean = false, content: @Composable () -> Unit) {
+internal fun CornerButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    news: Boolean = false,
+    newsTone: NewsTone = NewsTone.UNREAD,
+    content: @Composable () -> Unit,
+) {
     val c = Rk.colors
     val shape = Rk.shapes.panel
     val source = remember { MutableInteractionSource() }
@@ -749,7 +758,7 @@ internal fun CornerButton(onClick: () -> Unit, modifier: Modifier = Modifier, ne
                 .size(48.dp),
             contentAlignment = Alignment.Center,
         ) { content() }
-        if (news) NewsDot(NewsTone.UNREAD, ring = c.raised, modifier = Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp))
+        if (news) NewsDot(newsTone, ring = c.raised, modifier = Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp))
     }
 }
 

@@ -48,6 +48,9 @@ interface ChatUiHost {
 
     /** Shows another workspace, or none. */
     fun selectWorkspace(id: String?)
+
+    /** Opens the thread of [root] in [room] of [ws], when that workspace is still the one on screen. */
+    fun openThread(ws: String, room: String, root: String) {}
 }
 
 /**
@@ -376,39 +379,52 @@ class ChatUi(
         }
     }
 
-    // Undo of Discard: the text and mentions after what the composer holds. A composer this process never showed (a
-    // held thread reply discarded from the room after a restart) is only its cached draft, which keeps its text too.
+    // Undo of Discard: the text and mentions after what the composer holds. A thread reply discarded from the room goes
+    // back to a composer that isn't on screen, so its thread opens with the text in it. A room composer this process
+    // never showed is only its cached draft, which keeps its text too.
     private fun restore(ws: String, room: String, row: PendingRow) {
         val key = composerKey(ws, room, row.root)
+        val root = row.root
         val state = composers[key]
         if (state != null) {
-            composerChanged(ws, room, row.root, MentionEditing.append(state.value, row.text, row.mentions))
+            composerChanged(ws, room, root, MentionEditing.append(state.value, row.text, row.mentions))
+            if (root != null) host.openThread(ws, room, root)
             return
         }
         launch(ctx = context(ws)) {
-            val root = row.root
             val kept = withTimeoutOrNull(DRAFT_READ_MS) {
                 if (root == null) timeline(ws, room).firstOrNull()?.draft else thread(ws, room, root).firstOrNull()?.draft
             }
             // The composer may have come on screen meanwhile, from the draft as it was.
             val now = composers[key]
-            if (now != null) {
-                composerChanged(ws, room, root, MentionEditing.append(now.value, row.text, row.mentions))
-            } else {
-                saveDraft(ws, room, root, MentionEditing.appendToDraft(kept, row.text, row.mentions))
+            when {
+                now != null -> composerChanged(ws, room, root, MentionEditing.append(now.value, row.text, row.mentions))
+                // The thread's composer starts from the draft with the text after it, and is kept as the draft.
+                root != null -> composerChanged(ws, room, root, MentionEditing.append(MentionEditing.fromDraft(kept), row.text, row.mentions))
+                else -> saveDraft(ws, room, root, MentionEditing.appendToDraft(kept, row.text, row.mentions))
             }
+            if (root != null) host.openThread(ws, room, root)
         }
     }
 
     /**
-     * Remove a message (§3.14, desktop-ui 6.14): asked first, naming the room ([where]) and, for a manager removing
-     * someone else's message, its [author]. The row changes once the server took it.
+     * Remove a message (§3.14, desktop-ui 6.14): asked first, quoting the message's first line ([quote], when it has
+     * text), naming the room ([where]) and, for a manager removing someone else's message, its [author]; a message
+     * with [replies] says they stay. The row changes once the server took it.
      */
-    fun remove(ws: String, room: String, message: String, where: String, author: String?) {
+    fun remove(ws: String, room: String, message: String, where: String, author: String?, quote: String? = null, replies: Int = 0) {
         launch("remove:$message", context(ws)) {
-            val body = if (author == null) strings.get(R.string.chat_remove_body, where) else strings.get(R.string.chat_remove_body_other, where, author)
-            if (confirm(strings.get(R.string.chat_remove_title), body, strings.get(R.string.chat_remove_confirm), danger = true)) redact(ws, room, message)
+            if (confirm(strings.get(R.string.chat_remove_title), removeBody(where, author, quote, replies), strings.get(R.string.chat_remove_confirm), danger = true)) {
+                redact(ws, room, message)
+            }
         }
+    }
+
+    /** The text of Remove's question: the quoted first line, then what removing does. */
+    internal fun removeBody(where: String, author: String?, quote: String?, replies: Int): String {
+        val body = if (author == null) strings.get(R.string.chat_remove_body, where) else strings.get(R.string.chat_remove_body_other, where, author)
+        val withReplies = if (replies > 0) body + " " + strings.get(R.string.chat_remove_replies) else body
+        return if (quote.isNullOrEmpty()) withReplies else strings.get(R.string.chat_remove_quote, quote) + "\n\n" + withReplies
     }
 
     private suspend fun quietly(block: suspend () -> Unit) {
@@ -481,40 +497,46 @@ class ChatUi(
     fun markRead(ws: String, room: String) = launch("markRead:$room", context(ws)) { markAllRead(ws, room) }
 
     /**
-     * A question with a name field that asks again, with what went wrong in place of its text, until the name is
-     * taken or the person cancels: a server error never closes it (desktop-ui 6). [save] gets the trimmed name.
+     * A question with a name field, the name selected, that stays open until the name is taken or the person cancels
+     * (desktop-ui 6): Save shows progress while [save] runs, and a refusal shows under the field in the error style.
+     * [save] gets the trimmed name.
      */
-    private suspend fun askName(title: String, hint: String?, current: String, placeholder: String, ws: String, save: suspend (String) -> Unit) {
-        var text = current
-        var problem: String? = null
-        while (true) {
-            val answer = ask(
-                DialogRequest(
-                    title,
-                    problem ?: hint,
-                    strings.get(R.string.common_actions_save),
-                    strings.get(R.string.common_actions_cancel),
-                    input = text,
-                    inputPlaceholder = placeholder,
-                ),
-            )
-            if (answer.choice != DialogChoice.CONFIRM) return
-            text = answer.text
-            val name = text.trim()
-            if (!SheetRules.nameOk(name)) {
-                problem = strings.get(R.string.chat_errors_invalid_name)
-                continue
-            }
-            if (name == current.trim()) return
-            try {
-                save(name)
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                problem = errorText(e, context(ws))
-            }
-        }
+    private suspend fun Workspaces.askName(title: String, hint: String?, current: String, placeholder: String, ws: String, save: suspend Workspaces.(String) -> Unit) {
+        val w = this
+        lateinit var request: DialogRequest
+        request = DialogRequest(
+            title,
+            hint,
+            strings.get(R.string.common_actions_save),
+            strings.get(R.string.common_actions_cancel),
+            input = current,
+            inputPlaceholder = placeholder,
+            selectInput = true,
+            submit = submit@{ text ->
+                val name = text.trim()
+                if (!SheetRules.nameOk(name)) {
+                    request.error = strings.get(R.string.chat_errors_invalid_name)
+                    return@submit
+                }
+                if (name == current.trim()) return@submit request.answer(DialogChoice.CONFIRM, text)
+                request.error = null
+                request.busy = true
+                scope.launch {
+                    try {
+                        w.save(name)
+                        request.answer(DialogChoice.CONFIRM, text)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Cancelled meanwhile: the question is gone, so the refusal is a toast.
+                        if (request.answer.isCompleted) showError(e, context(ws)) else request.error = errorText(e, context(ws))
+                    } finally {
+                        request.busy = false
+                    }
+                }
+            },
+        )
+        ask(request)
     }
 
     /** Your name in [ws] (desktop-ui 6.16 "You"). */
@@ -524,7 +546,7 @@ class ChatUi(
         }
     }
 
-    /** Rename a channel (desktop-ui 6.7): names per §3.16, `name_taken` asks again. */
+    /** Rename a channel (desktop-ui 6.7): names per §3.16, `name_taken` shows under the field. */
     fun askRenameChannel(ws: String, room: Room) = launch("rename:${room.id}", context(ws)) {
         val name = room.name.orEmpty()
         askName(strings.get(R.string.chat_channel_rename_title, name), null, name, strings.get(R.string.chat_channel_name), ws) {
@@ -1016,6 +1038,14 @@ internal object ChatIcons {
 
     /** A channel visible to the workspace. */
     val Hash: ImageVector by lazy { icon("hash") { path("M9.5 4 7.5 20M16.5 4l-2 16M4.5 9h16M3.5 15h16") } }
+
+    /** A clipboard (Lucide `clipboard`), for Paste. */
+    val Clipboard: ImageVector by lazy {
+        icon("clipboard") {
+            rect(8f, 2.5f, 8f, 4f, 1f)
+            path("M16 4.5h1.5A2.5 2.5 0 0 1 20 7v12.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 19.5V7a2.5 2.5 0 0 1 2.5-2.5H8")
+        }
+    }
 
     /** A speech bubble, for Chat's empty states. */
     val Bubble: ImageVector by lazy {

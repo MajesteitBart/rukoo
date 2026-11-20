@@ -211,6 +211,7 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
                 where = roomTitle,
                 author = members[row.actor],
                 names = names,
+                replyCount = if (row.id == root) t.replies.count { it.isMessage } else 0,
                 onDismiss = { actionsFor = null },
             )
         }

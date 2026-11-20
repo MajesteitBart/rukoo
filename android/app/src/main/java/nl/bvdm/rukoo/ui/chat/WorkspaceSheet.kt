@@ -198,7 +198,7 @@ private fun DrawerAction(label: String, icon: ImageVector, danger: Boolean = fal
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 44.dp)
+            .heightIn(min = 48.dp)
             .alpha(if (enabled) 1f else 0.5f)
             .rkClickable(Rk.shapes.control, enabled = enabled, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),

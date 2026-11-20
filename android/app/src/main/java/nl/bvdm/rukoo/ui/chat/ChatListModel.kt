@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
 import kotlinx.serialization.Serializable
+import nl.bvdm.rukoo.ui.components.NewsTone
 import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.Connection
 import nl.bvdm.rukoo.workspaces.Member
@@ -95,8 +96,11 @@ class ChatNames(
         if (room.kind == RoomKind.DM) dmTitle(room.participants, members, me) else room.name.orEmpty()
 }
 
-/** A DM row's line under its title: the newest cached message, with its author's name in a group. */
-data class RoomPreview(val author: String?, val text: String?, val removed: Boolean)
+/**
+ * A DM row's line under its title: the newest message, with its author's name in a group, or "You:" when it is the
+ * person's own ([mine]), so their last message doesn't read as the other person's.
+ */
+data class RoomPreview(val author: String?, val text: String?, val removed: Boolean, val mine: Boolean = false)
 
 /** One row of the conversation list. [title] is a channel's bare name or a DM's people. */
 data class RoomRow(
@@ -167,6 +171,19 @@ object ChatListModel {
         else -> ChatStatus.IDLE
     }
 
+    /**
+     * The dot on the list's workspace button (desktop chat.js `othersAsk`): another workspace than [selected] has
+     * something calling for attention or unread messages. Warning when such a workspace is stopped; null for none.
+     */
+    fun othersNews(workspaces: List<WorkspaceSummary>, selected: String?): NewsTone? {
+        val asking = workspaces.filter { it.id != selected && (it.attention > 0 || it.unread) }
+        return when {
+            asking.isEmpty() -> null
+            asking.any { it.status == WorkspaceStatus.QUARANTINED } -> NewsTone.WAITING
+            else -> NewsTone.UNREAD
+        }
+    }
+
     /** What the Unread filter keeps: a room with unread messages that isn't muted, and the room open beside the list. */
     fun matches(room: Room, filter: ChatFilter, open: String?): Boolean = when (filter) {
         ChatFilter.ALL -> true
@@ -174,9 +191,10 @@ object ChatListModel {
     }
 
     /**
-     * A DM's preview from its newest cached message; the author's name only in a group and only for others. None when
-     * the cache is behind: with unread messages, a newest cached message that is already read isn't the newest one,
-     * and showing it next to the unread count would pass it off as the new message (the cache fills when the DM opens).
+     * A DM's preview from its newest known message ([Room.preview]: the cache's, or the one an alert fetched); the
+     * author's name only in a group and only for others, and [RoomPreview.mine] for the person's own. None when that
+     * message is behind: with unread messages, a newest message that is already read isn't the newest one, and showing
+     * it next to the unread count would pass it off as the new message (the cache fills when the DM opens).
      */
     fun preview(room: Room, members: Map<String, Member>, me: String?, names: ChatNames): RoomPreview? {
         if (room.kind != RoomKind.DM) return null
@@ -185,7 +203,7 @@ object ChatListModel {
         val removed = e.redacted || e.text == null
         val group = room.participants.orEmpty().distinct().count { it != me } > 1
         val author = if (group && e.actor != me) names.display(members[e.actor]) else null
-        return RoomPreview(author, if (removed) null else e.text.replace(Regex("\\s+"), " ").trim(), removed)
+        return RoomPreview(author, if (removed) null else e.text.replace(Regex("\\s+"), " ").trim(), removed, mine = me != null && e.actor == me)
     }
 
     /**

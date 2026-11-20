@@ -943,7 +943,7 @@ class WorkspaceService internal constructor(
             val row = getWs(ws) ?: return@read null
             val members = listMembers(ws)
             val me = members.firstOrNull { it.id == row.me } ?: Member(row.me.orEmpty(), "human", row.myName.orEmpty(), row.role, "active", 0)
-            val rooms = listRooms(ws).map { r -> r.toRoom(if (r.kind == RoomKind.DM.wire) lastMessage(ws, r.id) else null) }
+            val rooms = listRooms(ws).map { r -> r.toRoom(if (r.kind == RoomKind.DM.wire) newestOf(lastMessage(ws, r.id), alerts.fetchedPreview(ws, r.id)) else null) }
             val summary = known ?: summary(l, row, Totals(minOf(rooms.sumOf { it.attention }, BADGE_CAP), rooms.any { !it.muted && it.unread > 0 }))
             WorkspaceView(summary, me, rooms, members, row.membersMore, listChannels(ws), listBlocks(ws))
         }
@@ -1604,6 +1604,17 @@ class WorkspaceService internal constructor(
             ""
         }
     }
+}
+
+/**
+ * A DM row's preview (§7.4): the newest cached message, or the newer one an alert's fetch loaded while the cache
+ * doesn't hold it yet. At the same seq the cache's wins, as it knows of a removal.
+ */
+internal fun newestOf(cached: Event?, fetched: Event?): Event? = when {
+    fetched == null -> cached
+    cached == null -> fetched
+    fetched.seq > cached.seq -> fetched
+    else -> cached
 }
 
 /** A cached room as the UI shows it (§4.6 `Room`): `read` is this phone's `readLocal`, and a muted room asks for nothing. */

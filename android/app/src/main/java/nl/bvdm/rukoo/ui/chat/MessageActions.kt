@@ -84,6 +84,22 @@ object MessageRules {
         if (canRemove(message, me, room)) add(MessageAction.REMOVE)
     }
 
+    /** How many characters of a message's first line the menu's title and Remove's question quote. */
+    const val QUOTE_CHARS = 80
+
+    /**
+     * The first line of a message with text, white space folded, cut to [max] characters with an ellipsis: what the
+     * menu's title and Remove's question quote, so the person sees which message they act on. Null without text.
+     */
+    fun firstLine(text: String?, max: Int = QUOTE_CHARS): String? {
+        val line = text.orEmpty().lineSequence().map { it.replace(WHITE, " ").trim() }.firstOrNull { it.isNotEmpty() } ?: return null
+        val points = line.codePointCount(0, line.length)
+        if (points <= max) return line
+        return line.substring(0, line.offsetByCodePoints(0, max)).trimEnd() + "…"
+    }
+
+    private val WHITE = Regex("\\s+")
+
     /** Whether a long press opens the menu at all. */
     fun hasActions(
         message: ChatTimeline.Message,
@@ -125,11 +141,16 @@ internal fun MessageActionsSheet(
     author: Member?,
     names: ChatNames,
     onDismiss: () -> Unit,
+    /** How many replies the message has: its summary's count in the room, the thread's replies for its first message. */
+    replyCount: Int = message.replies?.count ?: 0,
 ) {
     val context = LocalContext.current
     app.chatUi.Covering()
     val actions = MessageRules.actions(message, me, room, inThread, myRole, author, blocked)
-    RkBottomSheet(onDismissRequest = onDismiss, title = stringResource(R.string.chat_msg_actions)) {
+    // The sheet covers the message, so its title says which one it is: the author and the first line.
+    val line = if (message.removed) null else MessageRules.firstLine(message.text)
+    val title = if (line != null) stringResource(R.string.chat_msg_actions_title, names.display(author), line) else stringResource(R.string.chat_msg_actions)
+    RkBottomSheet(onDismissRequest = onDismiss, title = title) {
         val sheet = this
         if (MessageAction.REPLY in actions) {
             SheetRow(stringResource(R.string.chat_msg_reply), icon = ChatIcons.Bubble, onClick = {
@@ -156,7 +177,7 @@ internal fun MessageActionsSheet(
             SheetRow(stringResource(R.string.chat_msg_remove), icon = RukooIcons.Trash, danger = true, onClick = {
                 sheet.dismiss()
                 val other = if (message.actor == me) null else names.display(author)
-                app.chatUi.remove(ws, room.id, message.id!!, where, other)
+                app.chatUi.remove(ws, room.id, message.id!!, where, other, quote = line, replies = replyCount)
             })
         }
     }

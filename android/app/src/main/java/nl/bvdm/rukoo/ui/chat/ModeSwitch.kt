@@ -67,7 +67,7 @@ fun ModeSwitch(mode: AppMode, chatBadge: ChatBadge?, onSelect: (AppMode) -> Unit
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .background(c.border.copy(alpha = c.border.alpha * 0.7f), track)
             .padding(2.dp)
             .semantics { contentDescription = label },
@@ -78,11 +78,11 @@ fun ModeSwitch(mode: AppMode, chatBadge: ChatBadge?, onSelect: (AppMode) -> Unit
             Modifier
                 .offset(x = segment * position)
                 .width(segment)
-                .height(36.dp)
+                .height(44.dp)
                 .then(if (c.isDark) Modifier else Modifier.rkShadow(Rk.elevation.shadowSm, track))
                 .background(if (c.isDark) c.active else c.raised, track),
         )
-        Row(Modifier.fillMaxWidth().height(36.dp).selectableGroup()) {
+        Row(Modifier.fillMaxWidth().height(44.dp).selectableGroup()) {
             Segment(
                 text = stringResource(R.string.chat_mode_mail),
                 selected = mode == AppMode.MAIL,

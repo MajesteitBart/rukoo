@@ -77,13 +77,17 @@ class ChatUiTest {
         override fun plural(id: Int, count: Int, vararg args: Any) = "p$id"
     }
 
-    // The test's own scope: advanceUntilIdle runs it, and the test ends once its work did.
-    private fun TestScope.ui(w: Workspaces): ChatUi = ChatUi(
+    // The test's own scope: advanceUntilIdle runs it, and the test ends once its work did. [threads] records the
+    // threads opened, as "ws/room/root".
+    private fun TestScope.ui(w: Workspaces, threads: MutableList<String> = ArrayList()): ChatUi = ChatUi(
         w,
         this,
         object : ChatUiHost {
             override fun openRoom(id: String, at: Long?) {}
             override fun selectWorkspace(id: String?) {}
+            override fun openThread(ws: String, room: String, root: String) {
+                threads += "$ws/$room/$root"
+            }
         },
     ).also { it.strings = Strings }
 
@@ -95,16 +99,43 @@ class ChatUiTest {
     }
 
     @Test
-    fun `Undo of a thread reply discarded after a restart keeps the draft that thread had`() = runTest {
+    fun `Undo of a thread reply discarded after a restart keeps the draft that thread had, and opens the thread with it`() = runTest {
         val w = FakeWorkspaces()
         w.drafts["c1/e1"] = Draft("Still writing")
-        val ui = ui(w)
+        val threads = ArrayList<String>()
+        val ui = ui(w, threads)
         // The thread's composer never came on screen in this process: only its cached draft is there.
         discardAndUndo(ui, PendingRow("l1", "e1", "@Ann can you check?", listOf(Mention(ANN, 0, 4))))
         assertEquals(listOf("discard l1", "saveDraft c1/e1"), w.calls)
         assertEquals(Draft("Still writing\n@Ann can you check?", listOf(Mention(ANN, 14, 18))), w.drafts["c1/e1"])
+        // The thread opens, its composer holding the text, so the Undo shows where the text went.
+        assertEquals(listOf("w1/c1/e1"), threads)
+        val composer = ui.composer("w1", "c1", "e1") { error("the composer should be there already") }
+        assertEquals("Still writing\n@Ann can you check?", composer.value.text)
+        assertEquals(listOf(MentionSpan(14, 18, ANN)), composer.value.spans)
         // The room's own draft is left alone.
         assertNull(w.drafts["c1/"])
+    }
+
+    @Test
+    fun `Undo of a thread reply whose composer is in memory puts the text after it and opens the thread`() = runTest {
+        val w = FakeWorkspaces()
+        val threads = ArrayList<String>()
+        val ui = ui(w, threads)
+        val composer = ui.composer("w1", "c1", "e1") { MentionEditing.fromDraft(Draft("Hi")) }
+        discardAndUndo(ui, PendingRow("l1", "e1", "ok", emptyList()))
+        assertEquals("Hi\nok", composer.value.text)
+        assertEquals(listOf("w1/c1/e1"), threads)
+    }
+
+    @Test
+    fun `Undo of a room message opens no thread`() = runTest {
+        val w = FakeWorkspaces()
+        val threads = ArrayList<String>()
+        val ui = ui(w, threads)
+        discardAndUndo(ui, PendingRow("l1", null, "Lunch?", emptyList()))
+        assertEquals(Draft("Lunch?"), w.drafts["c1/"])
+        assertEquals(emptyList<String>(), threads)
     }
 
     @Test

@@ -187,6 +187,7 @@
 
     <!-- chat.msg.* -->
     <string name="chat_msg_actions">Message actions</string><!-- Accessible name of the message toolbar. -->
+    <string name="chat_msg_actions_title">%1$s: %2$s</string><!-- Title of a message's long-press menu, so it names the message it acts on. %1$s: the author's name. %2$s: the message's first line, cut to fit. -->
     <string name="chat_msg_reply">Reply in thread</string><!-- Toolbar and menu item. -->
     <string name="chat_msg_copy">Copy text</string><!-- Toolbar and menu item. -->
     <string name="chat_msg_copied">Copied</string><!-- Toast. -->
@@ -216,6 +217,8 @@
     <string name="chat_remove_body">It\'s removed for everyone in %1$s. You can\'t undo this.</string><!-- Removing your own message. -->
     <string name="chat_remove_body_other">It\'s removed for everyone in %1$s, and %2$s sees that it was removed.</string><!-- A manager removing someone else's message. -->
     <string name="chat_remove_confirm">Remove</string><!-- Its button. -->
+    <string name="chat_remove_quote">“%1$s”</string><!-- First line of the confirmation text: the message being removed, quoted. %1$s: its first line, cut to fit. -->
+    <string name="chat_remove_replies">Replies to it stay.</string><!-- Added to the confirmation text when the message has replies in a thread. -->
 
     <!-- chat.input.* -->
     <string name="chat_input_placeholder_channel">Message #%1$s</string><!-- Composer placeholder and name in a channel. -->
@@ -490,6 +493,7 @@
 
     <!-- chat.notify.* -->
     <string name="chat_notify_body">%1$s: %2$s</string><!-- Notification text. -->
+    <string name="chat_list_you">You: %1$s</string><!-- Second line of a direct message row in the conversation list when the newest message is the user's own. %1$s: its text. -->
     <string name="chat_notify_summary_title">Team chat</string><!-- Title of the summary notification. -->
     <!-- Its text. -->
     <plurals name="chat_notify_summary_body">

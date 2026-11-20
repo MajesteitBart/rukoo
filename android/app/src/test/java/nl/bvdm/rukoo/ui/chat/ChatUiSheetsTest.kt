@@ -23,7 +23,9 @@ import nl.bvdm.rukoo.workspaces.WorkspaceSummary
 import nl.bvdm.rukoo.workspaces.WorkspaceView
 import nl.bvdm.rukoo.workspaces.Workspaces
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -113,6 +115,21 @@ class ChatUiSheetsTest {
 
         override suspend fun setRole(ws: String, member: String, role: String) {
             roles += role
+        }
+
+        val renames = ArrayList<String>()
+
+        /** Holds a rename back until completed; [renameError] refuses the next one. */
+        var renameGate: CompletableDeferred<Unit>? = null
+        var renameError: WorkspaceError? = null
+
+        override suspend fun renameChannel(ws: String, channel: String, name: String) {
+            renameGate?.await()
+            renames += name
+            renameError?.let {
+                renameError = null
+                throw it
+            }
         }
 
         val channelRoles = ArrayList<String>()
@@ -457,6 +474,69 @@ class ChatUiSheetsTest {
         advanceUntilIdle()
         assertEquals(listOf("manager", "member", "member", "manager"), w.channelRoles)
         assertEquals(4, loads)
+    }
+
+    @Test
+    fun `rename stays open with a busy Save while it is sent, and shows a taken name under the field`() = runTest {
+        val w = FakeWorkspaces(members)
+        w.renameGate = CompletableDeferred()
+        w.renameError = WorkspaceError("name_taken", status = 409)
+        val ui = ui(w)
+        ui.askRenameChannel("w1", channel)
+        runCurrent()
+        val asked = ui.dialog!!
+        // The name opens selected, so typing replaces it.
+        assertEquals("plans", asked.input)
+        assertTrue(asked.selectInput)
+
+        asked.confirm(" design ")
+        runCurrent()
+        assertSame(asked, ui.dialog)
+        assertTrue(asked.busy)
+        // A second tap while it runs sends nothing more.
+        asked.confirm("design")
+        w.renameGate!!.complete(Unit)
+        advanceUntilIdle()
+        assertSame(asked, ui.dialog)
+        assertFalse(asked.busy)
+        assertEquals(Strings.get(R.string.chat_errors_name_taken), asked.error)
+        assertEquals(listOf("design"), w.renames)
+
+        // A name the rules refuse doesn't reach the server.
+        asked.confirm("   ")
+        assertEquals(Strings.get(R.string.chat_errors_invalid_name), asked.error)
+        assertEquals(1, w.renames.size)
+
+        asked.confirm("design-2")
+        advanceUntilIdle()
+        assertEquals(listOf("design", "design-2"), w.renames)
+        assertNull(ui.dialog)
+        assertNull(ui.toasts.current)
+    }
+
+    @Test
+    fun `rename with the same name closes without asking the server`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.askRenameChannel("w1", channel)
+        runCurrent()
+        ui.dialog!!.confirm("plans ")
+        advanceUntilIdle()
+        assertNull(ui.dialog)
+        assertTrue(w.renames.isEmpty())
+    }
+
+    @Test
+    fun `remove's question quotes the message and says its replies stay`() = runTest {
+        val ui = ui(FakeWorkspaces(members))
+        val quote = Strings.get(R.string.chat_remove_quote, "Root message")
+        assertEquals(
+            quote + "\n\n" + Strings.get(R.string.chat_remove_body, "#plans") + " " + Strings.get(R.string.chat_remove_replies),
+            ui.removeBody("#plans", null, "Root message", replies = 1),
+        )
+        assertEquals(quote + "\n\n" + Strings.get(R.string.chat_remove_body_other, "#plans", "Mila Bakker"), ui.removeBody("#plans", "Mila Bakker", "Root message", 0))
+        // A message without text has nothing to quote.
+        assertEquals(Strings.get(R.string.chat_remove_body, "#plans"), ui.removeBody("#plans", null, null, 0))
     }
 
     @Test

@@ -178,7 +178,14 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
         }
         // The workspaces, where the thumb is, mirroring mail's folders button; it opens the drawer or the sheet.
         val switchLabel = stringResource(R.string.chat_workspace_switch)
-        CornerButton(onClick = app::openDrawer, modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)) {
+        // A dot when another workspace has a mention or a DM waiting, as Mail's corner button and desktop's tile have.
+        val othersNews = remember(chat.workspaces, wsId) { ChatListModel.othersNews(chat.workspaces, wsId) }
+        CornerButton(
+            onClick = app::openDrawer,
+            modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+            news = othersNews != null,
+            newsTone = othersNews ?: NewsTone.UNREAD,
+        ) {
             Monogram(summary?.name ?: "?", Modifier.clearAndSetSemantics { contentDescription = switchLabel }, size = 28.dp, hueKey = summary?.id)
         }
         if (sections?.canCreate == true) {
@@ -365,7 +372,7 @@ private fun PlainRow(label: String, icon: androidx.compose.ui.graphics.vector.Im
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
-            .heightIn(min = 44.dp)
+            .heightIn(min = 48.dp)
             .rkClickable(Rk.shapes.control, onClick = onClick)
             .padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -385,7 +392,7 @@ private fun ArchivedHead(count: Int, open: Boolean, onToggle: () -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .padding(top = 10.dp)
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .rkClickable(Rk.shapes.control, onClick = onToggle)
             .padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -436,7 +443,7 @@ private fun RowFrame(row: RoomRow, selected: Boolean, description: String, onCli
 private fun ChannelRow(row: RoomRow, selected: Boolean, onClick: () -> Unit) {
     val c = Rk.colors
     val strong = row.badge.bold && !row.badge.dim
-    RowFrame(row, selected, rowDescription(row, "#${row.title}"), onClick, 44.dp) {
+    RowFrame(row, selected, rowDescription(row, "#${row.title}"), onClick, 48.dp) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             RkIcon(if (row.private) ChatIcons.Lock else ChatIcons.Hash, null, size = 16.dp, tint = c.text3)
             Text(
@@ -485,6 +492,7 @@ private fun DmRow(row: RoomRow, members: Map<String, Member>, me: String, dates:
                 if (preview != null) {
                     val text = when {
                         preview.removed -> stringResource(R.string.chat_log_removed)
+                        preview.mine -> stringResource(R.string.chat_list_you, preview.text.orEmpty())
                         preview.author != null -> stringResource(R.string.chat_notify_body, preview.author, preview.text.orEmpty())
                         else -> preview.text.orEmpty()
                     }

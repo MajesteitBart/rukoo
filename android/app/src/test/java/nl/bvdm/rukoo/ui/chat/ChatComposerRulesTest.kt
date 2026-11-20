@@ -137,4 +137,16 @@ class ChatComposerRulesTest {
         // The main timeline has no count row.
         assertTrue(ChatTimeline.rows(listOf(msg(1, sanne), msg(2, sanne, "e_1")), me = me).none { it is ChatTimeline.Count })
     }
+
+    @Test
+    fun `the message menu and Remove quote the first line of a message, cut to fit`() {
+        assertEquals("Root message to remove later", MessageRules.firstLine("Root message to remove later"))
+        // The first line with text, white space folded.
+        assertEquals("Lunch at 12?", MessageRules.firstLine("\n  Lunch\tat  12?\nSecond line"))
+        assertEquals("abcde…", MessageRules.firstLine("abcdefgh", max = 5))
+        // Characters, not UTF-16 units: an emoji isn't split.
+        assertEquals("a😀b…", MessageRules.firstLine("a😀bcd", max = 3))
+        assertEquals(null, MessageRules.firstLine("   \n "))
+        assertEquals(null, MessageRules.firstLine(null))
+    }
 }

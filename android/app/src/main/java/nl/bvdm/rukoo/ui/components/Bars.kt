@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -150,7 +151,8 @@ fun QuickFilterRow(
                         }
                     }
                     .horizontalScroll(scroll)
-                    .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
+                    // No padding above or below: each tab's 48dp touch target already leaves room around its pill.
+                    .padding(start = 14.dp, end = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -181,6 +183,8 @@ private fun FilterTab(filter: QuickFilter, selected: Boolean, showCount: Boolean
     }
     Row(
         Modifier
+            // The pill stays 32dp; the touch target around it is Android's 48dp.
+            .minimumInteractiveComponentSize()
             .heightIn(min = 32.dp)
             .background(fill, shape)
             .clip(shape)

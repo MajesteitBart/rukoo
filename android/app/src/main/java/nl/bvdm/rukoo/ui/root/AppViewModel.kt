@@ -723,6 +723,13 @@ class AppViewModel(
 
     fun openThread(root: String) = set { it.openThread(root) }
 
+    override fun openThread(ws: String, room: String, root: String) {
+        val now = _state.value.chat
+        if (now.workspaceId != ws) return
+        if (now.roomId != room) openRoom(room)
+        openThread(root)
+    }
+
     fun closeThread() = set { it.closeThread() }
 
     fun openChatSheet(sheet: ChatSheet, target: String? = null) = set { it.openChatSheet(sheet, target) }
