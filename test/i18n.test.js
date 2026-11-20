@@ -203,3 +203,18 @@ test('an email whose date could not be read shows without one, instead of throwi
   const date = new Date(2026, 9, 7, 14, 45).getTime();
   assert.equal(context.format.listTime(date, date), '14:45', 'a real date still shows');
 });
+
+test('Dutch team chat says Inloggen like the account pages and names the Start over button the same as Android', () => {
+  const texts = Object.entries(nl)
+    .filter(([key]) => key.startsWith('chat.') || key === 'settings.rukoo.unsentChat')
+    .flatMap(([key, value]) => forms(value).map((text) => [key, text]));
+  const oldWording = /\b(aanmeld|afmeld|afgemeld|meld je (aan|af)|meld u)|begin opnieuw/i;
+  assert.deepEqual(texts.filter(([, text]) => oldWording.test(text)), []);
+  assert.equal(nl['chat.empty.signInAction'], nl['settings.rukoo.signIn']);
+  assert.equal(nl['chat.status.signedOut'], nl['settings.rukoo.signedOut']);
+  const button = nl['chat.banner.startOver'];
+  assert.equal(button, 'Opnieuw beginnen');
+  assert.ok(nl['chat.banner.paused'].includes(`Kies ${button}`));
+  // Android's chat_errors_paused says the same, with %1$s for {workspace}.
+  assert.equal(nl['chat.errors.paused'], '{workspace} is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.');
+});

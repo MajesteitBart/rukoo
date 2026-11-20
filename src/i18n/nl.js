@@ -2962,7 +2962,7 @@
   "chat.errors.network": "Rukoo kan {host} niet bereiken.",
   "chat.errors.signedOut": "Je bent uitgelogd. Log in om teamchat te blijven gebruiken.",
   "chat.errors.notSaved": "Rukoo kon dit bericht niet op deze computer bewaren, dus het is niet verstuurd. Maak schijfruimte vrij en probeer het opnieuw.",
-  "chat.errors.paused": "{workspace} is gestopt. Begin opnieuw om de werkruimte weer te gebruiken.",
+  "chat.errors.paused": "{workspace} is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.",
   "chat.errors.mentions": "Iemand die je noemde, zit niet meer in dit gesprek.",
   "chat.errors.failed": "Er ging iets mis. Probeer het opnieuw."
 };
