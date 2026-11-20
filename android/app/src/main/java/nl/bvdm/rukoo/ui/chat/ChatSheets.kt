@@ -223,6 +223,19 @@ object SheetRules {
         view.me.role == "owner" && !view.membersMore && view.members.none { it.id != view.me.id && it.state == "active" && it.role == "owner" }
 
     /**
+     * Whether the drawer's Leave row says to make someone else an owner first: the only owner with someone in the
+     * workspace to make owner. Alone, Delete workspace is the way out and the line would point at nobody.
+     */
+    fun ownerFirstHint(view: WorkspaceView): Boolean = onlyOwner(view) && !alone(view)
+
+    /**
+     * The rows of a successor list for [query]: the people whose name ([display]) matches, and always the one picked
+     * ([pick]), so a search never hides who the button acts for.
+     */
+    fun pickerShown(people: List<Member>, query: String, pick: String?, display: (Member) -> String): List<Member> =
+        people.filter { it.id == pick || matches(display(it), query) }
+
+    /**
      * The channels in [rooms] that may need a successor before the person leaves: open channels they manage with
      * other people in them. Whether they are the only manager there takes the channel's members ([soleManager]).
      */
@@ -1946,19 +1959,21 @@ private fun BlockedSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> U
 
 /**
  * Who takes a channel over: a radio row per person, nothing picked until the person chooses, and a search field above
- * more than [SheetRules.SUCCESSOR_SEARCH_FROM] people. [people] null shows a spinner while they load.
+ * more than [SheetRules.SUCCESSOR_SEARCH_FROM] people; the picked row stays through a search. [people] null shows a
+ * spinner while they load. [nobody] replaces "Nobody found" when the list is empty before any search.
  */
 @Composable
-private fun SuccessorPicker(people: List<Member>?, pick: String?, onPick: (String) -> Unit) {
+private fun SuccessorPicker(people: List<Member>?, pick: String?, nobody: (@Composable () -> Unit)? = null, onPick: (String) -> Unit) {
     val names = rememberChatNames()
     var query by remember { mutableStateOf("") }
     if (people != null && SheetRules.successorSearch(people.size)) {
         Form { RkSearchField(query, { query = it }, placeholder = stringResource(R.string.chat_members_search)) }
     }
-    val shown = people.orEmpty().filter { SheetRules.matches(names.display(it), query) }
+    val shown = SheetRules.pickerShown(people.orEmpty(), query, pick) { names.display(it) }
     Column(Modifier.selectableGroup()) {
         when {
             people == null -> Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Spinner(size = 16.dp) }
+            people.isEmpty() && nobody != null -> nobody()
             shown.isEmpty() -> Form { Help(stringResource(R.string.chat_new_none)) }
         }
         for (m in shown) {
@@ -1992,13 +2007,15 @@ private fun SuccessorPrompt(app: AppViewModel, p: ChatPrompt.Successor) {
 
 /**
  * Leaving a workspace as the only manager of channels (6.10): a successor picker for each, then one button that makes
- * the picks managers and leaves.
+ * the picks managers and leaves. A channel with nobody who can take it over (only guests beside the person) says so,
+ * with its Members to add someone. The pickers spin while the channels' members load.
  */
 @Composable
 private fun HandOverPrompt(app: AppViewModel, p: ChatPrompt.HandOver) {
     val ui = app.chatUi
     var picks by remember(p.ws) { mutableStateOf(emptyMap<String, String>()) }
-    val busy = ui.isBusy("leaveWs:${p.ws}")
+    // While the members still load, the same key is busy without anything being sent.
+    val busy = ui.isBusy("leaveWs:${p.ws}") && p.channels.none { it.people == null }
     SheetFrame(
         twoPane = true,
         title = stringResource(R.string.chat_leave_title, p.name),
@@ -2006,7 +2023,7 @@ private fun HandOverPrompt(app: AppViewModel, p: ChatPrompt.HandOver) {
         buttons = { close ->
             Secondary(stringResource(R.string.common_actions_cancel)) { close() }
             Primary(stringResource(R.string.chat_channel_successor_submit), busy = busy, enabled = SheetRules.handOverReady(p.channels, picks), danger = true) {
-                ui.handOverAndLeave(picks)
+                ui.handOverAndLeave(picks) { app.openChatSheet(ChatSheet.MEMBERS) }
             }
         },
     ) {
@@ -2025,7 +2042,21 @@ private fun HandOverPrompt(app: AppViewModel, p: ChatPrompt.HandOver) {
                         RkIcon(if (ch.private) ChatIcons.Lock else ChatIcons.Hash, null, size = 16.dp, tint = Rk.colors.text3)
                         Text(ch.name, style = Rk.type.text13.semibold, color = Rk.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     }
-                    SuccessorPicker(ch.people, picks[ch.id]) { picks = picks + (ch.id to it) }
+                    val nobody: (@Composable () -> Unit)? = if (ch.failed) null else {
+                        {
+                            Form {
+                                Help(stringResource(R.string.chat_leave_handover_nobody))
+                                Row {
+                                    RkButton(stringResource(R.string.chat_head_members_button), {
+                                        ui.dismissPrompt()
+                                        app.openRoom(ch.id)
+                                        app.openChatSheet(ChatSheet.MEMBERS, ch.id)
+                                    }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = RukooIcons.People)
+                                }
+                            }
+                        }
+                    }
+                    SuccessorPicker(ch.people, picks[ch.id], nobody) { picks = picks + (ch.id to it) }
                 }
             }
         }

@@ -191,6 +191,23 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `a search keeps the picked person in the successor list`() {
+        val list = listOf(member(ann, "Ann"), member(bo, "Bo"), member(cy, "Cy"))
+        assertEquals(listOf("Bo"), SheetRules.pickerShown(list, "bo", null) { it.name }.map { it.name })
+        assertEquals(listOf("Ann", "Bo"), SheetRules.pickerShown(list, "bo", ann) { it.name }.map { it.name })
+        assertEquals(listOf("Ann", "Bo", "Cy"), SheetRules.pickerShown(list, "", ann) { it.name }.map { it.name })
+    }
+
+    @Test
+    fun `the Leave row says to make someone else owner only when there is someone to make owner`() {
+        assertTrue(SheetRules.ownerFirstHint(view()))
+        val solo = listOf(member(me, "Me", role = "owner"), member(gone, "Gone", state = "former"))
+        assertFalse(SheetRules.ownerFirstHint(view(members = solo)))
+        assertFalse(SheetRules.ownerFirstHint(view(members = people.map { if (it.id == ann) it.copy(role = "owner") else it })))
+        assertFalse(SheetRules.ownerFirstHint(view(role = "member")))
+    }
+
+    @Test
     fun `the channels to hand over get their names from the rooms or the directory`() {
         val v = view(rooms = listOf(channel("c1", "plans", visibility = "private")), channels = listOf(Channel("c2", "ads", "workspace")))
         assertEquals(

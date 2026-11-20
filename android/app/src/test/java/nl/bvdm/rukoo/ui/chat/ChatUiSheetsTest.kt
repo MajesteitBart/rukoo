@@ -1,12 +1,14 @@
 package nl.bvdm.rukoo.ui.chat
 
 import java.lang.reflect.Proxy
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.mail.DialogChoice
@@ -75,7 +77,15 @@ class ChatUiSheetsTest {
                 leaveWsError = null
                 throw it
             }
+            // Like the server: the only manager of a shared channel nobody was made manager of can't leave.
+            val sole = inside?.none { it.member != ME && it.role == "manager" } ?: false
+            val pending = SheetRules.sharedManaged(rooms).filter { r -> sole && roleCalls.none { it.startsWith("${r.id}:") } }
+            if (pending.isNotEmpty()) throw WorkspaceError("last_manager", status = 409, channels = pending.map { it.id })
+            if (goneFirst) throw WorkspaceError("not_found", status = 404, scope = "workspace")
         }
+
+        /** The leave's own removal closes the workspace before its answer arrives. */
+        var goneFirst = false
 
         override suspend fun startDm(ws: String, members: List<String>): String = throw WorkspaceError("blocked", status = 409, member = members.first())
 
@@ -91,7 +101,13 @@ class ChatUiSheetsTest {
             if (successor == null && sole) throw WorkspaceError("last_manager", status = 409, channels = listOf("c_" + "x".repeat(22)))
         }
 
-        override suspend fun roomMembers(ws: String, room: String): List<RoomMember> = inside ?: throw WorkspaceError("network")
+        /** Holds the channels' members back until completed, like a slow link. */
+        var gate: CompletableDeferred<Unit>? = null
+
+        override suspend fun roomMembers(ws: String, room: String): List<RoomMember> {
+            gate?.await()
+            return inside ?: throw WorkspaceError("network")
+        }
 
         val roles = ArrayList<String>()
 
@@ -219,14 +235,118 @@ class ChatUiSheetsTest {
         // Only the channel with others in it; nobody preselected.
         assertEquals(listOf("c1"), prompt.channels.map { it.id })
         assertEquals(listOf("Mila Bakker"), prompt.channels.single().people!!.map { it.name })
-        ui.handOverAndLeave(emptyMap())
+        ui.handOverAndLeave(emptyMap()) {}
         advanceUntilIdle()
         assertEquals(0, w.wsLeaves)
-        ui.handOverAndLeave(mapOf("c1" to MILA))
+        ui.handOverAndLeave(mapOf("c1" to MILA)) {}
         advanceUntilIdle()
         assertEquals(listOf("c1:$MILA:manager"), w.roleCalls)
-        assertEquals(1, w.wsLeaves)
+        // Asked first (last_manager), then left once the pick was made.
+        assertEquals(2, w.wsLeaves)
         assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `when the leave's own removal overtakes its answer, the hand-over closes without an error`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.rooms = listOf(channel)
+        w.goneFirst = true
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) {}
+        advanceUntilIdle()
+        ui.handOverAndLeave(mapOf("c1" to MILA)) {}
+        advanceUntilIdle()
+        assertEquals(listOf("c1:$MILA:manager"), w.roleCalls)
+        assertNull(ui.prompt)
+        assertNull(ui.promptError)
+        // The removal path still finds the leave expected, so it says nothing about being removed.
+        assertTrue(ui.wasExpected("w1"))
+    }
+
+    @Test
+    fun `the hand-over shows at once with its pickers loading, before the channels' members arrive`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.rooms = listOf(channel)
+        w.gate = CompletableDeferred()
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) {}
+        runCurrent()
+        val loading = ui.prompt as ChatPrompt.HandOver
+        assertEquals(listOf("c1"), loading.channels.map { it.id })
+        assertNull(loading.channels.single().people)
+        w.gate!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(listOf("Mila Bakker"), (ui.prompt as ChatPrompt.HandOver).channels.single().people!!.map { it.name })
+        assertNull(ui.dialog)
+    }
+
+    @Test
+    fun `a channel someone else manages too leaves the hand-over, and with none left leaving asks as usual`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.rooms = listOf(channel)
+        w.inside = listOf(RoomMember(ME, "manager"), RoomMember(MILA, "manager"))
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) {}
+        advanceUntilIdle()
+        assertNull(ui.prompt)
+        assertEquals(Strings.get(R.string.chat_leave_title, ""), ui.dialog!!.title)
+        ui.dialog!!.answer(DialogChoice.CANCEL)
+        advanceUntilIdle()
+        assertEquals(0, w.wsLeaves)
+    }
+
+    @Test
+    fun `when a channel's members don't load, the hand-over gives way to the confirmation`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.rooms = listOf(channel)
+        w.inside = null
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) {}
+        advanceUntilIdle()
+        assertNull(ui.prompt)
+        assertEquals(Strings.get(R.string.chat_leave_title, ""), ui.dialog!!.title)
+        ui.dialog!!.answer(DialogChoice.CANCEL)
+        advanceUntilIdle()
+        assertEquals(0, w.wsLeaves)
+    }
+
+    @Test
+    fun `a last_owner on Hand over and leave appoints nobody and opens the only-owner dialog`() = runTest {
+        // The directory is incomplete, so the app couldn't tell the person is the only owner.
+        val w = FakeWorkspaces(members)
+        w.rooms = listOf(channel)
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1").copy(membersMore = true)) {}
+        advanceUntilIdle()
+        assertTrue(ui.prompt is ChatPrompt.HandOver)
+        w.leaveWsError = WorkspaceError("last_owner", status = 409)
+        var membersOpened = false
+        ui.handOverAndLeave(mapOf("c1" to MILA)) { membersOpened = true }
+        advanceUntilIdle()
+        assertEquals(emptyList<String>(), w.roleCalls)
+        assertNull(ui.prompt)
+        assertNull(ui.promptError)
+        val asked = ui.dialog!!
+        assertEquals(Strings.get(R.string.chat_leave_last_owner), asked.message)
+        asked.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertTrue(membersOpened)
+    }
+
+    @Test
+    fun `a channel whose members don't load after last_manager is marked failed, not empty`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.leaveWsError = WorkspaceError("last_manager", status = 409, channels = listOf("c1"))
+        w.inside = null
+        val view = w.currentView("w1").copy(channels = listOf(nl.bvdm.rukoo.workspaces.Channel("c1", "plans", "workspace")))
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", view) {}
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        val ch = (ui.prompt as ChatPrompt.HandOver).channels.single()
+        assertTrue(ch.failed)
+        assertTrue(ui.promptError != null)
     }
 
     @Test

@@ -163,13 +163,14 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
             if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) {
                 DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
             }
-            // The only owner can't leave; the row stays, and opens the dialog that says how to.
-            val onlyOwner = SheetRules.onlyOwner(view)
+            // The only owner can't leave; the row stays, and opens the dialog that says how to. Alone in the
+            // workspace there is nobody to make owner, and Delete workspace below is the way out.
+            val ownerFirst = SheetRules.ownerFirstHint(view)
             DrawerAction(
                 stringResource(R.string.chat_workspace_leave),
                 RukooIcons.Back,
                 danger = true,
-                hint = if (onlyOwner) stringResource(R.string.chat_leave_only_owner_hint) else null,
+                hint = if (ownerFirst) stringResource(R.string.chat_leave_only_owner_hint) else null,
             ) {
                 act { ui.askLeaveWorkspace(ws, view) { app.openChatSheet(ChatSheet.MEMBERS) } }
             }
