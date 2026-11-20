@@ -11,7 +11,6 @@
 
     <!-- chat.mode.* -->
     <string name="chat_mode_label">Chat</string><!-- Fourth segment of the mode switch. -->
-    <string name="chat_mode_shortcut">Chat (Ctrl+4)</string><!-- Tooltip of the Chat segment. Desktop shortcut kept in the text. -->
     <string name="chat_mode_badge_unread">Chat, unread messages</string><!-- Accessible name of the Chat segment with unread messages and no mentions. -->
     <string name="chat_mode_switch_label">Mail, calendar, meetings or chat</string><!-- Accessible name of the mode switch. -->
     <!-- Accessible name of the Chat segment when messages for the user wait. -->
@@ -31,7 +30,6 @@
     <string name="chat_sidebar_make_channel">Make a channel</string><!-- Menu item under the + beside Channels. -->
     <string name="chat_sidebar_browse">Browse channels</string><!-- Sidebar row and menu item that opens the channel list. -->
     <string name="chat_sidebar_new_message">New message</string><!-- Sidebar button that starts a direct message. -->
-    <string name="chat_sidebar_new_message_shortcut">New message (Ctrl+N)</string><!-- Tooltip of that button. Desktop shortcut kept in the text. -->
     <!-- Accessible name of a sidebar row with unread messages. {name}: channel or people. -->
     <plurals name="chat_sidebar_row_unread">
         <item quantity="one">%1$s, %2$d unread message</item>
@@ -222,7 +220,7 @@
     <string name="chat_input_placeholder_channel">Message #%1$s</string><!-- Composer placeholder and name in a channel. -->
     <string name="chat_input_placeholder_direct">Message %1$s</string><!-- In a direct message. {name}: the people. -->
     <string name="chat_input_placeholder_thread">Reply…</string><!-- In a thread. -->
-    <string name="chat_input_send">Send (Enter)</string><!-- Send button. Desktop shortcut kept in the text. -->
+    <string name="chat_input_send">Send (Enter)</string><!-- Send button. Enter sends from the field on a hardware keyboard too (ChatComposer), so the hint stays. -->
     <string name="chat_input_too_long">This message is too long to send. Split it in two.</string><!-- Over 16 KB. -->
     <string name="chat_input_too_many_mentions">A message can mention 32 people at most.</string><!-- Over the mention limit. -->
     <string name="chat_input_not_joined">You\'re not in #%1$s yet.</string><!-- Bar instead of the composer. -->
@@ -243,7 +241,7 @@
     <string name="chat_thread_label">Thread</string><!-- Thread panel title and name. -->
     <string name="chat_thread_in_channel">in #%1$s</string><!-- Line under the title. -->
     <string name="chat_thread_in_direct">with %1$s</string><!-- Line under the title in a direct message. -->
-    <string name="chat_thread_close">Close thread (Esc)</string><!-- Close button. Desktop shortcut kept in the text. -->
+    <string name="chat_thread_close">Close thread</string><!-- Close button on two panes; its tooltip. No key hint: Rukoo binds no key to it on Android. -->
     <string name="chat_thread_back">Back to %1$s</string><!-- Back button in a narrow view. -->
     <string name="chat_thread_loading">Loading replies…</string><!-- While a thread loads. -->
     <string name="chat_thread_failed">Couldn\'t load the replies.</string><!-- When it failed. -->

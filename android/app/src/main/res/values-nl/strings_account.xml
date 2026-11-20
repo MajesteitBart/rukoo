@@ -106,8 +106,8 @@
     <string name="settings_rukoo_sign_out">Uitloggen</string>
     <string name="settings_rukoo_sign_out_help">Deze telefoon stopt met synchroniseren en houdt een eigen kopie van je categorieën.</string>
     <plurals name="settings_rukoo_unsent_chat">
-        <item quantity="one">%d chatbericht is nog niet verstuurd en gaat verloren als je je afmeldt.</item>
-        <item quantity="other">%d chatberichten zijn nog niet verstuurd en gaan verloren als je je afmeldt.</item>
+        <item quantity="one">%d chatbericht is nog niet verstuurd en gaat verloren als je uitlogt.</item>
+        <item quantity="other">%d chatberichten zijn nog niet verstuurd en gaan verloren als je uitlogt.</item>
     </plurals>
     <string name="settings_rukoo_signed_out">Uitgelogd</string>
     <string name="settings_rukoo_delete">Account verwijderen</string>

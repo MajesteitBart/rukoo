@@ -181,12 +181,64 @@ class ChatStringsTest {
         assertNoProblems(problems)
     }
 
+    @Test
+    fun dutchChatSaysInloggenAndUitloggenLikeTheAccountPages() {
+        // The Rukoo account pages say Inloggen, Uitloggen and Uitgelogd; chat's Dutch follows them, as the desktop does.
+        val account = Catalog("values-nl", "strings_account.xml")
+        val texts = nl.strings.entries.map { it.key to it.value } +
+            nl.plurals.flatMap { (name, forms) -> forms.map { (q, t) -> "$name/$q" to t } } +
+            account.plurals.getValue("settings_rukoo_unsent_chat").map { (q, t) -> "settings_rukoo_unsent_chat/$q" to t }
+        val problems = texts.filter { (_, text) -> SIGN_IN_WORDS.containsMatchIn(text) }.map { (name, text) -> "$name: $text" }
+        assertNoProblems(problems)
+        assertEquals(account.strings["settings_rukoo_sign_in"], nl.strings["chat_empty_sign_in_action"])
+        assertEquals(account.strings["settings_rukoo_signed_out"], nl.strings["chat_status_signed_out"])
+        assertEquals("Log in om teamchat te gebruiken", nl.strings["chat_empty_signed_out_title"])
+        assertEquals("Je bent uitgelogd. Log in om teamchat te blijven gebruiken.", nl.strings["chat_errors_signed_out"])
+    }
+
+    @Test
+    fun dutchCallsTheStartOverActionOpnieuwBeginnen() {
+        val button = nl.strings.getValue("chat_banner_start_over")
+        assertEquals("Opnieuw beginnen", button)
+        val problems = mutableListOf<String>()
+        for (name in listOf("chat_banner_paused", "chat_errors_paused")) {
+            val text = nl.strings.getValue(name)
+            if (text.contains("Begin opnieuw", ignoreCase = true) || !text.contains(button)) problems += "$name: $text"
+        }
+        assertNoProblems(problems)
+    }
+
+    @Test
+    fun noDesktopShortcutsTheChatScreensDontHandle() {
+        // Enter sends from the composer on a hardware keyboard (ChatComposer), so "Send (Enter)" may keep its hint.
+        // Rukoo binds no other chat shortcut on Android: no Ctrl+ keys, no Esc.
+        val problems = mutableListOf<String>()
+        for (catalog in listOf(en, nl)) {
+            val texts = catalog.strings.entries.map { it.key to it.value } +
+                catalog.plurals.flatMap { (name, forms) -> forms.map { (q, t) -> "$name/$q" to t } }
+            texts.filter { (_, text) -> SHORTCUT.containsMatchIn(text) }.forEach { (name, text) -> problems += "$name: $text" }
+        }
+        for (name in listOf("chat_mode_shortcut", "chat_sidebar_new_message_shortcut")) {
+            if (name in en.names || name in nl.names) problems += "$name is left over from the desktop"
+        }
+        assertNoProblems(problems)
+        assertEquals("Send (Enter)", en.strings["chat_input_send"])
+        assertEquals("Close thread", en.strings["chat_thread_close"])
+        assertEquals("Thread sluiten", nl.strings["chat_thread_close"])
+    }
+
     private fun assertNoProblems(problems: List<String>) {
         if (problems.isNotEmpty()) fail(problems.joinToString("\n"))
     }
 
     private companion object {
         val RAW = Regex("""%(?:(\d+)\$)?([a-zA-Z])""")
+
+        /** Aanmelden and afmelden wording, which the account pages don't use: "meld je aan", "afgemeld", "je afmeldt". */
+        val SIGN_IN_WORDS = Regex("""\b(aanmeld|afmeld|afgemeld|meld je (aan|af)|meld u)""", RegexOption.IGNORE_CASE)
+
+        /** A desktop key hint: Ctrl+, Alt+, Shift+ or Esc. */
+        val SHORTCUT = Regex("""\b(Ctrl|Alt|Shift)\s*\+|\(Esc\)|\bEsc\b""")
 
         /**
          * The distinct placeholders in a text, sorted, unnumbered ones numbered in order: [1$s, 2$d]. A translation

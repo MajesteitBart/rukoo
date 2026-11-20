@@ -4,7 +4,6 @@
 
     <!-- chat.mode.* -->
     <string name="chat_mode_label">Chat</string>
-    <string name="chat_mode_shortcut">Chat (Ctrl+4)</string>
     <string name="chat_mode_badge_unread">Chat, ongelezen berichten</string>
     <string name="chat_mode_switch_label">E-mail, agenda, meetings of chat</string>
     <plurals name="chat_mode_badge_count">
@@ -23,7 +22,6 @@
     <string name="chat_sidebar_make_channel">Kanaal maken</string>
     <string name="chat_sidebar_browse">Kanalen bekijken</string>
     <string name="chat_sidebar_new_message">Nieuw bericht</string>
-    <string name="chat_sidebar_new_message_shortcut">Nieuw bericht (Ctrl+N)</string>
     <plurals name="chat_sidebar_row_unread">
         <item quantity="one">%1$s, %2$d ongelezen bericht</item>
         <item quantity="other">%1$s, %2$d ongelezen berichten</item>
@@ -68,11 +66,11 @@
     <string name="chat_status_reconnecting">Opnieuw verbinden…</string>
     <string name="chat_status_catching_up">Bijwerken…</string>
     <string name="chat_status_offline">Offline</string>
-    <string name="chat_status_signed_out">Afgemeld</string>
+    <string name="chat_status_signed_out">Uitgelogd</string>
 
     <!-- chat.empty.* -->
     <string name="chat_empty_loading">Teamchat laden</string>
-    <string name="chat_empty_sign_in_action">Aanmelden</string>
+    <string name="chat_empty_sign_in_action">Inloggen</string>
     <string name="chat_empty_upgrade_title">Werk Rukoo bij om teamchat te gebruiken</string>
     <string name="chat_empty_upgrade_body">%1$s gebruikt een nieuwere versie van teamchat dan deze Rukoo kent.</string>
     <string name="chat_empty_upgrade_action">Zoeken naar updates</string>
@@ -80,8 +78,8 @@
     <string name="chat_empty_no_workspace_body">Maak een werkruimte voor je team, of neem deel aan een werkruimte met een uitnodigingslink.</string>
     <string name="chat_empty_pick_title">Niets geopend</string>
     <string name="chat_empty_pick_body">Kies links een kanaal of gesprek.</string>
-    <string name="chat_empty_signed_out_title">Meld je aan om teamchat te gebruiken</string>
-    <string name="chat_empty_signed_out_body">Teamchat draait op je Rukoo-account bij %1$s. Meld je aan, of maak een account om een werkruimte te maken of eraan deel te nemen.</string>
+    <string name="chat_empty_signed_out_title">Log in om teamchat te gebruiken</string>
+    <string name="chat_empty_signed_out_body">Teamchat draait op je Rukoo-account bij %1$s. Log in, of maak een account om een werkruimte te maken of eraan deel te nemen.</string>
     <string name="chat_empty_sign_up_action">Account maken</string>
     <string name="chat_empty_invite_hint">Heb je een uitnodigingslink? Plak die waar Rukoo om een uitnodigingscode vraagt.</string>
     <string name="chat_empty_storage_title">Teamchat kan niet starten</string>
@@ -91,7 +89,7 @@
     <string name="chat_banner_offline">Je bent offline. Berichten die je verstuurt, wachten tot Rukoo weer verbinding heeft.</string>
     <string name="chat_banner_reconnecting">Opnieuw verbinden met %1$s…</string>
     <string name="chat_banner_try_now">Nu proberen</string>
-    <string name="chat_banner_paused">Rukoo synchroniseert %1$s niet meer, omdat de server achterloopt op wat deze telefoon zag. Begin opnieuw om de werkruimte opnieuw van de server te laden.</string><!-- phone wording -->
+    <string name="chat_banner_paused">Rukoo synchroniseert %1$s niet meer, omdat de server achterloopt op wat deze telefoon zag. Kies Opnieuw beginnen om de werkruimte weer van de server te laden.</string><!-- phone wording -->
     <string name="chat_banner_start_over">Opnieuw beginnen</string>
 
     <!-- chat.gone.* -->
@@ -227,7 +225,7 @@
     <string name="chat_thread_label">Thread</string>
     <string name="chat_thread_in_channel">in #%1$s</string>
     <string name="chat_thread_in_direct">met %1$s</string>
-    <string name="chat_thread_close">Thread sluiten (Esc)</string>
+    <string name="chat_thread_close">Thread sluiten</string>
     <string name="chat_thread_back">Terug naar %1$s</string>
     <string name="chat_thread_loading">Antwoorden laden…</string>
     <string name="chat_thread_failed">Kan de antwoorden niet laden.</string>
@@ -418,14 +416,14 @@
     </plurals>
     <string name="chat_errors_network">Rukoo kan %1$s niet bereiken.</string>
     <string name="chat_errors_failed">Er ging iets mis. Probeer het opnieuw.</string>
-    <string name="chat_errors_signed_out">Je bent afgemeld. Meld je aan om teamchat te blijven gebruiken.</string>
+    <string name="chat_errors_signed_out">Je bent uitgelogd. Log in om teamchat te blijven gebruiken.</string>
     <string name="chat_errors_not_found">Dat bestaat niet meer.</string>
     <string name="chat_errors_dm_unavailable">Je kunt geen gesprek met deze mensen beginnen.</string>
     <string name="chat_errors_blocked">Je hebt %1$s geblokkeerd. Deblokkeer eerst om een gesprek te beginnen.</string>
     <string name="chat_errors_daily_dms">Je bent vandaag 20 gesprekken begonnen. Probeer het later opnieuw.</string>
     <string name="chat_errors_members_remain">Verwijder eerst alle anderen.</string>
     <string name="chat_errors_not_saved">Rukoo kon dit bericht niet op deze telefoon bewaren, dus het is niet verstuurd. Maak opslagruimte vrij en probeer het opnieuw.</string><!-- phone wording -->
-    <string name="chat_errors_paused">%1$s is gepauzeerd. Begin opnieuw om de werkruimte weer te gebruiken.</string>
+    <string name="chat_errors_paused">%1$s is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.</string>
     <string name="chat_errors_mentions">Iemand die je noemde, zit niet meer in dit gesprek.</string>
     <string name="chat_errors_quota">%1$s is vol.</string>
     <string name="chat_errors_quota_members">%1$s heeft zoveel leden als er passen.</string>
