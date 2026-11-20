@@ -389,6 +389,9 @@ class WorkspaceService internal constructor(
         storage = true
         lostUnsent.addAndGet(store.lostUnsent)
         if (pending?.tag != session.tag) pending = null
+        // Alerts an earlier process posted whose take-back it didn't live to run (a reset, read or removal committed
+        // just before it ended) go before anything runs: a room's alert stands for its notice rows (§3.10).
+        quietly { alerts.reconcile(store) }
         val l = Live(session, store)
         l.selected = quietly { store.read { getMeta(META_SELECTED)?.takeIf { getWs(it) != null } } }
         quietly { l.outbox.start() }
@@ -952,7 +955,8 @@ class WorkspaceService internal constructor(
         if (l == null) {
             emptyFlow()
         } else {
-            combine(ticks(l) { it.affects(ws) }, state.map { s -> s.workspaces.firstOrNull { it.id == ws } }.distinctUntilChanged()) { _, s -> s }
+            // The kept DM previews live outside the cache, so a change to them ticks on its own.
+            combine(ticks(l) { it.affects(ws) }, state.map { s -> s.workspaces.firstOrNull { it.id == ws } }.distinctUntilChanged(), alerts.previews) { _, s, _ -> s }
                 .conflate()
                 .mapNotNull { s -> buildView(l, ws, s) }
         }
@@ -1243,6 +1247,9 @@ class WorkspaceService internal constructor(
 
     override suspend fun redact(ws: String, room: String, message: String) = onWs(ws) { l, s ->
         l.outbox.redact(ws, room, message)
+        // The cache knows the text is gone: an alert that showed it goes now, not when the feed confirms (desktop's
+        // outbox does the same).
+        quietly { alerts.onRemoved(ws, room, listOf(message), l.store) }
         confirm(s)
     }
 

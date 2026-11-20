@@ -71,7 +71,7 @@ data class RunnerState(val running: Boolean = false, val error: String? = null, 
  * [ChatDb.changes] tell it what changed.
  */
 interface SyncEvents {
-    /** After each feed page's transaction, and after a 410's reset. */
+    /** After each feed page's transaction, after a 410's reset, and after a history page whose floor took messages. */
     suspend fun page(ws: String, result: PageResult) {}
 
     /** At the end of a run that got through, after `syncedAt` was set: alerts, then the outbox (§3.6). */
@@ -951,8 +951,10 @@ class RoomLoader internal constructor(private val sync: WorkspaceSync) {
         }
         FeedApplier.check(page)
         val max = if (room == openRoom) Int.MAX_VALUE else timing.roomCacheMax
-        sync.applier.applyHistory(ws, room, row.grantId, page, mode, max, revision) ?: return null
+        val result = sync.applier.applyHistory(ws, room, row.grantId, page, mode, max, revision) ?: return null
         sync.guard()
+        // A floor the page raised took messages, some perhaps shown in an alert: those alerts go, as after a feed page.
+        if (result.removed.isNotEmpty()) sync.hook { sync.events.page(ws, PageResult(removed = mapOf(room to result.removed))) }
         return page
     }
 

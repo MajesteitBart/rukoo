@@ -233,6 +233,27 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `a history page whose floor took an alerted message takes the alert back`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val dm = Ids.DM
+        val sink = ChatAlertRulesTest.RecordingSink()
+        val engine = ChatAlertEngine(sink, { ChatAlertRulesTest.Words }, { true }, { _, _ -> false })
+        h.store.tx { upsertRoom(ws, room(id = dm, head = 1, unread = 1, dm = true)) }
+        engine.afterRun(ws, h.store) { EventPage(listOf(msg(1, room = 4)), head = 1, floor = 1) }
+        val key = ChatAlertRules.roomKey(ws, dm)
+        assertEquals(setOf(key), sink.activeKeys())
+
+        // Retention moved the floor past the message the alert showed.
+        h.http.once("GET", h.route("/conversations/$dm/events")) { ok(EventPage.serializer(), EventPage(head = 1, floor = 2)) }
+        h.sync.loader.open(dm)
+        assertEquals(2L, h.room(dm)!!.floor)
+        val page = h.events.pages.single()
+        assertEquals(mapOf(dm to listOf(Ids.event(1, 4))), page.removed)
+        engine.onPage(ws, page, h.store)
+        assertTrue(sink.activeKeys().isEmpty())
+    }
+
+    @Test
     fun `leaving and joining an open room twice keeps its whole history within reach`() = runTest {
         val h = SyncHarness(this, db).start()
         val route = h.withRoom(head = 120, read = 120)

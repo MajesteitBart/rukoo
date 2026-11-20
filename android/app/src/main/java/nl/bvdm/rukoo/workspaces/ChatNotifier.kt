@@ -8,6 +8,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import nl.bvdm.rukoo.MainActivity
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.Notifications
@@ -143,6 +147,9 @@ interface ChatAlertSink {
 
     /** Every alert whose key starts with [prefix], also those posted before this process started. */
     fun hideAll(prefix: String)
+
+    /** The keys of the alerts on screen that start with [prefix], also those posted before this process started. */
+    fun active(prefix: String): List<String>
 }
 
 /** How alerts word names (desktop `displayName`, `dmTitle`, `chat.notify.*`), from the interface language. */
@@ -201,14 +208,47 @@ class ChatAlertEngine(
 
     private fun previewKey(ws: String, room: String) = "$ws/$room"
 
+    // Goes up whenever a kept preview changes, which the cache's own change ticks don't show.
+    private val previewVersion = MutableStateFlow(0L)
+
+    /** Ticks when a kept DM preview was kept, changed or dropped: the workspace's view reads [fetchedPreview] again. */
+    val previews: StateFlow<Long> = previewVersion.asStateFlow()
+
     /** The newest message an alert's fetch loaded for the DM [room] of [ws], for its row's preview; null when none did. */
     fun fetchedPreview(ws: String, room: String): Event? = synchronized(lock) { fetchedNewest[previewKey(ws, room)] }
 
     /**
+     * At the cache's opening, before any run: Android keeps a process's alerts after it ended, also those whose
+     * take-back never ran (a reset, a read or a removal committed just before the process died). A room's alert stands
+     * for its notice rows, so one whose room has none goes, and so does any alert of a workspace the cache no longer
+     * has. A summary of a workspace still there is left to [settleSummary], as it has no notice rows.
+     */
+    suspend fun reconcile(store: WorkspaceStore) {
+        val keys = sink.active(ChatAlertRules.PREFIX)
+        if (keys.isEmpty()) return
+        val (workspaces, noticed) = store.read {
+            listWs().mapTo(HashSet()) { it.id } to
+                sql.query("SELECT DISTINCT ws, room FROM notice") { ChatAlertRules.roomKey(it.text(0), it.text(1)) }.toHashSet()
+        }
+        val tracked = synchronized(lock) { shown.keys.toHashSet() }
+        for (key in keys) {
+            if (key in noticed || key in tracked) continue
+            val ws = key.removePrefix(ChatAlertRules.PREFIX).substringBefore(':')
+            if (ws in workspaces && key == ChatAlertRules.summaryKey(ws)) continue
+            sink.hide(key)
+        }
+    }
+
+    /**
      * The end of a run of [ws]: alerts that a read here or elsewhere took back go, then the due rooms alert. [fetch]
      * loads a room's newest events (`events?before=<head + 1>&limit=20`); its failure leaves the room due.
+     *
+     * The run's alerts belong to the cache revision they started under (§3.6): once a reset, Start over, restore, new
+     * key or park raised it, a fetch's answer or error is dropped and the run ends, as the page may hold messages the
+     * new cache no longer has. Nothing is written, shown or kept as a preview from it.
      */
     suspend fun afterRun(ws: String, store: WorkspaceStore, fetch: suspend (RoomRow) -> EventPage) {
+        val rev = store.revision(ws)
         val row = store.read { getWs(ws) } ?: return
         takeBackRead(ws, store)
         settleSummary(ws, store)
@@ -231,17 +271,18 @@ class ChatAlertEngine(
         var fetches = notifyRooms
         val rest = ArrayList<RoomRow>()
         for (d in due) {
+            if (store.revision(ws) != rev) return
             var room = store.read { getRoom(ws, d.id) } ?: continue
             if (!ChatAlertRules.due(room)) continue
             if (silenced(ws, room)) {
-                mark(store, ws, room.id, room.head)
+                mark(store, ws, room.id, room.head, rev)
                 continue
             }
             val after = maxOf(room.read, room.readLocal, room.notified)
             // The cache first, also for the rooms beyond three: one it shows to hold nothing new to show isn't due.
             var messages = cached(store, ws, room, after, ctx)
             if (messages != null && messages.isEmpty()) {
-                mark(store, ws, room.id, room.head)
+                mark(store, ws, room.id, room.head, rev)
                 continue
             }
             if (slots <= 0) {
@@ -259,15 +300,19 @@ class ChatAlertEngine(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // A refusal from before a reset says nothing of the cache now: the run's alerts end.
+                    if (store.revision(ws) != rev) return
                     // Not now: the room stays due for the next run.
                     continue
                 }
-                if (room.kind == RoomKind.DM.wire) keepNewest(store, ws, room, page)
+                // The page belongs to the cache as it stood: after a reset or restore it may hold removed messages.
+                if (store.revision(ws) != rev) return
+                if (room.kind == RoomKind.DM.wire) keepNewest(store, ws, room, page, rev)
                 // Meanwhile the person may have read it, muted it or opened it.
                 room = store.read { getRoom(ws, d.id) } ?: continue
                 if (!ChatAlertRules.due(room)) continue
                 if (silenced(ws, room)) {
-                    mark(store, ws, room.id, room.head)
+                    mark(store, ws, room.id, room.head, rev)
                     continue
                 }
                 messages = fetched(store, ws, page, room, after, ctx)
@@ -277,14 +322,14 @@ class ChatAlertEngine(
                     continue
                 }
                 if (messages.isEmpty()) {
-                    mark(store, ws, room.id, room.head)
+                    mark(store, ws, room.id, room.head, rev)
                     continue
                 }
             }
-            alert(store, ws, room, messages, ctx)
+            if (!alert(store, ws, room, messages, ctx, rev)) return
             slots -= 1
         }
-        if (rest.isNotEmpty()) summarize(store, ws, rest, ctx)
+        if (rest.isNotEmpty()) summarize(store, ws, rest, ctx, rev)
     }
 
     /** This phone read the room further: its alert goes once the read reaches what the alert covered. */
@@ -293,27 +338,35 @@ class ChatAlertEngine(
         if (row == null || ChatAlertRules.readTo(row)) takeBack(ws, room, store)
     }
 
-    /** What a feed page, a pass install or a reset of [ws] did: a reset takes back every alert, else removals and evictions. */
+    /**
+     * What a feed page, a pass install or a reset of [ws] did: a reset takes back every alert, else removals and
+     * evictions. A room whose cache went whole (`removedMore`, a new grant) also loses its kept preview: the page can't
+     * list every message removedMore took, and one of them may be the preview.
+     */
     suspend fun onPage(ws: String, result: PageResult, store: WorkspaceStore) {
         if (result.reset) {
             onReset(ws)
             return
         }
         for ((room, ids) in result.removed) onRemoved(ws, room, ids, store)
+        for (room in result.cacheDropped) dropPreview(ws, room)
         for (room in result.evicted) onEvicted(ws, room)
     }
 
     /**
-     * Messages of the room were removed (`removed`, `removedMore`, a floor): the room's alert goes when it showed one of
-     * them, by its notice rows or what this process showed. The summary showed none, so it keeps counting the room.
+     * Messages of the room were removed (`removed`, `removedMore`, a floor, a removal of the person's own): the room's
+     * alert goes when it showed one of them, by its notice rows or what this process showed. The summary showed none,
+     * so it keeps counting the room.
      */
     suspend fun onRemoved(ws: String, room: String, ids: Collection<String>, store: WorkspaceStore) {
         if (ids.isEmpty()) return
         // A kept preview that was removed shows as removed, as a cached one does.
-        synchronized(lock) {
+        val changed = synchronized(lock) {
             val key = previewKey(ws, room)
-            fetchedNewest[key]?.takeIf { it.id in ids }?.let { fetchedNewest[key] = it.copy(text = null, mentions = emptyList(), redacted = true) }
+            fetchedNewest[key]?.takeIf { it.id in ids && !it.redacted }
+                ?.let { fetchedNewest[key] = it.copy(text = null, mentions = emptyList(), redacted = true) } != null
         }
+        if (changed) previewVersion.update { it + 1 }
         val noticed = store.read { if (getRoom(ws, room) != null) noticesForRoom(ws, room).map { it.message }.toSet() else emptySet() }
         val entry = synchronized(lock) { shown[ChatAlertRules.roomKey(ws, room)] }
         if (ids.any { it in noticed || (entry != null && it in entry.messages) }) takeBack(ws, room, store, summary = false)
@@ -321,9 +374,14 @@ class ChatAlertEngine(
 
     /** The person lost the room: its alert goes, and the summary stops counting it. Its notice rows went with the room. */
     fun onEvicted(ws: String, room: String) {
-        synchronized(lock) { fetchedNewest.remove(previewKey(ws, room)) }
+        dropPreview(ws, room)
         forget(ws, room)
         sink.hide(ChatAlertRules.roomKey(ws, room))
+    }
+
+    private fun dropPreview(ws: String, room: String) {
+        val dropped = synchronized(lock) { fetchedNewest.remove(previewKey(ws, room)) != null }
+        if (dropped) previewVersion.update { it + 1 }
     }
 
     /**
@@ -342,6 +400,7 @@ class ChatAlertEngine(
             settled.clear()
             fetchedNewest.clear()
         }
+        previewVersion.update { it + 1 }
         sink.hideAll(ChatAlertRules.PREFIX)
     }
 
@@ -351,6 +410,7 @@ class ChatAlertEngine(
             settled += ws
             fetchedNewest.keys.removeAll { it.startsWith(previewKey(ws, "")) }
         }
+        previewVersion.update { it + 1 }
         sink.hideAll(ChatAlertRules.workspacePrefix(ws))
     }
 
@@ -393,16 +453,24 @@ class ChatAlertEngine(
         return if (reached) emptyList() else null
     }
 
-    // Keeps the page's newest message that still exists as the DM's preview, when it is newer than the one kept.
-    private suspend fun keepNewest(store: WorkspaceStore, ws: String, room: RoomRow, page: EventPage) {
+    // Keeps the page's newest message that still exists as the DM's preview, when it is newer than the one kept. The
+    // revision is checked under the lock: a reset raises it before its onReset clears the previews under the same lock,
+    // so a preview either lands before that clear or isn't kept.
+    private suspend fun keepNewest(store: WorkspaceStore, ws: String, room: RoomRow, page: EventPage, rev: Long) {
         val newest = page.events.filter { it.kind == WireEvent.MESSAGE_POSTED && it.seq <= room.head }.maxByOrNull { it.seq } ?: return
         if (store.read { hasTombstone(ws, newest.id) }) return
         val event = Event(newest.seq, newest.id, newest.kind, newest.actor, newest.at, newest.root, newest.text, newest.mentions, newest.redacted)
-        synchronized(lock) {
+        val kept = synchronized(lock) {
             val key = previewKey(ws, room.id)
             val kept = fetchedNewest[key]
-            if (kept == null || kept.seq < event.seq) fetchedNewest[key] = event
+            if (store.revision(ws) == rev && (kept == null || kept.seq < event.seq)) {
+                fetchedNewest[key] = event
+                true
+            } else {
+                false
+            }
         }
+        if (kept) previewVersion.update { it + 1 }
     }
 
     private fun title(room: RoomRow, ctx: Context, w: ChatAlertWords): String {
@@ -410,8 +478,8 @@ class ChatAlertEngine(
         return if (ctx.suffix != null) "$base · ${ctx.suffix}" else base
     }
 
-    private suspend fun mark(store: WorkspaceStore, ws: String, room: String, head: Long) {
-        store.tx { markNotified(ws, room, head) }
+    private suspend fun mark(store: WorkspaceStore, ws: String, room: String, head: Long, rev: Long) {
+        store.tx { if (revision(ws) == rev) markNotified(ws, room, head) }
     }
 
     private fun WorkspaceStore.StoreTx.markNotified(ws: String, room: String, head: Long) {
@@ -419,15 +487,19 @@ class ChatAlertEngine(
         if (r.notified < head) setRoomFields(ws, room, mapOf("notified" to head))
     }
 
-    // One room's alert, which replaces the one it had.
-    private suspend fun alert(store: WorkspaceStore, ws: String, room: RoomRow, messages: List<Event>, ctx: Context) {
+    // One room's alert, which replaces the one it had. False, showing nothing, when the cache's revision moved past
+    // [rev]: the messages belong to a cache that no longer is.
+    private suspend fun alert(store: WorkspaceStore, ws: String, room: RoomRow, messages: List<Event>, ctx: Context, rev: Long): Boolean {
         val w = words()
         val key = ChatAlertRules.roomKey(ws, room.id)
-        store.tx {
+        val current = store.tx {
+            if (revision(ws) != rev) return@tx false
             markNotified(ws, room.id, room.head)
             deleteNotices(ws, room.id)
             addNotices(ws, room.id, messages.map { Notice(it.id, it.seq) })
+            true
         }
+        if (!current) return false
         synchronized(lock) { shown[key] = Shown(ws, room.id, messages.mapTo(HashSet()) { it.id }, HashSet()) }
         val lines = messages.map { m ->
             AlertLine(m.id, m.seq, m.at, w.names.display(ctx.members[m.actor]), ChatAlertRules.alertText(m.text.orEmpty(), m.mentions))
@@ -446,13 +518,28 @@ class ChatAlertEngine(
                 workspace = ctx.suffix,
             ),
         )
+        return withdrawIfStale(store, ws, key, rev)
+    }
+
+    // A reset that slipped in between the transaction and the post raised the revision before its onReset hid the
+    // workspace's alerts; one posted after that hiding goes here. False when it went.
+    private fun withdrawIfStale(store: WorkspaceStore, ws: String, key: String, rev: Long): Boolean {
+        if (store.revision(ws) == rev) return true
+        synchronized(lock) { shown.remove(key) }
+        sink.hide(key)
+        return false
     }
 
     // The rooms beyond three: one alert for the workspace, which counts the rooms it stands for.
-    private suspend fun summarize(store: WorkspaceStore, ws: String, rooms: List<RoomRow>, ctx: Context) {
+    private suspend fun summarize(store: WorkspaceStore, ws: String, rooms: List<RoomRow>, ctx: Context, rev: Long) {
         val w = words()
         val key = ChatAlertRules.summaryKey(ws)
-        store.tx { for (r in rooms) markNotified(ws, r.id, r.head) }
+        val current = store.tx {
+            if (revision(ws) != rev) return@tx false
+            for (r in rooms) markNotified(ws, r.id, r.head)
+            true
+        }
+        if (!current) return
         val count = synchronized(lock) {
             val entry = shown.getOrPut(key) { Shown(ws, null, emptySet(), HashSet()) }
             entry.rooms += rooms.map { it.id }
@@ -475,6 +562,7 @@ class ChatAlertEngine(
                 summary = true,
             ),
         )
+        withdrawIfStale(store, ws, key, rev)
     }
 
     // ---- taking back ----
@@ -605,15 +693,17 @@ class ChatNotifier(context: Context) : ChatAlertSink, ChatAlertWords {
 
     override fun hideAll(prefix: String) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        val active = try {
+        for (tag in active(prefix)) manager.cancel(tag, NOTIFICATION_ID)
+    }
+
+    override fun active(prefix: String): List<String> {
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return emptyList()
+        val posted = try {
             manager.activeNotifications.orEmpty()
         } catch (_: RuntimeException) {
-            return
+            return emptyList()
         }
-        for (n in active) {
-            val tag = n.tag ?: continue
-            if (tag.startsWith(prefix) && n.id == NOTIFICATION_ID) manager.cancel(tag, NOTIFICATION_ID)
-        }
+        return posted.mapNotNull { n -> n.tag?.takeIf { it.startsWith(prefix) && n.id == NOTIFICATION_ID } }
     }
 
     companion object {

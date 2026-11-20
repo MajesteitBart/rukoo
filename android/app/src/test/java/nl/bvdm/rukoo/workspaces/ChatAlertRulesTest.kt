@@ -1,6 +1,8 @@
 package nl.bvdm.rukoo.workspaces
 
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import nl.bvdm.rukoo.core.Clock
 import nl.bvdm.rukoo.ui.Screen
@@ -49,7 +51,14 @@ class ChatAlertRulesTest {
             synchronized(active) { active.keys.removeAll { it.startsWith(prefix) } }
         }
 
+        override fun active(prefix: String): List<String> = synchronized(active) { active.keys.filter { it.startsWith(prefix) } }
+
         fun activeKeys(): Set<String> = synchronized(active) { active.keys.toSet() }
+
+        /** An alert with [key] on screen, as one an earlier process posted. */
+        fun posted(key: String) = show(
+            ChatAlert(key = key, ws = "", room = "", seq = 1, title = "", me = "", group = false, lines = emptyList(), body = ""),
+        )
     }
 
     object Words : ChatAlertWords {
@@ -303,6 +312,102 @@ class ChatAlertRulesTest {
         assertNull(s.engine.fetchedPreview(ws, Ids.DM)!!.text)
         s.engine.onEvicted(ws, Ids.DM)
         assertNull(s.engine.fetchedPreview(ws, Ids.DM))
+    }
+
+    @Test
+    fun `an alert's fetch answered after a reset shows nothing, keeps no preview and writes nothing`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 3, unread = 1, read = 2))
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val alerting = async {
+            s.engine.afterRun(ws, s.store) {
+                started.complete(Unit)
+                release.await()
+                EventPage(listOf(msg(3, text = "removed while away", room = 4)), head = 3, floor = 1)
+            }
+        }
+        started.await()
+        val reset = FeedApplier(s.store, Clock { TestDb.NOW }).reset(ws)
+        s.engine.onPage(ws, reset, s.store)
+        release.complete(Unit)
+        alerting.await()
+        assertTrue("the page belongs to the cache before the reset", s.sink.shown.isEmpty())
+        assertNull(s.engine.fetchedPreview(ws, Ids.DM))
+        assertTrue(s.notices(Ids.DM).isEmpty())
+        assertEquals("the room stays due for a run under the new revision", 0L, s.row(Ids.DM).notified)
+    }
+
+    @Test
+    fun `a fetch refused after a reset ends the run's alerts`() = runTest {
+        val s = setup()
+        val other = Ids.id("d", 31)
+        s.room(room(Ids.DM, dm = true, head = 3, unread = 1, read = 2).copy(lastAt = 2_000))
+        s.room(room(other, dm = true, head = 3, unread = 1, read = 2).copy(lastAt = 1_000))
+        val applier = FeedApplier(s.store, Clock { TestDb.NOW })
+        s.engine.afterRun(ws, s.store) { r ->
+            s.fetched += r.id
+            if (r.id == Ids.DM) {
+                s.engine.onPage(ws, applier.reset(ws), s.store)
+                throw WorkspaceError("network")
+            }
+            EventPage(listOf(msg(3, text = "old text", room = 31)), head = 3, floor = 1)
+        }
+        assertEquals("the run stopped at the refusal from before the reset", listOf(Ids.DM), s.fetched.toList())
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals(0L, s.row(other).notified)
+    }
+
+    @Test
+    fun `a room whose cache went whole loses the preview an alert's fetch kept, and the view hears of it`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 65, unread = 1, read = 64))
+        s.pages = mapOf(Ids.DM to EventPage(listOf(msg(65, text = "body removed last", room = 4)), head = 65, floor = 1))
+        val before = s.engine.previews.value
+        s.run()
+        assertEquals("body removed last", s.engine.fetchedPreview(ws, Ids.DM)?.text)
+        assertTrue("keeping a preview ticks the view", s.engine.previews.value > before)
+        // Read here: the alert and its notice rows go, so a removal that doesn't list the message can't find it.
+        s.readAll(Ids.DM)
+        s.engine.onRead(ws, Ids.DM, s.store)
+        assertTrue(s.notices(Ids.DM).isEmpty())
+
+        val applier = FeedApplier(s.store, Clock { TestDb.NOW })
+        val result = applier.apply(
+            ws,
+            feed(room(Ids.DM, dm = true, head = 130, read = 65, removed = (1L..64L).map { Ids.event(it, 4) }, removedMore = true), next = "p1"),
+            sentCursor = "c0",
+        )!!
+        assertTrue(Ids.DM in result.cacheDropped)
+        assertFalse("the page didn't list the preview", Ids.event(65, 4) in result.removed[Ids.DM].orEmpty())
+        val ticked = s.engine.previews.value
+        s.engine.onPage(ws, result, s.store)
+        assertNull("removedMore may have taken the preview", s.engine.fetchedPreview(ws, Ids.DM))
+        assertTrue("the view builds again without it", s.engine.previews.value > ticked)
+    }
+
+    @Test
+    fun `at the cache's opening, alerts an earlier process left without notice rows go`() = runTest {
+        val s = setup()
+        val noticed = Ids.id("d", 32)
+        s.room(room(Ids.DM, dm = true, head = 1, unread = 1))
+        s.room(room(noticed, dm = true, head = 1, unread = 1))
+        s.store.tx { addNotices(ws, noticed, listOf(Notice(Ids.event(1, 32), 1))) }
+        // What Android still shows after the process died: the reset deleted the DM's notice rows before its
+        // cancellation ran; the other workspace left the cache.
+        val stale = ChatAlertRules.roomKey(ws, Ids.DM)
+        val kept = ChatAlertRules.roomKey(ws, noticed)
+        val summary = ChatAlertRules.summaryKey(ws)
+        val gone = ChatAlertRules.roomKey(Ids.WS2, Ids.DM)
+        val goneSummary = ChatAlertRules.summaryKey(Ids.WS2)
+        for (key in listOf(stale, kept, summary, gone, goneSummary)) s.sink.posted(key)
+
+        ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false }).reconcile(s.store)
+        assertEquals(
+            "a room's alert stays only with notice rows; a summary of a cached workspace waits for its own rule",
+            setOf(kept, summary),
+            s.sink.activeKeys(),
+        )
     }
 
     @Test

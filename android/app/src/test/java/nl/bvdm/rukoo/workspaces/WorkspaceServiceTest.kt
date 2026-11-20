@@ -743,6 +743,80 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    fun `removing a message takes back the alert that showed it at once, also when the confirming run fails`() = runTest {
+        val h = Harness(this, db)
+        val channel = Ids.GENERAL
+        val message = msg(1, text = "@Me body to remove", mentions = listOf(mention(bytes = 3)))
+        h.seed {
+            syncedWs()
+            upsertRoom(ws, room(id = channel, head = 1, unread = 1, mentions = 1).copy(role = "manager"))
+            appendEvents(ws, channel, listOf(message))
+        }
+        h.list(ws)
+        h.http.once("GET", h.route(ws, "/changes")) { ok(FeedPage.serializer(), feed(next = "after")) }
+        h.http.on("GET", h.route(ws, "/changes")) { throw WorkspaceError("network") }
+        h.http.once("POST", h.route(ws, "/conversations/$channel/messages/${message.id}/redact")) { ok(RedactAck.serializer(), RedactAck(message.id)) }
+        h.account.signIn("mine")
+        val s = h.start()
+        withTimeout(10_000) { while (h.sink.shown.isEmpty()) delay(100) }
+        assertEquals("@Me body to remove", h.sink.shown.single().lines.single().text)
+
+        s.redact(ws, channel, message.id)
+        assertFalse(ChatAlertRules.roomKey(ws, channel) in h.sink.activeKeys())
+    }
+
+    @Test
+    fun `alerts an earlier process left behind without notice rows go when the cache opens`() = runTest {
+        val h = Harness(this, db)
+        val noticed = Ids.id("d", 32)
+        h.seed {
+            syncedWs()
+            upsertRoom(ws, room(Ids.DM, dm = true, head = 1))
+            upsertRoom(ws, room(noticed, dm = true, head = 1, unread = 1))
+            addNotices(ws, noticed, listOf(Notice(Ids.event(1, 32), 1)))
+        }
+        val stale = ChatAlertRules.roomKey(ws, Ids.DM)
+        val kept = ChatAlertRules.roomKey(ws, noticed)
+        h.sink.posted(stale)
+        h.sink.posted(kept)
+        h.account.signIn("mine")
+        val s = h.start(foreground = false)
+        assertTrue(s.awaitReady())
+        assertEquals(setOf(kept), h.sink.activeKeys())
+    }
+
+    @Test
+    fun `a DM whose cache removedMore dropped no longer shows the preview its alert loaded`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs()
+            replaceMembers(ws, listOf(Member(Ids.ME, name = "Me", role = "member", state = "active"), Member(Ids.OLGA, name = "Olga", role = "member", state = "active")))
+            upsertRoom(ws, room(Ids.DM, dm = true, head = 1, read = 1))
+        }
+        h.list(ws)
+        h.http.on("GET", h.route(ws)) { ok(WorkspaceDetails.serializer(), details()) }
+        h.http.once("GET", h.route(ws, "/changes")) { ok(FeedPage.serializer(), feed(room(Ids.DM, dm = true, head = 2, read = 1, unread = 1), next = "c1")) }
+        h.http.on("GET", h.route(ws, "/changes")) { ok(FeedPage.serializer(), feed(next = "c2")) }
+        h.http.on("GET", h.route(ws, "/conversations/${Ids.DM}/events")) {
+            ok(EventPage.serializer(), EventPage(listOf(msg(2, text = "are you there?", room = 4)), head = 2, floor = 1))
+        }
+        h.http.on("POST", h.route(ws, "/conversations/${Ids.DM}/read")) { ok(ReadAck.serializer(), ReadAck(2)) }
+        h.account.signIn("mine")
+        val s = h.start()
+        withTimeout(10_000) { while (h.sink.shown.isEmpty()) delay(100) }
+        s.view(ws).until("the preview the alert loaded") { v -> v.rooms.single().preview?.text == "are you there?" }
+        // Read here: the alert's notice rows go, so the removal below can't name the preview through them.
+        s.markRead(ws, Ids.DM, 2)
+        withTimeout(10_000) { while (h.sink.activeKeys().isNotEmpty()) delay(100) }
+
+        h.http.once("GET", h.route(ws, "/changes")) {
+            ok(FeedPage.serializer(), feed(room(Ids.DM, dm = true, head = 3, read = 2, removed = listOf(Ids.event(1, 4)), removedMore = true), next = "c3"))
+        }
+        s.refresh(ws)
+        s.view(ws).until("the DM without the removed preview") { v -> v.rooms.single().preview == null }
+    }
+
+    @Test
     fun `the background catch-up lists, runs every cached workspace and alerts, and does nothing signed out`() = runTest {
         val h = Harness(this, db)
         h.seed {
