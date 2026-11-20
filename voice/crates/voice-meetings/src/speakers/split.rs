@@ -49,8 +49,8 @@ use crate::segmentation::{
 use crate::speakers::follower::{pad_with, FollowerTiming, Labeller};
 use crate::speakers::turns::{passage_speaker, word_speakers, Turn};
 use crate::transcript::{
-    mic_number, split_sent_mark, stored_split, LabelBatch, SplitWrite, StoredPassage, Transcript,
-    LABELLED_KEY, SETTLED_KEY, SPLIT_SENT_KEY,
+    mic_number, stored_split_voices, LabelBatch, SplitWrite, StoredPassage, Transcript,
+    LABELLED_KEY, SETTLED_KEY,
 };
 use crate::watcher::{Stretch, TimelineWatcher};
 
@@ -324,17 +324,25 @@ pub fn send_split(dir: &MeetingDir, log: &EventLog) -> Result<u64, SplitError> {
 
 /// At Voice's start, before the bridge serves: sends what a split stored by an earlier run still
 /// owes Rukoo ([`send_split`]), as when Voice quit between storing the split and sending its
-/// events. Returns how many events went out. A meeting that wasn't split, or whose split's
-/// events all went to this log ([`SPLIT_SENT_KEY`]), costs one read of its `transcript.db`, and
-/// none is created; only a split without that mark is read again in full. A meeting the log has
-/// no events of is left alone, since Rukoo doesn't know it from this log. No diarizer runs.
+/// events. Returns how many events went out. A meeting that wasn't split costs one read of its
+/// `transcript.db`, and none is created; one whose split's events the log noted as all sent
+/// ([`SPLIT_SENT_NOTE`]) costs one more read of the log; only a split without that note is read
+/// again in full. A meeting the log has no events of is left alone, since Rukoo doesn't know it
+/// from this log. No diarizer runs.
 pub fn catch_up_split(dir: &MeetingDir, log: &EventLog) -> Result<usize, SplitError> {
-    match stored_split(dir.path()) {
-        None => Ok(0),
-        Some(split) if split.sent_to(log.instance(), log.head()) => Ok(0),
-        Some(_) => Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent)),
+    if stored_split_voices(dir.path()).is_none() {
+        return Ok(0);
     }
+    // The note lives in the log, after the split's events: a power cut that lost any of them
+    // lost the note too, whatever the start appended since.
+    if log.noted(dir.id().as_str(), SPLIT_SENT_NOTE)? {
+        return Ok(0);
+    }
+    Ok(send_owed(dir, log, true)?.map_or(0, |(_, sent)| sent))
 }
+
+/// The [`EventLog::note`] that every event of a meeting's microphone split is in the log.
+pub const SPLIT_SENT_NOTE: &str = "split.mic";
 
 /// [`send_split`]'s work: the voices on the track and how many events went out. `None` when
 /// `known_only` and the log has no events of the meeting.
@@ -405,10 +413,9 @@ fn send_owed(
             to_data(passage),
         )?;
     }
-    // Every event of the split is in the log now, at or below its head. Without the mark the
-    // next start only reads the split again.
-    let mark = split_sent_mark(log.instance(), log.head());
-    if let Err(e) = transcript.meta_set(SPLIT_SENT_KEY, &mark) {
+    // Every event of the split is in the log now. Without the note the next start only reads the
+    // split again.
+    if let Err(e) = log.note(meeting, SPLIT_SENT_NOTE) {
         eprintln!("voice-meetings: {meeting}: couldn't note that the split's events went out: {e}");
     }
     Ok(Some((voices, emitted.len() - known)))
@@ -424,7 +431,8 @@ fn to_data(value: &impl serde::Serialize) -> serde_json::Value {
 /// meeting without labels, or whose labels stopped, is gated by its passages. A passage with word
 /// timings counts whole. One without them can hold a whole recognition window, as a cloud
 /// provider's do, so it counts only where the call's recorded audio sounds inside it. So does
-/// the call past what was transcribed of it, as when its transcription failed.
+/// the call past what was transcribed of it, as when its transcription failed, and all of a call
+/// without turns or passages.
 fn call_speech(transcript: &Transcript, call: &TrackReader) -> Result<Vec<(u64, u64)>, SplitError> {
     let turns = transcript.turns(Track::Call, 0, u64::MAX)?;
     let until = if transcript.meta_get(LABELLED_KEY)?.as_deref() == Some("1") {
@@ -440,8 +448,14 @@ fn call_speech(transcript: &Transcript, call: &TrackReader) -> Result<Vec<(u64, 
         .filter(|p| p.passage.track == Track::Call)
         .map(|p| (p.passage.start, p.passage.end, !p.tokens.is_empty()))
         .collect();
-    // In meeting samples, as the call's audio.
-    let transcribed = transcript.cursor(Track::Call)?;
+    // In meeting samples, as the call's audio. A call with neither turns nor passages says
+    // nothing about where it spoke, also when its transcription ran to the end and heard no
+    // words: its sound counts from the start.
+    let transcribed = if turns.is_empty() && passages.is_empty() {
+        0
+    } else {
+        transcript.cursor(Track::Call)?
+    };
     // The audio is read only when the gate goes by it somewhere.
     let by_sound = until < call.end().div_ceil(PER_MS)
         && (transcribed < call.end()

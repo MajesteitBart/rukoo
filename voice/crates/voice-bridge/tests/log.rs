@@ -25,6 +25,25 @@ fn a_new_log_is_empty_with_a_fresh_instance() {
 }
 
 #[test]
+fn a_note_stays_with_its_meeting_until_the_meeting_goes() {
+    let dir = TempDir::new("log-notes");
+    {
+        let log = EventLog::open(dir.path()).unwrap();
+        assert!(!log.noted(A, "split.mic").unwrap());
+        log.note(A, "split.mic").unwrap();
+        log.note(A, "split.mic").unwrap();
+        assert!(log.noted(A, "split.mic").unwrap());
+        assert!(!log.noted(B, "split.mic").unwrap());
+        assert!(!log.noted(A, "other").unwrap());
+    }
+    // It lasts across a restart, and goes with the meeting's events.
+    let log = EventLog::open(dir.path()).unwrap();
+    assert!(log.noted(A, "split.mic").unwrap());
+    log.remove_meeting(A).unwrap();
+    assert!(!log.noted(A, "split.mic").unwrap());
+}
+
+#[test]
 fn events_are_numbered_from_one_and_read_back_in_order() {
     let dir = TempDir::new("log-order");
     let log = EventLog::open(dir.path()).unwrap();

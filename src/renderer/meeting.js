@@ -468,6 +468,7 @@ function applyDelta(p) {
   }
   const removed = Array.isArray(p.removedPassages) ? p.removedPassages : [];
   if (removed.length) d.passages = d.passages.filter((x) => !removed.includes(x.id));
+  if (Array.isArray(p.pieces)) d.pieces = p.pieces;
   if (Array.isArray(p.marks)) {
     for (const k of p.marks) {
       const i = d.marks.findIndex((y) => y.id === k.id);
@@ -499,7 +500,7 @@ function applyDelta(p) {
     updateRows(changed, removed.map((id) => `p:${id}`));
     // A split's progress shows under the user's row; new passages can give a voice its first clip, or the open
     // player another one.
-    if (p.mic || P.open || stateChanged || (changed.some((k) => k.startsWith('p:')) && hearableSig() !== P.sig)) renderPeople();
+    if (p.mic || P.open || stateChanged || ((Array.isArray(p.pieces) || changed.some((k) => k.startsWith('p:'))) && hearableSig() !== P.sig)) renderPeople();
   }
   renderLive();
   if (listChanged) ctx.agentSync?.();

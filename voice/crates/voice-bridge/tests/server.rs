@@ -1312,6 +1312,46 @@ fn a_command_is_answered_while_a_flood_of_events_goes_on() {
     assert!(read_until_status_reply(&mut client, "c-2").is_empty());
 }
 
+/// Commands that pile up while the replay is still owed take turns with its pages: every one is
+/// answered, in the order sent, after the whole replay that was stored when it finished, and the
+/// replay comes whole and in order.
+#[test]
+fn a_burst_of_commands_during_the_replay_is_answered_in_order() {
+    const BURST: usize = 300;
+    let bridge = Bridge::start("server-burst");
+    *bridge.control.list_log.lock().unwrap() = Some(bridge.log.clone());
+    fill(&bridge.log, B, 5 * PAGE);
+    let head = bridge.log.head();
+    let (mut client, _) = bridge.client(None, 0);
+    for n in 0..BURST {
+        client.command(&format!("c-{n}"), "meeting.list", json!({ "limit": 1 }));
+    }
+    let mut events = Vec::new();
+    let mut replies = Vec::new();
+    while replies.len() < BURST {
+        let message = client.read();
+        match message["type"].as_str() {
+            Some("event") => events.push(message["seq"].as_u64().unwrap()),
+            Some("reply") => {
+                assert_eq!(message["ok"], json!(true), "{message}");
+                let id = message["id"].as_str().unwrap().to_owned();
+                replies.push((id, events.last().copied().unwrap_or(0)));
+            }
+            _ => panic!("{message}"),
+        }
+    }
+    assert_eq!(events, (1..=head).collect::<Vec<_>>());
+    assert!(
+        replies.iter().all(|(_, after)| *after == head),
+        "a reply came before the replay it waits for"
+    );
+    let order: Vec<String> = replies.into_iter().map(|(id, _)| id).collect();
+    assert_eq!(
+        order,
+        (0..BURST).map(|n| format!("c-{n}")).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn the_handle_reports_its_clients_and_the_last_refused_hello() {
     let bridge = Bridge::start("server-clients-info");

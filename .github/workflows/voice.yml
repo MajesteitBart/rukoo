@@ -143,10 +143,16 @@ jobs:
       # The Windows notices stay with package.ps1, which checks them itself.
       - name: Third-party notices of the macOS build match the lockfile
         run: node scripts/notices.mjs --check
-      # The speaker label tests need the NeMo runtime, the Nemotron model and the AMI excerpt. The runtime is built here
-      # from the pinned commit, because its source path ends up in the dylibs: the path is fixed and the cache key is
-      # what pins a build. The model and the excerpt are fetched once per pin and checked against their hashes; nothing
-      # of them is committed.
+      # The speaker label tests need the NeMo runtime, the Nemotron model and the AMI excerpt. Once manifest-macos.json
+      # pins a published runtime, the tests run on that archive, the files a Mac package ships. Before that the runtime
+      # is built here from the pinned commit, because its source path ends up in the dylibs: the path is fixed and the
+      # cache key is what pins a build. The model and the excerpt are fetched once per pin and checked against their
+      # hashes; nothing of them is committed.
+      - name: Is the macOS NeMo runtime published
+        id: runtime
+        run: |
+          published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest-macos.json")
+          echo "published=$published" | tee -a "$GITHUB_OUTPUT"
       - name: Cache the speaker label assets
         uses: actions/cache@v6
         with:
@@ -158,13 +164,15 @@ jobs:
       - name: Fetch the speaker label assets
         id: speaker-assets
         continue-on-error: true
-        run: node scripts/speaker-assets.mjs --out "$RUNNER_TEMP/speaker-assets" --model --ami
+        run: node scripts/speaker-assets.mjs --out "$RUNNER_TEMP/speaker-assets" --model --ami ${{ steps.runtime.outputs.published == 'true' && '--runtime' || '' }}
       - name: Cache the macOS NeMo runtime
+        if: steps.runtime.outputs.published != 'true'
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/nemo-runtime
           key: nemo-runtime-macos-${{ runner.arch }}-${{ hashFiles('voice/nemo-runtime/manifest-macos.json', 'voice/nemo-runtime/build-macos.sh', 'voice/nemo-runtime/macos.patch') }}
       - name: Build the macOS NeMo runtime
+        if: steps.runtime.outputs.published != 'true'
         run: |
           runtime="$RUNNER_TEMP/nemo-runtime/nemo_speech"
           if [ -f "$runtime/runtime.json" ]; then
@@ -180,8 +188,15 @@ jobs:
           root="$RUNNER_TEMP/speaker-assets"
           missing=()
           add() { echo "$1=$2"; echo "$1=$2" >> "$GITHUB_ENV"; }
-          if [ -f "$RUNNER_TEMP/nemo-runtime/nemo_speech/runtime.json" ]; then
-            add RUKOO_VOICE_TEST_NEMO_DIR "$RUNNER_TEMP/nemo-runtime/nemo_speech"
+          # The published runtime speaker-assets.mjs fetched and checked, else the one built above.
+          published="${{ steps.runtime.outputs.published }}"
+          if [ "$published" = true ]; then
+            runtime="$root/nemo_speech"
+          else
+            runtime="$RUNNER_TEMP/nemo-runtime/nemo_speech"
+          fi
+          if [ -f "$runtime/runtime.json" ]; then
+            add RUKOO_VOICE_TEST_NEMO_DIR "$runtime"
           else
             missing+=("RUKOO_VOICE_TEST_NEMO_DIR")
           fi
@@ -200,8 +215,6 @@ jobs:
             missing+=("RUKOO_VOICE_TEST_AMI")
           fi
           if [ ${#missing[@]} -gt 0 ]; then
-            # manifest-macos.json pins the macOS runtime; manifest.json is the Windows one.
-            published=$(node -e 'const m = require(process.argv[1]); process.stdout.write(String(Boolean(m.archive)))' "$GITHUB_WORKSPACE/voice/nemo-runtime/manifest-macos.json")
             if [ "$published" = true ]; then
               echo "::error::Speaker label assets missing: ${missing[*]}. The macOS runtime is published, so the AMI and runtime tests must run; rerun the job."
               exit 1

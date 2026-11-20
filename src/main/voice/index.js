@@ -442,6 +442,9 @@ class VoiceService extends EventEmitter {
       } else {
         if (d.passages.size) payload.passages = full.passages.filter((p) => d.passages.has(p.id));
         if (d.removed.size) payload.removedPassages = [...d.removed];
+        // A split's pieces can arrive as passages, from another client or the start's catch-up: a correction may hide
+        // them, and the player still plays them.
+        if (d.passages.size || d.removed.size) payload.pieces = full.pieces;
         if (d.marks.size) payload.marks = full.marks.filter((k) => d.marks.has(k.id));
         if (d.frames.size) payload.frames = full.frames.filter((f) => d.frames.has(f.id));
         // With the guests of the linked event to pick from, as meetingGet gives them.

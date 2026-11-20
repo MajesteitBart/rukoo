@@ -196,8 +196,9 @@ impl SplitService {
     /// At start, before the bridge serves and before any pipeline runs: sends what the splits an
     /// earlier run stored still owe Rukoo, as when Voice quit between storing a split and sending
     /// its events. A Rukoo that never asks about that meeting again still gets them. A meeting
-    /// costs one read of its `transcript.db`, also a split one whose events all went to this
-    /// event log; only a split that never finished sending is read in full. No diarizer runs.
+    /// costs one read of its `transcript.db`, and a split one whose events this event log noted as
+    /// all sent one more of the log; only a split that never finished sending is read in full. No
+    /// diarizer runs.
     pub fn catch_up(&self) {
         for dir in self.controller.library().dirs() {
             match voice_meetings::catch_up_split(&dir, &self.log) {

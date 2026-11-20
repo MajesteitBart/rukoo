@@ -888,6 +888,31 @@ test('frames reach the renderer in deltas, and frame.get fills in the text a sna
   assert.deepEqual(deltas.find((d) => d.frames).frames.map((f) => [f.id, f.text, f.textOmitted]), [['f-000100000', 'Agenda', undefined]]);
 });
 
+test('the pieces a correction hides reach an open meeting view when a split arrives without a split from here', async (t) => {
+  const { dir, file, voice } = await setup(t);
+  voice.writeDiscovery();
+  const s = service(t, dir, file).init();
+  const deltas = [];
+  s.on('meeting', (p) => p.kind === 'meeting' && deltas.push(p));
+  await until(() => s.connected, 'the connection');
+  voice.append('meeting.started', M1, started('Planning'));
+  voice.append('speaker', M1, { id: 'mic', track: 'mic', label: 'You' });
+  voice.append('passage', M1, passage('mic', 5000, 'I can do that. Thanks, Pieter.', 1, { end: 9000 }));
+  await until(() => s.get(M1) && s.get(M1).passages.length === 1, 'the passage');
+  assert.equal(s.correct(M1, 'mic-000005000', 'I can do that. Thanks, Pieter!'), true);
+  // Voice sends a split by itself, as its start's catch-up does: this Rukoo asked for none.
+  deltas.length = 0;
+  voice.append('speaker', M1, { id: 'mic-2', track: 'mic', label: 'Microphone 2' });
+  voice.append('passage', M1, passage('mic', 5000, 'I can do that.', 2, { speaker: 'mic-2', end: 6500 }));
+  voice.append('passage', M1, passage('mic', 6500, 'Thanks, Pieter.', 1, { end: 9000 }));
+  await until(() => deltas.some((d) => d.pieces && d.pieces.length), 'a delta with the hidden piece');
+  const last = deltas.filter((d) => d.pieces).at(-1);
+  assert.deepEqual(last.pieces.map((p) => [p.id, p.speaker, p.text, p.under]), [['mic-000006500', 'mic', 'Thanks, Pieter.', 'mic-000005000']]);
+  // The correction shows once, whole, and the piece only under it.
+  assert.deepEqual(s.get(M1).passages.map((p) => [p.id, p.text]), [['mic-000005000', 'I can do that. Thanks, Pieter!']]);
+  assert.ok(deltas.every((d) => !(d.passages || []).some((p) => p.id === 'mic-000006500')));
+});
+
 test("Voice's screen default reaches the state, and a change of it alone tells the renderer", async (t) => {
   const { dir, file, voice } = await setup(t);
   voice.status = { recording: null, dictating: false, screenDefault: 'video' };

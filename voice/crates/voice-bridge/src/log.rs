@@ -36,6 +36,11 @@ const SCHEMA: &str = "
         data TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS events_by_meeting ON events (meeting);
+    CREATE TABLE IF NOT EXISTS notes (
+        meeting TEXT NOT NULL,
+        key TEXT NOT NULL,
+        PRIMARY KEY (meeting, key)
+    );
 ";
 
 /// Room for the envelope around `data` in an `event` message.
@@ -327,6 +332,7 @@ impl EventLog {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let seq = next_seq(&tx, head)?;
         tx.execute("DELETE FROM events WHERE meeting = ?1", [meeting])?;
+        tx.execute("DELETE FROM notes WHERE meeting = ?1", [meeting])?;
         insert(&tx, seq, event, Some(meeting), created_at, &data_json)?;
         tx.commit()?;
         db.head = seq;
@@ -338,6 +344,28 @@ impl EventLog {
             data,
         });
         Ok(seq)
+    }
+
+    /// Notes that every event of `key` for `meeting` is stored, such as all of a split's. Call it
+    /// after appending them: the note shares their file and comes after them, so a power cut
+    /// that loses some of those events loses the note too. Removing the meeting removes it.
+    pub fn note(&self, meeting: &str, key: &str) -> Result<(), LogError> {
+        let db = self.lock();
+        db.conn.execute(
+            "INSERT OR IGNORE INTO notes (meeting, key) VALUES (?1, ?2)",
+            params![meeting, key],
+        )?;
+        Ok(())
+    }
+
+    /// Whether [`EventLog::note`] noted `key` for `meeting` in this file.
+    pub fn noted(&self, meeting: &str, key: &str) -> Result<bool, LogError> {
+        let db = self.lock();
+        Ok(db.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM notes WHERE meeting = ?1 AND key = ?2)",
+            params![meeting, key],
+            |row| row.get(0),
+        )?)
     }
 
     /// Every stored event after `seq`, oldest first.

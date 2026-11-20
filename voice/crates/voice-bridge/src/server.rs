@@ -753,14 +753,21 @@ impl Session {
         // burst the live channel couldn't carry, or the events a reply waits for. They go out a
         // page at a time from the log.
         let mut behind = true;
+        // Whether the last pass read a frame or a reply: then an owed page goes first, so a
+        // client that keeps sending commands can't hold back the pages its replies wait for.
+        let mut page_next = false;
         loop {
+            if behind && std::mem::take(&mut page_next) {
+                behind = self.next_page().await?;
+                continue;
+            }
             // In order, with the log's pages last: a command that comes while events keep
             // arriving is read after at most the page in hand, and a reply goes out once the
             // events stored before its command finished are out, however long the run of pages.
             tokio::select! {
                 biased;
                 _ = self.quit.changed() => return Ok(End::Quit),
-                frame = source.next() => match frame {
+                frame = source.next() => { page_next = true; match frame {
                     Some(Ok(Frame::Text(text))) => {
                         // Stamped before the job waits in the queue, so a command's deadline
                         // counts the time it spends behind earlier ones.
@@ -791,8 +798,11 @@ impl Session {
                     Some(Ok(Frame::Close(_))) | None => return Ok(End::ClientClosed),
                     Some(Err(WsError::Capacity(_))) => return Ok(End::TooBig),
                     Some(Err(_)) => return Ok(End::Dropped),
-                },
-                Some(answered) = replies.recv() => behind |= self.answer(answered).await?,
+                }},
+                Some(answered) = replies.recv() => {
+                    page_next = true;
+                    behind |= self.answer(answered).await?;
+                }
                 _ = ping.tick() => {
                     if pong_due.is_none() {
                         self.sink

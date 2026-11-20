@@ -17,7 +17,6 @@ use common::*;
 use serde_json::{json, Value};
 use voice_bridge::{EventLog, Stored};
 use voice_core::speakers::Diarizer;
-use voice_meetings::transcript::SPLIT_SENT_KEY;
 use voice_meetings::{
     catch_up_split, microphone_end, split_microphone, split_voices, FollowerTiming, Labels,
     Library, MeetingDir, Pipeline, PipelineOptions, PipelineState, SplitError, Timing, Transcript,
@@ -418,7 +417,7 @@ fn log_sql(log: &EventLog, statement: &str) {
 }
 
 #[test]
-fn a_start_reads_only_the_mark_of_a_split_whose_events_all_went_out() {
+fn a_start_reads_only_the_note_of_a_split_whose_events_all_went_out() {
     let tmp = TempDir::new("split-sent");
     let lib = Library::open(tmp.path()).unwrap();
     let log = EventLog::open(tmp.path()).unwrap();
@@ -432,23 +431,50 @@ fn a_start_reads_only_the_mark_of_a_split_whose_events_all_went_out() {
     let sent = events(&log, &rec.id()).len();
 
     // Every microphone passage moves to a revision the log never got, so a start that read the
-    // passages would send all six. The mark says the split's events went out: it sends none.
+    // passages would send all six. The log's note says the split's events went out: it sends none.
     sql(
         &rec,
         "UPDATE passages SET revision = revision + 1 WHERE track = 'mic'",
     );
     assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
     assert_eq!(events(&log, &rec.id()).len(), sent);
+}
 
-    // A log whose head is below the mark lost the split's last events, as to a power cut: the
-    // start reads the split again and sends what the log lacks, then marks it again.
-    let ahead = format!("{}:{}", log.instance(), log.head() + 100);
-    sql(
-        &rec,
-        &format!("UPDATE meta SET value = '{ahead}' WHERE key = '{SPLIT_SENT_KEY}'"),
-    );
-    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 6);
-    assert_no_repeats(&events(&log, &rec.id()));
+#[test]
+fn a_power_cut_that_lost_a_splits_last_events_sends_them_also_after_the_start_appended() {
+    let tmp = TempDir::new("split-power-cut");
+    let lib = Library::open(tmp.path()).unwrap();
+    let (pieces, dictation) = three_at_the_microphone();
+    let rec = recorded(&lib, &pieces, &dictation);
+    let (before, first) = {
+        let log = EventLog::open(tmp.path()).unwrap();
+        transcribe(&rec, &log, timed());
+        let before = events(&log, &rec.id());
+        assert_eq!(
+            split(&rec.dir, &log, &ScriptedDiarizer::new(), &no_stop()).unwrap(),
+            3
+        );
+        (before.clone(), events(&log, &rec.id())[before.len()].seq)
+    };
+
+    // The power cut rolled the log back to the split's first event: the other three and the
+    // note, which came after them, are gone, and so is the head that numbered them.
+    let conn = rusqlite::Connection::open(tmp.path().join("bridge.db")).unwrap();
+    conn.execute_batch(&format!(
+        "DELETE FROM events WHERE seq > {first}; DELETE FROM notes; UPDATE meta SET head = {first};"
+    ))
+    .unwrap();
+    drop(conn);
+    let log = EventLog::open(tmp.path()).unwrap();
+    assert_eq!(log.head(), first);
+    // The start appends before it catches up, and gives the lost numbers out again.
+    for n in 1..=3 {
+        log.remove_meeting(&format!("m-20000101-000000-000{n}"))
+            .unwrap();
+    }
+    assert_eq!(log.head(), first + 3);
+    assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 3);
+    assert_split_sent(&log, &rec, &before, &pieces);
     assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 0);
 }
 
@@ -466,13 +492,11 @@ fn a_split_that_stopped_halfway_through_its_events_sends_the_rest_at_the_next_st
         3
     );
 
-    // Voice stopped after the split's first event: the log lacks the other three, and the split
-    // has no mark.
+    // Voice stopped after the split's first event: the log lacks the other three, and the note.
     let first = events(&log, &rec.id())[before.len()].seq;
-    log_sql(&log, &format!("DELETE FROM events WHERE seq > {first}"));
-    sql(
-        &rec,
-        &format!("DELETE FROM meta WHERE key = '{SPLIT_SENT_KEY}'"),
+    log_sql(
+        &log,
+        &format!("DELETE FROM events WHERE seq > {first}; DELETE FROM notes;"),
     );
     assert_eq!(catch_up_split(&rec.dir, &log).unwrap(), 3);
     assert_split_sent(&log, &rec, &before, &pieces);
@@ -592,12 +616,13 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
     // Gated by the call's passages with word timings in a meeting without labels, by its turns
     // in one that Nemotron labelled, and by where the call's audio sounds when its passages have
     // no word timings, as from a cloud provider, or when it has no passages at all, as after a
-    // failed transcription.
+    // failed transcription or one that heard no words in the whole call.
     for (gate, opts) in [
         ("passages", timed()),
         ("turns", labelled(&labels)),
         ("audio in passages", untimed()),
         ("audio", untimed()),
+        ("audio, no words", untimed()),
     ] {
         let rec = Recording::new(&lib, &[Track::Mic, Track::Call]);
         rec.session(0, 1);
@@ -613,6 +638,11 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
                  DELETE FROM windows WHERE track = 'call';
                  DELETE FROM progress WHERE track = 'call';",
             );
+        }
+        if gate == "audio, no words" {
+            // A recognizer that returned no text for every window: the call is transcribed to
+            // its end, without a passage.
+            sql(&rec, "DELETE FROM passages WHERE track = 'call';");
         }
         let stored = Transcript::open(rec.dir.path()).unwrap();
         let call_turns = stored.turns(Track::Call, 0, u64::MAX).unwrap();
@@ -631,7 +661,7 @@ fn the_call_heard_at_the_microphone_doesn_t_become_a_voice_there() {
                 matches!(call_passages[..], [(start, 12_000.., true)] if start < 7_500),
                 "{call_passages:?}"
             ),
-            "audio" => assert!(call_passages.is_empty(), "{call_passages:?}"),
+            "audio" | "audio, no words" => assert!(call_passages.is_empty(), "{call_passages:?}"),
             _ => assert!(
                 call_passages.iter().all(|p| !p.2),
                 "word timings: {call_passages:?}"
