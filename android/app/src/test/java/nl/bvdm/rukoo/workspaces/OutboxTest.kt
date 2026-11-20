@@ -842,6 +842,52 @@ class OutboxTest {
     }
 
     @Test
+    fun `a lookup answer that comes after Start over changes nothing, and a lookup of the row's own decides`() = runBlocking {
+        seed()
+        val asked = CompletableDeferred<Unit>()
+        val answer = CompletableDeferred<Unit>()
+        val lookups = AtomicInteger()
+        val late = WorkspaceHttp { _, method, path, _, _ ->
+            when {
+                method == "GET" && path.contains("/operations/") -> {
+                    if (lookups.incrementAndGet() == 1) {
+                        asked.complete(Unit)
+                        answer.await()
+                        // What the cache before Start over would have taken: the message at seq 8.
+                        WorkspaceAnswer(200, RukooJson.parseToJsonElement("""{"messageId":"e_${"Z".repeat(22)}","seq":8,"visible":true}"""))
+                    } else {
+                        // The lookup under the new revision: the server has no message from this operation.
+                        throw WorkspaceError("not_found", 404)
+                    }
+                }
+                else -> error("unexpected $method $path")
+            }
+        }
+        val box = outbox(client = client(late))
+        val sent = CopyOnWriteArrayList<Outbox.Sent>()
+        scope.launch { box.sent.collect { sent += it } }
+        val local = box.enqueue(w, general, null, text, mentions)
+        val op = Uuid7.next(clock)
+        // A row whose answer went missing, marked for a lookup of its operation.
+        store.tx { updateOutbox(local, mapOf("operationId" to op, "reason" to Outbox.LOOKUP, "attempts" to 1)) }
+        box.synced(w)
+        withTimeout(5_000) { asked.await() }
+        FeedApplier(store).startOver(w)
+        assertEquals(Outbox.QUEUED to Outbox.LOOKUP, row(local).let { it.state to it.reason })
+        answer.complete(Unit)
+        waitFor("the second lookup's outcome") { lookups.get() == 2 && store.read { getOutbox(local) }?.state != Outbox.QUEUED }
+
+        val r = row(local)
+        assertEquals(Outbox.HELD to "unknown", r.state to r.reason)
+        assertEquals(op, r.operationId)
+        assertEquals(text, r.text)
+        assertTrue("no sent for the old answer", sent.isEmpty())
+        assertNull(store.read { eventAt(w, general, 8) })
+        assertTrue(store.read { getRoom(w, general) }!!.head < 8)
+        box.close()
+    }
+
+    @Test
     fun `a network failure after a restore keeps the lookup mark, and the next attempt is the lookup`() = runBlocking {
         seed()
         val started = CompletableDeferred<Unit>()

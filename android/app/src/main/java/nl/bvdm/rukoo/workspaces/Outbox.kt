@@ -489,9 +489,9 @@ class Outbox(
      * What any call of an attempt does for the answers that aren't about the message: the removal path, the upgrade
      * state, `Retry-After`, and for a network failure, a 5xx or anything unknown, the row back to `queued` with the
      * next backoff step. [reason] is what the row keeps: null, or `lookup` for a lookup that still has to run.
-     * [asked] is the generation a request for a `queued` row went out under (see [still]).
+     * [asked] is what a request for a `queued` row went out under (see [still]).
      */
-    private suspend fun waitOrPark(row: OutboxRow, e: WorkspaceError, reason: String?, asked: String? = null) {
+    private suspend fun waitOrPark(row: OutboxRow, e: WorkspaceError, reason: String?, asked: Asked? = null) {
         when {
             e.code == "not_found" && e.scope == "workspace" -> {
                 requeue(row, reason, nextAt = now() + backoff(row.attempts + 1), attempts = row.attempts + 1, asked = asked)
@@ -535,7 +535,9 @@ class Outbox(
             }
             return
         }
-        val asked = ws.generation
+        // The answer belongs to the cache revision the lookup started under (§3.6), as well as to its generation: a
+        // reset, Start over or park meanwhile keeps the generation but leaves the row to a lookup of its own.
+        val asked = store.read { Asked(getWs(row.ws)?.generation, revision(row.ws)) }
         val found = try {
             client.operation(row.ws, row.room, op)
         } catch (e: WorkspaceError) {
@@ -547,6 +549,7 @@ class Outbox(
                 permanent(e) -> settle(row, HELD, "unknown", asked)
                 else -> waitOrPark(row, e, LOOKUP, asked)
             }
+            relook(row, asked)
             return
         }
         if (closed) return
@@ -555,6 +558,21 @@ class Outbox(
             !acked(found.messageId, found.seq) ->
                 waitOrPark(row, WorkspaceError("server", message = "the lookup answer isn't one"), LOOKUP, asked)
             else -> delivered(row, found.messageId, found.seq, found.visible, asked)
+        }
+        relook(row, asked)
+    }
+
+    /**
+     * After a lookup whose answer was dropped because the revision moved: a row a `submission_expired` left `sending`
+     * waits as a lookup, so a new one decides it instead of the room staying blocked until the next start. A `queued`
+     * row is a lookup already. Nothing happens when the answer was applied: the row isn't the one the lookup left.
+     */
+    private suspend fun relook(row: OutboxRow, asked: Asked) {
+        if (row.state != SENDING) return
+        store.tx {
+            if (revision(row.ws) != asked.revision && still(row) != null) {
+                updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to LOOKUP, "nextAt" to 0L))
+            }
         }
     }
 
@@ -590,7 +608,7 @@ class Outbox(
             }
             if (known != null) return known
         }
-        val asked = store.read { getWs(row.ws)?.generation }
+        val asked = store.read { Asked(getWs(row.ws)?.generation) }
         val details = try {
             measure(row.ws)
         } catch (e: WorkspaceError) {
@@ -625,15 +643,23 @@ class Outbox(
     // ---- outcomes ----
 
     /**
+     * What a request went out under: the workspace's [generation], and for a lookup the cache [revision] (§3.6), or
+     * null where the revision isn't checked.
+     */
+    private class Asked(val generation: String?, val revision: Long? = null)
+
+    /**
      * The row as it stands, when it is still the one the request left: the same state and operation ID, and for a
      * `queued` row (a lookup, or the clock's `GET /` before a claim) the same reason and the workspace generation
-     * [asked] that request went out under. Null when a restore, Start over or the person changed it meanwhile: the
-     * late answer then changes nothing, and the lookup a restore marked decides (§3.6, §3.8).
+     * [asked] that request went out under. With [Asked.revision], also the same cache revision, whatever the row's
+     * state. Null when a restore, Start over, reset, park or the person changed it meanwhile: the late answer then
+     * changes nothing, and a lookup of the row's own decides (§3.6, §3.8).
      */
-    private fun WorkspaceStore.StoreTx.still(row: OutboxRow, asked: String? = null): OutboxRow? {
+    private fun WorkspaceStore.StoreTx.still(row: OutboxRow, asked: Asked? = null): OutboxRow? {
         val r = getOutbox(row.local) ?: return null
         if (r.state != row.state || r.operationId != row.operationId) return null
-        if (r.state == QUEUED && (r.reason != row.reason || getWs(row.ws)?.generation != asked)) return null
+        if (r.state == QUEUED && (r.reason != row.reason || getWs(row.ws)?.generation != asked?.generation)) return null
+        if (asked?.revision != null && revision(row.ws) != asked.revision) return null
         return r
     }
 
@@ -642,7 +668,7 @@ class Outbox(
      * directly, and raises the read positions to at least its seq, as the server did. Then [sent] hears it. Nothing
      * happens when the row isn't the one the request left any more ([still]).
      */
-    private suspend fun delivered(row: OutboxRow, messageId: String, seq: Long, visible: Boolean, asked: String? = null) {
+    private suspend fun delivered(row: OutboxRow, messageId: String, seq: Long, visible: Boolean, asked: Asked? = null) {
         val done = store.tx {
             if (still(row, asked) == null) return@tx false
             deleteOutbox(row.local)
@@ -674,7 +700,7 @@ class Outbox(
     }
 
     /** `held` or `failed` with [reason]; the operation ID stays. Only for the row the request left ([still]). */
-    private suspend fun settle(row: OutboxRow, state: String, reason: String, asked: String? = null) {
+    private suspend fun settle(row: OutboxRow, state: String, reason: String, asked: Asked? = null) {
         store.tx {
             if (still(row, asked) != null) {
                 updateOutbox(row.local, mapOf("state" to state, "reason" to reason))
@@ -687,7 +713,7 @@ class Outbox(
      * Back to `queued` until [nextAt]; only for the row the request left ([still]). A [limited] wait is a `429`'s, kept
      * on disk so a wake or a restart doesn't send the row before its `Retry-After`.
      */
-    private suspend fun requeue(row: OutboxRow, reason: String?, nextAt: Long, attempts: Int, asked: String? = null, limited: Boolean = false) {
+    private suspend fun requeue(row: OutboxRow, reason: String?, nextAt: Long, attempts: Int, asked: Asked? = null, limited: Boolean = false) {
         store.tx {
             if (still(row, asked) != null) {
                 updateOutbox(row.local, mapOf("state" to QUEUED, "reason" to reason, "nextAt" to nextAt, "attempts" to attempts))

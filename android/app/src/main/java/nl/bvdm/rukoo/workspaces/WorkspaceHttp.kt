@@ -108,7 +108,9 @@ class OkHttpWorkspaceHttp(base: OkHttpClient) : WorkspaceHttp {
                     val read = try {
                         response.use { Read(it.code, read(it), it.header("Retry-After")) }
                     } catch (e: IOException) {
-                        if (!cont.isCancelled) cont.resumeWithException(WorkspaceError("network", response.code, message = e.message, cause = e))
+                        // The body was cut off: no whole answer came, so its status counts for nothing, as on desktop
+                        // (client.js). A cut-off 401 doesn't end the session, nor does a cut-off 403 fail a message.
+                        if (!cont.isCancelled) cont.resumeWithException(WorkspaceError("network", message = e.message, cause = e))
                         return
                     } catch (e: WorkspaceError) {
                         if (!cont.isCancelled) cont.resumeWithException(e)

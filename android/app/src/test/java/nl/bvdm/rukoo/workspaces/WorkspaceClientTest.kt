@@ -23,6 +23,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import okio.Buffer
 import okio.GzipSink
 import okio.buffer
@@ -293,6 +294,25 @@ class WorkspaceClientTest {
         }
         assertEquals(2, refused.size)
         server.verify()
+    }
+
+    @Test
+    fun `a 401 whose body is cut off is a network failure and signs nobody out`() = runBlocking {
+        val body = """{"error":"unauthorized","scope":"account","message":"${"x".repeat(4096)}"}"""
+        for (status in listOf(401, 403)) {
+            server.answerWith(
+                MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body)
+                    .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY),
+            )
+            try {
+                client.list()
+                fail("expected network")
+            } catch (e: WorkspaceError) {
+                assertEquals("$status", "network", e.code)
+                assertEquals("$status: no whole answer came, so no status", 0, e.status)
+            }
+        }
+        assertTrue("nobody was signed out", refused.isEmpty())
     }
 
     @Test
