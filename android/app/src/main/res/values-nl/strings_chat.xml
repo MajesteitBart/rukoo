@@ -468,4 +468,8 @@
     <string name="chat_invite_share">Link delen</string>
     <string name="chat_room_details">Details</string>
     <string name="chat_room_pick">Kies een gesprek</string>
+    <plurals name="chat_input_bytes_left">
+        <item quantity="one">Nog %d byte over</item>
+        <item quantity="other">Nog %d bytes over</item>
+    </plurals>
 </resources>

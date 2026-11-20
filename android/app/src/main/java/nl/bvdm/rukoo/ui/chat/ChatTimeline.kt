@@ -318,6 +318,26 @@ object ChatTimeline {
     /** How many messages by others came after [seenSeq]: the count on the Latest pill. */
     fun newSince(rows: List<Row>, seenSeq: Long, me: String?): Int =
         rows.count { it is Message && it.pending == null && (it.seq ?: 0) > seenSeq && it.actor != me }
+
+    /**
+     * Whether [events] hold what an open at a seq loaded: their oldest seq is at or below [oldest], the oldest cached
+     * seq right after that open ended (null when nothing was cached then). The timeline on screen is built again after
+     * each page on its own time, so it can come in after the open ended.
+     */
+    fun holds(events: List<Event>, oldest: Long?): Boolean =
+        oldest == null || (events.minOfOrNull { it.seq } ?: Long.MAX_VALUE) <= oldest
+
+    /**
+     * Which of [items] (bottom up, newest first) a room opened at [at] shows (§3.7 "Opening at a seq"): the oldest sent
+     * message at or after it. When none is loaded, the oldest loaded message if the backfill stopped short ([complete]
+     * false), else null, which leaves the timeline at the newest message: the open failed (offline) or the message went.
+     */
+    fun openingTarget(items: List<Row>, at: Long, complete: Boolean): Int? {
+        val i = items.indexOfLast { it is Message && it.pending == null && (it.seq ?: 0) >= at }
+        if (i >= 0) return i
+        if (complete) return null
+        return items.indexOfLast { it is Message && it.pending == null }.takeIf { it >= 0 }
+    }
 }
 
 /**

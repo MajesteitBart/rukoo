@@ -26,6 +26,14 @@ data class WireText(val text: String, val mentions: List<Mention>, val bytes: In
     val tooLong: Boolean get() = bytes > TEXT_BYTES
     val tooManyMentions: Boolean get() = mentionCount > MENTION_LIMIT
     val canSend: Boolean get() = text.isNotEmpty() && !tooLong && !tooManyMentions
+
+    /** Above [NEAR_LIMIT_BYTES] and still within the limit: how many bytes are left, for the line over the field. */
+    val bytesLeft: Int? get() = if (bytes > NEAR_LIMIT_BYTES && !tooLong) TEXT_BYTES - bytes else null
+
+    companion object {
+        /** From here the composer shows what is left (android.md "Composer with mentions"). */
+        const val NEAR_LIMIT_BYTES = 15_000
+    }
 }
 
 /**
@@ -189,4 +197,7 @@ object MentionEditing {
         val spans = value.spans + Utf8Offsets.fromWire(text, mentions).map { it.copy(start = it.start + offset, end = it.end + offset) }
         return ComposerValue(TextFieldValue(next, TextRange(next.length)), spans)
     }
+
+    /** [append] for a composer that is only its kept [draft]: the draft with the text after it, offsets in bytes again. */
+    fun appendToDraft(draft: Draft?, text: String, mentions: List<Mention>): Draft? = toDraft(append(fromDraft(draft), text, mentions))
 }

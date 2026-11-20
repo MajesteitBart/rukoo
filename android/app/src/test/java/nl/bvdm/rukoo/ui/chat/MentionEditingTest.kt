@@ -218,6 +218,17 @@ class MentionEditingTest {
     }
 
     @Test
+    fun `above 15,000 bytes the composer counts down what is left, until the limit takes over`() {
+        assertNull(MentionEditing.wire(value("x".repeat(WireText.NEAR_LIMIT_BYTES))).bytesLeft)
+        assertEquals(TEXT_BYTES - 15_001, MentionEditing.wire(value("x".repeat(WireText.NEAR_LIMIT_BYTES + 1))).bytesLeft)
+        // Counted in bytes after trimming: ë takes two, the white space around the text none.
+        assertEquals(TEXT_BYTES - 15_002, MentionEditing.wire(value("  " + "ë".repeat(7_501) + "\n")).bytesLeft)
+        assertEquals(0, MentionEditing.wire(value("x".repeat(TEXT_BYTES))).bytesLeft)
+        // Over the limit the error shows instead.
+        assertNull(MentionEditing.wire(value("x".repeat(TEXT_BYTES + 1))).bytesLeft)
+    }
+
+    @Test
     fun `typing @Name by hand mentions nobody`() {
         val wire = MentionEditing.wire(value("@Ann hi"))
         assertTrue(wire.mentions.isEmpty())
@@ -247,5 +258,14 @@ class MentionEditingTest {
         assertEquals("draft\n@Ann hi", restored.text)
         assertEquals(listOf(MentionSpan(6, 10, ann.id)), restored.spans)
         assertEquals("@Ann hi", MentionEditing.append(ComposerValue(), "@Ann hi", emptyList()).text)
+    }
+
+    @Test
+    fun `a discarded message comes back after a kept draft, both mentions in bytes`() {
+        val kept = Draft("@Zoë de Vries hi", listOf(Mention(zoe.id, 0, 14)))
+        val restored = MentionEditing.appendToDraft(kept, "@Ann ok", listOf(Mention(ann.id, 0, 4)))
+        // "@Zoë de Vries hi\n" is 18 bytes, because ë takes two.
+        assertEquals(Draft("@Zoë de Vries hi\n@Ann ok", listOf(Mention(zoe.id, 0, 14), Mention(ann.id, 18, 22))), restored)
+        assertEquals(Draft("@Ann ok", listOf(Mention(ann.id, 0, 4))), MentionEditing.appendToDraft(null, "@Ann ok", listOf(Mention(ann.id, 0, 4))))
     }
 }

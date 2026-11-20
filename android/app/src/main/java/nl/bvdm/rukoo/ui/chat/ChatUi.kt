@@ -16,7 +16,9 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.RkToastState
 import nl.bvdm.rukoo.ui.icons.IconSpec
@@ -28,7 +30,6 @@ import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
-import nl.bvdm.rukoo.workspaces.Draft
 import nl.bvdm.rukoo.workspaces.ResendMode
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
@@ -225,6 +226,18 @@ class ChatUi(
 
     fun select(ws: String?) = host.selectWorkspace(ws)
 
+    /** The busy key of joining [channel]. */
+    fun joinKey(channel: String) = "join:$channel"
+
+    /**
+     * Join on a channel opened before joining it (§7.4). The room was already on screen when it had no cache row, so
+     * its open did nothing: once joined it opens, for its history, inline events and catching up (§3.7).
+     */
+    fun join(ws: String, channel: String) = launch(joinKey(channel), context(ws)) {
+        joinChannel(ws, channel)
+        open(ws, channel)
+    }
+
     /** Members' names in the interface language, for code outside composition. */
     fun names(): ChatNames = chatNames(strings)
 
@@ -330,14 +343,27 @@ class ChatUi(
         }
     }
 
-    // Undo of Discard: the text and mentions after what the composer holds, or as the draft when it isn't on screen.
+    // Undo of Discard: the text and mentions after what the composer holds. A composer this process never showed (a
+    // held thread reply discarded from the room after a restart) is only its cached draft, which keeps its text too.
     private fun restore(ws: String, room: String, row: PendingRow) {
         val key = composerKey(ws, room, row.root)
         val state = composers[key]
         if (state != null) {
             composerChanged(ws, room, row.root, MentionEditing.append(state.value, row.text, row.mentions))
-        } else {
-            launch(ctx = context(ws)) { saveDraft(ws, room, row.root, Draft(row.text, row.mentions)) }
+            return
+        }
+        launch(ctx = context(ws)) {
+            val root = row.root
+            val kept = withTimeoutOrNull(DRAFT_READ_MS) {
+                if (root == null) timeline(ws, room).firstOrNull()?.draft else thread(ws, room, root).firstOrNull()?.draft
+            }
+            // The composer may have come on screen meanwhile, from the draft as it was.
+            val now = composers[key]
+            if (now != null) {
+                composerChanged(ws, room, root, MentionEditing.append(now.value, row.text, row.mentions))
+            } else {
+                saveDraft(ws, room, root, MentionEditing.appendToDraft(kept, row.text, row.mentions))
+            }
         }
     }
 
@@ -364,6 +390,9 @@ class ChatUi(
     private companion object {
         // §3.19 DRAFT_SAVE_DELAY.
         const val DRAFT_SAVE_DELAY_MS = 500L
+
+        // How long Undo waits for the cached draft; the cache answers at once unless it isn't open.
+        const val DRAFT_READ_MS = 5_000L
     }
 }
 

@@ -427,16 +427,16 @@ private fun RoomLog(
 
     // Opening a room with unread messages places the New divider a third of the way down, once per opening. Opened
     // from a notification, the message it showed takes that place once its history reached it, or the oldest loaded
-    // message when the backfill stopped short (§3.7 "Opening at a seq"). Reading waits for it, so nothing counts as
-    // read from a position the opening didn't choose.
+    // message when the backfill stopped short (§3.7 "Opening at a seq"); when the open failed it stays at the newest.
+    // The open ending isn't enough: this timeline is rebuilt after each page on its own time, so it waits until it
+    // holds what the open loaded. Reading waits for it, so nothing counts as read from a position the opening didn't
+    // choose.
     LaunchedEffect(rows, viewport, listState, reached) {
         if (placed == count || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
         if (at != null) {
-            if (!reached) return@LaunchedEffect
-            // Bottom up: the oldest message at or after the seq is the last such item.
-            val i = items.indexOfLast { it is ChatTimeline.Message && it.pending == null && (it.seq ?: 0) >= at }
-            val target = if (i >= 0) i else items.indexOfLast { it is ChatTimeline.Message }
-            if (target > 0) {
+            if (!reached || !ChatTimeline.holds(t.events, opening.oldest)) return@LaunchedEffect
+            val target = ChatTimeline.openingTarget(items, at, opening.complete)
+            if (target != null && target > 0) {
                 showDivider(listState, target, viewport, animate = false)
                 pinned = false
             }

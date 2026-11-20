@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -67,6 +68,7 @@ import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.lineHeight
 import nl.bvdm.rukoo.ui.theme.medium
 import nl.bvdm.rukoo.ui.theme.rkSurface
+import nl.bvdm.rukoo.ui.theme.tabular
 import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Draft
 import nl.bvdm.rukoo.workspaces.Event
@@ -199,11 +201,19 @@ fun ChatComposer(
             MentionPicker(matches, active, members, onPick = ::pick)
             Spacer(Modifier.size(6.dp))
         }
+        val left = wire.bytesLeft
         if (wire.tooLong || wire.tooManyMentions) {
             Text(
                 stringResource(if (wire.tooLong) R.string.chat_input_too_long else R.string.chat_input_too_many_mentions),
                 style = Rk.type.text12,
                 color = c.danger,
+                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+            )
+        } else if (left != null) {
+            Text(
+                pluralStringResource(R.plurals.chat_input_bytes_left, left, left),
+                style = Rk.type.text12.tabular,
+                color = c.text3,
                 modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
             )
         }
@@ -387,13 +397,12 @@ internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room
             Text(text, style = Rk.type.text12_5.lineHeight(1.4f), color = c.text2)
             when {
                 slot is ComposerSlot.NotJoined -> {
-                    val key = "join:${slot.channel.id}"
                     RkButton(
                         stringResource(R.string.chat_input_join, slot.channel.name),
-                        { ui.launch(key, ui.context(ws)) { joinChannel(ws, slot.channel.id) } },
+                        { ui.join(ws, slot.channel.id) },
                         kind = RkButtonKind.PRIMARY,
                         size = RkButtonSize.SMALL,
-                        enabled = !ui.isBusy(key),
+                        enabled = !ui.isBusy(ui.joinKey(slot.channel.id)),
                     )
                 }
                 slot is ComposerSlot.Closed && room != null && !inThread -> {

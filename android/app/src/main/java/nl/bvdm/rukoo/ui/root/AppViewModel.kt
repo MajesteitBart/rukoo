@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -66,6 +67,7 @@ import nl.bvdm.rukoo.ui.mail.MailUi
 import nl.bvdm.rukoo.ui.mail.MailUiHost
 import nl.bvdm.rukoo.workspaces.ChatState
 import nl.bvdm.rukoo.workspaces.RoomKind
+import nl.bvdm.rukoo.workspaces.RoomTimeline
 import nl.bvdm.rukoo.workspaces.WorkspaceView
 
 /** Things the root does with a Context: open a link in a Custom Tab. */
@@ -87,9 +89,23 @@ sealed interface ChatFollow {
  * read position for the New divider (§3.18), and [count] goes up. RoomPane ties its divider placement and scroll
  * position to it. Folding and a thread opened over the room keep the opening; Back to the list or Mail ends it.
  * Opened from a notification, [at] is the seq of the message it showed, and [reached] turns true once the room's
- * history was paged back to it (or as far as §3.7 allows), so RoomPane shows that message.
+ * history was paged back to it (or as far as §3.7 allows), so RoomPane shows that message. With it come [oldest], the
+ * oldest cached seq right after that open, which RoomPane waits for in its own timeline, and [complete], false when
+ * the backfill stopped short of [at].
  */
-data class RoomOpening(val ws: String, val room: String, val count: Long, val at: Long? = null, val reached: Boolean = true)
+data class RoomOpening(
+    val ws: String,
+    val room: String,
+    val count: Long,
+    val at: Long? = null,
+    val reached: Boolean = true,
+    val oldest: Long? = null,
+    val complete: Boolean = true,
+) {
+    /** The open at [at] ended, and [loaded] is the room's timeline read after it (null when none came). */
+    fun reachedWith(loaded: RoomTimeline?): RoomOpening =
+        copy(reached = true, oldest = loaded?.events?.minOfOrNull { it.seq }, complete = loaded?.complete ?: true)
+}
 
 /**
  * Navigation state for both layouts, above the layout so folding keeps everything (spec 6 §5.6), and
@@ -662,10 +678,12 @@ class AppViewModel(
             set { it.openRoom(id) }
             viewModelScope.launch {
                 quietly { workspaces.open(ws, id, at) }
-                _roomOpening.value?.let { o -> if (o.count == count) _roomOpening.value = o.copy(reached = true) }
-                val root = withTimeoutOrNull(LOAD_WAIT_MS) {
-                    runCatching { workspaces.timeline(ws, id).first() }.getOrNull()?.events?.firstOrNull { it.seq == at }?.root
-                }
+                // Read after the open ended, this holds every page it loaded; RoomPane's own timeline may still be a
+                // build behind, so the opening says how far back it has to reach before the pane places the message.
+                var loaded: RoomTimeline? = null
+                quietly { loaded = withTimeoutOrNull(LOAD_WAIT_MS) { workspaces.timeline(ws, id).firstOrNull() } }
+                _roomOpening.value?.let { o -> if (o.count == count) _roomOpening.value = o.reachedWith(loaded) }
+                val root = loaded?.events?.firstOrNull { it.seq == at }?.root
                 // Only while the person is still in that room: they may have moved on meanwhile.
                 if (root != null) set { now -> if (now.chat.workspaceId == ws && now.chat.roomId == id && now.chat.threadRoot == null) now.openThread(root) else now }
             }

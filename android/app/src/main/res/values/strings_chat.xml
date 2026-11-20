@@ -492,4 +492,9 @@
     <string name="chat_invite_share">Share link</string>
     <string name="chat_room_details">Details</string>
     <string name="chat_room_pick">Pick a conversation</string>
+    <!-- Quiet line over the composer above 15,000 bytes, until the 16,384 limit (android.md "Composer with mentions"). -->
+    <plurals name="chat_input_bytes_left">
+        <item quantity="one">%d byte left</item>
+        <item quantity="other">%d bytes left</item>
+    </plurals>
 </resources>
