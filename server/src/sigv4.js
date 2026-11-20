@@ -39,15 +39,18 @@ async function hmacBytes(key, text) {
   return new Uint8Array(await crypto.subtle.sign('HMAC', imported, utf8(text)));
 }
 
-// The derived key changes once a day; it is kept for the secret, day, region and service it was made for.
+// Every request goes to S3 or a service that speaks its API, which all sign as the s3 service.
+const SERVICE = 's3';
+
+// The derived key changes once a day; it is kept for the secret, day and region it was made for.
 let derived = { id: null, key: null };
 
-async function signingKey(secret, day, region, service) {
-  const id = `${day}\n${region}\n${service}\n${secret}`;
+async function signingKey(secret, day, region) {
+  const id = `${day}\n${region}\n${secret}`;
   if (derived.id !== id) {
     let key = await hmacBytes(utf8(`AWS4${secret}`), day);
     key = await hmacBytes(key, region);
-    key = await hmacBytes(key, service);
+    key = await hmacBytes(key, SERVICE);
     key = await hmacBytes(key, 'aws4_request');
     derived = { id, key: await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) };
   }
@@ -60,7 +63,7 @@ async function signingKey(secret, day, region, service) {
 //
 // Returns the headers to send, Authorization included, and the query string, with the canonical request, the string
 // to sign and the signature for tests.
-export async function sign({ method, host, path, query = [], headers = {}, payloadHash = EMPTY_SHA256, region, service = 's3', accessKeyId, secretAccessKey, time = Date.now() }) {
+export async function sign({ method, host, path, query = [], headers = {}, payloadHash = EMPTY_SHA256, region, accessKeyId, secretAccessKey, time = Date.now() }) {
   const date = amzDate(time);
   const day = date.slice(0, 8);
   const all = new Map();
@@ -73,9 +76,9 @@ export async function sign({ method, host, path, query = [], headers = {}, paylo
   const signedHeaders = names.join(';');
   const queryString = canonicalQuery(query);
   const canonicalRequest = [method, path, queryString, canonicalHeaders, signedHeaders, payloadHash].join('\n');
-  const scope = `${day}/${region}/${service}/aws4_request`;
+  const scope = `${day}/${region}/${SERVICE}/aws4_request`;
   const stringToSign = [ALGORITHM, date, scope, hex(await crypto.subtle.digest('SHA-256', utf8(canonicalRequest)))].join('\n');
-  const key = await signingKey(secretAccessKey, day, region, service);
+  const key = await signingKey(secretAccessKey, day, region);
   const signature = hex(await crypto.subtle.sign('HMAC', key, utf8(stringToSign)));
   const out = Object.fromEntries([...all].filter(([name]) => name !== 'host'));
   out.authorization = `${ALGORITHM} Credential=${accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;

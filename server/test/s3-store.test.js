@@ -101,6 +101,24 @@ describe('putting and getting', () => {
     expect(s3.keys()).toEqual([]);
   });
 
+  it('leaves the size unknown when the service gives no Content-Length, or one that is no number', async () => {
+    for (const length of [null, 'abc']) {
+      s3.intercept = async (request, op) => {
+        if (op !== 'GET') return undefined;
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(enc.encode('some bytes'));
+            controller.close();
+          }
+        });
+        return new Response(body, { headers: length === null ? {} : { 'content-length': length } });
+      };
+      const object = await store().get('ws/w_1/unsized');
+      expect(object.size).toBeNull();
+      expect(new TextDecoder().decode(await new Response(object.body).arrayBuffer())).toBe('some bytes');
+    }
+  });
+
   it('treats a redirect as a refusal and never follows it', async () => {
     s3.intercept = async () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } });
     const err = await store().get('ws/w_1/moved').catch((e) => e);
@@ -139,6 +157,30 @@ describe('listing', () => {
     expect(readList(xml)).toEqual({ keys: ['a&b', 'c'], cursor: 't&1' });
     expect(() => readList('<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>')).toThrow(/continuation token/);
     expect(() => readList('<Error><Code>AccessDenied</Code></Error>')).toThrow(/other than a list/);
+    expect(readList('<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>\n')).toEqual({ keys: [], cursor: null });
+  });
+
+  it('throws on an answer that is not a whole list, rather than taking it for the last page', async () => {
+    const head = '<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">';
+    const entry = '<Contents><Key>ws/w_2/a</Key><Size>1</Size></Contents>';
+    const shapes = {
+      'an opening tag and nothing else': [head, /ends too soon/],
+      'an empty list element': ['<ListBucketResult></ListBucketResult>', /whether there is more/],
+      'entries without IsTruncated': [`${head}${entry}</ListBucketResult>`, /whether there is more/],
+      'an IsTruncated that is neither true nor false': [`${head}<IsTruncated>maybe</IsTruncated>${entry}</ListBucketResult>`, /whether there is more/],
+      'entries whose tail is missing': [`${head}<IsTruncated>false</IsTruncated>${entry}<Contents><Key>ws/w_2/b</Key>`, /ends too soon/],
+      'an entry cut off inside a closed list': [`${head}<IsTruncated>false</IsTruncated><Contents><Key>ws/w_2/b${entry}</ListBucketResult>`, /without a key/],
+      'an entry without a key': [`${head}<IsTruncated>false</IsTruncated><Contents><Size>1</Size></Contents></ListBucketResult>`, /without a key/],
+      'more without a token': [`${head}<IsTruncated>true</IsTruncated>${entry}</ListBucketResult>`, /continuation token/],
+      'more with an empty token': [`${head}<IsTruncated>true</IsTruncated>${entry}<NextContinuationToken> </NextContinuationToken></ListBucketResult>`, /continuation token/]
+    };
+    for (const [shape, [xml, error]] of Object.entries(shapes)) {
+      expect(() => readList(xml), shape).toThrow(error);
+    }
+    // The store throws too, so nobody takes it for an empty bucket.
+    s3.plant('ws/w_2/a', 'x');
+    s3.intercept = async (request, op) => (op === 'LIST' ? new Response(head, { headers: { 'content-type': 'application/xml' } }) : undefined);
+    await expect(store().list({ prefix: 'ws/w_2/' })).rejects.toThrow(/ends too soon/);
   });
 });
 
@@ -185,9 +227,35 @@ describe('deleting', () => {
     expect(getting).toBeInstanceOf(S3Error);
     expect(getting.message).toBe('S3 GET answered 404 NoSuchBucket');
     expect(s3.keys('ws/w_6/')).toEqual(['ws/w_6/kept']);
-    // A 404 without a code still means gone.
+  });
+
+  it('counts a delete as done only on a 2xx or NoSuchKey, not on a 404 that says less', async () => {
+    s3.plant('ws/w_6/kept', 'x');
+    // A 404 without a body, and one whose body breaks off before its code.
+    const answers = [
+      () => new Response(null, { status: 404 }),
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(enc.encode('<Error><Code>NoSuch'));
+              controller.error(new Error('connection reset'));
+            }
+          }),
+          { status: 404 }
+        )
+    ];
+    for (const answer of answers) {
+      s3.intercept = async (request, op) => (op === 'DELETE' ? answer() : undefined);
+      const err = await store()
+        .delete(['ws/w_6/kept'])
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toBe('S3 could not delete 1 of 1 objects, the first because S3 DELETE answered 404');
+      expect(err.failed).toEqual(['ws/w_6/kept']);
+    }
+    // A download's 404 without a code still means gone.
     s3.intercept = async () => new Response(null, { status: 404 });
-    await store().delete(['ws/w_6/kept']);
     expect(await store().get('ws/w_6/kept')).toBeNull();
   });
 });
@@ -249,6 +317,38 @@ describe('time limits', () => {
     expect(err.message).toBe('S3 PUT failed: no answer in time');
   });
 
+  it('stops reading the body of a refusal that stalls, and still refuses', async () => {
+    S3_TIME.error = 100;
+    // The start of an error answer, and then nothing.
+    const stalled = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(enc.encode('<Error><Code>SlowDown'));
+          },
+          pull: () => new Promise(() => {})
+        }),
+        { status: 503 }
+      );
+    s3.intercept = async (request, op) => {
+      if (op === 'PUT') await request.arrayBuffer();
+      return stalled();
+    };
+    const started = Date.now();
+    const getting = await store()
+      .get('ws/w_9/refused')
+      .catch((e) => e);
+    expect(getting).toBeInstanceOf(S3Error);
+    expect(getting.message).toBe('S3 GET answered 503');
+    const bytes = enc.encode('refused, slowly');
+    const putting = await store()
+      .put('ws/w_9/refused', streamOf(bytes), await opts(bytes))
+      .catch((e) => e);
+    expect(putting).toBeInstanceOf(S3Error);
+    expect(putting.message).toBe('S3 PUT answered 503');
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
   it("times a download's headers, not its body", async () => {
     S3_TIME.request = 150;
     const bytes = enc.encode('a slow download '.repeat(200));
@@ -280,12 +380,33 @@ describe('what errors say', () => {
     expect(s3.refused).toBeGreaterThanOrEqual(4);
   });
 
-  it('says that a request failed, and why', async () => {
+  it('says that a request failed, and nothing of the error it failed with', async () => {
+    const signature = '5a94b5c6676e69b84775384654c9cf3c92bac0d79cb8884d19a098dcf6f182c0';
     s3.intercept = async () => {
-      throw new TypeError('Network connection lost.');
+      throw new TypeError(`Network connection lost. Signature=${signature} ${FAKE_S3.secretAccessKey}`);
     };
     const err = await store().get('ws/w_8/x').catch((e) => e);
     expect(err).toBeInstanceOf(S3Unreachable);
-    expect(err.message).toBe('S3 GET failed: Network connection lost.');
+    expect(err.message).toBe('S3 GET failed: the request did not complete');
+    const said = `${err.message} ${err.stack} ${JSON.stringify(err)}`;
+    for (const secret of [signature, FAKE_S3.secretAccessKey, 'Signature=', 'Network connection lost']) expect(said).not.toContain(secret);
+  });
+
+  it('keeps only a code that looks like an S3 error code, never a hex string such as a signature', async () => {
+    // A signature, and one that happens to hold no digit.
+    const signatures = ['5a94b5c6676e69b84775384654c9cf3c92bac0d79cb8884d19a098dcf6f182c0', 'abcdef'.repeat(10).concat('abcd')];
+    for (const code of signatures) {
+      s3.intercept = async () => new Response(`<Error><Code>${code}</Code><Message>${code}</Message></Error>`, { status: 403 });
+      const err = await store().get('ws/w_8/x').catch((e) => e);
+      expect(err).toBeInstanceOf(S3Error);
+      expect(err.code).toBeNull();
+      expect(err.message).toBe('S3 GET answered 403');
+      expect(`${err.message} ${err.stack} ${JSON.stringify(err)}`).not.toContain(code);
+    }
+    // Real codes, digits and all, stay.
+    for (const code of ['AccessDenied', 'XAmzContentSHA256Mismatch']) {
+      s3.intercept = async () => new Response(`<Error><Code>${code}</Code></Error>`, { status: 403 });
+      expect((await store().get('ws/w_8/x').catch((e) => e)).code).toBe(code);
+    }
   });
 });

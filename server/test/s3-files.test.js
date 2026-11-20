@@ -257,6 +257,96 @@ describe('with an S3 store', () => {
     expect(await fileBytes(ws.id)).toBe(0);
   });
 
+  it('deletes the rest of a batch when one key keeps failing, and puts that key behind the others', async () => {
+    const ws = await newWorkspace();
+    const at = Date.now() - 1000;
+    const keys = [];
+    for (let i = 0; i < 45; i++) {
+      const key = `ws/${ws.id}/trash-${String(i).padStart(2, '0')}`;
+      keys.push(key);
+      s3.plant(key, 'x');
+      await workspaceSql(ws.id, 'INSERT INTO trash (key, size, at) VALUES (?, 1, ?)', key, at + i);
+    }
+    await workspaceSql(ws.id, 'UPDATE workspace SET fileBytes = 45');
+    // The oldest key gets a 404 that doesn't say NoSuchKey, every time.
+    const stuck = keys[0];
+    s3.intercept = async (request, op, key) => (op === 'DELETE' && key === stuck ? new Response(null, { status: 404 }) : undefined);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await alarm(ws.id);
+      // The other 39 of the batch went, with their bytes; the stuck key now waits behind the 5 left.
+      expect(await workspaceSql(ws.id, 'SELECT key FROM trash ORDER BY at')).toEqual([...keys.slice(40), stuck].map((key) => ({ key })));
+      expect(await fileBytes(ws.id)).toBe(6);
+      expect((await alarmAt(ws.id)) - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+      await alarm(ws.id);
+      expect(await workspaceSql(ws.id, 'SELECT key FROM trash')).toEqual([{ key: stuck }]);
+      expect(await fileBytes(ws.id)).toBe(1);
+      expect(keysOf(ws.id)).toEqual([stuck]);
+    } finally {
+      logged.mockRestore();
+    }
+    s3.intercept = null;
+    await alarm(ws.id);
+    expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
+    expect(keysOf(ws.id)).toEqual([]);
+    expect(await fileBytes(ws.id)).toBe(0);
+  });
+
+  it('starts no write to the bucket while the workspace deletes its files', async () => {
+    const ws = await newWorkspace();
+    const stub = workspaceStub(ws.id);
+    const bytes = text('late');
+    const first = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    const second = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    const carded = (await sendAndWait(ws.person, ws.id, ws.general, { text: 'cards soon' })).body;
+    const later = (await sendAndWait(ws.person, ws.id, ws.general, { text: 'cards later' })).body;
+
+    // A link card's image under way holds the deletion back, as an upload's attempt does.
+    const image = await stub.previewKey(ws.general, carded.messageId, 3);
+    expect(image).toMatch(new RegExp(`^ws/${ws.id}/`));
+    const busy = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get('retry-after')).toBe('30');
+    await stub.publishPreviews(ws.general, carded.messageId, [], [{ key: image, size: 3 }]);
+
+    // A deletion whose listing fails: a PUT that comes meanwhile is refused, and works once the deletion gave up.
+    let during = null;
+    s3.intercept = async (request, op) => {
+      if (op !== 'LIST' || during) return undefined;
+      during = await fileRequest(first.put.url, { method: 'PUT', body: bytes });
+      return new Response('<Error><Code>SlowDown</Code></Error>', { status: 503 });
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(503);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(during.status).toBe(503);
+    expect(during.body.error).toBe('unavailable');
+    expect(during.headers.get('retry-after')).toBe('30');
+    s3.intercept = null;
+    expect((await fileRequest(first.put.url, { method: 'PUT', body: bytes })).status).toBe(200);
+    await post(ws.person, ws.id, ws.general, 'kept', { attachments: [first.upload.id] });
+
+    // A deletion that goes through: the bucket is listed, and only then do a PUT and a link card try to write. Neither
+    // starts, so nothing lands after the listing went past it.
+    during = null;
+    s3.intercept = async (request, op) => {
+      if (op !== 'LIST' || during) return undefined;
+      during = {};
+      const listed = await s3.handle(request);
+      during.put = await fileRequest(second.put.url, { method: 'PUT', body: bytes });
+      during.image = await workspaceStub(ws.id).previewKey(ws.general, later.messageId, 3);
+      return listed;
+    };
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+    expect(during.put.status).toBe(503);
+    expect(during.image).toBeNull();
+    expect(keysOf(ws.id)).toEqual([]);
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
+  });
+
   it('deletes everything under the prefix, page by page, when the workspace is deleted', async () => {
     const ws = await newWorkspace();
     const sent = await upload(ws.person, ws.id, ws.general);
@@ -293,10 +383,83 @@ describe('with an S3 store', () => {
     // A listing that fails keeps it too.
     s3.intercept = failing('LIST', 500);
     expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(503);
+    // So does a listing cut short, which would otherwise pass for the last page.
+    s3.intercept = async (request, op) => (op === 'LIST' ? new Response('<?xml version="1.0"?><ListBucketResult>', { headers: { 'content-type': 'application/xml' } }) : undefined);
+    const cut = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(cut.status).toBe(503);
+    expect(cut.headers.get('retry-after')).toBe('30');
+    expect(keysOf(ws.id)).toHaveLength(2);
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
     s3.intercept = null;
     expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
     expect(keysOf(ws.id)).toEqual([]);
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
+  });
+
+  it('keeps a workspace with files while the S3 settings lack a secret, and deletes one without files', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sent = await newWorkspace();
+    const made = await upload(sent.person, sent.id, sent.general);
+    await post(sent.person, sent.id, sent.general, 'kept', { attachments: [made.id] });
+    // A key that is only in the trash, as after a cancelled upload.
+    const trashed = await newWorkspace();
+    const cancelled = await upload(trashed.person, trashed.id, trashed.general);
+    await api('DELETE', `/v1/workspaces/${trashed.id}/conversations/${trashed.general}/uploads/${cancelled.id}`, { token: trashed.person.token });
+    expect(await workspaceSql(trashed.id, 'SELECT COUNT(*) AS n FROM trash')).toEqual([{ n: 1 }]);
+    const empty = await newWorkspace();
+    const settings = (id, partial) =>
+      runInDurableObject(workspaceStub(id), (instance) => {
+        if (partial) {
+          instance.realEnv = instance.env;
+          instance.env = { ...instance.env, WORKSPACE_FILES_S3_SECRET_ACCESS_KEY: '' };
+        } else instance.env = instance.realEnv;
+      });
+    for (const ws of [sent, trashed, empty]) await settings(ws.id, true);
+    try {
+      for (const ws of [sent, trashed]) {
+        const failed = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+        expect(failed.status).toBe(503);
+        expect(failed.body.error).toBe('unavailable');
+        expect(failed.headers.get('retry-after')).toBe('30');
+        expect(keysOf(ws.id)).toHaveLength(1);
+        expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
+      }
+      // A workspace that knows no key in the bucket goes as before.
+      expect((await api('DELETE', `/v1/workspaces/${empty.id}`, { token: empty.person.token })).status).toBe(204);
+      expect((await api('GET', `/v1/workspaces/${empty.id}`, { token: empty.person.token })).status).toBe(404);
+    } finally {
+      for (const ws of [sent, trashed]) await settings(ws.id, false);
+      logged.mockRestore();
+    }
+    // With all five settings back, the files go first and then the workspace.
+    for (const ws of [sent, trashed]) {
+      expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+      expect(keysOf(ws.id)).toEqual([]);
+    }
+  });
+
+  it('sends a download without Content-Length when the service gives none', async () => {
+    const ws = await newWorkspace();
+    const bytes = text('a file of some length');
+    const made = await upload(ws.person, ws.id, ws.general, { bytes, type: 'text/plain' });
+    await post(ws.person, ws.id, ws.general, 'see attached', { attachments: [made.id] });
+    const link = (await askDownload(ws.person, ws.id, ws.general, made.id)).body.url;
+    // The object's bytes as a stream of unknown length, as a service answers that leaves Content-Length out.
+    s3.intercept = async (request, op, key) => {
+      if (op !== 'GET') return undefined;
+      const object = s3.objects.get(key);
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(object.bytes);
+          controller.close();
+        }
+      });
+      return new Response(body, { headers: { 'content-type': object.type } });
+    };
+    const got = await fileRequest(link);
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-length')).toBeNull();
+    expect(new TextDecoder().decode(got.bytes)).toBe('a file of some length');
   });
 
   it("stores a link card's image in the bucket", async () => {

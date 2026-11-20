@@ -46,6 +46,8 @@ describe('Signature Version 4', () => {
       lines('AWS4-HMAC-SHA256', '20130524T000000Z', '20130524/us-east-1/s3/aws4_request', '7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972')
     );
     expect(signed.signature).toBe('f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41');
+    // It always signs for the s3 service.
+    expect((await sign({ ...AWS, method: 'GET', path: '/test.txt', headers: { Range: 'bytes=0-9' }, service: 'execute-api' })).signature).toBe(signed.signature);
     expect(signed.headers).toEqual({
       range: 'bytes=0-9',
       'x-amz-date': '20130524T000000Z',

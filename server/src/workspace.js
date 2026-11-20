@@ -439,6 +439,8 @@ export class Workspace extends DurableObject {
     this.ceiling = new Bucket(WORKSPACE_LANE, now);
     // The earliest time a change asked the alarm to come by: for new trash, or for a reservation's expiry.
     this.alarmAt = null;
+    // How many deletions of this workspace are deleting its files right now. No write to the bucket starts meanwhile.
+    this.deleting = 0;
     this.lastWake = new Map();
     this.trailing = new Map();
     this.wakes = new Set();
@@ -1495,28 +1497,35 @@ export class Workspace extends DurableObject {
       if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
       const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
-      // A write under way could land after the bucket was listed.
-      const writing = this.sql
-        .exec("SELECT 1 FROM attempt JOIN upload ON upload.n = attempt.upload WHERE upload.state = 'uploading' AND attempt.at > ? LIMIT 1", Date.now() - ATTEMPT_TIME)
-        .toArray().length;
+      // A write under way could land after the bucket was listed: an upload's attempt, also one that lost to another
+      // or whose upload went, and a link card's image.
+      const writing = this.sql.exec('SELECT 1 FROM attempt WHERE at > ? LIMIT 1', Date.now() - ATTEMPT_TIME).toArray().length;
       if (writing) throw new Refusal(503, 'unavailable', 'A file is being uploaded. Try again shortly.', {}, { 'retry-after': '30' });
       return self;
     };
     this.#write(check);
+    // This object takes other requests while it waits on the bucket. None starts a write there (#startAttempt,
+    // #previewKey): it could land after the listing went past its key and outlive the database.
+    this.deleting += 1;
+    let owner;
     try {
-      await this.#forgetFiles(this.wid);
-    } catch (err) {
-      console.error('Could not delete the files of a workspace, which stays:', err?.message || err);
-      return reply(503, { error: 'unavailable', message: 'The workspace could not be deleted. Try again shortly.' }, { 'retry-after': '30' });
+      try {
+        await this.#forgetFiles(this.wid);
+      } catch (err) {
+        console.error('Could not delete the files of a workspace, which stays:', err?.message || err);
+        return reply(503, { error: 'unavailable', message: 'The workspace could not be deleted. Try again shortly.' }, { 'retry-after': '30' });
+      }
+      const now = Date.now();
+      owner = this.#write(() => {
+        const self = check();
+        this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
+        return self;
+      });
+      // From here every request, and every join still waiting on its account, finds no workspace.
+      this.present = false;
+    } finally {
+      this.deleting -= 1;
     }
-    const now = Date.now();
-    const owner = this.#write(() => {
-      const self = check();
-      this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
-      return self;
-    });
-    // From here every request, and every join still waiting on its account, finds no workspace.
-    this.present = false;
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.close(4003, 'deleted');
@@ -1536,10 +1545,17 @@ export class Workspace extends DurableObject {
   }
 
   // Every object under the workspace's prefix leaves the bucket, a page of up to 1,000 at a time (fewer from an S3
-  // store). Every key this workspace makes is under it (fileKey). A failure throws.
+  // store). Every key this workspace makes is under it (fileKey). A failure throws. So does a server without a file
+  // store, such as one whose S3 settings lost a secret, while the workspace still knows keys in the bucket: those
+  // objects would outlive the database that knows them.
   async #forgetFiles(wid) {
+    if (!wid) return;
     const store = fileStore(this.env);
-    if (!store || !wid) return;
+    if (!store) {
+      const known = this.sql.exec('SELECT 1 FROM upload WHERE key IS NOT NULL UNION ALL SELECT 1 FROM attempt UNION ALL SELECT 1 FROM trash LIMIT 1');
+      if (known.toArray().length) throw new Error('The workspace has files, and the server has no file store to delete them from.');
+      return;
+    }
     const limit = Math.min(TRASH_BATCH, store.batch);
     let cursor = null;
     do {
@@ -2359,6 +2375,7 @@ export class Workspace extends DurableObject {
   }
 
   #startAttempt(id, length, now) {
+    if (this.deleting) throw new Refusal(503, 'unavailable', 'The workspace is busy. Try again shortly.', {}, { 'retry-after': '30' });
     const upload = this.sql.exec('SELECT * FROM upload WHERE id = ?', id).toArray()[0];
     if (!upload || !(upload.state === 'reserved' || upload.state === 'uploading') || upload.expiresAt <= now) throw INVALID_STATE();
     if (length !== upload.size) {
@@ -2432,7 +2449,9 @@ export class Workspace extends DurableObject {
   }
 
   // Deletes the trash from the bucket, a batch at a time, and only then stops counting its bytes. A delete that fails
-  // throws and leaves the keys for the next alarm. Returns whether more is waiting.
+  // throws and leaves the keys for the next alarm. When the store names the keys that failed (err.failed), the others
+  // leave the trash all the same and the failed ones go to its back, so a key that keeps failing holds up no other.
+  // Returns whether more is waiting.
   async #emptyTrash() {
     const store = fileStore(this.env);
     if (!store) return false;
@@ -2440,14 +2459,27 @@ export class Workspace extends DurableObject {
     const rows = this.sql.exec('SELECT key FROM trash ORDER BY at LIMIT ?', size + 1).toArray();
     if (!rows.length) return false;
     const batch = rows.slice(0, size).map((row) => row.key);
-    await store.delete(batch);
+    let failure = null;
+    try {
+      await store.delete(batch);
+    } catch (err) {
+      if (!Array.isArray(err?.failed)) throw err;
+      failure = err;
+    }
     if (!this.present) return false;
+    const failed = new Set(failure?.failed);
+    const now = Date.now();
     this.#write(() => {
       for (const key of batch) {
+        if (failed.has(key)) {
+          this.sql.exec('UPDATE trash SET at = ? WHERE key = ?', now, key);
+          continue;
+        }
         const gone = this.sql.exec('DELETE FROM trash WHERE key = ? RETURNING size', key).toArray()[0];
         if (gone) this.#fileBytes(-gone.size);
       }
     });
+    if (failure) throw failure;
     return rows.length > size;
   }
 
@@ -2483,7 +2515,7 @@ export class Workspace extends DurableObject {
   }
 
   #previewKey(conversation, message, size, now) {
-    if (!this.#unfurlable(conversation, message)) return null;
+    if (this.deleting || !this.#unfurlable(conversation, message)) return null;
     if (this.#ws().fileBytes + size > workspaceLimits(this.env).filesBytes) return null;
     const key = fileKey(this.wid);
     this.sql.exec('INSERT INTO attempt (key, upload, size, charge, at) VALUES (?, NULL, ?, ?, ?)', key, size, size, now);

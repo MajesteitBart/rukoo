@@ -6,8 +6,10 @@
 //                                                        themselves. Throws DigestMismatch when they don't have the
 //                                                        declared SHA-256, and then leaves no object under key.
 //   get(key)                                             { body, size, contentType, name }, or null when it's gone.
+//                                                        size is null when the store doesn't say it.
 //   delete(keys)                                         Deletes every key; a key that is already gone counts as
-//                                                        deleted. Throws when any delete failed.
+//                                                        deleted. Throws when any delete failed, with the keys that
+//                                                        failed in err.failed when the store knows them.
 //   list({ prefix, cursor, limit })                      { keys, cursor }: one page, and the cursor of the next or
 //                                                        null.
 //   batch                                                The most keys one delete call and one list page should hold.
@@ -32,12 +34,12 @@ const R2_BATCH = 1000;
 const S3_BATCH = 40;
 const DELETES_AT_ONCE = 8;
 // How long S3 may take. request: a list, a delete, the headers of a download, and the answer to an upload once its
-// last byte went. idle: how long an upload may go without a byte moving. Neither caps how long a device takes to send
-// or fetch a file, which R2 doesn't either. Tests shorten them.
-export const S3_TIME = { request: 30 * 1000, idle: 60 * 1000 };
+// last byte went. idle: how long an upload may go without a byte moving. error: the body of a refusal, read for its
+// code. None caps how long a device takes to send or fetch a file, which R2 doesn't either. Tests shorten them.
+export const S3_TIME = { request: 30 * 1000, idle: 60 * 1000, error: 5 * 1000 };
 // Bytes the Worker holds itself, such as a link card's image, go to S3 within a minute plus a second per 64 KiB.
 const putTime = (size) => 60 * 1000 + Math.ceil(size / 65536) * 1000;
-// Bytes of an error answer read for its code.
+// Bytes of an error answer read for its code, at most.
 const ERROR_BYTES = 16384;
 
 // The bytes didn't have the SHA-256 they were declared with. files.js answers it the same way for every store.
@@ -67,8 +69,9 @@ export class S3Unreachable extends Error {
   }
 }
 
-// A 404 says the object is gone when S3 calls it NoSuchKey or says nothing more. NoSuchBucket, from a wrong bucket
-// name or endpoint, is a refusal like any other: the objects may well still be there.
+// A download's 404 says the object is gone when S3 calls it NoSuchKey or says nothing more. NoSuchBucket, from a wrong
+// bucket name or endpoint, is a refusal like any other: the objects may well still be there. A delete asks more: only
+// NoSuchKey counts (store.delete).
 const missing = (err) => err.status === 404 && (err.code === null || err.code === 'NoSuchKey');
 
 export function fileStore(env) {
@@ -172,27 +175,41 @@ function bytesOf(body) {
   throw new TypeError('A file body must be a stream or bytes.');
 }
 
-// The first bytes of an error answer, for its <Code>. The rest of it, which can repeat the string S3 signed, is
-// dropped unread.
+// An S3 error code is a name such as NoSuchKey or XAmzContentSHA256Mismatch: a letter, then letters and digits.
+// Anything else in <Code>, such as a hex string a service repeated from the request, is dropped, so a signature never
+// reaches an error message or a log.
+function s3Code(text) {
+  return /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(text) && !/^[0-9A-Fa-f]+$/.test(text) ? text : null;
+}
+
+// The first bytes of an error answer, for its <Code>, within S3_TIME.error. The rest of it, which can repeat the
+// string S3 signed, is dropped unread. A body that doesn't arrive in time, or breaks off, has no code.
 async function errorCode(res) {
   if (!res.body) return null;
   const reader = res.body.getReader();
   const chunks = [];
   let length = 0;
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), S3_TIME.error);
+  });
   try {
     while (length < ERROR_BYTES) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      length += value.byteLength;
+      const step = await Promise.race([reader.read(), late]);
+      if (step === null) return null;
+      if (step.done) break;
+      chunks.push(step.value);
+      length += step.value.byteLength;
     }
   } catch {
     return null;
   } finally {
+    clearTimeout(timer);
     reader.cancel().catch(() => {});
   }
   const text = new TextDecoder().decode(new Uint8Array(await new Blob(chunks).arrayBuffer()).subarray(0, ERROR_BYTES));
-  return /<Code>([A-Za-z0-9.]{1,64})<\/Code>/.exec(text)?.[1] ?? null;
+  const code = /<Code>([^<]*)<\/Code>/.exec(text)?.[1];
+  return code === undefined ? null : s3Code(code);
 }
 
 async function refusal(op, res) {
@@ -215,18 +232,23 @@ export function decodeXml(text) {
 }
 
 // A ListObjectsV2 answer: the keys of its <Contents>, and the continuation token when <IsTruncated> says there is
-// more.
+// more. Only a whole answer counts: one cut short would pass for the last page, and deleting a workspace would then
+// leave objects behind. It must end its <ListBucketResult>, give every entry a key, and say true or false in
+// <IsTruncated>, with a continuation token when true. Anything else throws.
 export function readList(xml) {
   if (!/<ListBucketResult[\s>]/.test(xml)) throw new Error('S3 LIST answered something other than a list.');
+  if (!/<\/ListBucketResult>\s*$/.test(xml)) throw new Error('S3 LIST answered a list that ends too soon.');
   const keys = [];
   for (const [, contents] of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
     const key = /<Key>([\s\S]*?)<\/Key>/.exec(contents);
     if (key) keys.push(decodeXml(key[1]));
   }
-  const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/.test(xml);
-  const token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml);
-  if (truncated && !token) throw new Error('S3 LIST said there is more without a continuation token.');
-  return { keys, cursor: truncated ? decodeXml(token[1]) : null };
+  if (keys.length !== (xml.match(/<Contents>/g) ?? []).length) throw new Error('S3 LIST answered an entry without a key.');
+  const truncated = /<IsTruncated>\s*(true|false)\s*<\/IsTruncated>/.exec(xml)?.[1];
+  if (!truncated) throw new Error('S3 LIST did not say whether there is more.');
+  const token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1];
+  if (truncated === 'true' && !token?.trim()) throw new Error('S3 LIST said there is more without a continuation token.');
+  return { keys, cursor: truncated === 'true' ? decodeXml(token) : null };
 }
 
 function s3Store(s) {
@@ -258,8 +280,9 @@ function s3Store(s) {
     try {
       return await fetch(url, { method, headers: signed.headers, body, signal, redirect: 'manual' });
     } catch (err) {
+      // Only the kind of failure: the error's own text could hold anything, and it goes on to the log.
       const late = err?.name === 'TimeoutError' || err?.name === 'AbortError';
-      throw new S3Unreachable(op, late ? 'no answer in time' : err?.message || 'the request did not complete');
+      throw new S3Unreachable(op, late ? 'no answer in time' : 'the request did not complete');
     }
   }
 
@@ -382,16 +405,20 @@ function s3Store(s) {
         if (missing(err)) return null;
         throw err;
       }
+      // An answer without a Content-Length, or with one that is no number, leaves the size unknown, and the download
+      // then goes without one.
+      const length = res.headers.get('content-length');
       return {
         body: res.body,
-        size: Number(res.headers.get('content-length')),
+        size: /^\d{1,15}$/.test(length ?? '') ? Number(length) : null,
         contentType: res.headers.get('content-type'),
         name: nameFrom(res.headers.get('x-amz-meta-name'))
       };
     },
 
     // One DELETE per key, eight at a time. S3 answers 204 for a key that isn't there; some services answer 404
-    // NoSuchKey, which counts as gone too.
+    // NoSuchKey, which counts as gone too. Any other answer fails, a 404 without a code or with a body that couldn't
+    // be read among them: the bucket or endpoint may be wrong, and the key stays in the trash for another try.
     async delete(keys) {
       const all = [...new Set(keys)];
       const failures = [];
@@ -404,15 +431,19 @@ function s3Store(s) {
             if (res.ok) await res.body?.cancel();
             else {
               const err = await refusal('DELETE', res);
-              if (!missing(err)) failures.push(err);
+              if (!(err.status === 404 && err.code === 'NoSuchKey')) failures.push({ key, err });
             }
           } catch (err) {
-            failures.push(err);
+            failures.push({ key, err });
           }
         }
       };
       await Promise.all(Array.from({ length: Math.min(DELETES_AT_ONCE, all.length) }, lane));
-      if (failures.length) throw new Error(`S3 could not delete ${failures.length} of ${all.length} objects, the first because ${failures[0].message}`);
+      if (failures.length) {
+        const err = new Error(`S3 could not delete ${failures.length} of ${all.length} objects, the first because ${failures[0].err.message}`);
+        err.failed = failures.map((failure) => failure.key);
+        throw err;
+      }
     },
 
     async list({ prefix, cursor = null, limit = S3_BATCH }) {
