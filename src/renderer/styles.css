@@ -750,7 +750,8 @@ body:has(.page) .titlebar-modes {
   }
 }
 /* The smallest bar, from 200 percent in the smallest window: the tabs close up and a recording shows its dot without
- * the clock (the indicator's tooltip and name keep the time), so the actions stay clear of the window buttons. */
+ * the clock (meeting.js puts it in the indicator's tooltip too), so the actions stay clear of the window buttons. The
+ * search can end up narrower than its input there; a press on it still puts the cursor in it (app.js renderSearch). */
 @media (max-width: 480px) {
   .titlebar-modes {
     margin-right: 8px;

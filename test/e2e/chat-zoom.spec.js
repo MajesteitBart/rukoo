@@ -165,6 +165,9 @@ test('four mode tabs and a recording at 200 percent in the smallest window keep 
     });
   await expect.poll(fit).toEqual({ overflow: 0, clear: 12, apart: true });
   await expect(win.locator('.titlebar-actions .rec-dot')).toBeVisible();
+  // The search is narrower than its input here; a press on what shows of it still puts the cursor in it.
+  await win.locator('.titlebar-search').click({ position: { x: 4, y: 15 } });
+  await expect(win.locator('#search')).toBeFocused();
   await win.evaluate(() => window.mail.call('setZoom', 100));
 });
 

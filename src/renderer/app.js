@@ -837,6 +837,13 @@ function renderSearch() {
         { align: 'right' }
       );
     });
+    // A press anywhere on the field, its magnifier included, puts the cursor in it. The smallest title bar can leave
+    // the field narrower than its input, which it then cuts off.
+    box.addEventListener('mousedown', (e) => {
+      if (e.target === input || e.target.closest('.search-scope')) return;
+      e.preventDefault();
+      input.focus();
+    });
   }
   const input = box.querySelector('input');
   box.title = `${t('mailbox.search.label')} (${shortcutLabel('Ctrl+E')})`;

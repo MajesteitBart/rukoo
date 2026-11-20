@@ -2373,7 +2373,8 @@ export function renderIndicator() {
   b.dataset.meetingIndicator = id;
   b.querySelector('.rec-time').textContent = ms === null ? t('meeting.indicator.short') : clock(ms);
   const label = t(paused ? 'meeting.indicator.paused' : 'meeting.indicator.recording', { title });
-  b.title = M.voice.hidden ? `${label}\n${t('meeting.head.hiddenHelp')}` : label;
+  // The clock goes in the tooltip as well: the smallest title bar leaves it out of the button (styles.css).
+  b.title = [label, ms === null ? '' : clock(ms), M.voice.hidden ? t('meeting.head.hiddenHelp') : ''].filter(Boolean).join('\n');
   b.setAttribute('aria-label', label);
 }
 
