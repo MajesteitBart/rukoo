@@ -133,7 +133,7 @@ class AccountService extends EventEmitter {
     if (this.state.email && this.state.token && this.state.dataKey) {
       this.pin();
       try {
-        this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
+        this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64'), server: this.server });
       } catch (_) {
         // Stored under another user or on another computer: the keys don't open here, so this device signs in again.
         this.state.error = 'signed_out';
@@ -189,11 +189,13 @@ class AccountService extends EventEmitter {
   // session: the one a signed-in call is made for. Its answer may come after this device signed out or into
   // another account; a 401 then says nothing about the session there is now. meter: { bytes } the answer's size is
   // added to. raw: the server's own error comes back as it is, with its code and details, instead of one of ERRORS;
-  // a 401 still ends the session. headers: extra request headers (client.js lets only a few through).
-  async call(method, route, body, { auth = false, server = this.server, session = this.session, meter, raw = false, headers } = {}) {
-    if (!server) throw fail('no_server');
+  // a 401 still ends the session. headers: extra request headers (client.js lets only a few through). server: where
+  // the call goes; a signed-in call goes to the address its session signed in at, so its token never reaches another.
+  async call(method, route, body, { auth = false, server, session = this.session, meter, raw = false, headers } = {}) {
+    const to = server || (auth && session && session.server) || this.server;
+    if (!to) throw fail('no_server');
     try {
-      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined, meter, headers });
+      return await this.http(to, method, route, { body, token: auth ? session && session.token : undefined, meter, headers });
     } catch (err) {
       // The session ended elsewhere: this device was removed or the password changed on another one.
       if (auth && err instanceof AccountError && err.status === 401) {
@@ -332,27 +334,30 @@ class AccountService extends EventEmitter {
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
     this.checkStorage();
+    const at = this.server;
     const former = this.state.server ? null : this.state.formerServer;
     try {
-      return await this.login(address, password);
+      return await this.login(address, password, at);
     } catch (err) {
       // This device went back to the default from a former one (forget()). An account made there signs in only
-      // there, as the password proofs include the address: try it once, and keep it when it works.
+      // there, as the password proofs include the address: try it once, and keep it when it works. The address stays
+      // with this attempt until attach() commits it, and only while the attempt is still current: nobody signed in
+      // meanwhile and the server is still the one it began at. A session made meanwhile keeps its own address.
       if (!former || !err || err.code !== 'unauthorized') throw err;
-      this.state.server = former;
+      if (this.signedIn || this.server !== at || this.state.formerServer !== former) throw err;
       try {
-        return await this.login(address, password);
-      } catch (_) {
-        this.state.server = null;
-        this.saveState();
-        throw err;
+        return await this.login(address, password, former, at);
+      } catch (later) {
+        // The former address took the password, but another sign-in got here first: that one says why.
+        throw later && later.code === 'signed_in' ? later : err;
       }
     }
   }
 
-  async login(address, password) {
-    const at = this.server;
-    await this.serverInfo(at);
+  // A sign-in at the address at. from: the server this device uses that the attempt began at, which differs from at
+  // only for the former-address try of signIn(); attach() takes the session only while the device still uses from.
+  async login(address, password, at = this.server, from = at) {
+    const info = await this.serverInfo(at);
     const { authKey, wrapKey } = await this.authFor(address, password, at);
     const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() }, { server: at });
     let dataKey;
@@ -361,7 +366,7 @@ class AccountService extends EventEmitter {
     } catch (_) {
       throw fail('server');
     }
-    this.attach(address, res.token, dataKey, at);
+    this.attach(address, res.token, dataKey, at, { from, info });
     return { account: res.account };
   }
 
@@ -530,8 +535,9 @@ class AccountService extends EventEmitter {
     if (res && typeof res.token === 'string') await this.call('POST', '/v1/logout', undefined, { auth: true, session: { token: res.token } }).catch(() => {});
   }
 
-  open({ token, dataKey }) {
-    this.session = { token, dataKey, keys: keys.recordKeys(dataKey) };
+  // server: the address the session signed in at, where every call made with it goes (call()).
+  open({ token, dataKey, server }) {
+    this.session = { token, dataKey, server, keys: keys.recordKeys(dataKey) };
     this.ids.clear();
     for (const [key, e] of this.entries) {
       e.id = keys.recordId(this.session.keys.indexKey, e.c, e.k);
@@ -544,14 +550,21 @@ class AccountService extends EventEmitter {
 
   // This device joins the account it signed in to at the address at. Everything it has goes up; what the account has
   // comes down first, so an older value here doesn't overwrite a newer one there. When the server was changed while the sign-in
-  // waited, the session is refused and ended there: its token would otherwise go to the new address.
-  attach(email, token, dataKey, at = this.server) {
-    if (at !== this.server) {
+  // waited, the session is refused and ended there: its token would otherwise go to the new address. So is one when
+  // another sign-in attached its session first: that session stays, with its address.
+  //
+  // from: the server this device used when the sign-in began; it differs from at only for signIn()'s try at a former
+  // address, whose address becomes this device's server here (info: that server's info, fetched by the sign-in).
+  attach(email, token, dataKey, at = this.server, { from = at, info = null } = {}) {
+    if (from !== this.server || this.signedIn) {
+      const code = this.signedIn ? 'signed_in' : 'server';
       this.http(at, 'POST', '/v1/logout', { token }).catch(() => {});
-      throw fail('server');
+      throw fail(code);
     }
+    const moved = at !== this.server;
     this.state = {
       ...this.state,
+      ...(moved ? { server: at, info: info ? { server: at, data: info, at: this.now() } : null } : {}),
       email,
       sessionServer: at,
       token: this.secrets.encrypt(token),
@@ -574,7 +587,7 @@ class AccountService extends EventEmitter {
       // A first write, unless it is a deletion: that settles by its time, like any other.
       if (FIRST_WRITE_WINS.has(e.c) && !e.deleted) e.ifAbsent = e.first = true;
     }
-    this.open({ token, dataKey });
+    this.open({ token, dataKey, server: at });
     this.saveState();
     this.changedStatus();
     this.sync().catch(() => {});

@@ -402,6 +402,45 @@ test('a Start DM answer that arrives after the feed took the room out opens noth
   assert.equal(svc.store.getRoom(ws.id, dm.conversation), null, 'the next run keeps it out');
 });
 
+test('a Start DM answer that arrives after a 426 parked the workspace writes nothing into its cache', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount();
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga' });
+  await server.seedMember(ws, bart, 'Bart');
+  const { svc, api, account } = await device(t, bart);
+  await settled(svc, ws.id);
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let reached;
+  const arrived = new Promise((resolve) => (reached = resolve));
+  watchCalls(account, async (method, url, real) => {
+    if (method === 'POST' && url.endsWith('/dms')) {
+      const answer = await real();
+      reached(answer);
+      await held;
+      return answer;
+    }
+    // Meanwhile another request learns that the server wants a newer Rukoo.
+    if (method === 'GET' && url === route(ws.id, '/channels')) {
+      throw new AccountError('upgrade_required', 426, 'Update Rukoo.', { minVersion: 2 });
+    }
+    return undefined;
+  });
+  const start = api.chatStartDm(ws.id, [ws.me.id]);
+  const { dm } = await arrived;
+  const before = svc.store.getWs(ws.id);
+  await assert.rejects(svc.call(ws.id, 'GET', '/channels'), fails('upgrade_required'));
+  const parked = svc.store.getWs(ws.id);
+  assert.equal(parked.state, 'upgrade');
+  assert.equal(parked.cursor, before.cursor, 'the park leaves the cursor');
+  assert.equal(parked.generation, before.generation, 'and the generation');
+  release();
+  await start;
+  assert.equal(svc.store.getRoom(ws.id, dm.conversation), null, 'the parked cache got no room');
+  assert.equal(svc.store.getWs(ws.id).state, 'upgrade');
+});
+
 test('the twenty-first new DM of a day fails with dailyDms, and an open DM still opens', async (t) => {
   if (skipWithoutServer(t)) return;
   const olga = await server.seedAccount();

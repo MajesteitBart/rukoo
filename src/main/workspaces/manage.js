@@ -528,11 +528,14 @@ class Manage {
   // into the cache at once (it is the room's feed row), unless the cache moved while the POST was on its way: a pass
   // under way or begun, or a feed page applied, may have taken the room out after the server answered (a 200 for a DM
   // left on another device). Then the run decides: the room it brings, or not_found with scope conversation when a
-  // run that read the feed to its end left the room out.
+  // run that read the feed to its end left the room out. A reset, restore, Start over or park meanwhile moves the
+  // cache revision (contract 3.6) even where cursor and generation end up the same: a 426 that parked the workspace
+  // leaves both, and the answer must not write into the parked cache.
   async startDm(ws, members) {
     const svc = this.svc;
     const epoch = svc.epoch;
     const before = this.row(ws);
+    const rev = svc.revision(ws);
     let answer;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -549,7 +552,13 @@ class Manage {
     const store = svc.store;
     const row = store.getWs(ws);
     const unmoved = Boolean(
-      row && !before.passing && !row.passing && row.cursor === before.cursor && row.generation === before.generation
+      row &&
+        svc.revision(ws) === rev &&
+        row.state === 'ok' &&
+        !before.passing &&
+        !row.passing &&
+        row.cursor === before.cursor &&
+        row.generation === before.generation
     );
     let outcome = null;
     if (unmoved) {

@@ -705,6 +705,53 @@ test('a POST answer that arrives after a restore marked its row leaves the row t
   assert.equal(ofKind(svc, 'sent').filter((e) => e.local === local).length, 0);
 });
 
+test('a lookup answer that arrives after a restore leaves the row to a lookup of its own, and the text stays', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, svc, api } = await setup(t, { timing: { sendBackoff: [600000] } });
+  const home = route(ws.id);
+  const text = 'never reached the restored workspace';
+  const head = svc.store.getRoom(ws.id, ws.general).head;
+  const lookup = gate();
+  let restoredTo = null;
+  let held = false;
+  const calls = watchCalls(svc.account, async (method, url, real) => {
+    // The POST's answer goes missing before the server got it: the message never arrived.
+    if (isPost(method, url)) throw lostAnswer();
+    if (method === 'GET' && url.includes('/operations/') && !held) {
+      held = true;
+      lookup.reach();
+      await lookup.wait;
+      // The workspace's life before the restore had the message, nine events further on.
+      return { messageId: `e_${'A'.repeat(22)}`, seq: head + 9, visible: true };
+    }
+    if (method === 'GET' && url === home && restoredTo) {
+      const answer = await real();
+      return { ...answer, workspace: { ...answer.workspace, generation: restoredTo } };
+    }
+    return undefined;
+  });
+  const { local } = await api.chatSend(ws.id, ws.general, { text, mentions: [], root: null });
+  await until(() => svc.store.getOutbox(local)?.attempts === 1, 10000, 'the lost answer');
+  // Start over marks the row for a lookup, which goes out and is held.
+  await api.chatReload(ws.id);
+  await lookup.reached;
+  // A restore while the lookup waits: the row stays queued with the same operation ID.
+  restoredTo = 'G'.repeat(22);
+  await svc.details(ws.id);
+  const marked = svc.store.getOutbox(local);
+  assert.equal(marked.state, 'queued');
+  assert.equal(marked.reason, 'lookup');
+  lookup.release();
+  // The old answer decides nothing; a new lookup asks the restored workspace, which doesn't know the operation.
+  const row = await rowIs(svc, local, 'held', 'unknown');
+  assert.equal(row.text, text);
+  assert.equal(row.operationId, marked.operationId);
+  assert.equal(calls.filter((c) => c.route.endsWith(`/operations/${row.operationId}`)).length, 2, 'looked up again');
+  assert.equal(ofKind(svc, 'sent').filter((e) => e.local === local).length, 0);
+  assert.ok(svc.store.getRoom(ws.id, ws.general).head < head + 9, "the old life's seq didn't move the room's head");
+  assert.equal((await serverMessages(bart, ws.id, ws.general)).filter((m) => m.text === text).length, 0);
+});
+
 test('a POST answer that arrives after Start over leaves the row to the lookup, which finds the message', async (t) => {
   if (skipWithoutServer(t)) return;
   const { bart, ws, svc, api } = await setup(t);

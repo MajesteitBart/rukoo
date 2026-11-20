@@ -467,20 +467,27 @@ class Outbox {
 
   // GET /conversations/{c}/operations/{operationId} for a row marked for lookup: 200 means it arrived, 404 that
   // nobody can tell, and the person decides.
+  //
+  // The answer counts only under the cache revision the lookup started under. A restore, Start over or park meanwhile
+  // leaves the row queued with the same ID, but the answer speaks for the workspace's life before that: it could
+  // delete the only copy of a message the restored workspace never got. The row then waits for a lookup of its own.
   async lookup(q, row) {
     const svc = this.svc;
     const operationId = row.operationId;
+    const rev = svc.revision(row.ws);
+    const moved = () => svc.revision(row.ws) !== rev;
     let answer;
     try {
       answer = wire.checkOperation(await svc.call(row.ws, 'GET', `/conversations/${row.room}/operations/${operationId}`));
     } catch (raw) {
       if (svc.isStale(raw)) throw raw;
+      if (moved()) return;
       const err = chatError(raw);
       if (!this.still(q, row, operationId, ['queued'])) return;
       if (err.code === 'not_found' && !err.scope) return this.settle(q, row, { state: 'held', reason: 'unknown' });
       return this.failed(q, row, operationId, err, { states: ['queued'], keep: { reason: 'lookup' } });
     }
-    if (!this.still(q, row, operationId, ['queued', 'sending'])) return;
+    if (moved() || !this.still(q, row, operationId, ['queued', 'sending'])) return;
     return this.acked(q, row, operationId, answer, { visible: answer.visible, states: ['queued', 'sending'] });
   }
 

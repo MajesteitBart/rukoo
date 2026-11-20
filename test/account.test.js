@@ -868,6 +868,99 @@ test("a pinned address that was never a default stays; a former default ends wit
   assert.equal(newLaptop.status().signedIn, true);
 });
 
+// A device at the new default that was pinned to the old one and signed out there, so a sign-in that the default
+// refuses tries the old address too. old@example.com lives at the old address, new@example.com at the new one. Every
+// request is recorded with the address it went to and its token; hold() keeps the next request to a route waiting.
+async function formerDevice(t, srv) {
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'old@example.com', password: PASSWORD });
+  before.close();
+  const moved = release(t, srv, NEW_DEFAULT, dir);
+  await moved.signOut();
+  moved.close();
+  assert.equal(stateOnDisk(dir).formerServer, OLD_DEFAULT);
+  await release(t, srv, NEW_DEFAULT, tmpDir(t), 'laptop').signUp({ email: 'new@example.com', password: PASSWORD });
+  const { request } = require('../src/main/account/client');
+  const sent = [];
+  const holds = [];
+  const acc = new AccountService({
+    dataDir: dir,
+    secrets,
+    defaultServer: NEW_DEFAULT,
+    deviceName: 'desk',
+    platform: 'linux',
+    request: async (at, method, route, opts = {}) => {
+      sent.push({ at, route: `${method} ${route}`, token: opts.token || null });
+      const h = holds.find((x) => !x.used && x.at === at && x.route === `${method} ${route}`);
+      if (h) {
+        h.used = true;
+        h.reach();
+        await h.go;
+      }
+      return request([OLD_DEFAULT, NEW_DEFAULT].includes(at) ? srv.url : at, method, route, opts);
+    }
+  }).init();
+  t.after(() => acc.close());
+  const hold = (at, route) => {
+    const h = { at, route };
+    h.reached = new Promise((r) => (h.reach = r));
+    h.go = new Promise((r) => (h.release = r));
+    holds.push(h);
+    return h;
+  };
+  return { acc, sent, hold };
+}
+
+test('a sign-in the default refused after another one succeeded tries no former address and moves no session', async (t) => {
+  const srv = await server(t);
+  const d = await formerDevice(t, srv);
+  const held = d.hold(NEW_DEFAULT, 'POST /v1/login');
+  const first = d.acc.signIn({ email: 'old@example.com', password: PASSWORD }).then(() => null, (err) => err);
+  await held.reached;
+  await d.acc.signIn({ email: 'new@example.com', password: PASSWORD });
+  held.release();
+  assert.equal((await first)?.code, 'unauthorized');
+  assert.equal(d.acc.status().email, 'new@example.com');
+  assert.equal(d.acc.status().server, NEW_DEFAULT);
+  await d.acc.details();
+  await d.acc.sync();
+  assert.ok(!d.sent.some((s) => s.at === OLD_DEFAULT), 'nothing went to the former address');
+  assert.ok(d.sent.filter((s) => s.token).length >= 2);
+});
+
+test("a former-address sign-in that ends after another session attached leaves that session at its own address", async (t) => {
+  const srv = await server(t);
+  const d = await formerDevice(t, srv);
+  const held = d.hold(OLD_DEFAULT, 'POST /v1/login');
+  const first = d.acc.signIn({ email: 'old@example.com', password: PASSWORD }).then(() => null, (err) => err);
+  // The default refused it, and the try at the former address waits.
+  await held.reached;
+  assert.equal(d.acc.status().server, NEW_DEFAULT, 'the try keeps the former address to itself');
+  await d.acc.signIn({ email: 'new@example.com', password: PASSWORD });
+  const token = d.acc.session.token;
+  held.release();
+  assert.equal((await first)?.code, 'signed_in');
+  assert.equal(d.acc.status().email, 'new@example.com');
+  assert.equal(d.acc.status().server, NEW_DEFAULT);
+  assert.equal(d.acc.session.token, token);
+  await d.acc.details();
+  await d.acc.sync();
+  const mine = d.sent.filter((s) => s.token === token);
+  assert.ok(mine.length >= 2);
+  assert.deepEqual([...new Set(mine.map((s) => s.at))], [NEW_DEFAULT], "the session's token only goes where it signed in");
+  // The session the former address made is ended there.
+  const ended = await (async () => {
+    for (let i = 0; i < 100; i++) {
+      const out = d.sent.find((s) => s.route === 'POST /v1/logout' && s.token && s.token !== token);
+      if (out) return out;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return null;
+  })();
+  assert.equal(ended?.at, OLD_DEFAULT);
+});
+
 test('a device signed out at the old default follows the new one', async (t) => {
   const srv = await server(t);
   const dir = tmpDir(t);
