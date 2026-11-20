@@ -124,6 +124,81 @@ class RoomAnchorTest {
     }
 
     @Test
+    fun `a position waiting for its row counts nothing the list shows meanwhile as seen or read`() {
+        // Scrolled back to message 50 with 97 read; the background cut the cache to 400..474 and the shorter list
+        // clamped its index onto the newest page.
+        val anchor = ScrollAnchor(null)
+        val reports = ReadReports()
+        reports.follow(97)
+        val all = events(1L..474L)
+        val before = keys(all)
+        assertTrue(anchor.onScrolled(TimelineScroll(1, "e_50", before.indexOf("e_50"), 0, 50), before, scrolling = true))
+        assertFalse(anchor.holding)
+        val trimmed = events(400L..474L)
+        val after = keys(trimmed)
+        assertFalse(anchor.onScrolled(TimelineScroll(1, after.last(), after.lastIndex, 0, 400), after, scrolling = false))
+        assertTrue(anchor.holding)
+
+        // Message 437 is fully in view on the clamped page while the load back runs: no seen, no report.
+        assertEquals(97L, RoomReading.seen(97, 437, anchor))
+        assertEquals(ScrollAnchor.Step.Reach(50), anchor.onTimeline(after, trimmed, loading = false))
+        assertEquals(97L, RoomReading.seen(97, 437, anchor))
+        assertNull(RoomReading.report(437, 97, anchor, reports))
+        assertEquals("nothing went out", 0L, reports.reported)
+
+        anchor.reached(oldest = 1)
+        val step = anchor.onTimeline(before, all, loading = false)
+        assertEquals(ScrollAnchor.Step.ScrollTo(before.indexOf("e_50"), 0), step)
+        assertTrue("until the list scrolled to the row, it still shows the clamped page", anchor.holding)
+        assertNull(RoomReading.report(437, 97, anchor, reports))
+
+        anchor.scrolled()
+        assertFalse(anchor.holding)
+        // Back at message 50, above the read position: nothing new is seen, nothing reported.
+        assertEquals(97L, RoomReading.seen(97, 50, anchor))
+        assertNull(RoomReading.report(50, 97, anchor, reports))
+        // The person scrolls down to 120 themselves.
+        assertEquals(120L, RoomReading.seen(97, 120, anchor))
+        assertEquals(120L, RoomReading.report(120, 97, anchor, reports))
+    }
+
+    @Test
+    fun `the holding flag is Compose state, so the reading effect restarts when it changes`() {
+        val anchor = ScrollAnchor(TimelineScroll(1, "e_2", 5, 10, 2))
+        val reads = mutableListOf<Any>()
+        androidx.compose.runtime.snapshots.Snapshot.observe(readObserver = { reads += it }) { anchor.holding }
+        assertTrue("reading holding is a state read", reads.isNotEmpty())
+        anchor.start(keys(events(4L..6L)))
+        assertTrue(anchor.holding)
+        anchor.cancel()
+        assertFalse("the person's own scroll ends the hold", anchor.holding)
+    }
+
+    @Test
+    fun `a row gone for good ends the hold once the load back ended`() {
+        val anchor = ScrollAnchor(TimelineScroll(1, "e_2", 5, 10, 2))
+        val left = events(4L..6L)
+        anchor.start(keys(left))
+        anchor.onTimeline(keys(left), left, loading = false)
+        anchor.reached(oldest = 4)
+        assertTrue(anchor.holding)
+        assertEquals(ScrollAnchor.Step.None, anchor.onTimeline(keys(left), left, loading = false))
+        assertFalse(anchor.holding)
+    }
+
+    @Test
+    fun `a read position captured before an ack raised it doesn't start the reports over`() {
+        val reports = ReadReports()
+        reports.follow(5)
+        assertEquals(10L, reports.next(10, 5))
+        // The ack raised the read position to 10; the pane's effect followed it.
+        assertFalse(reports.follow(10))
+        // A reading step that still holds read 5 asks about 8: already reported, so nothing goes out again.
+        assertNull(reports.next(8, 5))
+        assertEquals(10L, reports.reported)
+    }
+
+    @Test
     fun `read positions that only go up keep what was reported`() {
         val reports = ReadReports()
         assertFalse(reports.follow(5))

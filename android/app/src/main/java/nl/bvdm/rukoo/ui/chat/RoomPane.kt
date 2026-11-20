@@ -542,8 +542,14 @@ private fun RoomLog(
     LaunchedEffect(keys, t.loading, anchorCheck) {
         when (val step = anchor.onTimeline(keys, t.events, t.loading)) {
             is ScrollAnchor.Step.ScrollTo -> {
-                listState.scrollToItem(step.index, step.offset)
-                pinned = false
+                // Reading waits until the list shows the row (scrollToItem measures before it returns), also when a
+                // newer timeline cancels this scroll: the anchor isn't waiting any more, so nothing else would end it.
+                try {
+                    listState.scrollToItem(step.index, step.offset)
+                    pinned = false
+                } finally {
+                    anchor.scrolled()
+                }
             }
             is ScrollAnchor.Step.Reach -> scope.launch {
                 try {
@@ -628,9 +634,12 @@ private fun RoomLog(
     }
 
     // Reading (§3.9): the newest message fully in view, 1 second after the last change, when higher than the last
-    // report, while the room may report and once this opening placed its New divider.
-    LaunchedEffect(listState, rows, canRead, positioned) {
-        if (!canRead || !positioned) return@LaunchedEffect
+    // report, while the room may report, once this opening placed its New divider, and not while a saved position
+    // waits for its row (the list then shows rows at a clamped index that nobody scrolled to).
+    val holding = anchor.holding
+    val currentRead by rememberUpdatedState(t.room.read)
+    LaunchedEffect(listState, rows, canRead, positioned, holding) {
+        if (!canRead || !positioned || holding) return@LaunchedEffect
         snapshotFlow {
             val info = listState.layoutInfo
             info.visibleItemsInfo
@@ -638,9 +647,9 @@ private fun RoomLog(
                 .mapNotNull { it.key as? String }
         }.collectLatest { keys ->
             val seq = ChatTimeline.readableSeq(rows, keys) ?: return@collectLatest
-            if (seq > seen) seen = seq
+            seen = RoomReading.seen(seen, seq, anchor)
             delay(READ_REPORT_DELAY_MS)
-            reports.next(seq, t.room.read)?.let { workspaces.markRead(ws, room, it) }
+            RoomReading.report(seq, currentRead, anchor, reports)?.let { workspaces.markRead(ws, room, it) }
         }
     }
 }

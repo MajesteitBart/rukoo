@@ -1,5 +1,8 @@
 package nl.bvdm.rukoo.ui.chat
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import nl.bvdm.rukoo.workspaces.Event
 
 /**
@@ -32,6 +35,15 @@ internal class ScrollAnchor(private var saved: TimelineScroll?) {
 
     /** The saved position waiting for its row, or null. While one waits, nothing is saved. */
     var waiting: TimelineScroll? = null
+        private set
+
+    /**
+     * Whether the list shows rows the person didn't choose: from the moment a saved position starts waiting until its
+     * row is back on screen ([scrolled]) or the wait ends without it. Meanwhile the list sits at a clamped index on the
+     * newest page, and nothing it shows counts as seen or read ([RoomReading]). Compose state, so the reading effect
+     * restarts when it changes.
+     */
+    var holding by mutableStateOf(false)
         private set
 
     private var load = Load.NONE
@@ -96,21 +108,29 @@ internal class ScrollAnchor(private var saved: TimelineScroll?) {
         reachedOldest = oldest
     }
 
+    /** The list scrolled to the row a [Step.ScrollTo] named: what it shows from now on is the person's. */
+    fun scrolled() {
+        if (waiting == null) holding = false
+    }
+
     /** The person scrolled: what they chose now stands, and a position still waiting is dropped. */
     fun cancel() {
         if (waiting != null) giveUp()
+        holding = false
     }
 
     // The row isn't coming back, or the person moved on: the list's position stands, and the next one it takes is saved.
     private fun giveUp() {
         done()
         saved = null
+        holding = false
     }
 
     private fun wait(s: TimelineScroll) {
         waiting = s
         load = Load.NONE
         reachedOldest = null
+        holding = true
     }
 
     private fun done() {
@@ -132,7 +152,11 @@ internal class ReadReports {
 
     private var read = -1L
 
-    /** The room's read position is [read]: true when it moved back, which starts the reports over. */
+    /**
+     * The room's read position is [read]: true when it moved back, which starts the reports over. Only the pane's
+     * effect on the read position calls this, so a read that a longer-lived caller captured earlier isn't taken for a
+     * move back.
+     */
     fun follow(read: Long): Boolean {
         val back = this.read >= 0 && read < this.read
         this.read = read
@@ -142,9 +166,22 @@ internal class ReadReports {
 
     /** The newest message fully in view is [seq] while the room's read position is [read]: the seq to report, or null. */
     fun next(seq: Long, read: Long): Long? {
-        follow(read)
         if (seq <= reported || seq <= read) return null
         reported = seq
         return seq
     }
+}
+
+/**
+ * The reading effect's two steps for [seq], the newest message fully in view (§3.9). While [ScrollAnchor.holding], the
+ * list shows rows at a clamped index that the person didn't scroll to: they count neither as seen for the Latest pill
+ * nor as read.
+ */
+internal object RoomReading {
+    /** The opening's newest seen seq once [seq] is in view. */
+    fun seen(seen: Long, seq: Long, anchor: ScrollAnchor): Long = if (anchor.holding || seq <= seen) seen else seq
+
+    /** After the report delay: the seq to report for a room whose read position is [read], or null. */
+    fun report(seq: Long, read: Long, anchor: ScrollAnchor, reports: ReadReports): Long? =
+        if (anchor.holding) null else reports.next(seq, read)
 }
