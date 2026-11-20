@@ -177,7 +177,9 @@ export function mountView(section, H) {
     V.readBest = Math.max(V.readBest, head);
     V.readSent = Math.max(V.readSent, head);
     clearTimeout(V.readTimer);
-    api('chatMarkRead', V.ws, V.c).catch((err) => toast(H.errorText(err), 5000));
+    const ws = V.ws;
+    const c = V.c;
+    api('chatMarkRead', ws, c).catch((err) => H.goneError(err, ws, c) || toast(H.errorText(err), 5000));
   }
 
   // ---------- shell ----------
@@ -280,13 +282,16 @@ export function mountView(section, H) {
     }
   }
 
-  // The open conversation went (desktop-ui 7.10): its rows leave the screen at once.
-  function goneConversation(name) {
+  // The open conversation went (desktop-ui 7.10): its rows leave the screen at once. Called again while it shows, it
+  // draws only when the text changed (a language change); focus: the OK button takes the focus, only when it first shows.
+  function goneConversation(name, { focus = true } = {}) {
     const label = name || (V.room ? H.roomName(V.room) : '');
+    const key = `goneRoom|${label}|${getLocale()}`;
+    if (mode === 'state' && stateKey === key) return;
     dropRoom();
     token++;
     mode = 'state';
-    stateKey = null;
+    stateKey = key;
     showRoom(false);
     thread.hidden = true;
     section.dataset.thread = 'closed';
@@ -296,7 +301,7 @@ export function mountView(section, H) {
       body: t('chat.gone.conversationBody'),
       actions: [{ id: 'gone-ok', label: t('common.actions.ok'), primary: true, run: () => H.goneOk() }]
     });
-    empty.querySelector('button')?.focus();
+    if (focus) empty.querySelector('button')?.focus();
   }
 
   // The workspace went (desktop-ui 7.11).
@@ -392,7 +397,7 @@ export function mountView(section, H) {
     const c = V.c;
     api('chatMute', ws, c, on)
       .then(() => toast(t(on ? 'chat.mute.done' : 'chat.mute.undone', { name })))
-      .catch((err) => toast(H.errorText(err), 5000));
+      .catch((err) => H.goneError(err, ws, c) || toast(H.errorText(err), 5000));
   }
 
   // ---------- opening a room ----------
@@ -420,7 +425,8 @@ export function mountView(section, H) {
     } catch (err) {
       if (my !== token) return;
       V.opening = false;
-      if (err && err.code === 'not_found' && err.scope === 'conversation') return H.roomGone(c);
+      // A 404 for the room or the workspace shows its gone state (desktop-ui 7.10, 7.11), not an error with Retry.
+      if (H.goneError(err, ws, c)) return;
       V.openError = err;
       renderOlder();
       return;
@@ -463,6 +469,8 @@ export function mountView(section, H) {
       if (p.replace) {
         V.events = list.slice().sort(bySeq);
         V.hasOlder = p.lo !== null && p.lo > (p.floor || 1);
+        // The range is new: older history may load again (a page main dropped for a moved grant waited for this).
+        if (V.older === 'failed') V.older = 'idle';
       } else merge(list);
       V.lo = V.events.length ? V.events[0].seq : p.lo;
       V.hi = p.hi;
@@ -782,16 +790,27 @@ export function mountView(section, H) {
     const my = token;
     V.older = 'loading';
     renderOlder();
+    const ws = V.ws;
+    const c = V.c;
     let res;
     try {
-      res = await api('chatOlder', V.ws, V.c, V.lo);
+      res = await api('chatOlder', ws, c, V.lo);
     } catch (err) {
       if (my !== token) return;
+      if (H.goneError(err, ws, c)) return;
       V.older = 'failed';
       renderOlder();
       return;
     }
     if (my !== token) return;
+    // Nothing, though there is more: main dropped the page because the room's grant moved, and the room comes again as
+    // a replacing events push. Asking at once would only repeat the request, so the next try waits for that push or
+    // for Retry.
+    if (!(res.events || []).length && res.hasOlder) {
+      V.older = 'failed';
+      renderOlder();
+      return;
+    }
     V.older = 'idle';
     merge(res.events || []);
     V.lo = V.events.length ? Math.min(V.events[0].seq, res.lo ?? Infinity) : res.lo;

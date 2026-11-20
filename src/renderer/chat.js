@@ -39,8 +39,9 @@ export const CH = {
   open: false,
   // The workspace went while it was on screen (desktop-ui 7.11): { name } until the person says OK.
   gone: null,
-  // The open conversation went (desktop-ui 7.10): the gone state shows until OK.
-  goneRoom: false,
+  // The open conversation went (desktop-ui 7.10): { room } (the Room as it was, or null) while the gone state shows,
+  // until OK. The room is kept so a language change can draw its name again.
+  goneRoom: null,
   // Connection history for the foot status and the reconnecting banner.
   wasOnline: false,
   connectingSince: null
@@ -62,6 +63,10 @@ let view = null;
 let directoryTimer = null;
 let bannerTimer = null;
 let takingJoin = false;
+// The chatView in flight for the workspace on screen: { gen, promise }, so a caller waits for it instead of asking again.
+let loading = null;
+// openConversation is choosing the room: a workspace switch's own first-room open stands back.
+let routing = 0;
 
 // ---------- small helpers ----------
 
@@ -252,7 +257,7 @@ export function onEvent(p) {
       if (CH.openId && CH.rooms.has(CH.openId)) view?.roomChanged(CH.rooms.get(CH.openId));
       redrawSide();
       // A workspace's first pass brings its rooms: the first one opens.
-      if (CH.open && !CH.openId && !CH.goneRoom && !CH.gone && CH.view) openDefault();
+      if (CH.open && !CH.openId && !CH.goneRoom && !CH.gone && CH.view && !routing) openDefault();
       else renderPane();
       return;
     case 'directory':
@@ -268,29 +273,57 @@ export function onEvent(p) {
       return;
     case 'evicted':
       if (p.ws !== CH.ws) return;
-      if (p.conversation === CH.openId) {
-        const room = CH.rooms.get(p.conversation);
-        CH.goneRoom = true;
-        CH.openId = null;
-        view?.goneConversation(roomName(room));
+      if (p.conversation === CH.openId) roomGone(p.conversation);
+      else {
+        CH.rooms.delete(p.conversation);
+        redrawSide();
       }
-      CH.rooms.delete(p.conversation);
-      redrawSide();
       return;
     case 'removed':
-      if (p.ws !== CH.ws) return;
-      CH.gone = { name: summary(p.ws)?.name || CH.view?.ws?.name || '' };
-      CH.generation++;
-      CH.rooms.clear();
-      CH.members.clear();
-      CH.blocks.clear();
-      CH.openId = null;
-      CH.view = null;
-      if (CH.open) view?.goneWorkspace(CH.gone.name);
-      redrawSide();
+      workspaceGone(p.ws);
       return;
     default:
   }
+}
+
+// The open conversation went (desktop-ui 7.10): evicted, or a 404 with scope 'conversation' about it.
+function roomGone(id) {
+  if (id !== CH.openId) return;
+  const room = CH.rooms.get(id) || null;
+  CH.goneRoom = { room };
+  CH.openId = null;
+  CH.rooms.delete(id);
+  view?.goneConversation(roomName(room));
+  redrawSide();
+}
+
+// The workspace on screen went (desktop-ui 7.11): removed, or a 404 with scope 'workspace' from a call about it.
+function workspaceGone(ws) {
+  if (!ws || ws !== CH.ws || CH.gone) return;
+  CH.gone = { name: summary(ws)?.name || CH.view?.ws?.name || '' };
+  CH.generation++;
+  CH.rooms.clear();
+  CH.members.clear();
+  CH.blocks.clear();
+  CH.openId = null;
+  CH.goneRoom = null;
+  CH.view = null;
+  if (CH.open) view?.goneWorkspace(CH.gone.name);
+  redrawSide();
+}
+
+// A call's error that says the room or the workspace on screen is gone shows that state. True when it did.
+function goneError(err, ws, c) {
+  if (!err || err.code !== 'not_found') return false;
+  if (err.scope === 'workspace' && ws === CH.ws) {
+    workspaceGone(ws);
+    return true;
+  }
+  if (err.scope === 'conversation' && ws === CH.ws && c && c === CH.openId) {
+    roomGone(c);
+    return true;
+  }
+  return false;
 }
 
 // Keys that reach the document in Chat mode (desktop-ui 9.2, without the ones contract 5.9 leaves out). True when
@@ -315,8 +348,28 @@ export function onKey(e) {
   return view ? view.onKey(e, { typing }) : false;
 }
 
+// app.js draws the sidebar again as a whole: on every rooms event (any message, read or badge in the workspace), on
+// every state change and when a room opens. The keyboard stays where it was, as calendar.js keepSideFocus() does:
+// sidebarHtml() runs just before the old buttons go, so it notes the focused row or button and puts the focus on its
+// new copy once the redraw is done.
+function keepSideFocus() {
+  const el = document.activeElement;
+  if (!el || !el.closest || !el.closest('.sidebar .sidebar-main')) return;
+  let selector = null;
+  if (el.dataset.chOpen) selector = `[data-ch-open="${CSS.escape(el.dataset.chOpen)}"]`;
+  else if (el.dataset.chSide) selector = `[data-ch-side="${CSS.escape(el.dataset.chSide)}"]`;
+  else if (el.dataset.action) selector = `[data-action="${CSS.escape(el.dataset.action)}"]`;
+  if (!selector) return;
+  queueMicrotask(() => {
+    if (document.contains(el)) return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    $(`.sidebar .sidebar-main ${selector}`)?.focus({ preventScroll: true });
+  });
+}
+
 // The sidebar below the mode switch (contract 5.3); app.js adds its foot.
 export function sidebarHtml() {
+  keepSideFocus();
   // Room above the foot, which belongs at the bottom also when the sidebar has nothing else to show.
   const fill = '<div class="ch-side-fill" aria-hidden="true"></div>';
   const s = CH.state;
@@ -387,7 +440,7 @@ function roomRow(room) {
 // A click in the sidebar; false when it isn't chat's.
 export function sidebarClick(btn) {
   if (btn.dataset.chOpen) {
-    // By keyboard the focus would go to the composer (desktop-ui 9.3); by click it stays on the row.
+    // The focus stays on the row, by click and by Enter: the redraw puts it on the row's new copy (keepSideFocus).
     openRoom(btn.dataset.chOpen);
     return true;
   }
@@ -450,11 +503,17 @@ export async function openConversation(ws, c, seq = null) {
   if (!WS_ID.test(ws || '') || !ROOM_ID.test(c || '')) return;
   if (!summary(ws)) return;
   CH.gone = null;
-  if (ws !== CH.ws) {
-    await selectWorkspace(ws, { openFirst: false });
+  routing++;
+  try {
+    if (ws !== CH.ws) {
+      await selectWorkspace(ws, { openFirst: false });
+      if (CH.ws !== ws) return;
+    }
+    await viewReady();
     if (CH.ws !== ws) return;
+  } finally {
+    routing--;
   }
-  if (!CH.view) await reloadView();
   if (!CH.rooms.has(c)) {
     toast(t('chat.errors.goneConversation'), 5000);
     return openDefault();
@@ -464,7 +523,9 @@ export async function openConversation(ws, c, seq = null) {
 
 // ---------- state ----------
 
-function applyState(state) {
+// openFirst: a workspace switch this state causes opens its first conversation once its view is in. selectWorkspace
+// turns it off, because it opens the conversation itself.
+function applyState(state, { openFirst = true } = {}) {
   if (!state || typeof state !== 'object') return;
   const wasAvailable = available();
   const first = !CH.known;
@@ -480,7 +541,7 @@ function applyState(state) {
     const has = (id) => id && list.some((w) => w.id === id);
     const want = has(state.selected) ? state.selected : has(CH.ws) ? CH.ws : list[0]?.id || null;
     if (want !== CH.ws) {
-      switchTo(want);
+      switchTo(want, { openFirst });
       // Main learns the choice, for its sockets and the next start.
       if (want && want !== state.selected) api('chatSelect', want).catch(() => {});
     }
@@ -508,8 +569,9 @@ function trackConnection() {
   }
 }
 
-// Another workspace on screen (or none): what the window had of the one before goes.
-function switchTo(ws) {
+// Another workspace on screen (or none): what the window had of the one before goes. openFirst: its first conversation
+// opens once its view is in; off when the caller opens one itself.
+function switchTo(ws, { openFirst = true } = {}) {
   CH.generation++;
   CH.ws = ws;
   CH.view = null;
@@ -517,17 +579,39 @@ function switchTo(ws) {
   CH.members = new Map();
   CH.blocks = new Set();
   CH.openId = null;
-  CH.goneRoom = false;
+  CH.goneRoom = null;
   view?.close();
-  if (ws) {
-    reloadView().then(() => {
-      if (CH.open && CH.ws === ws && !CH.openId && !CH.goneRoom) openDefault();
+  if (!ws) return;
+  const gen = CH.generation;
+  const ready = reloadView();
+  if (openFirst) {
+    ready.then(() => {
+      if (gen === CH.generation && CH.open && CH.ws === ws && !CH.openId && !CH.goneRoom && !routing) openDefault();
     });
   }
 }
 
+// The workspace on screen has its view: at once, after the chatView already in flight for it, or after a new one.
+function viewReady() {
+  if (CH.view || !CH.ws) return Promise.resolve();
+  if (loading && loading.gen === CH.generation) return loading.promise;
+  return reloadView();
+}
+
 // chatView for the workspace on screen: its rooms, members, channels and blocks from main's cache.
-async function reloadView() {
+function reloadView() {
+  const gen = CH.generation;
+  const promise = loadView();
+  const entry = { gen, promise };
+  loading = entry;
+  const done = () => {
+    if (loading === entry) loading = null;
+  };
+  promise.then(done, done);
+  return promise;
+}
+
+async function loadView() {
   const ws = CH.ws;
   const gen = CH.generation;
   if (!ws) return;
@@ -535,7 +619,8 @@ async function reloadView() {
   try {
     v = await api('chatView', ws);
   } catch (err) {
-    if (gen === CH.generation && err && err.code === 'not_found') renderPane();
+    if (gen !== CH.generation) return;
+    if (!goneError(err, ws) && err && err.code === 'not_found') renderPane();
     return;
   }
   if (gen !== CH.generation || CH.ws !== ws || !v) return;
@@ -554,10 +639,12 @@ export async function selectWorkspace(ws, { openFirst = true } = {}) {
   CH.gone = null;
   try {
     const state = await api('chatSelect', ws);
-    applyState(state);
-    if (CH.ws !== ws) switchTo(ws);
-    if (!CH.view) await reloadView();
-    if (openFirst && CH.open && !CH.openId) openDefault();
+    // One chatView and one opened conversation: the switch only loads the view, and this call opens the room.
+    applyState(state, { openFirst: false });
+    if (CH.ws !== ws) switchTo(ws, { openFirst: false });
+    await viewReady();
+    if (CH.ws !== ws) return;
+    if (openFirst && CH.open && !CH.openId && !CH.goneRoom) openDefault();
   } catch (err) {
     toast(chatErrorText(err), 5000);
   }
@@ -577,7 +664,7 @@ function openDefault() {
 export function openRoom(id, { at = null } = {}) {
   if (!CH.rooms.has(id)) return;
   ensureView();
-  CH.goneRoom = false;
+  CH.goneRoom = null;
   CH.openId = id;
   saveOpen(CH.ws, id);
   redrawSide();
@@ -615,7 +702,7 @@ function ensureView() {
     openThread: (root, opts) => (typeof THREAD.open === 'function' ? THREAD.open(root, opts) : undefined),
     // OK on a gone conversation: the next one in sidebar order (desktop-ui 7.10).
     goneOk: () => {
-      CH.goneRoom = false;
+      CH.goneRoom = null;
       openDefault();
     },
     // OK on a gone workspace: the next workspace, else the no-workspace state (desktop-ui 7.11).
@@ -632,15 +719,8 @@ function ensureView() {
     roomOpened: (room) => {
       if (room && room.id) CH.rooms.set(room.id, room);
     },
-    roomGone: (id) => {
-      if (id !== CH.openId) return;
-      CH.goneRoom = true;
-      CH.openId = null;
-      const room = CH.rooms.get(id);
-      CH.rooms.delete(id);
-      view.goneConversation(roomName(room));
-      redrawSide();
-    },
+    // A call about the open room or the workspace said it is gone (a 404 with that scope): desktop-ui 7.10 or 7.11.
+    goneError: (err, ws, c) => goneError(err, ws, c),
     signIn: () => ctx.openSettings('rukoo-signin'),
     signUp: () => ctx.openSettings('rukoo-signup'),
     makeWorkspace: () => makeWorkspace(),
@@ -668,10 +748,12 @@ function renderPane() {
     const w = summary();
     if (w && w.status === 'upgrade') kind = 'upgrade';
     else if (!CH.view) kind = 'loading';
-    else if (CH.goneRoom) kind = null;
+    else if (CH.goneRoom) kind = 'goneRoom';
     else if (!CH.openId) kind = w && w.status === 'loading' && !CH.rooms.size ? 'loading' : 'pick';
   }
-  if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups) });
+  // The gone conversation stays until OK; drawn again only when its text changed (a language change).
+  if (kind === 'goneRoom') view.goneConversation(roomName(CH.goneRoom.room), { focus: false });
+  else if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups) });
   view.setBanner(bannerFor());
 }
 

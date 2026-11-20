@@ -227,13 +227,8 @@ test('replies show in the main log with their context, and the first message sum
   await expect(mine.locator('.ch-context')).toContainText('replied to Olga Owner');
 });
 
-test('older messages load while scrolling up, down to the note that older ones were removed', async () => {
-  const { olga, bart, ws } = await twoPeople(server);
-  const posts = [];
-  for (let i = 1; i <= 14; i++) posts.push(await server.post(olga, ws.id, ws.general, `Message ${i}`));
-  // The window has no focus here, so nothing is read: a read would bring the room's real floor back from the feed.
-  ({ app, win } = await launch(server, { dataDir, focus: false }));
-  await signIn(win, bart);
+// Main has the seeded workspace and its channels: the cache can be changed under it.
+async function roomsReady() {
   await expect
     .poll(async () => {
       const d = await app.evaluate(() => global.__semChat.debugState());
@@ -241,6 +236,45 @@ test('older messages load while scrolling up, down to the note that older ones w
       return Boolean(w && !w.passing && w.rooms.some((r) => r.kind === 'channel'));
     }, { timeout: 15000 })
     .toBe(true);
+}
+
+test('the keyboard stays on a sidebar row when the sidebar draws again, and when Enter opens its room', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const review = await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  await server.post(olga, ws.id, ws.general, 'Morning');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 15000 });
+  const row = roomRow(win, 'review');
+  const focused = () => win.evaluate(() => document.activeElement?.dataset?.chOpen || document.activeElement?.tagName || null);
+  await row.focus();
+  expect(await focused()).toBe(review.id);
+  // Olga posts in review: its count shows, so the sidebar was drawn again, and the focus is on the row's new copy.
+  await server.post(olga, ws.id, review.id, 'Something to review');
+  await expect(row.locator('.count')).toHaveText('1', { timeout: 10000 });
+  await expect(row).toHaveClass(/is-unread/);
+  expect(await focused()).toBe(review.id);
+  // Enter opens the room; the redraws for the open room and its read leave the focus on the row.
+  await win.keyboard.press('Enter');
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await expect(row).toHaveAttribute('aria-current', 'page');
+  await expect(row).not.toHaveClass(/is-unread/, { timeout: 10000 });
+  expect(await focused()).toBe(review.id);
+});
+
+test('older messages load when scrolling up, with the view kept in place, down to the note that older ones were removed', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  // Each message is taller than a third of the log, so a page of five overflows it by more than the 400px at which
+  // older messages load by themselves: a further page comes from scrolling up.
+  const lines = Array.from({ length: 16 }, (_, i) => `line ${i + 1}`).join('\n');
+  const posts = [];
+  for (let i = 1; i <= 14; i++) posts.push(await server.post(olga, ws.id, ws.general, `Message ${i}\n${lines}`));
+  // The window has no focus here, so nothing is read: a read would bring the room's real floor back from the feed.
+  ({ app, win } = await launch(server, { dataDir, focus: false }));
+  await signIn(win, bart);
+  await roomsReady();
   // Small pages, and a retention floor the local server can't produce on demand (contract 8.1): messages before
   // Message 3 aged out.
   const floor = posts[2].seq;
@@ -258,7 +292,33 @@ test('older messages load while scrolling up, down to the note that older ones w
   );
   await openChat(win);
   await expect(message('Message 14')).toBeVisible({ timeout: 15000 });
+  const scroller = pane().locator('.ch-scroll');
   const note = log().locator('li.ch-floor');
+  let scrolls = 0;
+  for (let i = 0; i < 6 && !(await note.count()); i++) {
+    await expect(pane().locator('.ch-older .spinner')).toHaveCount(0, { timeout: 15000 });
+    // Scrolled to the top: the first message and where its text shows in the log, read before the page can arrive.
+    const before = await scroller.evaluate((el) => {
+      el.scrollTop = 0;
+      const first = el.querySelector('.ch-log li.ch-msg');
+      const text = first.querySelector('.ch-text');
+      return { seq: Number(first.dataset.seq), top: text.getBoundingClientRect().top - el.getBoundingClientRect().top };
+    });
+    scrolls++;
+    await expect
+      .poll(() => scroller.evaluate((el) => Number(el.querySelector('.ch-log li.ch-msg').dataset.seq)), { timeout: 15000 })
+      .toBeLessThan(before.seq);
+    // The older page came in above it, and its text stays where it was, though its name line went to the group's new
+    // first message.
+    const after = await scroller.evaluate((el, seq) => {
+      const row = el.querySelector(`.ch-log li.ch-msg[data-seq="${seq}"]`);
+      const text = row.querySelector('.ch-text');
+      return { top: text.getBoundingClientRect().top - el.getBoundingClientRect().top, scrollTop: el.scrollTop };
+    }, before.seq);
+    expect(Math.abs(after.top - before.top)).toBeLessThan(3);
+    expect(after.scrollTop).toBeGreaterThan(400);
+  }
+  expect(scrolls).toBeGreaterThan(0);
   await expect(note).toBeVisible({ timeout: 15000 });
   await expect(note).toContainText('were removed');
   await expect(message('Message 3')).toBeVisible();
@@ -266,6 +326,174 @@ test('older messages load while scrolling up, down to the note that older ones w
   await expect(log().locator('li.ch-intro')).toHaveCount(0);
   // Fourteen messages came in pages of five: nothing shows twice.
   await expect(log().locator('li.ch-msg')).toHaveCount(12);
+});
+
+test('an older page main dropped waits for Retry or the room coming again, instead of asking at once', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  for (let i = 1; i <= 8; i++) await server.post(olga, ws.id, ws.general, `Note ${i}`);
+  ({ app, win } = await launch(server, { dataDir, focus: false }));
+  await signIn(win, bart);
+  await roomsReady();
+  // Small pages from an empty cache, and chatOlder answering as main does when the room's grant moved meanwhile:
+  // nothing, with more to come.
+  await app.evaluate(
+    (_, { wsId, room }) => {
+      const svc = global.__semChat;
+      svc.timing.eventsNewest = 5;
+      svc.store.tx(() => svc.store.dropRoomCache(wsId, room));
+      svc.roomsChanged(wsId, [room]);
+      global.__olderCalls = 0;
+      svc.history.older = async (w, c, before) => {
+        global.__olderCalls++;
+        return { events: [], lo: before, hasOlder: true };
+      };
+    },
+    { wsId: ws.id, room: ws.general }
+  );
+  const calls = () => app.evaluate(() => global.__olderCalls);
+  await openChat(win);
+  await expect(message('Note 8')).toBeVisible({ timeout: 15000 });
+  const older = pane().locator('.ch-older');
+  await expect(older.locator('.ch-older-text')).toHaveText("Couldn't load older messages.");
+  await win.waitForTimeout(1500);
+  expect(await calls()).toBe(1);
+  // Retry asks once more, and only once.
+  await older.locator('button').click();
+  await expect.poll(calls).toBe(2);
+  await expect(older.locator('.ch-older-text')).toHaveText("Couldn't load older messages.");
+  await win.waitForTimeout(1000);
+  expect(await calls()).toBe(2);
+  // The room comes again as a replacing push, as it does after a moved grant: older history loads by itself.
+  await app.evaluate(
+    (_, { wsId, room }) => {
+      const svc = global.__semChat;
+      delete svc.history.older;
+      svc.history.showAgain(wsId, room);
+    },
+    { wsId: ws.id, room: ws.general }
+  );
+  await expect(log().locator('li.ch-intro')).toBeVisible({ timeout: 15000 });
+  await expect(message('Note 1')).toBeVisible();
+  await expect(log().locator('li.ch-msg')).toHaveCount(8);
+  await expect(older.locator('.ch-older-text')).toHaveCount(0);
+});
+
+test('choosing a workspace or clicking a notification opens one conversation, once', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const review = await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const beta = await server.seedWorkspace(olga, { name: 'Beta', displayName: 'Olga Owner' });
+  const bartBeta = await server.seedMember(beta, bart, 'Bart');
+  const ops = await server.seedChannel(olga, beta.id, { name: 'ops', members: [bartBeta.id] });
+  const spaces = {
+    Acme: { id: ws.id, name: 'Acme', general: ws.general, other: { id: review.id, name: 'review' } },
+    Beta: { id: beta.id, name: 'Beta', general: beta.general, other: { id: ops.id, name: 'ops' } }
+  };
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  const switcher = win.locator('.sidebar .ch-ws-switch');
+  const here = spaces[(await switcher.locator('.name').textContent()).trim()];
+  const there = here === spaces.Acme ? spaces.Beta : spaces.Acme;
+  // Every chatView and chatOpen main answers from here on.
+  await app.evaluate(() => {
+    const svc = global.__semChat;
+    global.__chatCalls = [];
+    const view = svc.view;
+    svc.view = function (w) {
+      global.__chatCalls.push(['view', w]);
+      return view.call(this, w);
+    };
+    const openRoom = svc.history.openRoom;
+    svc.history.openRoom = function (w, c, opts) {
+      global.__chatCalls.push(['open', w, c]);
+      return openRoom.call(this, w, c, opts);
+    };
+  });
+  const calls = () => app.evaluate(() => global.__chatCalls.splice(0));
+  const opens = (list) => list.filter((x) => x[0] === 'open');
+
+  // The workspace menu: one chatView, then one chatOpen, for the first room of the other workspace.
+  await switcher.click();
+  await win.locator('.menu [role="menuitem"]', { hasText: there.name }).click();
+  await expect(switcher.locator('.name')).toHaveText(there.name, { timeout: 15000 });
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  await win.waitForTimeout(1500);
+  let list = await calls();
+  expect(opens(list)).toEqual([['open', there.id, there.general]]);
+  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view')).toEqual([['view', there.id]]);
+
+  // A notification for the other room of the first workspace opens that room, without its saved room (general) first.
+  await app.evaluate((_, open) => global.__semChatOpen(open), { ws: here.id, conversation: here.other.id });
+  await expect(switcher.locator('.name')).toHaveText(here.name, { timeout: 15000 });
+  await expect(pane().locator('.ch-title')).toHaveText(here.other.name, { timeout: 15000 });
+  await win.waitForTimeout(1500);
+  list = await calls();
+  expect(opens(list)).toEqual([['open', here.id, here.other.id]]);
+  expect(list.slice(0, list.findIndex((x) => x[0] === 'open')).filter((x) => x[0] === 'view')).toEqual([['view', here.id]]);
+});
+
+test('leaving the open channel elsewhere shows the gone state, and a language change redraws it', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const project = await server.seedChannel(olga, ws.id, { name: 'project', members: [bartMe.id] });
+  await server.post(olga, ws.id, project.id, 'Project kickoff');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(roomRow(win, 'project')).toBeVisible({ timeout: 15000 });
+  await roomRow(win, 'project').click();
+  await expect(message('Project kickoff')).toBeVisible({ timeout: 15000 });
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 15000 });
+  // Bart leaves on another device.
+  const left = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${project.id}/members/me`, { token: bart.token });
+  expect(left.status).toBe(204);
+  const empty = pane().locator('.ch-empty');
+  await expect(empty.locator('.ch-empty-title')).toHaveText("You're no longer in project", { timeout: 15000 });
+  await expect(log().locator('li')).toHaveCount(0);
+  await expect(roomRow(win, 'project')).toHaveCount(0);
+  await win.evaluate(() => window.mail.call('updateSettings', { language: 'nl' }));
+  await expect(empty.locator('.ch-empty-title')).toHaveText('Je bent niet meer in project');
+  await expect(empty.locator('.ch-empty-body')).toContainText('Je bent uit dit gesprek gehaald');
+  await empty.locator('[data-ch-empty="gone-ok"]').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+});
+
+test('a 404 for the workspace from opening a room or loading the workspace shows the gone workspace', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  const empty = pane().locator('.ch-empty');
+  // Main answers the next chatOpen as it does for a workspace the person is no longer in.
+  await app.evaluate(() => {
+    global.__semChat.history.openRoom = async () => {
+      throw Object.assign(new Error('gone'), { code: 'not_found', status: 404, details: { scope: 'workspace' } });
+    };
+  });
+  await roomRow(win, 'review').click();
+  await expect(empty.locator('.ch-empty-title')).toHaveText("You're no longer in Acme");
+  await expect(pane().locator('.ch-older-text')).toHaveCount(0);
+  await expect(win.locator('.sidebar [data-ch-side="make"]')).toBeVisible();
+  // With main back to normal, OK selects the workspace again.
+  await app.evaluate(() => {
+    delete global.__semChat.history.openRoom;
+  });
+  await empty.locator('[data-ch-empty="gone-ok"]').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review', { timeout: 15000 });
+  // The same answer to chatView, which a directory change asks for.
+  await app.evaluate((_, wsId) => {
+    const svc = global.__semChat;
+    svc.view = () => {
+      throw Object.assign(new Error('gone'), { code: 'not_found', status: 404, details: { scope: 'workspace' } });
+    };
+    svc.emitChat({ kind: 'directory', ws: wsId });
+  }, ws.id);
+  await expect(empty.locator('.ch-empty-title')).toHaveText("You're no longer in Acme", { timeout: 10000 });
+  await app.evaluate(() => {
+    delete global.__semChat.view;
+  });
 });
 
 test('the server going away shows the offline banner, and coming back clears it', async () => {
