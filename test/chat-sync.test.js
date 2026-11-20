@@ -305,6 +305,25 @@ test('a floor from retention deletes the events below it', async (t) => {
   assert.equal(after.floor, floor);
 });
 
+test('a floor on a page of a pass that has not installed yet is stored at once', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc } = await setup(t);
+  for (const text of ['one', 'two', 'three']) await server.post(olga, ws.id, ws.general, text);
+  await svc.sync(ws.id);
+  const cached = await cacheRoom(svc, ws.id, ws.general);
+  const floor = cached.head - 1;
+  // A page of a pass that says more: the room waits in pass_room, but its floor already holds for the cached room,
+  // so a history page that comes in before the pass installs is checked against it.
+  const { applyPassPage } = require('../src/main/workspaces/sync');
+  svc.store.updateWs(ws.id, { passing: 1 });
+  const page = { changes: [{ ...rawRoom(cached), conversation: ws.general, floor }], evictions: [], inlineEvents: [], directory: {}, next: 'cursor-of-the-pass', more: true };
+  assert.ok(applyPassPage(svc, ws.id, page));
+  const after = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(after.floor, floor);
+  assert.equal(after.lo, floor);
+  assert.equal(svc.store.eventsBefore(ws.id, ws.general, floor, 100).length, 0);
+});
+
 test('removedMore drops the room cache as a whole', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, ws, svc } = await setup(t);

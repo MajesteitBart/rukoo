@@ -633,10 +633,14 @@ class Store {
         if (!gone.includes(n.message)) gone.push(n.message);
       }
       this.run('DELETE FROM event WHERE ws = ? AND room = ? AND seq < ?', ws, room, floor);
+      // The floor is stored with the deletion, also from a page of a pass that hasn't installed yet: a history page
+      // that comes in meanwhile is checked against it, so it can't put back what retention removed.
       this.run(
         `UPDATE room SET lo = CASE WHEN hi IS NULL OR hi < ? THEN NULL ELSE MAX(lo, ?) END,
-                         hi = CASE WHEN hi IS NULL OR hi < ? THEN NULL ELSE hi END
+                         hi = CASE WHEN hi IS NULL OR hi < ? THEN NULL ELSE hi END,
+                         floor = MAX(floor, ?)
          WHERE ws = ? AND id = ?`,
+        floor,
         floor,
         floor,
         floor,
