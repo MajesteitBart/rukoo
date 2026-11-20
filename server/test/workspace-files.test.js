@@ -214,7 +214,9 @@ describe('uploading', () => {
     const f = reserved.upload.id;
     expect((await fileRequest(await signed(ws.id, { k: 'put', f, key: null, exp: Date.now() - 1 }), { method: 'PUT', body: bytes })).body.error).toBe('expired');
     const [payload, mac] = reserved.put.url.split('/files/')[1].split('.');
-    const forged = `https://accounts.example/v1/workspaces/${ws.id}/files/${payload}.${mac.slice(0, -2)}AA`;
+    // Another first character always changes the MAC's bytes; the last one carries only two bits, so "AA" there
+    // could still decode to the real MAC.
+    const forged = `https://accounts.example/v1/workspaces/${ws.id}/files/${payload}.${mac[0] === 'A' ? 'B' : 'A'}${mac.slice(1)}`;
     expect((await fileRequest(forged, { method: 'PUT', body: bytes })).status).toBe(404);
     const other = await newWorkspace();
     const elsewhere = reserved.put.url.replace(ws.id, other.id);
