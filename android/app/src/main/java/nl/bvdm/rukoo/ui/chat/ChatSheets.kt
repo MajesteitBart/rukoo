@@ -1377,11 +1377,11 @@ private fun DetailsSheet(app: AppViewModel, target: String, twoPane: Boolean, on
                 })
                 DetailAction.LEAVE_DM -> SheetRow(stringResource(R.string.chat_head_leave_dm), icon = RukooIcons.Back, danger = true, onClick = {
                     close()
-                    ui.askLeaveDm(ws, room)
+                    ui.askLeaveDm(ws, room, names.everyoneElse(room.participants, members, me))
                 })
                 DetailAction.REMOVE_FROM_LIST -> SheetRow(stringResource(R.string.chat_input_remove_from_list), icon = RukooIcons.Trash, onClick = {
                     close()
-                    ui.askLeaveDm(ws, room)
+                    ui.askLeaveDm(ws, room, names.everyoneElse(room.participants, members, me))
                 })
                 DetailAction.BLOCK -> SheetRow(stringResource(R.string.chat_head_block, otherName), icon = RukooIcons.Ban, danger = true, onClick = {
                     close()

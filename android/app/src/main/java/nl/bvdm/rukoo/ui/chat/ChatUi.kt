@@ -775,15 +775,21 @@ class ChatUi(
         toasts.showToast(strings.get(R.string.chat_delete_done, name))
     }
 
-    /** Leave a DM (§3.12): an open one closes for everyone in it; a closed one leaves the list. */
-    fun askLeaveDm(ws: String, room: Room) = launch("leaveDm:${room.id}", context(ws)) {
-        val closed = room.closedReason != null || room.archived
-        val ok = confirm(
-            strings.get(R.string.chat_leave_dm_title),
-            strings.get(if (closed) R.string.chat_leave_dm_body_closed else R.string.chat_leave_dm_body),
-            strings.get(R.string.chat_leave_dm_submit),
-            danger = !closed,
-        )
+    /**
+     * Leave a DM (§3.12). An open one closes for everyone in it, so the question says Close and names [others], the
+     * other people already joined as the language lists them; a closed one leaves the list, so it says Remove.
+     */
+    fun askLeaveDm(ws: String, room: Room, others: String) = launch("leaveDm:${room.id}", context(ws)) {
+        val ok = if (room.closedReason != null || room.archived) {
+            confirmRemoveDm()
+        } else {
+            confirm(
+                strings.get(R.string.chat_leave_dm_title),
+                strings.get(R.string.chat_leave_dm_body, others),
+                strings.get(R.string.chat_leave_dm_submit),
+                danger = true,
+            )
+        }
         if (!ok) return@launch
         expectGone(room.id)
         try {
@@ -794,9 +800,20 @@ class ChatUi(
         }
     }
 
-    /** Block someone (desktop-ui 6.13): what a block does and that they may notice, then said. */
+    /** Remove from list on a closed DM: the question its bar button and the details row both ask. */
+    suspend fun confirmRemoveDm(): Boolean = confirm(
+        strings.get(R.string.chat_leave_dm_remove_title),
+        strings.get(R.string.chat_leave_dm_body_closed),
+        strings.get(R.string.chat_leave_dm_remove_submit),
+        danger = false,
+    )
+
+    /**
+     * Block someone (desktop-ui 6.13): what a block does in this workspace, that the conversations it closes stay
+     * closed, and where to undo it; then said.
+     */
     fun askBlock(ws: String, member: String, name: String) = launch("block:$member", context(ws, member = name)) {
-        val ok = confirm(strings.get(R.string.chat_block_title, name), strings.get(R.string.chat_block_body, name), strings.get(R.string.chat_block_confirm), danger = true)
+        val ok = confirm(strings.get(R.string.chat_block_title, name), strings.get(R.string.chat_block_body, name, wsName(ws)), strings.get(R.string.chat_block_confirm), danger = true)
         if (!ok) return@launch
         block(ws, member)
         toasts.showToast(strings.get(R.string.chat_block_done, name))

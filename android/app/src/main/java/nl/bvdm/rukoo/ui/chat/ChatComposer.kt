@@ -429,12 +429,7 @@ internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room
                             stringResource(R.string.chat_input_remove_from_list),
                             {
                                 ui.launch(key, ui.context(ws)) {
-                                    val ok = ui.confirm(
-                                        ui.strings.get(R.string.chat_leave_dm_title),
-                                        ui.strings.get(R.string.chat_leave_dm_body_closed),
-                                        ui.strings.get(R.string.chat_leave_dm_submit),
-                                    )
-                                    if (ok) {
+                                    if (ui.confirmRemoveDm()) {
                                         ui.expectGone(room.id)
                                         leaveDm(ws, room.id)
                                     }

@@ -84,6 +84,12 @@ class ChatNames(
         }
     }
 
+    /** Everyone in a DM but [me], all named and joined as the language lists them, as Close conversation names them. */
+    fun everyoneElse(participants: List<String>?, members: Map<String, Member>, me: String?): String {
+        val names = participants.orEmpty().distinct().filter { it != me }.map { display(members[it]) }
+        return if (names.size == 1) names[0] else list(names)
+    }
+
     /** A room's title: a channel's name (the UI puts # before it), a DM's people. */
     fun title(room: Room, members: Map<String, Member>, me: String?): String =
         if (room.kind == RoomKind.DM) dmTitle(room.participants, members, me) else room.name.orEmpty()

@@ -116,7 +116,7 @@
     <string name="chat_head_mute">Dempen</string>
     <string name="chat_head_mute_hint">Geen meldingen of tellers, ook niet als iemand je noemt.</string>
     <string name="chat_head_unmute">Dempen opheffen</string>
-    <string name="chat_head_leave_dm">Gesprek verlaten</string>
+    <string name="chat_head_leave_dm">Gesprek sluiten</string>
 
     <!-- chat.log.* -->
     <string name="chat_log_label">Berichten in %1$s</string>
@@ -386,11 +386,11 @@
     <string name="chat_block_unblocked">%1$s gedeblokkeerd. Begin een nieuw gesprek om weer te praten.</string>
     <string name="chat_block_list">Geblokkeerde mensen</string>
     <string name="chat_block_none">Je hebt niemand geblokkeerd.</string>
-    <string name="chat_block_body">%1$s kan geen directe berichten meer met je beginnen, en je directe berichten met %1$s worden gesloten. Vermeldingen door %1$s geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. %1$s krijgt geen bericht, maar kan merken dat jullie gesprek gesloten is.</string>
+    <string name="chat_block_body">%1$s kan in %2$s geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. Vermeldingen door %1$s geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je bij Geblokkeerde mensen.</string>
 
     <!-- chat.leave.* -->
     <string name="chat_leave_title">%1$s verlaten?</string>
-    <string name="chat_leave_body">Je verliest de toegang tot de kanalen en directe berichten. Berichten die je schreef, blijven staan.</string>
+    <string name="chat_leave_body">Je verliest de toegang tot de kanalen en directe berichten, en de groepsgesprekken waarin je zit, worden ook voor de anderen gesloten. Berichten die je schreef, blijven staan.</string>
     <string name="chat_leave_submit">Verlaten</string>
     <string name="chat_leave_manager_first">Je bent de enige kanaalbeheerder van deze kanalen. Kies voor elk kanaal wie het na jou beheert.</string>
     <string name="chat_leave_only_owner_hint">Maak eerst iemand anders eigenaar.</string>
@@ -446,10 +446,12 @@
     <string name="chat_errors_quota_bytes">%1$s heeft geen ruimte meer voor berichten.</string>
 
     <!-- chat.leaveDm.* -->
-    <string name="chat_leave_dm_title">Dit gesprek verlaten?</string>
-    <string name="chat_leave_dm_body">Het wordt voor iedereen gesloten. Ze kunnen het nog lezen.</string>
-    <string name="chat_leave_dm_body_closed">Het verdwijnt uit je lijst.</string>
-    <string name="chat_leave_dm_submit">Verlaten</string>
+    <string name="chat_leave_dm_title">Dit gesprek voor iedereen sluiten?</string>
+    <string name="chat_leave_dm_body">Het blijft leesbaar voor %1$s, maar niemand kan er nog in schrijven. Wil je alleen geen meldingen meer, gebruik dan Dempen.</string>
+    <string name="chat_leave_dm_submit">Voor iedereen sluiten</string>
+    <string name="chat_leave_dm_remove_title">Uit je lijst halen?</string>
+    <string name="chat_leave_dm_body_closed">Daarna kun je het niet meer lezen.</string>
+    <string name="chat_leave_dm_remove_submit">Weghalen</string>
 
     <!-- chat.mute.* -->
     <string name="chat_mute_done">%1$s gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.</string>

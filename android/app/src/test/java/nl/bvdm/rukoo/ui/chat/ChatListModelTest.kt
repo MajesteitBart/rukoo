@@ -189,6 +189,15 @@ class ChatListModelTest {
     }
 
     @Test
+    fun `Close conversation names everyone else, past three too`() {
+        val m = people
+        assertEquals("Sanne", names.everyoneElse(listOf(me.id, u("sanne")), m, me.id))
+        assertEquals("Sanne and Mila", names.everyoneElse(listOf(u("sanne"), me.id, u("mila"), u("sanne")), m, me.id))
+        assertEquals("Sanne, Mila, Olga and Piet", names.everyoneElse(listOf(u("sanne"), u("mila"), u("olga"), u("piet"), me.id), m, me.id))
+        assertEquals("Sanne and Former member", names.everyoneElse(listOf(me.id, u("sanne"), u("stranger")), m, me.id))
+    }
+
+    @Test
     fun `the gate and the status line`() {
         val ready = ChatState(available = true, signedIn = true, workspaces = listOf(WorkspaceSummary("w1", "A", "member", WorkspaceStatus.OK)))
         assertNull(ChatListModel.gate(ready))
