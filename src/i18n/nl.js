@@ -2763,6 +2763,9 @@
   "chat.msg.sendAgainTitle": "Dit bericht opnieuw versturen?",
   "chat.msg.sendAgainBody": "Als het eerste toch is aangekomen, zien mensen het twee keer.",
   "chat.msg.sendWithoutMentions": "Versturen zonder vermeldingen",
+  "chat.msg.discarded": "Bericht weggegooid",
+  "chat.msg.send": "Versturen",
+  "chat.msg.retryAt": "nieuwe poging om {time}",
   "chat.remove.title": "Dit bericht verwijderen?",
   "chat.remove.body": "Het verdwijnt voor iedereen in {name}. Dit kun je niet ongedaan maken.",
   "chat.remove.bodyOther": "Het verdwijnt voor iedereen in {name}, en {author} ziet dat het is verwijderd.",
@@ -2781,7 +2784,7 @@
   "chat.input.closedBlocked": "Dit gesprek is gesloten. Je kunt het nog lezen.",
   "chat.input.newConversation": "Nieuw gesprek beginnen",
   "chat.input.removeFromList": "Uit de lijst halen",
-  "chat.input.paused": "Versturen is gestopt zolang {workspace} gepauzeerd is.",
+  "chat.input.paused": "Versturen is gestopt tot je {workspace} opnieuw begint.",
   "chat.mentions.label": "Mensen om te noemen",
   "chat.mentions.none": "Niemand hier met die naam",
   "chat.thread.label": "Thread",
@@ -2954,7 +2957,7 @@
   "chat.errors.network": "Rukoo kan {host} niet bereiken.",
   "chat.errors.signedOut": "Je bent uitgelogd. Log in om teamchat te blijven gebruiken.",
   "chat.errors.notSaved": "Rukoo kon dit bericht niet op deze computer bewaren, dus het is niet verstuurd. Maak schijfruimte vrij en probeer het opnieuw.",
-  "chat.errors.paused": "{workspace} is gepauzeerd. Begin opnieuw om de werkruimte weer te gebruiken.",
+  "chat.errors.paused": "{workspace} is gestopt. Begin opnieuw om de werkruimte weer te gebruiken.",
   "chat.errors.mentions": "Iemand die je noemde, zit niet meer in dit gesprek.",
   "chat.errors.failed": "Er ging iets mis. Probeer het opnieuw."
 };

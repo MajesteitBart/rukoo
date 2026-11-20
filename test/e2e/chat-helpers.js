@@ -114,4 +114,80 @@ async function serverRead(server, person, wsId, conversation) {
 // The sidebar row of a conversation by its name.
 const roomRow = (win, name) => win.locator(`.sidebar .ch-row[title="${name}"]`);
 
-module.exports = { PASSWORD, skipWithoutServer, startServer, launch, emulateFocus, signIn, openChat, twoPeople, debugState, notices, serverRead, roomRow };
+// The composer under the log, or the thread's.
+const composer = (win, { thread = false } = {}) => win.locator(thread ? 'section.chat .ch-thread .ch-input' : 'section.chat .ch-main .ch-input');
+
+// The messages of a conversation as the server has them, oldest first, read as person (Olga, usually): what the app
+// sent, checked from the other side.
+async function serverEvents(server, person, wsId, conversation) {
+  const out = [];
+  let after = 0;
+  for (;;) {
+    const page = await server.call('GET', `/v1/workspaces/${wsId}/conversations/${conversation}/events?after=${after}&limit=100`, { token: person.token });
+    if (page.status !== 200) throw new Error(`events: ${page.status} ${page.text}`);
+    const events = page.body.events || [];
+    out.push(...events);
+    if (events.length < 100) break;
+    after = events[events.length - 1].seq;
+  }
+  return out;
+}
+
+// The posted messages with text among them (removed ones have none).
+async function serverMessages(server, person, wsId, conversation, text = null) {
+  const events = await serverEvents(server, person, wsId, conversation);
+  return events.filter((e) => e.kind === 'message.posted' && (text === null || e.text === text));
+}
+
+// The window shows Chat connected to the server.
+async function connected(win) {
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 20000 });
+}
+
+// Holds main's feed runs for the workspaces, so a change on the server can't be seen halfway (the spec makes two
+// changes in a row that a run between them would see as one: leaving and rejoining). Waits for a run under way to
+// end. release() lets them go and asks for one.
+async function holdRuns(app) {
+  await app.evaluate(() => {
+    const svc = global.__semChat;
+    global.__runsHeld = true;
+    const run = Object.getPrototypeOf(svc).run;
+    svc.run = function (ws) {
+      if (global.__runsHeld) {
+        setTimeout(() => this.run(ws), 50);
+        return undefined;
+      }
+      return run.call(this, ws);
+    };
+  });
+  await expect.poll(() => app.evaluate(() => [...global.__semChat.runners.values()].some((r) => r.running)), { timeout: 15000 }).toBe(false);
+  return {
+    release: () =>
+      app.evaluate(() => {
+        const svc = global.__semChat;
+        global.__runsHeld = false;
+        delete svc.run;
+        for (const w of svc.store.listWs()) svc.sync(w.id, 'manual');
+      })
+  };
+}
+
+module.exports = {
+  PASSWORD,
+  skipWithoutServer,
+  startServer,
+  launch,
+  emulateFocus,
+  signIn,
+  openChat,
+  twoPeople,
+  debugState,
+  notices,
+  serverRead,
+  roomRow,
+  composer,
+  serverEvents,
+  serverMessages,
+  connected,
+  holdRuns
+};

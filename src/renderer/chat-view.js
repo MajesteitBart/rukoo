@@ -1,20 +1,20 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast } from './ui.js';
+import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog } from './ui.js';
 import { h } from './agent/bui.js';
-import { timeline, displayName, memberTag } from './chat-model.js';
-import { segments } from './chat-text.js';
+import { timeline, displayName, memberTag, canRemove } from './chat-model.js';
+import { segments, toParts } from './chat-text.js';
+import { mountChatInput } from './chat-input.js';
 
-// Team chat's pane (contract 5.4, desktop-ui 5.2 to 5.4 and 7): the open conversation's header, the banner, the log
-// with its reading, jump pills and older history, and the pane's states. chat.js decides what shows; this module
-// draws it. The log's rows come from chat-model.js timeline() and are kept by key: a row is built again only when
-// its sig changed, so live messages, pending sends and removals touch only their rows and the scroll position holds.
+// Team chat's pane (contract 5.4 to 5.6, desktop-ui 5.2 to 5.7 and 7): the open conversation's header, the banner,
+// the log with its reading, jump pills and older history, the composer and the bars that replace it, unsent messages
+// with their actions, the message tools and menus, the thread panel, and the pane's states. chat.js decides what
+// shows; this module draws it. The log's rows come from chat-model.js timeline() and are kept by key: a row is built
+// again only when its sig changed, so live messages, pending sends and removals touch only their rows and the scroll
+// position holds.
 //
 // Everything in the log was written by people: it reaches the DOM through h()'s text prop and text nodes, never as
 // HTML. Icons are the app's own static markup.
-//
-// The composer area (.ch-compose) and the thread panel (.ch-thread) stay empty here; chat-input.js and the thread
-// code fill them in.
 
 // When the log is this close to its end, a new message keeps it there (desktop-ui 5.3).
 const STICK_PX = 80;
@@ -25,6 +25,8 @@ const READ_DELAY = 1000;
 // A row opened at from a notification keeps its outline this long.
 const TARGET_MS = 2000;
 const ANNOUNCE_CHARS = 120;
+// The picker puts people who posted among this many of the last messages first (desktop-ui 5.6).
+const RECENT_MESSAGES = 50;
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const behavior = () => (reduced() ? 'auto' : 'smooth');
@@ -48,11 +50,21 @@ function timeEl(at, cls = 'ch-time') {
 }
 
 const dayOf = (at) => (Number.isFinite(at) ? new Intl.DateTimeFormat(getLocale(), { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(at)) : '');
+// A retry time to the second: the waits between attempts are seconds long.
+const clockTime = (at) => (Number.isFinite(at) ? new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(at)) : '');
 const firstChars = (text, n) => {
   const chars = [...String(text || '').replace(/\s+/g, ' ').trim()];
   return chars.length > n ? `${chars.slice(0, n).join('')}…` : chars.join('');
 };
 const bySeq = (a, b) => a.seq - b.seq;
+
+function copyText(text) {
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(
+    () => toast(t('chat.msg.copied')),
+    () => {}
+  );
+}
 
 // section: the .chat element app.js made. H: what chat.js gives the view (see chat.js ensureView).
 export function mountView(section, H) {
@@ -72,7 +84,21 @@ export function mountView(section, H) {
   const empty = h('div', { class: 'ch-empty', hidden: true });
   const announce = h('div', { class: 'ch-announce', 'aria-live': 'polite' });
   main.append(head, banner, area, compose, empty, announce);
-  const thread = h('aside', { class: 'ch-thread', hidden: true });
+
+  // The thread panel (desktop-ui 5.7): docked beside the log from 900px of the view's own width, over it below that.
+  const tBack = h('button', { type: 'button', class: 'icon-btn sm ch-thread-back', 'data-ch': 'thread-back' }, svg('back'));
+  // Its parts have classes of their own (ch-thread-*), so a selector for the conversation's log, header or composer
+  // never finds the thread's as well.
+  const tTitle = h('h2', { class: 'ch-thread-title' });
+  const tMeta = h('div', { class: 'ch-thread-meta' });
+  const tClose = h('button', { type: 'button', class: 'icon-btn sm ch-thread-close', 'data-ch': 'thread-close' }, svg('close'));
+  const tHead = h('header', { class: 'ch-thread-head' }, tBack, h('div', { class: 'ch-thread-titles' }, tTitle, tMeta), tClose);
+  const tOlder = h('div', { class: 'ch-thread-older' });
+  const tNote = h('div', { class: 'ch-thread-note', hidden: true });
+  const tLog = h('ol', { class: 'ch-thread-log' });
+  const tScroll = h('div', { class: 'ch-thread-scroll', tabindex: '-1' }, tOlder, tNote, tLog);
+  const tCompose = h('div', { class: 'ch-thread-compose' });
+  const thread = h('aside', { class: 'ch-thread', hidden: true }, tHead, tScroll, tCompose);
   section.append(main, thread);
 
   // 'room' while a conversation shows, 'state' for an empty or gone state, null before either.
@@ -81,6 +107,14 @@ export function mountView(section, H) {
   let bannerKey = null;
   let token = 0;
   let V = blank();
+  // The open room's composer (chat-input.js).
+  let input = null;
+  // The open thread: { root, seq, ev, nodes, rows, complete, expired, loading, error, token, input, … }, or null.
+  let T = null;
+  // The room's members for the mention picker, loaded once per opened room: { key, promise }.
+  let memberCache = null;
+  // The connection the unsent rows were drawn for: a queued message waits for it.
+  let drawnConnection = null;
 
   function blank() {
     return {
@@ -95,7 +129,7 @@ export function mountView(section, H) {
       readAtOpen: null,
       at: null,
       pending: [],
-      // messageId -> local ID of sends that committed while the room was open, so their rows keep their nodes.
+      // messageId -> local ID of sends that committed while the room was open, so their rows keep their keys.
       sentLocal: new Map(),
       // The events arrived: the room has a cache to show. Until then the log shows its loading row.
       loaded: false,
@@ -111,6 +145,8 @@ export function mountView(section, H) {
       // New messages below the view while it was scrolled up.
       unseen: 0,
       nodes: new Map(),
+      // The rows on screen by key, for the tools and menus.
+      rows: new Map(),
       focusKey: null,
       targetTimer: null
     };
@@ -118,6 +154,8 @@ export function mountView(section, H) {
 
   const members = () => H.members();
   const nameOf = (id) => displayName(members().get(id), t);
+  // A conversation as text says it: #name for a channel, the people for a DM.
+  const roomLabel = (room) => (!room ? '' : room.kind === 'dm' ? H.roomName(room) : `#${room.name || ''}`);
 
   // ---------- reading ----------
 
@@ -138,9 +176,16 @@ export function mountView(section, H) {
   );
 
   // Reading counts while the window has focus, Chat is on screen with this room, and nothing covers it (no Settings
-  // page, no dialog).
+  // page, no dialog, no thread over the log). The thread itself reports nothing (contract 3.9).
   const canRead = () =>
-    mode === 'room' && V.loaded && V.c && H.active() && document.hasFocus() && document.visibilityState !== 'hidden' && !document.querySelector('#overlays .page, .scrim');
+    mode === 'room' &&
+    V.loaded &&
+    V.c &&
+    H.active() &&
+    document.hasFocus() &&
+    document.visibilityState !== 'hidden' &&
+    !document.querySelector('#overlays .page, .scrim') &&
+    !(T && getComputedStyle(thread).position === 'absolute');
 
   function considerRead() {
     if (!canRead()) return;
@@ -173,9 +218,9 @@ export function mountView(section, H) {
   // Mark as read and Shift+Escape: everything up to head.
   function markRead() {
     if (mode !== 'room' || !V.c) return;
-    const head = V.room?.head || 0;
-    V.readBest = Math.max(V.readBest, head);
-    V.readSent = Math.max(V.readSent, head);
+    const top = V.room?.head || 0;
+    V.readBest = Math.max(V.readBest, top);
+    V.readSent = Math.max(V.readSent, top);
     clearTimeout(V.readTimer);
     const ws = V.ws;
     const c = V.c;
@@ -193,8 +238,14 @@ export function mountView(section, H) {
     if (!on) jumpUp.hidden = jumpDown.hidden = true;
   }
 
-  // Leaves the open room: its rows, timers and observer entries go.
+  // Leaves the open room: its thread, composer, rows, timers and observer entries go. The composer's draft is saved
+  // first.
   function dropRoom() {
+    closeThread({ restoreFocus: false });
+    if (input) input.dispose();
+    input = null;
+    compose.textContent = '';
+    memberCache = null;
     clearTimeout(V.readTimer);
     clearTimeout(V.targetTimer);
     for (const li of V.nodes.values()) io.unobserve(li);
@@ -293,8 +344,6 @@ export function mountView(section, H) {
     mode = 'state';
     stateKey = key;
     showRoom(false);
-    thread.hidden = true;
-    section.dataset.thread = 'closed';
     emptyBox({
       icon: 'leave',
       title: label ? t('chat.gone.conversationTitle', { name: label }) : t('chat.errors.goneConversation'),
@@ -312,8 +361,6 @@ export function mountView(section, H) {
     mode = 'state';
     stateKey = `gone|${name}|${getLocale()}`;
     showRoom(false);
-    thread.hidden = true;
-    section.dataset.thread = 'closed';
     emptyBox({
       icon: 'leave',
       title: t('chat.gone.workspaceTitle', { workspace: name }),
@@ -332,6 +379,19 @@ export function mountView(section, H) {
     if (!b) return;
     banner.append(svg(b.icon || 'info'), h('span', { class: 'ch-banner-text', text: b.text }));
     if (b.action) banner.append(h('button', { type: 'button', class: 'link-btn', 'data-ch-banner': '', text: b.action.label, onClick: () => b.action.run() }));
+  }
+
+  // ChatState changed (the connection, a workspace's status): the bars that depend on it, and unsent rows that wait
+  // for a connection.
+  function stateChanged() {
+    if (mode !== 'room') return;
+    updateBars();
+    const connection = H.state()?.connection || null;
+    if (connection === drawnConnection) return;
+    drawnConnection = connection;
+    if (!V.pending.length) return;
+    if (V.loaded) render({ position: 'keep' });
+    if (T) renderThread({ position: 'keep' });
   }
 
   // ---------- the header ----------
@@ -400,6 +460,123 @@ export function mountView(section, H) {
       .catch((err) => H.goneError(err, ws, c) || toast(H.errorText(err), 5000));
   }
 
+  // ---------- the composer and its bars (contract 5.5) ----------
+
+  const placeholderFor = (room) =>
+    room && room.kind === 'dm' ? t('chat.input.placeholderDirect', { name: H.roomName(room) }) : t('chat.input.placeholderChannel', { name: (room && room.name) || '' });
+
+  // Who a mention can name: the conversation's members (a channel's from the server, once per opened room; a DM's
+  // participants), active and without you, with their names from the workspace directory. Offline the directory
+  // stands in, and the next @ asks again.
+  function mentionCandidates() {
+    const key = `${V.ws}|${V.c}`;
+    if (!memberCache || memberCache.key !== key) {
+      const ws = V.ws;
+      const c = V.c;
+      const entry = { key, promise: null };
+      entry.promise = api('chatRoomMembers', ws, c).then(
+        (r) => ((r && r.members) || []).map((m) => m.member),
+        () => {
+          if (memberCache === entry) memberCache = null;
+          return null;
+        }
+      );
+      memberCache = entry;
+    }
+    return memberCache.promise.then((ids) => {
+      const dir = members();
+      const me = H.me();
+      const list = ids ? ids.map((id) => dir.get(id)).filter(Boolean) : [...dir.values()];
+      return list.filter((m) => m.id !== me && (!m.state || m.state === 'active'));
+    });
+  }
+
+  // Who posted among the last messages, the latest first: they come first among equal matches in the picker.
+  function recentAuthors() {
+    const out = [];
+    const me = H.me();
+    const msgs = V.events.filter((e) => e.kind === 'message.posted');
+    for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - RECENT_MESSAGES); i--) {
+      const a = msgs[i].actor;
+      if (a !== me && !out.includes(a)) out.push(a);
+    }
+    return out;
+  }
+
+  // The bar in place of the composer, or null (contract 5.5): the workspace stopped, an archived channel, a closed DM.
+  // main: the room's own composer, which carries the closed DM's actions.
+  function barFor(room, { main = true } = {}) {
+    if (!room) return null;
+    if (H.workspaceStatus && H.workspaceStatus() === 'quarantined') return { icon: 'warning', text: t('chat.input.paused', { workspace: H.workspaceName() }) };
+    if (room.kind === 'channel' && room.archived) return { icon: 'archive', text: t('chat.input.archived', { name: room.name || '' }) };
+    if (room.kind === 'dm' && room.closedReason) {
+      const key = room.closedReason === 'left' ? 'closedLeft' : room.closedReason === 'ineligible' ? 'closedIneligible' : 'closedBlocked';
+      const actions = [];
+      if (main) {
+        const others = (room.participants || []).filter((id) => id !== H.me());
+        if (H.full && H.full() && others.length) actions.push({ id: 'new-conversation', label: t('chat.input.newConversation'), run: () => H.startDm(others) });
+        actions.push({ id: 'remove-from-list', label: t('chat.input.removeFromList'), run: () => H.leaveDm(room) });
+      }
+      return { icon: 'lock', text: t(`chat.input.${key}`), actions };
+    }
+    return null;
+  }
+
+  function updateBars() {
+    if (input && V.room) input.setBar(barFor(V.room));
+    if (T && T.input) T.input.setBar(threadBar());
+  }
+
+  function mountComposer() {
+    if (input) input.dispose();
+    compose.textContent = '';
+    const ws = V.ws;
+    const c = V.c;
+    input = mountChatInput(compose, {
+      placeholder: placeholderFor(V.room),
+      members: () => mentionCandidates(),
+      recent: () => recentAuthors(),
+      onSend: (wire) => sendMessage(wire, null),
+      // Escape in the composer: the log (desktop-ui 5.5).
+      onEscape: () => {
+        focusLog();
+        return true;
+      },
+      onDraft: (draft) => api('chatSaveDraft', ws, c, null, draft).catch(() => {})
+    });
+    updateBars();
+  }
+
+  // chatSend (contract 3.8): main writes the message to disk and answers with its pending row; the queue sends it. A
+  // refusal puts the text back in the composer (chat-input.js) and says why, unless the room or the workspace is gone.
+  function sendMessage(wire, root) {
+    const ws = V.ws;
+    const c = V.c;
+    return api('chatSend', ws, c, { text: wire.text, mentions: wire.mentions, root }).then(
+      (res) => {
+        const p = res && res.pending;
+        if (!p || V.ws !== ws || V.c !== c || V.pending.some((x) => x.local === p.local)) return true;
+        V.pending = [...V.pending, p];
+        if (V.loaded) render({ position: root ? 'keep' : 'bottom' });
+        if (T && root === T.root) renderThread({ position: 'bottom' });
+        return true;
+      },
+      (err) => {
+        if (H.goneError(err, ws, c)) return true;
+        toast(H.errorText(err), 5000);
+        throw err;
+      }
+    );
+  }
+
+  function focusLog() {
+    const li = log.querySelector('li.ch-msg[tabindex="0"]') || [...log.querySelectorAll('li.ch-msg')].pop();
+    if (li) {
+      li.focus({ preventScroll: true });
+      li.scrollIntoView({ block: 'nearest' });
+    } else scroll.focus({ preventScroll: true });
+  }
+
   // ---------- opening a room ----------
 
   // Opens c of ws (contract 5.4): chatOpen answers from the cache at once and the rest comes as events pushes. at: a
@@ -414,11 +591,11 @@ export function mountView(section, H) {
     V.c = c;
     V.room = H.room(c);
     V.opening = true;
+    drawnConnection = H.state()?.connection || null;
     showRoom(true);
-    section.dataset.thread = 'closed';
-    thread.hidden = true;
     renderHead();
     renderOlder();
+    mountComposer();
     let rv;
     try {
       rv = await api('chatOpen', ws, c, at != null ? { at } : {});
@@ -447,6 +624,11 @@ export function mountView(section, H) {
     // An uncached room answers with nothing yet; the newest page follows as an events push.
     V.loaded = V.events.length > 0 || rv.hi !== null;
     renderHead();
+    if (input) {
+      input.setPlaceholder(placeholderFor(V.room));
+      if (rv.draft && !input.parts().length) input.setParts(toParts(rv.draft.text, rv.draft.mentions));
+    }
+    updateBars();
     if (!V.loaded) return renderOlder();
     render({ position: at != null ? 'at' : keepScroll !== null ? 'restore' : 'open', restore: keepScroll });
   }
@@ -458,6 +640,10 @@ export function mountView(section, H) {
     for (const e of events) if (e && Number.isSafeInteger(e.seq)) map.set(e.seq, e);
     V.events = [...map.values()].sort(bySeq);
   }
+
+  const inThread = (e) => Boolean(T) && e && e.kind === 'message.posted' && (e.id === T.root || e.root === T.root);
+  const threadReplies = () => (T ? [...T.ev.values()].filter((e) => e.kind === 'message.posted' && e.root === T.root).length : 0);
+  const threadAtEnd = () => tScroll.scrollHeight - tScroll.scrollTop - tScroll.clientHeight < STICK_PX;
 
   function onEvent(p) {
     if (mode !== 'room' || p.ws !== V.ws || p.conversation !== V.c) return;
@@ -480,41 +666,79 @@ export function mountView(section, H) {
       V.opening = false;
       const arrivals = wasLoaded && !p.replace ? list.filter((e) => e.kind === 'message.posted' && e.seq > hiBefore) : [];
       render({ position: !wasLoaded || p.replace ? 'open' : stick ? 'bottom' : 'keep', arrivals });
+      if (T) {
+        const mine = list.filter(inThread);
+        if (mine.length) {
+          const end = threadAtEnd();
+          for (const e of mine) T.ev.set(e.seq, e);
+          renderThread({ position: end ? 'bottom' : 'keep' });
+        }
+      }
       return;
     }
     if (p.kind === 'redacted') {
       const ids = new Set(Array.isArray(p.ids) ? p.ids : []);
+      const gone = (e) => ({ ...e, text: null, mentions: [], redacted: true });
       let changed = false;
       V.events = V.events.map((e) => {
         if (!ids.has(e.id) || e.redacted) return e;
         changed = true;
-        return { ...e, text: null, mentions: [], redacted: true };
+        return gone(e);
       });
       if (changed) render({ position: 'keep' });
+      if (T) {
+        let mine = false;
+        for (const [seq, e] of T.ev) {
+          if (!ids.has(e.id) || e.redacted) continue;
+          T.ev.set(seq, gone(e));
+          mine = true;
+        }
+        // A root that went without replies leaves nothing to read: the thread closes (contract 5.4).
+        if (ids.has(T.root) && !threadReplies() && !V.pending.some((x) => x.root === T.root)) closeThread();
+        else if (mine) renderThread({ position: 'keep' });
+      }
       return;
     }
     if (p.kind === 'pending') {
       const known = new Set(V.pending.map((x) => x.local));
       V.pending = Array.isArray(p.pending) ? p.pending : [];
-      // Sending your own message always goes to the end (desktop-ui 5.3).
-      const mine = V.pending.some((x) => !known.has(x.local) && !x.root);
-      if (V.loaded) render({ position: mine ? 'bottom' : 'keep' });
+      const added = V.pending.filter((x) => !known.has(x.local));
+      // Sending your own message always goes to the end (desktop-ui 5.3), in the log or the thread it went to.
+      if (V.loaded) render({ position: added.some((x) => !x.root) ? 'bottom' : 'keep' });
+      if (T) renderThread({ position: added.some((x) => x.root === T.root) ? 'bottom' : 'keep' });
       return;
     }
     if (p.kind === 'sent') {
-      if (p.messageId && p.local) V.sentLocal.set(p.messageId, p.local);
-      if (V.loaded) render({ position: 'keep' });
+      // The pending row becomes the sent message in place (contract 5.4): it keeps its key, and the message is in the
+      // log at once, from what was sent, until the history brings the server's copy.
+      if (p.messageId && p.local) {
+        V.sentLocal.set(p.messageId, p.local);
+        const item = V.pending.find((x) => x.local === p.local);
+        if (item && Number.isSafeInteger(p.seq) && !V.events.some((e) => e.seq === p.seq || e.id === p.messageId)) {
+          const ev = { seq: p.seq, id: p.messageId, kind: 'message.posted', actor: H.me(), at: Date.now(), root: item.root || null, text: item.text, mentions: item.mentions || [], redacted: false, data: {} };
+          merge([ev]);
+          if (inThread(ev)) T.ev.set(ev.seq, ev);
+        }
+      }
+      if (V.loaded) render({ position: atBottom() ? 'bottom' : 'keep' });
+      if (T) renderThread({ position: threadAtEnd() ? 'bottom' : 'keep' });
     }
   }
 
-  // The room's row changed (badges, members, mute) or the directory did (names): the header, and the log when names
-  // may have changed.
+  // The room's row changed (badges, members, mute, archived, closed) or the directory did (names): the header, the
+  // bars, and the log when names may have changed.
   function roomChanged(room, { directory = false } = {}) {
     if (mode !== 'room' || !room || room.id !== V.c) return;
     V.room = { ...V.room, ...room };
     renderHead();
-    if (directory && V.loaded) render({ position: 'keep' });
-    else updateJumps();
+    if (directory) memberCache = null;
+    if (input) input.setPlaceholder(placeholderFor(V.room));
+    updateBars();
+    if (T) renderThreadHead();
+    if (directory && V.loaded) {
+      render({ position: 'keep' });
+      if (T) renderThread({ position: 'keep' });
+    } else updateJumps();
   }
 
   // ---------- the log ----------
@@ -526,6 +750,32 @@ export function mountView(section, H) {
     return first ? { actor: first.actor, at: first.at } : null;
   }
 
+  // How an unsent row looks: 'sending', 'waiting' (for a connection), 'turn' (for the message above), 'stale'
+  // (held/stale_grant), 'unknown' (held/unknown) or 'failed' (contract 5.5). A queued message that hasn't failed yet
+  // shows as sending while there is a connection.
+  function lookOf(row) {
+    switch (row.pending) {
+      case 'queued': {
+        if (row.reason === 'lookup') return 'sending';
+        const connection = H.state()?.connection;
+        return (row.nextAt || 0) > 0 || (connection && connection !== 'online') ? 'waiting' : 'sending';
+      }
+      case 'waiting':
+        return 'turn';
+      case 'held':
+        return row.reason === 'unknown' ? 'unknown' : 'stale';
+      case 'failed':
+        return 'failed';
+      default:
+        return 'sending';
+    }
+  }
+  // The look is part of a pending row's sig: the connection changes it without a pending event.
+  function withLooks(rows) {
+    for (const r of rows) if (r.pending) r.sig += `\u0001${lookOf(r)}`;
+    return rows;
+  }
+
   // render: the rows from timeline() put in place. position: 'open' (the New divider a third down, else the end),
   // 'at' (the notification's message), 'bottom', 'anchor' (older rows came in above), 'restore' or 'keep'. arrivals:
   // events that came in live, which fade in and may be announced.
@@ -533,20 +783,25 @@ export function mountView(section, H) {
     if (mode !== 'room' || !V.loaded) return;
     const heightBefore = scroll.scrollHeight;
     const topBefore = scroll.scrollTop;
-    const rows = timeline(V.events, {
-      me: H.me(),
-      members: members(),
-      readAtOpen: V.readAtOpen,
-      pending: V.pending,
-      floor: V.floor,
-      hasOlder: V.hasOlder,
-      blocked: H.blocks(),
-      intro: introOf(),
-      now: Date.now(),
-      sentLocal: V.sentLocal
-    });
+    const rows = withLooks(
+      timeline(V.events, {
+        me: H.me(),
+        members: members(),
+        readAtOpen: V.readAtOpen,
+        pending: V.pending,
+        floor: V.floor,
+        hasOlder: V.hasOlder,
+        blocked: H.blocks(),
+        intro: introOf(),
+        now: Date.now(),
+        sentLocal: V.sentLocal
+      })
+    );
+    V.rows = new Map(rows.map((r) => [r.key, r]));
     const fresh = new Set(arrivals.map((e) => e.id));
-    reconcile(rows, fresh);
+    V.nodes = reconcile(log, V.nodes, rows, { observe: true, fresh, focusKey: V.focusKey, thread: false });
+    // Visible rows that went no longer count.
+    for (const seq of [...V.visible]) if (!log.querySelector(`li[data-seq="${seq}"]`)) V.visible.delete(seq);
     renderOlder();
     if (position === 'open') positionOpen();
     else if (position === 'at') positionAt();
@@ -563,42 +818,43 @@ export function mountView(section, H) {
     maybeOlder();
   }
 
-  function reconcile(rows, fresh) {
-    const focused = document.activeElement && log.contains(document.activeElement) ? document.activeElement.closest('li')?.dataset.key : null;
-    const old = V.nodes;
+  // Puts rows into list, reusing the nodes of old whose sig didn't change. Returns the new map of nodes by key.
+  // observe: the rows report reads (the main log only). The keyboard stays on the row it was on.
+  function reconcile(list, old, rows, { observe = false, fresh = new Set(), focusKey = null, thread: threaded = false } = {}) {
+    const active = document.activeElement;
+    const focused = active && list.contains(active) ? active.closest('li')?.dataset.key : null;
     const next = new Map();
     for (const row of rows) {
       let li = old.get(row.key);
       if (!li || li.dataset.sig !== row.sig) {
-        li = build(row);
+        li = build(row, { thread: threaded });
         li.dataset.key = row.key;
         li.dataset.sig = row.sig;
         if (fresh.has(row.id) && !reduced()) li.classList.add('is-arriving');
-        if (li.dataset.seq) io.observe(li);
+        if (observe && li.dataset.seq) io.observe(li);
       }
       next.set(row.key, li);
     }
-    let cursor = log.firstChild;
+    let cursor = list.firstChild;
     for (const li of next.values()) {
       if (li === cursor) cursor = cursor.nextSibling;
-      else log.insertBefore(li, cursor);
+      else list.insertBefore(li, cursor);
     }
     for (const [key, li] of old) {
       if (next.get(key) === li) continue;
-      io.unobserve(li);
+      if (observe) io.unobserve(li);
       li.remove();
     }
-    V.nodes = next;
-    // Visible rows that went no longer count.
-    for (const seq of [...V.visible]) if (!log.querySelector(`li[data-seq="${seq}"]`)) V.visible.delete(seq);
     // One message row takes Tab (desktop-ui 9.2): the focused one, else the last.
-    const msgs = [...log.querySelectorAll('li.ch-msg')];
-    const keep = (focused && next.get(focused)) || (V.focusKey && next.get(V.focusKey)) || msgs[msgs.length - 1] || null;
+    const msgs = [...list.querySelectorAll('li.ch-msg')];
+    const keep = (focused && next.get(focused)) || (focusKey && next.get(focusKey)) || msgs[msgs.length - 1] || null;
     for (const li of msgs) li.tabIndex = li === keep ? 0 : -1;
-    if (focused && next.get(focused) && document.activeElement !== next.get(focused)) next.get(focused).focus({ preventScroll: true });
+    const now = focused && next.get(focused);
+    if (now && !now.contains(document.activeElement)) now.focus({ preventScroll: true });
+    return next;
   }
 
-  function build(row) {
+  function build(row, ctx) {
     switch (row.type) {
       case 'day': {
         const label = groupLabel(row.at);
@@ -611,12 +867,16 @@ export function mountView(section, H) {
         const days = H.state()?.retention?.contentDays;
         return h('li', { class: 'ch-floor' }, days ? h('span', { text: t('chat.log.retentionFloor', { count: days }) }) : null);
       }
+      case 'tdiv': {
+        const label = t('chat.log.replies', { count: row.count });
+        return h('li', { class: 'ch-day ch-thread-div', role: 'separator', 'aria-label': label }, h('span', { text: label }));
+      }
       case 'intro':
         return buildIntro(row);
       case 'sys':
         return buildSys(row);
       default:
-        return buildMessage(row);
+        return buildMessage(row, ctx);
     }
   }
 
@@ -674,17 +934,13 @@ export function mountView(section, H) {
     return li;
   }
 
-  // A reply's context line and a thread's summary open the thread once the thread panel is there; until then they are
-  // text.
-  const threadTag = () => (H.threads() ? 'button' : 'div');
-  const threadProps = (cls, root, extra = {}) => (H.threads() ? { type: 'button', class: cls, 'data-ch': 'thread', 'data-root': root, ...extra } : { class: cls, ...extra });
-
+  // A reply's context line opens its thread (contract 3.13).
   function contextLine(c) {
     let text;
     if (c.state === 'ok') text = t('chat.log.replyTo', { name: displayName(c.author, t), text: c.text });
     else if (c.state === 'removed') text = t('chat.log.replyToRemoved');
     else text = t('chat.log.replyInThread');
-    return h(threadTag(), threadProps('ch-context', c.root, { title: text }), svg('reply'), h('span', { text }));
+    return h('button', { type: 'button', class: 'ch-context', 'data-ch': 'thread', 'data-root': c.root, title: text, tabindex: '-1' }, svg('reply'), h('span', { text }));
   }
 
   function textEl(row) {
@@ -701,7 +957,7 @@ export function mountView(section, H) {
     const r = row.replies;
     const count = t(r.hasNew ? 'chat.log.repliesUnread' : 'chat.log.replies', { count: r.count });
     const last = Number.isFinite(r.lastAt) ? t('chat.log.lastReply', { time: listTime(r.lastAt) }) : '';
-    const btn = h(threadTag(), threadProps(`ch-replies${r.hasNew ? ' has-new' : ''}`, row.id, { 'aria-label': [count, last].filter(Boolean).join(', ') }));
+    const btn = h('button', { type: 'button', class: `ch-replies${r.hasNew ? ' has-new' : ''}`, 'data-ch': 'thread', 'data-root': row.id, tabindex: '-1', 'aria-label': [count, last].filter(Boolean).join(', ') });
     const avs = h('span', { class: 'ch-replies-av', 'aria-hidden': 'true' });
     for (const id of r.actors) avs.append(avatarEl(id, nameOf(id), { cls: 'ch-av-16', deleted: members().get(id)?.state === 'deleted' }));
     btn.append(avs);
@@ -711,7 +967,92 @@ export function mountView(section, H) {
     return btn;
   }
 
-  function buildMessage(row) {
+  // Why a send failed, for chat.msg.failed (contract 3.8 "Answers").
+  function reasonText(reason) {
+    switch (reason) {
+      case 'conflict':
+        return t('chat.errors.operationConflict');
+      case 'archived':
+        return V.room && V.room.kind === 'dm' ? t('chat.input.closedBlocked') : t('chat.errors.archived');
+      case 'quota':
+        return H.errorText({ code: 'quota' });
+      case 'mentions':
+        return t('chat.errors.mentions');
+      case 'no_access':
+        return t('chat.errors.goneConversation');
+      default:
+        return t('chat.errors.invalid');
+    }
+  }
+
+  // The line under an unsent message (contract 5.5): what happens to it, and what the person can do.
+  function stateLine(row) {
+    const look = lookOf(row);
+    const line = h('div', { class: `ch-state is-${look}` });
+    const say = (text) => h('span', { class: 'ch-state-text', text });
+    const act = (id, label) => h('button', { type: 'button', class: 'link-btn', 'data-ch-act': id, 'data-local': row.local, text: label });
+    switch (look) {
+      case 'waiting': {
+        const later = (row.nextAt || 0) > Date.now() ? ` · ${t('chat.msg.retryAt', { time: clockTime(row.nextAt) })}` : '';
+        line.append(svg('clock'), say(`${t('chat.msg.waiting')}${later}`));
+        break;
+      }
+      case 'turn':
+        line.append(svg('clock'), say(t('chat.msg.waitingTurn')));
+        break;
+      case 'stale':
+        line.append(svg('warning'), say(t('chat.msg.staleGrant')), act('send', t('chat.msg.send')), act('discard', t('chat.msg.discard')));
+        break;
+      case 'unknown':
+        line.append(svg('warning'), say(t('chat.msg.unknown')), act('send-again', t('chat.msg.sendAgain')), act('discard', t('chat.msg.discard')));
+        break;
+      case 'failed': {
+        line.append(svg('warning'), say(t('chat.msg.failed', { reason: reasonText(row.reason) })));
+        if (row.reason === 'quota') line.append(act('retry', t('chat.msg.retry')));
+        if (row.reason === 'mentions') line.append(act('without-mentions', t('chat.msg.sendWithoutMentions')));
+        if (row.reason === 'conflict' || row.reason === 'archived') line.append(act('copy', t('chat.msg.copy')));
+        line.append(act('discard', t('chat.msg.discard')));
+        break;
+      }
+      default:
+        // Shown after a second, so a quick send doesn't flicker (styles.css .ch-state.is-sending).
+        line.append(h('span', { class: 'spinner', 'aria-hidden': 'true' }), say(t('chat.msg.sending')));
+    }
+    return line;
+  }
+
+  // The menu of a message (desktop-ui 5.3, contract 5.5): Reply in thread, Copy text, Block {author} once U5 gives
+  // blocks a dialog, and Remove message when the person may remove it. Unsent rows have none.
+  function menuItems(row, threaded) {
+    if (row.pending || !row.id) return [];
+    const items = [];
+    const root = row.root || row.id;
+    if (!threaded && (!row.removed || (row.replies && row.replies.count))) items.push({ icon: 'thread', label: t('chat.msg.reply'), action: () => openThread(root) });
+    if (!row.removed && row.text) items.push({ icon: 'copy', label: t('chat.msg.copy'), action: () => copyText(row.text) });
+    const author = members().get(row.actor);
+    if (H.canBlock && H.canBlock() && row.actor !== H.me() && author && author.state === 'active' && author.role !== 'guest' && !H.blocks().has(row.actor)) {
+      items.push({ separator: true }, { icon: 'ban', label: t('chat.head.block', { name: nameOf(row.actor) }), action: () => H.block(row.actor) });
+    }
+    if (canRemove(row, H.me(), V.room)) items.push({ separator: true }, { icon: 'trash', label: t('chat.msg.remove'), danger: true, action: () => removeMessage(row) });
+    return items;
+  }
+
+  // The tools over a message on hover and focus. They take no Tab stop of their own: the row does, and Shift+F10
+  // opens the same actions as a menu.
+  function toolsEl(row, threaded) {
+    const items = menuItems(row, threaded);
+    if (!items.length) return null;
+    const tool = (id, icon, label) => h('button', { type: 'button', class: 'icon-btn sm', 'data-ch-tool': id, tabindex: '-1', 'aria-label': label, title: label }, svg(icon));
+    const bar = h('div', { class: 'ch-tools', role: 'toolbar', 'aria-label': t('chat.msg.actions') });
+    if (!threaded && (!row.removed || (row.replies && row.replies.count))) bar.append(tool('reply', 'thread', t('chat.msg.reply')));
+    if (!row.removed && row.text) bar.append(tool('copy', 'copy', t('chat.msg.copy')));
+    // More always, so a narrow view that keeps only it still reaches every action.
+    bar.append(tool('menu', 'more', t('chat.msg.more')));
+    return bar;
+  }
+
+  function buildMessage(row, ctx = {}) {
+    const threaded = Boolean(ctx.thread);
     const author = row.author;
     const deleted = Boolean(author && author.state === 'deleted');
     const name = displayName(author, t);
@@ -745,11 +1086,99 @@ export function mountView(section, H) {
     } else body.append(h('span', { class: 'ch-vh', text: t('chat.msg.sender', { name, time: hhmm(row.at) }) }));
     if (row.removed) body.append(h('div', { class: 'ch-removed' }, svg('trash'), h('span', { text: t('chat.log.removed') })));
     else body.append(textEl(row));
-    if (row.replies && row.replies.count) body.append(repliesEl(row));
+    if (!threaded && row.replies && row.replies.count) body.append(repliesEl(row));
+    if (row.pending) body.append(stateLine(row));
     if (row.mentionsMe) li.setAttribute('aria-description', t('chat.msg.mentionsYou'));
     li.append(body);
+    const tools = toolsEl(row, threaded);
+    if (tools) li.append(tools);
     return li;
   }
+
+  // ---------- message actions ----------
+
+  // Remove (desktop-ui 6.14, contract 3.14): asked first; the row changes when main's redacted event comes back.
+  async function removeMessage(row) {
+    const room = V.room;
+    const own = row.actor === H.me();
+    const ok = await confirmDialog(
+      t('chat.remove.title'),
+      t(own ? 'chat.remove.body' : 'chat.remove.bodyOther', { name: roomLabel(room), author: nameOf(row.actor) }),
+      t('chat.remove.confirm'),
+      true
+    );
+    if (!ok) return;
+    const ws = V.ws;
+    const c = V.c;
+    try {
+      await api('chatRedact', ws, c, row.id);
+    } catch (err) {
+      if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+    }
+  }
+
+  // An unsent message's actions (contract 3.8 "Resend modes"): Send again asks first, because the first one may have
+  // arrived.
+  async function pendingAction(id, local) {
+    const p = V.pending.find((x) => x.local === local);
+    if (!p) return;
+    const ws = V.ws;
+    const c = V.c;
+    try {
+      if (id === 'discard') {
+        await api('chatDiscard', local);
+        // The text was the person's own work: Undo puts it back in the composer it came from.
+        toast(t('chat.msg.discarded'), { action: { label: t('common.actions.undo'), run: () => restoreDiscarded(p, ws, c) } });
+      } else if (id === 'send') await api('chatResend', local, { mode: 'send' });
+      else if (id === 'retry') await api('chatResend', local, { mode: 'retry' });
+      else if (id === 'without-mentions') await api('chatResend', local, { mode: 'withoutMentions' });
+      else if (id === 'copy') copyText(p.text);
+      else if (id === 'send-again') {
+        if (await confirmDialog(t('chat.msg.sendAgainTitle'), t('chat.msg.sendAgainBody'), t('chat.msg.sendAgain'))) await api('chatResend', local, { mode: 'send' });
+      }
+    } catch (err) {
+      if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
+    }
+  }
+
+  // Undo of Discard: the message's text and mentions back in the room's composer, or its thread's, after what is there
+  // already. With the room no longer open, they become its draft.
+  function restoreDiscarded(p, ws, c) {
+    const parts = toParts(p.text, p.mentions);
+    if (mode !== 'room' || V.ws !== ws || V.c !== c) {
+      api('chatSaveDraft', ws, c, p.root || null, { text: p.text, mentions: p.mentions || [] }).catch(() => {});
+      return;
+    }
+    if (p.root && (!T || T.root !== p.root)) openThread(p.root);
+    const target = p.root ? T && T.input : input;
+    if (!target) return;
+    const had = target.parts();
+    target.setParts(had.length ? [...had, '\n', ...parts] : parts, { dirty: true });
+    target.focus();
+  }
+
+  function rowOf(li) {
+    if (!li) return null;
+    if (tLog.contains(li)) return T ? T.rows.get(li.dataset.key) || null : null;
+    return V.rows.get(li.dataset.key) || null;
+  }
+
+  // at: { x, y } for a right click; without it the menu opens at the row (Shift+F10, the ContextMenu key).
+  function messageMenu(li, at = null) {
+    const row = rowOf(li);
+    if (!row) return false;
+    const items = menuItems(row, tLog.contains(li));
+    if (!items.length) return false;
+    let point = at;
+    if (!point) {
+      const r = li.getBoundingClientRect();
+      point = { x: r.left + 48, y: Math.min(r.bottom, r.top + 24) };
+    }
+    showMenu(li, items, { at: point });
+    return true;
+  }
+
+  // ---------- older history and positions ----------
 
   // The loading row, the older-history row and an open that failed, in the reserved space above the log.
   function renderOlder() {
@@ -841,7 +1270,7 @@ export function mountView(section, H) {
     target.classList.add('is-target');
     clearTimeout(V.targetTimer);
     V.targetTimer = setTimeout(() => target.classList.remove('is-target'), TARGET_MS);
-    if (target.dataset.root && H.threads()) H.openThread(target.dataset.root, { seq: at });
+    if (target.dataset.root) openThread(target.dataset.root, { seq: Number(target.dataset.seq) });
   }
 
   function toNew() {
@@ -887,6 +1316,211 @@ export function mountView(section, H) {
     announce.textContent = t('chat.msg.announce', { name: nameOf(e.actor), text: firstChars(e.text, ANNOUNCE_CHARS) });
   }
 
+  // ---------- the thread panel (contract 3.13, 5.6; desktop-ui 5.7) ----------
+
+  function renderThreadHead() {
+    const room = V.room;
+    if (!T || !room) return;
+    const name = H.roomName(room);
+    tTitle.textContent = t('chat.thread.label');
+    tMeta.textContent = room.kind === 'dm' ? t('chat.thread.inDirect', { names: name }) : t('chat.thread.inChannel', { name: room.name || '' });
+    const back = t('chat.thread.back', { name: roomLabel(room) });
+    tBack.setAttribute('aria-label', back);
+    tBack.title = back;
+    tClose.setAttribute('aria-label', t('chat.thread.close'));
+    tClose.title = t('chat.thread.close');
+    thread.setAttribute('aria-label', t('chat.thread.label'));
+    tLog.setAttribute('aria-label', `${t('chat.thread.label')}, ${tMeta.textContent}`);
+  }
+
+  const threadRoot = () => (T ? [...T.ev.values()].find((e) => e.id === T.root) || null : null);
+
+  // A root that was removed takes the thread's composer: nobody can reply to it (contract 3.13). Otherwise the
+  // room's own bar, without the closed DM's actions, which sit under the log.
+  function threadBar() {
+    const root = threadRoot();
+    if (root && (root.redacted || root.text == null)) return { icon: 'trash', text: t('chat.thread.rootRemoved') };
+    return barFor(V.room, { main: false });
+  }
+
+  // The root, a divider with the reply count, then the replies and their unsent rows (contract 3.13).
+  function threadRows() {
+    const events = [...T.ev.values()].sort(bySeq);
+    const rows = withLooks(
+      timeline(events, { me: H.me(), members: members(), pending: V.pending, root: T.root, blocked: H.blocks(), now: Date.now(), sentLocal: V.sentLocal, hasOlder: true })
+    );
+    const count = threadReplies();
+    const at = rows.findIndex((r) => r.id === T.root);
+    rows.splice(at >= 0 ? at + 1 : 0, 0, { type: 'tdiv', key: 'tdiv', count, sig: `tdiv\u0001${count}\u0001${getLocale()}` });
+    return rows;
+  }
+
+  // The loading row and the notes above the replies: loading, failed with Retry, partial with Load earlier, expired.
+  function renderThreadNotes() {
+    tOlder.textContent = '';
+    tNote.textContent = '';
+    const root = threadRoot();
+    const busy = T.loading && !root && !threadReplies();
+    tOlder.className = `ch-thread-older${busy || T.error ? ' is-reserved' : ''}`;
+    if (busy) tOlder.append(h('span', { class: 'spinner', role: 'status', 'aria-label': t('chat.thread.loading') }));
+    else if (T.error) {
+      tOlder.append(h('span', { class: 'ch-thread-older-text', text: t('chat.thread.failed') }), h('button', { type: 'button', class: 'btn secondary sm', 'data-ch': 'thread-retry', text: t('common.actions.retry') }));
+    } else if (!root) {
+      const days = H.state()?.retention?.contentDays;
+      if (T.expired && days) tNote.append(svg('info'), h('span', { text: t('chat.thread.rootExpired', { count: days }) }));
+      else if (!T.complete || T.expired) {
+        tNote.append(svg('info'), h('span', { text: t('chat.thread.partial') }));
+        if (!T.expired) {
+          const more = h('button', { type: 'button', class: 'link-btn', 'data-ch': 'thread-earlier', text: t('chat.thread.loadEarlier') });
+          if (T.loading) more.disabled = true;
+          tNote.append(more);
+        }
+      }
+    }
+    tNote.hidden = !tNote.childNodes.length;
+  }
+
+  // position: 'bottom', 'keep', 'anchor' (earlier replies came in above), 'restore' or 'at' (the notification's reply).
+  function renderThread({ position = 'keep', restore = null } = {}) {
+    if (!T || mode !== 'room') return;
+    renderThreadHead();
+    const heightBefore = tScroll.scrollHeight;
+    const topBefore = tScroll.scrollTop;
+    const rows = threadRows();
+    T.rows = new Map(rows.map((r) => [r.key, r]));
+    T.nodes = reconcile(tLog, T.nodes, rows, { focusKey: T.focusKey, thread: true });
+    renderThreadNotes();
+    if (T.input) T.input.setBar(threadBar());
+    if (position === 'bottom') tScroll.scrollTop = tScroll.scrollHeight;
+    else if (position === 'anchor') tScroll.scrollTop = topBefore + (tScroll.scrollHeight - heightBefore);
+    else if (position === 'restore' && restore !== null) tScroll.scrollTop = restore;
+    else if (position === 'at') threadAt();
+  }
+
+  function threadAt() {
+    if (!T) return;
+    const li = T.seq ? tLog.querySelector(`li[data-seq="${T.seq}"]`) : null;
+    if (!li) {
+      tScroll.scrollTop = tScroll.scrollHeight;
+      return;
+    }
+    li.scrollIntoView({ block: 'center' });
+    li.classList.add('is-target');
+    clearTimeout(T.targetTimer);
+    T.targetTimer = setTimeout(() => li.classList.remove('is-target'), TARGET_MS);
+  }
+
+  // chatThread: the root and its replies, paging back for a root older than the cache (contract 3.7 "Threads").
+  // earlier: Load earlier, which pages ten more.
+  async function loadThread({ earlier = false } = {}) {
+    if (!T) return;
+    const my = ++T.token;
+    const root = T.root;
+    const ws = V.ws;
+    const c = V.c;
+    T.loading = true;
+    T.error = null;
+    renderThreadNotes();
+    let tv;
+    try {
+      tv = await api('chatThread', ws, c, root);
+    } catch (err) {
+      if (!T || T.token !== my || T.root !== root) return;
+      T.loading = false;
+      if (H.goneError(err, ws, c)) return;
+      T.error = err;
+      renderThreadNotes();
+      return;
+    }
+    if (!T || T.token !== my || T.root !== root || V.c !== c) return;
+    T.loading = false;
+    if (tv.root) T.ev.set(tv.root.seq, tv.root);
+    for (const e of tv.replies || []) T.ev.set(e.seq, e);
+    T.complete = Boolean(tv.complete);
+    T.expired = Boolean(tv.expired);
+    if (!T.draftDone) {
+      T.draftDone = true;
+      if (tv.draft && T.input && !T.input.parts().length) T.input.setParts(toParts(tv.draft.text, tv.draft.mentions));
+    }
+    // A root removed without replies has nothing to show.
+    if (tv.root && tv.root.redacted && !threadReplies() && !V.pending.some((x) => x.root === root)) {
+      closeThread();
+      return;
+    }
+    renderThread({ position: earlier ? 'anchor' : T.seq ? 'at' : 'bottom' });
+    T.seq = null;
+  }
+
+  // Opens the thread of rootId beside the log, or over it in a narrow view, with the focus in its composer. seq: a
+  // reply to show, outlined. Opening one never moves the main log (contract 3.13).
+  function openThread(rootId, { seq = null } = {}) {
+    if (mode !== 'room' || !rootId || !V.c) return;
+    if (T && T.root === rootId) {
+      if (seq) {
+        T.seq = seq;
+        threadAt();
+      }
+      T.input?.focus();
+      return;
+    }
+    closeThread({ restoreFocus: false });
+    T = { root: rootId, seq, ev: new Map(), nodes: new Map(), rows: new Map(), complete: true, expired: false, loading: true, error: null, token: 0, input: null, focusKey: null, targetTimer: null, draftDone: false };
+    for (const e of V.events) if (inThread(e)) T.ev.set(e.seq, e);
+    section.dataset.thread = 'open';
+    thread.hidden = false;
+    thread.classList.remove('is-entering');
+    void thread.offsetWidth;
+    if (!reduced()) thread.classList.add('is-entering');
+    const ws = V.ws;
+    const c = V.c;
+    tCompose.textContent = '';
+    T.input = mountChatInput(tCompose, {
+      placeholder: t('chat.input.placeholderThread'),
+      members: () => mentionCandidates(),
+      recent: () => recentAuthors(),
+      onSend: (wire) => sendMessage(wire, rootId),
+      onEscape: () => {
+        closeThread();
+        return true;
+      },
+      onDraft: (draft) => api('chatSaveDraft', ws, c, rootId, draft).catch(() => {})
+    });
+    renderThread({ position: seq ? 'at' : 'bottom' });
+    T.input.focus();
+    // A bar without a button (the root removed): the header's close or back button, whichever shows.
+    if (!thread.contains(document.activeElement)) (getComputedStyle(tClose).display === 'none' ? tBack : tClose).focus({ preventScroll: true });
+    loadThread();
+  }
+
+  // Closes the thread, saving its draft. restoreFocus: back to the root's row in the main log (desktop-ui 5.7).
+  function closeThread({ restoreFocus = true } = {}) {
+    section.dataset.thread = 'closed';
+    thread.hidden = true;
+    thread.classList.remove('is-entering');
+    if (!T) return;
+    const root = T.root;
+    const hadFocus = thread.contains(document.activeElement);
+    if (T.input) T.input.dispose();
+    clearTimeout(T.targetTimer);
+    T = null;
+    tLog.textContent = '';
+    tNote.textContent = '';
+    tOlder.textContent = '';
+    tOlder.className = 'ch-thread-older';
+    tCompose.textContent = '';
+    if (!restoreFocus || mode !== 'room') return;
+    const li = log.querySelector(`li.ch-msg[data-id="${CSS.escape(root)}"]`);
+    if (li) {
+      for (const x of log.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
+      V.focusKey = li.dataset.key;
+      li.focus({ preventScroll: true });
+      li.scrollIntoView({ block: 'nearest' });
+    } else if (hadFocus) (input ? input.focus() : scroll.focus({ preventScroll: true }));
+    considerRead();
+  }
+
+  // ---------- input ----------
+
   scroll.addEventListener(
     'scroll',
     () => {
@@ -902,13 +1536,44 @@ export function mountView(section, H) {
     V.focusKey = li.dataset.key;
     for (const x of log.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
   });
+  tLog.addEventListener('focusin', (e) => {
+    const li = e.target.closest('li.ch-msg');
+    if (!li || !T) return;
+    T.focusKey = li.dataset.key;
+    for (const x of tLog.querySelectorAll('li.ch-msg')) x.tabIndex = x === li ? 0 : -1;
+  });
 
-  main.addEventListener('click', (e) => {
+  section.addEventListener('click', (e) => {
+    const tool = e.target.closest('[data-ch-tool]');
+    if (tool && section.contains(tool)) {
+      const li = tool.closest('li.ch-msg');
+      const row = rowOf(li);
+      if (!row) return;
+      if (tool.dataset.chTool === 'reply') openThread(row.root || row.id);
+      else if (tool.dataset.chTool === 'copy') copyText(row.text);
+      else messageMenu(li, (() => {
+        const r = tool.getBoundingClientRect();
+        return { x: r.left, y: r.bottom + 4 };
+      })());
+      return;
+    }
+    const act = e.target.closest('[data-ch-act]');
+    if (act && section.contains(act)) {
+      pendingAction(act.dataset.chAct, act.dataset.local);
+      return;
+    }
     const b = e.target.closest('[data-ch]');
-    if (!b || !main.contains(b)) return;
+    if (!b || !section.contains(b)) return;
     switch (b.dataset.ch) {
       case 'thread':
-        return H.openThread(b.dataset.root);
+        return openThread(b.dataset.root);
+      case 'thread-close':
+      case 'thread-back':
+        return closeThread();
+      case 'thread-earlier':
+        return loadThread({ earlier: true });
+      case 'thread-retry':
+        return loadThread();
       case 'members':
         return H.showMembers(V.room);
       case 'more':
@@ -921,12 +1586,29 @@ export function mountView(section, H) {
     }
   });
 
-  // Keys in the log (desktop-ui 9.2): the arrows step through message rows, Home and End go to the first and last,
-  // Page Up and Page Down scroll, and Enter on a message with replies opens its thread. True when handled.
+  section.addEventListener('contextmenu', (e) => {
+    const li = e.target.closest('li.ch-msg');
+    if (!li || !section.contains(li) || e.target.closest('a')) return;
+    if (messageMenu(li, { x: e.clientX, y: e.clientY })) e.preventDefault();
+  });
+
+  // Keys in the log and the thread (desktop-ui 9.2, contract 5.9): the arrows step through message rows, Home and End
+  // go to the first and last, Page Up and Page Down scroll, Enter on a message with replies opens its thread, Shift+F10
+  // and the ContextMenu key open the message menu, Escape closes the thread or goes to the composer, and a printable
+  // key goes to the composer. True when handled.
   function onKey(e, { typing }) {
-    if (mode !== 'room' || typing || e.ctrlKey || e.metaKey || e.altKey) return false;
-    if (!scroll.contains(e.target) && e.target !== scroll) return false;
-    const rows = [...log.querySelectorAll('li.ch-msg')];
+    if (mode !== 'room') return false;
+    if (e.key === 'Escape' && !e.shiftKey && !e.ctrlKey && !e.altKey && !typing && T) {
+      closeThread();
+      return true;
+    }
+    if (typing || e.ctrlKey || e.metaKey || e.altKey) return false;
+    const inMain = scroll.contains(e.target) || e.target === scroll;
+    const inThreadLog = tScroll.contains(e.target) || e.target === tScroll;
+    if (!inMain && !inThreadLog) return false;
+    const list = inMain ? log : tLog;
+    const area = inMain ? scroll : tScroll;
+    const rows = [...list.querySelectorAll('li.ch-msg')];
     const current = e.target.closest?.('li.ch-msg');
     const i = current ? rows.indexOf(current) : -1;
     const go = (li) => {
@@ -934,6 +1616,10 @@ export function mountView(section, H) {
       li.focus({ preventScroll: true });
       li.scrollIntoView({ block: 'nearest' });
     };
+    if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      if (current) messageMenu(current);
+      return true;
+    }
     switch (e.key) {
       case 'ArrowDown':
         go(rows[i < 0 ? rows.length - 1 : Math.min(rows.length - 1, i + 1)]);
@@ -943,23 +1629,31 @@ export function mountView(section, H) {
         return true;
       case 'Home':
         go(rows[0]);
-        maybeOlder();
+        if (inMain) maybeOlder();
         return true;
       case 'End':
         go(rows[rows.length - 1]);
         return true;
       case 'PageDown':
       case 'PageUp':
-        scroll.scrollBy({ top: (e.key === 'PageDown' ? 1 : -1) * scroll.clientHeight * 0.9, behavior: behavior() });
+        area.scrollBy({ top: (e.key === 'PageDown' ? 1 : -1) * area.clientHeight * 0.9, behavior: behavior() });
         return true;
       case 'Enter':
-        if (current && H.threads() && current.querySelector('.ch-replies')) {
-          H.openThread(current.dataset.id);
+        if (inMain && current && current.querySelector('.ch-replies')) {
+          openThread(current.dataset.id);
           return true;
         }
         return false;
-      default:
+      case 'Escape':
+        if (e.shiftKey) return false;
+        (inMain ? input : T && T.input)?.focus();
+        return true;
+      default: {
+        // A printable key types in the composer: the focus moves there before the key's character goes in.
+        const target = inMain ? input : T && T.input;
+        if (target && e.key.length === 1 && e.key !== ' ' && target.input && !target.input.closest('[hidden]')) target.focus();
         return false;
+      }
     }
   }
 
@@ -973,11 +1667,16 @@ export function mountView(section, H) {
     goneConversation,
     goneWorkspace,
     setBanner,
+    stateChanged,
     markRead,
     onKey,
-    // Chat mode left the screen: reading stops until a room opens again.
+    openThread,
+    closeThread,
+    // Chat mode left the screen: reading stops until a room opens again, and the drafts are saved.
     hide() {
       clearTimeout(V.readTimer);
+      if (input) input.flush();
+      if (T && T.input) T.input.flush();
       token++;
       mode = null;
       V.loaded = false;
@@ -997,13 +1696,21 @@ export function mountView(section, H) {
       bannerKey = null;
       if (mode !== 'room') return;
       renderHead();
+      if (input) input.setPlaceholder(placeholderFor(V.room));
+      updateBars();
       const top = scroll.scrollTop;
       for (const li of V.nodes.values()) io.unobserve(li);
       log.textContent = '';
       V.nodes = new Map();
       render({ position: 'restore', restore: top });
+      if (T) {
+        if (T.input) T.input.setPlaceholder(t('chat.input.placeholderThread'));
+        const threadTop = tScroll.scrollTop;
+        tLog.textContent = '';
+        T.nodes = new Map();
+        renderThread({ position: 'restore', restore: threadTop });
+      }
     },
-    // The log's element and the room on screen, for the composer and thread code that build on this view.
     elements: { section, main, head, banner, scroll, log, compose, thread },
     current: () => (mode === 'room' ? { ws: V.ws, c: V.c, room: V.room } : null)
   };

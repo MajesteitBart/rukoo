@@ -10719,6 +10719,18 @@
     "message": "Send without mentions",
     "description": "Message list: button under a message refused because someone it mentions left the conversation; sends it without the mentions. src/renderer/chat-view.js"
   },
+  "chat.msg.discarded": {
+    "message": "Message discarded",
+    "description": "Toast after Discard on an unsent message, with Undo, which puts its text back in the composer. src/renderer/chat-view.js"
+  },
+  "chat.msg.send": {
+    "message": "Send",
+    "description": "Message list: button under a message held because the user left the conversation before it went; sends it now that they are back. src/renderer/chat-view.js"
+  },
+  "chat.msg.retryAt": {
+    "message": "tries again at {time}",
+    "description": "Message list: after chat.msg.waiting and a middle dot, when Rukoo tries to send the message next. {time}: a time of day with seconds. src/renderer/chat-view.js"
+  },
   "chat.remove.title": {
     "message": "Remove this message?",
     "description": "Remove a message: confirmation title. src/renderer/chat-view.js"
@@ -10792,7 +10804,7 @@
     "description": "Conversation pane: button on the closed-conversation bar that leaves it, so it goes from the sidebar. src/renderer/chat-view.js"
   },
   "chat.input.paused": {
-    "message": "Sending is stopped while {workspace} is paused.",
+    "message": "Sending is stopped until you start {workspace} over.",
     "description": "Conversation pane: bar instead of the composer while Rukoo stopped the workspace (see chat.banner.paused). {workspace}: the workspace name. src/renderer/chat-view.js"
   },
   "chat.mentions.label": {
@@ -11484,7 +11496,7 @@
     "description": "Team chat error, shown under an unsent message: Rukoo couldn't store it on disk, so it didn't send it. src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.paused": {
-    "message": "{workspace} is paused. Start over to use it again.",
+    "message": "{workspace} is stopped. Start over to use it again.",
     "description": "Team chat error, shown in the dialog or toast of an action in a workspace Rukoo stopped (see chat.banner.paused). {workspace}: the workspace name. src/renderer/chat.js (chatErrorText)"
   },
   "chat.errors.mentions": {

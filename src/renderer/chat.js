@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, esc, $, hue, initials, toast, showMenu, dialog, KEEP_OPEN } from './ui.js';
+import { api, esc, $, hue, initials, toast, showMenu, dialog, confirmDialog, KEEP_OPEN } from './ui.js';
 import { sortRooms, dmTitle, displayName, roomBadge, modeBadge as badgeFor } from './chat-model.js';
 import { mountView } from './chat-view.js';
 
@@ -48,14 +48,17 @@ export const CH = {
 };
 
 // Sidebar and menu entries that U5's dialogs fill in (New message, the Channels plus menu, Browse channels, the
-// workspace's own settings). A button shows only once its action exists, so nothing on screen does nothing.
+// workspace's own settings, blocking someone from a message's menu). A button or menu item shows only once its action
+// exists, so nothing on screen does nothing.
 export const ACTIONS = {
   newMessage: null,
   addChannel: null,
   browse: null,
-  workspaceItems: null
+  workspaceItems: null,
+  // block(memberId): the block confirmation (desktop-ui 6.13).
+  block: null
 };
-// The thread panel (U4): open(root, { seq }) shows a thread beside the log.
+// The thread panel (chat-view.js): open(root, { seq }) shows a thread beside the log, or over it in a narrow view.
 export const THREAD = { open: null };
 
 let ctx = null;
@@ -67,6 +70,8 @@ let takingJoin = false;
 let loading = null;
 // openConversation is choosing the room: a workspace switch's own first-room open stands back.
 let routing = 0;
+// DMs this window is leaving (Remove from list): their eviction opens the next conversation instead of the gone state.
+const leaving = new Set();
 
 // ---------- small helpers ----------
 
@@ -273,7 +278,13 @@ export function onEvent(p) {
       return;
     case 'evicted':
       if (p.ws !== CH.ws) return;
-      if (p.conversation === CH.openId) roomGone(p.conversation);
+      if (leaving.has(p.conversation)) {
+        CH.rooms.delete(p.conversation);
+        if (p.conversation === CH.openId) {
+          CH.openId = null;
+          openDefault();
+        } else redrawSide();
+      } else if (p.conversation === CH.openId) roomGone(p.conversation);
       else {
         CH.rooms.delete(p.conversation);
         redrawSide();
@@ -697,9 +708,14 @@ function ensureView() {
     active: () => CH.open && Boolean(ctx.chatMode?.()),
     errorText: (err) => chatErrorText(err),
     showMembers: (room) => showMembers(room),
-    // The thread panel (U4) sets THREAD.open; until then reply summaries and context lines are text, not buttons.
-    threads: () => typeof THREAD.open === 'function',
-    openThread: (root, opts) => (typeof THREAD.open === 'function' ? THREAD.open(root, opts) : undefined),
+    // The workspace's status, for the stopped bar (contract 5.5); full members start DMs from a closed one.
+    workspaceStatus: () => summary()?.status || null,
+    full: () => !isGuest(),
+    startDm: (others) => startDm(others),
+    leaveDm: (room) => leaveDm(room),
+    // Block {author} in a message's menu, once U5's block dialog is there; full members only (contract 3.12).
+    canBlock: () => typeof ACTIONS.block === 'function' && !isGuest(),
+    block: (member) => (typeof ACTIONS.block === 'function' ? ACTIONS.block(member) : undefined),
     // OK on a gone conversation: the next one in sidebar order (desktop-ui 7.10).
     goneOk: () => {
       CH.goneRoom = null;
@@ -730,6 +746,44 @@ function ensureView() {
     startOver: () => startOver(),
     syncNow: () => reconnect()
   });
+  THREAD.open = (root, opts) => view.openThread(root, opts);
+}
+
+// A closed DM's Start a new conversation (contract 3.12): the same people again, which the server may refuse.
+async function startDm(others) {
+  const ws = CH.ws;
+  if (!ws || !others.length) return;
+  try {
+    const res = await api('chatStartDm', ws, others);
+    if (ws !== CH.ws || !res || !res.room || !res.room.id) return;
+    CH.rooms.set(res.room.id, res.room);
+    openRoom(res.room.id);
+  } catch (err) {
+    if (!goneError(err, ws)) toast(chatErrorText(err), 5000);
+  }
+}
+
+// A closed DM's Remove from list: asked first, then the DM leaves the list and the next conversation opens.
+async function leaveDm(room) {
+  const ws = CH.ws;
+  if (!ws || !room) return;
+  const ok = await confirmDialog(t('chat.leaveDm.title'), t(room.closedReason ? 'chat.leaveDm.bodyClosed' : 'chat.leaveDm.body'), t('chat.leaveDm.submit'), true);
+  if (!ok || ws !== CH.ws) return;
+  leaving.add(room.id);
+  try {
+    await api('chatLeaveDm', ws, room.id);
+    if (ws !== CH.ws) return;
+    CH.rooms.delete(room.id);
+    if (CH.openId === room.id) {
+      CH.openId = null;
+      openDefault();
+    } else redrawSide();
+  } catch (err) {
+    if (!goneError(err, ws, room.id)) toast(chatErrorText(err), 5000);
+  } finally {
+    // The eviction can come a little after the answer.
+    setTimeout(() => leaving.delete(room.id), 10000);
+  }
 }
 
 // What the pane shows besides an open conversation (contract 5.8), and the banner over it.
@@ -755,6 +809,7 @@ function renderPane() {
   if (kind === 'goneRoom') view.goneConversation(roomName(CH.goneRoom.room), { focus: false });
   else if (kind) view.showState(kind, { inviteSignups: Boolean(s && s.inviteSignups) });
   view.setBanner(bannerFor());
+  view.stateChanged();
 }
 
 function bannerFor() {

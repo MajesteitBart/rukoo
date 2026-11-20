@@ -10634,7 +10634,8 @@ body.chat-mode .titlebar-search {
   padding: 10px 12px 10px 20px;
   border-bottom: 1px solid var(--border);
 }
-.ch-titles {
+.ch-titles,
+.ch-thread-titles {
   flex: 1;
   min-width: 0;
 }
@@ -10675,7 +10676,8 @@ body.chat-mode .titlebar-search {
   width: 14px;
   height: 14px;
 }
-.ch-meta {
+.ch-meta,
+.ch-thread-meta {
   margin-top: 2px;
   font-size: 12.5px;
   color: var(--text-3);
@@ -10730,7 +10732,8 @@ body.chat-mode .titlebar-search {
   flex-direction: column;
 }
 /* The view keeps the scroll position itself when older rows come in above (chat-view.js render 'anchor'). */
-.ch-scroll {
+.ch-scroll,
+.ch-thread-scroll {
   position: relative;
   flex: 1;
   min-height: 0;
@@ -10738,12 +10741,14 @@ body.chat-mode .titlebar-search {
   overflow-anchor: none;
   padding-bottom: 12px;
 }
-.ch-log {
+.ch-log,
+.ch-thread-log {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.ch-older {
+.ch-older,
+.ch-thread-older {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -10753,16 +10758,19 @@ body.chat-mode .titlebar-search {
   font-size: 12.5px;
   color: var(--text-3);
 }
-.ch-older.is-reserved {
+.ch-older.is-reserved,
+.ch-thread-older.is-reserved {
   height: 40px;
 }
 .ch-older.is-opening {
   height: 72px;
 }
-.ch-older-text {
+.ch-older-text,
+.ch-thread-older-text {
   min-width: 0;
 }
 .ch-older .spinner,
+.ch-thread-older .spinner,
 .ch-empty .spinner {
   margin: 0;
   color: var(--text-3);
@@ -11137,11 +11145,334 @@ button.ch-replies .ch-replies-n {
 .ch-jump.is-down {
   bottom: 8px;
 }
+/* The tools over a message on hover and focus, at its top right inside the row, so they never cover the New divider
+   or the row above: Reply in thread, Copy text, More. They take no Tab stop; the row does, and Shift+F10 opens the
+   same actions as a menu. */
+.ch-tools {
+  position: absolute;
+  top: 2px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.ch-tools .icon-btn.sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+.ch-msg:hover > .ch-tools,
+.ch-msg:focus-within > .ch-tools {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* An unsent message's line: on its way, waiting, held or refused, with what the person can do. */
+.ch-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-height: 22px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-state > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-state .spinner {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  border-width: 1.5px;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-state-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ch-state .link-btn {
+  font-size: 12.5px;
+  min-height: 24px;
+}
+/* An unsent row keeps a little room under its line, so the line reads as its own and not as the next message's. */
+.ch-msg.is-pending {
+  padding-bottom: 6px;
+}
+/* A quick send never shows its line: it appears after a second, in room it already holds. */
+.ch-state.is-sending {
+  animation: ch-state-in 0s linear 1s both;
+}
+@keyframes ch-state-in {
+  from {
+    visibility: hidden;
+  }
+}
+.ch-state.is-stale,
+.ch-state.is-unknown,
+.ch-state.is-failed {
+  color: var(--danger);
+}
+.ch-state.is-stale > svg,
+.ch-state.is-unknown > svg,
+.ch-state.is-failed > svg {
+  color: var(--danger);
+}
+.ch-msg.is-failed .ch-text {
+  color: var(--text-2);
+}
+
+/* The composer: one box under the log, growing with the text up to 40 percent of the window, then scrolling. */
 .ch-compose {
   padding: 0 20px 16px;
 }
 .ch-compose:empty {
   display: none;
+}
+.ch-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: box-shadow 120ms ease;
+}
+.ch-box:focus-within {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.ch-box[hidden] {
+  display: none;
+}
+.ch-input {
+  position: relative;
+  min-height: 20px;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 2px 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+  cursor: text;
+}
+.ch-input.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 2px 0 auto 0;
+  color: var(--text-3);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-box-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 28px;
+}
+.ch-limit {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+  text-wrap: pretty;
+}
+.ch-send {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--on-primary);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ch-send svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+.ch-send:disabled {
+  background: var(--chip);
+  color: var(--text-3);
+  cursor: default;
+}
+.ch-send:not(:disabled):active {
+  transform: scale(0.96);
+}
+/* A mention in the composer: one locked piece, as it shows in the log. */
+.ch-chip {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--link);
+  font-weight: 500;
+}
+/* In place of the composer: the workspace stopped, an archived channel, a closed DM, a thread whose root went. */
+.ch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 40px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-bar[hidden] {
+  display: none;
+}
+.ch-bar-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-bar-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-bar-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  text-wrap: pretty;
+}
+.ch-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+/* The people a mention can name, under or over the @ (chat-input.js), on the composer's mention list styles. */
+.ch-suggest .avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+.ch-suggest [role='option'] {
+  min-height: 32px;
+}
+.ch-suggest .ch-suggest-none {
+  cursor: default;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+/* The thread: beside the log from 900px of the view's own width, over it below that. */
+.ch-thread {
+  position: relative;
+  flex: none;
+  width: clamp(320px, 36%, 420px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+.ch-thread[hidden] {
+  display: none;
+}
+.ch-thread-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 8px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ch-thread-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.ch-thread-back {
+  display: none;
+}
+.ch-thread .ch-msg {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.ch-thread .ch-day {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.ch-thread .ch-thread-div {
+  position: static;
+}
+.ch-thread .ch-tools {
+  right: 12px;
+}
+.ch-thread-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 12px 16px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--chip);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-thread-note[hidden] {
+  display: none;
+}
+.ch-thread-note > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-thread-note .link-btn {
+  font-size: 12.5px;
+}
+.ch-thread-compose {
+  padding: 0 16px 16px;
+}
+@container chat (max-width: 899.98px) {
+  .ch-thread {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    width: auto;
+    border-left: 0;
+  }
+  .ch-thread-back {
+    display: inline-flex;
+  }
+  .ch-thread-close {
+    display: none;
+  }
+  .ch-thread-head {
+    padding-left: 8px;
+  }
+  /*    0ms  the thread fades up 8px over the log
+   *  200ms  it rests. Closing has no animation. */
+  .ch-thread.is-entering {
+    animation: ch-arrive 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
 }
 
 /* What the pane says when no conversation shows: loading, signed out, no workspace, gone. */
@@ -11278,15 +11609,24 @@ button.ch-replies .ch-replies-n {
   .ch-compose {
     padding: 0 12px 12px;
   }
+  /* Only More stays in the tools; its menu holds the rest. */
+  .ch-tools [data-ch-tool='reply'],
+  .ch-tools [data-ch-tool='copy'] {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ch-msg.is-arriving,
-  .ch-jump {
+  .ch-jump,
+  .ch-thread.is-entering {
     animation: none;
   }
   .ch-msg,
-  .ch-replies {
+  .ch-replies,
+  .ch-tools,
+  .ch-box,
+  .ch-send {
     transition: none;
   }
 }
