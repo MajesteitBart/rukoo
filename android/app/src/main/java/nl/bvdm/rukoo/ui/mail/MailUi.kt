@@ -50,7 +50,9 @@ data class DialogAnswer(val choice: DialogChoice, val text: String = "")
 
 /**
  * A question shown by the root (desktop's confirmDialog, promptDialog and the composer's three-way close).
- * With [input] set it has a text field, prefilled with it, whose text comes back in the answer.
+ * With [input] set it has a text field, prefilled with it (all of it selected with [selectInput]), whose text comes
+ * back in the answer. With [submit] the main button hands the text to it instead of answering: the question stays
+ * open, with [busy] showing progress and [error] under the field, until the caller answers it.
  */
 class DialogRequest(
     val title: String,
@@ -61,8 +63,22 @@ class DialogRequest(
     val otherLabel: String? = null,
     val input: String? = null,
     val inputPlaceholder: String? = null,
+    val selectInput: Boolean = false,
+    val submit: ((String) -> Unit)? = null,
 ) {
     internal val answer = CompletableDeferred<DialogAnswer>()
+
+    /** A [submit] is running: the main button waits. */
+    var busy: Boolean by mutableStateOf(false)
+
+    /** What went wrong with the text, under the field in the error style; editing the text clears it. */
+    var error: String? by mutableStateOf(null)
+
+    /** The main button: [submit] when there is one and it isn't running, else the answer. */
+    fun confirm(text: String) {
+        val s = submit
+        if (s == null) answer(DialogChoice.CONFIRM, text) else if (!busy) s(text)
+    }
 
     fun answer(choice: DialogChoice, text: String = "") {
         answer.complete(DialogAnswer(choice, text))

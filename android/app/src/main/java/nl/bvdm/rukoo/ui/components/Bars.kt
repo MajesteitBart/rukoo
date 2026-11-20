@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -75,6 +76,8 @@ fun RkTopBar(
     tint: Color? = null,
     /** The list's subline wraps to a second line rather than cutting off the account on a narrow pane. */
     subtitleMaxLines: Int = 1,
+    /** `text3` for a caption; chat's room header passes `text2`, since its line says who hosts a DM and can read it. */
+    subtitleColor: Color = Rk.colors.text3,
 ) {
     val c = Rk.colors
     val wash = if (tint != null) Modifier.background(Brush.verticalGradient(listOf(tint.copy(alpha = 0.18f), Color.Transparent))) else Modifier
@@ -97,7 +100,7 @@ fun RkTopBar(
                         Text(title, style = titleStyle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (subtitle != null) {
-                        Text(subtitle, style = Rk.type.text12, color = c.text3, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
+                        Text(subtitle, style = Rk.type.text12, color = subtitleColor, maxLines = subtitleMaxLines, overflow = TextOverflow.Ellipsis)
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, content = actions)
@@ -148,7 +151,8 @@ fun QuickFilterRow(
                         }
                     }
                     .horizontalScroll(scroll)
-                    .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
+                    // No padding above or below: each tab's 48dp touch target already leaves room around its pill.
+                    .padding(start = 14.dp, end = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -179,6 +183,8 @@ private fun FilterTab(filter: QuickFilter, selected: Boolean, showCount: Boolean
     }
     Row(
         Modifier
+            // The pill stays 32dp; the touch target around it is Android's 48dp.
+            .minimumInteractiveComponentSize()
             .heightIn(min = 32.dp)
             .background(fill, shape)
             .clip(shape)

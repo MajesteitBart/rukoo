@@ -1,0 +1,521 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Teamchat. Zelfde namen en placeholders als values/strings_chat.xml; zie de uitleg daar. -->
+<resources>
+
+    <!-- chat.mode.* -->
+    <string name="chat_mode_label">Chat</string>
+    <string name="chat_mode_badge_unread">Chat, ongelezen berichten</string>
+    <string name="chat_mode_switch_label">E-mail, agenda, meetings of chat</string>
+    <plurals name="chat_mode_badge_count">
+        <item quantity="one">Chat, %d bericht voor jou</item>
+        <item quantity="other">Chat, %d berichten voor jou</item>
+    </plurals>
+
+    <!-- chat.view.* -->
+    <string name="chat_view_label">Teamchat</string>
+
+    <!-- chat.sidebar.* -->
+    <string name="chat_sidebar_label">Kanalen en directe berichten</string>
+    <string name="chat_sidebar_channels">Kanalen</string>
+    <string name="chat_sidebar_direct">Directe berichten</string>
+    <string name="chat_sidebar_add_channel">Kanaal toevoegen</string>
+    <string name="chat_sidebar_make_channel">Kanaal maken</string>
+    <string name="chat_sidebar_browse">Kanalen bekijken</string>
+    <string name="chat_sidebar_new_message">Nieuw bericht</string>
+    <plurals name="chat_sidebar_row_unread">
+        <item quantity="one">%1$s, %2$d ongelezen bericht</item>
+        <item quantity="other">%1$s, %2$d ongelezen berichten</item>
+    </plurals>
+    <plurals name="chat_sidebar_row_mentions">
+        <item quantity="one">%1$s, %2$d vermelding</item>
+        <item quantity="other">%1$s, %2$d vermeldingen</item>
+    </plurals>
+    <string name="chat_sidebar_no_channels">Nog geen kanalen</string>
+    <string name="chat_sidebar_no_direct">Nog geen directe berichten</string>
+    <string name="chat_sidebar_row_muted">%1$s, gedempt</string>
+    <string name="chat_sidebar_row_closed">%1$s, gesloten</string>
+    <string name="chat_sidebar_closed_tag">Gesloten</string>
+    <string name="chat_list_you">Jij: %1$s</string>
+
+    <!-- chat.workspace.* -->
+    <string name="chat_workspace_switch">Andere werkruimte</string>
+    <string name="chat_workspace_sub">%1$s · %2$s</string>
+    <string name="chat_workspace_menu_heading">Werkruimtes</string>
+    <string name="chat_workspace_make">Werkruimte maken</string>
+    <string name="chat_workspace_join">Deelnemen met een uitnodigingslink</string>
+    <string name="chat_workspace_invite">Mensen uitnodigen</string>
+    <string name="chat_workspace_members">Leden</string>
+    <string name="chat_workspace_your_name">Je naam wijzigen</string>
+    <string name="chat_workspace_settings">Instellingen van de werkruimte</string>
+    <string name="chat_workspace_leave">Werkruimte verlaten</string>
+    <string name="chat_workspace_delete">Werkruimte verwijderen</string>
+
+    <!-- chat.roles.* -->
+    <string name="chat_roles_owner">Eigenaar</string>
+    <string name="chat_roles_admin">Beheerder</string>
+    <string name="chat_roles_member">Lid</string>
+    <string name="chat_roles_guest">Gast</string>
+    <string name="chat_roles_manager">Kanaalbeheerder</string>
+    <string name="chat_roles_owners">Eigenaren</string>
+    <string name="chat_roles_admins">Beheerders</string>
+    <string name="chat_roles_members">Leden</string>
+    <string name="chat_roles_guests">Gasten</string>
+
+    <!-- chat.status.* -->
+    <string name="chat_status_connected">Verbonden</string>
+    <string name="chat_status_connected_title">Verbonden met %1$s</string>
+    <string name="chat_status_connecting">Verbinden…</string>
+    <string name="chat_status_reconnecting">Opnieuw verbinden…</string>
+    <string name="chat_status_catching_up">Bijwerken…</string>
+    <string name="chat_status_offline">Offline</string>
+    <string name="chat_status_signed_out">Uitgelogd</string>
+
+    <!-- chat.empty.* -->
+    <string name="chat_empty_loading">Teamchat laden</string>
+    <string name="chat_empty_sign_in_action">Inloggen</string>
+    <string name="chat_empty_upgrade_title">Werk Rukoo bij om teamchat te gebruiken</string>
+    <string name="chat_empty_upgrade_body">%1$s gebruikt een nieuwere versie van teamchat dan deze Rukoo kent.</string>
+    <string name="chat_empty_upgrade_action">Zoeken naar updates</string>
+    <string name="chat_empty_no_workspace_title">Nog geen werkruimte</string>
+    <string name="chat_empty_no_workspace_body">Maak een werkruimte voor je team, of neem deel aan een werkruimte met een uitnodigingslink.</string>
+    <string name="chat_empty_pick_title">Niets geopend</string>
+    <string name="chat_empty_pick_body">Kies links een kanaal of gesprek.</string>
+    <string name="chat_empty_signed_out_title">Log in om teamchat te gebruiken</string>
+    <string name="chat_empty_signed_out_body">Teamchat draait op je Rukoo-account bij %1$s. Log in, of maak een account om een werkruimte te maken of eraan deel te nemen.</string>
+    <string name="chat_empty_sign_up_action">Account maken</string>
+    <string name="chat_empty_invite_hint">Heb je een uitnodigingslink? Plak die waar Rukoo om een uitnodigingscode vraagt.</string>
+    <string name="chat_empty_storage_title">Teamchat kan niet starten</string>
+    <string name="chat_empty_storage_body">Rukoo kon de opslag voor chat op deze telefoon niet openen. Start Rukoo opnieuw om het nog eens te proberen.</string><!-- phone wording -->
+
+    <!-- chat.banner.* -->
+    <string name="chat_banner_offline">Rukoo kan %1$s niet bereiken. Berichten die je verstuurt, wachten tot er weer verbinding is.</string>
+    <string name="chat_banner_reconnecting">Opnieuw verbinden met %1$s…</string>
+    <string name="chat_banner_try_now">Nu proberen</string>
+    <string name="chat_banner_paused">Rukoo synchroniseert %1$s niet meer, omdat de server achterloopt op wat deze telefoon zag. Kies Opnieuw beginnen om de werkruimte weer van de server te laden.</string><!-- phone wording -->
+    <string name="chat_banner_start_over">Opnieuw beginnen</string>
+
+    <!-- chat.gone.* -->
+    <string name="chat_gone_conversation_title">Je bent niet meer in %1$s</string>
+    <string name="chat_gone_conversation_body">Je bent uit dit gesprek gehaald, of het bestaat niet meer. Rukoo heeft de berichten van deze telefoon verwijderd.</string><!-- phone wording -->
+    <string name="chat_gone_workspace_title">Je bent niet meer in %1$s</string>
+    <string name="chat_gone_workspace_body">Rukoo heeft de berichten van deze telefoon verwijderd.</string><!-- phone wording -->
+
+    <!-- chat.head.* -->
+    <plurals name="chat_head_members">
+        <item quantity="one">%d lid</item>
+        <item quantity="other">%d leden</item>
+    </plurals>
+    <string name="chat_head_private">Privé</string>
+    <string name="chat_head_direct">Direct bericht · gehost door %1$s</string>
+    <string name="chat_head_members_button">Leden</string>
+    <string name="chat_head_more">Meer acties</string>
+    <string name="chat_head_add_people">Mensen toevoegen</string>
+    <string name="chat_head_rename">Kanaal hernoemen</string>
+    <string name="chat_head_mark_read">Markeren als gelezen</string>
+    <string name="chat_head_leave">Kanaal verlaten</string>
+    <string name="chat_head_block">%1$s blokkeren</string>
+    <string name="chat_head_archive">Kanaal archiveren</string>
+    <string name="chat_head_mute">Dempen</string>
+    <string name="chat_head_mute_hint">Geen meldingen of tellers, ook niet als iemand je noemt.</string>
+    <string name="chat_head_unmute">Dempen opheffen</string>
+    <string name="chat_head_leave_dm">Gesprek sluiten</string>
+
+    <!-- chat.log.* -->
+    <string name="chat_log_label">Berichten in %1$s</string>
+    <string name="chat_log_new">Nieuw</string>
+    <string name="chat_log_new_label">Nieuwe berichten</string>
+    <plurals name="chat_log_jump_unread">
+        <item quantity="one">%d nieuw bericht</item>
+        <item quantity="other">%d nieuwe berichten</item>
+    </plurals>
+    <string name="chat_log_latest">Nieuwste</string>
+    <plurals name="chat_log_latest_count">
+        <item quantity="one">%d nieuw</item>
+        <item quantity="other">%d nieuw</item>
+    </plurals>
+    <string name="chat_log_loading_older">Oudere berichten laden…</string>
+    <string name="chat_log_older_failed">Kan oudere berichten niet laden.</string>
+    <string name="chat_log_start_channel">Dit is het begin van #%1$s</string>
+    <string name="chat_log_start_channel_by">%1$s heeft het gemaakt op %2$s.</string>
+    <string name="chat_log_start_public">Iedereen in %1$s kan het zien en eraan deelnemen.</string>
+    <string name="chat_log_start_private">Alleen mensen die zijn toegevoegd, en %1$s, die deze werkruimte host, kunnen het lezen.</string>
+    <string name="chat_log_start_direct">Dit is het begin van je gesprek met %1$s.</string>
+    <string name="chat_log_host_note">%1$s host dit gesprek en kan het lezen.</string>
+    <plurals name="chat_log_retention_floor">
+        <item quantity="one">Berichten ouder dan %d dag zijn verwijderd.</item>
+        <item quantity="other">Berichten ouder dan %d dagen zijn verwijderd.</item>
+    </plurals>
+    <string name="chat_log_removed">Bericht verwijderd</string>
+    <string name="chat_log_former_member">Voormalig lid</string>
+    <string name="chat_log_deleted_member">Verwijderd lid</string>
+    <plurals name="chat_log_replies">
+        <item quantity="one">%d antwoord</item>
+        <item quantity="other">%d antwoorden</item>
+    </plurals>
+    <plurals name="chat_log_replies_unread">
+        <item quantity="one">%d antwoord, nieuw</item>
+        <item quantity="other">%d antwoorden, waarvan nieuwe</item>
+    </plurals>
+    <string name="chat_log_last_reply">Laatste antwoord %1$s</string>
+    <string name="chat_log_reply_to">antwoordde %1$s: %2$s</string>
+    <string name="chat_log_reply_to_removed">antwoordde op een verwijderd bericht</string>
+    <string name="chat_log_reply_in_thread">antwoordde in een thread</string>
+
+    <!-- chat.sys.* -->
+    <string name="chat_sys_created">%1$s heeft #%2$s gemaakt</string>
+    <string name="chat_sys_renamed">%1$s heeft het kanaal hernoemd naar #%2$s</string>
+    <string name="chat_sys_archived">%1$s heeft dit kanaal gearchiveerd</string>
+    <string name="chat_sys_joined">%1$s doet nu mee</string>
+    <string name="chat_sys_added">%1$s heeft %2$s toegevoegd</string>
+    <string name="chat_sys_left">%1$s is vertrokken</string>
+    <string name="chat_sys_removed_by">%1$s heeft %2$s verwijderd</string>
+    <string name="chat_sys_dm_started">%1$s is dit gesprek begonnen</string>
+
+    <!-- chat.msg.* -->
+    <string name="chat_msg_actions">Berichtacties</string>
+    <string name="chat_msg_actions_title">%1$s: %2$s</string>
+    <string name="chat_msg_reply">Antwoorden in thread</string>
+    <string name="chat_msg_copy">Tekst kopiëren</string>
+    <string name="chat_msg_copied">Gekopieerd</string>
+    <string name="chat_msg_more">Meer acties voor dit bericht</string>
+    <string name="chat_msg_remove">Bericht verwijderen</string>
+    <string name="chat_msg_sender">%1$s, %2$s</string>
+    <string name="chat_msg_announce">%1$s: %2$s</string>
+    <string name="chat_msg_mentions_you">Noemt jou</string>
+    <string name="chat_msg_sending">Versturen…</string>
+    <string name="chat_msg_waiting">Wacht op verbinding</string>
+    <string name="chat_msg_failed">Niet verstuurd: %1$s</string>
+    <string name="chat_msg_retry">Opnieuw proberen</string>
+    <string name="chat_msg_discard">Weggooien</string>
+    <string name="chat_msg_unknown">Rukoo weet niet of dit is verstuurd.</string>
+    <string name="chat_msg_send_again">Opnieuw versturen</string>
+    <string name="chat_msg_stale_grant">Je bent uit dit gesprek gegaan of gehaald voordat dit werd verstuurd.</string>
+    <string name="chat_msg_send_again_title">Dit bericht opnieuw versturen?</string>
+    <string name="chat_msg_send_again_body">Als het eerste toch is aangekomen, zien mensen het twee keer.</string>
+    <string name="chat_msg_waiting_turn">Wacht op het bericht hierboven</string>
+    <string name="chat_msg_send_without_mentions">Versturen zonder vermeldingen</string>
+    <string name="chat_msg_send">Versturen</string>
+    <string name="chat_msg_retry_at">nieuwe poging om %1$s</string>
+    <string name="chat_msg_discarded">Bericht weggegooid</string>
+
+    <!-- chat.remove.* -->
+    <string name="chat_remove_title">Dit bericht verwijderen?</string>
+    <string name="chat_remove_body">Het verdwijnt voor iedereen in %1$s. Dit kun je niet ongedaan maken.</string>
+    <string name="chat_remove_body_other">Het verdwijnt voor iedereen in %1$s, en %2$s ziet dat het is verwijderd.</string>
+    <string name="chat_remove_confirm">Verwijderen</string>
+    <string name="chat_remove_quote">‘%1$s’</string>
+    <string name="chat_remove_replies">De antwoorden erop blijven staan.</string>
+
+    <!-- chat.input.* -->
+    <string name="chat_input_placeholder_channel">Bericht in #%1$s</string>
+    <string name="chat_input_placeholder_direct">Bericht aan %1$s</string>
+    <string name="chat_input_placeholder_thread">Antwoorden…</string>
+    <string name="chat_input_send">Versturen (Enter)</string>
+    <string name="chat_input_too_long">Dit bericht is te lang om te versturen. Splits het in tweeën.</string>
+    <string name="chat_input_too_many_mentions">Een bericht kan hoogstens 32 mensen noemen.</string>
+    <string name="chat_input_not_joined">Je doet nog niet mee in #%1$s.</string>
+    <string name="chat_input_join">Deelnemen aan #%1$s</string>
+    <string name="chat_input_archived">#%1$s is gearchiveerd. Je kunt het nog lezen.</string>
+    <string name="chat_input_new_conversation">Nieuw gesprek beginnen</string>
+    <string name="chat_input_paused">Versturen is gestopt zolang %1$s gepauzeerd is.</string>
+    <string name="chat_input_closed_left">Iemand is vertrokken, dus dit gesprek is gesloten. Je kunt het nog lezen.</string>
+    <string name="chat_input_closed_ineligible">Dit gesprek is gesloten omdat iemand gast werd. Je kunt het nog lezen.</string>
+    <string name="chat_input_closed_blocked">Dit gesprek is gesloten. Je kunt het nog lezen.</string>
+    <string name="chat_input_closed_you_blocked">Je hebt %1$s geblokkeerd. Je kunt dit gesprek nog lezen.</string>
+    <string name="chat_input_remove_from_list">Uit de lijst halen</string>
+
+    <!-- chat.mentions.* -->
+    <string name="chat_mentions_label">Mensen om te noemen</string>
+    <string name="chat_mentions_none">Niemand hier met die naam</string>
+
+    <!-- chat.thread.* -->
+    <string name="chat_thread_label">Thread</string>
+    <string name="chat_thread_in_channel">in #%1$s</string>
+    <string name="chat_thread_in_direct">met %1$s</string>
+    <string name="chat_thread_close">Thread sluiten</string>
+    <string name="chat_thread_back">Terug naar %1$s</string>
+    <string name="chat_thread_loading">Antwoorden laden…</string>
+    <string name="chat_thread_failed">Kan de antwoorden niet laden.</string>
+    <string name="chat_thread_partial">Oudere antwoorden staan nog niet op deze telefoon.</string><!-- phone wording -->
+    <string name="chat_thread_root_removed">Dit bericht is verwijderd, dus niemand kan erop antwoorden.</string>
+    <plurals name="chat_thread_root_expired">
+        <item quantity="one">Het eerste bericht is ouder dan %d dag en is verwijderd.</item>
+        <item quantity="other">Het eerste bericht is ouder dan %d dagen en is verwijderd.</item>
+    </plurals>
+    <string name="chat_thread_load_earlier">Eerdere antwoorden laden</string>
+
+    <!-- chat.host.* -->
+    <string name="chat_host_line">Gehost door %1$s op %2$s. Gegevens opgeslagen in %3$s.</string>
+    <string name="chat_host_line_no_location">Gehost door %1$s op %2$s.</string>
+    <plurals name="chat_host_retention">
+        <item quantity="one">Berichten worden %d dag bewaard.</item>
+        <item quantity="other">Berichten worden %d dagen bewaard.</item>
+    </plurals>
+    <string name="chat_host_reads">De host kan berichten in deze werkruimte lezen.</string>
+
+    <!-- chat.make.* -->
+    <string name="chat_make_title">Werkruimte maken</string>
+    <string name="chat_make_name">Naam van de werkruimte</string>
+    <string name="chat_make_name_placeholder">Bijvoorbeeld je team of bedrijf</string>
+    <string name="chat_make_your_name">Je naam in deze werkruimte</string>
+    <string name="chat_make_submit">Werkruimte maken</string>
+
+    <!-- chat.join.* -->
+    <string name="chat_join_title">Deelnemen aan een werkruimte</string>
+    <string name="chat_join_link">Uitnodigingslink</string>
+    <string name="chat_join_check">Doorgaan</string>
+    <string name="chat_join_checking">Uitnodiging controleren…</string>
+    <string name="chat_join_invited_by">%1$s heeft je uitgenodigd als lid.</string>
+    <string name="chat_join_invited_by_guest">%1$s heeft je uitgenodigd als gast.</string>
+    <plurals name="chat_join_channels">
+        <item quantity="one">Je komt in %d kanaal.</item>
+        <item quantity="other">Je komt in %d kanalen.</item>
+    </plurals>
+    <string name="chat_join_expires">Deze uitnodiging werkt tot %1$s.</string>
+    <string name="chat_join_history">Wie aan een kanaal deelneemt, kan de eerdere berichten lezen.</string>
+    <string name="chat_join_submit">Deelnemen aan %1$s</string>
+    <string name="chat_join_already">Je zit al in %1$s.</string>
+    <string name="chat_join_bad_link">Dit is geen uitnodigingslink van Rukoo.</string>
+    <string name="chat_join_other_host">Deze uitnodiging is voor %1$s. Rukoo neemt deel aan werkruimtes op %2$s, de server van je Rukoo-account.</string>
+    <string name="chat_join_open">Openen</string>
+
+    <!-- chat.invite.* -->
+    <string name="chat_invite_title">Mensen uitnodigen voor %1$s</string>
+    <string name="chat_invite_role">Uitnodigen als</string>
+    <string name="chat_invite_member_hint">Leden zien elk kanaal dat de werkruimte kan zien, en kunnen eraan deelnemen.</string>
+    <string name="chat_invite_guest_hint">Gasten zien alleen de kanalen die je kiest.</string>
+    <string name="chat_invite_channels">Toevoegen aan kanalen</string>
+    <string name="chat_invite_channels_none">Je beheert nog geen kanalen.</string>
+    <string name="chat_invite_guest_needs_channel">Kies minstens één kanaal voor een gast.</string>
+    <string name="chat_invite_expires">Link werkt</string>
+    <plurals name="chat_invite_days">
+        <item quantity="one">%d dag</item>
+        <item quantity="other">%d dagen</item>
+    </plurals>
+    <string name="chat_invite_make">Link maken</string>
+    <string name="chat_invite_ready_member">Eén persoon kan deelnemen als lid tot %1$s.</string>
+    <string name="chat_invite_ready_member_in">Eén persoon kan deelnemen als lid, met %1$s, tot %2$s.</string>
+    <string name="chat_invite_ready_guest">Eén persoon kan deelnemen als gast, alleen in %1$s, tot %2$s.</string>
+    <string name="chat_invite_list_and">%1$s en %2$s</string>
+    <string name="chat_invite_list_more">%1$s en nog %2$d</string>
+    <string name="chat_invite_once">Je ziet deze link maar één keer.</string>
+    <string name="chat_invite_close_title">Sluiten zonder de link te kopiëren?</string>
+    <string name="chat_invite_close_body">De uitnodiging blijft open tot hij verloopt. Je kunt hem intrekken onder Openstaande uitnodigingen.</string>
+    <string name="chat_invite_go_back">Terug</string>
+    <string name="chat_invite_withdrawn">Ingetrokken. Deze link werkt niet meer.</string>
+    <string name="chat_invite_guest_no_channels">Gasten kun je alleen toevoegen aan kanalen die je beheert. Maak een kanaal, of vraag een kanaalbeheerder om jou ook kanaalbeheerder te maken.</string>
+    <string name="chat_invite_new_channel">Nieuw kanaal</string>
+    <string name="chat_invite_copy">Link kopiëren</string>
+    <string name="chat_invite_copied">Link gekopieerd</string>
+    <string name="chat_invite_done">Klaar</string>
+    <string name="chat_invite_open">Openstaande uitnodigingen</string>
+    <plurals name="chat_invite_channel_count">
+        <item quantity="one">%d kanaal</item>
+        <item quantity="other">%d kanalen</item>
+    </plurals>
+    <string name="chat_invite_names_more">%1$s +%2$d</string>
+    <string name="chat_invite_until">Tot %1$s</string>
+    <string name="chat_invite_by">Door %1$s</string>
+    <string name="chat_invite_withdraw">Intrekken</string>
+    <string name="chat_invite_none">Geen openstaande uitnodigingen</string>
+
+    <!-- chat.channel.* -->
+    <string name="chat_channel_make_title">Kanaal maken</string>
+    <string name="chat_channel_name">Naam</string>
+    <string name="chat_channel_who">Wie het kan zien</string>
+    <string name="chat_channel_public">Iedereen in %1$s</string>
+    <string name="chat_channel_public_hint">Leden kunnen het vinden en deelnemen.</string>
+    <string name="chat_channel_private">Alleen mensen die je toevoegt</string>
+    <string name="chat_channel_private_hint">Anderen zien de naam niet.</string>
+    <string name="chat_channel_fixed">Dit kun je later niet wijzigen.</string>
+    <string name="chat_channel_make">Kanaal maken</string>
+    <string name="chat_channel_rename_title">#%1$s hernoemen</string>
+    <string name="chat_channel_archive_title">#%1$s archiveren?</string>
+    <string name="chat_channel_archive_body">Niemand kan er nog iets in plaatsen. De leden kunnen de geschiedenis lezen tot de bewaartermijn van de werkruimte die verwijdert. Dit kun je niet ongedaan maken.</string>
+    <string name="chat_channel_archive">Archiveren</string>
+    <string name="chat_channel_leave_title">#%1$s verlaten?</string>
+    <string name="chat_channel_leave_body_public">Je kunt opnieuw deelnemen via Kanalen bekijken.</string>
+    <string name="chat_channel_leave_body_private">Iemand moet je opnieuw toevoegen voordat je het kunt lezen.</string>
+    <string name="chat_channel_leave_body_last">Je bent de laatste hier, dus als je vertrekt wordt #%1$s gearchiveerd.</string>
+    <string name="chat_channel_leave">Verlaten</string>
+    <string name="chat_channel_successor_title">Kies een nieuwe kanaalbeheerder voor #%1$s</string>
+    <string name="chat_channel_successor_body">Jij bent de enige kanaalbeheerder. Kies iemand die het overneemt voordat je vertrekt.</string>
+    <string name="chat_channel_successor_submit">Overdragen en verlaten</string>
+    <string name="chat_channel_browse_title">Kanalen in %1$s</string>
+    <string name="chat_channel_search">Zoek een kanaal</string>
+    <string name="chat_channel_join">Deelnemen</string>
+    <string name="chat_channel_joined">Lid</string>
+    <string name="chat_channel_preview_title">#%1$s</string>
+    <string name="chat_channel_preview_body">Neem deel aan #%1$s om de berichten te lezen en erin te schrijven.</string>
+    <plurals name="chat_channel_archived_section">
+        <item quantity="one">Gearchiveerd (%d)</item>
+        <item quantity="other">Gearchiveerd (%d)</item>
+    </plurals>
+    <string name="chat_channel_none_found">Geen kanalen gevonden.</string>
+    <string name="chat_channel_members_title">Leden van #%1$s</string>
+    <string name="chat_channel_make_manager">Kanaalbeheerder maken</string>
+    <string name="chat_channel_make_member">Gewoon lid maken</string>
+    <string name="chat_channel_now_manager">%1$s is nu kanaalbeheerder</string>
+    <string name="chat_channel_now_member">%1$s is nu gewoon lid</string>
+    <string name="chat_channel_remove_member">Verwijderen uit #%1$s</string>
+    <string name="chat_channel_remove_title">%1$s verwijderen uit #%2$s?</string>
+    <string name="chat_channel_add_title">Mensen toevoegen aan #%1$s</string>
+    <string name="chat_channel_add_guest_needs_admin">Alleen een eigenaar of beheerder kan een gast toevoegen.</string>
+    <string name="chat_channel_add_everyone">Iedereen in %1$s zit al in #%2$s</string>
+    <string name="chat_channel_remove_body">%1$s zit daarna niet meer in #%2$s. Wat %1$s schreef, blijft staan.</string>
+    <string name="chat_channel_add_failed">Kan %1$s niet toevoegen.</string>
+
+    <!-- chat.members.* -->
+    <string name="chat_members_title">Leden van %1$s</string>
+    <string name="chat_members_search">Zoek een lid</string>
+    <string name="chat_members_you">%1$s (jij)</string>
+    <string name="chat_members_message">Bericht sturen</string>
+    <string name="chat_members_change_role">Rol wijzigen</string>
+    <string name="chat_members_owner_title">%1$s eigenaar maken?</string>
+    <string name="chat_members_owner_body">Eigenaren kunnen alles in %1$s wijzigen en ook jou verwijderen.</string>
+    <string name="chat_members_owner_confirm">Eigenaar maken</string>
+    <string name="chat_members_guest_title">%1$s gast maken?</string>
+    <string name="chat_members_guest_body">%1$s ziet alleen nog de kanalen waar iemand %1$s aan toevoegt. De directe berichten waarin %1$s zit, worden voor iedereen daarin gesloten.</string>
+    <string name="chat_members_guest_confirm">Gast maken</string>
+    <string name="chat_members_now_admin">%1$s is nu beheerder</string>
+    <string name="chat_members_now_member">%1$s is nu lid</string>
+    <string name="chat_members_remove">Uit werkruimte verwijderen</string>
+    <string name="chat_members_remove_title">%1$s verwijderen uit %2$s?</string>
+    <string name="chat_members_remove_body">%1$s verliest de toegang tot alle kanalen en directe berichten hier. Wat %1$s schreef, blijft staan.</string>
+    <string name="chat_members_remove_confirm">Verwijderen</string>
+    <string name="chat_members_more">Meer acties voor %1$s</string>
+    <string name="chat_members_blocked">Geblokkeerd</string>
+
+    <!-- chat.new.* -->
+    <string name="chat_new_title">Nieuw bericht</string>
+    <string name="chat_new_to">Aan</string>
+    <string name="chat_new_search">Zoek mensen in %1$s</string>
+    <string name="chat_new_remove_person">%1$s weghalen</string>
+    <string name="chat_new_limit">Een gesprek kan 8 mensen hebben, jij meegeteld.</string>
+    <string name="chat_new_none">Niemand gevonden</string>
+    <string name="chat_new_blocked_row">Je hebt %1$s geblokkeerd</string>
+    <string name="chat_new_guest_row">Gasten kunnen geen directe berichten krijgen.</string>
+    <string name="chat_new_nobody">Er zit nog niemand anders in %1$s</string>
+    <string name="chat_new_start">Gesprek beginnen</string>
+    <string name="chat_new_open">Gesprek openen</string>
+    <string name="chat_new_host_note">Iedereen die je toevoegt, kan meteen lezen en schrijven. %1$s kan directe berichten lezen, zoals alles in deze werkruimte.</string>
+
+    <!-- chat.block.* -->
+    <string name="chat_block_title">%1$s blokkeren?</string>
+    <string name="chat_block_confirm">Blokkeren</string>
+    <string name="chat_block_done">%1$s geblokkeerd</string>
+    <string name="chat_block_unblock">Deblokkeren</string>
+    <string name="chat_block_unblocked">%1$s gedeblokkeerd. Begin een nieuw gesprek om weer te praten.</string>
+    <string name="chat_block_list">Geblokkeerde mensen</string>
+    <string name="chat_block_none">Je hebt niemand geblokkeerd.</string>
+    <string name="chat_block_body">%1$s kan in %2$s geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. %1$s krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten. Vermeldingen door %1$s geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je bij Geblokkeerde mensen.</string>
+
+    <!-- chat.leave.* -->
+    <string name="chat_leave_title">%1$s verlaten?</string>
+    <string name="chat_leave_body">Je verliest de toegang tot de kanalen en directe berichten, en de groepsgesprekken waarin je zit, worden ook voor de anderen gesloten. Berichten die je schreef, blijven staan.</string>
+    <string name="chat_leave_submit">Verlaten</string>
+    <string name="chat_leave_manager_first">Je bent de enige kanaalbeheerder van deze kanalen. Kies voor elk kanaal wie het na jou beheert.</string>
+    <string name="chat_leave_handover_nobody">Hier is nog niemand die het kanaal kan beheren. Voeg eerst een lid aan het kanaal toe.</string>
+    <string name="chat_leave_only_owner_hint">Maak eerst iemand anders eigenaar.</string>
+    <string name="chat_leave_delete_instead">Er zit verder niemand in %1$s, dus je kunt de werkruimte in plaats daarvan verwijderen.</string>
+    <string name="chat_leave_last_owner">Je bent de enige eigenaar. Maak eerst iemand anders eigenaar.</string>
+
+    <!-- chat.name.* -->
+    <string name="chat_name_title">Je naam in %1$s</string>
+    <string name="chat_name_hint">Mensen in deze werkruimte zien deze naam. Je naam in e-mail en je account blijft hetzelfde.</string>
+
+    <!-- chat.settings.* -->
+    <string name="chat_settings_you">Jij</string>
+    <string name="chat_settings_role">Je rol</string>
+    <string name="chat_settings_host">Host</string>
+    <string name="chat_settings_limits">Tot %1$s leden per werkruimte op deze server.</string>
+    <string name="chat_settings_invitations">Uitnodigingen</string>
+
+    <!-- chat.errors.* -->
+    <string name="chat_errors_invalid">De server accepteerde dit niet. Controleer wat je hebt ingevuld.</string>
+    <string name="chat_errors_invalid_name">Gebruik 1 tot 80 tekens.</string>
+    <string name="chat_errors_forbidden">Dat mag je hier niet doen.</string>
+    <string name="chat_errors_workspace_limit">Je zit in zoveel werkruimtes als %1$s toestaat.</string>
+    <string name="chat_errors_workspaces_full">%1$s kan op dit moment geen werkruimtes meer bevatten.</string>
+    <string name="chat_errors_account_scope">Dit account kan alleen voor teamchat worden gebruikt.</string>
+    <string name="chat_errors_gone_workspace">Je zit niet meer in deze werkruimte.</string>
+    <string name="chat_errors_gone_conversation">Je zit niet meer in dit gesprek.</string>
+    <string name="chat_errors_invite_gone">Deze uitnodiging is al gebruikt, ingetrokken of verlopen. Vraag om een nieuwe.</string>
+    <string name="chat_errors_operation_conflict">Dit bericht botst met een bericht dat Rukoo eerder verstuurde. Gooi het weg en schrijf het opnieuw.</string>
+    <string name="chat_errors_archived">Dit kanaal is gearchiveerd.</string>
+    <string name="chat_errors_name_taken">Er is al een kanaal met die naam.</string>
+    <string name="chat_errors_last_owner">Je bent de enige eigenaar. Maak eerst iemand anders eigenaar.</string>
+    <string name="chat_errors_last_manager">Kies eerst een nieuwe kanaalbeheerder.</string>
+    <string name="chat_errors_upgrade">Werk Rukoo bij om teamchat op %1$s te blijven gebruiken.</string>
+    <plurals name="chat_errors_rate_limited">
+        <item quantity="one">Te veel verzoeken. Rukoo probeert het over %d seconde opnieuw.</item>
+        <item quantity="other">Te veel verzoeken. Rukoo probeert het over %d seconden opnieuw.</item>
+    </plurals>
+    <string name="chat_errors_network">Rukoo kan %1$s niet bereiken.</string>
+    <string name="chat_errors_failed">Er ging iets mis. Probeer het opnieuw.</string>
+    <string name="chat_errors_signed_out">Je bent uitgelogd. Log in om teamchat te blijven gebruiken.</string>
+    <string name="chat_errors_not_found">Dat bestaat niet meer.</string>
+    <string name="chat_errors_dm_unavailable">Je kunt geen gesprek met deze mensen beginnen.</string>
+    <string name="chat_errors_blocked">Je hebt %1$s geblokkeerd. Deblokkeer eerst om een gesprek te beginnen.</string>
+    <string name="chat_errors_daily_dms">Je bent vandaag 20 gesprekken begonnen. Probeer het later opnieuw.</string>
+    <string name="chat_errors_members_remain">Verwijder eerst alle anderen.</string>
+    <string name="chat_errors_not_saved">Rukoo kon dit bericht niet op deze telefoon bewaren, dus het is niet verstuurd. Maak opslagruimte vrij en probeer het opnieuw.</string><!-- phone wording -->
+    <string name="chat_errors_paused">%1$s is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.</string>
+    <string name="chat_errors_mentions">Iemand die je noemde, zit niet meer in dit gesprek.</string>
+    <string name="chat_errors_quota">%1$s is vol.</string>
+    <string name="chat_errors_quota_members">%1$s heeft zoveel leden als er passen.</string>
+    <string name="chat_errors_quota_conversations">%1$s kan geen kanalen of gesprekken meer bevatten.</string>
+    <string name="chat_errors_quota_invites">%1$s heeft te veel openstaande uitnodigingen. Trek er eerst een paar in.</string>
+    <string name="chat_errors_quota_bytes">%1$s heeft geen ruimte meer voor berichten.</string>
+
+    <!-- chat.leaveDm.* -->
+    <string name="chat_leave_dm_title">Dit gesprek voor iedereen sluiten?</string>
+    <string name="chat_leave_dm_body">Het blijft leesbaar voor %1$s, maar niemand kan er nog in schrijven. Wil je alleen geen meldingen meer, gebruik dan Dempen.</string>
+    <string name="chat_leave_dm_submit">Voor iedereen sluiten</string>
+    <string name="chat_leave_dm_remove_title">Uit je lijst halen?</string>
+    <string name="chat_leave_dm_body_closed">Daarna kun je het niet meer lezen.</string>
+    <string name="chat_leave_dm_remove_submit">Weghalen</string>
+
+    <!-- chat.mute.* -->
+    <string name="chat_mute_done">%1$s gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.</string>
+    <string name="chat_mute_undone">Dempen van %1$s opgeheven</string>
+
+    <!-- chat.delete.* -->
+    <string name="chat_delete_title">%1$s verwijderen?</string>
+    <string name="chat_delete_body">Hiermee verdwijnen alle kanalen en berichten erin. Dit kun je niet ongedaan maken.</string>
+    <string name="chat_delete_submit">Werkruimte verwijderen</string>
+    <string name="chat_delete_only_you">Je kunt een werkruimte verwijderen als jij het enige lid bent. Verwijder eerst alle anderen.</string>
+    <string name="chat_delete_done">%1$s verwijderd</string>
+
+    <!-- chat.notify.* -->
+    <string name="chat_notify_body">%1$s: %2$s</string>
+    <string name="chat_notify_summary_title">Teamchat</string>
+    <plurals name="chat_notify_summary_body">
+        <item quantity="one">Nieuwe berichten in %d gesprek</item>
+        <item quantity="other">Nieuwe berichten in %d gesprekken</item>
+    </plurals>
+
+    <!-- agent.empty.* -->
+    <string name="agent_empty_title_chat">%1$s ziet de teamchat niet</string>
+    <string name="agent_empty_body_chat">Rukoo houdt werkruimteberichten weg bij je persoonlijke agents. Plak waarmee je hulp wilt, of vraag iets anders.</string>
+
+    <!-- Alleen Android (contract §6.5). -->
+    <string name="chat_mode_mail">E-mail</string>
+    <string name="chat_mode_switch">E-mail of chat</string>
+    <string name="chat_filter_all">Alles</string>
+    <string name="chat_filter_unread">Ongelezen</string>
+    <string name="chat_filter_none">Geen ongelezen gesprekken</string>
+    <string name="chat_join_paste">Plakken</string>
+    <string name="chat_invite_share">Link delen</string>
+    <string name="chat_room_details">Details</string>
+    <string name="chat_room_pick">Kies een gesprek</string>
+    <string name="chat_dm_new">Iemand een bericht sturen</string>
+    <plurals name="chat_input_bytes_left">
+        <item quantity="one">Nog %d byte over</item>
+        <item quantity="other">Nog %d bytes over</item>
+    </plurals>
+    <plurals name="chat_lost_unsent">
+        <item quantity="one">%d chatbericht was nog niet verstuurd en is verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
+        <item quantity="other">%d chatberichten waren nog niet verstuurd en zijn verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
+    </plurals>
+</resources>

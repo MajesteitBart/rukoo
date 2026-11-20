@@ -7,6 +7,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
+import nl.bvdm.rukoo.core.RukooJson
+import nl.bvdm.rukoo.workspaces.InviteLink
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -689,6 +696,10 @@ class AccountServiceTest {
         assertFalse(again.status().signedIn)
         assertEquals("signed_out", again.status().error)
         assertEquals("its records stay", cat("Updates"), again.value("category", "updates"))
+        // Found while loading, before anything collects sessionEnded: the workspace service reads status() at start.
+        val ended = ends(again)
+        assertNull(again.borrowSession())
+        settles(ended, 0)
     }
 
     /**
@@ -1342,6 +1353,214 @@ class AccountServiceTest {
         assertEquals(info, desk.status().info)
         desk.setServer("https://elsewhere.example.com")
         assertNull("another server, another operator", desk.status().info)
+    }
+
+    // ---- lending the session to team chat (contract 3.4, android.md "Session borrowing") ----
+
+    /** Counts what [device] announces on sessionEnded, from now on. */
+    private fun ends(device: AccountService): AtomicInteger {
+        val n = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { device.sessionEnded.collect { n.incrementAndGet() } }
+        return n
+    }
+
+    /** Waits until [n] reaches [count], then a little longer to see that it stays there. */
+    private suspend fun settles(n: AtomicInteger, count: Int) {
+        withTimeout(5_000) { while (n.get() < count) delay(10) }
+        delay(100)
+        assertEquals(count, n.get())
+    }
+
+    @Test
+    fun `a borrowed session has the server it signed in at, its token and its tag, and none while signed out`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        assertNull(desk.borrowSession())
+        desk.signUp("borrow@example.com", PASSWORD)
+        val borrowed = desk.borrowSession()!!
+        assertEquals(srv.url, borrowed.server)
+        assertTrue(srv.sessions.containsKey(borrowed.token))
+        val sha = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(borrowed.token.toByteArray()))
+        assertEquals(sha.take(22), borrowed.tag)
+        assertEquals(22, borrowed.tag.length)
+        assertFalse("the token stays out of logs", borrowed.toString().contains(borrowed.token))
+        val again = desk.borrowSession()!!
+        assertSame("one session, one reference", borrowed.ref, again.ref)
+        assertEquals(borrowed.tag, again.tag)
+
+        desk.signOut()
+        assertNull(desk.borrowSession())
+        desk.signIn("borrow@example.com", PASSWORD)
+        val next = desk.borrowSession()!!
+        assertNotEquals("a new session has a new tag", borrowed.tag, next.tag)
+        assertNotSame(borrowed.ref, next.ref)
+    }
+
+    @Test
+    fun `a workspace 401 signs out only the session it was for, once`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        desk.signUp("refused@example.com", PASSWORD)
+        val ended = ends(desk)
+        val first = desk.borrowSession()!!
+        assertTrue(desk.sessionRefused(first))
+        assertFalse(desk.status().signedIn)
+        assertEquals("signed_out", desk.status().error)
+        settles(ended, 1)
+        assertFalse("a second 401 for the same session changes nothing", desk.sessionRefused(first))
+        settles(ended, 1)
+
+        // A late 401 for the session before this one leaves the new one alone.
+        desk.signIn("refused@example.com", PASSWORD)
+        assertFalse(desk.sessionRefused(first))
+        assertTrue(desk.status().signedIn)
+        assertNotNull(desk.borrowSession())
+        settles(ended, 1)
+    }
+
+    @Test
+    fun `every end of a session is announced once`() = runBlocking {
+        val srv = server()
+        val desk = device(srv, "desk")
+        val ended = ends(desk)
+        desk.signOut()
+        settles(ended, 0)
+
+        desk.signUp("ends@example.com", PASSWORD)
+        desk.signOut()
+        settles(ended, 1)
+
+        desk.signIn("ends@example.com", PASSWORD)
+        val laptop = device(srv, "laptop")
+        laptop.signIn("ends@example.com", PASSWORD)
+        laptop.removeDevice(laptop.details().devices.first { it.name == "desk" }.id)
+        signedOut(desk)
+        settles(ended, 2)
+
+        desk.signIn("ends@example.com", PASSWORD)
+        desk.deleteAccount(PASSWORD)
+        settles(ended, 3)
+    }
+
+    @Test
+    fun `signing up with a workspace invitation sends it in place of the invite code`() = runBlocking {
+        val srv = server()
+        val desk = device(srv)
+        val link = InviteLink(srv.url, "w_" + "A".repeat(22), "b".repeat(43))
+        desk.signUp("colleague@example.com", PASSWORD, invite = "a code", workspaceInvite = link)
+        val sent = RukooJson.parseToJsonElement(srv.calls.single { it.route == "POST /v1/signup" }.body).jsonObject
+        val invite = sent.getValue("workspaceInvite").jsonObject
+        assertEquals(JsonPrimitive(link.workspace), invite["workspace"])
+        assertEquals(JsonPrimitive(link.secret), invite["invite"])
+        assertEquals(2, invite.size)
+        assertNull("the invite code doesn't go along", sent["invite"])
+
+        // An invitation for another server never sends its secret here.
+        val other = device(srv)
+        rejects("invalid") {
+            other.signUp("other@example.com", PASSWORD, workspaceInvite = InviteLink("https://elsewhere.example", link.workspace, link.secret))
+        }
+        assertEquals(1, srv.calls.count { it.route == "POST /v1/signup" })
+        assertFalse(srv.calls.any { it.body.contains(link.secret) && it.route != "POST /v1/signup" })
+    }
+
+    /**
+     * An account http that records where each call went, and holds the call to [route] until [go] completes, so a
+     * test can change the server while a sign-in waits for it.
+     */
+    private class Gate(private val route: String) : AccountHttp {
+        val asked = CompletableDeferred<Unit>()
+        val go = CompletableDeferred<Unit>()
+        val sent = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
+        private val real = OkHttpAccountHttp(OkHttpClient())
+
+        override suspend fun request(server: String, method: String, path: String, body: JsonElement?, token: String?, meter: AtomicLong?): JsonElement? {
+            sent += server to "$method $path"
+            if (path == route && !asked.isCompleted) {
+                asked.complete(Unit)
+                go.await()
+            }
+            return real.request(server, method, path, body, token, meter)
+        }
+    }
+
+    private suspend fun switchWhileWaiting(gate: Gate, device: AccountService, to: String, call: suspend () -> Unit): AccountError? {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
+        val result = scope.async {
+            try {
+                call()
+                null
+            } catch (e: AccountError) {
+                e
+            }
+        }
+        withTimeout(30_000) { gate.asked.await() }
+        device.setServer(to)
+        gate.go.complete(Unit)
+        return withTimeout(30_000) { result.await() }
+    }
+
+    @Test
+    fun `a server changed while sign-up asks for its info gets nothing, and the invitation stays with its server`() = runBlocking {
+        val srv = server()
+        val gate = Gate("/v1/info")
+        val desk = device(srv, http = gate)
+        val link = InviteLink(srv.url, "w_" + "A".repeat(22), "b".repeat(43))
+        val elsewhere = "https://second.example"
+        val error = switchWhileWaiting(gate, desk, elsewhere) { desk.signUp("colleague@example.com", PASSWORD, workspaceInvite = link) }
+        assertEquals("server", error?.code)
+        assertEquals("every call went to the server the sign-up began at", emptyList<Pair<String, String>>(), gate.sent.filter { it.first != srv.url })
+        assertTrue(srv.calls.single { it.route == "POST /v1/signup" }.body.contains(link.secret))
+        assertNull(desk.borrowSession())
+        assertFalse(desk.status().signedIn)
+        assertEquals(elsewhere, desk.status().server)
+    }
+
+    @Test
+    fun `a session made at one server is never lent to the server changed to while it was made`() = runBlocking {
+        val srv = server()
+        val gate = Gate("/v1/signup")
+        val desk = device(srv, http = gate)
+        val error = switchWhileWaiting(gate, desk, "https://second.example") { desk.signUp("someone@example.com", PASSWORD) }
+        assertEquals("server", error?.code)
+        assertNull(desk.borrowSession())
+        assertFalse(desk.status().signedIn)
+        delay(300)
+        assertEquals(emptyList<Pair<String, String>>(), gate.sent.filter { it.first != srv.url })
+        // The session the first server made is ended there.
+        assertEquals(srv.url to "POST /v1/logout", gate.sent.last())
+    }
+
+    @Test
+    fun `a server changed while sign-in or recovery waits gets neither the proof nor the session`() = runBlocking {
+        val srv = server()
+        val recoveryKey = device(srv).signUp("moving@example.com", PASSWORD).recoveryKey
+
+        val signIn = Gate("/v1/login")
+        val laptop = device(srv, "laptop", http = signIn)
+        assertEquals("server", switchWhileWaiting(signIn, laptop, "https://second.example") { laptop.signIn("moving@example.com", PASSWORD) }?.code)
+        assertNull(laptop.borrowSession())
+        assertEquals(emptyList<Pair<String, String>>(), signIn.sent.filter { it.first != srv.url })
+
+        val recover = Gate("/v1/recover/finish")
+        val phone = device(srv, "phone", http = recover)
+        assertEquals(
+            "server",
+            switchWhileWaiting(recover, phone, "https://second.example") { phone.recover("moving@example.com", recoveryKey, "another long password") }?.code,
+        )
+        assertNull(phone.borrowSession())
+        assertEquals(emptyList<Pair<String, String>>(), recover.sent.filter { it.first != srv.url })
+    }
+
+    @Test
+    fun `a server without team chat reads as one without it`() = runBlocking {
+        val desk = device(server())
+        val info = desk.serverInfo()
+        assertEquals(emptyList<String>(), info.features)
+        assertNull(info.workspace)
+        assertFalse(info.teamChat)
     }
 
     private companion object {

@@ -89,6 +89,16 @@ kotlin {
     }
 }
 
+// The live tests (AccountLiveTest, WorkspaceLiveTest) run against the server RUKOO_ACCOUNT_TEST_SERVER names and skip
+// without it; RUKOO_ACCOUNT_TEST_INVITE and RUKOO_ACCOUNT_TEST_NODE turn on more of their cases. Gradle doesn't see
+// environment variables, so they are inputs here: a test task that ran without one isn't UP-TO-DATE once it is set
+// (docs/development.md, "Team chat tests").
+tasks.withType<Test>().configureEach {
+    inputs.property("rukooAccountTestServer", System.getenv("RUKOO_ACCOUNT_TEST_SERVER").orEmpty())
+    inputs.property("rukooAccountTestInvite", System.getenv("RUKOO_ACCOUNT_TEST_INVITE").orEmpty())
+    inputs.property("rukooAccountTestNode", System.getenv("RUKOO_ACCOUNT_TEST_NODE").orEmpty())
+}
+
 // Rukoo's own skills (the repository's skills/ folder) ship in the APK's assets under skills/, so the phone
 // offers the same /name skills as desktop Rukoo.
 abstract class BundleSkills : DefaultTask() {
@@ -131,6 +141,10 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.window)
+    // The team chat cache (workspaces/ChatDb.kt): the driver API, opened on the platform's SQLite in the app and on
+    // the bundled SQLite in JVM unit tests, so the store's tests run real SQL transactions.
+    implementation(libs.androidx.sqlite)
+    implementation(libs.androidx.sqlite.framework)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -157,6 +171,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.androidx.sqlite.bundled.jvm)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.junit)

@@ -38,7 +38,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -53,6 +55,7 @@ import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkTextField
 import nl.bvdm.rukoo.ui.components.SheetRow
+import nl.bvdm.rukoo.ui.components.Spinner
 import nl.bvdm.rukoo.ui.components.popIn
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.theme.Rk
@@ -168,7 +171,11 @@ fun MailCheckbox(checked: Boolean, modifier: Modifier = Modifier, partial: Boole
 @Composable
 fun MailDialog(request: DialogRequest) {
     val c = Rk.colors
-    var text by remember(request) { mutableStateOf(request.input.orEmpty()) }
+    var field by remember(request) {
+        val input = request.input.orEmpty()
+        mutableStateOf(TextFieldValue(input, if (request.selectInput) TextRange(0, input.length) else TextRange.Zero))
+    }
+    val text = field.text
     val focus = remember(request) { FocusRequester() }
     Dialog(
         onDismissRequest = { request.answer(DialogChoice.CANCEL) },
@@ -196,12 +203,17 @@ fun MailDialog(request: DialogRequest) {
             }
             if (request.input != null) {
                 RkTextField(
-                    value = text,
-                    onValueChange = { text = it },
+                    value = field,
+                    onValueChange = {
+                        if (it.text != field.text) request.error = null
+                        field = it
+                    },
                     placeholder = request.inputPlaceholder,
+                    error = request.error,
+                    enabled = !request.busy,
                     focusRequester = focus,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { request.answer(DialogChoice.CONFIRM, text) }),
+                    keyboardActions = KeyboardActions(onDone = { request.confirm(text) }),
                 )
                 LaunchedEffect(request) { runCatching { focus.requestFocus() } }
             }
@@ -211,15 +223,18 @@ fun MailDialog(request: DialogRequest) {
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
             ) {
                 if (request.otherLabel != null) {
                     RkButton(request.otherLabel, { request.answer(DialogChoice.OTHER, text) }, kind = RkButtonKind.SECONDARY)
                 }
                 RkButton(request.cancelLabel, { request.answer(DialogChoice.CANCEL) }, kind = RkButtonKind.SECONDARY)
+                if (request.busy) Spinner(size = 14.dp)
                 RkButton(
                     request.confirmLabel,
-                    { request.answer(DialogChoice.CONFIRM, text) },
+                    { request.confirm(text) },
                     kind = if (request.danger) RkButtonKind.DANGER else RkButtonKind.PRIMARY,
+                    enabled = !request.busy,
                 )
             }
         }

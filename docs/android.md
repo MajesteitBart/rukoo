@@ -11,6 +11,7 @@ The app's code is in [`android/`](../android). It is a native Kotlin and Jetpack
 - Rukoo's twenty-three MCP tools served by the phone, so an agent can read the phone's mail, write into its composer and ask for approval on its screen. The phone has no calendar yet, so `list_events`, `find_free_time` and `create_event` answer just that, and tell the agent to ask you to use Rukoo on your computer. `get_booking_link` gives the link to your [booking page](booking.md): it reads the page's settings from your Rukoo account when the phone is signed in to it. The phone has no meetings: Rukoo Voice records them on a computer, so the six meeting tools check their arguments and then say so.
 - Pairing with Rukoo on your computer, which brings over your accounts and agent settings once and lets the phone use the computer's Claude Code and Codex.
 - A [Rukoo account](account.md), end-to-end encrypted, which keeps Rukoo's own data the same on the phone and your computers, and [inbox categories](categories.md): under Inbox in the folder drawer, sorted on the phone.
+- [Team chat](#team-chat) with your colleagues: the same workspaces, channels and direct messages as Rukoo on your computer.
 - English and Dutch, light and dark.
 
 ## Install
@@ -93,6 +94,28 @@ The phone signs in to the same account as the computer and syncs the same record
 
 The server is `https://rukoo.io` unless you choose another while signed out; [Rukoo account](account.md#the-server-rukoo-uses) says what that means for an account made at the old address, `https://rukoo-account.bvdm.ai`. A fork sets its own default with `ACCOUNT_SERVER` in `android/app/build.gradle.kts`. Release builds talk to account servers over https only; debug builds also take plain http to the phone itself and to the emulator's host, `http://10.0.2.2:<port>`, so an emulator can use `wrangler dev` on the computer. An account belongs to its server's address, so an account made through `10.0.2.2` doesn't open through `127.0.0.1`.
 
+## Team chat
+
+The phone has the team chat of [Rukoo on your computer](chat.md): workspaces on the server of your Rukoo account, with channels and direct messages, threads, mentions, mute and blocks. A read on one device counts on the other. Mute and drafts stay on the device where you set them.
+
+**Switching to Chat.** The top of the folder drawer, and of the folder sheet on the cover screen, has a Mail and Chat switch. It shows once the server of your Rukoo account has team chat turned on, which the server at rukoo.io doesn't have yet. Chat's half of the switch carries the number of mentions and unread direct messages in all your workspaces, or a dot when only channels have unread messages, and while you're in Mail the folders button in the list's corner gets a dot too. Back at the top of Chat goes to Mail. In Chat the same corner button opens the workspaces, with the switch on top.
+
+**Getting in.** Signed out, Chat offers Create an account and Sign in, which open Settings > Rukoo account. To join a workspace, choose Join with an invitation link in the workspace drawer and paste the link; Rukoo shows who invited you, the role, the channels, until when the link works and who hosts the workspace, and asks the name you want there. A link made on your computer works on the phone and the other way round, as long as both use the same server address. Without an account yet, paste the link in the invite code field of Create an account: after the recovery key, Settings closes and Chat opens the Join sheet with the link filled in. Make a workspace in the same drawer makes your own, with one channel, `general`.
+
+**Channels and direct messages.** The list has the channels you're in by name, Browse channels for the ones you can join, and your direct messages by their last message, with closed ones dimmed at the end. New message in the corner starts a conversation with 1 to 7 people, or opens the one you already have with exactly them. Press and hold a message for Reply in thread, Copy text and Remove message. The (i) button in a conversation's header has Mute and Mark as read, plus Members, Add people, Rename, Archive and Leave for a channel, or Close conversation, which closes it for everyone in it, and, with one other person, Block for a direct message. The workspace drawer has Change your name, Members, Invite people for owners and admins, Blocked people, Leave workspace and, for owners, Delete workspace, which works once the owner is its only member. [Team chat](chat.md) describes the rules, which are the same on both devices.
+
+**Notifications.** A direct message and a mention notify you while that conversation isn't on screen, also while you're in Mail; tapping one opens the conversation at that message, and reading it here or on another device takes the notification back. A muted conversation never notifies. Settings > Notifications > Team chat notifications turns them off. While Rukoo is open, it checks every workspace about every minute and the workspace on screen hears of new messages at once. In the background, Android runs Rukoo's check every 15 minutes at most, so a message can take that long to notify you, longer when Android's battery saving holds the app back (Settings > Phone tools > Battery points to Unrestricted).
+
+**What the host can read.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change the messages in its workspaces, direct messages included. The Join sheet, the start of each direct message and its header name the host. [What the host can read](chat.md#what-the-host-can-read) has the details.
+
+**On the phone.** Rukoo keeps your workspaces in one file in its private storage, `files/chat/chat.db`, up to 2,000 messages per conversation, so Chat opens at once and works offline; older messages load from the server as you scroll up. A message written without a connection waits and goes out once the phone is back online. Signing out, deleting your account, choosing another server or the server ending your session deletes that file, unsent messages included; the sign-out dialog counts them first.
+
+### Chat on the Fold
+
+- Cover screen: the conversation list, a conversation and a thread each fill the screen, and Back steps from the thread to the conversation, to the list and then to Mail. The workspaces and the sheets (Join, New message, Members and the others) come up from the bottom.
+- Inner screen: the list next to the conversation, at the list width you dragged it to. A thread opens to the right of its conversation, which then takes the list's place. The sheets show as dialogs in the middle of the screen.
+- Folding and unfolding keeps the open conversation, the thread and what you were typing. Folded, you see the pane you touched last.
+
 ## Inbox categories
 
 Settings > Inbox categories turns [inbox categories](categories.md) on. The folder drawer then lists them under Inbox, each with its color; one shows only its mail, under its own name with a dot and a wash of its color at the top, and switching clears a selection. Inbox shows all of it apart from the categories whose Show in Inbox is off, marked with a crossed-out eye; their unread mail leaves Inbox's count and the launcher badge's number, and Mark all as read leaves it alone. A search covers every category, and VIP and Unread still show them. Opening such an email from its notification brings up its category. Each email in Inbox, in search results, VIP and Unread carries a label with its category's color and name, which gives way before the subject on a narrow screen. In a list of several accounts, the account is a dot in its color on the sender's picture, as on the computer. To move an email to another category, press and hold it (or select several) and choose More > Move to category, or use More in the open email; the toast that follows offers Also future mail for its sender.
@@ -121,6 +144,9 @@ The phone sorts like the desktop. During each inbox sync it fetches a few header
 - The phone has no PDF reader, so `read_attachment` and `read_chat_file` give agents a PDF as a file without its text. Clark can read it on its own machine.
 - Photos keep the format the camera saved them in. A HEIC photo goes to the agent as a file, not as an image.
 - OpenClaw's Rukoo tools point at one device at a time.
+- Team chat has no push: in the background Android lets Rukoo check for new messages every 15 minutes at most, so a notification can come that late. Open, Rukoo checks about every minute and hears of the workspace on screen at once.
+- Team chat uses one host, the server of your Rukoo account. A workspace on another server can't be joined from the phone.
+- Team chat has no files or attachments, and no search through messages, on the phone and on the computer. [Not in this version](chat.md#not-in-this-version) lists the rest.
 
 ## Build and develop
 
@@ -142,6 +168,7 @@ Debug builds add things for testing that release builds leave out:
 - The "Test agent", a scripted agent like desktop's `SEM_AGENT_FAKE=1`, which uses the real tools.
 - A loopback listener for the MCP server, and Settings > Phone tools > For testing > "Address for agents", so an emulator behind `adb forward` can play a phone on the tailnet.
 - `adb shell am broadcast -n nl.bvdm.rukoo.debug/nl.bvdm.rukoo.mail.sync.DebugSyncReceiver` runs a background sync.
+- `adb shell am broadcast -n nl.bvdm.rukoo.debug/nl.bvdm.rukoo.workspaces.DebugChatSyncReceiver` runs team chat's background catch-up, with its notifications, without waiting 15 minutes.
 - The Rukoo account may use a server over plain http on the phone or the emulator's host: Settings > Rukoo account > Server, `http://10.0.2.2:8790` for `npx wrangler dev --port 8790` in `server/`.
 
 The account's tests against a real server skip unless `RUKOO_ACCOUNT_TEST_SERVER` is set, for example to `http://127.0.0.1:8790` with `wrangler dev` running. With `RUKOO_ACCOUNT_TEST_NODE` set to a Node.js binary as well, one of them runs desktop Rukoo's account code in Node next to the phone's, so both read each other's records; desktop's dependencies must be installed (or on `NODE_PATH`).
@@ -149,6 +176,15 @@ The account's tests against a real server skip unless `RUKOO_ACCOUNT_TEST_SERVER
 ```sh
 RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:8790 RUKOO_ACCOUNT_TEST_NODE=$(which node) ./gradlew testDebugUnitTest --tests 'nl.bvdm.rukoo.account.*'
 ```
+
+Team chat's live test, `WorkspaceLiveTest`, needs a server with team chat on, which `wrangler dev` with the defaults isn't. `test/fixtures/real-server-cli.js` runs one, as CI does; it needs `npm ci --prefix server` once:
+
+```sh
+node test/fixtures/real-server-cli.js --port 38850 --ready-file tmp/rukoo-server.json   # from the repository root; delete the file to stop it
+RUKOO_ACCOUNT_TEST_SERVER=http://127.0.0.1:38850 RUKOO_ACCOUNT_TEST_INVITE=test-invite ./gradlew testDebugUnitTest
+```
+
+The other team chat tests use answers recorded from that server (`app/src/test/resources/workspace/vectors.json`, written by `app/src/test/workspace-fixtures/make-fixtures.js`). For a check by hand on an emulator, `adb reverse tcp:38850 tcp:38850` lets the emulator reach the same server at `http://127.0.0.1:38850`. Choose that address under Settings > Rukoo account > Server, so invitation links made on the computer for `127.0.0.1:38850` work on the phone; with `http://10.0.2.2:38850` they belong to another server.
 
 `app/src/androidTest` holds tests that need Android's own TLS: the account client, Jev, Google sign-in and one-click unsubscribe count each answer's bytes on the plain socket underneath TLS, and only a device shows that Android's TLS reads through that socket. CI doesn't run them. Run them on an emulator of your own after changing how one of those clients connects; `ANDROID_SERIAL` picks the emulator when more than one runs, and leaving the APKs installed keeps the debug app's data:
 
@@ -166,7 +202,9 @@ Code map, under `android/app/src/main/java/nl/bvdm/rukoo/`:
 | `agents/` | Conversations, turns and approvals (`Hub.kt`), the turn text and `<unsafe_content>` rules, quick actions and skills; `agents/adapters/` has Hermes, OpenClaw, the computer host and the test agent |
 | `account/` | The Rukoo account: the keys and sealing of `server/PROTOCOL.md` (`AccountKeys.kt`), the server's HTTP API, and the local-first records and their sync (`AccountService.kt`), a port of desktop's `src/main/account/` |
 | `categories/` | Inbox categories: the mail signals, the rules, Jev, and which category each inbox email is in (`Categories.kt`), a port of desktop's `src/main/categories/` |
+| `workspaces/` | Team chat's engine, a port of desktop's `src/main/workspaces/`: the cache (`ChatDb.kt`, `WorkspaceStore.kt`), the server's routes (`WorkspaceClient.kt`), the feed, history and reads (`FeedApplier.kt`, `WorkspaceSync.kt`), sending (`Outbox.kt`), the wake socket, the service behind the `Workspaces` interface (`WorkspaceService.kt`), background catch-up (`ChatBackground.kt`, `ChatSyncWorker.kt`) and notifications (`ChatNotifier.kt`) |
 | `mcp/` | The phone's MCP server, its tokens and proof, and the twenty-three tools (`tools/BookingLink.kt` has the calendar tools' answers, `tools/McpTools.kt` the meeting tools' `NO_MEETINGS`) |
 | `desktop/` | Pairing with a computer, the import and the client of the computer's `/phone/v1` routes |
-| `ui/` | Compose screens: `root/` (layout and navigation), `mail/` (with the category sheet), `reader/`, `composer/`, `agent/`, `settings/` (with the Rukoo account's pages and Inbox categories), `onboarding/`, and the theme, icons and components ported from the desktop |
+| `ui/` | Compose screens: `root/` (layout and navigation), `mail/` (with the category sheet), `reader/`, `composer/`, `agent/`, `settings/` (with the Rukoo account's pages and Inbox categories), `onboarding/`, `chat/` (team chat), and the theme, icons and components ported from the desktop |
+| `ui/chat/` | Team chat's screens: the Mail and Chat switch (`ModeSwitch.kt`), the one- and two-pane layouts (`ChatLayouts.kt`), the conversation list, a conversation and a thread (`ChatHomePane.kt`, `RoomPane.kt`, `ThreadPane.kt`), the composer with mentions (`ChatComposer.kt`), the workspace drawer (`WorkspaceSheet.kt`) and the sheets (`ChatSheets.kt`), with `ChatUi.kt` for the questions, busy states and error texts |
 | `core/` | Storage, the Keystore box, Tailnet checks and the `<unsafe_content>` helpers |

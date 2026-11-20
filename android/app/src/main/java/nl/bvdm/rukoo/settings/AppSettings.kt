@@ -48,6 +48,8 @@ data class AppSettings(
     val notifyMail: Boolean = true,
     /** Notifications for agent replies, drafts and approvals while the chat isn't on screen. */
     val notifyAgents: Boolean = true,
+    /** Team chat notifications: direct messages and mentions (contract §3.10), desktop's `chatNotifications`. */
+    val notifyChat: Boolean = true,
     /** Sync interval while the app is open, in minutes; 0 turns periodic sync off (desktop `syncInterval`). */
     val syncMinutes: Int = 5,
     val defaultAccountId: String? = null,

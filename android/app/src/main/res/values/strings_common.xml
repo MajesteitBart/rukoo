@@ -25,6 +25,8 @@
     <string name="notification_channel_mail_description">New emails in your inboxes</string>
     <string name="notification_channel_agents">Agents</string>
     <string name="notification_channel_agents_description">Answers, drafts and approval requests from your agents while their chat isn\'t open</string>
+    <string name="notification_channel_chat">Team chat</string>
+    <string name="notification_channel_chat_description">Direct messages and mentions in your workspaces</string>
     <string name="notification_channel_service">Agent access</string>
     <string name="notification_channel_service_description">Shown while agents can use Rukoo on this phone</string>
 

@@ -100,6 +100,20 @@ fun NotificationsPage(app: AppViewModel) {
                     if (on) turnedOn()
                 },
             )
+            // Team chat's switch, only where Chat shows (contract §3.1, §3.10).
+            val workspaces = s.workspaces
+            val chatAvailable = workspaces?.state?.collectAsStateWithLifecycle()?.value?.available == true
+            if (chatAvailable) {
+                SettingsSwitchRow(
+                    title = stringResource(R.string.settings_general_chat_notifications),
+                    description = stringResource(R.string.settings_general_chat_notifications_help),
+                    checked = settings.notifyChat,
+                    onCheckedChange = { on ->
+                        scope.launch { s.settings.update { it.copy(notifyChat = on) } }
+                        if (on) turnedOn()
+                    },
+                )
+            }
         }
         Spacer(Modifier.height(10.dp))
         SettingsCard {

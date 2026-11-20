@@ -19,6 +19,9 @@ object Notifications {
     /** The foreground service that serves Rukoo's tools; silent. */
     const val CHANNEL_SERVICE = "service"
 
+    /** Team chat: direct messages and mentions while their room isn't on screen (workspaces/ChatNotifier). */
+    const val CHANNEL_CHAT = "chat"
+
     /** Notification id of the MCP foreground service. */
     const val SERVICE_NOTIFICATION_ID = 1
 
@@ -35,6 +38,9 @@ object Notifications {
                 NotificationChannel(CHANNEL_SERVICE, context.getString(R.string.notification_channel_service), NotificationManager.IMPORTANCE_MIN).apply {
                     description = context.getString(R.string.notification_channel_service_description)
                     setShowBadge(false)
+                },
+                NotificationChannel(CHANNEL_CHAT, context.getString(R.string.notification_channel_chat), NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = context.getString(R.string.notification_channel_chat_description)
                 },
             ),
         )

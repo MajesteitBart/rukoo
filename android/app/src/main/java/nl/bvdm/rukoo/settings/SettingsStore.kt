@@ -44,6 +44,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         private val SWIPE_LEFT = stringPreferencesKey("swipe_left")
         private val NOTIFY_MAIL = booleanPreferencesKey("notify_mail")
         private val NOTIFY_AGENTS = booleanPreferencesKey("notify_agents")
+        private val NOTIFY_CHAT = booleanPreferencesKey("notify_chat")
         private val SYNC_MINUTES = intPreferencesKey("sync_minutes")
         private val DEFAULT_ACCOUNT = stringPreferencesKey("default_account_id")
         private val MCP_ENABLED = booleanPreferencesKey("mcp_enabled")
@@ -65,6 +66,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
                 swipeLeft = SwipeAction.of(prefs[SWIPE_LEFT]) ?: d.swipeLeft,
                 notifyMail = prefs[NOTIFY_MAIL] ?: d.notifyMail,
                 notifyAgents = prefs[NOTIFY_AGENTS] ?: d.notifyAgents,
+                notifyChat = prefs[NOTIFY_CHAT] ?: d.notifyChat,
                 syncMinutes = (prefs[SYNC_MINUTES] ?: d.syncMinutes).coerceIn(0, 24 * 60),
                 defaultAccountId = prefs[DEFAULT_ACCOUNT]?.takeIf { it.isNotEmpty() },
                 mcpEnabled = prefs[MCP_ENABLED] ?: d.mcpEnabled,
@@ -83,6 +85,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             prefs[SWIPE_LEFT] = s.swipeLeft.wire
             prefs[NOTIFY_MAIL] = s.notifyMail
             prefs[NOTIFY_AGENTS] = s.notifyAgents
+            prefs[NOTIFY_CHAT] = s.notifyChat
             prefs[SYNC_MINUTES] = s.syncMinutes
             if (s.defaultAccountId == null) prefs.remove(DEFAULT_ACCOUNT) else prefs[DEFAULT_ACCOUNT] = s.defaultAccountId
             prefs[MCP_ENABLED] = s.mcpEnabled

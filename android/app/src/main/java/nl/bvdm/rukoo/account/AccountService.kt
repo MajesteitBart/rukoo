@@ -41,6 +41,17 @@ import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.core.RukooJson
 import nl.bvdm.rukoo.core.SecretCipher
 import nl.bvdm.rukoo.core.UriComponent
+import nl.bvdm.rukoo.workspaces.InviteLink
+
+/**
+ * What a workspace call needs from the signed-in session (android.md "Session borrowing"): the [server] it signed in
+ * at, its [token], and its [tag] for the chat cache (contract 3.4). [ref] is the session itself, so a 401 can sign out
+ * only the session it was for. Internal: only code in the app module borrows the token.
+ */
+internal class BorrowedSession(val server: String, val token: String, val tag: String, internal val ref: Any) {
+    // The token signs in as the person; keep it out of logs and crash reports.
+    override fun toString(): String = "BorrowedSession($server, $tag)"
+}
 
 /**
  * A Rukoo account: Rukoo's own data (categories, the category each email got, corrections) on every device of one
@@ -105,6 +116,17 @@ class AccountService(
     /** Goes up whenever any record changes, for screens that show records. */
     val version: StateFlow<Long> = _version.asStateFlow()
 
+    // Unlimited, so an end is never dropped while a collector is busy; tryEmit then always succeeds.
+    private val _sessionEnded = MutableSharedFlow<Unit>(extraBufferCapacity = Int.MAX_VALUE)
+
+    /**
+     * Emits once each time a session ends while the app runs: signing out, a 401 from any account or workspace route,
+     * or deleting the account. The workspace service collects it to delete the chat cache (contract 3.4). An end found
+     * while loading at start-up, such as keys that no longer open, isn't announced: nothing could collect it yet. The
+     * workspace service applies the start rule instead, from [status]: signed out at start means the cache goes.
+     */
+    val sessionEnded: SharedFlow<Unit> = _sessionEnded
+
     private val stateFile get() = File(dir, "account.json")
     private val recordsFile get() = File(dir, "account-records.json")
 
@@ -129,7 +151,7 @@ class AccountService(
             } else {
                 // Stored under a Keystore key this phone no longer has: the keys don't open here, so it signs in again.
                 state = state.copy(error = "signed_out")
-                forget()
+                forget(announce = false)
             }
         }
         _status.value = statusNow()
@@ -270,35 +292,55 @@ class AccountService(
         secrets.encrypt("rukoo")
     }
 
-    /** The password's keys for the server this phone uses; its address is part of authKey (server/PROTOCOL.md, Keys). */
-    private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf) =
+    /**
+     * The password's keys for the server [at], by default the one this phone uses; its address is part of authKey
+     * (server/PROTOCOL.md, Keys).
+     */
+    private suspend fun passwordKeys(password: String, salt: ByteArray, kdf: Kdf, at: String = server) =
         withContext(Dispatchers.Default) {
             try {
-                AccountKeys.passwordKeys(password, salt, kdf, server)
+                AccountKeys.passwordKeys(password, salt, kdf, at)
             } catch (e: OutOfMemoryError) {
                 // The hash's memory is one block that is freed again; the app carries on.
                 throw fail("heavy_kdf")
             }
         }
 
-    private fun recoveryKeys(key: ByteArray) = AccountKeys.recoveryKeys(key, server)
+    private fun recoveryKeys(key: ByteArray, at: String = server) = AccountKeys.recoveryKeys(key, at)
 
-    suspend fun signUp(email: String, password: String, invite: String = ""): SignUpResult {
+    /**
+     * [invite] is the operator's invite code. [workspaceInvite] is a workspace invitation for this server, which an
+     * invite-only server takes in its place (contract 2.12, 3.3): it goes as `workspaceInvite`, and [invite] doesn't
+     * go at all. One for another server is refused here, so its secret never reaches this one.
+     *
+     * Sign-up, sign-in and recovery read the server once and use that address for every call and key, since the
+     * server can still change while they wait (only a session stops it). [attach] refuses the session when it did.
+     */
+    suspend fun signUp(email: String, password: String, invite: String = "", workspaceInvite: InviteLink? = null): SignUpResult {
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
-        serverInfo()
+        val at = server
+        if (workspaceInvite != null && workspaceInvite.server != at) throw fail("invalid")
+        serverInfo(at)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
-        val keys = passwordKeys(password, salt, kdf)
+        val keys = passwordKeys(password, salt, kdf, at)
         val dataKey = AccountKeys.randomBytes(32)
         val recoveryKey = AccountKeys.randomBytes(20)
-        val recovery = recoveryKeys(recoveryKey)
+        val recovery = recoveryKeys(recoveryKey, at)
         val res = call(
             "POST",
             "/v1/signup",
             buildJsonObject {
                 put("email", address)
-                if (invite.isNotEmpty()) put("invite", invite.trim())
+                if (workspaceInvite != null) {
+                    putJsonObject("workspaceInvite") {
+                        put("workspace", workspaceInvite.workspace)
+                        put("invite", workspaceInvite.secret)
+                    }
+                } else if (invite.isNotEmpty()) {
+                    put("invite", invite.trim())
+                }
                 put("kdf", kdf.toJson())
                 put("salt", AccountKeys.b64u(salt))
                 put("authKey", AccountKeys.b64u(keys.authKey))
@@ -307,8 +349,9 @@ class AccountService(
                 put("recoveryWrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(recovery.recoveryWrap, dataKey)))
                 put("device", device())
             },
+            server = at,
         ) as? JsonObject
-        attach(address, tokenOf(res), dataKey)
+        attach(address, tokenOf(res), dataKey, at)
         return SignUpResult(AccountKeys.formatRecoveryKey(recoveryKey), detailsOf(res?.get("account")))
     }
 
@@ -317,9 +360,9 @@ class AccountService(
 
     private fun detailsOf(e: JsonElement?): AccountDetails? = (e as? JsonObject)?.let { runCatching { RukooJson.decodeFromJsonElement(AccountDetails.serializer(), it) }.getOrNull() }
 
-    /** authKey for the password, with the parameters the server keeps for the address. Refuses weak ones. */
-    private suspend fun authFor(email: String, password: String): AccountKeys.PasswordKeys {
-        val pre = call("POST", "/v1/prelogin", buildJsonObject { put("email", email) }) as? JsonObject
+    /** authKey for the password, with the parameters the server [at] keeps for the address. Refuses weak ones. */
+    private suspend fun authFor(email: String, password: String, at: String = server): AccountKeys.PasswordKeys {
+        val pre = call("POST", "/v1/prelogin", buildJsonObject { put("email", email) }, server = at) as? JsonObject
         val kdf = try {
             AccountKeys.checkKdf(pre?.get("kdf"))
         } catch (e: IllegalArgumentException) {
@@ -331,7 +374,7 @@ class AccountService(
         } catch (e: IllegalArgumentException) {
             throw fail("server")
         }
-        return passwordKeys(password, salt, kdf)
+        return passwordKeys(password, salt, kdf, at)
     }
 
     suspend fun signIn(email: String, password: String): AccountDetails? {
@@ -340,19 +383,20 @@ class AccountService(
         if (!validEmail(address)) throw fail("invalid_email")
         if (password.isEmpty()) throw fail("unauthorized")
         checkStorage()
-        serverInfo()
-        val keys = authFor(address, password)
+        val at = server
+        serverInfo(at)
+        val keys = authFor(address, password, at)
         val res = call("POST", "/v1/login", buildJsonObject {
             put("email", address)
             put("authKey", AccountKeys.b64u(keys.authKey))
             put("device", device())
-        }) as? JsonObject
+        }, server = at) as? JsonObject
         val dataKey = try {
             AccountKeys.unwrapDataKey(keys.wrapKey, AccountKeys.unb64u((res?.get("wrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
             throw fail("server")
         }
-        attach(address, tokenOf(res), dataKey)
+        attach(address, tokenOf(res), dataKey, at)
         return detailsOf(res?.get("account"))
     }
 
@@ -361,12 +405,13 @@ class AccountService(
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
         val key = AccountKeys.parseRecoveryKey(recoveryKey) ?: throw fail("recovery_key")
-        serverInfo()
-        val recovery = recoveryKeys(key)
+        val at = server
+        serverInfo(at)
+        val recovery = recoveryKeys(key, at)
         val start = call("POST", "/v1/recover/start", buildJsonObject {
             put("email", address)
             put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
-        }) as? JsonObject
+        }, server = at) as? JsonObject
         val dataKey = try {
             AccountKeys.unwrapDataKey(recovery.recoveryWrap, AccountKeys.unb64u((start?.get("recoveryWrappedKey") as? JsonPrimitive)?.content))
         } catch (e: Exception) {
@@ -374,7 +419,7 @@ class AccountService(
         }
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF
-        val keys = passwordKeys(password, salt, kdf)
+        val keys = passwordKeys(password, salt, kdf, at)
         val res = call("POST", "/v1/recover/finish", buildJsonObject {
             put("email", address)
             put("recoveryAuth", AccountKeys.b64u(recovery.recoveryAuth))
@@ -383,8 +428,8 @@ class AccountService(
             put("authKey", AccountKeys.b64u(keys.authKey))
             put("wrappedKey", AccountKeys.b64u(AccountKeys.wrapDataKey(keys.wrapKey, dataKey)))
             put("device", device())
-        }) as? JsonObject
-        attach(address, tokenOf(res), dataKey)
+        }, server = at) as? JsonObject
+        attach(address, tokenOf(res), dataKey, at)
         return detailsOf(res?.get("account"))
     }
 
@@ -408,6 +453,33 @@ class AccountService(
         state = state.copy(error = null)
         forget()
         true
+    }
+
+    // ---- lending the session to team chat ----
+
+    /**
+     * The current session for the workspace routes, or null while signed out. Its server is the address the session
+     * signed in at, so a borrowed token only ever goes there.
+     */
+    internal fun borrowSession(): BorrowedSession? = synchronized(lock) {
+        val s = session ?: return null
+        BorrowedSession(state.sessionServer ?: state.server ?: defaultServer, s.token, sessionTag(s.token), s)
+    }
+
+    /**
+     * A workspace route answered 401 for [borrowed]: this phone signs out as [call] does for an account route's 401,
+     * and only when [borrowed] is still the session it has. A late 401 for a session that ended meanwhile, or for one
+     * before a new sign-in, changes nothing. True when it signed out.
+     */
+    internal fun sessionRefused(borrowed: BorrowedSession): Boolean {
+        val ended = synchronized(lock) {
+            if (session == null || session !== borrowed.ref) return false
+            state = state.copy(error = "signed_out")
+            forget()
+            true
+        }
+        if (ended) changedStatus()
+        return ended
     }
 
     suspend fun details(): AccountDetails {
@@ -488,14 +560,17 @@ class AccountService(
     }
 
     /**
-     * This phone joins the account. Everything it has goes up; what the account has comes down first, so an older
-     * value here doesn't overwrite a newer one there.
+     * This phone joins the account it signed in to at [at]. Everything it has goes up; what the account has comes
+     * down first, so an older value here doesn't overwrite a newer one there. When the server was changed while the
+     * sign-in waited, the session is refused and ended there: its token would otherwise go to the new address.
      */
-    private fun attach(email: String, token: String, dataKey: ByteArray) {
-        synchronized(lock) {
+    private suspend fun attach(email: String, token: String, dataKey: ByteArray, at: String) {
+        val attached = synchronized(lock) {
+            // Under the lock setServer takes too, and it refuses once the session below is set.
+            if ((state.server ?: defaultServer) != at) return@synchronized false
             state = state.copy(
                 email = email,
-                sessionServer = state.server ?: defaultServer,
+                sessionServer = at,
                 token = secrets.encrypt(token),
                 dataKey = secrets.encrypt(Base64.getEncoder().encodeToString(dataKey)),
                 cursor = 0,
@@ -520,14 +595,26 @@ class AccountService(
             }
             open(token, dataKey)
             saveState()
+            true
+        }
+        if (!attached) {
+            try {
+                http.request(at, "POST", "/v1/logout", null, token, null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The server ends the session when it expires.
+            }
+            throw fail("server")
         }
         changedStatus()
         startSync()
         changedStatus()
     }
 
-    /** Under the lock. */
-    private fun forget() {
+    /** Under the lock. [announce] is false only while loading, before anyone can collect [sessionEnded]. */
+    private fun forget(announce: Boolean = true) {
+        val had = session != null || state.token != null
         session = null
         pushJob?.cancel()
         ids.clear()
@@ -548,6 +635,7 @@ class AccountService(
             AccountState(server = state.server, info = state.info, error = state.error)
         }
         saveState()
+        if (had && announce) _sessionEnded.tryEmit(Unit)
     }
 
     // ---- records ----
@@ -975,6 +1063,13 @@ class AccountService(
         }
 
         fun validEmail(email: String): Boolean = EMAIL.matches(email) && email.length <= 320
+
+        /**
+         * The session tag the chat cache is labelled with (contract 3.4): the first 22 characters of base64url SHA-256
+         * of the session token, as desktop's AccountService.sessionTag. It names the session without revealing it.
+         */
+        fun sessionTag(token: String): String =
+            AccountKeys.b64u(java.security.MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))).take(22)
 
         private fun entryKey(c: String, k: String) = "$c\n$k"
 

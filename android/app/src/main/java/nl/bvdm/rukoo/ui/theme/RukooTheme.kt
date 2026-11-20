@@ -72,6 +72,17 @@ object Rk {
 }
 
 /**
+ * Team chat's surfaces: [content] reads chat's caption grey as `text3`, so times, counts and "Last reply" pass 4.5:1,
+ * as desktop's `.chat { --text-3: var(--ch-text-3) }` does. Mail around it keeps its own `text3`.
+ */
+@Composable
+fun ChatInk(content: @Composable () -> Unit) {
+    val colors = LocalRukooColors.current
+    val chat = remember(colors) { colors.forChat() }
+    CompositionLocalProvider(LocalRukooColors provides chat, content = content)
+}
+
+/**
  * Rukoo's theme. Material 3 is the plumbing, not the look: the tokens live in Rukoo's own CompositionLocals,
  * and Material components get a color scheme mapped from them, so a TextField, DropdownMenu or
  * ModalBottomSheet doesn't stand out. Material's ripple is off in favor of [RukooIndication].

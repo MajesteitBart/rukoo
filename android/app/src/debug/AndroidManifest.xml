@@ -15,5 +15,10 @@
             android:name=".mail.sync.DebugSyncReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+        <!-- Debug builds only: team chat's background catch-up from adb, for chat alert tests (see DebugChatSyncReceiver). -->
+        <receiver
+            android:name=".workspaces.DebugChatSyncReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>

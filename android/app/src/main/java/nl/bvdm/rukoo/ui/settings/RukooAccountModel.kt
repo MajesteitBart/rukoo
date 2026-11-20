@@ -20,20 +20,24 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import nl.bvdm.rukoo.AppServices
+import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountDetails
 import nl.bvdm.rukoo.account.AccountError
 import nl.bvdm.rukoo.account.AccountService
 import nl.bvdm.rukoo.account.ServerInfo
 import nl.bvdm.rukoo.core.AppLog
+import nl.bvdm.rukoo.workspaces.InviteLink
+import nl.bvdm.rukoo.workspaces.Workspaces
 
 /**
  * Settings > Rukoo account's work, a port of desktop's src/renderer/rukoo-account.js. It runs here rather than in a
  * page, so folding or leaving the page doesn't cut a sign-up short. The forms' fields live here too, outside any
  * Bundle, so a password is never saved with the activity's state.
  */
-class RukooAccountModel(services: AppServices) : ViewModel() {
+class RukooAccountModel(services: AppServices, private val devHosts: Boolean = BuildConfig.DEBUG) : ViewModel() {
     val account: AccountService? = services.account
+    private val workspaces: Workspaces? = services.workspaces
 
     data class Ui(
         val info: ServerInfo? = null,
@@ -46,12 +50,32 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
         val formError: FormError? = null,
         /** The recovery key, shown once after a sign-up or a new key. */
         val recoveryKey: String? = null,
+        /**
+         * The last sign-up used a workspace invitation link (contract §3.3): once its recovery key is saved, Settings
+         * closes back to Chat, which opens the Join sheet with the link.
+         */
+        val joinWithLink: Boolean = false,
     )
 
     sealed interface FormError {
         data class Code(val code: String) : FormError
 
         data class Text(@StringRes val res: Int) : FormError
+
+        /** An invitation link for a workspace on another server, named by [host]. */
+        data class OtherServer(val host: String) : FormError
+    }
+
+    /** What the sign-up form's invite field holds (contract §3.3). */
+    sealed interface InviteInput {
+        /** The operator's invite code, or nothing. */
+        data class Code(val code: String) : InviteInput
+
+        /** A workspace invitation link for the configured server, which goes as `workspaceInvite`. */
+        data class Link(val link: InviteLink) : InviteInput
+
+        /** A workspace invitation link for another server: refused here, so its secret never leaves the phone. */
+        data class OtherServer(val host: String) : InviteInput
     }
 
     private val _ui = MutableStateFlow(Ui())
@@ -120,6 +144,9 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
 
     fun recoveryKeyShown() = _ui.update { it.copy(recoveryKey = null) }
 
+    /** Chat took over after a sign-up with an invitation link. */
+    fun joinShown() = _ui.update { it.copy(joinWithLink = false) }
+
     enum class Form { SIGN_UP, SIGN_IN, RECOVER }
 
     /** A form's submit (desktop's submit): its own checks first, then the account; [done] gets the toast to show. */
@@ -135,13 +162,21 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
             if (password != f["repeat"].orEmpty()) return stop(FormError.Text(R.string.settings_rukoo_mismatch))
         }
         if (form == Form.SIGN_UP && f["understand"] != "on") return stop(FormError.Text(R.string.settings_rukoo_need_understand))
+        val invite = if (form == Form.SIGN_UP) inviteInput(f["invite"].orEmpty(), acc.server, devHosts) else null
+        if (invite is InviteInput.OtherServer) return stop(FormError.OtherServer(invite.host))
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
             try {
                 when (form) {
                     Form.SIGN_UP -> {
-                        val res = acc.signUp(email, password, f["invite"].orEmpty())
-                        _ui.update { it.copy(recoveryKey = res.recoveryKey) }
+                        val res = when (invite) {
+                            is InviteInput.Link -> acc.signUp(email, password, workspaceInvite = invite.link)
+                            is InviteInput.Code -> acc.signUp(email, password, invite.code)
+                            else -> acc.signUp(email, password, "")
+                        }
+                        // Chat opens the Join sheet with the link next time it shows; it isn't written anywhere (§3.3).
+                        if (invite is InviteInput.Link) workspaces?.rememberJoin(invite.link)
+                        _ui.update { it.copy(recoveryKey = res.recoveryKey, joinWithLink = invite is InviteInput.Link) }
                     }
                     Form.SIGN_IN -> acc.signIn(email, password)
                     Form.RECOVER -> acc.recover(email, f["recoveryKey"].orEmpty(), password)
@@ -208,6 +243,16 @@ class RukooAccountModel(services: AppServices) : ViewModel() {
     companion object {
         private const val FILL_AGAIN_AFTER = 15_000L
         private const val TAG = "RukooAccount"
+
+        /**
+         * What [text] in the invite field is (contract §3.2, §3.3): a workspace invitation link for [server], the
+         * configured credential URL, goes as `workspaceInvite`; a link for another server is refused; anything else is
+         * the operator's invite code, as typed.
+         */
+        fun inviteInput(text: String, server: String, devHosts: Boolean): InviteInput {
+            val link = InviteLink.parse(text, devHosts) ?: return InviteInput.Code(text)
+            return if (link.server == server) InviteInput.Link(link) else InviteInput.OtherServer(hostOf(link.server))
+        }
 
         // JSON.stringify(data, null, 2), as desktop writes the export.
         @OptIn(ExperimentalSerializationApi::class)

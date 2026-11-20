@@ -1,6 +1,7 @@
 // Ported in part from Beautiful UI (beautifului.dev), MIT License, Copyright (c) 2026 Shane Levine.
 package nl.bvdm.rukoo.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,14 +20,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -60,7 +65,9 @@ class RkSheetScope internal constructor(column: ColumnScope, private val close: 
  * A bottom sheet for long menus and pickers on a phone (the message menu, the chat list, the model list):
  * `raised`, 14dp top corners, a 36x4 drag handle in `borderStrong`, over Rukoo's scrim. Long flows such as
  * the chat get a full-screen route instead (spec 6 §5.5). Show it while a flag is set and clear the flag in
- * [onDismissRequest]; rows call [RkSheetScope.dismiss] to close it with its animation.
+ * [onDismissRequest]; rows call [RkSheetScope.dismiss] to close it with its animation. [holdClose] is asked before a
+ * swipe down, a tap on the scrim or Back closes it: true keeps it open, for a sheet that asks first. [RkSheetScope.dismiss]
+ * closes without asking.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,10 +75,12 @@ fun RkBottomSheet(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     title: String? = null,
+    holdClose: (() -> Boolean)? = null,
     content: @Composable RkSheetScope.() -> Unit,
 ) {
     val c = Rk.colors
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val hold by rememberUpdatedState(holdClose)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { it != SheetValue.Hidden || hold?.invoke() != true })
     val scope = rememberCoroutineScope()
     val close: () -> Unit = {
         scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismissRequest() }
@@ -89,6 +98,8 @@ fun RkBottomSheet(
             Box(Modifier.padding(top = 8.dp, bottom = 6.dp).size(36.dp, 4.dp).background(c.borderStrong, Rk.shapes.pill))
         },
     ) {
+        // Back skips confirmValueChange, so a sheet that asks first takes Back itself.
+        BackHandler(enabled = holdClose != null) { if (hold?.invoke() != true) close() }
         Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
             if (title != null) SheetHeading(title)
             RkSheetScope(this, close).content()
@@ -144,14 +155,14 @@ fun SheetRow(
     }
 }
 
-/** A heading inside a sheet or menu: 11.5/600 `text3`. */
+/** A heading inside a sheet or menu: 11.5/600 `text3`, or [color] where the heading carries information. */
 @Composable
-fun SheetHeading(text: String, modifier: Modifier = Modifier) {
+fun SheetHeading(text: String, modifier: Modifier = Modifier, color: Color = Rk.colors.text3) {
     Text(
         text,
         modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 4.dp),
         style = Rk.type.text11_5.semibold,
-        color = Rk.colors.text3,
+        color = color,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
     )
@@ -226,7 +237,7 @@ private class MenuPositionProvider(private val dx: Int, private val gap: Int, pr
 }
 
 /**
- * A row in an [RkDropdownMenu] (bui.js `glideMenu` rows): 40dp on touch, 6dp corners inside the menu's 4dp
+ * A row in an [RkDropdownMenu] (bui.js `glideMenu` rows): 48dp on touch (Android's touch target), 6dp corners inside the menu's 4dp
  * inset, icon 16 in `ink2`, label 12.5/500, a [tag] in `ink3` and a check on the [checked] row. [leading]
  * replaces the icon, for a status dot.
  */
@@ -247,7 +258,7 @@ fun RkMenuItem(
         modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp)
-            .heightIn(min = 40.dp)
+            .heightIn(min = 48.dp)
             .alpha(if (enabled) 1f else 0.45f)
             .rkClickable(Rk.shapes.chip, enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp),

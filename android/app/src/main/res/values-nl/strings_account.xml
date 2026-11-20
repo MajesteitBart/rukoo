@@ -50,6 +50,7 @@
     <string name="settings_rukoo_repeat">Herhaal wachtwoord</string>
     <string name="settings_rukoo_mismatch">De wachtwoorden zijn niet gelijk.</string>
     <string name="settings_rukoo_invite">Uitnodigingscode</string>
+    <string name="settings_rukoo_invite_chat_help">Een uitnodigingslink voor een werkruimte in teamchat werkt ook als uitnodigingscode.</string>
     <string name="settings_rukoo_understand">Ik begrijp dat alleen mijn herstelsleutel me terug in mijn account brengt als ik mijn wachtwoord vergeet.</string>
     <string name="settings_rukoo_need_understand">Vink het vakje aan om te bevestigen.</string>
     <string name="settings_rukoo_create">Account maken</string>
@@ -104,9 +105,14 @@
     <string name="settings_rukoo_exported">Gegevens geëxporteerd</string>
     <string name="settings_rukoo_sign_out">Uitloggen</string>
     <string name="settings_rukoo_sign_out_help">Deze telefoon stopt met synchroniseren en houdt een eigen kopie van je categorieën.</string>
+    <plurals name="settings_rukoo_unsent_chat">
+        <item quantity="one">%d chatbericht is nog niet verstuurd en gaat verloren als je uitlogt.</item>
+        <item quantity="other">%d chatberichten zijn nog niet verstuurd en gaan verloren als je uitlogt.</item>
+    </plurals>
     <string name="settings_rukoo_signed_out">Uitgelogd</string>
     <string name="settings_rukoo_delete">Account verwijderen</string>
     <string name="settings_rukoo_delete_help">Verwijdert je account en alles erin van de server. Je apparaten houden hun eigen kopie en stoppen met synchroniseren. Dit kan niet ongedaan worden gemaakt.</string>
+    <string name="settings_rukoo_delete_chat_note">Berichten die je in teamchat schreef, blijven in hun werkruimtes staan onder een verwijderd lid, tot de bewaartermijn van elke werkruimte ze verwijdert.</string>
     <string name="settings_rukoo_deleted">Account verwijderd</string>
 
     <string name="settings_rukoo_stored">Opgeslagen in je account</string>

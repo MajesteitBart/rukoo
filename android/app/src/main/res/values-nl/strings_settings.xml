@@ -247,6 +247,8 @@
     <string name="settings_notifications_new_mail_help">Toon een melding bij nieuwe e-mails.</string>
     <string name="settings_notifications_agents_row">Antwoorden van agents</string>
     <string name="settings_notifications_agents_help">Antwoorden, concepten en goedkeuringsvragen terwijl hun chat niet open is.</string>
+    <string name="settings_general_chat_notifications">Meldingen van teamchat</string>
+    <string name="settings_general_chat_notifications_help">Directe berichten en vermeldingen in je werkruimtes.</string>
     <string name="settings_notifications_system">Meldingsinstellingen</string>
     <string name="settings_notifications_system_help">Geluiden, het vergrendelscherm en elk soort melding, in de instellingen van Android</string>
 

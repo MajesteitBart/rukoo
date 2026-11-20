@@ -262,6 +262,8 @@
     <string name="settings_notifications_new_mail_help">Show a notification for new emails.</string>
     <string name="settings_notifications_agents_row">Agent replies</string>
     <string name="settings_notifications_agents_help">Answers, drafts and approval requests while their chat isn\'t open.</string>
+    <string name="settings_general_chat_notifications">Team chat notifications</string><!-- settings.general.chatNotifications -->
+    <string name="settings_general_chat_notifications_help">Direct messages and mentions in your workspaces.</string><!-- settings.general.chatNotificationsHelp -->
     <string name="settings_notifications_system">Notification settings</string>
     <string name="settings_notifications_system_help">Sounds, the lock screen and each kind of notification, in Android\'s settings</string>
 

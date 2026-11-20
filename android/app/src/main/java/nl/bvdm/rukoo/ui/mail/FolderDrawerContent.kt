@@ -60,6 +60,7 @@ import nl.bvdm.rukoo.ui.components.SheetRow
 import nl.bvdm.rukoo.ui.components.StatusDot
 import nl.bvdm.rukoo.ui.components.rkClickable
 import nl.bvdm.rukoo.ui.icons.RukooIcons
+import nl.bvdm.rukoo.ui.chat.AppModeSwitch
 import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.settings.CategoryDot
 import nl.bvdm.rukoo.ui.theme.AccountColors
@@ -70,9 +71,9 @@ import nl.bvdm.rukoo.ui.theme.tabular
 import nl.bvdm.rukoo.ui.theme.weight
 
 /**
- * The folder drawer, the desktop sidebar on a phone (spec 6 §4.3 and §5.2): the account switch, the
- * unified views with their counts, each account's own folders with a color dot, the sync status and
- * Settings. Views keep the account scope the switch chose. Two panes show it as a drawer; one pane as
+ * The folder drawer, the desktop sidebar on a phone (spec 6 §4.3 and §5.2): the Mail and Chat switch while the
+ * server has team chat, the account switch, the unified views with their counts, each account's own folders with a
+ * color dot, the sync status and Settings. Views keep the account scope the switch chose. Two panes show it as a drawer; one pane as
  * [FolderSheet].
  */
 @Composable
@@ -167,6 +168,8 @@ private fun Folders(app: AppViewModel, modifier: Modifier, pick: (MailView) -> U
     }
 
     Column(modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
+        // Mail or Chat, while the server has team chat (contract §3.1); above the account switch.
+        AppModeSwitch(app, Modifier.padding(bottom = 12.dp))
         // The account switch (styles.css:655-694).
         val account = scope?.let { id -> accounts.firstOrNull { it.id == id } } ?: accounts.singleOrNull()
         Row(

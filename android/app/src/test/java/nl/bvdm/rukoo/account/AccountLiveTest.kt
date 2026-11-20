@@ -164,7 +164,7 @@ class AccountLiveTest {
               const acc = new AccountService({ dataDir: dir, secrets, defaultServer: server, deviceName: 'desktop', platform: 'linux' }).init();
               try {
                 const w = JSON.parse(write);
-                if (step === 'signup') await acc.signUp({ email, password });
+                if (step === 'signup') await acc.signUp({ email, password, invite: process.env.RUKOO_DESKTOP_INVITE });
                 else await acc.signIn({ email, password });
                 await acc.sync();
                 for (const r of w.put || []) acc.put(r.c, r.k, r.v, { ifAbsent: Boolean(r.ifAbsent) });
@@ -182,7 +182,10 @@ class AccountLiveTest {
         // What to write goes through the environment: on Windows, an argument loses its double quotes on the way to Node.
         val process = ProcessBuilder(node, "-e", script, repo.path, server, step, address, password)
             .redirectErrorStream(false)
-            .apply { environment()["RUKOO_DESKTOP_WRITE"] = write.toString() }
+            .apply {
+                environment()["RUKOO_DESKTOP_WRITE"] = write.toString()
+                environment()["RUKOO_DESKTOP_INVITE"] = invite
+            }
             .start()
         val out = process.inputStream.bufferedReader().readText()
         val err = process.errorStream.bufferedReader().readText()
