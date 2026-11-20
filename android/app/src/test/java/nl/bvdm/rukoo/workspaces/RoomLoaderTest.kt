@@ -385,6 +385,22 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `a room folded behind the list opens again at its saved scroll row below the cut`() = runTest {
+        val h = SyncHarness(this, db, SyncTiming(roomCacheMax = 50)).start()
+        h.withRoom(head = 200)
+        h.sync.loader.open(general)
+        h.sync.loader.older(general)
+        h.sync.loader.older(general)
+        // The person scrolled back to 60; folding closes the room and cuts its range above that.
+        h.sync.loader.close(general)
+        assertTrue(h.events().none { it.seq == 60L })
+        // RoomPane's saved position opens it at that row's seq, and the row is back.
+        h.sync.loader.open(general, at = 60)
+        assertTrue(h.events().any { it.seq == 60L })
+        assertTrue(h.sync.loader.rooms.value.getValue(general).complete)
+    }
+
+    @Test
     fun `opening another room cuts the last one back to ROOM_CACHE_MAX`() = runTest {
         val h = SyncHarness(this, db, SyncTiming(roomCacheMax = 50)).start()
         h.withRoom(head = 200)

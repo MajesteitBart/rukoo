@@ -25,9 +25,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -63,7 +65,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.Avatar
 import nl.bvdm.rukoo.ui.components.EmptyState
@@ -265,7 +269,26 @@ private fun NotJoinedNote(channel: Channel) {
  * view model keeps it for the opening (folding, the background and a thread over the room keep it), so another opening
  * starts at the bottom, from where the New divider is placed again (§3.18).
  */
-data class TimelineScroll(val opening: Long, val key: String?, val index: Int, val offset: Int) {
+data class TimelineScroll(val opening: Long, val key: String?, val index: Int, val offset: Int, val seq: Long? = null) {
+    companion object {
+        /**
+         * The seq a load has to reach for the row at [index] of [items] (bottom up) to show again: the nearest row at or
+         * above it that has one, as a day divider or the New divider shows with the messages around it; else the nearest
+         * below it. Null when no row has one.
+         */
+        fun seqNear(items: List<ChatTimeline.Row>, index: Int): Long? {
+            fun seqOf(row: ChatTimeline.Row): Long? = when (row) {
+                is ChatTimeline.Message -> row.seq.takeIf { row.pending == null }
+                is ChatTimeline.Sys -> row.seq
+                else -> null
+            }
+            if (index < 0 || index >= items.size) return null
+            for (i in index until items.size) seqOf(items[i])?.let { return it }
+            for (i in index - 1 downTo 0) seqOf(items[i])?.let { return it }
+            return null
+        }
+    }
+
     /** Whether the timeline was at the bottom, following new messages. */
     val atBottom: Boolean get() = index == 0 && offset < STICK_PX
 
@@ -382,14 +405,15 @@ private fun RoomLog(
         val (index, offset) = restored?.restoreIn(keys) ?: (0 to 0)
         LazyListState(index, offset)
     }
-    // The row the saved position showed may come with a later page: the position is final once it did, or once the
-    // load ended without it, and is saved from then on.
-    var anchored by remember(count) { mutableStateOf(restored == null || restored.atBottom || restored.key in keys) }
+    // The row a saved position showed may be older than what the cache kept while the room was off screen: the
+    // position waits for a load back to it, and nothing replaces it meanwhile (ScrollAnchor).
+    val anchor = remember(count) { ScrollAnchor(restored).also { it.start(keys) } }
+    var anchorCheck by remember(count) { mutableIntStateOf(0) }
     var placed by remember(count) { mutableStateOf(if (opening.readAt != null) count else null) }
     val positioned = placed == count
     val scope = rememberCoroutineScope()
     var older by remember(ws, room) { mutableStateOf(Older.IDLE) }
-    var lastReported by remember(ws, room) { mutableLongStateOf(0L) }
+    val reports = remember(ws, room) { ReadReports() }
     // The newest message seen in this opening, for the Latest pill's count; kept with the opening across folding.
     var seen by rememberSaveable(count) { mutableLongStateOf(readAt) }
     // At the bottom, following new messages; a scroll position kept across a fold may be elsewhere.
@@ -513,29 +537,65 @@ private fun RoomLog(
         if (positioned && opening.readAt != null && opening.resets != t.resets) app.roomPlaced(count, t.readAtOpen, t.resets)
     }
 
-    // A position kept from earlier in the opening, put back at the row it showed once that row is loaded.
-    LaunchedEffect(keys, t.loading) {
-        val r = restored ?: return@LaunchedEffect
-        if (anchored) return@LaunchedEffect
-        val i = r.key?.let { keys.indexOf(it) } ?: -1
-        if (i >= 0) listState.scrollToItem(i, r.offset)
-        if (i >= 0 || !t.loading) anchored = true
+    // A position kept from earlier in the opening, put back at the row it showed once that row is loaded: after a
+    // load back to its seq when the cache no longer reached it.
+    LaunchedEffect(keys, t.loading, anchorCheck) {
+        when (val step = anchor.onTimeline(keys, t.events, t.loading)) {
+            is ScrollAnchor.Step.ScrollTo -> {
+                listState.scrollToItem(step.index, step.offset)
+                pinned = false
+            }
+            is ScrollAnchor.Step.Reach -> scope.launch {
+                try {
+                    workspaces.open(ws, room, step.seq)
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Offline or refused: the position stands where the list shows it once the timeline settles.
+                }
+                // Read after the load ended, this holds every page it loaded; the timeline on screen may be a build behind.
+                val loaded = try {
+                    withTimeoutOrNull(ANCHOR_WAIT_MS) { workspaces.timeline(ws, room).first() }
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+                anchor.reached(loaded?.events?.minOfOrNull { it.seq })
+                anchorCheck += 1
+            }
+            else -> Unit
+        }
     }
 
-    // Where the timeline is, for the view model to bring back later in this opening.
-    LaunchedEffect(listState, anchored) {
-        if (!anchored) return@LaunchedEffect
+    // Where the timeline is, for the view model to bring back later in this opening. A saved row the cache lost under
+    // the list isn't replaced: it waits for its load.
+    val currentItems by rememberUpdatedState(items)
+    val currentKeys by rememberUpdatedState(keys)
+    LaunchedEffect(listState) {
         snapshotFlow {
             val index = listState.firstVisibleItemIndex
             val key = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
-            TimelineScroll(count, key, index, listState.firstVisibleItemScrollOffset)
-        }.distinctUntilChanged().collect { app.roomScrolled(it) }
+            TimelineScroll(count, key, index, listState.firstVisibleItemScrollOffset, TimelineScroll.seqNear(currentItems, index))
+        }.distinctUntilChanged().collect { now ->
+            val waited = anchor.waiting != null
+            if (anchor.onScrolled(now, currentKeys)) app.roomScrolled(now) else if (!waited) anchorCheck += 1
+        }
     }
 
     // Follow the user's own scrolling: near the bottom the timeline sticks to new messages, else the Latest pill shows.
     LaunchedEffect(listState) {
         snapshotFlow { Triple(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) }
-            .collect { (index, offset, scrolling) -> if (scrolling) pinned = index == 0 && offset < STICK_PX }
+            .collect { (index, offset, scrolling) ->
+                if (scrolling) {
+                    pinned = index == 0 && offset < STICK_PX
+                    // The person's own scroll stands over a saved position still waiting for its row.
+                    if (anchor.waiting != null) {
+                        anchor.cancel()
+                        anchorCheck += 1
+                    }
+                }
+            }
     }
     // A new row at the bottom: stay with it while pinned, and always for your own send. The row that was at the bottom
     // when the pane appeared is no news.
@@ -561,6 +621,12 @@ private fun RoomLog(
             .collect { near -> if (near && older == Older.IDLE) loadOlder() }
     }
 
+    // A read position that moved back (a restore's pass took it from the restored feed): what this opening reported
+    // and saw belongs to the old generation, so both start over from the new position.
+    LaunchedEffect(t.room.read) {
+        if (reports.follow(t.room.read)) seen = t.room.read
+    }
+
     // Reading (§3.9): the newest message fully in view, 1 second after the last change, when higher than the last
     // report, while the room may report and once this opening placed its New divider.
     LaunchedEffect(listState, rows, canRead, positioned) {
@@ -574,10 +640,7 @@ private fun RoomLog(
             val seq = ChatTimeline.readableSeq(rows, keys) ?: return@collectLatest
             if (seq > seen) seen = seq
             delay(READ_REPORT_DELAY_MS)
-            if (seq > lastReported && seq > t.room.read) {
-                lastReported = seq
-                workspaces.markRead(ws, room, seq)
-            }
+            reports.next(seq, t.room.read)?.let { workspaces.markRead(ws, room, it) }
         }
     }
 }
@@ -940,6 +1003,9 @@ private const val OLDER_AHEAD = 10
 
 // §3.19 READ_REPORT_DELAY.
 private const val READ_REPORT_DELAY_MS = 1_000L
+
+/** How long a saved scroll position's load waits for the timeline it loaded, as an opening at a seq does. */
+private const val ANCHOR_WAIT_MS = 5_000L
 
 // A quick send shows nothing, so it doesn't flicker (desktop-ui 5.3).
 private const val SENDING_QUIET_MS = 1_000L
