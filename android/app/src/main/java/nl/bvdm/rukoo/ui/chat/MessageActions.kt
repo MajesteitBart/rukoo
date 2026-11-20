@@ -60,10 +60,44 @@ object MessageRules {
     /** Whether the menu offers Copy text. */
     fun canCopy(message: ChatTimeline.Message): Boolean = !message.removed && !message.text.isNullOrEmpty()
 
+    /**
+     * Whether the menu offers Block {author} (contract §5.5, desktop chat-view.js): a full member ([myRole]) on a sent
+     * message by someone else who is an active full member and isn't blocked yet. Unblocking is the Blocked list's.
+     */
+    fun canBlock(message: ChatTimeline.Message, me: String?, myRole: String?, author: Member?, blocked: Set<String>): Boolean =
+        message.pending == null && message.id != null && me != null && message.actor != me && ChatListModel.isFullMember(myRole) &&
+            author != null && author.state == "active" && ChatListModel.isFullMember(author.role) && message.actor !in blocked
+
+    /** The menu's items in their order: Reply in thread, Copy text, Block {author}, Remove message. */
+    fun actions(
+        message: ChatTimeline.Message,
+        me: String?,
+        room: Room,
+        inThread: Boolean,
+        myRole: String?,
+        author: Member?,
+        blocked: Set<String>,
+    ): List<MessageAction> = buildList {
+        if (canReply(message, inThread)) add(MessageAction.REPLY)
+        if (canCopy(message)) add(MessageAction.COPY)
+        if (canBlock(message, me, myRole, author, blocked)) add(MessageAction.BLOCK)
+        if (canRemove(message, me, room)) add(MessageAction.REMOVE)
+    }
+
     /** Whether a long press opens the menu at all. */
-    fun hasActions(message: ChatTimeline.Message, me: String?, room: Room, inThread: Boolean): Boolean =
-        canReply(message, inThread) || canCopy(message) || canRemove(message, me, room)
+    fun hasActions(
+        message: ChatTimeline.Message,
+        me: String?,
+        room: Room,
+        inThread: Boolean,
+        myRole: String?,
+        author: Member?,
+        blocked: Set<String>,
+    ): Boolean = actions(message, me, room, inThread, myRole, author, blocked).isNotEmpty()
 }
+
+/** An item of a message's menu. */
+enum class MessageAction { REPLY, COPY, BLOCK, REMOVE }
 
 /** Puts [text] on the clipboard, unmarked (android.md: the sensitive flag stays off), and says so. */
 internal fun copyText(context: Context, app: AppViewModel, text: String) {
@@ -73,8 +107,9 @@ internal fun copyText(context: Context, app: AppViewModel, text: String) {
 
 /**
  * The menu of a message (android.md "Conversation", contract §5.5): Reply in thread (in the main timeline), Copy text,
- * and Remove message when the person may, which asks first. A long press opens it. It covers the panes, so the
- * timeline reports nothing as read meanwhile.
+ * Block {author} on someone else's message, which asks first like the member menu's, and Remove message when the
+ * person may, which asks first. A long press opens it. It covers the panes, so the timeline reports nothing as read
+ * meanwhile.
  */
 @Composable
 internal fun MessageActionsSheet(
@@ -83,6 +118,8 @@ internal fun MessageActionsSheet(
     room: Room,
     message: ChatTimeline.Message,
     me: String?,
+    myRole: String?,
+    blocked: Set<String>,
     inThread: Boolean,
     where: String,
     author: Member?,
@@ -91,22 +128,31 @@ internal fun MessageActionsSheet(
 ) {
     val context = LocalContext.current
     app.chatUi.Covering()
+    val actions = MessageRules.actions(message, me, room, inThread, myRole, author, blocked)
     RkBottomSheet(onDismissRequest = onDismiss, title = stringResource(R.string.chat_msg_actions)) {
         val sheet = this
-        if (MessageRules.canReply(message, inThread)) {
+        if (MessageAction.REPLY in actions) {
             SheetRow(stringResource(R.string.chat_msg_reply), icon = ChatIcons.Bubble, onClick = {
                 sheet.dismiss()
                 app.openThread(message.root ?: message.id!!)
             })
         }
-        if (MessageRules.canCopy(message)) {
+        if (MessageAction.COPY in actions) {
             SheetRow(stringResource(R.string.chat_msg_copy), icon = PanelIcons.named("copy"), onClick = {
                 sheet.dismiss()
                 copyText(context, app, message.text.orEmpty())
             })
         }
-        if (MessageRules.canRemove(message, me, room)) {
-            if (MessageRules.canReply(message, inThread) || MessageRules.canCopy(message)) SheetDivider()
+        if (MessageAction.BLOCK in actions) {
+            if (MessageAction.REPLY in actions || MessageAction.COPY in actions) SheetDivider()
+            val name = names.display(author)
+            SheetRow(stringResource(R.string.chat_head_block, name), icon = RukooIcons.Ban, onClick = {
+                sheet.dismiss()
+                app.chatUi.askBlock(ws, message.actor, name)
+            })
+        }
+        if (MessageAction.REMOVE in actions) {
+            if (actions.first() != MessageAction.REMOVE) SheetDivider()
             SheetRow(stringResource(R.string.chat_msg_remove), icon = RukooIcons.Trash, danger = true, onClick = {
                 sheet.dismiss()
                 val other = if (message.actor == me) null else names.display(author)

@@ -3,6 +3,7 @@ package nl.bvdm.rukoo.ui.chat
 import nl.bvdm.rukoo.ui.chat.ChatTimeline.Message
 import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Event
+import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.PendingState
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
@@ -82,7 +83,38 @@ class ChatComposerRulesTest {
         assertTrue(MessageRules.canReply(message(sanne, root = "e_0"), inThread = false))
         assertTrue(MessageRules.canCopy(message(sanne)))
         assertFalse(MessageRules.canCopy(message(sanne, removed = true)))
-        assertFalse(MessageRules.hasActions(message(sanne, removed = true), me, room(), inThread = true))
+        assertFalse(MessageRules.hasActions(message(sanne, removed = true), me, room(), inThread = true, "guest", member(sanne), emptySet()))
+    }
+
+    private fun member(id: String, role: String = "member", state: String = "active") = Member(id = id, name = "Sanne", role = role, state = state)
+
+    @Test
+    fun `the message menu offers Block on someone else's message, between Copy and Remove, as long as they can be blocked`() {
+        val none = emptySet<String>()
+        val sanneMember = member(sanne)
+        assertEquals(
+            listOf(MessageAction.REPLY, MessageAction.COPY, MessageAction.BLOCK),
+            MessageRules.actions(message(sanne), me, room(), inThread = false, "member", sanneMember, none),
+        )
+        // A manager sees Block before Remove; in a thread, no Reply.
+        assertEquals(
+            listOf(MessageAction.COPY, MessageAction.BLOCK, MessageAction.REMOVE),
+            MessageRules.actions(message(sanne), me, room(role = "manager"), inThread = true, "owner", sanneMember, none),
+        )
+        // In a DM too, and on a removed message, which then still opens the menu.
+        assertEquals(listOf(MessageAction.BLOCK), MessageRules.actions(message(sanne, removed = true), me, room(RoomKind.DM), inThread = true, "admin", sanneMember, none))
+        assertTrue(MessageRules.hasActions(message(sanne, removed = true), me, room(), inThread = true, "member", sanneMember, none))
+        // Never on your own messages.
+        assertEquals(listOf(MessageAction.REPLY, MessageAction.COPY, MessageAction.REMOVE), MessageRules.actions(message(me), me, room(), inThread = false, "member", member(me), none))
+        // Not when they're blocked already: the Blocked list unblocks.
+        assertEquals(listOf(MessageAction.REPLY, MessageAction.COPY), MessageRules.actions(message(sanne), me, room(), inThread = false, "member", sanneMember, setOf(sanne)))
+        // Not for a guest who reads, nor about a guest, a former member or someone unknown.
+        assertFalse(MessageAction.BLOCK in MessageRules.actions(message(sanne), me, room(), inThread = false, "guest", sanneMember, none))
+        assertFalse(MessageAction.BLOCK in MessageRules.actions(message(sanne), me, room(), inThread = false, "member", member(sanne, role = "guest"), none))
+        assertFalse(MessageAction.BLOCK in MessageRules.actions(message(sanne), me, room(), inThread = false, "member", member(sanne, state = "former"), none))
+        assertFalse(MessageAction.BLOCK in MessageRules.actions(message(sanne), me, room(), inThread = false, "member", null, none))
+        // Not on a message that isn't sent.
+        assertFalse(MessageAction.BLOCK in MessageRules.actions(message(sanne, pending = PendingState.FAILED), me, room(), inThread = false, "member", sanneMember, none))
     }
 
     @Test

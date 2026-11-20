@@ -141,6 +141,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
     val notJoined = if (roomModel == null) view?.channels?.firstOrNull { it.id == room && !it.joined } else null
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
     val me = view?.me?.id
+    val blocked = remember(view) { view?.blocks.orEmpty().mapTo(HashSet()) { it.member } }
     val names = rememberChatNames()
     val title = roomModel?.let { if (it.kind == RoomKind.DM) names.title(it, members, me) else "#${it.name.orEmpty()}" }
         ?: notJoined?.let { "#${it.name}" }.orEmpty()
@@ -183,14 +184,14 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                     opening = opening,
                     t = t,
                     members = members,
-                    blocked = view?.blocks.orEmpty().mapTo(HashSet()) { it.member },
+                    blocked = blocked,
                     me = me,
                     names = names,
                     workspace = summary?.name.orEmpty(),
                     host = chat.host,
                     retentionDays = chat.retention?.contentDays,
                     canRead = canRead,
-                    onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false)) actionsFor = row },
+                    onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false, view?.me?.role, members[row.actor], blocked)) actionsFor = row },
                 )
             }
         }
@@ -223,6 +224,8 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                 room = roomModel,
                 message = target,
                 me = me,
+                myRole = view?.me?.role,
+                blocked = blocked,
                 inThread = false,
                 where = title,
                 author = members[target.actor],

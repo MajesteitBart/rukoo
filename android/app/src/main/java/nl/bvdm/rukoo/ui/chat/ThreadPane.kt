@@ -118,7 +118,7 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
             onOpenThread = null,
             onOpenUrl = app::openUrl,
             reasonText = { app.chatUi.reasonText(it, app.chatUi.context(ws)) },
-            onLongPress = { row -> if (MessageRules.hasActions(row, me, roomModel, inThread = true)) actionsFor = row },
+            onLongPress = { row -> if (MessageRules.hasActions(row, me, roomModel, inThread = true, view?.me?.role, members[row.actor], blocked)) actionsFor = row },
             onPending = { row, action ->
                 row.local?.let { local ->
                     app.chatUi.pendingAction(ws, room, PendingRow(local, row.root, row.text.orEmpty(), row.mentions), action) { copyText(context, app, it) }
@@ -205,6 +205,8 @@ fun ThreadPane(app: AppViewModel, ws: String, room: String, root: String, modifi
                 room = roomModel,
                 message = row,
                 me = me,
+                myRole = view?.me?.role,
+                blocked = blocked,
                 inThread = true,
                 where = roomTitle,
                 author = members[row.actor],
