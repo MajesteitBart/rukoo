@@ -52,6 +52,8 @@
   --text: #ecedf1;
   --text-2: #a7adba;
   --text-3: #7a808e;
+  /* Team chat's caption grey: timestamps and counts in chat pass 4.5:1 on the panel and on dialogs, mail keeps --text-3. */
+  --ch-text-3: #8a909e;
   --accent: #7aa5f5;
   --accent-soft: rgba(122, 165, 245, 0.15);
   --link: #8ab0ff;
@@ -94,6 +96,7 @@
   --text: #16181d;
   --text-2: #565c69;
   --text-3: #868b98;
+  --ch-text-3: #666b7a;
   --accent: #2f66d6;
   --accent-soft: rgba(47, 102, 214, 0.1);
   --link: #2f63c8;
@@ -2800,10 +2803,11 @@ body.dragging-mail .nav-item * {
 .dialog .buttons button.left {
   margin-right: auto;
 }
+/* White on the light red, the dark ink on dark's lighter red: both keep the label above 4.5:1. */
 .dialog .buttons button.danger:last-child {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-primary);
 }
 .choices {
   display: flex;
@@ -10452,6 +10456,14 @@ button.mt-person:disabled {
   position: relative;
   container: chat / inline-size;
 }
+/* Chat's surfaces draw their captions (times, counts, "Last reply") in chat's own caption grey, which passes 4.5:1;
+   the mail around them keeps --text-3. */
+.chat,
+.ch-nav,
+.ch-ws-switch,
+.ch-form {
+  --text-3: var(--ch-text-3);
+}
 .shell.chat-mode .chat {
   display: flex;
 }
@@ -10542,7 +10554,7 @@ body.chat-mode .titlebar-search {
   font-variant-numeric: tabular-nums;
 }
 .ch-row-quiet {
-  color: var(--text-3);
+  color: var(--text-2);
 }
 .ch-side-fill {
   flex: 1;
@@ -10685,6 +10697,10 @@ body.chat-mode .titlebar-search {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* The header line says who hosts a DM and can read it, or who is in a channel: read, so in the supporting ink. */
+.ch-meta {
+  color: var(--text-2);
 }
 .ch-actions {
   display: flex;
@@ -10976,7 +10992,7 @@ body.chat-mode .titlebar-search {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: var(--text-3);
+  color: var(--text-2);
 }
 .ch-removed svg {
   width: 14px;
@@ -11532,6 +11548,10 @@ button.ch-replies .ch-replies-n {
 .ch-form .error {
   margin: -8px 0 0;
 }
+/* A chat form's help says what a choice does ("You can't change this later.", what an invitation link gives). */
+.ch-form .field-help {
+  color: var(--text-2);
+}
 .ch-host {
   font-size: 12.5px;
 }
@@ -12024,7 +12044,7 @@ button.ch-replies .ch-replies-n {
   padding: 6px 8px 2px;
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--text-2);
 }
 .ch-pick .ch-check-row {
   min-height: 40px;
