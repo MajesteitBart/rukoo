@@ -13,7 +13,8 @@ const { execFileSync } = require('child_process');
 
 const DIR = path.join(__dirname, '../src/renderer/emoji');
 const dataUrl = (source) => `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-const read = (file) => fs.readFileSync(path.join(DIR, file), 'utf8');
+// With LF line endings, as committed: a Windows checkout can turn them into CRLF.
+const read = (file) => fs.readFileSync(path.join(DIR, file), 'utf8').replace(/\r\n/g, '\n');
 
 // index.js as a data: URL whose imports of the data are data: URLs too (a browser module in a CommonJS package), with
 // the data module of a language replaced when a test needs that. The comment makes each one a module of its own.
