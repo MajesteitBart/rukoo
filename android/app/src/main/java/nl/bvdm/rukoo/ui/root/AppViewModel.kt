@@ -611,6 +611,16 @@ class AppViewModel(
     }
 
     /**
+     * A broken cache was made again and took unsent messages with it (§3.4, ChatState.lostUnsent): the app toast says
+     * how many, once. RukooRoot calls this when the state carries a count, after it set the strings, so the count isn't
+     * taken before there is text to show it with. The toast shows the count taken: none when another caller took it.
+     */
+    fun noticeLostUnsent() {
+        val lost = services.workspaces?.takeLostUnsent() ?: 0
+        if (lost > 0) mailUi.toasts.showError(chatUi.strings.plural(R.plurals.chat_lost_unsent, lost, lost))
+    }
+
+    /**
      * With nothing selected, Chat shows the workspace the service last selected, else the first. It happens behind
      * whatever is on screen, so a drawer that is open stays open.
      */

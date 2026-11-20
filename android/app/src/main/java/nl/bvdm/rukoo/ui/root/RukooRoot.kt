@@ -158,6 +158,9 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
     // it goes away; until the workspace service first says it's there, a Chat mode restored from saved state shows
     // Mail here and waits.
     val chatAvailable = chatState.available
+    // Unsent messages a broken chat cache took with it: one toast, after the SideEffect above gave it its text (§3.4).
+    val lostUnsent = chatState.lostUnsent > 0
+    LaunchedEffect(lostUnsent) { if (lostUnsent) app.noticeLostUnsent() }
     val chatMode = nav.mode == AppMode.CHAT && chatAvailable
     // The presets' names follow the language until someone renames them.
     val locales = LocalConfiguration.current.locales

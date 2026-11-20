@@ -477,4 +477,8 @@
         <item quantity="one">Nog %d byte over</item>
         <item quantity="other">Nog %d bytes over</item>
     </plurals>
+    <plurals name="chat_lost_unsent">
+        <item quantity="one">%d chatbericht was nog niet verstuurd en is verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
+        <item quantity="other">%d chatberichten waren nog niet verstuurd en zijn verloren gegaan toen Rukoo de chatopslag moest herstellen.</item>
+    </plurals>
 </resources>

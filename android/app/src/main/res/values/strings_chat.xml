@@ -502,4 +502,10 @@
         <item quantity="one">%d byte left</item>
         <item quantity="other">%d bytes left</item>
     </plurals>
+    <!-- Toast, once, after a damaged chat cache was made again with unsent messages in it (contract §3.4
+         ChatState.lostUnsent). Worded like settings.rukoo.unsentChat; desktop has no key for it yet (chat.lostUnsent). -->
+    <plurals name="chat_lost_unsent">
+        <item quantity="one">%d chat message hadn\'t been sent yet and was lost when Rukoo had to repair its chat storage.</item>
+        <item quantity="other">%d chat messages hadn\'t been sent yet and were lost when Rukoo had to repair its chat storage.</item>
+    </plurals>
 </resources>

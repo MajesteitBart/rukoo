@@ -507,6 +507,34 @@ class ChatNavTest {
     }
 
     @Test
+    fun `unsent messages a broken cache took are told once, in the app toast`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(listOf(summary("w1"))).copy(lostUnsent = 2)
+        val (_, vm) = vm(w)
+        assertNull("the view model doesn't take the count before the root gave it its strings", vm.mailUi.toasts.current)
+        assertEquals(0, w.takes)
+        vm.noticeLostUnsent()
+        assertEquals("${R.plurals.chat_lost_unsent}|2", vm.mailUi.toasts.current?.message)
+        assertEquals("an error toast's 5 seconds", 5000L, vm.mailUi.toasts.current?.durationMs)
+        assertEquals("taken, so the state no longer carries it", 0, w.state.value.lostUnsent)
+        // Asked again, by the same view model or one made again after a rotation: nothing more to say.
+        vm.mailUi.toasts.dismiss()
+        vm.noticeLostUnsent()
+        assertNull(vm.mailUi.toasts.current)
+        val (_, again) = vm(w)
+        again.noticeLostUnsent()
+        assertNull(again.mailUi.toasts.current)
+        // A later broken cache in the session reports its own count, once more.
+        w.state.value = w.state.value.copy(lostUnsent = 1)
+        vm.noticeLostUnsent()
+        assertEquals("${R.plurals.chat_lost_unsent}|1", vm.mailUi.toasts.current?.message)
+        // Without team chat there is no service and no toast.
+        val (_, none) = vm(null)
+        none.noticeLostUnsent()
+        assertNull(none.mailUi.toasts.current)
+    }
+
+    @Test
     fun `a mail notification or a new email brings Mail back`() = runTest(main) {
         val w = FakeWorkspaces()
         w.state.value = ready(listOf(summary("w1")))
@@ -576,6 +604,13 @@ class ChatNavTest {
         override suspend fun join(link: InviteLink, displayName: String): String = no()
         override fun rememberJoin(link: InviteLink) {}
         override fun takePendingJoin(): InviteLink? = null
+        var takes = 0
+        override fun takeLostUnsent(): Int {
+            takes += 1
+            val lost = state.value.lostUnsent
+            if (lost != 0) state.value = state.value.copy(lostUnsent = 0)
+            return lost
+        }
         override suspend fun leaveWorkspace(ws: String) {}
         override suspend fun deleteWorkspace(ws: String) {}
         override suspend fun renameMe(ws: String, name: String) {}
