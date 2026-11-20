@@ -181,8 +181,11 @@ function makeLock(file) {
   return true;
 }
 
-// A takeover guard left by a process that ended in the middle of one, a few file operations, goes after this long.
+// A takeover guard older than this was left by a process that ended in the middle of a takeover, a few file
+// operations. It stays: removing it could remove a newer one another process just made, since checking its age and
+// removing it are two steps. The helper says where it is and uses another port.
 const GUARD_STALE_MS = 10000;
+const reportedGuards = new Set();
 
 // True when this process now owns port's lock. False when another living process, or this one for another server,
 // owns it, or another process is taking over a stale lock on it right now.
@@ -199,7 +202,10 @@ function claimPort(port) {
   const guard = `${file}.takeover`;
   if (!makeLock(guard)) {
     try {
-      if (Date.now() - fs.statSync(guard).mtimeMs > GUARD_STALE_MS) fs.rmSync(guard, { force: true });
+      if (Date.now() - fs.statSync(guard).mtimeMs > GUARD_STALE_MS && !reportedGuards.has(guard)) {
+        reportedGuards.add(guard);
+        console.warn(`real-server: port ${port} stays unused while ${guard} exists. Delete it when no test is running.`);
+      }
     } catch (_) {
       // Gone already.
     }

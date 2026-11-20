@@ -72,19 +72,27 @@ export class Registry extends DurableObject {
 
   // The server is full: made workspaces not asked in the past hour, those asked longest ago first, are asked whether
   // they still exist, RECHECK_BATCH at a time, and the place of one deleted without telling the registry is free
-  // again. A server that really is full asks each workspace at most once an hour.
+  // again. A server that really is full asks each workspace at most once an hour. The batch is marked asked before
+  // anyone answers, so a workspace that can't answer waits its hour like the others, and a reservation made meanwhile
+  // asks the next batch.
   async #recheck() {
     const now = Date.now();
     const asked = this.sql
-      .exec('SELECT id FROM workspace WHERE made = 1 AND checked < ? ORDER BY checked, at LIMIT ?', now - RECHECK_AFTER, RECHECK_BATCH)
+      .exec(
+        `UPDATE workspace SET checked = ? WHERE id IN
+           (SELECT id FROM workspace WHERE made = 1 AND checked < ? ORDER BY checked, at LIMIT ?)
+         RETURNING id`,
+        now,
+        now - RECHECK_AFTER,
+        RECHECK_BATCH
+      )
       .toArray();
     await Promise.all(
       asked.map(async ({ id }) => {
         try {
-          if (await workspaceObject(this.env, id).exists()) this.sql.exec('UPDATE workspace SET checked = ? WHERE id = ?', now, id);
-          else this.sql.exec('DELETE FROM workspace WHERE id = ? AND made = 1', id);
+          if (!(await workspaceObject(this.env, id).exists())) this.sql.exec('DELETE FROM workspace WHERE id = ? AND made = 1', id);
         } catch {
-          // Asked again the next time the server is full.
+          // Asked again in an hour, the next time the server is full.
         }
       })
     );

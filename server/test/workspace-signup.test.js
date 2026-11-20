@@ -253,5 +253,17 @@ describe('the join page', () => {
     const claimed = await publish(other, page('join', await hostKey()));
     expect(claimed.status).toBe(409);
     expect(claimed.body.error).toBe('handle_reserved');
+    // With team chat on and a booking address of its own, /join there is still the page's: invitation links point at
+    // WORKSPACE_ORIGIN, which answers them.
+    const apart = { ...ON, BOOKING_ORIGIN: 'https://booking.example', WORKSPACE_ORIGIN: 'https://accounts.example' };
+    const booking = await call('GET', '/join', { origin: 'https://booking.example', vars: apart });
+    expect(booking.status).toBe(200);
+    expect(booking.text).toContain('Still here');
+    expect(booking.text).not.toContain('Invitation to team chat');
+    const invitation = await call('GET', '/join', { origin: 'https://accounts.example', vars: apart });
+    expect(invitation.text).toContain('Invitation to team chat in Rukoo');
+    // Where both are one address, the invitation page wins there.
+    const shared = { ...ON, BOOKING_ORIGIN: 'https://accounts.example', WORKSPACE_ORIGIN: 'https://accounts.example' };
+    expect((await call('GET', '/join', { vars: shared })).text).toContain('Invitation to team chat in Rukoo');
   });
 });

@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const { tempDir, removeDir } = require('./tmp');
 const {
@@ -178,8 +179,12 @@ test('a lock left by a process that ended is taken over, and close() removes it'
 
 // The takeover of a stale lock is one process's at a time. Before the guard, one process could move aside the lock
 // another had just made in place of the stale one, and a third then made its own: two owners of one port.
-test('a stale lock is left alone while another process takes it over, and a guard left behind goes', async (t) => {
-  const port = await unusedPort();
+// The lock's own tests use a port the helpers never pick (they pick 38800 to 38899), so a server another test process
+// starts meanwhile can't take part. Nothing listens on it: claiming a lock doesn't bind.
+const lockOnlyPort = () => 40000 + crypto.randomInt(20000);
+
+test('a stale lock is left alone while another process takes it over, or a guard is left behind', async (t) => {
+  const port = lockOnlyPort();
   const file = portLockFile(port);
   const guard = `${file}.takeover`;
   const ended = await endedPid();
@@ -192,12 +197,14 @@ test('a stale lock is left alone while another process takes it over, and a guar
   assert.equal(claimPort(port), false, 'a takeover under way keeps the port');
   assert.equal(fs.readFileSync(file, 'utf8'), String(ended));
   assert.ok(fs.existsSync(guard));
-  // A guard older than ten seconds was left by a process that ended mid-takeover. It goes, and the next claim takes
-  // the stale lock over.
+  // A guard older than ten seconds was left by a process that ended mid-takeover. It stays, as removing it could
+  // remove a newer one, and the port stays unused until someone deletes it.
   const old = new Date(Date.now() - 60000);
   fs.utimesSync(guard, old, old);
   assert.equal(claimPort(port), false);
-  assert.equal(fs.existsSync(guard), false);
+  assert.ok(fs.existsSync(guard));
+  assert.equal(fs.readFileSync(file, 'utf8'), String(ended));
+  fs.rmSync(guard);
   assert.equal(claimPort(port), true);
   assert.equal(fs.readFileSync(file, 'utf8'), String(process.pid));
   assert.equal(fs.existsSync(guard), false, 'the takeover removes its guard');
@@ -206,10 +213,12 @@ test('a stale lock is left alone while another process takes it over, and a guar
 });
 
 test('processes that claim one stale lock at the same moment: exactly one gets it', async (t) => {
-  const port = await unusedPort();
+  const port = lockOnlyPort();
   const file = portLockFile(port);
-  const ended = await endedPid();
-  fs.writeFileSync(file, String(ended));
+  // An ID no process has. One that just ended could be handed to a claimant on Windows, which then sees its own lock.
+  const nobody = 2147483640;
+  assert.equal(alive(nobody), false);
+  fs.writeFileSync(file, String(nobody));
   t.after(() => fs.rmSync(`${file}.takeover`, { force: true }));
   // Each child waits for the same moment, claims, says whether it got the port and holds it until its stdin closes,
   // so a winner that ended early can't hand the port to a later claimant.

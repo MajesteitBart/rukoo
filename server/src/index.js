@@ -20,6 +20,7 @@ import {
   limitRate,
   positive,
   registryObject,
+  workspaceOrigin,
   workspacesOn
 } from './config.js';
 import { NOINDEX, READ_CORS, html, json, redirect, send } from './http.js';
@@ -72,8 +73,11 @@ async function handle(request, env) {
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
   // root never redirects it; the link's fragment stays in the browser either way. With team chat off the path is the
-  // booking pages' as before, so a page made under the handle join before it was reserved still answers there.
-  if (path === '/join' && reading && workspacesOn(env)) {
+  // booking pages' as before, so a page made under the handle join before it was reserved still answers there. So it
+  // does at the root of a BOOKING_ORIGIN that isn't WORKSPACE_ORIGIN, as invitation links point at the latter.
+  const home = workspaceOrigin(env);
+  const bookingHere = bookingRoot(env) === url.origin && home !== null && home !== url.origin;
+  if (path === '/join' && reading && workspacesOn(env) && !bookingHere) {
     const cfg = { ...config(env, url), host: url.host, inviteSignups: inviteSignups(env) };
     const response = html(joinPage(cfg, privacyLanguage(url, request.headers.get('accept-language'))), method);
     response.headers.set('referrer-policy', 'no-referrer');

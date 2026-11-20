@@ -406,6 +406,41 @@ describe('deleting a workspace', () => {
     expect((await make('Third')).body.error).toBe('workspaces_full');
   });
 
+  it('moves past workspaces that can’t answer when it asks about places, so one that was deleted still comes free', async () => {
+    const registry = env.REGISTRY.get(env.REGISTRY.newUniqueId());
+    await runInDurableObject(registry, async (instance, state) => {
+      const sql = state.storage.sql;
+      const real = instance.env;
+      const asked = [];
+      instance.env = {
+        WORKSPACES: {
+          idFromName: (name) => name.split('\n')[1],
+          get: (id) => ({
+            exists: async () => {
+              asked.push(id);
+              if (id === 'deleted') return false;
+              throw new Error('this workspace can’t answer');
+            }
+          })
+        }
+      };
+      try {
+        for (let i = 0; i < 25; i++) sql.exec('INSERT INTO workspace (id, at, made) VALUES (?, ?, 1)', `silent-${i}`, i);
+        sql.exec("INSERT INTO workspace (id, at, made) VALUES ('deleted', 25, 1)");
+        // The first try asks the 25 oldest, which can't answer; the second asks the next one, the deleted workspace.
+        expect(await instance.reserveWorkspace('first', 26)).toBe('full');
+        expect(await instance.reserveWorkspace('second', 26)).toBe('ok');
+        expect(asked).toHaveLength(26);
+        expect(asked.at(-1)).toBe('deleted');
+        // Those that couldn't answer wait their hour.
+        expect(await instance.reserveWorkspace('third', 26)).toBe('full');
+        expect(asked).toHaveLength(26);
+      } finally {
+        instance.env = real;
+      }
+    });
+  });
+
   it('gives a maker who handed the workspace over and left its place back, once the new owner deletes it', async () => {
     const ws = await newWorkspace();
     const route = `/v1/workspaces/${ws.id}`;
