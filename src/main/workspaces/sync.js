@@ -147,9 +147,10 @@ function appendInline(store, ws, active, events, result) {
   const last = events[events.length - 1].seq;
   const fits = room.hi !== null ? first === room.hi + 1 : last === room.head;
   if (!fits) return;
-  // Reactions and link cards the events add to cached messages (rich contract 3.1).
+  // Reactions and link cards the events add to cached messages (rich contract 3.1). The answer's messages carry theirs
+  // as they were at the room's head in it.
   const touched = new Set();
-  const stored = store.appendEvents(ws, active, events, { touched });
+  const stored = store.appendEvents(ws, active, events, { touched, asOf: Math.max(room.head, last) });
   if (touched.size) result.updated[active] = [...touched];
   const targets = events.filter((e) => e.kind === 'message.redacted' && e.target).map((e) => e.target);
   if (targets.length) {

@@ -57,7 +57,7 @@ const COLUMNS = {
   ws: ['id', 'name', 'role', 'me', 'myName', 'generation', 'keyId', 'limits', 'retention', 'cursor', 'passing', 'fresh', 'state', 'membersStale', 'channelsStale', 'blocksStale', 'membersMore', 'syncedAt', 'activeAt'],
   room: ['ws', 'id', 'kind', 'name', 'visibility', 'archived', 'closedReason', 'participants', 'startedBy', 'grantId', 'role', 'members', 'head', 'floor', 'lastAt', 'read', 'readLocal', 'readSent', 'unread', 'mentions', 'lo', 'hi', 'notified', 'muted', 'readMark', 'readPaused'],
   pass_room: ['ws', 'id', 'row'],
-  event: ['ws', 'room', 'seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'data', 'redacted', 'attachments', 'previews', 'reactions'],
+  event: ['ws', 'room', 'seq', 'id', 'kind', 'actor', 'at', 'root', 'text', 'mentions', 'data', 'redacted', 'attachments', 'previews', 'reactions', 'asOf'],
   tombstone: ['ws', 'message', 'at'],
   member: ['ws', 'id', 'kind', 'name', 'role', 'state', 'joinedAt'],
   channel: ['ws', 'id', 'name', 'visibility', 'archived', 'joined', 'role', 'members'],
@@ -68,10 +68,10 @@ const COLUMNS = {
   file_cache: ['ws', 'room', 'file', 'message', 'sha256', 'size', 'name', 'type', 'usedAt']
 };
 
-test('a new cache has the schema of contract 3.5 with rich chat 4.2, its pragmas and schema version 2', (t) => {
+test('a new cache has the schema of contract 3.5 with rich chat 4.2, its pragmas and schema version 3', (t) => {
   const store = fresh(t);
   const db = store.db;
-  assert.equal(store.getMeta('schema'), '2');
+  assert.equal(store.getMeta('schema'), '3');
   assert.equal(store.lostUnsent, 0);
   assert.ok(store.quickCheck());
   const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all().map((r) => r.name);

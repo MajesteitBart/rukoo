@@ -242,7 +242,8 @@ class History {
       }
       const touched = new Set();
       if (joined && events.length) {
-        store.writeEvents(ws, c, events, { touched });
+        // The page's messages carry their reactions and cards as they were at the page's head.
+        store.writeEvents(ws, c, events, { touched, asOf: page.head });
         store.run(
           'UPDATE room SET lo = MIN(COALESCE(lo, ?), ?), hi = MAX(COALESCE(hi, ?), ?) WHERE ws = ? AND id = ?',
           first,
@@ -824,7 +825,9 @@ class History {
     const mark = r.readMark ?? 0;
     let ok = false;
     try {
-      const answer = wire.checkRead(await svc.call(ws, 'POST', `/conversations/${c}/read`, { seq: r.readLocal }));
+      // The readMark this device knows: a server that knows a higher one (another device marked the room unread since)
+      // changes nothing and answers with its own read, and the feed then brings the mark.
+      const answer = wire.checkRead(await svc.call(ws, 'POST', `/conversations/${c}/read`, { seq: r.readLocal, readMark: mark }));
       svc.guard(epoch);
       const store = svc.store;
       const changed = store.tx(() => {

@@ -10,13 +10,14 @@
 //
 // Version 2 (rich chat contract 4.2) adds what rich messages need: a message's files, link cards and reactions, the
 // files of an unsent message and of a draft, a room's readMark and whether this device holds back its reads of it,
-// and the index of downloaded files. A version 1 file migrates in place; a new file is made as version 1 and migrated
-// the same way, so both end with the same tables.
+// and the index of downloaded files. Version 3 adds the seq a cached message's reactions and cards are current to. An
+// older file migrates in place; a new file is made as version 1 and migrated the same way, so both end with the same
+// tables.
 const fs = require('fs');
 const path = require('path');
 const { ChatError, jsonList } = require('./wire');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const ROOM_CACHE_MAX = 2000;
 // Downloaded files live next to chat.db (rich contract 4.6); staged uploads made from dropped or pasted bytes too.
 const FILES_DIR = 'chat-files';
@@ -169,6 +170,9 @@ CREATE TABLE file_cache (                   -- downloaded files in chat-files/, 
 ) WITHOUT ROWID;
 CREATE INDEX file_cache_message ON file_cache (ws, message) WHERE message IS NOT NULL;
 CREATE INDEX file_cache_sha ON file_cache (sha256);
+`,
+  3: `
+ALTER TABLE event ADD COLUMN asOf INTEGER;          -- a message's: the seq its reactions and cards are current to
 `
 };
 
@@ -517,7 +521,8 @@ class Store {
   // cached is the first since a Mark unread: read, readLocal and readSent take its read, also when that is lower, and
   // this device holds back its reads of the room until it opens it again. A row with a lower one left the server
   // before the last Mark unread this device knows of, so its read position and badges are from before it and stay
-  // out; everything else of the row counts.
+  // out; everything else of the row counts. A new grant has a readMark of its own: the row's replaces the cached one,
+  // and the hold of the old grant ends.
   // Returns { row, inserted, grantChanged, dropped }: dropped lists the message IDs the floor took.
   upsertRoom(ws, feed, { keepLocal = true } = {}) {
     return this.tx(() => {
@@ -526,9 +531,9 @@ class Store {
       if (before && (grantChanged || !keepLocal)) this.dropRoomCache(ws, feed.conversation);
       const local = before && keepLocal;
       const mark = feed.readMark ?? 0;
-      // Older: from before the last Mark unread. Newer: the first row since one.
-      const older = 'excluded.readMark < room.readMark';
-      const newer = 'excluded.readMark > room.readMark';
+      // Older: from before the last Mark unread. Newer: the first row since one. Neither under a new grant.
+      const older = grantChanged ? '0' : 'excluded.readMark < room.readMark';
+      const newer = grantChanged ? '0' : 'excluded.readMark > room.readMark';
       this.run(
         `INSERT INTO room (ws, id, kind, name, visibility, archived, closedReason, participants, startedBy, grantId, role,
            members, head, floor, lastAt, read, readLocal, readSent, unread, mentions, readMark)
@@ -545,8 +550,8 @@ class Store {
                            ELSE ${local ? 'MAX(room.readSent, excluded.read)' : 'excluded.read'} END,
            unread = CASE WHEN ${older} THEN room.unread ELSE excluded.unread END,
            mentions = CASE WHEN ${older} THEN room.mentions ELSE excluded.mentions END,
-           readPaused = CASE WHEN ${newer} THEN 1 ELSE room.readPaused END,
-           readMark = MAX(room.readMark, excluded.readMark)`,
+           readPaused = ${grantChanged ? '0' : `CASE WHEN ${newer} THEN 1 ELSE room.readPaused END`},
+           readMark = ${grantChanged ? 'excluded.readMark' : 'MAX(room.readMark, excluded.readMark)'}`,
         ws,
         feed.conversation,
         feed.kind,
@@ -632,29 +637,36 @@ class Store {
   //
   // Rich messages (rich contract 3.1): a message keeps its files, cards and reactions as the server sent them. Reaction
   // and card events are stored like every event, so the range stays contiguous, and change their target when it is
-  // cached. A message from a page carries its reactions and cards as they were when the page was made; the cached
-  // reaction and card events after the page then apply on top again, in order, so an older page can't take back one
-  // that came in meanwhile. Applying one twice changes nothing. touched, a Set, collects the IDs of cached messages
-  // whose reactions or cards changed, for the updated event.
-  writeEvents(ws, room, events, { touched = null } = {}) {
+  // cached. A message carries its reactions and cards as they were when its answer was made: asOf is the seq they are
+  // current to, the page's or feed answer's head (at least the message's own seq). Each cached message keeps its asOf,
+  // and a reaction or card event changes it only when the event is newer, after which the event's seq is its asOf. So
+  // an older page can't take back what came in meanwhile, the events of a page that its messages already hold apply
+  // nothing, and applying one twice changes nothing. touched, a Set, collects the IDs of cached messages whose
+  // reactions or cards changed, for the updated event.
+  writeEvents(ws, room, events, { touched = null, asOf = null } = {}) {
     const stored = [];
     const messages = new Set();
+    let from = Infinity;
+    // A message cached with newer reactions and cards than these keeps them.
+    const newer = 'COALESCE(event.asOf, event.seq) > excluded.asOf';
     for (const e of events) {
       const message = e.kind === 'message.posted';
       const removed = message && (e.redacted === true || this.hasTombstone(ws, e.id));
       const data = {};
       for (const [k, v] of Object.entries(e)) if (!EVENT_COLUMNS.has(k) && !(message && RICH_COLUMNS.has(k))) data[k] = v;
       const rich = message && !removed;
+      const current = rich ? Math.max(e.seq, asOf ?? 0) : null;
       this.run(
-        `INSERT INTO event (ws, room, seq, id, kind, actor, at, root, text, mentions, data, redacted, attachments, previews, reactions)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO event (ws, room, seq, id, kind, actor, at, root, text, mentions, data, redacted, attachments, previews, reactions, asOf)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (ws, room, seq) DO UPDATE SET
            id = excluded.id, kind = excluded.kind, actor = excluded.actor, at = excluded.at, root = excluded.root,
            text = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.text END,
            mentions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.mentions END,
            attachments = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.attachments END,
-           previews = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.previews END,
-           reactions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE excluded.reactions END,
+           previews = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL WHEN ${newer} THEN event.previews ELSE excluded.previews END,
+           reactions = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL WHEN ${newer} THEN event.reactions ELSE excluded.reactions END,
+           asOf = CASE WHEN event.redacted = 1 OR excluded.redacted = 1 THEN NULL ELSE MAX(COALESCE(event.asOf, event.seq), excluded.asOf) END,
            data = excluded.data, redacted = MAX(event.redacted, excluded.redacted)`,
         ws,
         room,
@@ -670,51 +682,62 @@ class Store {
         removed ? 1 : 0,
         rich ? listColumn(e.attachments) : null,
         rich ? listColumn(e.previews) : null,
-        rich ? listColumn(e.reactions) : null
+        rich ? listColumn(e.reactions) : null,
+        current
       );
       if (e.kind === 'message.redacted' && e.target) {
         this.addTombstones(ws, [e.target]);
         this.redact(ws, [e.target]);
       }
-      if (rich) messages.add(e.id);
+      if (rich) {
+        messages.add(e.id);
+        from = Math.min(from, current);
+      }
       if (CHANGE_KINDS.has(e.kind) && this.applyChange(ws, room, e) && touched) touched.add(e.target);
       stored.push(e.seq);
     }
-    // The cached reaction and card events after the page, again on top of the page's messages.
-    if (messages.size && events.length) {
-      const last = events[events.length - 1].seq;
+    // The cached reaction and card events newer than these messages' reactions and cards, on top of them in order.
+    if (messages.size) {
       const later = this.all(
         `SELECT seq, kind, actor, data FROM event WHERE ws = ? AND room = ? AND seq > ?
            AND kind IN ('reaction.added', 'reaction.removed', 'message.previewed') ORDER BY seq`,
         ws,
         room,
-        last
+        from
       );
       for (const row of later) {
         const data = parseData(row.data);
         if (!messages.has(data.target)) continue;
-        this.applyChange(ws, room, { ...data, kind: row.kind, actor: row.actor });
+        this.applyChange(ws, room, { ...data, kind: row.kind, actor: row.actor, seq: row.seq });
       }
     }
     return stored.map((seq) => this.eventAt(ws, room, seq)).filter(Boolean);
   }
 
-  // A reaction or card event on its cached target, a message of the room that isn't removed. Returns whether the
-  // target changed.
+  // A reaction or card event on its cached target, a message of the room that isn't removed, when the event is newer
+  // than what the target holds (its asOf), which then becomes the event's seq. An event without a seq (this device's
+  // own reaction or card removal, as the server answered it) always applies. Returns whether the target changed.
   applyChange(ws, room, e) {
     if (!e || typeof e.target !== 'string') return false;
-    const target = this.get('SELECT room, seq, kind, redacted, previews, reactions FROM event WHERE ws = ? AND id = ?', ws, e.target);
+    const target = this.get('SELECT room, seq, kind, redacted, previews, reactions, asOf FROM event WHERE ws = ? AND id = ?', ws, e.target);
     if (!target || target.room !== room || target.kind !== 'message.posted' || target.redacted) return false;
+    const seq = Number.isSafeInteger(e.seq) ? e.seq : null;
+    if (seq !== null && seq <= (target.asOf ?? target.seq)) return false;
+    let column = null;
+    let value = null;
     if (e.kind === 'message.previewed') {
-      const next = listColumn(Array.isArray(e.previews) ? e.previews : []);
-      if (next === target.previews) return false;
-      this.run('UPDATE event SET previews = ? WHERE ws = ? AND room = ? AND seq = ?', next, ws, room, target.seq);
-      return true;
+      value = listColumn(Array.isArray(e.previews) ? e.previews : []);
+      if (value !== target.previews) column = 'previews';
+    } else {
+      const next = reactionChange(jsonList(target.reactions), e.emoji, e.actor, e.kind === 'reaction.added');
+      if (next) {
+        column = 'reactions';
+        value = listColumn(next);
+      }
     }
-    const next = reactionChange(jsonList(target.reactions), e.emoji, e.actor, e.kind === 'reaction.added');
-    if (!next) return false;
-    this.run('UPDATE event SET reactions = ? WHERE ws = ? AND room = ? AND seq = ?', listColumn(next), ws, room, target.seq);
-    return true;
+    if (column) this.run(`UPDATE event SET ${column} = ?, asOf = COALESCE(?, asOf) WHERE ws = ? AND room = ? AND seq = ?`, value, seq, ws, room, target.seq);
+    else if (seq !== null) this.run('UPDATE event SET asOf = ? WHERE ws = ? AND room = ? AND seq = ?', seq, ws, room, target.seq);
+    return Boolean(column);
   }
 
   // This device's own reaction, answered by the server (chatReact): the cached message changes at once, before its
@@ -729,11 +752,12 @@ class Store {
   }
 
   // Events after the cached range, ascending: hi rises to the last, lo is set when the room had no cache, head follows,
-  // and a room over ROOM_CACHE_MAX loses its lowest events. The caller checks that they start at hi + 1 (3.6).
-  appendEvents(ws, room, events, { max = ROOM_CACHE_MAX, touched = null } = {}) {
+  // and a room over ROOM_CACHE_MAX loses its lowest events. The caller checks that they start at hi + 1 (3.6). asOf as
+  // for writeEvents.
+  appendEvents(ws, room, events, { max = ROOM_CACHE_MAX, touched = null, asOf = null } = {}) {
     if (!events.length) return [];
     return this.tx(() => {
-      const stored = this.writeEvents(ws, room, events, { touched });
+      const stored = this.writeEvents(ws, room, events, { touched, asOf });
       const first = events[0].seq;
       const last = events[events.length - 1].seq;
       this.run('UPDATE room SET lo = COALESCE(lo, ?), hi = MAX(COALESCE(hi, ?), ?), head = MAX(head, ?) WHERE ws = ? AND id = ?', first, last, last, last, ws, room);
@@ -743,10 +767,10 @@ class Store {
   }
 
   // Events before the cached range, ascending: lo falls to the first, hi is set when the room had no cache.
-  prependEvents(ws, room, events, { touched = null } = {}) {
+  prependEvents(ws, room, events, { touched = null, asOf = null } = {}) {
     if (!events.length) return [];
     return this.tx(() => {
-      const stored = this.writeEvents(ws, room, events, { touched });
+      const stored = this.writeEvents(ws, room, events, { touched, asOf });
       const first = events[0].seq;
       const last = events[events.length - 1].seq;
       this.run('UPDATE room SET lo = MIN(COALESCE(lo, ?), ?), hi = COALESCE(hi, ?), head = MAX(head, ?) WHERE ws = ? AND id = ?', first, first, last, last, ws, room);

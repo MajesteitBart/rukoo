@@ -35,6 +35,7 @@ const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const { Transform, pipeline } = require('stream');
 const wire = require('./wire');
 const { filesDir, uploadsDir } = require('./store');
 const { AccountError, errorDetails } = require('../account/client');
@@ -218,7 +219,8 @@ function imageInfo(b) {
 // readable stream sent with the given content-length. onChunk(chunk) for each chunk read from body (upload) or
 // received for sink (download). sink: a writable the answer's body goes to when the status is 2xx, at most limit
 // bytes; else the body is read as JSON. Resolves { status, json } for 2xx, rejects with an AccountError (as client.js
-// makes them) otherwise, or with a cancelled error when signal aborts.
+// makes them) otherwise, with the sink's own error when writing fails (a full disk), or with a cancelled error when
+// signal aborts.
 function transfer(url, { method, headers = {}, body = null, sink = null, onChunk = null, limit = Infinity, signal }) {
   const u = new URL(url);
   const lib = u.protocol === 'https:' ? https : http;
@@ -239,18 +241,22 @@ function transfer(url, { method, headers = {}, body = null, sink = null, onChunk
       const ok = status >= 200 && status < 300;
       if (ok && sink) {
         let got = 0;
-        res.on('data', (chunk) => {
-          got += chunk.length;
-          if (got > limit) {
-            req.destroy();
-            return finish(reject, new AccountError('server', status, 'too long'));
+        const meter = new Transform({
+          transform(chunk, _encoding, done) {
+            got += chunk.length;
+            if (got > limit) return done(new AccountError('server', status, 'too long'));
+            if (onChunk) onChunk(chunk);
+            done(null, chunk);
           }
-          if (onChunk) onChunk(chunk);
-          if (!sink.write(chunk)) res.pause();
         });
-        sink.on('drain', () => res.resume());
-        res.on('end', () => sink.end(() => finish(resolve, { status, json: null })));
-        res.on('error', (err) => finish(reject, new AccountError('network', 0, err.message)));
+        // An error of any of the three, the sink's included, ends all of them and rejects.
+        let failed = null;
+        sink.once('error', (err) => (failed = err));
+        pipeline(res, meter, sink, (err) => {
+          if (!err) return finish(resolve, { status, json: null });
+          req.destroy();
+          finish(reject, err === failed || err.cancelled || err instanceof AccountError ? err : new AccountError('network', 0, err.message));
+        });
         return;
       }
       const chunks = [];
@@ -356,9 +362,9 @@ class Files {
     this.staged = new Map();
     // path -> when it stops being stageable.
     this.picked = new Map();
-    // token -> { path, type, name, epoch } for rukoo-chat-file: links.
+    // token -> { ws, room, file, path, type, name, sha256, epoch } for rukoo-chat-file: links.
     this.views = new Map();
-    // Downloads in flight: `${ws}\n${file}` -> promise.
+    // Downloads in flight: `${ws}\n${room}\n${file}` -> promise.
     this.downloads = new Map();
     // SHA-256s of cached files whose digest this session checked, and of files a download is putting in place.
     this.verified = new Set();
@@ -567,6 +573,11 @@ class Files {
       await fsp.writeFile(file, source.bytes);
       temp = true;
       svc.guard(epoch);
+    }
+    // Another attach may have filled the list while this one read the file or wrote its bytes.
+    if (this.entries(ws, c, root).length >= wire.limits.ATTACHMENTS_MAX) {
+      if (temp) await removeQuietly(file);
+      throw new ChatError('invalid', { field: 'attachments' });
     }
     const entry = {
       stage: wire.localId(),
@@ -825,15 +836,20 @@ class Files {
     if (any) this.emit(any);
   }
 
-  // A draft's kept files as it is read: those whose upload expired go, and the rest are staged again as ready, so
-  // the tray shows them and chatSend takes them. Returns { attachments, expired }.
+  // A draft's kept files as it is read: those whose upload expired go, from the tray too, and the rest are staged
+  // again as ready, so the tray shows them and chatSend takes them. Returns { attachments, expired }.
   restore(ws, c, root, attachments) {
     const list = Array.isArray(attachments) ? attachments : [];
-    if (!list.length) return { attachments: [], expired: 0 };
     const now = this.serverNow();
-    const kept = list.filter((f) => !(Number.isSafeInteger(f.expiresAt) && f.expiresAt <= now));
+    const expired = (f) => Number.isSafeInteger(f.expiresAt) && f.expiresAt <= now;
+    let changed = null;
+    for (const e of this.entries(ws, c, root)) {
+      if (e.state !== 'ready' || !expired(e)) continue;
+      this.forgetEntry(e, { cancel: false });
+      changed = e;
+    }
+    const kept = list.filter((f) => !expired(f));
     const have = new Set(this.entries(ws, c, root).map((e) => e.file).filter(Boolean));
-    let added = null;
     for (const f of kept) {
       if (have.has(f.id)) continue;
       const entry = {
@@ -862,9 +878,9 @@ class Files {
         gone: false
       };
       this.staged.set(entry.stage, entry);
-      added = entry;
+      changed = entry;
     }
-    if (added) this.emit(added);
+    if (changed) this.emit(changed);
     return { attachments: kept, expired: list.length - kept.length };
   }
 
@@ -874,7 +890,7 @@ class Files {
   async file(ws, c, fileId, action) {
     this.room(ws, c);
     const local = await this.fetch(ws, c, fileId);
-    if (action === 'view') return { url: this.viewLink(ws, local) };
+    if (action === 'view') return { url: this.viewLink(ws, c, fileId, local) };
     if (action === 'save') return this.saveAs(local);
     // open
     if (RISKY.test(safeName(local.name))) {
@@ -900,15 +916,17 @@ class Files {
     return true;
   }
 
-  viewLink(ws, local) {
+  viewLink(ws, room, file, local) {
     const token = crypto.randomBytes(18).toString('base64url');
-    this.views.set(token, { ws, path: local.path, type: local.type, name: local.name, sha256: local.sha256, epoch: this.svc.epoch });
+    this.views.set(token, { ws, room, file, path: local.path, type: local.type, name: local.name, sha256: local.sha256, epoch: this.svc.epoch });
     while (this.views.size > VIEWS_MAX) this.views.delete(this.views.keys().next().value);
     return `${VIEW_SCHEME}://view/${token}`;
   }
 
   // What main.js's rukoo-chat-file: handler serves for a URL: { path, type, name } of a file this session fetched and
-  // still has, or null. type is the file's own only for the image types the viewer shows.
+  // still has, or null. The link's own file must still be in the cache, of the same room and with the same digest: a
+  // removed message's file, or another file with the same bytes, doesn't keep it working. type is the file's own only
+  // for the image types the viewer shows.
   serve(url) {
     let u;
     try {
@@ -920,14 +938,14 @@ class Files {
     const token = u.pathname.replace(/^\/+/, '');
     const v = this.views.get(token);
     if (!v || v.epoch !== this.svc.epoch || !this.svc.store) return null;
-    if (!fs.existsSync(v.path) || !this.svc.store.hasCachedSha(v.sha256)) return null;
+    const row = this.svc.store.getCachedFile(v.ws, v.file);
+    if (!row || row.room !== v.room || row.sha256 !== v.sha256 || !fs.existsSync(v.path)) return null;
     return { path: v.path, type: VIEW_TYPES.has(v.type) ? v.type : 'application/octet-stream', name: v.name };
   }
 
-  // The file on this computer: { path, name, type, size, sha256 }, from the cache when it holds it whole, else
-  // downloaded. One download per file at a time.
+  // The file on this computer: { path, name, type, size, sha256 }. One download per file and room at a time.
   fetch(ws, c, fileId) {
-    const key = `${ws}\n${fileId}`;
+    const key = `${ws}\n${c}\n${fileId}`;
     const running = this.downloads.get(key);
     if (running && running.epoch === this.svc.epoch) return running.promise;
     const entry = { epoch: this.svc.epoch, promise: null };
@@ -938,20 +956,26 @@ class Files {
     return entry.promise;
   }
 
+  // The cache answers by itself only for a file of a message it holds, live, in that room. Anything else asks the
+  // server first, which checks that the person may still see the file, and is downloaded unless this computer holds
+  // those bytes whole already. A download is kept only when, as it lands, the room still has the grant it started
+  // under and a message the cache held with the file at the start is still cached and not removed; else it goes, as
+  // not_found, since the removal's cleanup may have run before its row existed.
   async fetchOnce(ws, c, fileId) {
     const svc = this.svc;
     const store = this.store();
     const dir = this.dir();
+    const grant = store.getRoom(ws, c).grantId;
+    const known = store.messageWithFile(ws, c, fileId);
     const row = store.getCachedFile(ws, fileId);
     if (row) {
       const local = path.join(dir, row.sha256);
-      if (await this.intact(local, row.size, row.sha256)) {
+      if (!(await this.intact(local, row.size, row.sha256))) store.deleteCachedFile(ws, fileId);
+      else if (known && row.room === c && row.message === known.message) {
         store.touchCachedFile(ws, fileId);
         return { path: local, name: row.name, type: row.type, size: row.size, sha256: row.sha256 };
       }
-      store.deleteCachedFile(ws, fileId);
     }
-    const known = store.messageWithFile(ws, c, fileId);
     const epoch = svc.epoch;
     for (let attempt = 0; ; attempt++) {
       const link = wire.checkDownload(await svc.call(ws, 'POST', `/conversations/${c}/files/${fileId}/download`, undefined, { retry: true }));
@@ -959,21 +983,34 @@ class Files {
       if (!this.allowedLink(link.url)) throw new ChatError('server', { where: 'download.url' });
       if (link.size > this.cacheMax) throw new ChatError('too_large', { status: 413 });
       this.landing.add(link.sha256);
+      let kept = false;
       try {
-        try {
-          await this.fetches(() => this.download(link, dir));
-        } catch (raw) {
-          const err = chatError(raw);
-          // The 60-second link ran out before the request got there: a fresh one, once.
-          if (attempt === 0 && err.code === 'expired') continue;
-          throw err;
+        if (!(await this.intact(path.join(dir, link.sha256), link.size, link.sha256))) {
+          try {
+            await this.fetches(() => this.download(link, dir));
+          } catch (raw) {
+            const err = chatError(raw);
+            // The 60-second link ran out before the request got there: a fresh one, once.
+            if (attempt === 0 && err.code === 'expired') continue;
+            throw err;
+          }
         }
         svc.guard(epoch);
         const now = this.store();
-        if (!now.getRoom(ws, c)) throw new ChatError('not_found', { scope: 'conversation' });
-        now.putCachedFile({ ws, room: c, file: fileId, message: known ? known.message : null, sha256: link.sha256, size: link.size, name: link.name, type: link.type });
+        kept = now.tx(() => {
+          const r = now.getRoom(ws, c);
+          if (!r || r.grantId !== grant) return false;
+          const holder = now.messageWithFile(ws, c, fileId);
+          if (known && (!holder || holder.message !== known.message)) return false;
+          now.putCachedFile({ ws, room: c, file: fileId, message: holder ? holder.message : null, sha256: link.sha256, size: link.size, name: link.name, type: link.type });
+          return true;
+        });
       } finally {
         this.landing.delete(link.sha256);
+      }
+      if (!kept) {
+        this.sweep();
+        throw new ChatError('not_found');
       }
       this.verified.add(link.sha256);
       this.trim();
@@ -1018,7 +1055,8 @@ class Files {
       if (size !== link.size || hash.digest('hex') !== link.sha256) throw new ChatError('server', { where: 'download.sha256' });
       await fsp.rename(part, target);
     } catch (err) {
-      sink.destroy();
+      // The part goes once the stream let go of it (Windows won't delete an open file).
+      await new Promise((resolve) => (sink.closed ? resolve() : (sink.once('close', resolve), sink.destroy())));
       await removeQuietly(part);
       throw err;
     }

@@ -186,6 +186,42 @@ test('a history page carries reactions as they were, and the cached events after
   assert.deepEqual(reactionsOf(store, 5), [{ emoji: '👍', actors: [JOEL] }]);
 });
 
+test('paging back keeps reactions and cards as of the page head: its own events and older cached ones apply nothing', (t) => {
+  const store = fresh(t);
+  withRoom(store);
+  const m = posted(5);
+  const n = posted(8, { previews: [card()] });
+  // The cache holds 10 to 12, from the feed: Joel's thumbs up to 5, a removal of Mila's party to 8 and a card update
+  // of 8, all before either message was cached, so they changed nothing then.
+  store.appendEvents(W, C, [reacted(10, m, '👍', JOEL), reacted(11, n, '🎉', MILA, false), previewed(12, n, [card(), card({ url: 'https://example.org/b' })])]);
+  // Joel took his thumbs up back at 14, which the cache doesn't have yet. A page before 10, made at head 15, brings
+  // 5 without reactions, 8 as it is now, and the older events: Mila's reaction to 5 at 6 (taken back at 13) and her
+  // party to 8 at 9.
+  const touched = new Set();
+  store.prependEvents(
+    W,
+    C,
+    [posted(4), m, reacted(6, m, '🙌', MILA), posted(7), { ...n, previews: [card(), card({ url: 'https://example.org/b' })] }, reacted(9, n, '🎉', MILA)],
+    { touched, asOf: 15 }
+  );
+  assert.deepEqual(reactionsOf(store, 5), []);
+  assert.deepEqual(reactionsOf(store, 8), []);
+  assert.equal(wire.toRenderer(store.eventAt(W, C, 8)).previews.length, 2);
+  assert.equal(touched.size, 0);
+  assert.equal(store.eventAt(W, C, 5).asOf, 15);
+  // The feed then brings 13 to 15, which the page already holds, and a new reaction at 16, which applies.
+  store.appendEvents(W, C, [reacted(13, m, '🙌', MILA, false), reacted(14, m, '👍', JOEL, false), posted(15)]);
+  assert.deepEqual(reactionsOf(store, 5), []);
+  store.appendEvents(W, C, [reacted(16, m, '❤️', JOEL)], { touched });
+  assert.deepEqual(reactionsOf(store, 5), [{ emoji: '❤️', actors: [JOEL] }]);
+  assert.deepEqual([...touched], [m.id]);
+  assert.equal(store.eventAt(W, C, 5).asOf, 16);
+  // A slower page made at head 12 lands last: message 5 keeps what is newer than it.
+  store.writeEvents(W, C, [{ ...m, reactions: [{ emoji: '👍', actors: [JOEL] }] }], { asOf: 12 });
+  assert.deepEqual(reactionsOf(store, 5), [{ emoji: '❤️', actors: [JOEL] }]);
+  assert.equal(store.eventAt(W, C, 5).asOf, 16);
+});
+
 test('message.previewed replaces the target cards, also on top of an older page; a message keeps its files', (t) => {
   const store = fresh(t);
   withRoom(store);
@@ -256,6 +292,23 @@ test('a feed row with a higher readMark moves the read positions back and holds 
   // toRoom gives the renderer readMark and readingPaused.
   const room = wire.toRoom(store.getRoom(W, C));
   assert.deepEqual([room.readMark, room.readingPaused], [1, true]);
+});
+
+test('a feed row of a new grant brings its own readMark and ends the hold of the old grant', (t) => {
+  const store = fresh(t);
+  withRoom(store, feedRoom({ read: 10, unread: 0 }));
+  // Marked unread three times under the old grant, and held.
+  store.upsertRoom(W, feedRoom({ read: 6, unread: 4, readMark: 3 }));
+  assert.deepEqual([store.getRoom(W, C).readMark, store.getRoom(W, C).readPaused], [3, 1]);
+  // Left and joined again: the new grant counts from 0, and its read and badges count, though its readMark is lower.
+  const { grantChanged } = store.upsertRoom(W, feedRoom({ grant: id('g', 'again'), read: 2, unread: 9, readMark: 0 }));
+  assert.equal(grantChanged, true);
+  let r = store.getRoom(W, C);
+  assert.deepEqual([r.grantId, r.read, r.unread, r.readMark, r.readPaused], [id('g', 'again'), 2, 9, 0, 0]);
+  // Its first Mark unread is newer than 0, and holds again.
+  store.upsertRoom(W, feedRoom({ grant: id('g', 'again'), read: 1, unread: 10, readMark: 1 }));
+  r = store.getRoom(W, C);
+  assert.deepEqual([r.read, r.readLocal, r.readMark, r.readPaused], [1, 1, 1, 1]);
 });
 
 // ---- files of unsent messages, drafts and downloads ----

@@ -354,6 +354,29 @@ test('Mark unread puts the New divider before the message, brings the badge back
   expect(random.id).toBeTruthy();
 });
 
+test('Mark unread on another device moves the New divider of the room open here and holds its reads', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const first = await server.post(olga, ws.id, ws.general, 'First note');
+  const second = await server.post(olga, ws.id, ws.general, 'Second note');
+  const third = await server.post(olga, ws.id, ws.general, 'Third note');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  await expect(message('Third note')).toBeVisible({ timeout: 15000 });
+  await expect.poll(() => serverRead(server, bart, ws.id, ws.general), { timeout: 15000 }).toBeGreaterThanOrEqual(third.seq);
+  // Opened with three unread notes: the New divider sits before the first, and stays there while the room is open.
+  const divider = log().locator('li.ch-new');
+  const nextId = () => divider.evaluate((el) => el.nextElementSibling?.dataset.id);
+  await expect(divider).toBeVisible();
+  expect(await nextId()).toBe(first.messageId);
+  // Bart's phone marks the second note unread; this window follows through the feed, divider included.
+  await server.markUnread(bart, ws.id, ws.general, second.messageId);
+  await expect.poll(nextId, { timeout: 15000 }).toBe(second.messageId);
+  await expect(roomRow(win, 'general').locator('.count')).toHaveText('2', { timeout: 15000 });
+  // The room on screen doesn't read them again by itself.
+  await win.waitForTimeout(2500);
+  expect(await serverRead(server, bart, ws.id, ws.general)).toBe(second.seq - 1);
+});
+
 test('without files on the server, Attach, paste and drop add nothing, and reactions still work', async ({}, testInfo) => {
   const plain = await startServer({ files: false });
   try {

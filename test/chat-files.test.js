@@ -441,6 +441,35 @@ test('sending takes ready files of the same room and root, and a draft keeps the
   assert.deepEqual(store.getDraft(W, C, null).attachments.map((f) => f.id), [old.id]);
 });
 
+test('two attaches at once never pass ten files, and the refused one leaves no bytes behind', async (t) => {
+  const { svc, store } = await setup(t);
+  for (let i = 0; i < 9; i++) await svc.files.stage(W, C, null, { name: `n${i}.txt`, type: 'text/plain', bytes: Buffer.from(`file ${i}`) });
+  // Both pass the first count while they write their bytes.
+  const both = await Promise.allSettled(['ten.txt', 'eleven.txt'].map((name) => svc.files.stage(W, C, null, { name, type: 'text/plain', bytes: Buffer.from(name) })));
+  assert.deepEqual(both.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
+  const refused = both.find((r) => r.status === 'rejected').reason;
+  assert.deepEqual([refused.code, refused.field], ['invalid', 'attachments']);
+  assert.equal((await svc.files.list(W, C, null)).length, 10);
+  assert.equal(fs.readdirSync(uploadsDir(store.file)).length, 10, 'one file of bytes per staged entry');
+});
+
+test('restoring a draft takes a file whose upload expired out of the tray, so it can no longer be sent', async (t) => {
+  const { svc, store } = await setup(t);
+  const s = await svc.files.stage(W, C, null, { name: 'a.txt', type: 'text/plain', bytes: Buffer.from('a') });
+  const r = await ready(svc, s.stage);
+  const kept = { id: r.file, name: 'a.txt', type: 'text/plain', size: 1, expiresAt: r.expiresAt };
+  store.putDraft(W, C, null, { text: '', mentions: [], attachments: [kept] });
+  // Two hours later the upload has expired, and the draft is read again.
+  const later = Date.now() + 2 * 3600 * 1000;
+  svc.now = () => later;
+  const before = stagedEvents(svc).length;
+  assert.deepEqual(svc.files.restore(W, C, null, [kept]), { attachments: [], expired: 1 });
+  assert.deepEqual(await svc.files.list(W, C, null), []);
+  assert.ok(stagedEvents(svc).length > before);
+  assert.deepEqual(stagedEvents(svc).at(-1).staged, []);
+  assert.throws(() => svc.files.forSend(W, C, null, [r.file]), (err) => err.code === 'invalid' && err.field === 'attachments');
+});
+
 // ---- downloads ----
 
 test('a download is checked, cached by its digest, viewed through a link of this session, opened as a copy and saved', async (t) => {
@@ -515,6 +544,113 @@ test('a download is refused for another origin, a redirect or a wrong digest, an
   assert.equal(calls.length - n, 2, 'two links');
   // A file the server no longer gives is not_found.
   await assert.rejects(svc.files.file(W, C, id('f', 'gone'), 'view'), (err) => err.code === 'not_found');
+});
+
+// A message of the room with one file, cached.
+function withFile(store, downloads, label, seq, bytes) {
+  const fileId = id('f', label);
+  const message = id('e', label);
+  downloads.set(fileId, { name: `${label}.png`, type: 'image/png', bytes });
+  store.appendEvents(W, C, [{ seq, id: message, kind: 'message.posted', actor: ME, at: 1, text: '', mentions: [], attachments: [{ id: fileId, name: `${label}.png`, type: 'image/png', size: bytes.length }] }]);
+  return { fileId, message };
+}
+
+const cacheNames = (store) => (fs.existsSync(filesDir(store.file)) ? fs.readdirSync(filesDir(store.file)) : []);
+
+test('a file whose message is removed, or whose room gets another grant, while it downloads is not kept', async (t) => {
+  const { svc, store, downloads } = await setup(t);
+  const a = withFile(store, downloads, 'a', 1, png(10, 10));
+  const b = withFile(store, downloads, 'b', 2, png(20, 20));
+  // What happens between the server's link and the end of the download.
+  let meanwhile = null;
+  const call = svc.call;
+  svc.call = async (...args) => {
+    const out = await call(...args);
+    if (out && out.sha256 && meanwhile) meanwhile();
+    return out;
+  };
+  // The removal's cleanup runs before the download has a row to clean up.
+  meanwhile = () => {
+    store.addTombstones(W, [a.message]);
+    store.redact(W, [a.message]);
+    svc.files.onRemoved(W, C, [a.message]);
+  };
+  await assert.rejects(svc.files.file(W, C, a.fileId, 'view'), (err) => err.code === 'not_found');
+  assert.equal(store.getCachedFile(W, a.fileId), null);
+  assert.deepEqual(cacheNames(store), []);
+  // Left and joined again: the grant the download started under is gone.
+  meanwhile = () => store.setRoomFields(W, C, { grantId: id('g', 'again') });
+  await assert.rejects(svc.files.file(W, C, b.fileId, 'view'), (err) => err.code === 'not_found');
+  assert.equal(store.getCachedFile(W, b.fileId), null);
+  assert.deepEqual(cacheNames(store), []);
+  // Without either, it is kept.
+  meanwhile = null;
+  assert.ok(svc.files.serve((await svc.files.file(W, C, b.fileId, 'view')).url));
+  assert.equal(store.getCachedFile(W, b.fileId).message, b.message);
+});
+
+test('the cache answers by itself only for a live cached message of the same room, and a view link only for its own file', async (t) => {
+  const { svc, store, downloads, calls } = await setup(t);
+  const C2 = id('c', 'plans');
+  store.upsertRoom(W, {
+    conversation: C2, kind: 'channel', name: 'plans', visibility: 'workspace', archived: false, participants: null, startedBy: null, closedReason: null,
+    grant: id('g', 'plans'), role: 'member', members: 2, head: 1, floor: 1, lastAt: null, read: 1, unread: 0, mentions: 0, removed: [], removedMore: false, readMark: 0
+  });
+  // The server gives no file of general through plans.
+  const call = svc.call;
+  svc.call = async (ws, method, route, body) => {
+    if (route.startsWith(`/conversations/${C2}/files/`)) {
+      calls.push({ method, route, body });
+      throw new AccountError('not_found', 404, 'not here');
+    }
+    return call(ws, method, route, body);
+  };
+  // Two files with the same bytes: one file on disk, two rows.
+  const bytes = png(10, 10);
+  const a = withFile(store, downloads, 'a', 1, bytes);
+  const b = withFile(store, downloads, 'b', 2, bytes);
+  const viewA = (await svc.files.file(W, C, a.fileId, 'view')).url;
+  const viewB = (await svc.files.file(W, C, b.fileId, 'view')).url;
+  assert.deepEqual(cacheNames(store), [sha(bytes)]);
+  const downloadsAsked = () => calls.filter((c) => c.route.endsWith('/download')).length;
+  let n = downloadsAsked();
+  await svc.files.file(W, C, a.fileId, 'view');
+  assert.equal(downloadsAsked(), n, 'from the cache');
+  // Through another room the server is asked, and refuses.
+  await assert.rejects(svc.files.file(W, C2, a.fileId, 'view'), (err) => err.code === 'not_found');
+  assert.equal(downloadsAsked(), n + 1);
+  // A removed message's link stops, though another row names the same bytes.
+  svc.files.onRemoved(W, C, [a.message]);
+  assert.equal(svc.files.serve(viewA), null);
+  assert.ok(svc.files.serve(viewB));
+  // A message the cache no longer holds: the server is asked again, and its bytes on disk are used.
+  store.dropRoomCache(W, C);
+  n = downloadsAsked();
+  const again = await svc.files.file(W, C, b.fileId, 'view');
+  assert.equal(downloadsAsked(), n + 1);
+  assert.ok(svc.files.serve(again.url));
+  assert.equal(store.getCachedFile(W, b.fileId).message, b.message, 'the row keeps the message it learned');
+});
+
+test('a download whose file can no longer be written fails, and leaves no part behind', async (t) => {
+  const { svc, store, downloads } = await setup(t);
+  const a = withFile(store, downloads, 'a', 1, crypto.randomBytes(256 * 1024));
+  // The disk is full: every write of the download's file fails.
+  const real = fs.createWriteStream;
+  t.after(() => (fs.createWriteStream = real));
+  const full = () => Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC', syscall: 'write' });
+  fs.createWriteStream = (file, options) => {
+    const stream = real(file, options);
+    stream._write = (chunk, encoding, done) => done(full());
+    stream._writev = (chunks, done) => done(full());
+    return stream;
+  };
+  await assert.rejects(svc.files.file(W, C, a.fileId, 'view'), (err) => err instanceof ChatError && err.code === 'server');
+  assert.equal(store.getCachedFile(W, a.fileId), null);
+  assert.deepEqual(cacheNames(store), []);
+  // With room again, the same file downloads.
+  fs.createWriteStream = real;
+  assert.ok(svc.files.serve((await svc.files.file(W, C, a.fileId, 'view')).url));
 });
 
 test('the cache keeps its limit, least recently used first, and removed messages and leftovers go', async (t) => {

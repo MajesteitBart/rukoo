@@ -431,6 +431,31 @@ test('chatTiming turns the test knobs on only in test mode', () => {
   assert.equal(chatTiming({ SEM_HIDDEN: '1', SEM_CHAT_RETRY_DELAY: 'soon' }).retryDelay, undefined);
 });
 
+test('workspace requests name the newest protocol version both this Rukoo and the saved server info list', async (t) => {
+  // No server is needed: every request is answered here, and only its version header counts.
+  const { account } = newAccount({ url: 'http://127.0.0.1:9' });
+  t.after(() => account.close());
+  const sent = [];
+  account.http = async (srv, method, route, opts) => {
+    if (route.startsWith('/v1/workspaces')) sent.push(opts.headers && opts.headers['rukoo-workspace-version']);
+    return {};
+  };
+  account.attach('chat@example.com', 'x'.repeat(43), require('crypto').randomBytes(32));
+  const versionWith = async (info) => {
+    account.state.info = info;
+    await account.workspaceCall('GET', '/v1/workspaces');
+    return sent.at(-1);
+  };
+  const saved = (versions, server = account.server) => ({ server, data: { protocol: 1, workspace: { versions } }, at: Date.now() });
+  assert.equal(await versionWith(saved([1, 2])), '2');
+  assert.equal(await versionWith(saved([1])), '1', 'a server of version 1 only');
+  assert.equal(await versionWith(saved([1, 2, 3])), '2', 'a newer server');
+  assert.equal(await versionWith(saved([2])), '2');
+  assert.equal(await versionWith(null), '1', 'no info saved yet');
+  assert.equal(await versionWith(saved([1, 2], 'https://other.example')), '1', "another server's info");
+  assert.equal(await versionWith({ server: account.server, data: { protocol: 1 }, at: Date.now() }), '1');
+});
+
 test('the modules other packages fill in start as hooks that do nothing', () => {
   const svc = {};
   for (const Module of [History, Outbox, Manage, Notifier]) {

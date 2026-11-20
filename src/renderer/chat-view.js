@@ -911,7 +911,15 @@ export function mountView(section, H) {
   // bars, and the log when names may have changed.
   function roomChanged(room, { directory = false } = {}) {
     if (mode !== 'room' || !room || room.id !== V.c) return;
+    // Marked unread, here or on another device (contract 3.2): main moved the read position back and holds the room's
+    // reads, so the New divider moves to it as well.
+    const marked = Number.isSafeInteger(room.readMark) && room.readMark > ((V.room && V.room.readMark) || 0) && Number.isSafeInteger(room.read);
     V.room = { ...V.room, ...room };
+    if (marked) {
+      clearTimeout(V.readTimer);
+      V.readBest = V.readSent = room.read;
+      V.readAtOpen = room.read;
+    }
     // Main sends a floor that moved without the events when the log shows nothing below it that it pushed: the log
     // still drops what aged out.
     const floored = applyFloor(room.floor);
@@ -920,7 +928,7 @@ export function mountView(section, H) {
     if (input) input.setPlaceholder(placeholderFor(V.room));
     updateBars();
     if (T) renderThreadHead();
-    if ((directory || floored) && V.loaded) {
+    if ((directory || floored || marked) && V.loaded) {
       render({ position: 'keep' });
       if (T) renderThread({ position: 'keep' });
     } else updateJumps();

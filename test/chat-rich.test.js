@@ -132,7 +132,12 @@ test('a reaction goes on and off, another person reaction reaches the cache, and
 
 test('mark unread moves the read position back, holds reads until the room opens again, and another device follows', async (t) => {
   if (skipWithoutServer(t)) return;
-  const { olga, bart, ws, svc, api } = await setup(t);
+  const { olga, bart, ws, svc, api, account } = await setup(t);
+  // Every POST /read names the readMark the device knows, so the server can drop one from before a Mark unread.
+  const reads = [];
+  watchCalls(account, async (method, url, real, body) => {
+    if (method === 'POST' && url.endsWith(`/conversations/${ws.general}/read`)) reads.push(body);
+  });
   const posts = [];
   for (const text of ['een', 'twee', 'drie']) posts.push(await server.post(olga, ws.id, ws.general, text));
   const other = await device(t, bart, ws.id);
@@ -140,6 +145,7 @@ test('mark unread moves the read position back, holds reads until the room opens
   await cached(svc, ws.id, ws.general, posts[2].seq);
   await api.chatMarkRead(ws.id, ws.general);
   await until(() => svc.store.getRoom(ws.id, ws.general).readSent >= posts[2].seq, 10000, 'the read to reach the server');
+  assert.deepEqual(reads.at(-1), { seq: posts[2].seq, readMark: 0 });
   await other.svc.sync(ws.id, 'test');
   assert.equal(other.svc.store.getRoom(ws.id, ws.general).readLocal, posts[2].seq);
 
@@ -178,6 +184,7 @@ test('mark unread moves the read position back, holds reads until the room opens
   assert.equal(view.readAtOpen, posts[1].seq - 1);
   await api.chatRead(ws.id, ws.general, posts[2].seq);
   await until(() => svc.store.getRoom(ws.id, ws.general).readSent === posts[2].seq, 10000, 'the read after opening again');
+  assert.deepEqual(reads.at(-1), { seq: posts[2].seq, readMark: 1 });
 
   // Mark as read works during a hold, and ends it.
   await api.chatMarkUnread(ws.id, ws.general, posts[2].messageId);
@@ -186,6 +193,7 @@ test('mark unread moves the read position back, holds reads until the room opens
   r = svc.store.getRoom(ws.id, ws.general);
   assert.deepEqual([r.readLocal, r.readPaused, r.unread], [posts[2].seq, 0, 0]);
   await until(() => svc.store.getRoom(ws.id, ws.general).readSent === posts[2].seq, 10000, 'Mark as read to reach the server');
+  assert.deepEqual(reads.at(-1), { seq: posts[2].seq, readMark: 2 });
   // A read never moves past the target's position back once the other device had read further.
   await assert.rejects(api.chatMarkUnread(ws.id, ws.general, `e_${crypto.randomBytes(16).toString('base64url')}`), (err) => err.code === 'not_found');
 });
@@ -243,10 +251,16 @@ test('an image and a PDF are staged, uploaded with progress and sent; Olga downl
   assert.deepEqual(pending.attachments[0], { id: one.file, name: 'foto.png', type: 'image/png', size: image.length, width: 320, height: 200 });
   assert.deepEqual(await api.chatStaged(ws.id, ws.general, null), []);
   const sent = await until(() => ofKind(svc, 'sent').find((e) => e.local === local), 15000, 'sent');
-  const onServer = await server.call('GET', route(ws.id, `/conversations/${ws.general}/events?limit=100`), { token: olga.token });
-  const message = onServer.body.events.find((e) => e.id === sent.messageId);
+  // Read as Rukoo reads it now, in version 2 of the workspace protocol: a message of files only has no text. A reader
+  // of version 1 gets a text standing in for it.
+  const read = async (version) => {
+    const res = await server.call('GET', route(ws.id, `/conversations/${ws.general}/events?limit=100`), { token: olga.token, headers: { 'rukoo-workspace-version': version } });
+    return res.body.events.find((e) => e.id === sent.messageId);
+  };
+  const message = await read('2');
   assert.deepEqual(message.attachments.map((f) => f.id), [one.file, two.file]);
   assert.equal(message.text, '');
+  assert.notEqual((await read('1')).text, '');
 
   // Olga's download is the same bytes, with the serving headers of contract 2.6.
   const got = await server.download(olga, ws.id, ws.general, one.file);

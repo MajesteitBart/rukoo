@@ -818,7 +818,8 @@ function checkOperation(v) {
   };
 }
 
-// POST /conversations/{c}/read: { read }.
+// POST /conversations/{c}/read: { read }, and the grant's readMark on a server with Mark unread, which isn't needed:
+// a higher readMark reaches the room through the feed.
 function checkRead(v) {
   obj(v, 'read');
   return { read: int(v.read, 'read.read') };
