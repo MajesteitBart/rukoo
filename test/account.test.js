@@ -391,6 +391,88 @@ test('a slow sign-out leaves alone the session made while it waited', async (t) 
   assert.equal(desk.status().signedIn, true);
 });
 
+// A device whose calls are recorded with the server they went to, and whose call to route waits until the test
+// changes the server, so a sign-in can be caught halfway.
+function gated(t, srv, route, name = 'desk') {
+  const { request } = require('../src/main/account/client');
+  const gate = { sent: [] };
+  gate.asked = new Promise((r) => (gate.onAsked = r));
+  gate.go = new Promise((r) => (gate.release = r));
+  const acc = new AccountService({
+    dataDir: tmpDir(t),
+    secrets,
+    defaultServer: srv.url,
+    deviceName: name,
+    request: async (...args) => {
+      gate.sent.push([args[0], `${args[1]} ${args[2]}`]);
+      if (args[2] === route && !gate.held) {
+        gate.held = true;
+        gate.onAsked();
+        await gate.go;
+      }
+      return request(...args);
+    }
+  }).init();
+  t.after(() => acc.close());
+  return { acc, gate };
+}
+
+async function switchWhileWaiting({ acc, gate }, to, call) {
+  const done = call().then(
+    () => null,
+    (err) => err
+  );
+  await gate.asked;
+  acc.setServer(to);
+  gate.release();
+  return done;
+}
+
+test('a server changed while sign-up asks for its info gets nothing, and the invitation stays with its server', async (t) => {
+  const srv = await server(t);
+  const d = gated(t, srv, '/v1/info');
+  const workspaceInvite = { workspace: 'w_' + 'A'.repeat(22), invite: 'b'.repeat(43) };
+  const err = await switchWhileWaiting(d, 'https://second.example', () =>
+    d.acc.signUp({ email: 'colleague@example.com', password: PASSWORD, workspaceInvite })
+  );
+  assert.equal(err && err.code, 'server');
+  assert.deepEqual(d.gate.sent.filter(([at]) => at !== srv.url), [], 'every call went to the server the sign-up began at');
+  assert.ok(d.gate.sent.some(([, route]) => route === 'POST /v1/signup'));
+  assert.equal(d.acc.status().signedIn, false);
+  assert.equal(d.acc.status().server, 'https://second.example');
+});
+
+test('a session made at one server is never lent to the server changed to while it was made', async (t) => {
+  const srv = await server(t);
+  const d = gated(t, srv, '/v1/signup');
+  const err = await switchWhileWaiting(d, 'https://second.example', () => d.acc.signUp({ email: 'someone@example.com', password: PASSWORD }));
+  assert.equal(err && err.code, 'server');
+  assert.equal(d.acc.status().signedIn, false);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(d.gate.sent.filter(([at]) => at !== srv.url), []);
+  // The session the first server made is ended there.
+  assert.deepEqual(d.gate.sent.at(-1), [srv.url, 'POST /v1/logout']);
+});
+
+test('a server changed while sign-in or recovery waits gets neither the proof nor the session', async (t) => {
+  const srv = await server(t);
+  const { recoveryKey } = await device(t, srv, 'helper').signUp({ email: 'moving@example.com', password: PASSWORD });
+
+  const laptop = gated(t, srv, '/v1/login', 'laptop');
+  const signIn = await switchWhileWaiting(laptop, 'https://second.example', () => laptop.acc.signIn({ email: 'moving@example.com', password: PASSWORD }));
+  assert.equal(signIn && signIn.code, 'server');
+  assert.equal(laptop.acc.status().signedIn, false);
+  assert.deepEqual(laptop.gate.sent.filter(([at]) => at !== srv.url), []);
+
+  const phone = gated(t, srv, '/v1/recover/finish', 'phone');
+  const recovered = await switchWhileWaiting(phone, 'https://second.example', () =>
+    phone.acc.recover({ email: 'moving@example.com', recoveryKey, password: 'another long password' })
+  );
+  assert.equal(recovered && recovered.code, 'server');
+  assert.equal(phone.acc.status().signedIn, false);
+  assert.deepEqual(phone.gate.sent.filter(([at]) => at !== srv.url), []);
+});
+
 test('a classification deleted while signed out stays deleted when signing in', async (t) => {
   const srv = await server(t);
   const clock = { t: 100 };

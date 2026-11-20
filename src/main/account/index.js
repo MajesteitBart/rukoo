@@ -275,6 +275,9 @@ class AccountService extends EventEmitter {
 
   // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
   // invite code accepts in place of one (contract 2.12). Sent instead of invite.
+  //
+  // Sign-up, sign-in and recovery read the server once and use that address for every call and key: the server can
+  // still change while they wait (only a session stops it), and attach() refuses the session when it did.
   async signUp({ email, password, invite, workspaceInvite }) {
     const address = keys.normalizeEmail(email);
     this.checkNew(address, password);
@@ -282,13 +285,14 @@ class AccountService extends EventEmitter {
       workspaceInvite && typeof workspaceInvite === 'object' && typeof workspaceInvite.workspace === 'string' && typeof workspaceInvite.invite === 'string'
         ? { workspace: workspaceInvite.workspace.slice(0, 100), invite: workspaceInvite.invite.slice(0, 100) }
         : null;
-    await this.serverInfo();
+    const at = this.server;
+    await this.serverInfo(at);
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
     const dataKey = crypto.randomBytes(32);
     const recoveryKey = crypto.randomBytes(20);
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, this.server);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, at);
     const res = await this.call('POST', '/v1/signup', {
       email: address,
       ...(linked ? { workspaceInvite: linked } : invite ? { invite: String(invite).trim() } : {}),
@@ -299,14 +303,14 @@ class AccountService extends EventEmitter {
       recoveryAuth: keys.b64u(recoveryAuth),
       recoveryWrappedKey: keys.b64u(keys.wrapDataKey(recoveryWrap, dataKey)),
       device: this.device()
-    });
-    this.attach(address, res.token, dataKey);
+    }, { server: at });
+    this.attach(address, res.token, dataKey, at);
     return { recoveryKey: keys.formatRecoveryKey(recoveryKey), account: res.account };
   }
 
-  // authKey for the password, with the parameters the server keeps for the address. Refuses weak ones.
-  async authFor(email, password) {
-    const pre = await this.call('POST', '/v1/prelogin', { email });
+  // authKey for the password, with the parameters the server at keeps for the address. Refuses weak ones.
+  async authFor(email, password, at = this.server) {
+    const pre = await this.call('POST', '/v1/prelogin', { email }, { server: at });
     let kdf;
     try {
       kdf = keys.checkKdf(pre && pre.kdf);
@@ -319,7 +323,7 @@ class AccountService extends EventEmitter {
     } catch (_) {
       throw fail('server');
     }
-    return keys.passwordKeys(password, salt, kdf, this.server);
+    return keys.passwordKeys(password, salt, kdf, at);
   }
 
   async signIn({ email, password }) {
@@ -347,16 +351,17 @@ class AccountService extends EventEmitter {
   }
 
   async login(address, password) {
-    await this.serverInfo();
-    const { authKey, wrapKey } = await this.authFor(address, password);
-    const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() });
+    const at = this.server;
+    await this.serverInfo(at);
+    const { authKey, wrapKey } = await this.authFor(address, password, at);
+    const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() }, { server: at });
     let dataKey;
     try {
       dataKey = keys.unwrapDataKey(wrapKey, keys.unb64u(res.wrappedKey));
     } catch (_) {
       throw fail('server');
     }
-    this.attach(address, res.token, dataKey);
+    this.attach(address, res.token, dataKey, at);
     return { account: res.account };
   }
 
@@ -366,9 +371,10 @@ class AccountService extends EventEmitter {
     this.checkNew(address, password);
     const key = keys.parseRecoveryKey(recoveryKey);
     if (!key) throw fail('recovery_key');
-    await this.serverInfo();
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, this.server);
-    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) });
+    const at = this.server;
+    await this.serverInfo(at);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, at);
+    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) }, { server: at });
     let dataKey;
     try {
       dataKey = keys.unwrapDataKey(recoveryWrap, keys.unb64u(start.recoveryWrappedKey));
@@ -377,7 +383,7 @@ class AccountService extends EventEmitter {
     }
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
     const res = await this.call('POST', '/v1/recover/finish', {
       email: address,
       recoveryAuth: keys.b64u(recoveryAuth),
@@ -386,8 +392,8 @@ class AccountService extends EventEmitter {
       authKey: keys.b64u(authKey),
       wrappedKey: keys.b64u(keys.wrapDataKey(wrapKey, dataKey)),
       device: this.device()
-    });
-    this.attach(address, res.token, dataKey);
+    }, { server: at });
+    this.attach(address, res.token, dataKey, at);
     return { account: res.account };
   }
 
@@ -536,13 +542,18 @@ class AccountService extends EventEmitter {
     if (this.timers.every.unref) this.timers.every.unref();
   }
 
-  // This device joins the account. Everything it has goes up; what the account has comes down first, so an older
-  // value here doesn't overwrite a newer one there.
-  attach(email, token, dataKey) {
+  // This device joins the account it signed in to at the address at. Everything it has goes up; what the account has
+  // comes down first, so an older value here doesn't overwrite a newer one there. When the server was changed while the sign-in
+  // waited, the session is refused and ended there: its token would otherwise go to the new address.
+  attach(email, token, dataKey, at = this.server) {
+    if (at !== this.server) {
+      this.http(at, 'POST', '/v1/logout', { token }).catch(() => {});
+      throw fail('server');
+    }
     this.state = {
       ...this.state,
       email,
-      sessionServer: this.server,
+      sessionServer: at,
       token: this.secrets.encrypt(token),
       dataKey: this.secrets.encrypt(dataKey.toString('base64')),
       cursor: 0,
