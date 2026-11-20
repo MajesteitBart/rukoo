@@ -108,13 +108,14 @@ data class ClosedBar(val text: ClosedText, val blocked: String?, val startNew: B
 
 /**
  * Which [ComposerSlot] a room or thread gets, pure for the tests. A workspace that needs a newer Rukoo ([upgrade])
- * takes every write away, Join included; a stopped workspace wins over the room's own state, as on desktop.
+ * takes every write away, Join included; a stopped workspace wins over the room's own state and over Join, as its
+ * banner offers Start over and nothing else can be written there.
  */
 object ComposerSlots {
     fun of(room: Room?, notJoined: Channel? = null, paused: Boolean = false, rootRemoved: Boolean = false, upgrade: Boolean = false): ComposerSlot = when {
         upgrade -> ComposerSlot.Upgrade
-        room == null && notJoined != null -> ComposerSlot.NotJoined(notJoined)
         paused -> ComposerSlot.Paused
+        room == null && notJoined != null -> ComposerSlot.NotJoined(notJoined)
         room == null -> ComposerSlot.Composer
         room.kind == RoomKind.CHANNEL && room.archived -> ComposerSlot.Archived
         room.kind == RoomKind.DM && (room.closedReason != null || room.archived) -> ComposerSlot.Closed(room.closedReason)

@@ -38,7 +38,9 @@ class ChatComposerRulesTest {
     @Test
     fun `the composer gives way to a bar for a channel not joined, a stopped workspace, an archived channel, a closed DM and a removed root`() {
         val browse = Channel("c_2", "ideas", "workspace", joined = false)
-        assertEquals(ComposerSlot.NotJoined(browse), ComposerSlots.of(null, browse, paused = true))
+        assertEquals(ComposerSlot.NotJoined(browse), ComposerSlots.of(null, browse))
+        // A stopped workspace offers no Join: its bar explains, and the banner has Start over.
+        assertEquals(ComposerSlot.Paused, ComposerSlots.of(null, browse, paused = true))
         assertEquals(ComposerSlot.Paused, ComposerSlots.of(room(archived = true), paused = true))
         assertEquals(ComposerSlot.Archived, ComposerSlots.of(room(archived = true)))
         assertEquals(ComposerSlot.Closed("left"), ComposerSlots.of(room(RoomKind.DM, archived = true, closed = "left")))
@@ -51,6 +53,7 @@ class ChatComposerRulesTest {
         assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(room(), upgrade = true))
         assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(room(), rootRemoved = false, upgrade = true))
         assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(null, browse, upgrade = true))
+        assertEquals(ComposerSlot.Upgrade, ComposerSlots.of(null, browse, paused = true, upgrade = true))
     }
 
     @Test

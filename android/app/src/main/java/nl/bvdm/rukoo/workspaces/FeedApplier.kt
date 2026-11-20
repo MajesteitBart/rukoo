@@ -210,6 +210,10 @@ class FeedApplier(
 
     // The IDs in removed get a tombstone and lose their text; removedMore drops the room's cache whole, as more were
     // removed than the feed can list. Alerts for any of them go, and for every alert of the room after removedMore.
+    // removedMore also raises the cache's revision: the IDs it couldn't list get no tombstone, so an events page or an
+    // alert fetch that started before it would write their text back, and the revision drops it (applyHistory,
+    // ChatAlertEngine). The feed run reads the revision afresh for its next request. A grant change needs no bump:
+    // applyHistory drops a page from another grant.
     private fun WorkspaceStore.StoreTx.applyRemovals(ws: String, c: Change, out: Collect, alsoGone: List<String>) {
         val room = c.conversation
         val gone = ArrayList(alsoGone)
@@ -222,6 +226,7 @@ class FeedApplier(
             gone += cachedMessages(ws, room)
             gone += noticesForRoom(ws, room).map { it.message }
             dropRoomCache(ws, room)
+            bumpRevision(ws)
             out.cacheDropped += room
         }
         out.removed(room, gone)

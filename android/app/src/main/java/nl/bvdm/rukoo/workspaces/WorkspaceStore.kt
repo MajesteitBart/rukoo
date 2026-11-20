@@ -110,9 +110,10 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
     /**
      * The workspace's cache revision (§3.6). It goes up in the transaction of a `410` reset, Start over, a new key, a
-     * restore, a quarantine, a park and the removal. A fetch records it before its request goes out, and its answer
-     * or error is dropped (not written, not shown, not alerted) when it changed meanwhile: that answer belongs to a
-     * cache that no longer is. Check it again inside the transaction that writes the answer ([StoreTx.revision]).
+     * restore, a quarantine, a park, the removal and a feed page whose `removedMore` dropped a room's cache. A fetch
+     * records it before its request goes out, and its answer or error is dropped (not written, not shown, not
+     * alerted) when it changed meanwhile: that answer belongs to a cache that no longer is. Check it again inside the
+     * transaction that writes the answer ([StoreTx.revision]).
      */
     fun revision(ws: String): Long = revisions[ws] ?: 0L
 
@@ -187,8 +188,8 @@ class WorkspaceStore(val db: ChatDb, private val now: () -> Long = System::curre
 
         /**
          * Raises the workspace's revision, from inside the transaction that resets, restores, re-keys, starts over,
-         * quarantines, parks or removes it. A transaction that rolls back afterwards leaves the bump, which only drops
-         * an answer that could have stayed.
+         * quarantines, parks or removes it, or drops a room's cache for `removedMore`. A transaction that rolls back
+         * afterwards leaves the bump, which only drops an answer that could have stayed.
          */
         fun bumpRevision(ws: String) {
             revisions.merge(ws, 1L, Long::plus)

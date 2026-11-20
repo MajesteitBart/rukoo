@@ -233,6 +233,49 @@ class RoomLoaderTest {
     }
 
     @Test
+    fun `a history page that started before removedMore dropped the room's cache writes nothing`() = runTest {
+        val h = SyncHarness(this, db).start()
+        h.sync.applier.apply(ws, feed(room(head = 10), next = "cursor1"), "cursor0")
+        val route = EventsRoute((1L..10L).map { msg(it, text = "body $it") })
+        val started = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        h.http.on("GET", h.route("/conversations/$general/events")) {
+            started.complete(Unit)
+            gate.await()
+            route.answer(it)
+        }
+        val opening = launch { h.sync.loader.open(general) }
+        started.await()
+        // More messages were removed than the feed can list: it names none of them, so no tombstone stops the page,
+        // and the grant stays the same.
+        h.sync.applier.apply(ws, feed(room(head = 10, removedMore = true), next = "cursor2"), "cursor1")
+        gate.complete(Unit)
+        opening.join()
+        assertEquals(null to null, h.range())
+        assertEquals(emptyList<Event>(), h.events())
+    }
+
+    @Test
+    fun `a feed run goes on past its own removedMore page and the open room loads again`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val route = h.withRoom(head = 10)
+        h.sync.loader.open(general)
+        assertEquals(1L to 10L, h.range())
+        // Messages 1 to 5 went, more than the feed can list; the run's next page raises the head.
+        route.events = (6L..12L).map { msg(it) }
+        route.head = 12
+        h.feedPages(
+            feed(room(head = 10, removedMore = true), next = "cursor2", more = true),
+            feed(room(head = 12), next = "cursor3"),
+        )
+        h.sync.now()
+        assertEquals("cursor3", h.ws().cursor)
+        assertEquals(12L, h.room()!!.head)
+        assertEquals((6L..12L).toList(), h.events().map { it.seq })
+        h.http.verify()
+    }
+
+    @Test
     fun `a history page whose floor took an alerted message takes the alert back`() = runTest {
         val h = SyncHarness(this, db).start()
         val dm = Ids.DM
