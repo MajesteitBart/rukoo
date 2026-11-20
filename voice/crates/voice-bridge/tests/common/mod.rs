@@ -97,6 +97,10 @@ pub struct FakeControl {
     /// `meeting.protected` waits until the test sends on this gate's other end. The server
     /// answers it on the connection's own loop, so the loop sends nothing meanwhile.
     pub hold_protection: Mutex<Option<mpsc::Receiver<()>>>,
+    /// Once the test hands it the log, `meeting.list` notes the log's head in `list_heads` as it
+    /// runs: an upper bound of the events stored before the command finished.
+    pub list_log: Mutex<Option<EventLog>>,
+    pub list_heads: Mutex<Vec<u64>>,
 }
 
 /// Passages a split that is done appends to the log once the test opens `go`, as Voice sends a
@@ -217,6 +221,9 @@ impl MeetingControl for FakeControl {
 
     fn list(&self, limit: usize) -> Vec<MeetingSummary> {
         self.call(format!("list {limit}"));
+        if let Some(log) = self.list_log.lock().unwrap().as_ref() {
+            self.list_heads.lock().unwrap().push(log.head());
+        }
         let done = MeetingSummary {
             id: MeetingId::parse(DONE_MEETING).unwrap(),
             title: "Standup".into(),

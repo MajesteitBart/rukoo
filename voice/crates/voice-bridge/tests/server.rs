@@ -1193,6 +1193,125 @@ fn events_keep_flowing_while_a_command_runs() {
     client.read_reply("c-2");
 }
 
+/// The events per page the server reads from the log.
+const PAGE: u64 = 500;
+/// The most events a flood appends.
+const FLOOD: u64 = 200_000;
+/// How far past what the connection sent a flood keeps the log: more than the socket takes
+/// at once, so every page the connection reads is full.
+const AHEAD: u64 = 8 * PAGE;
+/// The events Rukoo reads between two looks at the flood.
+const READS: usize = 50;
+
+/// Appends until the log is [`AHEAD`] events past what the connection has sent, or until the
+/// flood has appended [`FLOOD`]; returns how many it appended in all.
+fn flood(bridge: &Bridge, mut appended: u64) -> u64 {
+    let sent = bridge.handle.as_ref().unwrap().clients().connected[0].sent;
+    while appended < FLOOD && bridge.log.head() < sent + AHEAD {
+        bridge
+            .log
+            .append("passage", Some(B), passage(appended * 1000))
+            .unwrap();
+        appended += 1;
+    }
+    appended
+}
+
+/// The next message, which must be an event, with its seq noted in `events`.
+fn read_event(client: &mut Client, events: &mut Vec<u64>) {
+    let event = client.read();
+    assert_eq!(event["type"], "event", "{event}");
+    events.push(event["seq"].as_u64().unwrap());
+}
+
+/// A flood of stored events: the log stays pages ahead of the connection, so every page the
+/// connection reads from it is full, for as long as the flood lasts. A command Rukoo sends
+/// meanwhile still runs after the page in hand and is answered while the flood goes on: after
+/// every event stored before it finished, and at most a page or two of later ones.
+#[test]
+fn a_command_is_answered_while_a_flood_of_events_goes_on() {
+    let bridge = Bridge::start("server-flood");
+    *bridge.control.list_log.lock().unwrap() = Some(bridge.log.clone());
+    let (mut client, _) = bridge.client(None, 0);
+    let sent = || bridge.handle.as_ref().unwrap().clients().connected[0].sent;
+
+    // Rukoo reads nothing until its socket is full and the connection falls behind.
+    let mut appended = 0;
+    while bridge.log.head() < sent() + AHEAD {
+        assert!(
+            appended < FLOOD,
+            "the connection kept up with {FLOOD} events"
+        );
+        appended = flood(&bridge, appended);
+    }
+    let filled = appended;
+    // Then it reads until the connection sent two more pages: it works through the log, more
+    // than the live channel holds behind, a page at a time.
+    let mut events = Vec::new();
+    let behind = sent();
+    while sent() < behind + 2 * PAGE {
+        assert!(appended < FLOOD, "the connection stopped at {}", sent());
+        for _ in 0..READS {
+            read_event(&mut client, &mut events);
+        }
+        appended = flood(&bridge, appended);
+    }
+
+    let asked_at = bridge.log.head();
+    client.command("c-1", "meeting.list", json!({ "limit": 1 }));
+    let mut reply = None;
+    while reply.is_none() && appended < FLOOD {
+        for _ in 0..READS {
+            let message = client.read();
+            if message["type"] == "reply" {
+                reply = Some(message);
+                break;
+            }
+            assert_eq!(message["type"], "event", "{message}");
+            events.push(message["seq"].as_u64().unwrap());
+        }
+        appended = flood(&bridge, appended);
+    }
+    let ran_at = bridge.control.list_heads.lock().unwrap().first().copied();
+    let last = events.last().copied().unwrap_or(0);
+    eprintln!(
+        "flood: {filled} events filled the socket; asked at {asked_at}, ran at {ran_at:?}, \
+         answered after {last}; {appended} appended"
+    );
+    let reply = reply.expect("no reply while the flood went on");
+    assert_eq!(
+        (&reply["id"], &reply["ok"]),
+        (&json!("c-1"), &json!(true)),
+        "{reply}"
+    );
+    let ran_at = ran_at.expect("the command ran");
+    // It ran once the connection had sent the page in hand: the log is never more than AHEAD
+    // past what the connection sent, and the connection sent at most a page or two meanwhile.
+    assert!(
+        ran_at - asked_at <= AHEAD + 3 * PAGE,
+        "{} events were stored between the command and its run",
+        ran_at - asked_at
+    );
+    // Every event stored before it finished came first, in order, and at most a page or two of
+    // later ones.
+    assert!(last >= ran_at, "the reply came after {last} of {ran_at}");
+    assert_eq!(events, (1..=last).collect::<Vec<_>>());
+    assert!(
+        last - ran_at <= 2 * PAGE,
+        "{} events stored after the command finished came before its reply",
+        last - ran_at
+    );
+    // The rest follow in order, and a caught-up connection answers at once.
+    let head = bridge.log.head();
+    if head > last {
+        assert_eq!(
+            client.read_events_until(head),
+            (last + 1..=head).collect::<Vec<_>>()
+        );
+    }
+    assert!(read_until_status_reply(&mut client, "c-2").is_empty());
+}
+
 #[test]
 fn the_handle_reports_its_clients_and_the_last_refused_hello() {
     let bridge = Bridge::start("server-clients-info");
