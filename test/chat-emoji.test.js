@@ -32,8 +32,10 @@ test('the data is what scripts/emoji-data.js makes from the installed emojibase-
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'rukoo-emoji-'));
   try {
     execFileSync(process.execPath, [path.join(__dirname, '../scripts/emoji-data.js'), out], { stdio: 'pipe' });
+    // Line endings aside: a Windows checkout can turn the committed LF into CRLF.
+    const text = (file) => fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
     for (const file of ['data-en.js', 'data-nl.js', 'LICENSE']) {
-      assert.ok(fs.readFileSync(path.join(out, file)).equals(fs.readFileSync(path.join(DIR, file))), `${file} is up to date`);
+      assert.ok(text(path.join(out, file)) === text(path.join(DIR, file)), `${file} is up to date`);
     }
   } finally {
     fs.rmSync(out, { recursive: true, force: true });
