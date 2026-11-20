@@ -123,12 +123,16 @@ test("joining Olga's workspace with a link from the Join dialog opens its first 
   await expect(dialog.locator('[data-other]')).toHaveText(/This invitation is for chat\.example\.org\. Rukoo joins workspaces on 127\.0\.0\.1:\d+/);
   await expect(dialog.locator('.buttons button:visible')).toHaveText(['Close']);
 
-  // The real link: its card, the host, and the name to use.
-  await dialog.locator('[name="link"]').fill(link);
+  // The real link, pasted with the sentence around it and its full stop: it's checked at once, and the field shows
+  // only the link, with its card, the host, and the name to use.
+  await dialog.locator('[name="link"]').fill('');
   await expect(dialog.locator('[data-other]')).toBeHidden();
-  await primary.click();
+  await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), `Join Acme here: ${link}.`);
+  await dialog.locator('[name="link"]').focus();
+  await win.keyboard.press('Control+V');
   const card = dialog.locator('[data-preview]');
   await expect(card.locator('.ch-join-ws')).toHaveText('Acme', { timeout: 15000 });
+  await expect(dialog.locator('[name="link"]')).toHaveValue(link);
   await expect(card).toContainText('Olga Owner invited you as a member.');
   await expect(card).toContainText('Joining a channel lets you read its earlier messages.');
   await expect(dialog.locator('[data-host] .ch-host')).toContainText('Test operator');

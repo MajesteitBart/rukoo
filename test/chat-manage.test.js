@@ -121,6 +121,7 @@ test('previews and joins with an invitation link: bad_link, other_server and alr
   assert.deepEqual(preview.issuer, { name: 'Olga' });
   assert.ok(preview.expiresAt > Date.now());
   assert.equal(preview.already, false);
+  assert.equal(preview.link, link, 'the link without the sentence around it, for the Join field');
 
   const joined = await api.chatJoin({ link, name: '  Bart  ' });
   assert.deepEqual(joined, { ws: ws.id, already: false });
@@ -138,6 +139,8 @@ test('previews and joins with an invitation link: bad_link, other_server and alr
   const used = await api.chatPreviewInvite(link);
   assert.equal(used.already, true);
   assert.deepEqual(used.workspace, { id: ws.id, name: 'Acme' });
+  // A full stop and a bracket after the link, as in a sentence, are no part of it.
+  assert.equal((await api.chatPreviewInvite(`(Join here: ${link}).`)).link, link);
   // A link with a secret nobody has gets the 404 of a missing workspace; the workspace Bart is in stays.
   const wrong = `${server.url}/join#w=${ws.id}&i=${crypto.randomBytes(32).toString('base64url')}`;
   assert.equal((await api.chatPreviewInvite(wrong)).already, true);

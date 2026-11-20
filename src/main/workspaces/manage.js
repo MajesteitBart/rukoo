@@ -272,11 +272,13 @@ class Manage {
     return { ws };
   }
 
-  // chatPreviewInvite: the invitation's card. already says the workspace is in the local list.
+  // chatPreviewInvite: the invitation's card. already says the workspace is in the local list; link is the link as
+  // contract 3.2 read it from the text, for the Join field to show in place of a sentence or a link with a full stop.
   async previewInvite(text) {
     const svc = this.svc;
     const epoch = svc.epoch;
     const link = this.parse(text);
+    const cleaned = wire.inviteLink(link.server, link.workspace, link.secret);
     const already = Boolean(svc.store.getWs(link.workspace));
     try {
       const preview = wire.checkPreview(
@@ -284,7 +286,7 @@ class Manage {
       );
       svc.guard(epoch);
       if (preview.workspace.id !== link.workspace) throw new ChatError('server', { where: 'preview.workspace.id' });
-      return { ...preview, already: already || Boolean(svc.store.getWs(link.workspace)) };
+      return { ...preview, already: already || Boolean(svc.store.getWs(link.workspace)), link: cleaned };
     } catch (err) {
       if (svc.isStale(err) || !already) throw err;
       svc.guard(epoch);
@@ -298,7 +300,8 @@ class Manage {
         channels,
         issuer: { name: '' },
         expiresAt: null,
-        already: true
+        already: true,
+        link: cleaned
       };
     }
   }

@@ -236,7 +236,9 @@ export async function joinWorkspace(link = '') {
       const card = await api('chatPreviewInvite', text);
       if (!scrim.isConnected || p.link.value.trim() !== text) return;
       preview = card;
-      checked = text;
+      // The field shows the link main read (contract 3.2), in place of a sentence around it or a full stop after it.
+      if (card.link && card.link !== text) p.link.value = card.link;
+      checked = p.link.value.trim();
       drawCard(scrim, card);
     } catch (err) {
       if (!scrim.isConnected) return;
@@ -349,11 +351,13 @@ export async function joinWorkspace(link = '') {
   return joined || null;
 }
 
+// The host of the link in text, for the other-server note; a link pasted without https:// has one too (contract 3.2).
 const hostOf = (text) => {
-  const m = String(text || '').match(/https?:\/\/\S+/);
+  const s = String(text || '');
+  const m = s.match(/https?:\/\/\S+/) || s.match(/[A-Za-z0-9.-]+(?::[0-9]+)?\/\S*join#\S*/);
   if (!m) return '';
   try {
-    return new URL(m[0]).host;
+    return new URL(/^https?:\/\//.test(m[0]) ? m[0] : `https://${m[0]}`).host;
   } catch (_) {
     return '';
   }

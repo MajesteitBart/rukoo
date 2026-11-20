@@ -224,6 +224,26 @@ function checkMentions(text, mentions, { max = MENTIONS_MAX, field = 'mentions' 
 // ---- Invitation links ----
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+// Characters that can't end a link, such as the full stop of a sentence or the bracket around a link, and the ones
+// that can't start a link written without its scheme. A secret or workspace ID never ends in one.
+const LINK_QUOTES = '‘’‚“”„«»‹›';
+const LINK_CLOSING = new RegExp(`[.,;:!?)\\]}>'"${LINK_QUOTES}]+$`);
+const LINK_OPENING = new RegExp(`^[(\\[{<'"${LINK_QUOTES}]+`);
+// <host>[:<port>][/<path>]/join#<fragment>, a link pasted without https://.
+const LINK_WITHOUT_SCHEME = /^[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?\/join#\S*$/;
+
+// Step 1 of contract 3.2: the first http:// or https:// URL in the trimmed text up to white space, without the
+// characters that can't end a link. Without one, the first word that is a link without its scheme, read as https.
+function linkInText(text) {
+  const trimmed = text.trim();
+  const found = /https?:\/\/\S+/.exec(trimmed);
+  if (found) return found[0].replace(LINK_CLOSING, '');
+  for (const word of trimmed.split(/\s+/)) {
+    const bare = word.replace(LINK_OPENING, '').replace(LINK_CLOSING, '');
+    if (LINK_WITHOUT_SCHEME.test(bare)) return `https://${bare}`;
+  }
+  return null;
+}
 
 // An invitation link in pasted text (contract 3.2): { server, workspace, secret }. Throws ChatError('bad_link') for
 // text that holds none, and ChatError('other_server') for a link to another server than server, the configured
@@ -231,12 +251,12 @@ const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 function parseInviteLink(text, server = null) {
   const bad = () => new ChatError('bad_link');
   if (typeof text !== 'string') throw bad();
-  // 1. The first http:// or https:// URL in the trimmed text, up to white space.
-  const found = /https?:\/\/\S+/.exec(text.trim());
+  // 1. The link in the text.
+  const found = linkInText(text);
   if (!found) throw bad();
   let url;
   try {
-    url = new URL(found[0]);
+    url = new URL(found);
   } catch (_) {
     throw bad();
   }
