@@ -451,3 +451,30 @@ export function addPeopleEmpty({ rows = 0, candidates = 0, others = 0, query = '
   if (String(query || '').trim() && candidates > 0) return 'none';
   return others > 0 ? 'everyone' : 'nobody';
 }
+
+// The channels a new invitation link grants, for the line under the link: up to three names, then "and n more".
+// names: channel names without the #.
+export function inviteChannelList(names, t) {
+  const tags = (names || []).map((n) => `#${n}`);
+  if (tags.length <= 1) return tags[0] || '';
+  if (tags.length <= 3) return t('chat.invite.listAnd', { list: tags.slice(0, -1).join(', '), last: tags[tags.length - 1] });
+  return t('chat.invite.listMore', { list: tags.slice(0, 3).join(', '), count: tags.length - 3 });
+}
+
+// The line under a new invitation link: who can join, as what, into which channels, until when.
+export function inviteGrant(role, names, date, t) {
+  const channels = inviteChannelList(names, t);
+  if (role === 'guest') return t('chat.invite.readyGuest', { channels, date });
+  return channels ? t('chat.invite.readyMemberIn', { channels, date }) : t('chat.invite.readyMember', { date });
+}
+
+// The channels in an open invitation's row: up to two names, then "+n" for the rest. total: the invitation's
+// channelCount, which also counts private channels whose names the viewer doesn't get. Without a name, the count.
+export function inviteRowChannels(names, total, t) {
+  const tags = (names || []).filter(Boolean).map((n) => `#${n}`);
+  const count = Math.max(Number(total) || 0, tags.length);
+  if (!tags.length) return t('chat.invite.channelCount', { count });
+  const rest = count - Math.min(tags.length, 2);
+  const shown = tags.slice(0, 2).join(', ');
+  return rest > 0 ? t('chat.invite.namesMore', { names: shown, count: rest }) : shown;
+}

@@ -75,11 +75,26 @@ test('inviting as a guest needs a channel, the link copies, and withdrawing it r
   await expect(field).toBeVisible({ timeout: 15000 });
   const link = await field.inputValue();
   expect(link).toMatch(new RegExp(`^${server.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/join#w=${ws.id}&i=[A-Za-z0-9_-]{43}$`));
-  await expect(dialog.locator('[data-ready]')).toContainText('It works once.');
+  // The line under the link says what it grants; Copy link is the filled button until the link is copied.
+  await expect(dialog.locator('[data-ready]')).toHaveText(/^One person can join as a guest, only in #general, until .+\.$/);
+  await expect(dialog.locator('[data-once]')).toHaveText("You'll see this link only once.");
   await expect(dialog.locator('.buttons button').last()).toHaveText('Done');
+  await expect(dialog.locator('[data-copy]')).toHaveClass(/\bprimary\b/);
+  await expect(dialog).toHaveClass(/\bch-quiet-close\b/);
+  // Closing before copying asks first; Go back keeps the link on screen.
+  await win.keyboard.press('Escape');
+  const ask = win.locator('.scrim').last().locator('.dialog');
+  await expect(ask.locator('h2')).toHaveText('Close without copying the link?');
+  await expect(ask).toContainText('The invitation stays open until it expires. You can withdraw it under Open invitations.');
+  await expect(ask.locator('.buttons button')).toHaveText(['Go back', 'Close']);
+  await ask.locator('.buttons button', { hasText: 'Go back' }).click();
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await expect(field).toHaveValue(link);
   await dialog.locator('[data-copy]').click();
   await expect(toast()).toHaveText('Link copied');
   await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(link);
+  await expect(dialog.locator('[data-copy]')).toHaveClass(/\bsecondary\b/);
+  await expect(dialog).not.toHaveClass(/\bch-quiet-close\b/);
 
   // The server has it as a guest invitation into general, open for three days.
   const { invites } = await serverGet(server, bart, ws.id, '/invites');
@@ -92,13 +107,69 @@ test('inviting as a guest needs a channel, the link copies, and withdrawing it r
   const row = dialog.locator('.ch-invite');
   await expect(row).toHaveCount(1, { timeout: 15000 });
   await expect(row.locator('.ch-invite-role')).toHaveText('Guest');
-  await expect(row.locator('.ch-invite-meta')).toContainText('1 channel');
-  await expect(row.locator('.ch-invite-meta')).toContainText('By Bart');
+  await expect(row.locator('.ch-invite-meta')).toHaveText(/^#general · Until .+ · By Bart$/);
   await row.locator('[data-withdraw]').click();
   await expect(dialog.locator('.ch-invites-none')).toHaveText('No open invitations', { timeout: 15000 });
   expect((await serverGet(server, bart, ws.id, '/invites')).invites).toHaveLength(0);
+  // It was the link on screen: it says so, and nothing copies it any more.
+  await expect(dialog.locator('[data-ready]')).toHaveText('Withdrawn. This link no longer works.');
+  await expect(dialog.locator('[data-copy]')).toBeDisabled();
+  await expect(field).toBeDisabled();
+  await expect(dialog.locator('[data-once]')).toBeHidden();
   await dialog.locator('.buttons button').last().click();
   await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
+test('closing a new link before copying it asks, the invitation stays open, and open rows name their channels', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
+  for (const name of ['design', 'sales', 'support']) await server.seedChannel(bart, ws.id, { name });
+  await ready(bart);
+  await expect(roomRow(win, 'support')).toBeVisible({ timeout: 15000 });
+
+  await workspaceMenu(win, 'Invite people');
+  const dialog = dialogBox(win);
+  for (const name of ['design', 'general', 'sales', 'support']) await dialog.locator('.ch-check-row', { hasText: name }).locator('input').check();
+  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('[data-ready]')).toHaveText(/^One person can join as a member, with #design, #general, #sales and 1 more, until .+\.$/, { timeout: 15000 });
+
+  // Done before copying asks; Close closes, and the invitation is still open on the server.
+  await dialog.locator('.buttons button', { hasText: 'Done' }).click();
+  const ask = win.locator('.scrim').last().locator('.dialog');
+  await expect(ask.locator('h2')).toHaveText('Close without copying the link?');
+  await ask.locator('.buttons button', { hasText: 'Close' }).click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  const { invites } = await serverGet(server, bart, ws.id, '/invites');
+  expect(invites).toHaveLength(1);
+  expect(invites[0].channels).toHaveLength(4);
+
+  // Its row names two channels and counts the rest.
+  await workspaceMenu(win, 'Invite people');
+  await dialog.locator('.ch-open-invites summary').click();
+  await expect(dialog.locator('.ch-invite .ch-invite-meta')).toHaveText(/^#design, #general \+2 · Until .+ · By Bart$/, { timeout: 15000 });
+  // Nothing was made here, so Cancel closes without asking.
+  await dialog.locator('.buttons button', { hasText: 'Cancel' }).click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
+test('an admin who manages no channel is told how to invite a guest, and New channel opens Make a channel', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.call('PATCH', `/v1/workspaces/${ws.id}/members/${bartMe.id}`, { token: olga.token, body: { role: 'admin' } });
+  await ready(bart);
+  await expect(roomRow(win, 'general')).toBeVisible({ timeout: 15000 });
+
+  await workspaceMenu(win, 'Invite people');
+  const dialog = dialogBox(win);
+  await expect(dialog.locator('[data-none-member]')).toHaveText("You don't manage any channels yet.");
+  await expect(dialog.locator('[data-new-channel]')).toBeHidden();
+  await dialog.locator('[data-role="guest"]').click();
+  await expect(dialog.locator('[data-none-member]')).toBeHidden();
+  await expect(dialog.locator('[data-none-guest]')).toContainText("Guests can only be added to channels you manage. Make a channel, or ask a channel's manager to make you one.");
+  await expect(dialog.locator('[data-guest-need]')).toBeHidden();
+  await expect(dialog.locator('.buttons button').last()).toBeDisabled();
+  await dialog.locator('[data-new-channel]').click();
+  await expect(dialogBox(win).locator('h2')).toHaveText('Make a channel');
+  await expect(win.locator('.scrim')).toHaveCount(1);
 });
 
 test("joining Olga's workspace with a link from the Join dialog opens its first channel", async () => {

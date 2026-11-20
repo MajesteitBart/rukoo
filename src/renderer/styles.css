@@ -11762,9 +11762,13 @@ button.ch-replies .ch-replies-n {
   margin: 0 -6px;
 }
 /* The rows reach into the margin for their hover fill; a note in their place lines up with the label above. */
-.ch-checks > p {
+.ch-checks > p,
+.ch-checks > .ch-invite-none {
   margin: 0;
   padding: 0 6px;
+}
+.ch-invite-none p {
+  margin: 0;
 }
 /* .form label lays fields out as a grid; these rows stay a line. */
 .ch-check-row,
@@ -11848,6 +11852,19 @@ button.ch-replies .ch-replies-n {
 }
 .form input[type='text'].ch-link-field {
   font-size: 12.5px;
+}
+/* A withdrawn link stays in its field, struck through, so the line under it has something to point at. */
+.ch-invite-withdrawn input[type='text'].ch-link-field {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+/* Copy link with "You'll see this link only once." under it; Guest with no channel to pick, with New channel. */
+.ch-invite-copy,
+.ch-invite-none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
 }
 /* Invitations: the made link, and the open ones with Withdraw. */
 .ch-open-invites {

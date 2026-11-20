@@ -10999,9 +10999,53 @@
     "message": "Make link",
     "description": "Invite people dialog: button that makes the invitation link. src/renderer/chat-dialogs.js"
   },
-  "chat.invite.ready": {
-    "message": "Anyone with this link can join until {date}. It works once.",
-    "description": "Invite people dialog: line under the finished link. {date}: when it expires. src/renderer/chat-dialogs.js"
+  "chat.invite.readyMember": {
+    "message": "One person can join as a member until {date}.",
+    "description": "Invite people dialog: line under the finished link of a member invitation without channels. {date}: when it expires. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.readyMemberIn": {
+    "message": "One person can join as a member, with {channels}, until {date}.",
+    "description": "Invite people dialog: line under the finished link of a member invitation. {channels}: the picked channels, such as '#general' or '#general and #design' (chat.invite.listAnd, chat.invite.listMore). {date}: when it expires. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.readyGuest": {
+    "message": "One person can join as a guest, only in {channels}, until {date}.",
+    "description": "Invite people dialog: line under the finished link of a guest invitation. {channels}: the picked channels, such as '#design' (chat.invite.listAnd, chat.invite.listMore). {date}: when it expires. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.listAnd": {
+    "message": "{list} and {last}",
+    "description": "Invite people dialog: two or three channel names in the line under the link. {list}: the first names, comma-separated, such as '#general, #design'. {last}: the last name. src/renderer/chat-model.js"
+  },
+  "chat.invite.listMore": {
+    "message": "{list} and {count} more",
+    "description": "Invite people dialog: more than three channel names in the line under the link. {list}: the first three, comma-separated. {count}: how many more channels. src/renderer/chat-model.js"
+  },
+  "chat.invite.once": {
+    "message": "You'll see this link only once.",
+    "description": "Invite people dialog: line under Copy link. The link can't be shown again after the dialog closes. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.closeTitle": {
+    "message": "Close without copying the link?",
+    "description": "Invite people dialog: title of the question when the person closes it before copying the new link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.closeBody": {
+    "message": "The invitation stays open until it expires. You can withdraw it under Open invitations.",
+    "description": "Invite people dialog: text of the question when the person closes it before copying the new link. 'Open invitations' is chat.invite.open. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.goBack": {
+    "message": "Go back",
+    "description": "Invite people dialog: button of the close question that returns to the link. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.withdrawn": {
+    "message": "Withdrawn. This link no longer works.",
+    "description": "Invite people dialog: line under the new link after the person withdrew it under Open invitations. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.guestNoChannels": {
+    "message": "Guests can only be added to channels you manage. Make a channel, or ask a channel's manager to make you one.",
+    "description": "Invite people dialog: line instead of the channel list when Guest is picked and the person manages no channel. 'one' is a channel manager. src/renderer/chat-dialogs.js"
+  },
+  "chat.invite.newChannel": {
+    "message": "New channel",
+    "description": "Invite people dialog: button under chat.invite.guestNoChannels that opens Make a channel. src/renderer/chat-dialogs.js"
   },
   "chat.invite.copy": {
     "message": "Copy link",
@@ -11021,7 +11065,11 @@
   },
   "chat.invite.channelCount": {
     "message": { "one": "{count} channel", "other": "{count} channels" },
-    "description": "Open invitations list: how many channels an invitation adds. {count}: channels. src/renderer/chat-dialogs.js"
+    "description": "Open invitations list: how many channels an invitation adds, when none of their names is known. {count}: channels. src/renderer/chat-model.js"
+  },
+  "chat.invite.namesMore": {
+    "message": "{names} +{count}",
+    "description": "Open invitations list: the channels an invitation adds, two names and how many more. {names}: such as '#general, #design'. {count}: the other channels. src/renderer/chat-model.js"
   },
   "chat.invite.until": {
     "message": "Until {date}",

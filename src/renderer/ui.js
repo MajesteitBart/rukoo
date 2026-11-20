@@ -446,7 +446,9 @@ export function setSegmented(el, value) {
 // A button value that keeps the dialog open, for a form that found something to fix.
 export const KEEP_OPEN = Symbol('keep-open');
 
-export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false }) {
+// beforeClose(value): asked before Escape, a click outside or a button closes the dialog; false, or a promise of
+// false, keeps it open. The done that render gets closes without asking.
+export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false, beforeClose = null }) {
   return new Promise((resolve) => {
     const before = document.activeElement;
     const scrim = document.createElement('div');
@@ -464,13 +466,25 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
       if (before && document.contains(before)) before.focus();
       resolve(value);
     };
+    let asking = false;
+    const tryClose = (value) => {
+      if (!beforeClose) return done(value);
+      if (asking) return;
+      asking = true;
+      Promise.resolve(beforeClose(value))
+        .catch(() => false)
+        .then((ok) => {
+          asking = false;
+          if (ok && scrim.isConnected) done(value);
+        });
+    };
     const onKey = (e) => {
       // A dialog opened from another one, such as a confirmation: each dialog listens on the document, so only the one
       // on top takes keys, and Escape closes it alone.
       if (scrim !== [...document.querySelectorAll('.scrim')].pop()) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
-        done(null);
+        tryClose(null);
       }
       // Keep Tab inside the dialog.
       if (e.key === 'Tab') {
@@ -489,13 +503,13 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
     };
     document.addEventListener('keydown', onKey, true);
     scrim.addEventListener('mousedown', (e) => {
-      if (e.target === scrim) done(null);
+      if (e.target === scrim) tryClose(null);
     });
     scrim.querySelectorAll('.buttons button').forEach((b) =>
       b.addEventListener('click', () => {
         const btn = buttons[Number(b.dataset.i)];
         const value = typeof btn.value === 'function' ? btn.value(scrim) : btn.value;
-        if (value !== KEEP_OPEN) done(value);
+        if (value !== KEEP_OPEN) tryClose(value);
       })
     );
     document.body.appendChild(scrim);

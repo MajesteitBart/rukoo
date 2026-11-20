@@ -1,7 +1,7 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
 import { api, esc, toast, showMenu, closeMenu, menuOpen, dialog, confirmDialog, KEEP_OPEN, segmented, setSegmented } from './ui.js';
-import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM, dmPicker, addPeopleEmpty } from './chat-model.js';
+import { displayName, onlyOwner, sharedManaged, soleManager, successors, handOverReady, SUCCESSOR_SEARCH_FROM, dmPicker, addPeopleEmpty, inviteGrant, inviteRowChannels } from './chat-model.js';
 
 // Team chat's dialogs (contract 3.3, 3.12, 5.10; desktop-ui 6): making and joining a workspace, inviting people,
 // channels (make, browse, members and roles, rename, archive, leave and the successor), leaving and deleting a
@@ -395,8 +395,12 @@ const hostOf = (text) => {
 
 // ---------- invitations (desktop-ui 6.3) ----------
 
-// The open invitations as list rows, with Withdraw. into: the <ul>; ws: the workspace they belong to.
-async function fillInvites(into, ws) {
+// A channel's name from the rooms the person is in or the workspace's channel list; '' when neither has it.
+const channelName = (id) => K.CH.rooms.get(id)?.name || (K.CH.view?.channels || []).find((c) => c.id === id)?.name || '';
+
+// The open invitations as list rows, with Withdraw. into: the <ul>; ws: the workspace they belong to; onWithdrawn(id)
+// after one is withdrawn.
+async function fillInvites(into, ws, { onWithdrawn = null } = {}) {
   into.setAttribute('aria-busy', 'true');
   into.innerHTML = '<li class="ch-invites-wait"><span class="spinner"></span></li>';
   let list;
@@ -417,7 +421,7 @@ async function fillInvites(into, ws) {
     .map(
       (i) => `<li class="ch-invite" data-invite="${esc(i.id)}">
         <span class="ch-invite-text"><span class="ch-invite-role">${esc(roleText(i.role))}</span><span class="ch-invite-meta">${esc(
-          [t('chat.invite.channelCount', { count: i.channelCount || 0 }), t('chat.invite.until', { date: dateTime(i.expiresAt) }), t('chat.invite.by', { name: nameOf(i.issuer) })].join(' · ')
+          [inviteRowChannels((i.channels || []).map(channelName).filter(Boolean).sort(collator().compare), i.channelCount, t), t('chat.invite.until', { date: dateTime(i.expiresAt) }), t('chat.invite.by', { name: nameOf(i.issuer) })].join(' · ')
         )}</span></span>
         <button type="button" class="link-btn danger" data-withdraw="${esc(i.id)}" data-busy-off>${esc(t('chat.invite.withdraw'))}</button>
       </li>`
@@ -430,6 +434,7 @@ async function fillInvites(into, ws) {
         await api('chatWithdrawInvite', ws, b.dataset.withdraw);
         b.closest('li').remove();
         if (!into.querySelector('.ch-invite')) into.innerHTML = `<li class="ch-invites-none">${esc(t('chat.invite.none'))}</li>`;
+        if (onWithdrawn) onWithdrawn(b.dataset.withdraw);
       } catch (err) {
         b.disabled = false;
         toast(K.errorText(err), 5000);
@@ -446,24 +451,72 @@ export async function invitePeople() {
     .sort((a, b) => collator().compare(a.name || '', b.name || ''));
   let role = 'member';
   let link = null;
+  let inviteId = null;
+  // The link shows only this once. Until it is copied or withdrawn, Copy link is the filled button and closing the
+  // dialog asks first; the invitation itself stays open on the server either way.
+  let kept = false;
   let busy = false;
   let finish = null;
 
   const picked = (body) => [...body.querySelectorAll('input[name="channel"]:checked')].map((x) => x.value);
-  // A guest needs a channel, and an invitation holds 20 at most (contract 3.16).
+  // A guest needs a channel, and an invitation holds 20 at most (contract 3.16). With no channel to pick, Guest says
+  // why and offers New channel instead.
   const update = (scrim) => {
     const body = scrim.querySelector('.dialog-body');
     const n = picked(body).length;
     const needs = role === 'guest' && n === 0;
-    body.querySelector('[data-guest-need]').hidden = !needs;
+    body.querySelector('[data-guest-need]').hidden = !needs || !managed.length;
+    if (!managed.length) {
+      body.querySelector('[data-none-member]').hidden = role === 'guest';
+      body.querySelector('[data-none-guest]').hidden = role !== 'guest';
+    }
     for (const box of body.querySelectorAll('input[name="channel"]')) box.disabled = !box.checked && n >= 20;
     const primary = scrim.querySelector('.buttons button:last-child');
     if (!link) primary.disabled = needs || busy;
   };
 
+  // Copy link is filled until the link is kept; Done is filled after.
+  const showKept = (scrim) => {
+    const copy = scrim.querySelector('[data-copy]');
+    copy.classList.toggle('primary', !kept);
+    copy.classList.toggle('secondary', kept);
+    scrim.querySelector('.dialog').classList.toggle('ch-quiet-close', !kept);
+  };
+  const keep = (scrim) => {
+    if (!link || kept) return;
+    kept = true;
+    showKept(scrim);
+  };
+  // The link was withdrawn under Open invitations: it no longer works, so nothing here copies it.
+  const withdrawn = (scrim, id) => {
+    if (!link || id !== inviteId) return;
+    const out = scrim.querySelector('[data-step="made"]');
+    out.querySelector('[name="link"]').disabled = true;
+    out.querySelector('[data-copy]').disabled = true;
+    out.querySelector('[data-once]').hidden = true;
+    out.querySelector('[data-ready]').textContent = t('chat.invite.withdrawn');
+    out.classList.add('ch-invite-withdrawn');
+    kept = true;
+    showKept(scrim);
+  };
+  const leaveOk = () =>
+    !link ||
+    kept ||
+    dialog({
+      title: t('chat.invite.closeTitle'),
+      body: `<p>${esc(t('chat.invite.closeBody'))}</p>`,
+      buttons: [
+        { label: t('chat.invite.goBack'), value: false },
+        { label: t('common.actions.close'), value: true }
+      ]
+    });
+
   const submit = async (scrim) => {
     if (busy) return;
-    if (link) return finish(true);
+    if (link) {
+      if (await leaveOk()) finish(true);
+      return;
+    }
     const body = scrim.querySelector('.dialog-body');
     const channels = picked(body);
     if (role === 'guest' && !channels.length) return update(scrim);
@@ -475,18 +528,21 @@ export async function invitePeople() {
       const made = await api('chatCreateInvite', ws, { role, channels, expiresIn: days * 86400 });
       if (!scrim.isConnected) return;
       link = made.link;
+      inviteId = made.invite && made.invite.id;
       body.querySelector('[data-step="make"]').hidden = true;
       const out = body.querySelector('[data-step="made"]');
       out.hidden = false;
       const field = out.querySelector('[name="link"]');
       field.value = link;
-      out.querySelector('[data-ready]').textContent = t('chat.invite.ready', { date: dateTime(made.invite && made.invite.expiresAt) });
+      const names = channels.map((id) => managed.find((r) => r.id === id)?.name || channelName(id)).filter(Boolean);
+      out.querySelector('[data-ready]').textContent = inviteGrant((made.invite && made.invite.role) || role, names, dateTime(made.invite && made.invite.expiresAt), t);
       const [cancel, primary] = scrim.querySelectorAll('.buttons button');
       cancel.hidden = true;
       primary.textContent = t('chat.invite.done');
+      showKept(scrim);
       field.focus();
       field.select();
-      fillInvites(body.querySelector('.ch-invites'), ws);
+      fillInvites(body.querySelector('.ch-invites'), ws, { onWithdrawn: (id) => withdrawn(scrim, id) });
     } catch (err) {
       showError(body, '', K.errorText(err));
     } finally {
@@ -501,6 +557,7 @@ export async function invitePeople() {
   return wsDialog({
     title: t('chat.invite.title', { workspace: wsName() }),
     buttons: [cancelButton(), { label: t('chat.invite.make'), value: (scrim) => (submit(scrim), KEEP_OPEN) }],
+    beforeClose: () => leaveOk(),
     render(body, done) {
       finish = done;
       const channelRows = managed.length
@@ -510,7 +567,9 @@ export async function invitePeople() {
                 `<label class="ch-check-row"><input type="checkbox" name="channel" value="${esc(r.id)}"/><span class="ch-check-ic" aria-hidden="true">${channelIcon(r)}</span><span class="ch-check-label">${esc(r.name || '')}</span></label>`
             )
             .join('')
-        : `<p class="field-help">${esc(t('chat.invite.channelsNone'))}</p>`;
+        : `<p class="field-help" data-none-member>${esc(t('chat.invite.channelsNone'))}</p>
+           <div class="ch-invite-none" data-none-guest hidden><p class="field-help">${esc(t('chat.invite.guestNoChannels'))}</p>
+             <div><button type="button" class="btn secondary sm" data-new-channel>${icons.plus}<span>${esc(t('chat.invite.newChannel'))}</span></button></div></div>`;
       const days = [1, 3, 7].map((d) => `<option value="${d}">${esc(t('chat.invite.days', { count: d }))}</option>`).join('');
       body.innerHTML = `<div class="form ch-form" data-step="make">
           <div class="ch-field"><span class="ch-label">${esc(t('chat.invite.role'))}</span>
@@ -524,8 +583,9 @@ export async function invitePeople() {
         </div>
         <div class="form ch-form" data-step="made" hidden>
           <label>${esc(t('chat.join.link'))}<input type="text" name="link" class="sel ch-link-field" readonly spellcheck="false"/></label>
-          <div><button type="button" class="btn secondary sm" data-copy>${icons.copy}<span>${esc(t('chat.invite.copy'))}</span></button></div>
           <p class="field-help" data-ready></p>
+          <div class="ch-invite-copy"><button type="button" class="btn primary sm" data-copy>${icons.copy}<span>${esc(t('chat.invite.copy'))}</span></button>
+            <span class="field-help" data-once>${esc(t('chat.invite.once'))}</span></div>
         </div>
         <details class="ch-open-invites"><summary>${esc(t('chat.invite.open'))}</summary><ul class="ch-invites"></ul></details>`;
       const scrim = body.closest('.scrim');
@@ -539,18 +599,27 @@ export async function invitePeople() {
         update(scrim);
       });
       body.addEventListener('change', () => update(scrim));
+      body.querySelector('[data-new-channel]')?.addEventListener('click', () => {
+        done(null);
+        makeChannel();
+      });
       body.querySelector('[data-copy]').addEventListener('click', () => {
         if (!link) return;
         navigator.clipboard.writeText(link).then(
-          () => toast(t('chat.invite.copied')),
+          () => {
+            toast(t('chat.invite.copied'));
+            keep(scrim);
+          },
           () => {}
         );
       });
+      // Ctrl+C in the selected field copies it too.
+      body.querySelector('[name="link"]').addEventListener('copy', () => keep(scrim));
       const open = body.querySelector('.ch-open-invites');
       open.addEventListener('toggle', () => {
         if (open.open && !open.dataset.loaded) {
           open.dataset.loaded = '1';
-          fillInvites(open.querySelector('.ch-invites'), ws);
+          fillInvites(open.querySelector('.ch-invites'), ws, { onWithdrawn: (id) => withdrawn(scrim, id) });
         }
       });
       update(scrim);

@@ -22,9 +22,9 @@ You can be in several workspaces. The tile at the top of the sidebar shows the o
 Owners and admins invite people with **Invite people** in the workspace menu.
 
 1. Choose **Member** or **Guest**. Members see every channel the workspace can see and can join them. Guests see only the channels you pick.
-2. Pick the channels the person joins, from the ones you manage, up to 20. A guest needs at least one. A member also lands in the workspace's default channel, normally `general`.
+2. Pick the channels the person joins, from the ones you manage, up to 20. A guest needs at least one. A member also lands in the workspace's default channel, normally `general`. When you manage no channel, Guest offers **New channel** instead.
 3. Choose how long the link works: 1, 3 or 7 days. One day is the default.
-4. Choose **Make link**, then **Copy link**, and send it to the person yourself, for example by email.
+4. Choose **Make link**, then **Copy link**, and send it to the person yourself, for example by email. The line under the link repeats the role, the channels and the expiry. Rukoo shows the link only this once: closing the dialog before you copied it asks first, and the invitation stays open until it expires or you withdraw it.
 
 A link looks like `https://your-server/join#w=…&i=…` and works once. The part after `#` stays in the browser, so the server never sees it in its logs. **Open invitations** in the same dialog, and in Workspace settings, lists the links that still work, and **Withdraw** stops one.
 

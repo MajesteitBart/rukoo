@@ -535,3 +535,30 @@ test('Add people says whether nobody else is in the workspace or everyone is in 
   assert.equal(en('chat.new.nobody', { workspace: 'Acme' }), 'Nobody else is in Acme yet');
   assert.equal(nl('chat.channel.addEveryone', { workspace: 'Acme', name: 'design' }), 'Iedereen in Acme zit al in #design');
 });
+
+test('a new invitation link says what it grants, and an open one names its channels', async () => {
+  const { inviteChannelList, inviteGrant, inviteRowChannels } = await loading;
+  const en = (key, params) => i18n.translate('en', key, params);
+  const nl = (key, params) => i18n.translate('nl', key, params);
+  const date = '21 November at 03:50';
+  // Up to three names, then how many more.
+  assert.equal(inviteChannelList([], en), '');
+  assert.equal(inviteChannelList(['general'], en), '#general');
+  assert.equal(inviteChannelList(['design', 'general'], en), '#design and #general');
+  assert.equal(inviteChannelList(['a', 'b', 'c'], en), '#a, #b and #c');
+  assert.equal(inviteChannelList(['a', 'b', 'c', 'd', 'e'], en), '#a, #b, #c and 2 more');
+  assert.equal(inviteChannelList(['a', 'b', 'c', 'd'], nl), '#a, #b, #c en nog 1');
+  // The role, the channels and the expiry; a member invitation can have no channels.
+  assert.equal(inviteGrant('member', ['general'], date, en), 'One person can join as a member, with #general, until 21 November at 03:50.');
+  assert.equal(inviteGrant('guest', ['design'], date, en), 'One person can join as a guest, only in #design, until 21 November at 03:50.');
+  assert.equal(inviteGrant('member', [], date, en), 'One person can join as a member until 21 November at 03:50.');
+  assert.equal(inviteGrant('guest', ['design', 'general'], '21 november om 03:50', nl), 'Eén persoon kan deelnemen als gast, alleen in #design en #general, tot 21 november om 03:50.');
+  // An open invitation's row: two names, then +n; private channels the viewer can't name count in the +n.
+  assert.equal(inviteRowChannels(['general'], 1, en), '#general');
+  assert.equal(inviteRowChannels(['design', 'general'], 2, en), '#design, #general');
+  assert.equal(inviteRowChannels(['a', 'b', 'c', 'd'], 4, en), '#a, #b +2');
+  assert.equal(inviteRowChannels(['design'], 3, en), '#design +2');
+  assert.equal(inviteRowChannels(['', 'design'], 2, en), '#design +1');
+  assert.equal(inviteRowChannels([], 2, en), '2 channels');
+  assert.equal(inviteRowChannels([], 0, nl), '0 kanalen');
+});
