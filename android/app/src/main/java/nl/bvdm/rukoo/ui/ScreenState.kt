@@ -22,6 +22,12 @@ data class Screen(
     val lastInteractionAt: Long = 0,
     /** When the app last left the foreground; 0 while it never was in it. */
     val leftForegroundAt: Long = 0,
+    /**
+     * Team chat on screen: the workspace Chat shows and its room, null while Chat isn't showing them. A room on screen
+     * in the foreground gets no alert (contract §3.10); Workspaces.onScreen sets these.
+     */
+    val chatWorkspace: String? = null,
+    val chatRoom: String? = null,
 )
 
 class ScreenState(private val clock: Clock = Clock.System) {

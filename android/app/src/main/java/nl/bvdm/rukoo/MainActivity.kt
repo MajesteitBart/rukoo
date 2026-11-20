@@ -75,7 +75,11 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
-        NotificationRoute.of(intent::getStringExtra) { intent.getBooleanExtra(it, false) }?.let(app::openRoute)
+        NotificationRoute.of(
+            string = intent::getStringExtra,
+            flag = { intent.getBooleanExtra(it, false) },
+            long = { if (intent.hasExtra(it)) intent.getLongExtra(it, 0L) else null },
+        )?.let(app::openRoute)
     }
 
     companion object {
@@ -96,6 +100,17 @@ class MainActivity : ComponentActivity() {
 
         /** "<Agent> wrote a draft": the composer to the front (a boolean). */
         const val EXTRA_SHOW_COMPOSER = "nl.bvdm.rukoo.composer"
+
+        // A team chat alert (workspaces/ChatNotifier): the room to open in Chat, at the message it showed.
+
+        /** The workspace of a team chat alert, a `w_` ID. */
+        const val EXTRA_WORKSPACE_ID = "nl.bvdm.rukoo.workspace"
+
+        /** Its room, a `c_` ID. */
+        const val EXTRA_ROOM_ID = "nl.bvdm.rukoo.room"
+
+        /** The seq of the newest message the alert showed (a long). */
+        const val EXTRA_SEQ = "nl.bvdm.rukoo.seq"
     }
 }
 
@@ -113,9 +128,18 @@ sealed interface NotificationRoute {
     /** Several new emails in one account: its inbox. */
     data class Inbox(val accountId: String) : NotificationRoute
 
+    /** A team chat alert: the room in Chat, opened at [seq] when the alert named one (contract §3.7, §7.5). */
+    data class Room(val workspaceId: String, val roomId: String, val seq: Long?) : NotificationRoute
+
     companion object {
-        /** The route of an intent's extras; a chat comes before its email, the composer before both. */
-        fun of(string: (String) -> String?, flag: (String) -> Boolean): NotificationRoute? {
+        /**
+         * The route of an intent's extras. A team chat room comes first; then a chat before its email, the composer
+         * before both. [long] reads a long extra, null when the intent has none.
+         */
+        fun of(string: (String) -> String?, flag: (String) -> Boolean, long: (String) -> Long? = { null }): NotificationRoute? {
+            val workspace = string(MainActivity.EXTRA_WORKSPACE_ID)
+            val room = string(MainActivity.EXTRA_ROOM_ID)
+            if (workspace != null && room != null) return Room(workspace, room, long(MainActivity.EXTRA_SEQ)?.takeIf { it >= 0 })
             val conversation = string(MainActivity.EXTRA_CONVERSATION_ID)
             val message = string(MainActivity.EXTRA_MESSAGE_ID)
             val account = string(MainActivity.EXTRA_ACCOUNT_ID)

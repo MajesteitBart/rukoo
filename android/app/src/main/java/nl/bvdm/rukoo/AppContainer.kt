@@ -2,6 +2,7 @@ package nl.bvdm.rukoo
 
 import android.content.Context
 import android.net.Uri
+import androidx.sqlite.driver.AndroidSQLiteDriver
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +52,13 @@ import nl.bvdm.rukoo.settings.SettingsStore
 import nl.bvdm.rukoo.ui.ComposerController
 import nl.bvdm.rukoo.ui.ScreenState
 import nl.bvdm.rukoo.ui.composer.DraftStore
+import nl.bvdm.rukoo.workspaces.AccountChat
+import nl.bvdm.rukoo.workspaces.ChatBackground
+import nl.bvdm.rukoo.workspaces.ChatDb
+import nl.bvdm.rukoo.workspaces.ChatNotifier
+import nl.bvdm.rukoo.workspaces.OkHttpChatSockets
+import nl.bvdm.rukoo.workspaces.OkHttpWorkspaceHttp
+import nl.bvdm.rukoo.workspaces.WorkspaceService
 import nl.bvdm.rukoo.workspaces.Workspaces
 import okhttp3.OkHttpClient
 
@@ -194,6 +202,28 @@ class AppContainer(context: Context) : AppServices {
         )
     }
 
+    /**
+     * Team chat (contract §7): the workspaces of the Rukoo account's server, with their cache in files/chat/chat.db,
+     * alerts on the `chat` channel and wake sockets on the shared client. It follows the account from its start, off
+     * the main thread.
+     */
+    override val workspaces: WorkspaceService by lazy {
+        val notifier = ChatNotifier(appContext)
+        WorkspaceService(
+            account = AccountChat { account },
+            http = OkHttpWorkspaceHttp(http),
+            file = ChatDb.fileIn(appContext.filesDir),
+            driver = AndroidSQLiteDriver(),
+            sockets = OkHttpChatSockets(http),
+            scope = CoroutineScope(appScope.coroutineContext + Dispatchers.Default),
+            settings = settingsSnapshot,
+            screen = screen,
+            sink = notifier,
+            words = { notifier },
+            clock = clock,
+        ).start()
+    }
+
     /** OAuth returns that arrive as `rukoo-oauth:` deep links; the sign-in flow collects them. */
     val oauthReturns = MutableSharedFlow<Uri>(extraBufferCapacity = 1)
 
@@ -203,6 +233,8 @@ class AppContainer(context: Context) : AppServices {
             appScope.launch(Dispatchers.IO) { categories }
             AccountBackground(appScope, { account }, { mail }).start()
         }
+        // Team chat follows the account and runs while the app is in the foreground; ChatSyncWorker in the background.
+        ChatBackground(appContext, appScope) { workspaces }.start()
         // The language the user picks in Rukoo; LocaleManager keeps it, so only changes are applied.
         appScope.launch {
             settings.flow.map { it.language }.distinctUntilChanged().drop(1).collect { Locales.apply(appContext, it) }

@@ -401,6 +401,12 @@ class AppViewModel(
                 val one = route.accountId.takeIf { id -> accounts.size > 1 && accounts.any { it.id == id } }
                 selectView(MailView(ViewKind.INBOX, one))
             }
+            // A team chat alert: its room in Chat, at the message it showed (contract §7.5; A8 completes this).
+            is NotificationRoute.Room -> {
+                setMode(AppMode.CHAT)
+                selectWorkspace(route.workspaceId)
+                openRoom(route.roomId, route.seq)
+            }
         }
     }
 

@@ -1,0 +1,418 @@
+package nl.bvdm.rukoo.workspaces
+
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.test.runTest
+import nl.bvdm.rukoo.core.Clock
+import nl.bvdm.rukoo.ui.Screen
+import nl.bvdm.rukoo.ui.chat.ChatNames
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The alert rule of contract §3.10 on a real chat cache: DMs with unread messages and channels with mentions alert,
+ * past `notified` only; mute, the setting and the room on screen in the resumed app silence them; the pass that first
+ * fills a workspace alerts nothing and a later one alerts as usual; three rooms alert and the rest make one summary;
+ * and a read here or elsewhere, a removal, an eviction, a reset, the workspace going and the end of the session take
+ * alerts back. Desktop's test/chat-notify.test.js covers the same rule.
+ */
+class ChatAlertRulesTest {
+    private val db = TestDb()
+
+    @After
+    fun tearDown() = db.close()
+
+    private val ws = Ids.WS
+
+    /** The alerts posted and taken back, and which are on screen now. */
+    class RecordingSink : ChatAlertSink {
+        val shown = CopyOnWriteArrayList<ChatAlert>()
+        val hidden = CopyOnWriteArrayList<String>()
+        val cleared = CopyOnWriteArrayList<String>()
+        val active = LinkedHashMap<String, ChatAlert>()
+
+        override fun show(alert: ChatAlert) {
+            shown += alert
+            synchronized(active) { active[alert.key] = alert }
+        }
+
+        override fun hide(key: String) {
+            hidden += key
+            synchronized(active) { active.remove(key) }
+        }
+
+        override fun hideAll(prefix: String) {
+            cleared += prefix
+            synchronized(active) { active.keys.removeAll { it.startsWith(prefix) } }
+        }
+
+        fun activeKeys(): Set<String> = synchronized(active) { active.keys.toSet() }
+    }
+
+    object Words : ChatAlertWords {
+        override val names = ChatNames(
+            former = "Former member",
+            deleted = "Deleted member",
+            others = { n -> " and $n others" },
+            list = { names -> names.dropLast(1).joinToString(", ") + " and " + names.last() },
+        )
+        override fun line(name: String, text: String) = "$name: $text"
+        override fun summaryTitle() = "Team chat"
+        override fun summaryBody(count: Int) = if (count == 1) "New messages in 1 conversation" else "New messages in $count conversations"
+    }
+
+    private class Setup(val store: WorkspaceStore, val sink: RecordingSink, val engine: ChatAlertEngine) {
+        var enabled = true
+        var screen = Screen()
+        val fetched = CopyOnWriteArrayList<String>()
+        var pages: Map<String, EventPage> = emptyMap()
+    }
+
+    private suspend fun setup(fresh: Boolean = false, workspaces: Int = 1): Setup {
+        val store = db.store()
+        store.tx {
+            insertWs(WsRow(id = ws, name = "Team", role = "member", me = Ids.ME, myName = "Me", generation = Ids.GEN, cursor = "c0", passing = false, fresh = fresh))
+            if (workspaces > 1) insertWs(WsRow(id = Ids.WS2, name = "Other", role = "member", me = Ids.ME, passing = false, fresh = false))
+            replaceMembers(
+                ws,
+                listOf(
+                    Member(Ids.ME, name = "Me", role = "member", state = "active"),
+                    Member(Ids.OLGA, name = "Olga", role = "member", state = "active"),
+                    Member(Ids.SAM, name = "Sam", role = "member", state = "active"),
+                ),
+            )
+        }
+        lateinit var s: Setup
+        val sink = RecordingSink()
+        val engine = ChatAlertEngine(sink, { Words }, { s.enabled }, { w, r -> ChatAlertRules.onScreen(s.screen, w, r) })
+        s = Setup(store, sink, engine)
+        return s
+    }
+
+    private suspend fun Setup.run() = engine.afterRun(ws, store) { room ->
+        fetched += room.id
+        pages[room.id] ?: throw WorkspaceError("network")
+    }
+
+    /** A room with [events] cached as its whole range. */
+    private suspend fun Setup.room(change: Change, vararg events: WireEvent) {
+        store.tx {
+            upsertRoom(ws, change)
+            if (events.isNotEmpty()) appendEvents(ws, change.conversation, events.toList())
+        }
+    }
+
+    private suspend fun Setup.row(id: String = Ids.GENERAL): RoomRow = store.read { getRoom(ws, id)!! }
+
+    private suspend fun Setup.notices(id: String = Ids.GENERAL): List<Notice> = store.read { noticesForRoom(ws, id) }
+
+    @Test
+    fun `a DM with unread messages past notified alerts once, with its newest messages`() = runTest {
+        val s = setup()
+        s.room(
+            room(Ids.DM, dm = true, head = 4, read = 1, unread = 3),
+            msg(1, actor = Ids.ME, room = 4),
+            msg(2, text = "first", room = 4),
+            msg(3, text = "second", room = 4),
+            msg(4, text = "third\nline", room = 4),
+        )
+        s.run()
+        assertEquals(1, s.sink.shown.size)
+        val alert = s.sink.shown.single()
+        assertEquals(ChatAlertRules.roomKey(ws, Ids.DM), alert.key)
+        assertEquals("Olga", alert.title)
+        assertEquals(listOf("first", "second", "third line"), alert.lines.map { it.text })
+        assertEquals("Olga: first\nOlga: second\nOlga: third line", alert.body)
+        assertEquals(4L, alert.seq)
+        assertEquals("Me", alert.me)
+        assertFalse("a one-to-one DM isn't a group conversation", alert.group)
+        assertEquals(4L, s.row(Ids.DM).notified)
+        assertEquals(listOf(2L, 3L, 4L), s.notices(Ids.DM).map { it.seq })
+
+        s.run()
+        assertEquals("nothing new past notified", 1, s.sink.shown.size)
+    }
+
+    @Test
+    fun `a channel alerts for mentions of me, not for unread messages alone`() = runTest {
+        val s = setup()
+        s.room(room(head = 2, unread = 2), msg(1), msg(2))
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals("a channel without mentions isn't due", 0L, s.row().notified)
+
+        s.room(room(head = 4, unread = 4, mentions = 1), msg(3), msg(4, text = "Me look", mentions = listOf(Mention(Ids.ME, 0, 2))))
+        s.run()
+        val alert = s.sink.shown.single()
+        assertEquals("#general", alert.title)
+        assertEquals("only the message that mentions me shows", "Olga: @Me look", alert.body)
+        assertTrue(alert.group)
+        assertEquals(listOf(4L), s.notices().map { it.seq })
+    }
+
+    @Test
+    fun `a muted room never alerts, and counts as notified so unmuting brings nothing back`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4), msg(2, room = 4))
+        s.store.tx { setRoomFields(ws, Ids.DM, mapOf("muted" to true)) }
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals(2L, s.row(Ids.DM).notified)
+        s.store.tx { setRoomFields(ws, Ids.DM, mapOf("muted" to false)) }
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+    }
+
+    @Test
+    fun `with team chat notifications off nothing alerts`() = runTest {
+        val s = setup()
+        s.enabled = false
+        s.room(room(Ids.DM, dm = true, head = 1, unread = 1), msg(1, room = 4))
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals(1L, s.row(Ids.DM).notified)
+    }
+
+    @Test
+    fun `the room on screen in the resumed app doesn't alert, but it does from Mail or the background`() = runTest {
+        val s = setup()
+        s.screen = Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.DM)
+        s.room(room(Ids.DM, dm = true, head = 1, unread = 1), msg(1, room = 4))
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(2, room = 4))
+        s.screen = Screen(foreground = false, chatWorkspace = ws, chatRoom = Ids.DM)
+        s.run()
+        assertEquals("in the background the same room alerts", 1, s.sink.shown.size)
+
+        s.room(room(Ids.DM, dm = true, head = 3, unread = 3), msg(3, room = 4))
+        s.screen = Screen(foreground = true)
+        s.run()
+        assertEquals("in Mail, in the foreground, it alerts", 2, s.sink.shown.size)
+
+        assertTrue(ChatAlertRules.onScreen(Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.DM), ws, Ids.DM))
+        assertFalse(ChatAlertRules.onScreen(Screen(foreground = true, chatWorkspace = ws, chatRoom = Ids.GENERAL), ws, Ids.DM))
+        assertFalse(ChatAlertRules.onScreen(Screen(foreground = true, chatWorkspace = Ids.WS2, chatRoom = Ids.DM), ws, Ids.DM))
+    }
+
+    @Test
+    fun `the pass that first fills a workspace alerts nothing, and the next page does`() = runTest {
+        val s = setup(fresh = true)
+        s.store.tx { updateWs(ws, mapOf("cursor" to null, "passing" to true)) }
+        val applier = FeedApplier(s.store, Clock { TestDb.NOW })
+        applier.apply(ws, feed(room(Ids.DM, dm = true, head = 5, unread = 5), next = "p1"), sentCursor = null)
+        assertEquals("the first pass counts every room as notified", 5L, s.row(Ids.DM).notified)
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertTrue("nothing was loaded for it", s.fetched.isEmpty())
+
+        applier.apply(ws, feed(room(Ids.DM, dm = true, head = 6, unread = 6), next = "p2"), sentCursor = "p1")
+        s.pages = mapOf(Ids.DM to EventPage((1L..6L).map { msg(it, room = 4) }, head = 6, floor = 1))
+        s.run()
+        assertEquals(listOf(Ids.DM), s.fetched.toList())
+        assertEquals("only the message after notified shows", listOf(6L), s.sink.shown.single().lines.map { it.seq })
+    }
+
+    @Test
+    fun `a later pass, after a reset, alerts as usual`() = runTest {
+        val s = setup()
+        val applier = FeedApplier(s.store, Clock { TestDb.NOW })
+        applier.apply(ws, feed(room(Ids.DM, dm = true, head = 2, unread = 0, read = 2), next = "p1"), sentCursor = "c0")
+        applier.reset(ws)
+        applier.apply(ws, feed(room(Ids.DM, dm = true, head = 4, read = 2, unread = 2), next = "p2"), sentCursor = null)
+        assertFalse(s.store.read { getWs(ws)!!.passing })
+        s.pages = mapOf(Ids.DM to EventPage((1L..4L).map { msg(it, room = 4) }, head = 4, floor = 1))
+        s.run()
+        assertEquals(listOf(3L, 4L), s.sink.shown.single().lines.map { it.seq })
+    }
+
+    @Test
+    fun `a read here to the alert's position takes it back, a smaller one doesn't`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 3, unread = 3), msg(1, room = 4), msg(2, room = 4), msg(3, room = 4))
+        s.run()
+        val key = ChatAlertRules.roomKey(ws, Ids.DM)
+        assertEquals(setOf(key), s.sink.activeKeys())
+
+        s.store.tx { setRoomFields(ws, Ids.DM, mapOf("readLocal" to 2L)) }
+        s.engine.onRead(ws, Ids.DM, s.store)
+        assertEquals(setOf(key), s.sink.activeKeys())
+
+        s.store.tx { setRoomFields(ws, Ids.DM, mapOf("readLocal" to 3L)) }
+        s.engine.onRead(ws, Ids.DM, s.store)
+        assertTrue(s.sink.activeKeys().isEmpty())
+        assertTrue("its notice rows went", s.notices(Ids.DM).isEmpty())
+    }
+
+    @Test
+    fun `a read on another device, arriving as a feed row, takes the alert back at the end of the run`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4), msg(2, room = 4))
+        s.run()
+        assertEquals(1, s.sink.activeKeys().size)
+        s.room(room(Ids.DM, dm = true, head = 2, read = 2, unread = 0))
+        s.run()
+        assertTrue(s.sink.activeKeys().isEmpty())
+    }
+
+    @Test
+    fun `a removal of a shown message takes the alert back, a removal of another message doesn't`() = runTest {
+        val s = setup()
+        s.room(
+            room(head = 3, unread = 2, mentions = 1),
+            msg(1),
+            msg(2, text = "Me hey", mentions = listOf(Mention(Ids.ME, 0, 2))),
+            msg(3),
+        )
+        s.run()
+        val key = ChatAlertRules.roomKey(ws, Ids.GENERAL)
+        assertEquals(setOf(key), s.sink.activeKeys())
+        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(3)), s.store)
+        assertEquals("another message's removal leaves it", setOf(key), s.sink.activeKeys())
+        s.engine.onRemoved(ws, Ids.GENERAL, listOf(Ids.event(2)), s.store)
+        assertTrue(s.sink.activeKeys().isEmpty())
+    }
+
+    @Test
+    fun `a removal through the feed takes back the alert that showed it`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4), msg(2, room = 4))
+        s.run()
+        val applier = FeedApplier(s.store, Clock { TestDb.NOW })
+        val result = applier.apply(ws, feed(room(Ids.DM, dm = true, head = 3, unread = 1, removed = listOf(Ids.event(2, 4))), next = "p1"), sentCursor = "c0")!!
+        for ((room, ids) in result.removed) s.engine.onRemoved(ws, room, ids, s.store)
+        assertTrue(s.sink.activeKeys().isEmpty())
+    }
+
+    @Test
+    fun `a reset takes back the alerts whose notices it deleted`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4), msg(2, room = 4))
+        s.run()
+        // As after a restart: the engine no longer knows what it showed, only the notice rows do.
+        val restarted = ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false })
+        val result = FeedApplier(s.store, Clock { TestDb.NOW }).reset(ws)
+        for ((room, ids) in result.removed) restarted.onRemoved(ws, room, ids, s.store)
+        assertTrue(s.sink.activeKeys().isEmpty())
+    }
+
+    @Test
+    fun `an eviction, the workspace going and the end of the session take alerts back`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 1, unread = 1), msg(1, room = 4))
+        s.room(room(Ids.RANDOM, name = "random", head = 1, unread = 1, mentions = 1), msg(1, room = 2, mentions = listOf(Mention(Ids.ME, 0, 3))))
+        s.run()
+        assertEquals(2, s.sink.activeKeys().size)
+
+        s.store.tx { deleteRoom(ws, Ids.DM) }
+        s.engine.onEvicted(ws, Ids.DM)
+        assertEquals(setOf(ChatAlertRules.roomKey(ws, Ids.RANDOM)), s.sink.activeKeys())
+
+        s.engine.onWorkspaceGone(ws)
+        assertTrue(s.sink.activeKeys().isEmpty())
+        assertTrue(ChatAlertRules.workspacePrefix(ws) in s.sink.cleared)
+
+        s.engine.clear()
+        assertEquals(ChatAlertRules.PREFIX, s.sink.cleared.last())
+    }
+
+    @Test
+    fun `three rooms alert, newest first, and a fourth or more make one summary`() = runTest {
+        val s = setup(workspaces = 2)
+        val ids = listOf(Ids.id("c", 11), Ids.id("c", 12), Ids.id("c", 13), Ids.id("c", 14), Ids.id("c", 15))
+        ids.forEachIndexed { i, id ->
+            val head = 10L + i
+            s.room(
+                room(id, name = "room$i", head = head, unread = 1, mentions = 1).copy(lastAt = 1_000L + i),
+                msg(head, room = 5 + i, mentions = listOf(Mention(Ids.ME, 0, 3))),
+            )
+        }
+        s.run()
+        val rooms = s.sink.shown.filter { !it.summary }
+        assertEquals("the three most recently active rooms", listOf(ids[4], ids[3], ids[2]), rooms.map { it.room })
+        assertEquals("#room4 · Team", rooms.first().title)
+        val summary = s.sink.shown.single { it.summary }
+        assertEquals(ChatAlertRules.summaryKey(ws), summary.key)
+        assertEquals("New messages in 2 conversations", summary.body)
+        assertEquals("Team chat · Team", summary.title)
+        for (id in ids) assertEquals(s.row(id).head, s.row(id).notified)
+
+        // A summary goes once every room it stands for was read.
+        for (id in listOf(ids[0], ids[1])) {
+            val head = s.row(id).head
+            s.store.tx { setRoomFields(ws, id, mapOf("readLocal" to head)) }
+            s.engine.onRead(ws, id, s.store)
+        }
+        assertFalse(ChatAlertRules.summaryKey(ws) in s.sink.activeKeys())
+    }
+
+    @Test
+    fun `rooms the cache can't tell about are loaded, at most three a run, and a failed load leaves the room due`() = runTest {
+        val s = setup()
+        val ids = (21..25).map { Ids.id("c", it) }
+        ids.forEachIndexed { i, id -> s.room(room(id, name = "r$i", head = 5, unread = 1, mentions = 1).copy(lastAt = 2_000L - i)) }
+        s.pages = ids.take(2).associateWith { id ->
+            EventPage(listOf(msg(5, room = ids.indexOf(id) + 5, mentions = listOf(Mention(Ids.ME, 0, 3)))), head = 5, floor = 1)
+        }
+        s.run()
+        assertEquals("three loads, the third failing", ids.take(3), s.fetched.toList())
+        assertEquals(ids.take(2), s.sink.shown.filter { !it.summary }.map { it.room })
+        assertEquals("the failed one stays due", 0L, s.row(ids[2]).notified)
+        assertEquals("New messages in 2 conversations", s.sink.shown.single { it.summary }.body)
+    }
+
+    @Test
+    fun `a blocked person's messages and mentions don't alert`() = runTest {
+        val s = setup()
+        s.store.tx { replaceBlocks(ws, listOf(Block(Ids.OLGA, 1))) }
+        s.room(room(head = 1, unread = 1, mentions = 1), msg(1, mentions = listOf(Mention(Ids.ME, 0, 3))))
+        s.run()
+        assertTrue(s.sink.shown.isEmpty())
+        assertEquals("nothing to show: notified anyway", 1L, s.row().notified)
+    }
+
+    @Test
+    fun `a removed message never shows`() = runTest {
+        val s = setup()
+        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4, text = "kept"), msg(2, room = 4, redacted = true))
+        s.run()
+        assertEquals(listOf("kept"), s.sink.shown.single().lines.map { it.text })
+    }
+
+    @Test
+    fun `the rule itself`() {
+        fun row(kind: String, head: Long, notified: Long, unread: Int, mentions: Int, read: Long = 0, readLocal: Long = read) = RoomRow(
+            ws, Ids.GENERAL, kind, null, if (kind == "dm") "dm" else "workspace", false, null, null, null, Ids.grant(1), "member", 2,
+            head, 1, null, read, readLocal, read, unread, mentions, null, null, notified, false,
+        )
+        assertTrue(ChatAlertRules.due(row("dm", 5, 4, 1, 0)))
+        assertFalse("nothing past notified", ChatAlertRules.due(row("dm", 5, 5, 1, 0)))
+        assertFalse("a DM needs unread", ChatAlertRules.due(row("dm", 5, 0, 0, 0)))
+        assertTrue(ChatAlertRules.due(row("channel", 5, 0, 0, 1)))
+        assertFalse("a channel needs mentions", ChatAlertRules.due(row("channel", 5, 0, 3, 0)))
+        assertTrue(ChatAlertRules.silenced(notifyChat = false, muted = false, onScreen = false))
+        assertTrue(ChatAlertRules.silenced(notifyChat = true, muted = true, onScreen = false))
+        assertTrue(ChatAlertRules.silenced(notifyChat = true, muted = false, onScreen = true))
+        assertFalse(ChatAlertRules.silenced(notifyChat = true, muted = false, onScreen = false))
+        assertTrue(ChatAlertRules.readTo(row("dm", 5, 4, 1, 0, read = 0, readLocal = 4)))
+        assertTrue("a read elsewhere counts", ChatAlertRules.readTo(row("dm", 5, 4, 1, 0, read = 5, readLocal = 0)))
+        assertFalse(ChatAlertRules.readTo(row("dm", 5, 4, 1, 0, read = 3)))
+    }
+
+    @Test
+    fun `an alert line shows mentions with an at sign, one line, cut at 120 characters`() {
+        val text = "Zoë and Joël,\n\nplease  look"
+        val bytes = "Zoë".toByteArray().size
+        val mentions = listOf(Mention(Ids.OLGA, 0, bytes), Mention(Ids.SAM, bytes + " and ".length, bytes + " and ".length + "Joël".toByteArray().size))
+        assertEquals("@Zoë and @Joël, please look", ChatAlertRules.alertText(text, mentions))
+        assertEquals("@Sam already", ChatAlertRules.alertText("@Sam already", listOf(Mention(Ids.SAM, 0, 4))))
+        assertEquals("a range that splits a character stays plain", "Zoë", ChatAlertRules.alertText("Zoë", listOf(Mention(Ids.SAM, 0, 3))))
+        val long = "a".repeat(130)
+        assertEquals("a".repeat(120) + "…", ChatAlertRules.alertText(long, emptyList()))
+        val emoji = "😀".repeat(121)
+        assertEquals("characters, not UTF-16 units", "😀".repeat(120) + "…", ChatAlertRules.alertText(emoji, emptyList()))
+    }
+}
