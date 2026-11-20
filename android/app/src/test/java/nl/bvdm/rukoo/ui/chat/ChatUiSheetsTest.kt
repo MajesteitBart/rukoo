@@ -54,9 +54,28 @@ class ChatUiSheetsTest {
         override val state = MutableStateFlow(ChatState(selected = "w1"))
         val leaves = ArrayList<String?>()
 
-        override fun view(ws: String): Flow<WorkspaceView> = flowOf(
-            WorkspaceView(WorkspaceSummary(ws, "Acme", "owner"), people.first(), emptyList(), people, false, emptyList(), emptyList()),
-        )
+        /** The rooms the view holds. */
+        var rooms: List<Room> = emptyList()
+
+        /** The channels' members; null makes loading them fail. */
+        var inside: List<RoomMember>? = listOf(RoomMember(ME, "manager"), RoomMember(MILA, "member"), RoomMember(OLGA, "member"))
+
+        /** What leaving the workspace answers the first time; null leaves. */
+        var leaveWsError: WorkspaceError? = null
+        var wsLeaves = 0
+        val roleCalls = ArrayList<String>()
+
+        fun currentView(ws: String) = WorkspaceView(WorkspaceSummary(ws, "Acme", "owner"), people.first(), rooms, people, false, emptyList(), emptyList())
+
+        override fun view(ws: String): Flow<WorkspaceView> = flowOf(currentView(ws))
+
+        override suspend fun leaveWorkspace(ws: String) {
+            wsLeaves++
+            leaveWsError?.let {
+                leaveWsError = null
+                throw it
+            }
+        }
 
         override suspend fun startDm(ws: String, members: List<String>): String = throw WorkspaceError("blocked", status = 409, member = members.first())
 
@@ -68,11 +87,11 @@ class ChatUiSheetsTest {
 
         override suspend fun leaveChannel(ws: String, channel: String, successor: String?) {
             leaves += successor
-            if (successor == null) throw WorkspaceError("last_manager", status = 409, channels = listOf("c_" + "x".repeat(22)))
+            val sole = inside?.none { it.member != ME && it.role == "manager" } ?: true
+            if (successor == null && sole) throw WorkspaceError("last_manager", status = 409, channels = listOf("c_" + "x".repeat(22)))
         }
 
-        override suspend fun roomMembers(ws: String, room: String): List<RoomMember> =
-            listOf(RoomMember(ME, "manager"), RoomMember(MILA, "member"), RoomMember(OLGA, "member"))
+        override suspend fun roomMembers(ws: String, room: String): List<RoomMember> = inside ?: throw WorkspaceError("network")
 
         val roles = ArrayList<String>()
 
@@ -84,6 +103,7 @@ class ChatUiSheetsTest {
 
         override suspend fun setChannelRole(ws: String, channel: String, member: String, role: String) {
             channelRoles += role
+            roleCalls += "$channel:$member:$role"
         }
     }
 
@@ -127,22 +147,103 @@ class ChatUiSheetsTest {
     }
 
     @Test
-    fun `the only manager leaving picks a successor among the full members, and leaves with them`() = runTest {
+    fun `the only manager leaving picks a successor among the full members at once, and leaves with them`() = runTest {
         val w = FakeWorkspaces(members)
         val ui = ui(w)
         ui.askLeaveChannel("w1", channel, members.associateBy { it.id }, ME)
         advanceUntilIdle()
-        // The question first.
-        ui.dialog!!.answer(DialogChoice.CONFIRM)
-        advanceUntilIdle()
+        // No confirmation first: the successor question is the one that matters.
+        assertNull(ui.dialog)
         val prompt = ui.prompt as ChatPrompt.Successor
         // Not yourself, not the guest.
         assertEquals(listOf("Mila Bakker"), prompt.people!!.map { it.name })
         assertTrue(ui.wasExpected("c1").also { ui.expectGone("c1") })
         ui.handOver(MILA)
         advanceUntilIdle()
-        assertEquals(listOf(null, MILA), w.leaves)
+        assertEquals(listOf(MILA), w.leaves)
         assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `a manager with another manager beside them gets the plain confirmation`() = runTest {
+        val w = FakeWorkspaces(members)
+        w.inside = listOf(RoomMember(ME, "manager"), RoomMember(MILA, "manager"), RoomMember(OLGA, "member"))
+        val ui = ui(w)
+        ui.askLeaveChannel("w1", channel, members.associateBy { it.id }, ME)
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_channel_leave_title, "plans"), ui.dialog!!.title)
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertEquals(listOf<String?>(null), w.leaves)
+        assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `when the channel's members don't load, the server's last_manager still opens the successor question`() = runTest {
+        val w = FakeWorkspaces(members)
+        w.inside = null
+        val ui = ui(w)
+        ui.askLeaveChannel("w1", channel, members.associateBy { it.id }, ME)
+        advanceUntilIdle()
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertTrue(ui.prompt is ChatPrompt.Successor)
+        assertEquals(listOf<String?>(null), w.leaves)
+    }
+
+    @Test
+    fun `the only owner is told before any confirmation and nothing is sent`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        var membersOpened = false
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) { membersOpened = true }
+        advanceUntilIdle()
+        val asked = ui.dialog!!
+        assertEquals(Strings.get(R.string.chat_leave_last_owner), asked.message)
+        assertEquals(Strings.get(R.string.chat_workspace_members), asked.confirmLabel)
+        asked.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        assertTrue(membersOpened)
+        assertEquals(0, w.wsLeaves)
+    }
+
+    @Test
+    fun `the only manager of a shared channel picks its successor in the hand-over, whose button hands over and leaves`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        w.rooms = listOf(channel, channel.copy(id = "c2", name = "solo", members = 1), channel.copy(id = "c3", name = "ads", role = "member"))
+        val ui = ui(w)
+        ui.askLeaveWorkspace("w1", w.currentView("w1")) {}
+        advanceUntilIdle()
+        assertNull(ui.dialog)
+        val prompt = ui.prompt as ChatPrompt.HandOver
+        // Only the channel with others in it; nobody preselected.
+        assertEquals(listOf("c1"), prompt.channels.map { it.id })
+        assertEquals(listOf("Mila Bakker"), prompt.channels.single().people!!.map { it.name })
+        ui.handOverAndLeave(emptyMap())
+        advanceUntilIdle()
+        assertEquals(0, w.wsLeaves)
+        ui.handOverAndLeave(mapOf("c1" to MILA))
+        advanceUntilIdle()
+        assertEquals(listOf("c1:$MILA:manager"), w.roleCalls)
+        assertEquals(1, w.wsLeaves)
+        assertNull(ui.prompt)
+    }
+
+    @Test
+    fun `with nothing to hand over, leaving asks first, and the server's last_manager opens the hand-over`() = runTest {
+        val w = FakeWorkspaces(members.map { if (it.id == MILA) it.copy(role = "owner") else it })
+        val ui = ui(w)
+        w.leaveWsError = WorkspaceError("last_manager", status = 409, channels = listOf("c1"))
+        // The view doesn't hold the room yet, so the app can't tell; the hand-over names it from the server's answer.
+        val view = w.currentView("w1").copy(channels = listOf(nl.bvdm.rukoo.workspaces.Channel("c1", "plans", "workspace")))
+        ui.askLeaveWorkspace("w1", view) {}
+        advanceUntilIdle()
+        assertEquals(Strings.get(R.string.chat_leave_title, ""), ui.dialog!!.title)
+        ui.dialog!!.answer(DialogChoice.CONFIRM)
+        advanceUntilIdle()
+        val prompt = ui.prompt as ChatPrompt.HandOver
+        assertEquals(listOf("plans"), prompt.channels.map { it.name })
+        assertEquals(listOf("Mila Bakker"), prompt.channels.single().people!!.map { it.name })
     }
 
     @Test
@@ -243,8 +344,6 @@ class ChatUiSheetsTest {
         val w = FakeWorkspaces(members)
         val ui = ui(w)
         ui.askLeaveChannel("w1", channel, members.associateBy { it.id }, ME)
-        advanceUntilIdle()
-        ui.dialog!!.answer(DialogChoice.CONFIRM)
         advanceUntilIdle()
         ui.dismissPrompt()
         assertNull(ui.prompt)

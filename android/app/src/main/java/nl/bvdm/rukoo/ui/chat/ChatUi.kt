@@ -15,6 +15,8 @@ import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -34,6 +36,7 @@ import nl.bvdm.rukoo.workspaces.Member
 import nl.bvdm.rukoo.workspaces.ResendMode
 import nl.bvdm.rukoo.workspaces.Room
 import nl.bvdm.rukoo.workspaces.RoomKind
+import nl.bvdm.rukoo.workspaces.RoomMember
 import nl.bvdm.rukoo.workspaces.WorkspaceError
 import nl.bvdm.rukoo.workspaces.WorkspaceView
 import nl.bvdm.rukoo.workspaces.Workspaces
@@ -572,10 +575,20 @@ class ChatUi(
     }
 
     /**
-     * Leave a channel (desktop-ui 6.9): asked first, with what leaving means here. The only manager of a channel with
-     * others in it then picks a successor from its full members ([members] is the directory), in [prompt].
+     * Leave a channel (desktop-ui 6.9). The only manager of a channel with others in it picks a successor from its full
+     * members ([members] is the directory) in [prompt], without a confirmation first; anyone else is asked, with what
+     * leaving means here. When the channel's members don't load, the server's `last_manager` opens the prompt instead.
      */
     fun askLeaveChannel(ws: String, room: Room, members: Map<String, Member>, me: String?) = launch("leave:${room.id}", context(ws)) {
+        if (SheetRules.sharedManaged(listOf(room)).isNotEmpty()) {
+            val inside = membersOrNull(ws, room.id)
+            if (inside != null && SheetRules.soleManager(inside, me)) {
+                expectGone(room.id)
+                promptError = null
+                prompt = ChatPrompt.Successor(ws, room, SheetRules.successors(inside.map { it.member }, members, me, collator()))
+                return@launch
+            }
+        }
         val name = room.name.orEmpty()
         val body = when (SheetRules.leaveBody(room)) {
             LeaveBody.LAST -> strings.get(R.string.chat_channel_leave_body_last, name)
@@ -621,12 +634,21 @@ class ChatUi(
     }
 
     /**
-     * Leave a workspace (desktop-ui 6.10). The only manager of channels is shown them, each with its members to hand
-     * it over ([prompt]). The only owner is told to make someone else an owner, with [onMembers] to do it; with
-     * nobody else left, deleting the workspace is offered instead (§5.10).
+     * Leave a workspace (desktop-ui 6.10). What the app knows decides first, before any confirmation: the only owner
+     * is told to make someone else an owner, with [onMembers] to do it, or offered Delete workspace with nobody else
+     * left (§5.10); the only manager of channels with others in them picks a successor for each in [prompt], whose
+     * button hands them over and leaves. Anyone else confirms. The server's `last_owner` and `last_manager` lead to
+     * the same dialogs when the app couldn't tell.
      */
     fun askLeaveWorkspace(ws: String, view: WorkspaceView?, onMembers: () -> Unit) = launch("leaveWs:$ws", context(ws)) {
         val name = wsName(ws)
+        if (view != null && SheetRules.onlyOwner(view)) return@launch lastOwner(this, ws, view, onMembers)
+        val mine = view?.let { soleManaged(this, ws, it) }
+        if (!mine.isNullOrEmpty()) {
+            promptError = null
+            prompt = ChatPrompt.HandOver(ws, name, mine)
+            return@launch
+        }
         if (!confirm(strings.get(R.string.chat_leave_title, name), strings.get(R.string.chat_leave_body), strings.get(R.string.chat_leave_submit), danger = true)) return@launch
         expectGone(ws)
         try {
@@ -634,25 +656,105 @@ class ChatUi(
         } catch (e: WorkspaceError) {
             wasExpected(ws)
             when (e.code) {
-                "last_manager" -> {
-                    promptError = null
-                    prompt = ChatPrompt.HandOver(ws, SheetRules.handOver(e.channels, view))
-                }
-                "last_owner" -> {
-                    val alone = view != null && SheetRules.alone(view)
-                    val text = strings.get(R.string.chat_leave_last_owner) + if (alone) "\n\n" + strings.get(R.string.chat_leave_delete_instead, name) else ""
-                    val answer = ask(
-                        DialogRequest(
-                            strings.get(R.string.chat_workspace_leave),
-                            text,
-                            strings.get(if (alone) R.string.chat_workspace_delete else R.string.chat_workspace_members),
-                            strings.get(R.string.common_actions_close),
-                            danger = alone,
-                        ),
-                    )
-                    if (answer.choice == DialogChoice.CONFIRM) if (alone) deleteAsked(this, ws) else onMembers()
-                }
+                "last_manager" -> askHandOver(this, ws, name, e.channels, view)
+                "last_owner" -> lastOwner(this, ws, view, onMembers)
                 else -> throw e
+            }
+        }
+    }
+
+    /** The only owner can't leave: Members to make someone else an owner, or Delete workspace when nobody else is in it. */
+    private suspend fun lastOwner(w: Workspaces, ws: String, view: WorkspaceView?, onMembers: () -> Unit) {
+        val alone = view != null && SheetRules.alone(view)
+        val text = strings.get(R.string.chat_leave_last_owner) + if (alone) "\n\n" + strings.get(R.string.chat_leave_delete_instead, wsName(ws)) else ""
+        val answer = ask(
+            DialogRequest(
+                strings.get(R.string.chat_workspace_leave),
+                text,
+                strings.get(if (alone) R.string.chat_workspace_delete else R.string.chat_workspace_members),
+                strings.get(R.string.common_actions_close),
+                danger = alone,
+            ),
+        )
+        if (answer.choice == DialogChoice.CONFIRM) if (alone) deleteAsked(w, ws) else onMembers()
+    }
+
+    /** A channel's members, or null when they don't load; the server's answer to leaving then decides. */
+    private suspend fun Workspaces.membersOrNull(ws: String, channel: String): List<RoomMember>? = try {
+        roomMembers(ws, channel)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * The channels in [view] the person is the only manager of while others are in them, each with who can take it
+     * over; null when a channel's members don't load.
+     */
+    private suspend fun soleManaged(w: Workspaces, ws: String, view: WorkspaceView): List<HandOverChannel>? = coroutineScope {
+        val directory = view.members.associateBy { it.id }
+        val me = view.me.id
+        val loaded = SheetRules.sharedManaged(view.rooms).map { room -> room to async { w.membersOrNull(ws, room.id) } }
+        val out = ArrayList<HandOverChannel>()
+        for ((room, members) in loaded) {
+            val inside = members.await() ?: return@coroutineScope null
+            if (!SheetRules.soleManager(inside, me)) continue
+            val people = SheetRules.successors(inside.map { it.member }, directory, me, collator())
+            out += HandOverChannel(room.id, room.name.orEmpty(), room.visibility == "private", people)
+        }
+        out.sortedWith { a, b -> collator().compare(a.name, b.name) }
+    }
+
+    /** The hand-over [prompt] for the channels a `409 last_manager` named, their people loading after it shows. */
+    private suspend fun askHandOver(w: Workspaces, ws: String, name: String, ids: List<String>, view: WorkspaceView?) {
+        val asking = ChatPrompt.HandOver(ws, name, SheetRules.handOver(ids, view))
+        promptError = null
+        prompt = asking
+        val directory = view?.members.orEmpty().associateBy { it.id }
+        val me = view?.me?.id
+        var failed: Exception? = null
+        val channels = asking.channels.map { ch ->
+            val inside = try {
+                w.roomMembers(ws, ch.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failed = e
+                emptyList()
+            }
+            ch.copy(people = SheetRules.successors(inside.map { it.member }, directory, me, collator()))
+        }
+        if (prompt !== asking) return
+        prompt = asking.copy(channels = channels)
+        failed?.let { promptError = errorText(it, context(ws)) }
+    }
+
+    /**
+     * The hand-over [prompt]'s submit: makes each pick in [picks] (channel to member) a manager of its channel, then
+     * leaves. A `last_manager` naming channels the prompt didn't hold shows those instead.
+     */
+    fun handOverAndLeave(picks: Map<String, String>) {
+        val p = prompt as? ChatPrompt.HandOver ?: return
+        if (!SheetRules.handOverReady(p.channels, picks)) return
+        attempt("leaveWs:${p.ws}", failed = { e -> if (prompt === p) promptError = errorText(e, context(p.ws)) }) {
+            for (ch in p.channels) setChannelRole(p.ws, ch.id, picks.getValue(ch.id), "manager")
+            expectGone(p.ws)
+            try {
+                leaveWorkspace(p.ws)
+            } catch (e: WorkspaceError) {
+                wasExpected(p.ws)
+                if (e.code != "last_manager" || prompt !== p) throw e
+                val view = withTimeoutOrNull(VIEW_WAIT_MS) { view(p.ws).firstOrNull() }
+                askHandOver(this, p.ws, p.name, e.channels, view)
+                return@attempt
+            } catch (e: Exception) {
+                wasExpected(p.ws)
+                throw e
+            }
+            if (prompt === p) {
+                prompt = null
+                promptError = null
             }
         }
     }
@@ -792,12 +894,18 @@ sealed interface ChatPrompt {
      */
     data class Successor(val ws: String, val room: Room, val people: List<Member>?) : ChatPrompt
 
-    /** Leaving [ws] as the only manager of [channels]: each opens its members, where it is handed over (6.10). */
-    data class HandOver(val ws: String, val channels: List<HandOverChannel>) : ChatPrompt
+    /**
+     * Leaving [ws] (named [name]) as the only manager of [channels]: a successor is picked for each, then one button
+     * hands them over and leaves (6.10).
+     */
+    data class HandOver(val ws: String, val name: String, val channels: List<HandOverChannel>) : ChatPrompt
 }
 
-/** A channel the person has to hand over before leaving the workspace. */
-data class HandOverChannel(val id: String, val name: String, val private: Boolean)
+/**
+ * A channel the person has to hand over before leaving the workspace, with who can take it over ([people], null while
+ * they load).
+ */
+data class HandOverChannel(val id: String, val name: String, val private: Boolean, val people: List<Member>? = null)
 
 /** Members' names as [s] words them: Former member, Deleted member, " and N others" and the language's list. */
 fun chatNames(s: UiStrings): ChatNames = ChatNames(

@@ -414,7 +414,8 @@
     <string name="chat_leave_title">Leave %1$s?</string><!-- Confirmation title. -->
     <string name="chat_leave_body">You lose access to its channels and direct messages. Messages you wrote stay.</string><!-- Its text. -->
     <string name="chat_leave_submit">Leave</string><!-- Its button. -->
-    <string name="chat_leave_manager_first">You\'re the only manager of these channels. Hand each one over before you leave.</string><!-- Dialog after 409 last_manager. -->
+    <string name="chat_leave_manager_first">You\'re the only manager of these channels. Choose who manages each one after you.</string><!-- Leave a workspace as the only manager of channels: text above a successor picker per channel. Desktop chat.leave.managerFirst. -->
+    <string name="chat_leave_only_owner_hint">Make someone else an owner first.</string><!-- Quiet line under the drawer's Leave workspace row while the user is its only owner. Desktop chat.leave.onlyOwnerHint. -->
     <string name="chat_leave_delete_instead">Nobody else is in %1$s, so you can delete it instead.</string><!-- Second line of the only-owner dialog when the user is its only member, above Delete workspace. Desktop chat.leave.deleteInstead. -->
     <string name="chat_leave_last_owner">You\'re the only owner. Make someone else an owner first.</string><!-- Dialog after 409 last_owner. -->
 

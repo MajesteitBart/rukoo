@@ -392,7 +392,8 @@
     <string name="chat_leave_title">%1$s verlaten?</string>
     <string name="chat_leave_body">Je verliest de toegang tot de kanalen en directe berichten. Berichten die je schreef, blijven staan.</string>
     <string name="chat_leave_submit">Verlaten</string>
-    <string name="chat_leave_manager_first">Je bent de enige beheerder van deze kanalen. Draag elk kanaal over voordat je vertrekt.</string>
+    <string name="chat_leave_manager_first">Je bent de enige kanaalbeheerder van deze kanalen. Kies voor elk kanaal wie het na jou beheert.</string>
+    <string name="chat_leave_only_owner_hint">Maak eerst iemand anders eigenaar.</string>
     <string name="chat_leave_delete_instead">Er zit verder niemand in %1$s, dus je kunt de werkruimte in plaats daarvan verwijderen.</string>
     <string name="chat_leave_last_owner">Je bent de enige eigenaar. Maak eerst iemand anders eigenaar.</string>
 

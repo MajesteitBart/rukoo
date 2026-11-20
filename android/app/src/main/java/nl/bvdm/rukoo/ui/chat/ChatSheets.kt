@@ -209,6 +209,33 @@ object SheetRules {
         ids.distinct().mapNotNull { members[it] }.filter { it.id != me && it.state == "active" && ChatListModel.isFullMember(it.role) }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }
 
+    /** A successor list gets a search field once it holds more people than this. */
+    const val SUCCESSOR_SEARCH_FROM = 6
+
+    /** Whether a successor list of [count] people shows a search field. */
+    fun successorSearch(count: Int): Boolean = count > SUCCESSOR_SEARCH_FROM
+
+    /**
+     * Whether [view]'s person is its only owner, as far as the directory knows: an owner with no other active owner in
+     * a complete directory. Leaving then can't work (`409 last_owner`), so the app says so before asking.
+     */
+    fun onlyOwner(view: WorkspaceView): Boolean =
+        view.me.role == "owner" && !view.membersMore && view.members.none { it.id != view.me.id && it.state == "active" && it.role == "owner" }
+
+    /**
+     * The channels in [rooms] that may need a successor before the person leaves: open channels they manage with
+     * other people in them. Whether they are the only manager there takes the channel's members ([soleManager]).
+     */
+    fun sharedManaged(rooms: List<Room>): List<Room> = rooms.filter { it.kind == RoomKind.CHANNEL && !it.archived && it.role == "manager" && it.members > 1 }
+
+    /** Whether [me] is the only manager among a channel's [members] while others are in it (`409 last_manager`). */
+    fun soleManager(members: List<RoomMember>, me: String?): Boolean =
+        members.any { it.member != me } && members.none { it.member != me && it.role == "manager" }
+
+    /** Whether every channel of a hand-over has a successor picked from its own people. */
+    fun handOverReady(channels: List<HandOverChannel>, picks: Map<String, String>): Boolean =
+        channels.isNotEmpty() && channels.all { ch -> ch.people?.any { it.id == picks[ch.id] } == true }
+
     /** The channels a `409 last_manager` named, with the names [view] knows; unknown ones are left out. */
     fun handOver(ids: List<String>, view: WorkspaceView?): List<HandOverChannel> = ids.distinct().mapNotNull { id ->
         val room = view?.rooms?.firstOrNull { it.id == id }
@@ -1917,65 +1944,91 @@ private fun BlockedSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> U
 
 // ---- prompts (ChatUi.prompt) ----
 
+/**
+ * Who takes a channel over: a radio row per person, nothing picked until the person chooses, and a search field above
+ * more than [SheetRules.SUCCESSOR_SEARCH_FROM] people. [people] null shows a spinner while they load.
+ */
+@Composable
+private fun SuccessorPicker(people: List<Member>?, pick: String?, onPick: (String) -> Unit) {
+    val names = rememberChatNames()
+    var query by remember { mutableStateOf("") }
+    if (people != null && SheetRules.successorSearch(people.size)) {
+        Form { RkSearchField(query, { query = it }, placeholder = stringResource(R.string.chat_members_search)) }
+    }
+    val shown = people.orEmpty().filter { SheetRules.matches(names.display(it), query) }
+    Column(Modifier.selectableGroup()) {
+        when {
+            people == null -> Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Spinner(size = 16.dp) }
+            shown.isEmpty() -> Form { Help(stringResource(R.string.chat_new_none)) }
+        }
+        for (m in shown) {
+            RadioRow(names.display(m), selected = pick == m.id, onClick = { onPick(m.id) }, leading = { Avatar(m.name, m.id, size = 24.dp) })
+        }
+    }
+}
+
 /** The only manager of a channel picks a successor before leaving (desktop-ui 6.9). */
 @Composable
 private fun SuccessorPrompt(app: AppViewModel, p: ChatPrompt.Successor) {
     val ui = app.chatUi
-    val names = rememberChatNames()
     var pick by remember(p.room.id) { mutableStateOf<String?>(null) }
     val people = p.people
-    LaunchedEffect(people) { if (pick == null) pick = people?.firstOrNull()?.id }
     val busy = ui.isBusy("leave:${p.room.id}")
+    val ready = pick != null && people?.any { it.id == pick } == true
     SheetFrame(
         twoPane = true,
         title = stringResource(R.string.chat_channel_successor_title, p.room.name.orEmpty()),
         onDismiss = ui::dismissPrompt,
         buttons = { close ->
             Secondary(stringResource(R.string.common_actions_cancel)) { close() }
-            Primary(stringResource(R.string.chat_channel_successor_submit), busy = busy, enabled = pick != null, danger = true) { pick?.let(ui::handOver) }
+            Primary(stringResource(R.string.chat_channel_successor_submit), busy = busy, enabled = ready, danger = true) { pick?.let(ui::handOver) }
         },
     ) {
         Form { SheetText(stringResource(R.string.chat_channel_successor_body)) }
-        Column(Modifier.selectableGroup()) {
-            when {
-                people == null -> Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Spinner(size = 16.dp) }
-                people.isEmpty() -> Form { Help(stringResource(R.string.chat_new_none)) }
-            }
-            for (m in people.orEmpty()) {
-                RadioRow(names.display(m), selected = pick == m.id, onClick = { pick = m.id }, leading = { Avatar(m.name, m.id, size = 24.dp) })
-            }
-        }
+        SuccessorPicker(people, pick) { pick = it }
         ui.promptError?.let { Form { ErrorLine(it) } }
     }
 }
 
-/** Leaving a workspace as the only manager of channels: each opens its members, where it is handed over (6.10). */
+/**
+ * Leaving a workspace as the only manager of channels (6.10): a successor picker for each, then one button that makes
+ * the picks managers and leaves.
+ */
 @Composable
 private fun HandOverPrompt(app: AppViewModel, p: ChatPrompt.HandOver) {
     val ui = app.chatUi
+    var picks by remember(p.ws) { mutableStateOf(emptyMap<String, String>()) }
+    val busy = ui.isBusy("leaveWs:${p.ws}")
     SheetFrame(
         twoPane = true,
-        title = stringResource(R.string.chat_workspace_leave),
+        title = stringResource(R.string.chat_leave_title, p.name),
         onDismiss = ui::dismissPrompt,
-        buttons = { close -> Primary(stringResource(R.string.common_actions_close), busy = false) { close() } },
+        buttons = { close ->
+            Secondary(stringResource(R.string.common_actions_cancel)) { close() }
+            Primary(stringResource(R.string.chat_channel_successor_submit), busy = busy, enabled = SheetRules.handOverReady(p.channels, picks), danger = true) {
+                ui.handOverAndLeave(picks)
+            }
+        },
     ) {
-        Form { SheetText(stringResource(R.string.chat_leave_manager_first)) }
-        Column {
-            for (ch in p.channels) {
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 20.dp, end = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RkIcon(if (ch.private) ChatIcons.Lock else ChatIcons.Hash, null, size = 16.dp, tint = Rk.colors.text3)
-                    Text(ch.name, style = Rk.type.text13.medium, color = Rk.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    RkButton(stringResource(R.string.chat_head_members_button), {
-                        ui.dismissPrompt()
-                        app.openRoom(ch.id)
-                        app.openChatSheet(ChatSheet.MEMBERS, ch.id)
-                    }, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL, icon = RukooIcons.People)
+        Form {
+            SheetText(stringResource(R.string.chat_leave_manager_first))
+            SheetText(stringResource(R.string.chat_leave_body))
+        }
+        for (ch in p.channels) {
+            key(ch.id) {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(start = 20.dp, end = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RkIcon(if (ch.private) ChatIcons.Lock else ChatIcons.Hash, null, size = 16.dp, tint = Rk.colors.text3)
+                        Text(ch.name, style = Rk.type.text13.semibold, color = Rk.colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    }
+                    SuccessorPicker(ch.people, picks[ch.id]) { picks = picks + (ch.id to it) }
                 }
             }
         }
+        ui.promptError?.let { Form { ErrorLine(it) } }
     }
 }

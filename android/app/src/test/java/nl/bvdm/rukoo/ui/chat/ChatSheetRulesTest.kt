@@ -148,6 +148,49 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `the only owner is an owner with no other active owner in a complete directory`() {
+        assertTrue(SheetRules.onlyOwner(view()))
+        assertFalse(SheetRules.onlyOwner(view(role = "admin")))
+        assertFalse(SheetRules.onlyOwner(view(members = people.map { if (it.id == ann) it.copy(role = "owner") else it })))
+        // A former owner doesn't count, and a directory that isn't complete can't vouch for it.
+        assertTrue(SheetRules.onlyOwner(view(members = people + member(id("u", "old"), "Old", role = "owner", state = "former"))))
+        assertFalse(SheetRules.onlyOwner(view(more = true)))
+    }
+
+    @Test
+    fun `a successor may be needed in open channels you manage with others in them, and only when you are their only manager`() {
+        val rooms = listOf(
+            channel("c1", "plans", role = "manager"),
+            channel("c2", "solo", role = "manager", members = 1),
+            channel("c3", "old", role = "manager", archived = true),
+            channel("c4", "ads"),
+            dm("d1", ann),
+        )
+        assertEquals(listOf("c1"), SheetRules.sharedManaged(rooms).map { it.id })
+        assertTrue(SheetRules.soleManager(listOf(RoomMember(me, "manager"), RoomMember(bo, "member")), me))
+        assertFalse(SheetRules.soleManager(listOf(RoomMember(me, "manager"), RoomMember(bo, "manager")), me))
+        assertFalse(SheetRules.soleManager(listOf(RoomMember(me, "manager")), me))
+    }
+
+    @Test
+    fun `the hand-over leaves once every channel has a successor picked from its own people`() {
+        val a = HandOverChannel("c1", "plans", false, listOf(member(bo, "Bo")))
+        val b = HandOverChannel("c2", "ads", false, listOf(member(cy, "Cy")))
+        assertFalse(SheetRules.handOverReady(listOf(a, b), emptyMap()))
+        assertFalse(SheetRules.handOverReady(listOf(a, b), mapOf("c1" to bo)))
+        assertFalse(SheetRules.handOverReady(listOf(a, b), mapOf("c1" to bo, "c2" to bo)))
+        assertTrue(SheetRules.handOverReady(listOf(a, b), mapOf("c1" to bo, "c2" to cy)))
+        assertFalse(SheetRules.handOverReady(listOf(a.copy(people = null)), mapOf("c1" to bo)))
+        assertFalse(SheetRules.handOverReady(emptyList(), emptyMap()))
+    }
+
+    @Test
+    fun `a successor list gets a search field above six people`() {
+        assertFalse(SheetRules.successorSearch(6))
+        assertTrue(SheetRules.successorSearch(7))
+    }
+
+    @Test
     fun `the channels to hand over get their names from the rooms or the directory`() {
         val v = view(rooms = listOf(channel("c1", "plans", visibility = "private")), channels = listOf(Channel("c2", "ads", "workspace")))
         assertEquals(
