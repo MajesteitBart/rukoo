@@ -540,12 +540,16 @@ body.main-window .titlebar-actions {
 }
 
 /* The modes: Mail, Calendar, Meet and Chat as tabs beside the icon (app.js renderModeSwitch). They change the sidebar
- * and the workspace together, so they sit above both. The bar is chrome, so the tabs are plain labels: the chosen one
- * gets the sidebar's selected-row fill, which glides to it (placeModeThumb measures --x and --w), and what waits in a
- * mode is a number after its label, as in the list's quick filters. */
-/* Only the tabs take clicks: the empty rest of their column still drags the window. */
+ * and the workspace together, so they sit above both. A track holds the tabs as labels; the chosen tab is filled with
+ * ink, like the list's active quick filter, and only it shows its icon. Choosing another tab folds the old icon away
+ * and opens the new one while the fill glides there. placeModeThumb measures where the chosen tab settles, as --x and
+ * --w, so the fill goes straight to its end while the tabs change width under it. The track's 10px corners hold 8px
+ * tabs at a 2px inset. What waits in a mode is a
+ * number after its label, as in the quick filters. Only the tabs take clicks: the empty rest of their column still
+ * drags the window. */
 .titlebar-modes {
   -webkit-app-region: no-drag;
+  position: relative;
   justify-self: start;
   margin: 0 24px 0 2px;
 }
@@ -559,31 +563,46 @@ body:has(.page) .titlebar-modes {
   display: flex;
   align-items: center;
   gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+/* The copy placeModeThumb measures: in the same place and font, never seen. */
+.mode-tabs.is-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 .mode-thumb {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: 2px;
+  bottom: 2px;
   left: 0;
   width: var(--w, 0);
   border-radius: var(--radius);
-  background: var(--active);
+  background: var(--primary);
   transform: translateX(var(--x, 0));
   pointer-events: none;
+  z-index: 1;
 }
+/*   0ms  the old tab's icon folds, the new tab's icon opens, the fill glides over the tabs between
+ *  40ms  the new tab's label starts to take the fill's ink, as the fill arrives under it
+ * 300ms  all settled; the icon's own pop overshoots a little and settles with them
+ * The fill passes over the other tabs and under the chosen one, so a label it crosses is covered, never dim text on
+ * ink. */
 .mode-tabs.glides .mode-thumb {
   transition:
-    transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
-    width 200ms cubic-bezier(0.23, 1, 0.32, 1);
+    transform 300ms cubic-bezier(0.23, 1, 0.32, 1),
+    width 300ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .mode-tabs button {
   position: relative;
-  z-index: 1;
   height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 10px;
+  padding: 0 12px;
   border-radius: var(--radius);
   font-size: 12.5px;
   font-weight: 500;
@@ -591,22 +610,47 @@ body:has(.page) .titlebar-modes {
   white-space: nowrap;
   transition: color 120ms ease;
 }
-.mode-tabs button:hover,
-.mode-tabs button[aria-selected='true'] {
+.mode-tabs button:hover {
   color: var(--text);
 }
+.mode-tabs button[aria-selected='true'] {
+  z-index: 2;
+  color: var(--on-primary);
+  transition: color 100ms ease 40ms;
+}
 .mode-ic {
-  display: none;
+  display: inline-flex;
+  width: 0;
+  margin-right: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    width 300ms cubic-bezier(0.23, 1, 0.32, 1),
+    margin-right 300ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 200ms ease;
 }
 .mode-ic svg {
-  width: 16px;
-  height: 16px;
-  stroke-width: 1.7;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
   display: block;
+  transform: scale(0.6);
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+[aria-selected='true'] > .mode-ic {
+  width: 14px;
+  margin-right: 6px;
+  opacity: 1;
+}
+[aria-selected='true'] > .mode-ic svg {
+  transform: none;
 }
 /* Booking requests on Calendar in orange, and on Chat the messages for you in accent, or a dot for other unread
- * messages. The light theme darkens the orange, as for the booking warnings, so the number stays readable. */
+ * messages. The light theme darkens the orange, as for the booking warnings, so the number stays readable. On the
+ * chosen tab a count takes the tab's own ink. */
 .mode-badge {
+  margin-left: 5px;
   font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
@@ -620,14 +664,22 @@ body:has(.page) .titlebar-modes {
 :root.light .mode-badge.is-mention {
   color: var(--accent);
 }
+.mode-tabs button[aria-selected='true'] .mode-badge.mode-badge {
+  color: inherit;
+  opacity: 0.7;
+}
 .mode-dot {
   width: 6px;
   height: 6px;
+  margin-left: 5px;
   border-radius: 50%;
   background: var(--accent);
   flex: none;
 }
-/* A narrow window gives the room to the search: the tabs show their icons, with the label in the tooltip, and a count
+.mode-tabs [aria-selected='true'] .mode-dot {
+  background: currentColor;
+}
+/* A narrow window gives the room to the search: every tab shows its icon, with the label in the tooltip, and a count
  * becomes a pill on the icon's corner. Half a 1920px screen, 960px, still has the labels. */
 @media (max-width: 939px) {
   .mode-tabs button {
@@ -638,16 +690,26 @@ body:has(.page) .titlebar-modes {
   .mode-label {
     display: none;
   }
-  .mode-ic {
-    display: block;
+  .mode-ic,
+  [aria-selected='true'] > .mode-ic {
+    width: 16px;
+    margin-right: 0;
+    opacity: 1;
+  }
+  .mode-ic svg {
+    width: 16px;
+    height: 16px;
+    transform: none;
   }
   .mode-badge,
   .mode-dot {
     position: absolute;
+    margin: 0;
   }
-  .mode-badge {
-    top: -2px;
-    right: -2px;
+  .mode-badge,
+  .mode-tabs button[aria-selected='true'] .mode-badge.mode-badge {
+    top: -3px;
+    right: -3px;
     min-width: 15px;
     height: 15px;
     padding: 0 4px;
@@ -656,26 +718,34 @@ body:has(.page) .titlebar-modes {
     place-items: center;
     font-size: 9.5px;
     font-weight: 650;
+    opacity: 1;
     background: var(--warn);
     color: var(--panel);
   }
   /* Dark ink on the orange in both themes; the light theme's panel colour is white, too faint on it. */
-  :root.light .mode-badge {
+  :root.light .mode-badge,
+  :root.light .mode-tabs button[aria-selected='true'] .mode-badge.mode-badge {
     color: var(--text);
   }
   .mode-badge.is-mention,
-  :root.light .mode-badge.is-mention {
+  :root.light .mode-badge.is-mention,
+  :root .mode-tabs button[aria-selected='true'] .mode-badge.is-mention.is-mention {
     background: var(--accent);
     color: var(--panel);
   }
-  .mode-dot {
-    top: 4px;
-    right: 5px;
+  .mode-dot,
+  .mode-tabs [aria-selected='true'] .mode-dot {
+    top: 3px;
+    right: 4px;
+    background: var(--accent);
     box-shadow: 0 0 0 2px var(--bg);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mode-tabs.glides .mode-thumb {
+  .mode-tabs.glides .mode-thumb,
+  .mode-tabs button,
+  .mode-ic,
+  .mode-ic svg {
     transition: none;
   }
 }

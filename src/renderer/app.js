@@ -972,21 +972,30 @@ function tabBadge(tab, badge) {
   tab.setAttribute('aria-label', badge.label);
 }
 
-// The highlight behind the chosen tab. A tab is as wide as its label and its badge, so the highlight's place is
-// measured: --x and --w on the tabs. glide: slide there, for another choice among the same tabs; without it the
-// highlight is put there, as when a badge, the language or the window's width changed a tab's size. A measurement
-// that changes nothing leaves a glide under way alone.
+// The pill behind the chosen tab: --x and --w on the tabs. The chosen tab opens its icon and the one before folds its
+// own, so the tabs change width while the pill moves. The pill goes straight to where the chosen tab settles,
+// measured on a copy of the tabs that has no transition running. glide: slide there, for another choice among the same
+// tabs; without it the pill is put there, as when a count, the language or the window's width changed a tab's size. A
+// measurement that changes nothing leaves a glide under way alone.
 function placeModeThumb(glide = false) {
   const tabs = $('.titlebar-modes .mode-tabs');
-  const on = tabs?.querySelector('[aria-selected="true"]');
-  // Hidden behind a page such as Settings, the tabs have no size: the next measurement places the highlight.
-  if (!on || !on.offsetWidth) return;
-  const place = `${on.offsetLeft}|${on.offsetWidth}`;
+  // Hidden behind a page such as Settings, the tabs have no size: the next measurement places the pill.
+  if (!tabs || !tabs.offsetWidth) return;
+  const copy = tabs.cloneNode(true);
+  copy.classList.add('is-measure');
+  copy.removeAttribute('role');
+  copy.setAttribute('aria-hidden', 'true');
+  tabs.after(copy);
+  const on = copy.querySelector('[aria-selected="true"]')?.getBoundingClientRect();
+  const left = copy.getBoundingClientRect().left;
+  copy.remove();
+  if (!on || !on.width) return;
+  const place = `${(on.left - left).toFixed(2)}|${on.width.toFixed(2)}`;
   if (tabs.dataset.place === place) return;
   tabs.dataset.place = place;
   tabs.classList.toggle('glides', glide);
-  tabs.style.setProperty('--x', `${on.offsetLeft}px`);
-  tabs.style.setProperty('--w', `${on.offsetWidth}px`);
+  tabs.style.setProperty('--x', `${on.left - left}px`);
+  tabs.style.setProperty('--w', `${on.width}px`);
 }
 
 // The tabs sit in the title bar, outside the shell, so they are bound once and outlive it.
