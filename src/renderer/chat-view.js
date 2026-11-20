@@ -44,14 +44,18 @@ function avatarEl(id, name, { cls = 'ch-av', deleted = false } = {}) {
   return el;
 }
 
+// A time a Date can hold. Main refuses others from the server, but a cache from before that may still have one, and
+// toISOString() or Intl throws a RangeError for it, which would stop the log from drawing: it shows without a time.
+const isTime = (at) => Number.isFinite(at) && Number.isFinite(new Date(at).getTime());
+
 function timeEl(at, cls = 'ch-time') {
-  const iso = Number.isFinite(at) ? new Date(at).toISOString() : '';
+  const iso = isTime(at) ? new Date(at).toISOString() : '';
   return h('time', { class: cls, datetime: iso, title: longDate(at), text: hhmm(at) });
 }
 
-const dayOf = (at) => (Number.isFinite(at) ? new Intl.DateTimeFormat(getLocale(), { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(at)) : '');
+const dayOf = (at) => (isTime(at) ? new Intl.DateTimeFormat(getLocale(), { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(at)) : '');
 // A retry time to the second: the waits between attempts are seconds long.
-const clockTime = (at) => (Number.isFinite(at) ? new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(at)) : '');
+const clockTime = (at) => (isTime(at) ? new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(new Date(at)) : '');
 const firstChars = (text, n) => {
   const chars = [...String(text || '').replace(/\s+/g, ' ').trim()];
   return chars.length > n ? `${chars.slice(0, n).join('')}…` : chars.join('');
@@ -115,6 +119,8 @@ export function mountView(section, H) {
   let memberCache = null;
   // The connection the unsent rows were drawn for: a queued message waits for it.
   let drawnConnection = null;
+  // Closers of the open dialogs about the open room's messages (Remove message): dropRoom() closes them.
+  const roomDialogs = new Set();
 
   function blank() {
     return {
@@ -237,13 +243,15 @@ export function mountView(section, H) {
     area.hidden = !on;
     compose.hidden = !on;
     empty.hidden = on;
-    banner.hidden = !on || !bannerKey;
+    banner.hidden = !bannerKey || mode === null;
     if (!on) jumpUp.hidden = jumpDown.hidden = true;
   }
 
   // Leaves the open room: its thread, composer, rows, timers and observer entries go. The composer's draft is saved
   // first.
   function dropRoom() {
+    for (const close of [...roomDialogs]) close();
+    roomDialogs.clear();
     closeThread({ restoreFocus: false });
     main.classList.remove('is-preview');
     if (input) input.dispose();
@@ -351,7 +359,7 @@ export function mountView(section, H) {
     main.classList.add('is-preview');
     head.hidden = false;
     area.hidden = true;
-    banner.hidden = true;
+    banner.hidden = !bannerKey;
     jumpUp.hidden = jumpDown.hidden = true;
     empty.hidden = false;
     compose.hidden = false;
@@ -400,13 +408,15 @@ export function mountView(section, H) {
     });
   }
 
-  // { icon, text, action: { label, run } } or null. Shown without motion, its height only while it shows.
+  // { icon, text, action: { label, run } } or null. Shown without motion, its height only while it shows. It shows over
+  // a state too, such as no conversation open in a stopped workspace, where its Start over is the way back (contract
+  // 3.6).
   function setBanner(b) {
     const key = b ? `${b.icon}|${b.text}|${b.action ? b.action.label : ''}` : null;
     if (key === bannerKey) return;
     bannerKey = key;
     banner.textContent = '';
-    banner.hidden = !b || mode !== 'room';
+    banner.hidden = !b || mode === null;
     if (!b) return;
     banner.append(svg(b.icon || 'info'), h('span', { class: 'ch-banner-text', text: b.text }));
     if (b.action) banner.append(h('button', { type: 'button', class: 'link-btn', 'data-ch-banner': '', text: b.action.label, onClick: () => b.action.run() }));
@@ -618,8 +628,9 @@ export function mountView(section, H) {
   // ---------- opening a room ----------
 
   // Opens c of ws (contract 5.4): chatOpen answers from the cache at once and the rest comes as events pushes. at: a
-  // notification's message, which the log scrolls to and outlines.
-  async function open(ws, c, { at = null } = {}) {
+  // notification's message, which the log scrolls to and outlines. focus: the composer takes the focus, for a room
+  // opened by keyboard (desktop-ui 9.3).
+  async function open(ws, c, { at = null, focus = false } = {}) {
     const my = ++token;
     const keepScroll = V.c === c && V.ws === ws && mode === 'room' && at == null ? scroll.scrollTop : null;
     dropRoom();
@@ -634,6 +645,7 @@ export function mountView(section, H) {
     renderHead();
     renderOlder();
     mountComposer();
+    if (focus) input.focus();
     let rv;
     try {
       rv = await api('chatOpen', ws, c, at != null ? { at } : {});
@@ -699,7 +711,11 @@ export function mountView(section, H) {
       } else merge(list);
       V.lo = V.events.length ? V.events[0].seq : p.lo;
       V.hi = p.hi;
-      V.floor = p.floor || 1;
+      let floored = false;
+      if (p.replace) V.floor = p.floor || 1;
+      else floored = applyFloor(p.floor);
+      // A cache made again, or someone joining or leaving: the mention picker asks for the members again.
+      if (p.replace || list.some((e) => e.kind === 'member.joined' || e.kind === 'member.left')) memberCache = null;
       V.room = { ...V.room, head: p.head, floor: p.floor };
       V.loaded = true;
       V.opening = false;
@@ -713,7 +729,7 @@ export function mountView(section, H) {
           T.ev = new Map(mine.map((e) => [e.seq, e]));
           renderThread({ position: 'keep' });
           loadThread();
-        } else if (mine.length) {
+        } else if (mine.length || floored) {
           const end = threadAtEnd();
           for (const e of mine) T.ev.set(e.seq, e);
           renderThread({ position: end ? 'bottom' : 'keep' });
@@ -775,15 +791,35 @@ export function mountView(section, H) {
   function roomChanged(room, { directory = false } = {}) {
     if (mode !== 'room' || !room || room.id !== V.c) return;
     V.room = { ...V.room, ...room };
+    // Main sends a floor that moved without the events when the log shows nothing below it that it pushed: the log
+    // still drops what aged out.
+    const floored = applyFloor(room.floor);
     renderHead();
     if (directory) memberCache = null;
     if (input) input.setPlaceholder(placeholderFor(V.room));
     updateBars();
     if (T) renderThreadHead();
-    if (directory && V.loaded) {
+    if ((directory || floored) && V.loaded) {
       render({ position: 'keep' });
       if (T) renderThread({ position: 'keep' });
     } else updateJumps();
+  }
+
+  // Retention moved the room's floor (contract 3.6, 3.7): what is older leaves the log and the open thread at once,
+  // and the note that older messages were removed takes its place once nothing older can load. True when it moved.
+  function applyFloor(floor) {
+    if (!Number.isSafeInteger(floor) || floor <= V.floor) return false;
+    V.floor = floor;
+    V.events = V.events.filter((e) => e.seq >= floor);
+    V.lo = V.events.length ? V.events[0].seq : V.lo === null ? null : Math.max(V.lo, floor);
+    if (V.lo === null || V.lo <= floor) V.hasOlder = false;
+    for (const seq of [...V.visible]) if (seq < floor) V.visible.delete(seq);
+    if (T) {
+      const root = threadRoot();
+      if (root && root.seq < floor) T.expired = true;
+      for (const seq of [...T.ev.keys()]) if (seq < floor) T.ev.delete(seq);
+    }
+    return true;
   }
 
   // ---------- the log ----------
@@ -1147,26 +1183,35 @@ export function mountView(section, H) {
 
   // Remove (desktop-ui 6.14, contract 3.14): asked first, quoting the message and saying that replies stay, as Android
   // does; the row changes when main's redacted event comes back.
+  // The confirmation belongs to the room it was opened in: it closes when that room leaves the screen (evicted, the
+  // workspace gone or switched, another room opened), so the message it quotes goes with the rest of the log.
   async function removeMessage(row) {
     const room = V.room;
+    const ws = V.ws;
+    const c = V.c;
+    const id = row.id;
     const own = row.actor === H.me();
     const first = String(row.text || '').split(/\r?\n/).find((line) => line.trim()) || '';
     const quote = first.length > 120 ? `${first.slice(0, 119).trimEnd()}…` : first;
     const said = [t(own ? 'chat.remove.body' : 'chat.remove.bodyOther', { name: roomLabel(room), author: nameOf(row.actor) })];
     if (row.replies && row.replies.count) said.push(t('chat.remove.replies'));
+    let close = null;
     const ok = await dialog({
       title: t('chat.remove.title'),
       body: `${quote ? `<p class="ch-remove-quote">${esc(t('chat.remove.quote', { text: quote }))}</p>` : ''}<p>${esc(said.join(' '))}</p>`,
       buttons: [
         { label: t('common.actions.cancel'), value: false },
         { label: t('chat.remove.confirm'), value: true, danger: true }
-      ]
+      ],
+      render: (_, done) => {
+        close = () => done(false);
+        roomDialogs.add(close);
+      }
     });
-    if (!ok) return;
-    const ws = V.ws;
-    const c = V.c;
+    roomDialogs.delete(close);
+    if (!ok || mode !== 'room' || V.ws !== ws || V.c !== c) return;
     try {
-      await api('chatRedact', ws, c, row.id);
+      await api('chatRedact', ws, c, id);
     } catch (err) {
       if (!H.goneError(err, ws, c)) toast(H.errorText(err), 5000);
     }
@@ -1556,11 +1601,20 @@ export function mountView(section, H) {
       onDraft: (draft) => api('chatSaveDraft', ws, c, rootId, draft).catch(() => {})
     });
     renderThread({ position: seq ? 'at' : 'bottom' });
+    syncCover();
     T.input.focus();
     // A bar without a button (the root removed): the header's close or back button, whichever shows.
     if (!thread.contains(document.activeElement)) (getComputedStyle(tClose).display === 'none' ? tBack : tClose).focus({ preventScroll: true });
     loadThread();
   }
+
+  // Below 900px of the view's width the thread covers the conversation (styles.css .ch-thread): what it covers leaves
+  // the focus order and the accessibility tree until the thread closes or docks again (desktop-ui 5.7, 9.3).
+  function syncCover() {
+    const covered = Boolean(T) && !thread.hidden && getComputedStyle(thread).position === 'absolute';
+    if (main.inert !== covered) main.inert = covered;
+  }
+  new ResizeObserver(() => syncCover()).observe(section);
 
   // Closes the thread, saving its draft. restoreFocus: back to the root's row in the main log (desktop-ui 5.7).
   function closeThread({ restoreFocus = true } = {}) {
@@ -1573,6 +1627,7 @@ export function mountView(section, H) {
     if (T.input) T.input.dispose();
     clearTimeout(T.targetTimer);
     T = null;
+    syncCover();
     tLog.textContent = '';
     tNote.textContent = '';
     tOlder.textContent = '';
@@ -1709,7 +1764,8 @@ export function mountView(section, H) {
         area.scrollBy({ top: (e.key === 'PageDown' ? 1 : -1) * area.clientHeight * 0.9, behavior: behavior() });
         return true;
       case 'Enter':
-        if (inMain && current && current.querySelector('.ch-replies')) {
+        // Only on the row itself: Enter on a link in it opens the link.
+        if (inMain && current && e.target === current && current.querySelector('.ch-replies')) {
           openThread(current.dataset.id);
           return true;
         }

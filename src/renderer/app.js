@@ -1158,7 +1158,7 @@ function bindSidebar() {
     if (t.dataset.mode) return setMode(t.dataset.mode);
     if (calendarMode() && calendar.sidebarClick(t)) return;
     if (meetingMode() && meeting.sidebarClick(t)) return;
-    if (chatMode() && chat.sidebarClick(t)) return;
+    if (chatMode() && chat.sidebarClick(t, e)) return;
     switch (t.dataset.action) {
       case 'accounts':
         return accountMenu(t);

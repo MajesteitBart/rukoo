@@ -133,19 +133,28 @@ function wsDialog(opts) {
 
 // A person's menu inside a dialog. The dialog takes Escape on the document before the menu sees it, which would close
 // both; this listener on the window comes first, so Escape closes only the menu and the focus goes back to its button.
+// One listener serves the menu on screen: a menu closed by a click leaves its listener until the next key or the next
+// menu, which takes its place.
+let dialogMenuKey = null;
 function menuInDialog(anchor, items) {
+  if (dialogMenuKey) window.removeEventListener('keydown', dialogMenuKey, true);
   showMenu(anchor, items, { align: 'right' });
   const onKey = (e) => {
     if (!menuOpen()) {
-      window.removeEventListener('keydown', onKey, true);
+      stop();
       return;
     }
     if (e.key !== 'Escape') return;
     e.preventDefault();
     e.stopPropagation();
-    window.removeEventListener('keydown', onKey, true);
+    stop();
     closeMenu({ refocus: true });
   };
+  const stop = () => {
+    window.removeEventListener('keydown', onKey, true);
+    if (dialogMenuKey === onKey) dialogMenuKey = null;
+  };
+  dialogMenuKey = onKey;
   window.addEventListener('keydown', onKey, true);
 }
 
@@ -499,10 +508,12 @@ export async function invitePeople() {
     kept = true;
     showKept(scrim);
   };
-  const leaveOk = () =>
-    !link ||
-    kept ||
-    dialog({
+  // While the link is being made the dialog stays: closed then, the one-time link would come back to nothing while the
+  // invitation stays open on the server. Once it shows, closing asks first until it is copied.
+  const leaveOk = () => {
+    if (busy) return false;
+    if (!link || kept) return true;
+    return dialog({
       title: t('chat.invite.closeTitle'),
       body: `<p>${esc(t('chat.invite.closeBody'))}</p>`,
       buttons: [
@@ -510,6 +521,7 @@ export async function invitePeople() {
         { label: t('common.actions.close'), value: true }
       ]
     });
+  };
 
   const submit = async (scrim) => {
     if (busy) return;
@@ -1410,13 +1422,14 @@ export async function changeName() {
 // closes stay closed, and where to undo it.
 export async function blockMember(member) {
   const ws = K.CH.ws;
+  const from = { ws, generation: K.CH.generation };
   if (!ws || !member || member === K.me()) return false;
   const name = nameOf(member);
   const ok = await confirmDialog(t('chat.block.title', { name }), t('chat.block.body', { name, workspace: wsName() }), t('chat.block.confirm'), true);
-  if (!ok || ws !== K.CH.ws) return false;
+  if (!ok || ws !== K.CH.ws || from.generation !== K.CH.generation) return false;
   try {
     const res = await api('chatBlock', ws, member);
-    K.setBlocks(res && res.blocks);
+    K.setBlocks(res && res.blocks, from);
     toast(t('chat.block.done', { name }));
     return true;
   } catch (err) {
@@ -1428,11 +1441,12 @@ export async function blockMember(member) {
 // Unblock: no question; closed DMs stay closed.
 export async function unblockMember(member) {
   const ws = K.CH.ws;
+  const from = { ws, generation: K.CH.generation };
   if (!ws || !member) return false;
   const name = nameOf(member);
   try {
     const res = await api('chatUnblock', ws, member);
-    K.setBlocks(res && res.blocks);
+    K.setBlocks(res && res.blocks, from);
     toast(t('chat.block.unblocked', { name }));
     return true;
   } catch (err) {

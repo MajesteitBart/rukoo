@@ -245,7 +245,7 @@ test('blocking from the conversation closes it with its bar, and Workspace setti
   await roomMenu(win, 'Block Olga Owner');
   await expect(dialog.locator('h2')).toHaveText('Block Olga Owner?');
   await expect(dialog.locator('p')).toHaveText(
-    "Olga Owner can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from Olga Owner stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
+    "Olga Owner can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Olga Owner isn't told, but may notice that your conversations closed. Mentions from Olga Owner stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
   );
   await dialog.locator('.buttons button').last().click();
   await expect(toast()).toHaveText('Blocked Olga Owner', { timeout: 15000 });

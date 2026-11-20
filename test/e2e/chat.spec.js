@@ -238,7 +238,7 @@ async function roomsReady() {
     .toBe(true);
 }
 
-test('the keyboard stays on a sidebar row when the sidebar draws again, and when Enter opens its room', async () => {
+test('the keyboard stays on a sidebar row when the sidebar draws again; Enter opens its room in the composer, a click stays on the row', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const review = await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
   await server.post(olga, ws.id, ws.general, 'Morning');
@@ -256,12 +256,123 @@ test('the keyboard stays on a sidebar row when the sidebar draws again, and when
   await expect(row.locator('.count')).toHaveText('1', { timeout: 10000 });
   await expect(row).toHaveClass(/is-unread/);
   expect(await focused()).toBe(review.id);
-  // Enter opens the room; the redraws for the open room and its read leave the focus on the row.
+  // Enter opens the room with the focus in its composer, to write (desktop-ui 9.3); the redraws for the open room and
+  // its read leave it there.
+  const inComposer = () => win.evaluate(() => Boolean(document.activeElement?.matches('section.chat .ch-main .ch-input')));
   await win.keyboard.press('Enter');
   await expect(pane().locator('.ch-title')).toHaveText('review');
   await expect(row).toHaveAttribute('aria-current', 'page');
   await expect(row).not.toHaveClass(/is-unread/, { timeout: 10000 });
-  expect(await focused()).toBe(review.id);
+  expect(await inComposer()).toBe(true);
+  // A click opens the room and leaves the focus on its row.
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  await expect(roomRow(win, 'general')).toHaveAttribute('aria-current', 'page');
+  await win.waitForTimeout(300);
+  expect(await focused()).toBe(ws.general);
+});
+
+test('a workspace that needs a newer Rukoo keeps its upgrade state when a conversation is clicked', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  // Main parks the workspace as after a 426 from its server.
+  await app.evaluate((_, id) => global.__semChat.park(id), ws.id);
+  const empty = pane().locator('.ch-empty');
+  await expect(empty.locator('[data-ch-empty="updates"]')).toBeVisible({ timeout: 10000 });
+  const title = await empty.locator('.ch-empty-title').textContent();
+  await roomRow(win, 'review').click();
+  await expect(roomRow(win, 'review')).toHaveAttribute('aria-current', 'page');
+  await win.waitForTimeout(1000);
+  await expect(empty.locator('.ch-empty-title')).toHaveText(title);
+  await expect(empty.locator('[data-ch-empty="updates"]')).toBeVisible();
+  await expect(pane().locator('.ch-head')).toBeHidden();
+  await expect(pane().locator('.ch-main .ch-input')).toBeHidden();
+});
+
+test('a stopped workspace with no conversation open still offers Start over, which loads it again', async () => {
+  const olga = await server.seedAccount();
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
+  // Bart is in none of its conversations, so nothing opens: he left general, which joining gave him.
+  await server.seedMember(ws, bart, 'Bart', { joinGeneral: false });
+  const left = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: bart.token });
+  expect([200, 204]).toContain(left.status);
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  const empty = pane().locator('.ch-empty');
+  await expect(win.locator('.sidebar .ch-ws-switch')).toBeVisible({ timeout: 15000 });
+  await expect(empty).toBeVisible({ timeout: 15000 });
+  await expect(empty.locator('.ch-empty-title')).toHaveText('Nothing open', { timeout: 15000 });
+  await expect(pane().locator('.ch-head')).toBeHidden();
+  // Main stops the workspace as after a 409 history_regressed.
+  await app.evaluate((_, id) => {
+    const svc = global.__semChat;
+    svc.store.updateWs(id, { state: 'quarantined' });
+    svc.stateChanged();
+  }, ws.id);
+  const banner = pane().locator('.ch-banner');
+  await expect(banner).toBeVisible({ timeout: 10000 });
+  await expect(banner.locator('.ch-banner-text')).toHaveText(/^Rukoo stopped syncing Acme/);
+  await expect(empty).toBeVisible();
+  await expect(empty.locator('.ch-empty-title')).toHaveText('Nothing open');
+  await banner.locator('[data-ch-banner]').click();
+  await expect(banner).toBeHidden({ timeout: 15000 });
+  await expect.poll(() => win.evaluate((id) => window.mail.call('chatState').then((s) => s.workspaces.find((w) => w.id === id)?.status), ws.id), { timeout: 15000 }).not.toBe('quarantined');
+});
+
+test('messages that age out leave the open conversation at once, with the note that older ones were removed', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  for (const text of ['Oldest note', 'Middle note', 'Newest note']) await server.post(olga, ws.id, ws.general, text);
+  // The window has no focus, so nothing is read: a read would bring the room's real floor back from the feed.
+  ({ app, win } = await launch(server, { dataDir, focus: false }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(message('Newest note')).toBeVisible({ timeout: 15000 });
+  await expect(message('Oldest note')).toBeVisible();
+  await expect(log().locator('li.ch-intro')).toHaveCount(1);
+  const floor = Number(await message('Middle note').getAttribute('data-seq'));
+  // Retention moved general's floor to the middle message (contract 8.1: the local server can't do that on demand).
+  // Main sends the room's row alone when the log shows nothing below it that main pushed; the renderer has to drop
+  // what aged out itself.
+  await app.evaluate(
+    (_, { wsId, room, floorSeq }) => {
+      const svc = global.__semChat;
+      svc.store.setRoomFields(wsId, room, { floor: floorSeq });
+      svc.roomsChanged(wsId, [room]);
+    },
+    { wsId: ws.id, room: ws.general, floorSeq: floor }
+  );
+  await expect(message('Oldest note')).toHaveCount(0);
+  await expect(message('Middle note')).toBeVisible();
+  await expect(message('Newest note')).toBeVisible();
+  await expect(log().locator('li.ch-intro')).toHaveCount(0);
+  await expect(log().locator('li.ch-floor')).toHaveCount(1);
+});
+
+test('a cached message with a time a Date cannot hold still shows, without a time', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  await server.post(olga, ws.id, ws.general, 'From the far future');
+  await server.post(olga, ws.id, ws.general, 'From today');
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(message('From today')).toBeVisible({ timeout: 15000 });
+  const seq = Number(await message('From the far future').getAttribute('data-seq'));
+  // A cache from before main refused such times holds one past 8.64e15 ms, where toISOString() throws.
+  await app.evaluate((_, [w, c, s]) => global.__semChat.store.run('UPDATE event SET at = ? WHERE ws = ? AND room = ? AND seq = ?', 8.64e15 + 1, w, c, s), [ws.id, ws.general, seq]);
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  await expect(message('From the far future')).toBeVisible({ timeout: 10000 });
+  await expect(message('From today')).toBeVisible();
+  await expect(message('From the far future').locator('time').first()).toHaveAttribute('datetime', '');
 });
 
 test('older messages load when scrolling up, with the view kept in place, down to the note that older ones were removed', async () => {

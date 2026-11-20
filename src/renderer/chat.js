@@ -250,7 +250,10 @@ export function init(context) {
       api('chatState')
         .then(applyState)
         .catch(() => {}),
-    setBlocks: (blocks) => {
+    // from: { ws, generation } of the workspace the call was made in. A late answer for another workspace, or for this
+    // one before a switch away and back, is dropped: it would replace that workspace's list with this one's.
+    setBlocks: (blocks, from = null) => {
+      if (from && (from.ws !== CH.ws || from.generation !== CH.generation)) return;
       if (Array.isArray(blocks)) CH.blocks = new Set(blocks.map((b) => b.member));
       redrawSide();
       // A closed DM's bar says who you blocked and what you can do about it.
@@ -278,7 +281,7 @@ export function show() {
   ensureView();
   renderPane();
   if (CH.ws && CH.view && !CH.openId && !CH.goneRoom && !CH.preview) openDefault();
-  else if (CH.openId && CH.view) view.open(CH.ws, CH.openId, { refresh: true });
+  else if (CH.openId && CH.view && !upgradeNeeded()) view.open(CH.ws, CH.openId, { refresh: true });
   maybeTakeJoin();
 }
 
@@ -552,11 +555,13 @@ function roomRow(room) {
   return `<button class="${cls}" data-ch-open="${esc(room.id)}" title="${esc(name)}" aria-label="${esc(label)}"${active ? ' aria-current="page"' : ''}>${icon}<span class="label">${esc(name)}</span>${badge}</button>`;
 }
 
-// A click in the sidebar; false when it isn't chat's.
-export function sidebarClick(btn) {
+// A click in the sidebar; false when it isn't chat's. e: the click, whose detail is 0 when Enter or Space pressed the
+// button.
+export function sidebarClick(btn, e = null) {
   if (btn.dataset.chOpen) {
-    // The focus stays on the row, by click and by Enter: the redraw puts it on the row's new copy (keepSideFocus).
-    openRoom(btn.dataset.chOpen);
+    // By click the focus stays on the row (the redraw puts it on the row's new copy, keepSideFocus); by keyboard it goes
+    // to the composer, to write (desktop-ui 9.3).
+    openRoom(btn.dataset.chOpen, { focus: Boolean(e) && e.detail === 0 });
     return true;
   }
   switch (btn.dataset.chSide) {
@@ -798,7 +803,7 @@ function openDefault() {
   renderPane();
 }
 
-export function openRoom(id, { at = null } = {}) {
+export function openRoom(id, { at = null, focus = false } = {}) {
   if (!CH.rooms.has(id)) return;
   ensureView();
   CH.goneRoom = null;
@@ -807,8 +812,12 @@ export function openRoom(id, { at = null } = {}) {
   saveOpen(CH.ws, id);
   redrawSide();
   renderPane();
-  view.open(CH.ws, id, { at });
+  // A workspace that needs a newer Rukoo keeps its upgrade state: the room is chosen, and opens once that state goes.
+  if (upgradeNeeded()) return;
+  view.open(CH.ws, id, { at, focus });
 }
+
+const upgradeNeeded = () => summary()?.status === 'upgrade';
 
 // ---------- drawing ----------
 

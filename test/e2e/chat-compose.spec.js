@@ -354,12 +354,30 @@ test('replying in a thread: docked at 1400px, over the log at 900px, the reply i
   await expect(pane()).toHaveAttribute('data-thread', 'closed');
   expect(await win.evaluate(() => document.activeElement?.dataset?.id || null)).toBe(root.messageId);
 
+  // Docked, the conversation beside it stays in reach.
+  const covered = win.locator('section.chat .ch-main');
+  await expect(covered).toHaveJSProperty('inert', false);
+
   // At 900px the view is narrower than 900px: the thread covers the log, with a back button.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 950));
   await expect.poll(() => win.evaluate(() => window.innerWidth)).toBeLessThan(910);
   await top.locator('.ch-replies').click();
   await expect(threadPane()).toBeVisible();
   await expect(threadPane()).toHaveCSS('position', 'absolute');
+  // What it covers leaves the focus order: Shift+Tab from its composer stays out of the conversation under it.
+  await expect(covered).toHaveJSProperty('inert', true);
+  for (let i = 0; i < 6; i++) {
+    await win.keyboard.press('Shift+Tab');
+    expect(await win.evaluate(() => Boolean(document.activeElement?.closest('section.chat .ch-main')))).toBe(false);
+  }
+  await composer(win, { thread: true }).focus();
+  // Wide again, it docks and the conversation comes back in reach; narrow, it covers it again.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1400, 950));
+  await expect(threadPane()).toHaveCSS('position', 'relative');
+  await expect(covered).toHaveJSProperty('inert', false);
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 950));
+  await expect(threadPane()).toHaveCSS('position', 'absolute');
+  await expect(covered).toHaveJSProperty('inert', true);
   await expect(threadPane().locator('.ch-thread-back')).toBeVisible();
   await expect(threadPane().locator('.ch-thread-back')).toHaveAttribute('aria-label', 'Back to #general');
   await expect(threadPane().locator('.ch-thread-close')).toBeHidden();
@@ -370,7 +388,133 @@ test('replying in a thread: docked at 1400px, over the log at 900px, the reply i
   await expect(message(threadLog(), "I'm in")).toBeVisible();
   await threadPane().locator('.ch-thread-back').click();
   await expect(threadPane()).toBeHidden();
+  await expect(covered).toHaveJSProperty('inert', false);
   expect(await win.evaluate(() => document.activeElement?.dataset?.id || null)).toBe(root.messageId);
+});
+
+test('a send main refuses after a switch to another room puts its text back in the draft, and one refused while typing on keeps both', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  // Test hook: main's chatSend waits for the spec, then refuses as when the message couldn't be written to disk.
+  const hold = () =>
+    app.evaluate(() => {
+      const outbox = global.__semChat.outbox;
+      delete global.__refuseSend;
+      outbox.send = () =>
+        new Promise((_, reject) => {
+          global.__refuseSend = () => {
+            delete outbox.send;
+            reject(Object.assign(new Error('not saved'), { code: 'not_saved' }));
+          };
+        });
+    });
+  const waiting = () => expect.poll(() => app.evaluate(() => typeof global.__refuseSend)).toBe('function');
+  const draftOf = () => win.evaluate(([w, c]) => window.mail.call('chatDraft', w, c, null).then((d) => (d ? d.text : null)), [ws.id, ws.general]);
+
+  await hold();
+  await write('Keep this message, please');
+  await expect(composer(win)).toHaveJSProperty('value', '');
+  await waiting();
+  // Bart goes on to review before main answers; the refusal still keeps the text, in general's draft.
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await app.evaluate(() => global.__refuseSend());
+  await expect.poll(draftOf, { timeout: 10000 }).toBe('Keep this message, please');
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  await expect(composer(win)).toHaveJSProperty('value', 'Keep this message, please', { timeout: 10000 });
+
+  // Refused while Bart writes the next one: the refused text comes back first, then what he wrote since.
+  await hold();
+  await composer(win).click();
+  await win.keyboard.press('End');
+  await win.keyboard.press('Enter');
+  await expect(composer(win)).toHaveJSProperty('value', '');
+  await waiting();
+  await win.keyboard.type('Next one');
+  await app.evaluate(() => global.__refuseSend());
+  await expect(composer(win)).toHaveJSProperty('value', 'Keep this message, please\nNext one');
+  await expect.poll(draftOf, { timeout: 10000 }).toBe('Keep this message, please\nNext one');
+  expect(await serverMessages(server, olga, ws.id, ws.general, 'Keep this message, please')).toHaveLength(0);
+});
+
+test('Enter on a link in a message with replies opens the link, and Enter on the message opens its thread', async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  const root = await server.post(olga, ws.id, ws.general, 'The agenda is at https://example.com/agenda');
+  await server.post(olga, ws.id, ws.general, 'Looks good', { root: root.messageId });
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  await app.evaluate(({ shell }) => {
+    global.__opened = [];
+    shell.openExternal = async (url) => {
+      global.__opened.push(url);
+    };
+  });
+  const top = message(log(), 'The agenda is at');
+  await expect(top.locator('.ch-replies-n')).toHaveText('1 reply', { timeout: 15000 });
+  await top.locator('a.ch-link').focus();
+  await win.keyboard.press('Enter');
+  await expect.poll(() => app.evaluate(() => global.__opened)).toEqual(['https://example.com/agenda']);
+  await expect(threadPane()).toBeHidden();
+  await top.focus();
+  await win.keyboard.press('Enter');
+  await expect(threadPane()).toBeVisible();
+  await expect(message(threadLog(), 'Looks good')).toBeVisible();
+});
+
+test('a removal confirmation closes when access to its channel goes, and removes nothing', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const review = await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const made = await server.call('PATCH', `/v1/workspaces/${ws.id}/channels/${review.id}/members/${bartMe.id}`, { token: olga.token, body: { role: 'manager' } });
+  expect(made.status).toBe(200);
+  await server.post(olga, ws.id, review.id, 'Olga wrote this');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  await roomRow(win, 'review').click();
+  const hers = message(log(), 'Olga wrote this');
+  await expect(hers).toBeVisible({ timeout: 15000 });
+  // As a manager of review Bart may remove Olga's message: the confirmation quotes it.
+  await hers.click({ button: 'right' });
+  await win.locator('.menu [role="menuitem"]', { hasText: 'Remove message' }).click();
+  const dialog = win.locator('.scrim .dialog');
+  await expect(dialog.locator('h2')).toHaveText('Remove this message?');
+  await expect(dialog.locator('.ch-remove-quote')).toHaveText('“Olga wrote this”');
+  // Olga takes Bart out of review: the conversation goes, and its confirmation with what it quotes.
+  const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${review.id}/members/${bartMe.id}`, { token: olga.token });
+  expect([200, 204]).toContain(out.status);
+  await expect(pane().locator('[data-ch-empty="gone-ok"]')).toBeVisible({ timeout: 15000 });
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  await expect(win.getByText('Olga wrote this')).toHaveCount(0);
+  expect((await serverMessages(server, olga, ws.id, review.id, 'Olga wrote this')).length).toBe(1);
+});
+
+test('the mention picker drops someone taken out of the channel and offers who came in, the member count the same', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const zoe = await server.seedMember(ws, await server.seedAccount(), 'Zoë');
+  const yan = await server.seedMember(ws, await server.seedAccount(), 'Yannick');
+  const review = await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id, zoe.id] });
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  const offered = () => win.locator('.ch-suggest [role="option"] .mention-name').allTextContents().then((names) => names.sort());
+  await write('@', { send: false });
+  await expect.poll(offered, { timeout: 10000 }).toEqual(['Olga Owner', 'Zoë']);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.ch-suggest')).toHaveCount(0);
+  // Olga swaps Zoë for Yannick: review still has three members.
+  const removed = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${review.id}/members/${zoe.id}`, { token: olga.token });
+  expect([200, 204]).toContain(removed.status);
+  const added = await server.call('POST', `/v1/workspaces/${ws.id}/channels/${review.id}/members`, { token: olga.token, body: { member: yan.id } });
+  expect([200, 201, 204]).toContain(added.status);
+  await expect(log().locator('li.ch-sys', { hasText: 'Yannick' })).toBeVisible({ timeout: 15000 });
+  await expect(pane().locator('.ch-members-n')).toHaveText('3');
+  await composer(win).focus();
+  await win.keyboard.press('End');
+  await win.keyboard.type(' @');
+  await expect.poll(offered, { timeout: 10000 }).toEqual(['Olga Owner', 'Yannick']);
 });
 
 test('removing a message asks first, shows "Message removed" here, and Olga sees it removed', async () => {

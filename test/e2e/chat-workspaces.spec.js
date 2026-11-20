@@ -152,6 +152,140 @@ test('closing a new link before copying it asks, the invitation stays open, and 
   await expect(win.locator('.scrim')).toHaveCount(0);
 });
 
+test('Invite people stays open while its link is made, and Tab from Done goes round the controls that show', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
+  await ready(bart);
+  await expect(roomRow(win, 'general')).toBeVisible({ timeout: 15000 });
+  // Test hook: main holds the new invitation's answer until the spec lets it go.
+  await app.evaluate(() => {
+    const manage = global.__semChat.manage;
+    const make = Object.getPrototypeOf(manage).createInvite;
+    manage.createInvite = function (...args) {
+      return new Promise((resolve, reject) => {
+        global.__releaseInvite = () => {
+          delete manage.createInvite;
+          make.apply(this, args).then(resolve, reject);
+        };
+      });
+    };
+  });
+  await workspaceMenu(win, 'Invite people');
+  const dialog = dialogBox(win);
+  await dialog.locator('.buttons button').last().click();
+  await expect.poll(() => app.evaluate(() => typeof global.__releaseInvite)).toBe('function');
+  // Escape and a click beside the dialog while the link is made leave it open: the link shows only once.
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await win.locator('.scrim').last().click({ position: { x: 4, y: 300 } });
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await app.evaluate(() => global.__releaseInvite());
+  const field = dialog.locator('[data-step="made"] [name="link"]');
+  await expect(field).toBeVisible({ timeout: 15000 });
+  expect((await serverGet(server, bart, ws.id, '/invites')).invites).toHaveLength(1);
+  // Tab from Done goes to the link, the first control that shows (the step that made it is hidden), and Shift+Tab
+  // from there back to Done.
+  const active = () => win.evaluate(() => document.activeElement?.getAttribute('name') || document.activeElement?.textContent || null);
+  await dialog.locator('.buttons button', { hasText: 'Done' }).focus();
+  await win.keyboard.press('Tab');
+  expect(await active()).toBe('link');
+  await win.keyboard.press('Shift+Tab');
+  expect(await active()).toBe('Done');
+  // Open invitations' summary is in the order too.
+  await field.focus();
+  await win.keyboard.press('Tab');
+  await win.keyboard.press('Tab');
+  expect(await active()).toBe('Open invitations');
+  // Now Escape asks first, as the link isn't copied.
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim').last().locator('h2')).toHaveText('Close without copying the link?');
+});
+
+test("a late answer to blocking someone in one workspace doesn't replace the block list of the next", async () => {
+  const { olga, bart, ws } = await twoPeople(server);
+  await server.post(olga, ws.id, ws.general, 'Hello from Acme');
+  // Beta, where Bart blocked Zed.
+  const zed = await server.seedAccount();
+  const beta = await server.seedWorkspace(zed, { name: 'Beta', displayName: 'Zed' });
+  await server.seedMember(beta, bart, 'Bart');
+  await server.post(zed, beta.id, beta.general, 'Hello from Beta');
+  await server.block(bart, beta.id, beta.me.id);
+  await ready(bart);
+  await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
+  const row = (text) => pane().locator('.ch-log li.ch-msg').filter({ has: win.locator('.ch-text', { hasText: text }) });
+  const menuOf = async (text) => {
+    await row(text).click({ button: 'right' });
+    const items = await win.locator('.menu [role="menuitem"]').allTextContents();
+    await win.keyboard.press('Escape');
+    return items;
+  };
+  await expect(row('Hello from Acme')).toBeVisible({ timeout: 15000 });
+  // Test hook: main holds the block's answer until the spec lets it go.
+  await app.evaluate(() => {
+    const manage = global.__semChat.manage;
+    const block = Object.getPrototypeOf(manage).block;
+    manage.block = function (...args) {
+      return new Promise((resolve, reject) => {
+        global.__releaseBlock = () => {
+          delete manage.block;
+          return block.apply(this, args).then(
+            (r) => (resolve(r), true),
+            (e) => (reject(e), false)
+          );
+        };
+      });
+    };
+  });
+  await row('Hello from Acme').click({ button: 'right' });
+  await menuItem(win, 'Block Olga Owner').click();
+  await dialogBox(win).locator('.buttons button').last().click();
+  await expect.poll(() => app.evaluate(() => typeof global.__releaseBlock)).toBe('function');
+  // Bart goes to Beta before the answer comes: Zed is blocked there, so his message offers no Block.
+  await workspaceMenu(win, 'Beta');
+  await expect(switcherName()).toHaveText('Beta', { timeout: 15000 });
+  await expect(row('Hello from Beta')).toBeVisible({ timeout: 15000 });
+  expect(await menuOf('Hello from Beta')).not.toContain('Block Zed');
+  expect(await app.evaluate(() => global.__releaseBlock())).toBe(true);
+  await win.waitForTimeout(500);
+  expect(await menuOf('Hello from Beta')).not.toContain('Block Zed');
+  // Acme has the block on the server all the same.
+  expect((await serverGet(server, bart, ws.id, '/blocks')).blocks.map((b) => b.member)).toEqual([ws.me.id]);
+});
+
+test('closing a member menu in a dialog with the mouse leaves no key listener behind', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
+  await server.seedMember(ws, await server.seedAccount(), 'Mila Bakker');
+  await ready(bart);
+  await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
+  const cdp = await win.context().newCDPSession(win);
+  const keyListeners = async () => {
+    const { result } = await cdp.send('Runtime.evaluate', { expression: 'window' });
+    const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId });
+    return listeners.filter((l) => l.type === 'keydown').length;
+  };
+  await workspaceMenu(win, 'Members');
+  const dialog = dialogBox(win);
+  const person = dialog.locator('.ch-person', { hasText: 'Mila Bakker' }).locator('[data-person]');
+  await expect(person).toBeVisible({ timeout: 15000 });
+  const before = await keyListeners();
+  for (let i = 0; i < 5; i++) {
+    await person.click();
+    await expect(win.locator('.menu')).toBeVisible();
+    // A click elsewhere in the dialog closes the menu.
+    await dialog.locator('h2').click();
+    await expect(win.locator('.menu')).toHaveCount(0);
+  }
+  expect(await keyListeners()).toBeLessThanOrEqual(before + 1);
+  // Escape still closes a menu alone, and the dialog with the next one.
+  await person.click();
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.menu')).toHaveCount(0);
+  await expect(win.locator('.scrim')).toHaveCount(1);
+  await win.keyboard.press('Escape');
+  await expect(win.locator('.scrim')).toHaveCount(0);
+});
+
 test('an admin who manages no channel is told how to invite a guest, and New channel opens Make a channel', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   await server.call('PATCH', `/v1/workspaces/${ws.id}/members/${bartMe.id}`, { token: olga.token, body: { role: 'admin' } });

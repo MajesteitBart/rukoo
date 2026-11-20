@@ -137,6 +137,10 @@ export function mountChatInput(container, opts = {}) {
   let pickSeq = 0;
   let draftTimer = null;
   let savedDraft = '';
+  // The draft on disk as this composer last wrote or loaded it (parts, or null for none), and how many times it wrote
+  // one: a send in flight compares the count to know whether the draft it leaves behind is still the one on disk.
+  let diskParts = null;
+  let draftWrites = 0;
   const history = { list: [{ parts: [], caret: 0 }], at: 0, type: '', last: 0, from: null };
 
   function setPlaceholder(placeholder, label = placeholder) {
@@ -314,10 +318,17 @@ export function mountChatInput(container, opts = {}) {
   function flushDraft() {
     clearTimeout(draftTimer);
     draftTimer = null;
-    const d = draftOf(current());
+    const parts = current();
+    const d = draftOf(parts);
     const key = draftKey(d);
     if (key === savedDraft) return;
-    savedDraft = key;
+    writeDraft(d ? parts : null);
+  }
+  function writeDraft(parts) {
+    const d = parts ? draftOf(parts) : null;
+    savedDraft = draftKey(d);
+    diskParts = d ? parts : null;
+    draftWrites++;
     if (opts.onDraft) opts.onDraft(d);
   }
 
@@ -327,8 +338,10 @@ export function mountChatInput(container, opts = {}) {
     updatePicker();
   }
 
-  // Enter and Ctrl+Enter: the message goes. The input empties at once; when main can't take it (it couldn't be saved,
-  // say), the text comes back as it was.
+  // Enter and Ctrl+Enter: the message goes. The input empties at once, and the saved draft stays until main has the
+  // message on disk (contract 3.8): then it goes, unless a newer draft was saved meanwhile. When main can't take it (it
+  // couldn't be saved, say), the text comes back: in the input, before what was typed since, or in the saved draft when
+  // the composer is gone, so it is never lost.
   function submit() {
     if (state.composing || state.disposed) return;
     const parts = current();
@@ -341,17 +354,30 @@ export function mountChatInput(container, opts = {}) {
     spaceAfter = null;
     clearTimeout(draftTimer);
     draftTimer = null;
+    // An empty input is the draft from now on, so a draft of nothing isn't written; the old one waits for the answer.
     savedDraft = '';
     updateSend();
-    if (opts.onDraft) opts.onDraft(null);
+    const writes = draftWrites;
     Promise.resolve()
       .then(() => opts.onSend && opts.onSend(wire))
-      .catch(() => {
-        if (state.disposed || current().length) return;
-        render(parts, caret);
-        resetHistory();
-        changed();
-      });
+      .then(
+        () => {
+          // Nothing written since the send: the draft on disk is the one from before it, this message, so it goes.
+          if (draftWrites === writes) writeDraft(null);
+        },
+        () => {
+          // What was written since the send: still in the input, or on disk once the composer went.
+          const since = state.disposed ? (draftWrites === writes ? null : diskParts) : current();
+          const back = since && since.length ? mergedParts([...parts, '\n', ...since]) : parts;
+          if (state.disposed) {
+            if (opts.onDraft) opts.onDraft(draftOf(back));
+            return;
+          }
+          render(back, since && since.length ? partsText(back).length : caret);
+          resetHistory();
+          changed();
+        }
+      );
   }
 
   // Backspace right after a chip and Delete right before one take it off whole.
@@ -642,7 +668,10 @@ export function mountChatInput(container, opts = {}) {
     render(list, partsText(list).length);
     resetHistory();
     if (dirty) scheduleDraft();
-    else savedDraft = draftKey(draftOf(list));
+    else {
+      savedDraft = draftKey(draftOf(list));
+      diskParts = draftOf(list) ? list : null;
+    }
     updateSend();
   }
 

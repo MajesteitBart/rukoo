@@ -446,6 +446,8 @@ export function setSegmented(el, value) {
 // A button value that keeps the dialog open, for a form that found something to fix.
 export const KEEP_OPEN = Symbol('keep-open');
 
+const TABBABLE = 'button, input, textarea, select, summary, a[href], [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
 // beforeClose(value): asked before Escape, a click outside or a button closes the dialog; false, or a promise of
 // false, keeps it open. The done that render gets closes without asking.
 export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false, beforeClose = null }) {
@@ -486,9 +488,10 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
         e.stopPropagation();
         tryClose(null);
       }
-      // Keep Tab inside the dialog.
+      // Keep Tab inside the dialog, among what Tab can reach now: a step or section that is hidden, and what a closed
+      // <details> holds, take no focus, and a <summary> or a link does.
       if (e.key === 'Tab') {
-        const items = [...scrim.querySelectorAll('button, input, textarea, select')].filter((x) => !x.disabled);
+        const items = [...scrim.querySelectorAll(TABBABLE)].filter((x) => !x.disabled && x.tabIndex >= 0 && x.getClientRects().length > 0 && !x.closest('[inert]'));
         if (!items.length) return;
         const first = items[0];
         const last = items[items.length - 1];
