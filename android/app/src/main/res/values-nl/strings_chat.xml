@@ -192,6 +192,9 @@
     <string name="chat_msg_send_again_body">Als het eerste toch is aangekomen, zien mensen het twee keer.</string>
     <string name="chat_msg_waiting_turn">Wacht op het bericht hierboven</string>
     <string name="chat_msg_send_without_mentions">Versturen zonder vermeldingen</string>
+    <string name="chat_msg_send">Versturen</string>
+    <string name="chat_msg_retry_at">nieuwe poging om %1$s</string>
+    <string name="chat_msg_discarded">Bericht weggegooid</string>
 
     <!-- chat.remove.* -->
     <string name="chat_remove_title">Dit bericht verwijderen?</string>

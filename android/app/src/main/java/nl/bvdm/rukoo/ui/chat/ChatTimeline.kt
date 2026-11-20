@@ -53,6 +53,11 @@ object ChatTimeline {
         override val key = "new"
     }
 
+    /** In a thread, between its first message and the replies: how many replies there are (desktop-ui 5.7). */
+    data class Count(val count: Int) : Row {
+        override val key = "count"
+    }
+
     /** A system event, such as a join or a rename. */
     data class Sys(
         val id: String,
@@ -285,6 +290,11 @@ object ChatTimeline {
         for (e in shown) {
             if (e.isMessage) {
                 addMessage(e.id, e.seq, e.id, null, e.actor, e.at, e.root, e.text, e.mentions, e.redacted || e.text == null, null, null, null)
+                // A thread's first message, then how many replies follow; the first reply starts a group of its own.
+                if (root != null && e.id == root) {
+                    rows += Count(shown.count { it.root == root })
+                    prev = null
+                }
             } else {
                 sysKind(e)?.let { addSys(e, it) }
             }

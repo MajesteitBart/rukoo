@@ -38,12 +38,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -57,6 +58,10 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
@@ -71,6 +76,7 @@ import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkButtonSize
 import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkIconButton
+import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.RkTopBar
 import nl.bvdm.rukoo.ui.components.Spinner
 import nl.bvdm.rukoo.ui.components.rkClickable
@@ -78,7 +84,9 @@ import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.mail.MailDates
 import nl.bvdm.rukoo.ui.mail.rememberMailDates
 import nl.bvdm.rukoo.ui.root.AppViewModel
+import nl.bvdm.rukoo.ui.root.ChatPane
 import nl.bvdm.rukoo.ui.root.ChatSheet
+import nl.bvdm.rukoo.ui.root.RoomOpening
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.lineHeight
 import nl.bvdm.rukoo.ui.theme.medium
@@ -86,6 +94,7 @@ import nl.bvdm.rukoo.ui.theme.rkShadow
 import nl.bvdm.rukoo.ui.theme.semibold
 import nl.bvdm.rukoo.ui.theme.tabular
 import nl.bvdm.rukoo.ui.theme.title
+import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Connection
 import nl.bvdm.rukoo.workspaces.Event
 import nl.bvdm.rukoo.workspaces.Member
@@ -100,10 +109,13 @@ private enum class Older { IDLE, LOADING, FAILED }
 
 /**
  * A conversation (android.md "Conversation", contract §3.9, §3.13, §3.18, §7.4): the room's title and members over its
- * timeline, newest at the bottom. Reply rows open their thread, a top-level message's summary too. The timeline
- * reports the newest message fully in view as read while nothing covers it, loads older messages near the top, and
- * offers a pill to the latest message and one up to the first unread. A stopped workspace shows its banner with Start
- * over, and sending stays off. [twoPane] hides Back, as the list stays beside it.
+ * timeline, newest at the bottom, and the composer under it. Reply rows open their thread, a top-level message's
+ * summary too, and a long press opens a message's menu. The timeline reports the newest message fully in view as read
+ * while nothing covers it, loads older messages near the top, and offers a pill to the latest message and one up to
+ * the first unread. Opened from a notification it shows that message. Where nothing can be sent, a bar takes the
+ * composer's place: a channel not joined yet (with Join), an archived channel, a closed DM (with Start a new
+ * conversation and Remove from list) and a stopped workspace, whose banner has Start over. [twoPane] hides Back, as
+ * the list stays beside it.
  */
 @Composable
 fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = Modifier, twoPane: Boolean = app.twoPane) {
@@ -122,22 +134,26 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
     // Which opening of the room this is (§3.18). It comes with the view model's open(), and the pane keeps it while it
     // slides away after Back, when the view model's has already ended.
     val memo = remember(ws, room) { OpeningMemo() }
-    val opening = openingNow?.takeIf { it.ws == ws && it.room == room }?.count?.also { memo.count = it } ?: memo.count
+    val opening = openingNow?.takeIf { it.ws == ws && it.room == room }?.also { memo.opening = it } ?: memo.opening
     val summary = chat.workspaces.firstOrNull { it.id == ws }
     val roomModel = timeline?.room ?: view?.rooms?.firstOrNull { it.id == room }
+    // A channel opened before joining it (from Browse): no history to read, and Join where the composer goes.
+    val notJoined = if (roomModel == null) view?.channels?.firstOrNull { it.id == room && !it.joined } else null
     val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
     val me = view?.me?.id
     val names = rememberChatNames()
-    val title = roomModel?.let { if (it.kind == RoomKind.DM) names.title(it, members, me) else "#${it.name.orEmpty()}" }.orEmpty()
+    val title = roomModel?.let { if (it.kind == RoomKind.DM) names.title(it, members, me) else "#${it.name.orEmpty()}" }
+        ?: notJoined?.let { "#${it.name}" }.orEmpty()
     val paused = summary?.status == WorkspaceStatus.QUARANTINED
     // The newest message fully in view counts as read while the room is on screen in the resumed app and nothing
     // covers it (§3.9).
     val canRead = screen.foreground && nav.chat.sheet == null && !nav.drawerOpen && nav.overlay == null && !app.chatUi.covered
+    var actionsFor by remember(ws, room) { mutableStateOf<ChatTimeline.Message?>(null) }
 
     Column(modifier.background(c.panel)) {
         RkTopBar(
             title = title,
-            subtitle = roomModel?.let { roomSubtitle(it, chat.host) },
+            subtitle = roomModel?.let { roomSubtitle(it, chat.host) } ?: notJoined?.let { channelSubtitle(it.members, it.visibility) },
             navigation = if (twoPane) null else {
                 { RkIconButton(RukooIcons.Back, stringResource(R.string.common_actions_back), onClick = { app.back() }) }
             },
@@ -152,6 +168,7 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val t = timeline
             when {
+                notJoined != null -> NotJoinedNote(notJoined, summary?.name.orEmpty())
                 roomModel == null && view != null -> EmptyState(stringResource(R.string.chat_errors_gone_conversation), icon = ChatIcons.Bubble)
                 t == null || opening == null || (t.loading && t.events.isEmpty() && t.pending.isEmpty()) ->
                     ChatLoading(stringResource(R.string.chat_empty_loading), Modifier.fillMaxSize())
@@ -169,16 +186,64 @@ fun RoomPane(app: AppViewModel, ws: String, room: String, modifier: Modifier = M
                     host = chat.host,
                     retentionDays = chat.retention?.contentDays,
                     canRead = canRead,
+                    onLongPress = { row -> if (MessageRules.hasActions(row, me, t.room, inThread = false)) actionsFor = row },
                 )
             }
         }
-        if (paused) FooterBar(stringResource(R.string.chat_input_paused, summary.name))
+        val slot = ComposerSlots.of(roomModel, notJoined, paused)
+        val t = timeline
+        when {
+            slot != ComposerSlot.Composer -> ComposerBar(app, ws, slot, roomModel, me, summary?.name.orEmpty(), inThread = false)
+            roomModel != null && t != null -> ChatComposer(
+                app = app,
+                ws = ws,
+                room = roomModel,
+                root = null,
+                draft = t.draft,
+                members = members,
+                me = me,
+                recent = remember(t.events, me) { ComposerSlots.recentAuthors(t.events, me) },
+                placeholder = if (roomModel.kind == RoomKind.DM) {
+                    stringResource(R.string.chat_input_placeholder_direct, title)
+                } else {
+                    stringResource(R.string.chat_input_placeholder_channel, roomModel.name.orEmpty())
+                },
+                pane = ChatPane.ROOM,
+            )
+        }
+        val target = actionsFor
+        if (target != null && roomModel != null) {
+            MessageActionsSheet(
+                app = app,
+                ws = ws,
+                room = roomModel,
+                message = target,
+                me = me,
+                inThread = false,
+                where = title,
+                author = members[target.actor],
+                names = names,
+                onDismiss = { actionsFor = null },
+            )
+        }
     }
 }
 
 /** The last opening of one room a pane saw. */
 private class OpeningMemo {
-    var count: Long? = null
+    var opening: RoomOpening? = null
+}
+
+/** Where a channel not joined yet keeps its history: what it is, and who can see it. */
+@Composable
+private fun NotJoinedNote(channel: Channel, workspace: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        EmptyState(
+            stringResource(R.string.chat_log_start_channel, channel.name),
+            hint = if (channel.visibility == "private") stringResource(R.string.chat_log_start_private) else stringResource(R.string.chat_log_start_public, workspace),
+            icon = if (channel.visibility == "private") ChatIcons.Lock else ChatIcons.Hash,
+        )
+    }
 }
 
 /**
@@ -194,15 +259,16 @@ internal fun timelineSaver(opening: Long): Saver<LazyListState, Any> = listSaver
 
 @Composable
 private fun roomSubtitle(room: Room, host: String): String =
-    if (room.kind == RoomKind.DM) {
-        stringResource(R.string.chat_head_direct, host)
-    } else {
-        val count = pluralStringResource(R.plurals.chat_head_members, room.members, room.members)
-        if (room.visibility == "private") "$count · ${stringResource(R.string.chat_head_private)}" else count
-    }
+    if (room.kind == RoomKind.DM) stringResource(R.string.chat_head_direct, host) else channelSubtitle(room.members, room.visibility)
 
 @Composable
-private fun OfflineBanner() {
+private fun channelSubtitle(members: Int, visibility: String): String {
+    val count = pluralStringResource(R.plurals.chat_head_members, members, members)
+    return if (visibility == "private") "$count · ${stringResource(R.string.chat_head_private)}" else count
+}
+
+@Composable
+internal fun OfflineBanner() {
     val c = Rk.colors
     Text(
         stringResource(R.string.chat_banner_offline),
@@ -210,16 +276,6 @@ private fun OfflineBanner() {
         color = c.text2,
         modifier = Modifier.fillMaxWidth().background(c.field).padding(horizontal = 16.dp, vertical = 8.dp),
     )
-}
-
-/** A quiet bar where the composer goes when nothing can be sent here. */
-@Composable
-internal fun FooterBar(text: String) {
-    val c = Rk.colors
-    Column(Modifier.fillMaxWidth()) {
-        Hairline()
-        Text(text, style = Rk.type.text12_5, color = c.text2, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp))
-    }
 }
 
 /** What a timeline row needs to draw itself. */
@@ -238,6 +294,11 @@ internal class RowContext(
     val onOpenThread: ((String) -> Unit)?,
     val onOpenUrl: (String) -> Unit,
     val reasonText: (String?) -> String,
+    /** A long press on a sent message: its menu. */
+    val onLongPress: ((ChatTimeline.Message) -> Unit)? = null,
+    /** An action under an unsent message. */
+    val onPending: ((ChatTimeline.Message, PendingAction) -> Unit)? = null,
+    val isBusy: (String) -> Boolean = { false },
 )
 
 @Composable
@@ -245,7 +306,7 @@ private fun RoomLog(
     app: AppViewModel,
     ws: String,
     room: String,
-    opening: Long,
+    opening: RoomOpening,
     t: RoomTimeline,
     members: Map<String, Member>,
     blocked: Set<String>,
@@ -255,21 +316,27 @@ private fun RoomLog(
     host: String,
     retentionDays: Int?,
     canRead: Boolean,
+    onLongPress: (ChatTimeline.Message) -> Unit,
 ) {
     val workspaces = app.services.workspaces ?: return
+    val context = LocalContext.current
+    // The opening a notification asked for: the message at [at], once its history reached it.
+    val at = opening.at
+    val reached = opening.reached
     val rows = remember(t, me, blocked) {
         ChatTimeline.rows(t.events, t.pending, me, t.readAtOpen, floor = t.room.floor, hasOlder = t.hasOlder, blocked = blocked, replies = t.replies)
     }
     // Bottom up: the newest row is item 0.
     val items = remember(rows) { rows.asReversed() }
     // Both belong to this opening: a new one starts at the bottom with the New divider still to place.
-    val listState = rememberSaveable(opening, saver = timelineSaver(opening)) { LazyListState() }
-    var placed by rememberSaveable(opening) { mutableStateOf<Long?>(null) }
-    val positioned = placed == opening
+    val count = opening.count
+    val listState = rememberSaveable(count, saver = timelineSaver(count)) { LazyListState() }
+    var placed by rememberSaveable(count) { mutableStateOf<Long?>(null) }
+    val positioned = placed == count
     val scope = rememberCoroutineScope()
     var older by remember(ws, room) { mutableStateOf(Older.IDLE) }
     var lastReported by remember(ws, room) { mutableLongStateOf(0L) }
-    var seen by remember(opening) { mutableLongStateOf(t.readAtOpen) }
+    var seen by remember(count) { mutableLongStateOf(t.readAtOpen) }
     // At the bottom, following new messages; a scroll position kept across a fold may be elsewhere.
     var pinned by remember(listState) { mutableStateOf(listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < STICK_PX) }
     var viewport by remember(listState) { mutableStateOf(0) }
@@ -294,6 +361,13 @@ private fun RoomLog(
         onOpenThread = { root -> app.openThread(root) },
         onOpenUrl = app::openUrl,
         reasonText = { app.chatUi.reasonText(it, app.chatUi.context(ws)) },
+        onLongPress = onLongPress,
+        onPending = { row, action ->
+            row.local?.let { local ->
+                app.chatUi.pendingAction(ws, room, PendingRow(local, row.root, row.text.orEmpty(), row.mentions), action) { copyText(context, app, it) }
+            }
+        },
+        isBusy = app.chatUi::isBusy,
     )
 
     fun loadOlder() {
@@ -334,9 +408,9 @@ private fun RoomLog(
             ) { scope.launch { showDivider(listState, newIndex, viewport) } }
         }
         if (!pinned) {
-            val count = ChatTimeline.newSince(rows, seen, me)
+            val fresh = ChatTimeline.newSince(rows, seen, me)
             JumpPill(
-                if (count > 0) pluralStringResource(R.plurals.chat_log_latest_count, count, count) else stringResource(R.string.chat_log_latest),
+                if (fresh > 0) pluralStringResource(R.plurals.chat_log_latest_count, fresh, fresh) else stringResource(R.string.chat_log_latest),
                 up = false,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             ) {
@@ -351,13 +425,27 @@ private fun RoomLog(
     // The viewport's height, for placing the New divider a third of the way down.
     LaunchedEffect(listState) { snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { viewport = it } }
 
-    // Opening a room with unread messages places the New divider a third of the way down, once per opening. Reading
-    // waits for it, so nothing counts as read from a position the opening didn't choose.
-    LaunchedEffect(rows, viewport, listState) {
-        if (placed == opening || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
+    // Opening a room with unread messages places the New divider a third of the way down, once per opening. Opened
+    // from a notification, the message it showed takes that place once its history reached it, or the oldest loaded
+    // message when the backfill stopped short (§3.7 "Opening at a seq"). Reading waits for it, so nothing counts as
+    // read from a position the opening didn't choose.
+    LaunchedEffect(rows, viewport, listState, reached) {
+        if (placed == count || viewport == 0 || rows.isEmpty()) return@LaunchedEffect
+        if (at != null) {
+            if (!reached) return@LaunchedEffect
+            // Bottom up: the oldest message at or after the seq is the last such item.
+            val i = items.indexOfLast { it is ChatTimeline.Message && it.pending == null && (it.seq ?: 0) >= at }
+            val target = if (i >= 0) i else items.indexOfLast { it is ChatTimeline.Message }
+            if (target > 0) {
+                showDivider(listState, target, viewport, animate = false)
+                pinned = false
+            }
+            placed = count
+            return@LaunchedEffect
+        }
         val i = items.indexOfFirst { it is ChatTimeline.New }
         if (i > 0 && i > (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0)) showDivider(listState, i, viewport, animate = false)
-        placed = opening
+        placed = count
     }
 
     // Follow the user's own scrolling: near the bottom the timeline sticks to new messages, else the Latest pill shows.
@@ -464,6 +552,7 @@ internal fun TimelineRowView(row: ChatTimeline.Row, ctx: RowContext) {
         ChatTimeline.Floor -> CenterNote(pluralStringResource(R.plurals.chat_log_retention_floor, ctx.retentionDays, ctx.retentionDays))
         ChatTimeline.New -> NewDivider()
         is ChatTimeline.Day -> DayDivider(ctx.days.label(row.date, ctx.now))
+        is ChatTimeline.Count -> DayDivider(pluralStringResource(R.plurals.chat_log_replies, row.count, row.count))
         is ChatTimeline.Sys -> CenterNote(sysText(row, ctx))
         is ChatTimeline.Message -> MessageRow(row, ctx)
     }
@@ -569,9 +658,17 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
     val author = ctx.members[row.actor]
     val name = ctx.names.display(author)
     val accent = c.accent
+    val longPress = ctx.onLongPress?.takeIf { row.pending == null && row.id != null }
     Row(
         Modifier
             .fillMaxWidth()
+            .then(
+                if (longPress != null) {
+                    Modifier.rkClickable(RectangleShape, role = null, onLongClickLabel = stringResource(R.string.chat_msg_actions), onLongClick = { longPress(row) }, onClick = {})
+                } else {
+                    Modifier
+                },
+            )
             .then(if (row.mentionsMe) Modifier.drawBehind { drawLine(accent, Offset(1.dp.toPx(), 0f), Offset(1.dp.toPx(), size.height), 2.dp.toPx()) } else Modifier)
             .padding(start = 16.dp, end = 16.dp, top = if (row.head) 8.dp else 1.dp, bottom = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -599,7 +696,7 @@ private fun MessageRow(row: ChatTimeline.Message, ctx: RowContext) {
                 Text(annotated, style = Rk.type.text13_5.lineHeight(1.5f), color = if (row.pending != null) c.text2 else c.text)
             }
             row.replies?.let { r -> ctx.onOpenThread?.let { open -> ReplySummaryRow(r, ctx) { open(row.id!!) } } }
-            row.pending?.let { PendingLine(it, row.reason, ctx) }
+            row.pending?.let { PendingLine(row, it, ctx) }
         }
     }
 }
@@ -693,10 +790,14 @@ private fun ReplySummaryRow(r: ChatTimeline.Replies, ctx: RowContext, onClick: (
     }
 }
 
-/** How a send on its way is doing (contract §5.5): sending after a second, waiting, behind another, held or failed. */
+/**
+ * How a send on its way is doing (contract §5.5): sending after a second, waiting for a connection (with the next try's
+ * time), behind another, held or failed. A held or failed one has its actions under the line (§3.8 "Answers").
+ */
 @Composable
-private fun PendingLine(state: PendingState, reason: String?, ctx: RowContext) {
+private fun PendingLine(row: ChatTimeline.Message, state: PendingState, ctx: RowContext) {
     val c = Rk.colors
+    val reason = row.reason
     var slow by remember(state) { mutableStateOf(state != PendingState.SENDING) }
     if (state == PendingState.SENDING) {
         LaunchedEffect(Unit) {
@@ -705,20 +806,50 @@ private fun PendingLine(state: PendingState, reason: String?, ctx: RowContext) {
         }
     }
     if (!slow) return
-    val (text, danger) = when (state) {
-        PendingState.SENDING -> stringResource(R.string.chat_msg_sending) to false
-        PendingState.QUEUED -> stringResource(R.string.chat_msg_waiting) to false
-        PendingState.WAITING -> stringResource(R.string.chat_msg_waiting_turn) to false
-        PendingState.HELD -> stringResource(if (reason == "stale_grant") R.string.chat_msg_stale_grant else R.string.chat_msg_unknown) to true
-        PendingState.FAILED -> stringResource(R.string.chat_msg_failed, ctx.reasonText(reason)) to true
-    }
-    Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-        when (state) {
-            PendingState.SENDING -> Spinner(size = 12.dp)
-            PendingState.QUEUED, PendingState.WAITING -> RkIcon(RukooIcons.Clock, null, size = 12.dp, tint = c.text3)
-            else -> RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
+    val locale = LocalConfiguration.current.locales[0]
+    val text = when (state) {
+        PendingState.SENDING -> stringResource(R.string.chat_msg_sending)
+        PendingState.QUEUED -> {
+            val next = row.nextAt?.takeIf { it > ctx.now }
+            val waiting = stringResource(R.string.chat_msg_waiting)
+            if (next == null) {
+                waiting
+            } else {
+                val time = remember(next, locale) { DateTimeFormatter.ofLocalizedTime(FormatStyle.MEDIUM).withLocale(locale).format(Instant.ofEpochMilli(next).atZone(ZoneId.systemDefault())) }
+                "$waiting · ${stringResource(R.string.chat_msg_retry_at, time)}"
+            }
         }
-        Text(text, style = Rk.type.text12, color = if (danger) c.danger else c.text3)
+        PendingState.WAITING -> stringResource(R.string.chat_msg_waiting_turn)
+        PendingState.HELD -> stringResource(if (reason == "stale_grant") R.string.chat_msg_stale_grant else R.string.chat_msg_unknown)
+        PendingState.FAILED -> stringResource(R.string.chat_msg_failed, ctx.reasonText(reason))
+    }
+    val danger = state == PendingState.HELD || state == PendingState.FAILED
+    Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
+        Box(Modifier.heightIn(min = 18.dp), contentAlignment = Alignment.Center) {
+            when (state) {
+                PendingState.SENDING -> Spinner(size = 12.dp)
+                PendingState.QUEUED, PendingState.WAITING -> RkIcon(RukooIcons.Clock, null, size = 12.dp, tint = c.text3)
+                else -> RkIcon(RukooIcons.Info, null, size = 12.dp, tint = c.danger)
+            }
+        }
+        Text(text, style = Rk.type.text12.lineHeight(1.4f), color = if (danger) c.danger else c.text3)
+    }
+    val on = ctx.onPending ?: return
+    val actions = MessageRules.pendingActions(state, reason)
+    if (actions.isEmpty()) return
+    val busy = row.local?.let { ctx.isBusy("pending:$it") } == true
+    Row(Modifier.padding(start = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        for (action in actions) {
+            val label = when (action) {
+                PendingAction.SEND -> stringResource(R.string.chat_msg_send)
+                PendingAction.SEND_AGAIN -> stringResource(R.string.chat_msg_send_again)
+                PendingAction.RETRY -> stringResource(R.string.chat_msg_retry)
+                PendingAction.SEND_WITHOUT_MENTIONS -> stringResource(R.string.chat_msg_send_without_mentions)
+                PendingAction.COPY -> stringResource(R.string.chat_msg_copy)
+                PendingAction.DISCARD -> stringResource(R.string.chat_msg_discard)
+            }
+            RkLinkButton(label, onClick = { on(row, action) }, style = Rk.type.text12_5.medium, enabled = !busy)
+        }
     }
 }
 
@@ -735,4 +866,4 @@ private const val READ_REPORT_DELAY_MS = 1_000L
 private const val SENDING_QUIET_MS = 1_000L
 
 // The server's default retention, while the workspace's own isn't known yet.
-private const val DEFAULT_RETENTION_DAYS = 90
+internal const val DEFAULT_RETENTION_DAYS = 90

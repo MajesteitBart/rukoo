@@ -2,6 +2,7 @@ package nl.bvdm.rukoo.ui.chat
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -14,6 +15,7 @@ import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.RkToastState
@@ -26,6 +28,10 @@ import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.mail.UiStrings
 import nl.bvdm.rukoo.workspaces.ChatState
+import nl.bvdm.rukoo.workspaces.Draft
+import nl.bvdm.rukoo.workspaces.ResendMode
+import nl.bvdm.rukoo.workspaces.Room
+import nl.bvdm.rukoo.workspaces.RoomKind
 import nl.bvdm.rukoo.workspaces.WorkspaceError
 import nl.bvdm.rukoo.workspaces.Workspaces
 
@@ -221,6 +227,144 @@ class ChatUi(
 
     /** Members' names in the interface language, for code outside composition. */
     fun names(): ChatNames = chatNames(strings)
+
+    // ---- composers (contract §3.8, §3.17; android.md "Composer with mentions") ----
+
+    // Each room's and thread's composer, kept here so its text survives folding, a thread opened over the room and a
+    // new activity. The cache's draft fills it the first time; after the process ends the draft is all that is left.
+    private val composers = HashMap<String, MutableState<ComposerValue>>()
+    private val draftSaves = HashMap<String, Job>()
+
+    private fun composerKey(ws: String, room: String, root: String?) = "$ws/$room/${root.orEmpty()}"
+
+    /** The busy key of a send from that composer: its field is read-only while the message goes to disk. */
+    fun sendKey(ws: String, room: String, root: String?) = "send:" + composerKey(ws, room, root)
+
+    /** The composer of a room ([root] null) or a thread, made from [initial] (the cached draft) the first time. */
+    fun composer(ws: String, room: String, root: String?, initial: () -> ComposerValue): MutableState<ComposerValue> =
+        composers.getOrPut(composerKey(ws, room, root)) { mutableStateOf(initial()) }
+
+    /**
+     * The person changed the composer's text: it is kept as the draft 500 ms after the last change (§3.19
+     * `DRAFT_SAVE_DELAY`), in the view model's scope, so a pane that closes meanwhile still saves it.
+     */
+    fun composerChanged(ws: String, room: String, root: String?, value: ComposerValue) {
+        val key = composerKey(ws, room, root)
+        composers.getOrPut(key) { mutableStateOf(value) }.value = value
+        draftSaves.remove(key)?.cancel()
+        val w = workspaces ?: return
+        draftSaves[key] = scope.launch {
+            delay(DRAFT_SAVE_DELAY_MS)
+            quietly { w.saveDraft(ws, room, root, MentionEditing.toDraft(value)) }
+        }
+    }
+
+    /**
+     * Sends what the composer holds (§3.8 "Writing"). Once the message is on disk the composer and its draft empty; when
+     * it couldn't be saved, the text stays and the error shows (`not_saved`).
+     */
+    fun send(ws: String, room: String, root: String?) {
+        val key = composerKey(ws, room, root)
+        val state = composers[key] ?: return
+        val value = state.value
+        val wire = MentionEditing.wire(value)
+        if (!wire.canSend) return
+        launch(sendKey(ws, room, root), context(ws)) {
+            send(ws, room, root, wire.text, wire.mentions)
+            draftSaves.remove(key)?.cancel()
+            if (state.value.text == value.text) state.value = ComposerValue()
+            quietly { saveDraft(ws, room, root, null) }
+        }
+    }
+
+    /** Forgets every composer: the session ended, and its drafts went with the cache (§3.4). */
+    fun forgetComposers() {
+        draftSaves.values.forEach { it.cancel() }
+        draftSaves.clear()
+        composers.clear()
+        mentionIds.clear()
+    }
+
+    // Who can be mentioned in a channel, by room and member count: `GET /channels/{c}/members` once per open room.
+    private val mentionIds = HashMap<String, List<String>>()
+
+    /** The member IDs of [room], for the mention picker; null when they couldn't load (offline). */
+    suspend fun mentionMembers(ws: String, room: Room): List<String>? {
+        if (room.kind == RoomKind.DM) return room.participants.orEmpty()
+        val key = "$ws/${room.id}/${room.members}"
+        mentionIds[key]?.let { return it }
+        val w = workspaces ?: return null
+        return try {
+            w.roomMembers(ws, room.id).map { it.member }.also { mentionIds[key] = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ---- sends on their way (§3.8 "Resend modes") and removing messages (§3.14) ----
+
+    /**
+     * What the person chose under an unsent message. Send again asks first, because the first one may have arrived.
+     * Discard offers Undo, which puts the text back in the composer it came from. [copy] puts text on the clipboard.
+     */
+    fun pendingAction(ws: String, room: String, row: PendingRow, action: PendingAction, copy: (String) -> Unit) {
+        when (action) {
+            PendingAction.COPY -> copy(row.text)
+            PendingAction.SEND -> launch("pending:${row.local}", context(ws)) { resend(row.local, ResendMode.SEND) }
+            PendingAction.RETRY -> launch("pending:${row.local}", context(ws)) { resend(row.local, ResendMode.RETRY) }
+            PendingAction.SEND_WITHOUT_MENTIONS -> launch("pending:${row.local}", context(ws)) { resend(row.local, ResendMode.WITHOUT_MENTIONS) }
+            PendingAction.SEND_AGAIN -> launch("pending:${row.local}", context(ws)) {
+                val ok = confirm(
+                    strings.get(R.string.chat_msg_send_again_title),
+                    strings.get(R.string.chat_msg_send_again_body),
+                    strings.get(R.string.chat_msg_send_again),
+                )
+                if (ok) resend(row.local, ResendMode.SEND)
+            }
+            PendingAction.DISCARD -> launch("pending:${row.local}", context(ws)) {
+                discard(row.local)
+                toasts.showToast(strings.get(R.string.chat_msg_discarded), strings.get(R.string.common_actions_undo)) { restore(ws, room, row) }
+            }
+        }
+    }
+
+    // Undo of Discard: the text and mentions after what the composer holds, or as the draft when it isn't on screen.
+    private fun restore(ws: String, room: String, row: PendingRow) {
+        val key = composerKey(ws, room, row.root)
+        val state = composers[key]
+        if (state != null) {
+            composerChanged(ws, room, row.root, MentionEditing.append(state.value, row.text, row.mentions))
+        } else {
+            launch(ctx = context(ws)) { saveDraft(ws, room, row.root, Draft(row.text, row.mentions)) }
+        }
+    }
+
+    /**
+     * Remove a message (§3.14, desktop-ui 6.14): asked first, naming the room ([where]) and, for a manager removing
+     * someone else's message, its [author]. The row changes once the server took it.
+     */
+    fun remove(ws: String, room: String, message: String, where: String, author: String?) {
+        launch("remove:$message", context(ws)) {
+            val body = if (author == null) strings.get(R.string.chat_remove_body, where) else strings.get(R.string.chat_remove_body_other, where, author)
+            if (confirm(strings.get(R.string.chat_remove_title), body, strings.get(R.string.chat_remove_confirm), danger = true)) redact(ws, room, message)
+        }
+    }
+
+    private suspend fun quietly(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+    }
+
+    private companion object {
+        // §3.19 DRAFT_SAVE_DELAY.
+        const val DRAFT_SAVE_DELAY_MS = 500L
+    }
 }
 
 /** Members' names as [s] words them: Former member, Deleted member, " and N others" and the language's list. */

@@ -86,8 +86,10 @@ sealed interface ChatFollow {
  * One opening of a team chat room: each time a room comes on screen the view model calls `open()`, which freezes its
  * read position for the New divider (§3.18), and [count] goes up. RoomPane ties its divider placement and scroll
  * position to it. Folding and a thread opened over the room keep the opening; Back to the list or Mail ends it.
+ * Opened from a notification, [at] is the seq of the message it showed, and [reached] turns true once the room's
+ * history was paged back to it (or as far as §3.7 allows), so RoomPane shows that message.
  */
-data class RoomOpening(val ws: String, val room: String, val count: Long)
+data class RoomOpening(val ws: String, val room: String, val count: Long, val at: Long? = null, val reached: Boolean = true)
 
 /**
  * Navigation state for both layouts, above the layout so folding keeps everything (spec 6 §5.6), and
@@ -401,12 +403,7 @@ class AppViewModel(
                 val one = route.accountId.takeIf { id -> accounts.size > 1 && accounts.any { it.id == id } }
                 selectView(MailView(ViewKind.INBOX, one))
             }
-            // A team chat alert: its room in Chat, at the message it showed (contract §7.5; A8 completes this).
-            is NotificationRoute.Room -> {
-                setMode(AppMode.CHAT)
-                selectWorkspace(route.workspaceId)
-                openRoom(route.roomId, route.seq)
-            }
+            is NotificationRoute.Room -> openChatRoute(route)
         }
     }
 
@@ -495,6 +492,9 @@ class AppViewModel(
     // Whether the last ChatState had team chat: only losing it sends a person in Chat to Mail.
     private var chatWasAvailable = false
 
+    // Whether the last ChatState was signed in: signing out forgets the composers.
+    private var chatWasSignedIn = false
+
     init {
         services.workspaces?.let { workspaces ->
             viewModelScope.launch { chatState.collect(::onChatState) }
@@ -559,12 +559,16 @@ class AppViewModel(
         return if (two || nav.chat.top != ChatPane.HOME) ws to room else null
     }
 
-    /** A new opening of [room]: the next count, saved, for RoomPane to place the New divider again. */
-    private fun opened(ws: String, room: String) {
+    /**
+     * A new opening of [room]: the next count, saved, for RoomPane to place the New divider again, or the message at
+     * [at] once the history reached it. Returns the count.
+     */
+    private fun opened(ws: String, room: String, at: Long? = null): Long {
         openedRoom = ws to room
         openings += 1
         saved[OPENINGS] = openings
-        _roomOpening.value = RoomOpening(ws, room, openings)
+        _roomOpening.value = RoomOpening(ws, room, openings, at, reached = at == null)
+        return openings
     }
 
     private fun onChatState(s: ChatState) {
@@ -572,6 +576,9 @@ class AppViewModel(
         // come before it read the server's answer, and a Chat mode restored meanwhile waits (RukooRoot shows Mail).
         if (chatWasAvailable && !s.available && _state.value.mode == AppMode.CHAT) set { it.setMode(AppMode.MAIL) }
         chatWasAvailable = s.available
+        // The session ended and its drafts went with the cache (§3.4): the composers' text goes too.
+        if (chatWasSignedIn && !s.signedIn) chatUi.forgetComposers()
+        chatWasSignedIn = s.signedIn
         val ids = s.workspaces.associate { it.id to it.name }
         val current = _state.value.chat.workspaceId
         // Only a list the service vouches for says a workspace went: not one emptied by signing out, a broken cache or
@@ -644,17 +651,45 @@ class AppViewModel(
 
     /**
      * Opens a room of the selected workspace. With [at] (a notification) it opens at that seq, backfilling as far as
-     * §3.7 allows; otherwise it opens when it comes on screen.
+     * §3.7 allows, and when that message is a reply its thread opens over the room; otherwise the room opens when it
+     * comes on screen.
      */
     override fun openRoom(id: String, at: Long?) {
         val ws = _state.value.chat.workspaceId
         val workspaces = services.workspaces
         if (at != null && ws != null && workspaces != null) {
-            opened(ws, id)
+            val count = opened(ws, id, at)
             set { it.openRoom(id) }
-            viewModelScope.launch { quietly { workspaces.open(ws, id, at) } }
+            viewModelScope.launch {
+                quietly { workspaces.open(ws, id, at) }
+                _roomOpening.value?.let { o -> if (o.count == count) _roomOpening.value = o.copy(reached = true) }
+                val root = withTimeoutOrNull(LOAD_WAIT_MS) {
+                    runCatching { workspaces.timeline(ws, id).first() }.getOrNull()?.events?.firstOrNull { it.seq == at }?.root
+                }
+                // Only while the person is still in that room: they may have moved on meanwhile.
+                if (root != null) set { now -> if (now.chat.workspaceId == ws && now.chat.roomId == id && now.chat.threadRoot == null) now.openThread(root) else now }
+            }
         } else {
             set { it.openRoom(id) }
+        }
+    }
+
+    /**
+     * A team chat alert (contract §7.5): Chat with its workspace, the room at the message it showed, and that message's
+     * thread when it is a reply. On a cold start team chat may not have answered yet, so it waits for the workspace,
+     * briefly; a workspace that is gone by then leaves the app where it was.
+     */
+    private fun openChatRoute(route: NotificationRoute.Room) {
+        if (services.workspaces == null) return
+        viewModelScope.launch {
+            withTimeoutOrNull(LOAD_WAIT_MS) {
+                chatState.first { s -> s.available && s.signedIn && s.workspaces.any { it.id == route.workspaceId } }
+            } ?: return@launch
+            set { it.closeOverlay() }
+            // The workspace first, so switching to Chat doesn't pick another one meanwhile.
+            selectWorkspace(route.workspaceId)
+            setMode(AppMode.CHAT)
+            openRoom(route.roomId, route.seq)
         }
     }
 

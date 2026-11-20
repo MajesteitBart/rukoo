@@ -208,6 +208,9 @@
     <string name="chat_msg_send_again_body">If the first one did arrive, people see it twice.</string><!-- Its text. -->
     <string name="chat_msg_waiting_turn">Waits for the message above</string><!-- Under a queued message behind a failed one. -->
     <string name="chat_msg_send_without_mentions">Send without mentions</string><!-- Button after a mention was refused. -->
+    <string name="chat_msg_send">Send</string><!-- Button under a message held because the user left the conversation before it went. Desktop chat.msg.send. -->
+    <string name="chat_msg_retry_at">tries again at %1$s</string><!-- After chat_msg_waiting and a middle dot: when Rukoo tries to send it next. %1$s: a time with seconds. Desktop chat.msg.retryAt. -->
+    <string name="chat_msg_discarded">Message discarded</string><!-- Toast after Discard on an unsent message, with Undo. Desktop chat.msg.discarded. -->
 
     <!-- chat.remove.* -->
     <string name="chat_remove_title">Remove this message?</string><!-- Confirmation title. -->
