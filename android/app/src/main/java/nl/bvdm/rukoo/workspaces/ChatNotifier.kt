@@ -118,7 +118,21 @@ data class ChatAlert(
     /** The text without MessagingStyle: "Name: text" lines, or the summary's sentence. */
     val body: String,
     val summary: Boolean = false,
+    /** The workspace's name when there are several workspaces, which [title] already ends with; else null. */
+    val workspace: String? = null,
 )
+
+/**
+ * How a room's alert sets up MessagingStyle. Android titles a conversation with a title "title: sender", so a
+ * one-to-one DM gets no conversation title and isn't a group: Android titles it with the sender, and the workspace's
+ * name, when there are several, goes in the header as [subText]. A channel or group DM keeps [ChatAlert.title].
+ */
+data class ChatAlertStyle(val conversationTitle: String?, val group: Boolean, val subText: String?) {
+    companion object {
+        fun of(alert: ChatAlert): ChatAlertStyle =
+            if (alert.group) ChatAlertStyle(alert.title, true, null) else ChatAlertStyle(null, false, alert.workspace)
+    }
+}
 
 /** Where alerts go: Android's notifications ([ChatNotifier]), or a recorder in tests. Posting may be refused quietly. */
 interface ChatAlertSink {
@@ -399,6 +413,7 @@ class ChatAlertEngine(
                 group = room.kind != RoomKind.DM.wire || (room.participants?.distinct()?.size ?: 0) > 2,
                 lines = lines,
                 body = lines.joinToString("\n") { w.line(it.author, it.text) },
+                workspace = ctx.suffix,
             ),
         )
     }
@@ -539,9 +554,11 @@ class ChatNotifier(context: Context) : ChatAlertSink, ChatAlertWords {
         if (alert.summary || alert.lines.isEmpty()) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(alert.body))
         } else {
+            val spec = ChatAlertStyle.of(alert)
             val style = NotificationCompat.MessagingStyle(Person.Builder().setName(alert.me.ifEmpty { " " }).build())
-                .setConversationTitle(alert.title)
-                .setGroupConversation(alert.group)
+                .setConversationTitle(spec.conversationTitle)
+                .setGroupConversation(spec.group)
+            if (spec.subText != null) builder.setSubText(spec.subText)
             for (l in alert.lines) style.addMessage(l.text, l.at, Person.Builder().setName(l.author).build())
             builder.setStyle(style)
         }

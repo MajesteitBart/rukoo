@@ -154,6 +154,38 @@ class ChatAlertRulesTest {
     }
 
     @Test
+    fun `MessagingStyle titles a one-to-one DM with the sender and keeps a group's or channel's title`() = runTest {
+        val s = setup(workspaces = 2)
+        s.room(room(Ids.DM, dm = true, head = 1, unread = 1), msg(1, text = "hi", room = 4))
+        val group = Ids.id("d", 21)
+        s.room(room(group, dm = true, head = 1, unread = 1).copy(participants = listOf(Ids.ME, Ids.OLGA, Ids.SAM)), msg(1, text = "all", room = 7))
+        s.room(room(head = 1, unread = 1, mentions = 1), msg(1, text = "Me look", mentions = listOf(Mention(Ids.ME, 0, 2))))
+        s.run()
+        val byRoom = s.sink.shown.associateBy { it.room }
+
+        // Android titles a conversation with a title "title: sender", which read "Olga · Team: Olga" for a DM.
+        val dm = ChatAlertStyle.of(byRoom.getValue(Ids.DM))
+        assertEquals("a one-to-one DM has no conversation title", null, dm.conversationTitle)
+        assertFalse("a one-to-one DM isn't a group conversation", dm.group)
+        assertEquals("the workspace's name goes in the header", "Team", dm.subText)
+
+        val groupStyle = ChatAlertStyle.of(byRoom.getValue(group))
+        assertEquals(ChatAlertStyle("Olga and Sam · Team", true, null), groupStyle)
+
+        val channel = ChatAlertStyle.of(byRoom.getValue(Ids.GENERAL))
+        assertEquals(ChatAlertStyle("#general · Team", true, null), channel)
+    }
+
+    @Test
+    fun `with one workspace a one-to-one DM's alert has no header text`() {
+        val alert = ChatAlert(
+            key = "chat:w:d", ws = "w", room = "d", seq = 1, title = "Zoë de Vries", me = "Me", group = false,
+            lines = listOf(AlertLine("m", 1, 1, "Zoë de Vries", "hi")), body = "Zoë de Vries: hi",
+        )
+        assertEquals(ChatAlertStyle(null, false, null), ChatAlertStyle.of(alert))
+    }
+
+    @Test
     fun `a channel alerts for mentions of me, not for unread messages alone`() = runTest {
         val s = setup()
         s.room(room(head = 2, unread = 2), msg(1), msg(2))
