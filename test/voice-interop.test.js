@@ -372,6 +372,31 @@ test('Rukoo talks to the real Voice bridge server', { skip: ENABLED ? false : 's
     assert.deepEqual(r.invalid, []);
   });
 
+  await t.test('speakers.split runs, then gives the microphone a second voice that the store shows as Speaker A', async () => {
+    const b = r.bridge;
+    // The split op makes the next speakers.split refuse with that reason, which reaches Rukoo with the code.
+    await voice.send({ op: 'split', reason: 'cpu' });
+    const refused = await refusal(b.command('speakers.split', { meeting: A, track: 'mic' }));
+    assert.deepEqual([refused.code, refused.reason], ['not_available', 'cpu']);
+    const running = await b.command('speakers.split', { meeting: A, track: 'mic' });
+    assert.equal(running.state, 'running');
+    assert.ok(Number.isInteger(running.at) && Number.isInteger(running.end) && running.end >= running.at, JSON.stringify(running));
+    const done = await b.command('speakers.split', { meeting: A, track: 'mic' });
+    assert.deepEqual(done, { state: 'done', voices: 2 });
+    assert.deepEqual(await b.command('speakers.split', { meeting: A, track: 'mic' }), done, 'a split is done once');
+    // Voice sent the new voice and the passage that moved before it answered done.
+    await until(() => store.meeting(A).speakers.some((s) => s.id === 'mic-2'), 'the second voice at the microphone');
+    const m = store.meeting(A);
+    assert.deepEqual(m.speakers.filter((s) => s.track === 'mic').map((s) => [s.id, s.you, s.letter]), [['mic', true, null], ['mic-2', false, 'A']]);
+    assert.ok(m.passages.some((p) => p.track === 'mic' && p.speaker === 'mic-2'), 'a microphone passage moved to mic-2');
+    // Rukoo's checks refuse a split of the call before sending; Voice's refuse it too.
+    assert.equal((await refusal(b.command('speakers.split', { meeting: A, track: 'call' }))).code, 'bad_request');
+    const call = await refusal(raw(b, { type: 'command', id: 'c-raw-split', command: 'speakers.split', args: { meeting: A, track: 'call' } }));
+    assert.equal(call.code, 'bad_request');
+    assert.equal((await refusal(b.command('speakers.split', { meeting: 'm-20200101-000000-0000', track: 'mic' }))).code, 'not_found');
+    assert.deepEqual(r.invalid, []);
+  });
+
   let B;
   await t.test('a reconnect replays only what Rukoo missed', async () => {
     B = store.list().find((m) => m.title === 'From Rukoo').id;

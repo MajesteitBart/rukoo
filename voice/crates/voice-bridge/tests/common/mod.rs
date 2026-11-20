@@ -16,7 +16,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as Frame, WebSocket};
 use voice_bridge::{
     BridgeServer, ControlError, EventLog, Handle, MediaKind, MediaOpenArgs, MeetingControl,
-    MeetingSummary, Options, StartArgs, Status,
+    MeetingSummary, Options, SplitResult, StartArgs, Status, Track,
 };
 use voice_protocol::{
     media_read_result, validate_discovery, validate_incoming, MeetingId, MeetingState, Message,
@@ -88,11 +88,50 @@ pub struct FakeControl {
     pub screen: Mutex<Option<Value>>,
     /// The deadline of every `screen.get` and `screen.select`, in the order they ran.
     pub screen_deadlines: Mutex<Vec<Instant>>,
+    /// What the next `speakers.split` answers instead of splitting.
+    pub split_refusal: Mutex<Option<ControlError>>,
+    /// `speakers.split`s that reached the fake: the first is running, later ones are done.
+    pub splits: AtomicUsize,
+    /// What the next split that is done appends before it answers.
+    pub split_events: Mutex<Option<SplitEvents>>,
+    /// `meeting.protected` waits until the test sends on this gate's other end. The server
+    /// answers it on the connection's own loop, so the loop sends nothing meanwhile.
+    pub hold_protection: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+/// Passages a split that is done appends to the log once the test opens `go`, as Voice sends a
+/// split's events before it answers `done`.
+pub struct SplitEvents {
+    pub log: EventLog,
+    pub count: u64,
+    pub go: mpsc::Receiver<()>,
 }
 
 impl FakeControl {
     fn call(&self, what: String) {
         self.calls.lock().unwrap().push(what);
+    }
+
+    /// Waits until `count` calls that start with `prefix` reached the fake.
+    pub fn wait_for_calls(&self, prefix: &str, count: usize) {
+        let deadline = Instant::now() + READ_TIMEOUT;
+        loop {
+            let seen = self
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.starts_with(prefix))
+                .count();
+            if seen >= count {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{seen} of {count} {prefix} calls"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     fn known(&self, id: &str) -> Result<(), ControlError> {
@@ -234,6 +273,11 @@ impl MeetingControl for FakeControl {
 
     fn protected(&self, id: &str) -> Result<(), ControlError> {
         self.call(format!("protected {id}"));
+        let hold = self.hold_protection.lock().unwrap().take();
+        if let Some(hold) = hold {
+            hold.recv_timeout(READ_TIMEOUT)
+                .expect("the test lets the protection go");
+        }
         self.known(id)
     }
 
@@ -297,6 +341,42 @@ impl MeetingControl for FakeControl {
             "start": args.start,
             "end": args.end.unwrap_or(args.start),
         }))
+    }
+
+    /// A meeting that records is busy; otherwise the first split runs and the next ones are done,
+    /// with the numbers of the shared vectors.
+    fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
+        self.call(format!("speakers.split {id} {track}"));
+        if let Some(refusal) = self.split_refusal.lock().unwrap().take() {
+            return Err(refusal);
+        }
+        self.known(id)?;
+        if self.recording.lock().unwrap().as_deref() == Some(id) {
+            return Err(ControlError::busy(id, "The meeting is still recording."));
+        }
+        Ok(match self.splits.fetch_add(1, Ordering::SeqCst) {
+            0 => SplitResult::Running {
+                at: 412_000,
+                end: 3_605_120,
+            },
+            _ => {
+                let events = self.split_events.lock().unwrap().take();
+                if let Some(events) = events {
+                    events
+                        .go
+                        .recv_timeout(READ_TIMEOUT)
+                        .expect("the test lets the split go on");
+                    for i in 0..events.count {
+                        events
+                            .log
+                            .append("passage", Some(id), passage(i * 1000))
+                            .unwrap();
+                    }
+                }
+                SplitResult::Done { voices: 3 }
+            }
+        }
+        .to_value())
     }
 
     fn media_read(&self, media: &str, offset: u64, length: u64) -> Result<Value, ControlError> {

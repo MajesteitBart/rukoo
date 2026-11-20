@@ -632,16 +632,12 @@ impl Ctx {
         result
     }
 
-    /// Pushes `len` zeros that belong to no meeting time.
+    /// Pushes the padding at a gap: zeros that belong to no meeting time.
     fn pad(&mut self, stream: &mut dyn DiarStream, labeller: &mut Labeller) -> Result<(), Fail> {
-        let mut left = self.timing.pad;
-        while left > 0 {
-            let len = left.min(self.timing.push_max.max(1));
-            labeller.clock.pad(len);
-            self.push(stream, labeller, &vec![0i16; len as usize])?;
-            left -= len;
-        }
-        Ok(())
+        let (pad, push_max) = (self.timing.pad, self.timing.push_max);
+        pad_with(labeller, pad, push_max, |labeller, zeros| {
+            self.push(stream, labeller, zeros)
+        })
     }
 
     /// One stream, from opening it to the end of the recording or a failure.
@@ -787,6 +783,25 @@ impl Ctx {
     }
 }
 
+/// Pushes `pad` zeros that belong to no meeting time in pieces of at most `push_max`, through
+/// `push`, so the stream commits the audio before a gap or the end (see [`PAD`]). The follower
+/// and the microphone split pad alike.
+pub(crate) fn pad_with<E>(
+    labeller: &mut Labeller,
+    pad: u64,
+    push_max: u64,
+    mut push: impl FnMut(&mut Labeller, &[i16]) -> Result<(), E>,
+) -> Result<(), E> {
+    let mut left = pad;
+    while left > 0 {
+        let len = left.min(push_max.max(1));
+        labeller.clock.pad(len);
+        push(labeller, &vec![0i16; len as usize])?;
+        left -= len;
+    }
+    Ok(())
+}
+
 /// A turn the stream reported a start for and no end yet.
 struct OpenTurn {
     /// Stream samples.
@@ -795,8 +810,10 @@ struct OpenTurn {
     row: Option<(String, u64)>,
 }
 
-/// Turns one stream's probabilities into stored turns with stable ids.
-struct Labeller {
+/// Turns one stream's probabilities into stored turns with stable ids. The follower's ids are
+/// `call-N`; the microphone split's labeller numbers its voices under another prefix and gives
+/// them their ids once it heard the whole track.
+pub(crate) struct Labeller {
     epoch: u64,
     /// Meeting ms where this stream's stored turns start: the settled position it began at.
     feed_from: u64,
@@ -804,7 +821,7 @@ struct Labeller {
     reel_end: u64,
     /// Whether the stream's labels have their ids. True at once without a reel.
     matched: bool,
-    clock: StreamClock,
+    pub(crate) clock: StreamClock,
     binarizer: LiveBinarizer,
     speakers: usize,
     /// Frames taken so far.
@@ -818,6 +835,8 @@ struct Labeller {
     reel_open: HashMap<usize, u64>,
     map: HashMap<usize, String>,
     next: u64,
+    /// New ids are this and a number: `call-` for the follower.
+    prefix: &'static str,
     open: HashMap<usize, OpenTurn>,
     settled_ms: u64,
     /// The ids the meeting has, for the status.
@@ -858,14 +877,27 @@ impl Labeller {
             reel_open: HashMap::new(),
             map: HashMap::new(),
             next,
+            prefix: "call-",
             open: HashMap::new(),
             settled_ms: feed_from,
             known,
         }
     }
 
+    /// A labeller for a stream that hears a whole track from its start, without a reel, whose
+    /// voices are `<prefix>1`, `<prefix>2` and so on in the order their turns were confirmed.
+    pub(crate) fn fresh(
+        prefix: &'static str,
+        geometry: voice_core::speakers::StreamGeometry,
+    ) -> Labeller {
+        Labeller {
+            prefix,
+            ..Labeller::new(0, 0, 1, Vec::new(), &[], geometry)
+        }
+    }
+
     /// Feeds newly committed frames and returns what to store.
-    fn take(&mut self, probs: Probs) -> Result<LabelBatch, DiarError> {
+    pub(crate) fn take(&mut self, probs: Probs) -> Result<LabelBatch, DiarError> {
         let mut batch = LabelBatch::default();
         if probs.frames == 0 {
             self.settle(&mut batch);
@@ -896,7 +928,7 @@ impl Labeller {
 
     /// The stream finished: closes every turn, matches if the reel never settled, and settles
     /// everything that was pushed.
-    fn close(&mut self, batch: &mut LabelBatch) {
+    pub(crate) fn close(&mut self, batch: &mut LabelBatch) {
         for event in self.binarizer.close() {
             self.event(event, batch);
         }
@@ -1014,7 +1046,7 @@ impl Labeller {
         if let Some(id) = self.map.get(&label) {
             return id.clone();
         }
-        let id = format!("call-{}", self.next);
+        let id = format!("{}{}", self.prefix, self.next);
         self.next += 1;
         batch.map.push(MapRow {
             epoch: self.epoch,

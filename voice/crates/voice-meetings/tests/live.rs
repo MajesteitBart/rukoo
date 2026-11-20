@@ -37,13 +37,15 @@ fn recorder_exe() -> &'static Path {
     static EXE: OnceLock<PathBuf> = OnceLock::new();
     EXE.get_or_init(|| {
         let name = format!("rukoo-voice-recorder{}", std::env::consts::EXE_SUFFIX);
-        // target/<profile>/deps/live-<hash>[.exe]
-        let deps = std::env::current_exe()
+        // target/<profile>/deps/live-<hash>[.exe] up to cargo 1.99, and
+        // target/<profile>/build/voice-meetings/<hash>/out/live-<hash>[.exe] from 1.100.
+        let profile = std::env::current_exe()
             .unwrap()
-            .parent()
-            .unwrap()
+            .ancestors()
+            .find(|dir| dir.file_name().is_some_and(|n| n == "deps" || n == "build"))
+            .and_then(Path::parent)
+            .expect("the test runs from cargo's target folder")
             .to_owned();
-        let profile = deps.parent().unwrap().to_owned();
         let exe = profile.join(&name);
         if exe.is_file() {
             return exe;

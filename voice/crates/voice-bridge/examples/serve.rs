@@ -17,6 +17,9 @@
 //! - `{"op":"restart"}` stops the server and starts it again: new port and token, same events.
 //! - `{"op":"media","error":"not_available"}` makes the next `media.open` answer that error;
 //!   `"failed"` works too.
+//! - `{"op":"split","reason":"cpu"}` makes the next `speakers.split` answer `not_available` with
+//!   that reason (`cpu`, `runtime`, `model` or `audio`); `"reason":"failed"` makes it answer
+//!   `failed`.
 //! - `{"op":"quit"}`, or the end of stdin, stops it.
 //!
 //! Rukoo's commands reach a small scripted Voice that starts, pauses, marks and stops meetings by
@@ -34,6 +37,12 @@
 //! - `frame`: 107 bytes, `FF D8 FF E0 00 10 'JFIF' 00`, zeros, then `FF D9`, at `start` rounded
 //!   down to a whole second.
 //! - `video`: `not_available`.
+//!
+//! `speakers.split` of the microphone answers `busy` while the meeting records, then `running`
+//! once and `done` from the next command on. The split gives the first microphone passage the
+//! user didn't dictate to `mic-2` "Microphone 2", with a `speaker` event and a new revision of
+//! that passage, so `voices` is 2; a meeting without such a passage gets `voices` 1 and no
+//! events. Every later split of that meeting answers `done` with the same `voices`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
@@ -47,8 +56,8 @@ use voice_bridge::{
     MeetingSummary, StartArgs, Status,
 };
 use voice_protocol::{
-    events, media_read_result, new_media_id, passage_id, ErrorCode, MeetingId, MeetingState,
-    ScreenMode,
+    events, media_read_result, new_media_id, passage_id, split_reasons, ErrorCode, MeetingId,
+    MeetingState, ScreenMode, SplitResult, Track,
 };
 
 const VERSION: &str = "0.1.0";
@@ -92,6 +101,7 @@ fn main() {
                 continue;
             }
             "media" => voice.fail_next_media(&request),
+            "split" => voice.fail_next_split(&request),
             "quit" => break,
             other => Err(format!("unknown op {other:?}")),
         };
@@ -259,12 +269,21 @@ struct Media {
     fail_next: Option<ErrorCode>,
 }
 
+/// The microphone splits `speakers.split` started: `None` while running, then the voices.
+#[derive(Default)]
+struct Splits {
+    meetings: HashMap<String, Option<u64>>,
+    /// The error the next `speakers.split` answers, from the `split` op.
+    fail_next: Option<ControlError>,
+}
+
 /// Just enough of Voice to answer Rukoo's commands with the events a real Voice would send.
 struct ScriptedVoice {
     log: EventLog,
     meetings: Mutex<BTreeMap<String, Meeting>>,
     recording: Mutex<Option<String>>,
     media: Mutex<Media>,
+    splits: Mutex<Splits>,
 }
 
 impl ScriptedVoice {
@@ -274,7 +293,68 @@ impl ScriptedVoice {
             meetings: Mutex::new(BTreeMap::new()),
             recording: Mutex::new(None),
             media: Mutex::new(Media::default()),
+            splits: Mutex::new(Splits::default()),
         }
+    }
+
+    /// The `split` op: the next `speakers.split` answers `not_available` with that reason, or
+    /// `failed`.
+    fn fail_next_split(&self, request: &Value) -> Result<Value, String> {
+        let error = match request["reason"].as_str() {
+            Some("failed") => ControlError::failed("The speaker worker failed."),
+            Some(
+                reason @ (split_reasons::CPU
+                | split_reasons::RUNTIME
+                | split_reasons::MODEL
+                | split_reasons::AUDIO),
+            ) => ControlError::not_available(format!("Voice can't split voices here: {reason}."))
+                .with_reason(reason),
+            other => {
+                return Err(format!(
+                    "reason must be cpu, runtime, model, audio or failed, not {other:?}"
+                ))
+            }
+        };
+        self.splits.lock().unwrap().fail_next = Some(error);
+        Ok(json!({}))
+    }
+
+    /// Moves the meeting's first microphone passage the user didn't dictate to `mic-2`, as a
+    /// split that heard a second voice would. Returns the voices on the microphone.
+    fn split_microphone(&self, id: &str) -> Result<u64, ControlError> {
+        let (_, stored) = self
+            .log
+            .meeting_events(id)
+            .map_err(|e| ControlError::failed(e.to_string()))?;
+        let mut passages: BTreeMap<String, Value> = BTreeMap::new();
+        for event in stored {
+            match event.event.as_str() {
+                events::PASSAGE => {
+                    let key = event.data["id"].as_str().unwrap_or("").to_owned();
+                    passages.insert(key, event.data);
+                }
+                events::PASSAGE_REMOVED => {
+                    passages.remove(event.data["id"].as_str().unwrap_or(""));
+                }
+                _ => {}
+            }
+        }
+        let Some(mut moved) = passages
+            .into_values()
+            .filter(|p| p["track"] == "mic" && p["dictation"] == false)
+            .min_by_key(|p| p["start"].as_u64())
+        else {
+            return Ok(1);
+        };
+        self.append(
+            id,
+            events::SPEAKER,
+            json!({"id": "mic-2", "track": "mic", "label": "Microphone 2"}),
+        )?;
+        moved["speaker"] = "mic-2".into();
+        moved["revision"] = (moved["revision"].as_u64().unwrap_or(1) + 1).into();
+        self.append(id, events::PASSAGE, moved)?;
+        Ok(2)
     }
 
     /// The `media` op: the next `media.open` answers `not_available` or `failed`.
@@ -752,6 +832,42 @@ impl MeetingControl for ScriptedVoice {
             offset,
             &prepared.file.bytes(offset, length),
         ))
+    }
+
+    fn split_speakers(&self, id: &str, track: Track) -> Result<Value, ControlError> {
+        if let Some(error) = self.splits.lock().unwrap().fail_next.take() {
+            return Err(error);
+        }
+        if track != Track::Mic {
+            return Err(ControlError::bad_request(
+                "Only the microphone can be split.",
+            ));
+        }
+        let (state, length) = {
+            let meetings = self.meetings.lock().unwrap();
+            let Some(meeting) = meetings.get(id) else {
+                return Err(ControlError::not_found(format!("No meeting {id}.")));
+            };
+            let end = meeting.ended_at.unwrap_or_else(now_ms);
+            (meeting.state, end.saturating_sub(meeting.started_at))
+        };
+        if !matches!(state, MeetingState::Done | MeetingState::Failed) {
+            return Err(ControlError::busy(id, "The meeting is still recording."));
+        }
+        let mut splits = self.splits.lock().unwrap();
+        let result = match splits.meetings.get(id).copied() {
+            None => {
+                splits.meetings.insert(id.to_owned(), None);
+                SplitResult::Running { at: 0, end: length }
+            }
+            Some(None) => {
+                let voices = self.split_microphone(id)?;
+                splits.meetings.insert(id.to_owned(), Some(voices));
+                SplitResult::Done { voices }
+            }
+            Some(Some(voices)) => SplitResult::Done { voices },
+        };
+        Ok(result.to_value())
     }
 
     fn status(&self) -> Status {

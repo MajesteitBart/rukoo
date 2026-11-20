@@ -60,6 +60,7 @@ pub mod commands {
     pub const SCREEN_SET: &str = "screen.set";
     pub const MEDIA_OPEN: &str = "media.open";
     pub const MEDIA_READ: &str = "media.read";
+    pub const SPEAKERS_SPLIT: &str = "speakers.split";
 }
 
 /// Generates `as_str`, `parse`, `Display` and string serde for an enum of fixed names.
@@ -699,6 +700,11 @@ pub enum CommandBody {
         /// 1 to [`crate::MAX_MEDIA_READ`].
         length: u64,
     },
+    /// Tells apart the voices on one track of a stopped meeting. The checks allow only `mic`.
+    SpeakersSplit {
+        meeting: MeetingId,
+        track: Track,
+    },
     /// A command this version doesn't know. Voice answers `unknown_command`.
     Unknown {
         command: String,
@@ -727,6 +733,7 @@ impl CommandBody {
             CommandBody::ScreenSet { .. } => commands::SCREEN_SET,
             CommandBody::MediaOpen(_) => commands::MEDIA_OPEN,
             CommandBody::MediaRead { .. } => commands::MEDIA_READ,
+            CommandBody::SpeakersSplit { .. } => commands::SPEAKERS_SPLIT,
             CommandBody::Unknown { command, .. } => command,
         }
     }
@@ -806,6 +813,10 @@ impl CommandBody {
                 args.insert("media".into(), media.as_str().into());
                 args.insert("offset".into(), (*offset).into());
                 args.insert("length".into(), (*length).into());
+            }
+            CommandBody::SpeakersSplit { meeting, track } => {
+                args.insert("meeting".into(), meeting.as_str().into());
+                args.insert("track".into(), track.as_str().into());
             }
             CommandBody::Unknown { args: unknown, .. } => return Value::Object(unknown.clone()),
         }
@@ -910,6 +921,10 @@ pub struct ReplyError {
     /// For `busy`: the meeting that is recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting: Option<MeetingId>,
+    /// Why, for codes that say more: `speakers.split`'s `not_available` names one of
+    /// [`split_reasons`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl ReplyError {
@@ -918,6 +933,37 @@ impl ReplyError {
             code: code.as_str().to_owned(),
             message: message.into(),
             meeting: None,
+            reason: None,
+        }
+    }
+}
+
+/// The `reason` of a `speakers.split` that answers `not_available`.
+pub mod split_reasons {
+    /// The processor, or the platform, can't run speaker labels.
+    pub const CPU: &str = "cpu";
+    /// The speaker label runtime is missing or failed to load.
+    pub const RUNTIME: &str = "runtime";
+    /// The speaker model is missing or damaged.
+    pub const MODEL: &str = "model";
+    /// The track's audio is gone from this computer.
+    pub const AUDIO: &str = "audio";
+}
+
+/// The result of `speakers.split`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitResult {
+    /// Voice has labelled the track up to meeting time `at` of `end`, both in ms.
+    Running { at: u64, end: u64 },
+    /// The split is done: `voices` voices are left on the track, 1 or more.
+    Done { voices: u64 },
+}
+
+impl SplitResult {
+    pub fn to_value(self) -> Value {
+        match self {
+            SplitResult::Running { at, end } => json!({ "state": "running", "at": at, "end": end }),
+            SplitResult::Done { voices } => json!({ "state": "done", "voices": voices }),
         }
     }
 }

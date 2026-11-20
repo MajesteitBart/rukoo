@@ -1201,6 +1201,243 @@ test('three voices on the call keep their names', async () => {
   await expect(rows().nth(2).locator('.mt-name')).toHaveText('Speaker 10');
 });
 
+const hear = (speaker) => win.locator(`.meeting [data-mt="hear"][data-speaker="${speaker}"]`);
+const player = () => win.locator('.meeting .mt-player');
+const playButton = () => player().locator('[data-mt="clip-play"]');
+const peopleNames = () => win.locator('.meeting .mt-people .mt-person-name');
+// The audio media.open stretches Rukoo asked Voice for, as [start, end].
+const audioAsked = () => voice.commands.filter((c) => c.command === 'media.open' && c.args.kind === 'audio').map((c) => [c.args.start, c.args.end]);
+
+test('each voice has a player: it plays a clip of that voice, steps through its clips, and Assign moves on to the next voice', async () => {
+  test.setTimeout(240000);
+  await linkEvents();
+  await openMeetings();
+  const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
+  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  voice.append('speaker', id, callVoice(1));
+  say(id, 'call', 1000, 'Shall we start with the numbers?');
+  say(id, 'mic', 4500, 'Yes, go ahead.');
+  voice.append('speaker', id, callVoice(2));
+  say(id, 'call', 8000, 'The numbers are in.', { speaker: 'call-2' });
+  say(id, 'call', 12000, 'Can someone pull the churn figures?');
+  await expect(rows()).toHaveCount(4);
+
+  // Your microphone is one voice that anyone next to you speaks into, until it is split after the meeting.
+  await expect(view().locator('.mt-people .mt-group')).toHaveText(['At your microphone', 'On the call']);
+  await expect(person('mic').locator('.mt-person-sub')).toHaveText('You and anyone next to you');
+  await expect(view().locator('.mt-split')).toContainText('Once the meeting has ended');
+  await expect(view().locator('[data-mt="hear-each"]')).toHaveCount(0);
+
+  // While Voice records, a clip shows its words and plays nothing: Voice would record it as call audio.
+  await hear('call-1').click();
+  await expect(player()).toContainText('Shall we start with the numbers?');
+  await expect(playButton()).toBeDisabled();
+  await expect(player().locator('.mt-pnote')).toContainText('Clips play after Stop');
+  await expect(player().locator('.mt-pcount')).toHaveText('1 of 2');
+  await expect(rows().nth(0)).toHaveClass(/is-clip/);
+  await player().locator('[data-mt="clip-next"]').click();
+  await expect(player()).toContainText('Can someone pull the churn figures?');
+  await expect(rows().nth(3)).toHaveClass(/is-clip/);
+  await expect(rows().nth(0)).not.toHaveClass(/is-clip/);
+  await shot('voices-recording-en');
+  expect(audioAsked()).toEqual([]);
+
+  // The meeting ends: the same player plays, from a WAV Voice cuts for the passage.
+  voice.append('meeting.state', id, { state: 'done', at: 16000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(playButton()).toBeEnabled({ timeout: 10000 });
+  await expect(view().locator('[data-mt="hear-each"]')).toBeVisible();
+  await playButton().click();
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  expect(audioAsked()).toContainEqual([12000, 15000]);
+  // The window really plays the WAV Voice cut.
+  const playing = () => win.evaluate(() => [...document.querySelectorAll('audio.mt-clip-audio')].map((a) => ({ paused: a.paused, wav: a.src.startsWith('data:audio/wav;base64,') })));
+  await expect.poll(playing).toEqual([{ paused: false, wav: true }]);
+  await expect(rows().nth(3)).toHaveClass(/is-playing/);
+  await expect(hear('call-1')).toHaveAttribute('aria-pressed', 'true');
+
+  // The keyboard works inside the player: Left takes the previous clip and plays it, Space pauses.
+  await player().locator('[data-mt="assign"]').focus();
+  await win.keyboard.press('ArrowLeft');
+  await expect(player()).toContainText('Shall we start with the numbers?');
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  expect(audioAsked()).toContainEqual([1000, 4000]);
+  await win.keyboard.press(' ');
+  await expect(playButton()).toHaveAttribute('aria-label', 'Play');
+  await expect(menu()).toHaveCount(0);
+
+  // Captures of the player while a clip plays, wide and narrow, in both themes and languages.
+  await playButton().click();
+  for (const [width, height, size] of [[1500, 950, 'wide'], [760, 900, 'narrow']]) {
+    await resizeTo(width, height);
+    for (const language of ['en', 'nl']) {
+      await setLanguage(language);
+      for (const theme of ['dark', 'light']) {
+        await setTheme(theme);
+        if (size === 'narrow') await view().locator('[data-mt-tab="people"]').click();
+        await expect(player()).toBeVisible();
+        await shot(`voices-player-${size}-${theme}-${language}`);
+      }
+    }
+  }
+  await resizeTo(1500, 950);
+  await setLanguage('en');
+  await setTheme('dark');
+
+  // Assign names the voice from the Stand-up's guests, and the player moves on to the next voice without a name.
+  await player().locator('[data-mt="assign"]').click();
+  await expect(menu().locator('button')).toHaveText([/Sanne de Vries/, /Joris Bakker/, /Someone else/]);
+  await shot('voices-assign-dark-en');
+  await menu().locator('button', { hasText: 'Joris Bakker' }).click();
+  await expect(person('call-1').locator('.mt-person-name')).toHaveText('Joris Bakker');
+  await expect(rows().nth(0).locator('.mt-name')).toHaveText('Joris Bakker');
+  await expect(player()).toHaveAttribute('data-player', 'call-2');
+  await expect(player()).toContainText('The numbers are in.');
+  await expect(playButton()).toBeFocused();
+  await expect(rows().nth(2)).toHaveClass(/is-clip/);
+  // Escape closes the player and goes back to the voice's play button.
+  await win.keyboard.press('Escape');
+  await expect(player()).toHaveCount(0);
+  await expect(hear('call-2')).toBeFocused();
+  // Hear each voice opens the first voice still without a name, and plays it.
+  await view().locator('[data-mt="hear-each"]').click();
+  await expect(player()).toHaveAttribute('data-player', 'call-2');
+  await expect(playButton()).toHaveAttribute('aria-label', 'Pause', { timeout: 10000 });
+  // Another meeting starts recording: the clip stops, because Voice records everything this computer plays, and the
+  // finished meeting's player says why it waits.
+  const other = voice.meetingId();
+  voice.append('meeting.started', other, { title: 'Next call', startedAt: Date.now(), tracks: ['mic', 'call'], screen: 'off', startedBy: 'voice', context: null });
+  voice.append('meeting.state', other, { state: 'recording', at: 0 });
+  voice.append('status', null, { recording: other, dictating: false });
+  await expect(view().locator('.mt-title')).toHaveText('Next call', { timeout: 10000 });
+  await expect.poll(() => win.evaluate(() => [...document.querySelectorAll('audio.mt-clip-audio')].map((a) => a.paused))).toEqual([true]);
+  await win.locator(`.sidebar [data-mt-open="${id}"]`).click();
+  await hear('call-2').click();
+  await expect(player().locator('.mt-pnote')).toContainText('Clips play when no meeting records.');
+  await expect(playButton()).toBeDisabled();
+  voice.append('meeting.state', other, { state: 'done', at: 3000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(playButton()).toBeEnabled({ timeout: 10000 });
+  // Without Voice, the player says the clips need it.
+  await voice.close();
+  await expect(player().locator('.mt-pnote')).toContainText('Clips play while Rukoo Voice runs.', { timeout: 15000 });
+  await expect(playButton()).toBeDisabled();
+});
+
+test('the microphone splits into the voices of the people next to you, who can be named, be you, or be one voice again', async () => {
+  test.setTimeout(240000);
+  await linkEvents();
+  await openMeetings();
+  const id = voiceStarts({ startedAt: standupAt() + 60 * 1000, speakers: [MIC] });
+  await expect(view().locator('.mt-event-title')).toHaveText('Stand-up', { timeout: 10000 });
+  voice.append('speaker', id, callVoice(1));
+  say(id, 'call', 1000, 'Can someone pull the churn figures before Thursday?');
+  say(id, 'mic', 4500, 'I can do that, I have the export open already.');
+  say(id, 'mic', 9000, 'Thanks. Then the launch checklist.');
+  say(id, 'mic', 13000, 'One of the two labels is mine.');
+  voice.append('meeting.state', id, { state: 'done', at: 17000, endedAt: Date.now() });
+  voice.append('status', null, { recording: null, dictating: false });
+  await expect(rows()).toHaveCount(4);
+  const split = () => view().locator('.mt-split');
+  await expect(split().locator('[data-mt="split"]')).toBeEnabled({ timeout: 10000 });
+  await expect(split()).toContainText('When someone next to you spoke too');
+  // Before the split the microphone's player plays all of it.
+  await hear('mic').click();
+  await expect(player()).toContainText('I can do that');
+  await expect(player().locator('.mt-pcount')).toHaveText('1 of 3');
+  await expect(player().locator('[data-mt="assign"]')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+  await shot('split-before-en');
+
+  // A Voice that doesn't know the command: Rukoo says to update it, and can ask again.
+  await split().locator('[data-mt="split"]').click();
+  await expect(split()).toContainText('Update Rukoo Voice to split your microphone into voices.');
+
+  // Voice labels the microphone: twice "running", then the new voice and the passages that moved, then done.
+  let asked = 0;
+  voice.handlers['speakers.split'] = function (args) {
+    asked += 1;
+    if (args.track !== 'mic') return { error: { code: 'bad_request', message: 'mic only' } };
+    if (asked < 3) return { state: 'running', at: asked * 6000, end: 17000 };
+    if (asked === 3) {
+      this.append('speaker', args.meeting, { id: 'mic-2', track: 'mic', label: 'Microphone 2' });
+      this.append('passage', args.meeting, { id: pid('mic', 4500), track: 'mic', speaker: 'mic-2', start: 4500, end: 7500, text: 'I can do that, I have the export open already.', revision: 2, dictation: false, language: 'en' });
+      // A passage two voices shared is cut where the voice changes: its first piece keeps the id, the rest is new.
+      this.append('passage', args.meeting, { id: pid('mic', 13000), track: 'mic', speaker: 'mic-2', start: 13000, end: 15000, text: 'One of the two labels is mine.', revision: 2, dictation: false, language: 'en' });
+      this.append('passage', args.meeting, { id: pid('mic', 15000), track: 'mic', speaker: 'mic', start: 15000, end: 16000, text: 'Good, thanks.', revision: 1, dictation: false, language: 'en' });
+    }
+    return { state: 'done', voices: 2 };
+  };
+  await split().locator('[data-mt="split"]').click();
+  await expect(split()).toContainText(/Telling the voices apart… \d+%/);
+  await shot('split-running-en');
+  await expect(peopleNames()).toHaveText(['You', 'Speaker A', 'Speaker 1'], { timeout: 15000 });
+  await expect(split()).toHaveCount(0);
+  await expect(rows().nth(1).locator('.mt-name')).toHaveText('Speaker A');
+  await expect(rows().nth(2).locator('.mt-name')).toHaveText('You');
+  await expect(rows().nth(3).locator('.mt-name')).toHaveText('Speaker A');
+  await expect(rows()).toHaveCount(5);
+  await expect(rows().nth(3).locator('.mt-text')).toHaveText('One of the two labels is mine.');
+  await expect(rows().nth(4).locator('.mt-name')).toHaveText('You');
+  await expect(rows().nth(4).locator('.mt-text')).toHaveText('Good, thanks.');
+  await expect(person('mic').locator('.mt-person-sub')).toHaveCount(0);
+  expect(voice.commands.filter((c) => c.command === 'speakers.split').every((c) => c.args.track === 'mic' && c.args.meeting === id)).toBe(true);
+
+  // Speaker A is someone at your microphone: hear them, then name them from the Stand-up's guests.
+  await hear('mic-2').click();
+  await expect(player().locator('.mt-pcount')).toHaveText('1 of 2');
+  await player().locator('[data-mt="assign"]').click();
+  await expect(menu().locator('button')).toHaveText([/This is me/, /Sanne de Vries/, /Joris Bakker/, /Someone else/]);
+  await win.keyboard.press('Escape');
+  for (const language of ['en', 'nl']) {
+    await setLanguage(language);
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme);
+      if (!(await player().count())) await hear('mic-2').click();
+      await player().locator('[data-mt="assign"]').click();
+      await expect(menu().locator('button').first()).toHaveText(language === 'nl' ? 'Dit ben ik' : 'This is me');
+      await shot(`split-voices-${theme}-${language}`);
+      await win.keyboard.press('Escape');
+      await expect(menu()).toHaveCount(0);
+    }
+  }
+  await setLanguage('en');
+  await setTheme('dark');
+  await person('mic-2').click();
+  await menu().locator('button', { hasText: 'Joris Bakker' }).click();
+  await expect(rows().nth(1).locator('.mt-name')).toHaveText('Joris Bakker');
+
+  // "This is me": the user was the other voice. Their name goes, and the microphone's first voice gets the letter.
+  await person('mic-2').click();
+  await menu().locator('button', { hasText: 'This is me' }).click();
+  await expect(peopleNames()).toHaveText(['You', 'Speaker A', 'Speaker 1']);
+  await expect(person('mic-2').locator('.mt-person-name')).toHaveText('You');
+  await expect(rows().nth(1).locator('.mt-name')).toHaveText('You');
+  await expect(rows().nth(2).locator('.mt-name')).toHaveText('Speaker A');
+  await person('mic').click();
+  await menu().locator('button', { hasText: 'This is me' }).click();
+  await expect(person('mic').locator('.mt-person-name')).toHaveText('You');
+
+  // Show as one voice: everything at the microphone is the user's again, and the voices can come back.
+  await person('mic').click();
+  await menu().locator('button', { hasText: 'Show as one voice' }).click();
+  await expect(peopleNames()).toHaveText(['You', 'Speaker 1']);
+  await expect(rows().nth(1).locator('.mt-name')).toHaveText('You');
+  await expect(rows().nth(3).locator('.mt-name')).toHaveText('You');
+  await expect(split().locator('[data-mt="unjoin"]')).toBeVisible();
+
+  // After a restart the microphone is still one voice, and Voice isn't asked again to show the voices.
+  const asks = asked;
+  await closeApp(app);
+  await launch();
+  await expect(view().locator('.mt-title')).toHaveText('Stand-up', { timeout: 20000 });
+  await expect(peopleNames()).toHaveText(['You', 'Speaker 1']);
+  await split().locator('[data-mt="unjoin"]').click();
+  await expect(peopleNames()).toHaveText(['You', 'Speaker A', 'Speaker 1']);
+  await expect(rows().nth(1).locator('.mt-name')).toHaveText('Speaker A');
+  expect(asked).toBe(asks);
+});
+
 test("a 1:1's guessed name stays when a second voice joins, and the People card asks to check it", async () => {
   await linkEvents();
   await openMeetings();

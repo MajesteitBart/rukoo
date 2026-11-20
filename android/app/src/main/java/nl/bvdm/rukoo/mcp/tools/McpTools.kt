@@ -122,7 +122,7 @@ internal suspend fun ensureConversation(d: ToolDeps, lookup: MailLookup, call: T
 }
 
 /**
- * Rukoo's tools on the phone (desktop tools.js): the same twenty-two tools, with the same arguments, validation,
+ * Rukoo's tools on the phone (desktop tools.js): the same twenty-three tools, with the same arguments, validation,
  * tagging, results and error texts. Only the behavior adapts: the composer and screen are the phone's, every
  * caller is remote, so nothing gets a local path, and the phone has no calendar yet (BookingLink).
  */
@@ -210,7 +210,7 @@ class McpTools(private val d: ToolDeps) : McpBackend {
         // Rukoo Voice records meetings on a computer, so the phone has none. Checked as on a computer first, like the
         // calendar tools.
         "read_meeting_transcript", "search_meetings", "read_meeting_notes", "get_meeting_frame", "get_meeting_clip",
-        "get_meeting_media_link" -> throw ToolError(NO_MEETINGS)
+        "get_meeting_media_link", "name_meeting_speaker" -> throw ToolError(NO_MEETINGS)
         else -> throw ToolError("Unknown tool \"$name\".")
     }
 

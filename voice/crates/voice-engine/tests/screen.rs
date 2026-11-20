@@ -28,6 +28,7 @@ use voice_engine::media::{MediaService, RecordedScreen};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::meetings::screen::{ScreenChange, ScreenOptions, ScreenSupervisor, ScreenTiming};
+use voice_engine::meetings::split::SplitService;
 use voice_engine::PillPhase;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
 use voice_screen_files::journal::{self, Line};
@@ -386,6 +387,7 @@ impl Rig {
                 Arc::new(RecordedScreen::default()),
                 Arc::new(|_| None),
             ),
+            SplitService::unavailable(Arc::clone(&self.controller), self.log.clone()),
         )
     }
 

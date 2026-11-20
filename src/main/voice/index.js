@@ -17,7 +17,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { VoiceStore } = require('./store');
 const { VoiceBridge, VoiceError } = require('./bridge');
-const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS } = require('./protocol');
+const { isMeetingId, TITLE_MAX, LABEL_MAX, SCREENS, MEDIA_READ_MAX } = require('./protocol');
 const { candidateEvents, suggest, compareSpeakers, WINDOW_MS } = require('./speakers');
 const { bridgePathHere } = require('./paths');
 
@@ -73,10 +73,28 @@ function summary(e, now = Date.now()) {
   };
 }
 
-// calls: how many voices the meeting has on the call. A name Rukoo filled in for a 1:1 is a guess once a second voice
-// turns up, so the People card asks the user to check it (autoCheck) rather than dropping a probably right name.
-function speakerView(s, calls = 1) {
-  return { id: s.id, track: s.track, label: s.label, name: s.name, address: s.address, from: s.from, you: s.track === 'mic', autoCheck: s.from === 'auto' && calls > 1 };
+// others: how many voices the meeting has besides the user's. A name Rukoo filled in for a 1:1 is a guess once a
+// second voice turns up, so the People card asks the user to check it (autoCheck) rather than dropping a probably
+// right name. letter: a voice at the user's microphone after a split, A, B, … (store.js micView).
+function speakerView(s, others = 1) {
+  return { id: s.id, track: s.track, label: s.label, name: s.name, address: s.address, from: s.from, you: s.you === true, letter: s.letter || null, autoCheck: s.from === 'auto' && others > 1 };
+}
+
+// speakers.split polls: Voice wants at most one command a second (voice/PROTOCOL.md).
+const SPLIT_POLL_MS = 1000;
+// A clip in the People card's player: a few seconds of one voice, at most this long.
+const AUDIO_CLIP_MAX_MS = 30000;
+// A clip's WAV: 16 kHz mono 16-bit with its 44-byte header, plus room.
+const AUDIO_CLIP_BYTES_MAX = Math.ceil((AUDIO_CLIP_MAX_MS / 1000) * 32000) + 4096;
+// How long Rukoo waits for Voice to prepare a clip, for instance while it fetches the audio back from the bucket.
+const AUDIO_PREPARE_MS = 30000;
+const SPLIT_REASONS = new Set(['cpu', 'runtime', 'model', 'audio']);
+
+// speakers.split's answer, checked: {state: 'running', at, end} or {state: 'done', voices}.
+function checkSplit(r) {
+  if (r && r.state === 'running' && count(r.at) && count(r.end)) return { state: 'running', at: r.at, end: Math.max(r.at, r.end) };
+  if (r && r.state === 'done' && Number.isInteger(r.voices) && r.voices >= 1) return { state: 'done', voices: r.voices };
+  throw badReply('a split');
 }
 
 const count = (v) => Number.isInteger(v) && v >= 0;
@@ -151,6 +169,9 @@ class VoiceService extends EventEmitter {
     this.deltaTimer = null;
     // The meetings whose meeting.get is on its way, each with the events for it applied meanwhile (refetch()).
     this.waiting = new Set();
+    // The microphone splits Rukoo follows, by meeting (splitMic): {state: 'running', at, end} or {state: 'error', code,
+    // reason}. A finished split lives in the store.
+    this.splits = new Map();
     this.closed = false;
   }
 
@@ -349,6 +370,9 @@ class VoiceService extends EventEmitter {
     // The meeting's state takes over the initial start hold. A live screen change still needs
     // its own hold until capture starts, even if another client pauses or resumes the audio.
     if (ev.event === 'meeting.state' && live) this.releaseStarting(ev.meeting, !ENDED_STATES.includes(ev.data.state));
+    // Voice refused a split because the meeting still recorded or processed: once its state moves on, the user can ask
+    // again, and the People card shows Split into voices.
+    if (ev.event === 'meeting.state' && this.splits.get(ev.meeting)?.code === 'busy') this.splitChanged(ev.meeting, null);
     const screenChange = ev.event === 'mark' && (ev.data.kind === 'screen_mode' || (ev.data.track === 'screen' && ['dropped', 'video_dropped'].includes(ev.data.kind)));
     if (screenChange && live) {
       this.screenGeneration += 1;
@@ -378,7 +402,7 @@ class VoiceService extends EventEmitter {
     const id = change.meeting;
     let d = this.deltas.get(id);
     if (!d) {
-      d = { from: before, passages: new Set(), removed: new Set(), marks: new Set(), frames: new Set(), speakers: false, notes: false, all: false };
+      d = { from: before, passages: new Set(), removed: new Set(), marks: new Set(), frames: new Set(), speakers: false, notes: false, mic: false, all: false };
       this.deltas.set(id, d);
     }
     if (change.kind === 'passage') {
@@ -391,7 +415,9 @@ class VoiceService extends EventEmitter {
     else if (change.kind === 'frame') d.frames.add(change.id);
     else if (change.kind === 'speaker' || change.kind === 'names') d.speakers = true;
     else if (change.kind === 'notes') d.notes = true;
-    else if (change.kind === 'snapshot' || change.kind === 'removed') d.all = true;
+    // How a split goes. A change to how the microphone shows (the user, joined) moves passages between voices.
+    else if (change.kind === 'mic') d.mic = true;
+    else if (change.kind === 'snapshot' || change.kind === 'removed' || change.kind === 'micView') d.all = true;
     if (!this.deltaTimer && !this.closed) {
       this.deltaTimer = setTimeout(() => this.flushDeltas(), this.emitMs);
       if (this.deltaTimer.unref) this.deltaTimer.unref();
@@ -421,6 +447,7 @@ class VoiceService extends EventEmitter {
         // With the guests of the linked event to pick from, as meetingGet gives them.
         if (d.speakers) payload.speakers = this.speakers(id);
         if (d.notes) payload.notes = full.notes;
+        if (d.mic) payload.mic = this.micState(id);
       }
       this.emit('meeting', payload);
     }
@@ -436,6 +463,7 @@ class VoiceService extends EventEmitter {
   get(id) {
     const full = this.store.meeting(id);
     if (!full) return null;
+    this.finishSplit(id, full);
     return {
       meeting: summary(full.meeting, this.now()),
       // Each with the guests of the linked event the meeting view offers as names.
@@ -445,6 +473,7 @@ class VoiceService extends EventEmitter {
       frames: full.frames,
       notes: full.notes,
       event: this.eventSummary(full.meeting.eventId),
+      mic: this.micState(id),
       rev: full.rev
     };
   }
@@ -733,8 +762,12 @@ class VoiceService extends EventEmitter {
     return out;
   }
 
-  setSpeaker(id, speakerId, value) {
-    if (!this.change(id, 'names', () => this.store.setName(id, speakerId, value === null ? null : { ...value, from: 'user' }))) throw new VoiceError('not_found', 'No such meeting or speaker.');
+  // from: who gave the name, the user in the People card or the agent (name_meeting_speaker). The user's own voice
+  // takes no name.
+  setSpeaker(id, speakerId, value, from = 'user') {
+    const s = this.store.meeting(id)?.speakers.find((x) => x.id === speakerId);
+    if (s && s.you && value !== null) throw new VoiceError('bad_request', "The user's own voice takes no name.");
+    if (!this.change(id, 'names', () => this.store.setName(id, speakerId, value === null ? null : { ...value, from: from === 'agent' ? 'agent' : 'user' }))) throw new VoiceError('not_found', 'No such meeting or speaker.');
     return this.speakers(id);
   }
 
@@ -747,7 +780,10 @@ class VoiceService extends EventEmitter {
   }
 
   correct(id, passageId, text) {
+    // A correction over pieces a split cut changes which rows show: the renderer fetches the meeting again.
+    const hid = this.store.hidesPieces(id, passageId);
     if (!this.change(id, 'passage', () => this.store.correct(id, passageId, text))) throw new VoiceError('not_found', 'No such meeting or passage.');
+    if (hid || this.store.hidesPieces(id, passageId)) this.note({ meeting: id, kind: 'micView' }, this.revOf(id));
     // The delta names the passage.
     const d = this.deltas.get(id);
     if (d) d.passages.add(passageId);
@@ -762,14 +798,122 @@ class VoiceService extends EventEmitter {
     return this.speakers(id);
   }
 
-  // In one order for the meeting view and meetingGet: the microphone, then call-1, call-2, …, call-10 by number.
+  // In one order for the meeting view and meetingGet: the user, the other voices at the microphone, then call-1,
+  // call-2, …, call-10 by number.
   speakers(id) {
     const full = this.store.meeting(id);
     if (!full) return [];
     const event = this.calendarEvent(full.meeting.eventId);
     const { suggestions } = suggest(full.speakers, event);
-    const calls = full.speakers.filter((s) => s.track === 'call').length;
-    return [...full.speakers].sort(compareSpeakers).map((s) => ({ ...speakerView(s, calls), suggestions: suggestions[s.id] || [] }));
+    const others = full.speakers.filter((s) => !s.you).length;
+    return [...full.speakers].sort(compareSpeakers).map((s) => ({ ...speakerView(s, others), suggestions: suggestions[s.id] || [] }));
+  }
+
+  // ---------- the microphone's voices ----------
+
+  // What the People card shows of the microphone: which voice is the user, whether it is split or joined, and the
+  // split Voice is doing now or couldn't do: state none, running (at of end), done or error (code, reason).
+  micState(id) {
+    const full = this.store.meeting(id);
+    if (!full) return null;
+    const job = this.splits.get(id) || null;
+    const state = job ? job.state : full.mic.voices !== null ? 'done' : 'none';
+    return { ...full.mic, state, at: job && job.at, end: job && job.end, code: (job && job.code) || null, reason: (job && job.reason) || null };
+  }
+
+  splitChanged(id, job) {
+    if (job) this.splits.set(id, job);
+    else this.splits.delete(id);
+    this.note({ meeting: id, kind: 'mic' }, this.revOf(id));
+  }
+
+  // Asks Voice to tell apart the people who shared the microphone in a stopped meeting, and follows the split until
+  // it is done. Returns the microphone's state at once; the People card hears the rest through deltas. Voice sends
+  // the new voices and the passages that moved as events before it answers done.
+  // confirm: Rukoo only asks for the result of a split it saw, so the user's "Show as one voice" stays.
+  splitMic(id, { confirm = false } = {}) {
+    const e = this.store.entry(id);
+    if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
+    const running = this.splits.get(id);
+    if (running && running.state === 'running') return this.micState(id);
+    this.mustConnect();
+    this.splitChanged(id, { state: 'running', at: 0, end: 0 });
+    (async () => {
+      for (;;) {
+        const r = checkSplit(await this.bridge.command('speakers.split', { meeting: id, track: 'mic' }));
+        if (this.closed) return;
+        if (r.state === 'done') {
+          this.change(id, 'micView', () => this.store.setSplit(id, r.voices, { keepJoined: confirm }));
+          return this.splitChanged(id, null);
+        }
+        this.splitChanged(id, { state: 'running', at: r.at, end: r.end });
+        await delay(SPLIT_POLL_MS);
+        if (this.closed) return;
+      }
+    })().catch((err) => {
+      if (this.closed) return;
+      const code = (err && err.code) || 'failed';
+      const reason = err && SPLIT_REASONS.has(err.reason) ? err.reason : null;
+      this.log('voice', `speakers.split for ${id} stopped: ${code}${reason ? ` (${reason})` : ''}`);
+      this.splitChanged(id, { state: 'error', code, reason });
+    });
+    return this.micState(id);
+  }
+
+  // A microphone that shows voices of a split Rukoo never heard finish: Voice stopped, or Rukoo quit, between the
+  // split's events and its done. Asking again makes Voice send what is missing and answer done (voice/PROTOCOL.md).
+  // A failed try, such as Voice going away, is tried again the next time the meeting opens.
+  finishSplit(id, full) {
+    const job = this.splits.get(id);
+    if (!full.mic.split || full.mic.voices !== null || (job && job.state === 'running') || !this.connected) return;
+    if (!['done', 'failed'].includes(full.meeting.state) || full.meeting.removed) return;
+    try {
+      this.splitMic(id, { confirm: true });
+    } catch (_) {
+      // Voice went away meanwhile; the next time the meeting opens, Rukoo asks again.
+    }
+  }
+
+  // Which voice at the microphone is the user, after a split.
+  setYou(id, speakerId) {
+    if (!this.change(id, 'micView', () => this.store.setYou(id, speakerId))) throw new VoiceError('not_found', 'No such meeting or voice at the microphone.');
+    return this.micState(id);
+  }
+
+  // Shows the split microphone as one voice again, or as its voices.
+  joinMic(id, joined) {
+    if (!this.change(id, 'micView', () => this.store.setJoined(id, joined))) throw new VoiceError('not_found', 'No such meeting.');
+    return this.micState(id);
+  }
+
+  // A few seconds of the meeting's audio, for the People card's player: {type, data (base64), start, end}. Voice
+  // mixes the tracks (media.open); a clip is a stretch where one voice speaks.
+  async audioClip(id, start, end) {
+    const e = this.store.entry(id);
+    if (!e || e.removed) throw new VoiceError('not_found', 'No such meeting.');
+    if (!count(start) || !count(end) || end <= start || end - start > AUDIO_CLIP_MAX_MS) throw new VoiceError('bad_request', 'A clip is 30 s at most.');
+    this.mustConnect();
+    const until = this.now() + AUDIO_PREPARE_MS;
+    let r;
+    for (let wait = 250; ; wait = Math.min(1000, wait * 2)) {
+      r = await this.mediaOpen({ meeting: id, kind: 'audio', start, end });
+      if (r && r.ready === true) break;
+      if (!r || r.ready !== false) throw badReply('a media file');
+      if (this.now() > until) throw new VoiceError('timeout', 'Rukoo Voice took too long to prepare the clip.');
+      await delay(wait);
+    }
+    if (r.type !== 'audio/wav' || !count(r.size) || r.size > AUDIO_CLIP_BYTES_MAX) throw badReply('a clip');
+    const parts = [];
+    let offset = 0;
+    while (offset < r.size) {
+      const piece = await this.mediaRead(r.media, offset, Math.min(MEDIA_READ_MAX, r.size - offset));
+      const data = piece && typeof piece.data === 'string' ? Buffer.from(piece.data, 'base64') : null;
+      if (!data || piece.offset !== offset) throw badReply('a piece of a clip');
+      if (!data.length) break;
+      parts.push(data);
+      offset += data.length;
+    }
+    return { type: 'audio/wav', data: Buffer.concat(parts).toString('base64'), start: count(r.start) ? r.start : start, end: count(r.end) ? r.end : end };
   }
 
   // The calendar events this meeting can be, nearest first. {events, failed}.

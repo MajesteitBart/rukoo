@@ -1994,7 +1994,7 @@ test('hermes bridge: combines old and new device catalogs regardless of activity
   assert.equal(phone.calls.length, 0);
   assert.equal(JSON.parse(fs.readFileSync(cache)).tools.length, catalog.length);
   assert.match(log, /supplied 16 tools/);
-  assert.match(log, /serving 22 tools from 2 devices/);
+  assert.match(log, new RegExp(`serving ${catalog.length} tools from 2 devices`));
 });
 
 test('hermes bridge: tells Hermes when Rukoo gains tools after Hermes listed them, and only then', async (t) => {

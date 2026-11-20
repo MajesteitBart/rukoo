@@ -170,7 +170,10 @@ A voice in the meeting, as Voice labels it.
 { "id": "call-1", "track": "call", "label": "Speaker 1" }
 ```
 
-The user's microphone is always the speaker `mic` with the label `You`. Voice doesn't tell apart people who share the microphone.
+The user's microphone is the speaker `mic` with the label `You`. Voice hears it as one voice until the user splits it with `speakers.split`, which gives the other people at the microphone ids of their own:
+
+- After a split, the voice Voice takes for the user keeps `mic`: the voice heard most while the user dictated, else the one that spoke longest. The others get `mic-2`, `mic-3` and so on, in the order Voice first heard them, labelled `Microphone 2`, `Microphone 3` with the same number.
+- Rukoo decides how to show them. It can show another microphone voice as the user, or the whole microphone as one voice again, without telling Voice.
 
 The call track's speakers depend on speaker labels in Voice's Settings:
 
@@ -191,7 +194,7 @@ A stretch of transcript.
 
 - `id` is the track, a dash and the start in milliseconds as nine digits. It stays the same when Voice transcribes the passage again.
 - A passage with a higher `revision` replaces the one Rukoo has. Voice sends a new revision when a better transcript or a settled speaker arrives.
-- `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another.
+- `speaker` is a speaker id, or `null` while Voice doesn't know. With speaker labels, a call passage can arrive with `null` when Voice couldn't tell whose words they were, and a later revision can name the speaker. Voice never moves a passage from one speaker id to another, with one exception: `speakers.split` moves a microphone passage from `mic` to the voice that said it, or cuts it where the voice changes.
 - `dictation` is true when the user was dictating into another app while the meeting recorded. Those words reached the call, but weren't part of the conversation.
 - `language` is a BCP 47 code when the recognizer reports one, otherwise `null`.
 
@@ -262,7 +265,7 @@ Rukoo sends commands; Voice answers each with one reply.
 { "type": "reply", "id": "c-18", "ok": false, "error": { "code": "busy", "message": "A meeting is already recording.", "meeting": "m-20261030-171203-4f2a" } }
 ```
 
-`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply.
+`id` is Rukoo's own, at most 64 characters, and comes back unchanged. Voice answers commands in order, except that `meeting.protected` bypasses the queue so it can acknowledge a `screen.set` waiting on that same connection. Events may arrive before a command's reply, and every event Voice stored before it finished a command arrives before that command's reply.
 
 | Command | `args` | `result` | Errors |
 |---|---|---|---|
@@ -282,6 +285,7 @@ Rukoo sends commands; Voice answers each with one reply.
 | `screen.set` | `meeting`, `screen`, `monitor`? | `{ "screen" }` | `not_found`, `not_recording`, `not_available`, `failed` |
 | `media.open` | `meeting`, `kind`, `start`, `end`? | `{ "media", "ready", … }` | `not_found`, `not_available`, `bad_request`, `failed` |
 | `media.read` | `media`, `offset`, `length` | `{ "offset", "data" }` | `not_found`, `bad_request`, `failed` |
+| `speakers.split` | `meeting`, `track` | `{ "state", … }` | `not_found`, `not_available`, `busy`, `failed` |
 | `status.get` | | the `status` object | |
 
 - `meeting.start` uses the Settings default for every argument left out. `title` is at most 200 characters, `tracks` a non-empty list of `mic` and `call`, `screen` one of the values of `meeting.started`, and `context` an object of at most 16 KiB.
@@ -302,6 +306,11 @@ Rukoo sends commands; Voice answers each with one reply.
   `end` is required for `audio` and `video`. Voice cuts the range to what was recorded. Preparing can take a while, for instance when Voice fetches the media back from the user's bucket, so Voice answers at once. While the file isn't ready, the result is `{ "media": "md-…", "ready": false }`, and Rukoo sends the same `media.open` again, no more than every 250 ms. A ready file gives `{ "media", "ready": true, "type", "size", "start", "end" }`: `type` is `audio/wav`, `image/jpeg` or `video/mp4`, `size` the file's length in bytes, and `start` and `end` the meeting times the file covers (both the frame's `at` for a frame). The same arguments give the same `media` while Voice keeps the file.
 - `media.read` returns up to `length` bytes of a prepared file from `offset` as `{ "offset", "data" }`, with `data` in standard base64. It returns fewer bytes at the end of the file and an empty `data` past it. `length` is at most 1,048,576, so a reply stays far below Voice's 8 MiB limit and one command never holds the connection for long. Voice keeps a file for 10 minutes after it was last read and answers `not_found` afterwards; Rukoo then opens it again.
 - `media.open` answers `not_found` when the meeting or the frame doesn't exist or nothing was recorded at `start`, and `not_available` when the meeting didn't record that kind of media, or its media is gone from this computer and isn't in a synced bucket. `media.read` answers `bad_request` for a file that isn't ready yet.
+- `speakers.split` tells apart the voices on one track of a stopped meeting. `track` is `mic`: the people who share the user's microphone. Voice labels the recorded track with the same speaker model it uses for the call, on this computer, also for a meeting transcribed with Mistral's realtime model. When Voice has a microphone passage's word timings, it cuts the passage where the voice changes: the first piece keeps the passage's `id` and gets a new revision with its own `end` and `text`, and each later piece is a new passage with its own `id`, at revision 1. Each piece gets the voice that said its words, and words without a clear voice keep `mic`. Without word timings, Voice gives the whole passage the voice with a clear majority of its time, and a passage without one keeps `mic`. Every passage the user dictated stays whole and keeps `mic`. Without headphones the microphone also hears the call, so Voice first silences the track wherever the call has speech, 200 ms wider on each side: the call's speaker turns where Voice labelled the call, its passages elsewhere. A call voice heard through the speakers then never becomes a voice at the microphone, and microphone words in those stretches have no clear voice, so they keep `mic`. The meeting must be `done` or `failed`; while it records, pauses or processes, Voice answers `busy`.
+  - Voice answers at once. While it works, the result is `{ "state": "running", "at", "end" }`: it has labelled the track up to meeting time `at` of `end`. Rukoo sends the same command again, no more than once a second, until the state is `done`.
+  - A finished split gives `{ "state": "done", "voices" }`, the number of voices on the track, at least 1. Before Voice answers `done` it has sent the split's events: a `speaker` for each new voice, a new revision of each passage that moved or was cut, and each new passage a cut made. With `voices` 1 nothing moved.
+  - Voice splits a track once and remembers it: every later `speakers.split` of that meeting and track answers `done` with the same `voices`. A split that stopped, because Voice quit or the speaker worker failed, starts over at the next `speakers.split`. When Voice quit after it stored a split but before it sent all of the split's events, it sends the rest when it starts again, and before it answers the next `done`.
+  - `not_available` comes with a `reason`: `cpu`, `runtime` or `model` when speaker labels can't run on this computer, as in Settings › Speaker labels, and `audio` when the track's audio is gone from this computer. `failed` means the speaker worker failed this time.
 
 Errors carry a `code` and an English `message` for logs. Rukoo shows its own text for a code.
 
@@ -325,6 +334,7 @@ Both sides check what they receive with the same rules and drop a message that b
 - `command` needs `id` (1 to 64 characters) and `command`; `args` defaults to `{}`. The arguments of a known command follow the table above, and its required ones must be there.
 - `event` needs `seq`, `event`, `createdAt` and an object in `data`. The meeting events need `meeting`. A known event's `data` must have the fields this document lists for it, with these limits: `tracks` holds `mic` and `call` without repeats and isn't empty; `end` ≥ `start`; `until`, when not `null`, ≥ `at`; a passage's `id` is its `track`, a dash and its `start` as nine digits; `endedAt` comes with `processing`, `done` and `failed`, and `reason` with `processing` and `failed`.
 - `clip.get` needs `meeting`, `start` and `end`, with `end` ≥ `start`. `screen.select`'s `monitor` is 1 to 64 characters. `meeting.starting` needs `screen`. `screenDefault` in a status, when present and not `null`, is one of the values of `screen`.
+- `speakers.split` needs `meeting` and `track`, which is `mic`. Its result's `state` is `running`, with `at` and `end`, or `done`, with `voices` of 1 or more; an error's `reason`, when present, is a string.
 - `media.open` needs `meeting`, `kind` (`audio`, `frame` or `video`) and `start`; `end`, when given, is ≥ `start` and at most 3,600,000 more. `media.read` needs `media`, which matches `^md-[A-Za-z0-9_-]{22}$`, `offset`, and `length` from 1 to 1,048,576.
 - A `reply` with `ok` true has an object in `result`; with `ok` false, an `error` with `code` and `message`.
 - An unknown event type or command name is not an error in itself.

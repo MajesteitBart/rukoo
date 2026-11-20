@@ -718,6 +718,7 @@ impl Session {
         let (replies_out, mut replies) = mpsc::unbounded_channel();
         let worker = tokio::spawn(run_commands(
             self.shared.control.clone(),
+            self.shared.log.clone(),
             queue,
             replies_out,
         ));
@@ -731,7 +732,7 @@ impl Session {
         live: &mut tokio::sync::broadcast::Receiver<Stored>,
         source: &mut Source,
         jobs: &mpsc::Sender<Job>,
-        replies: &mut mpsc::UnboundedReceiver<String>,
+        replies: &mut mpsc::UnboundedReceiver<Answered>,
     ) -> Result<End, End> {
         let options = &self.shared.options;
         let mut ping = interval_at(
@@ -762,6 +763,8 @@ impl Session {
                                         Ok(()) => Reply::ok(id, Object::new()),
                                         Err(error) => Reply::error(id, reply_error(error)),
                                     };
+                                    let head = self.shared.log.head();
+                                    self.flush_to(head).await?;
                                     self.send(within_limit(reply)).await?;
                                 }
                                 job => jobs.send(job).await.map_err(|_| End::Dropped)?,
@@ -787,7 +790,10 @@ impl Session {
                     Ok(_) | Err(RecvError::Lagged(_)) => self.catch_up().await?,
                     Err(RecvError::Closed) => return Ok(End::Dropped),
                 },
-                Some(reply) = replies.recv() => self.send(reply).await?,
+                Some(answered) = replies.recv() => {
+                    self.flush_to(answered.head).await?;
+                    self.send(answered.json).await?;
+                }
                 _ = ping.tick() => {
                     if pong_due.is_none() {
                         self.sink
@@ -803,6 +809,41 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Sends the stored events up to `head` that this connection doesn't have yet, before a
+    /// reply. A command's events then reach Rukoo before its answer, however the loop's select
+    /// picks between the live events and the replies: `speakers.split` sends a split's events
+    /// before it answers `done` (PROTOCOL.md).
+    async fn flush_to(&mut self, head: u64) -> Result<(), End> {
+        // Only up to `head`, the log's head when the command finished: events that keep arriving
+        // after it must not hold the reply, nor this loop's reading of the next command.
+        while self.last < head {
+            let log = self.shared.log.clone();
+            let after = self.last;
+            let page = blocking(move || log.page(after, PAGE)).await?;
+            let more = page.len() == PAGE;
+            let mut sent = false;
+            for stored in page {
+                if stored.seq > head {
+                    break;
+                }
+                self.sink
+                    .feed(Frame::text(stored.to_json()))
+                    .await
+                    .map_err(|_| End::Dropped)?;
+                self.last = stored.seq;
+                sent = true;
+            }
+            self.sink.flush().await.map_err(|_| End::Dropped)?;
+            let last = self.last;
+            self.reached(last);
+            // Numbers can skip: nothing stored up to `head` is left when a page sent nothing.
+            if !more || !sent {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Sends every stored event after `last`, page by page.
@@ -880,31 +921,53 @@ fn read_command(text: &str, received: std::time::Instant) -> Option<Job> {
     }
 }
 
+/// A command's reply, and the log's head once the command had run: the connection sends the
+/// events up to that head before the reply.
+struct Answered {
+    json: String,
+    head: u64,
+}
+
 async fn run_commands(
     control: Arc<dyn MeetingControl>,
+    log: EventLog,
     mut queue: mpsc::Receiver<Job>,
-    replies: mpsc::UnboundedSender<String>,
+    replies: mpsc::UnboundedSender<Answered>,
 ) {
     while let Some(job) = queue.recv().await {
-        let reply = match job {
-            Job::Answer(reply) => reply,
+        let (reply, head) = match job {
+            // Nothing ran, so no event of this command is in the log.
+            Job::Answer(reply) => (reply, 0),
             Job::Run(Command { id, body }, received) => {
                 let control = control.clone();
-                let run = move || dispatch(control.as_ref(), body, received);
+                let log_after = log.clone();
+                // The head is read on the command's thread once it returns, so every event it
+                // appended, and every other one appended by then, is at or below it.
+                let run = move || {
+                    let result = dispatch(control.as_ref(), body, received);
+                    (result, log_after.head())
+                };
                 match tokio::task::spawn_blocking(run).await {
-                    Ok(Ok(result)) => Reply::ok(id, result),
-                    Ok(Err(error)) => Reply::error(id, reply_error(error)),
-                    Err(_) => Reply::error(
-                        id,
-                        ReplyError::new(
-                            ErrorCode::Failed,
-                            "Voice failed while running the command.",
+                    Ok((Ok(result), head)) => (Reply::ok(id, result), head),
+                    Ok((Err(error), head)) => (Reply::error(id, reply_error(error)), head),
+                    Err(_) => (
+                        Reply::error(
+                            id,
+                            ReplyError::new(
+                                ErrorCode::Failed,
+                                "Voice failed while running the command.",
+                            ),
                         ),
+                        log.head(),
                     ),
                 }
             }
         };
-        if replies.send(within_limit(reply)).is_err() {
+        let answered = Answered {
+            json: within_limit(reply),
+            head,
+        };
+        if replies.send(answered).is_err() {
             return;
         }
     }
@@ -953,6 +1016,9 @@ fn dispatch(
             offset,
             length,
         } => control.media_read(&media, offset, length)?,
+        CommandBody::SpeakersSplit { meeting, track } => {
+            control.split_speakers(meeting.as_str(), track)?
+        }
         CommandBody::StatusGet => json!(control.status()),
         CommandBody::ClipGet {
             meeting,
@@ -998,6 +1064,7 @@ fn reply_error(error: ControlError) -> ReplyError {
         message: error.message,
         // A malformed id would make Rukoo drop the whole reply; the code alone still helps.
         meeting: error.meeting.as_deref().and_then(MeetingId::parse),
+        reason: error.reason,
     }
 }
 

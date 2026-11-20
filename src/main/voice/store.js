@@ -33,7 +33,7 @@ const NOTES_MAX = 100000;
 const CORRECTION_MAX = 20000;
 const EVENT_ID_MAX = 4000;
 const ENDED = new Set(['processing', 'done', 'failed']);
-const NAME_SOURCES = new Set(['calendar', 'user', 'auto']);
+const NAME_SOURCES = new Set(['calendar', 'user', 'auto', 'agent']);
 
 const isObj = (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
 const int = (v, fallback = 0) => (Number.isInteger(v) && v >= 0 ? v : fallback);
@@ -60,8 +60,48 @@ function frameEntry(d, changed, textOmitted = false) {
   return f;
 }
 
+// What Rukoo owns of the microphone (voice/PROTOCOL.md speakers.split). Voice can split it into mic, mic-2, mic-3;
+// you: which of those is the user, joined: whether the view shows them as one voice again, voices: how many voices the
+// split found, or null before Voice split it.
+function emptyMic() {
+  return { you: 'mic', joined: false, voices: null };
+}
+
 function emptyMeeting(id) {
-  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {} };
+  return { version: VERSION, id, speakers: {}, passages: {}, marks: {}, frames: {}, names: {}, notes: null, corrections: {}, correctedEnds: {}, mic: emptyMic() };
+}
+
+const MIC_VOICE = /^mic(?:-[1-9]\d{0,2})?$/;
+
+function normalizeMic(raw) {
+  const m = emptyMic();
+  if (!isObj(raw)) return m;
+  if (typeof raw.you === 'string' && MIC_VOICE.test(raw.you)) m.you = raw.you;
+  m.joined = raw.joined === true;
+  if (Number.isInteger(raw.voices) && raw.voices >= 1) m.voices = raw.voices;
+  return m;
+}
+
+// The order of a microphone voice's id: mic, then mic-2, mic-3, …
+function micOrder(id) {
+  const n = /^mic-([1-9]\d*)$/.exec(id);
+  return id === 'mic' ? 1 : n ? Number(n[1]) : Infinity;
+}
+
+// The microphone as the view shows it. Before a split, and when the user joined it again, it is one voice: the user.
+// After a split each voice at the microphone is a speaker; the one the user chose (else mic) is the user, and the
+// others get letters in id order (Speaker A, Speaker B), so they don't clash with the call's numbers.
+function micView(m) {
+  const ids = Object.values(m.speakers)
+    .filter((s) => s.track === 'mic')
+    .map((s) => s.id)
+    .sort((a, b) => micOrder(a) - micOrder(b));
+  const split = ids.some((id) => id !== 'mic');
+  const you = split && ids.includes(m.mic.you) ? m.mic.you : 'mic';
+  const joined = split && m.mic.joined;
+  const letters = {};
+  if (split && !joined) ids.filter((id) => id !== you).forEach((id, i) => (letters[id] = String.fromCharCode(65 + Math.min(i, 25))));
+  return { you, joined, split, voices: m.mic.voices, letters };
 }
 
 // An index entry with every field, from what was stored or what Voice sent.
@@ -101,6 +141,12 @@ function normalizeMeeting(id, raw) {
   m.names = map(raw.names, (v) => typeof v.name === 'string');
   m.notes = isObj(raw.notes) && typeof raw.notes.text === 'string' ? { text: raw.notes.text, rev: int(raw.notes.rev, 0), updatedAt: int(raw.notes.updatedAt, 0) } : null;
   if (isObj(raw.corrections)) for (const [k, v] of Object.entries(raw.corrections)) if (typeof v === 'string') m.corrections[k] = v;
+  // Where a corrected passage ended when the user corrected it, and the change number then (meeting(): a split that
+  // cuts it). A correction from before Rukoo kept these gets them now: no split has cut it yet.
+  if (isObj(raw.correctedEnds)) for (const [k, v] of Object.entries(raw.correctedEnds)) if (Object.hasOwn(m.corrections, k) && isObj(v) && Number.isInteger(v.end) && Number.isInteger(v.at)) m.correctedEnds[k] = { end: v.end, at: v.at };
+  const newest = Object.values(m.passages).reduce((n, p) => Math.max(n, int(p.changed), int(p.added)), 0);
+  for (const k of Object.keys(m.corrections)) if (!m.correctedEnds[k] && m.passages[k] && Number.isInteger(m.passages[k].end)) m.correctedEnds[k] = { end: m.passages[k].end, at: newest };
+  m.mic = normalizeMic(raw.mic);
   return m;
 }
 
@@ -445,6 +491,7 @@ class VoiceStore {
     if (!m || !m.passages[passageId]) return null;
     delete m.passages[passageId];
     delete m.corrections[passageId];
+    delete m.correctedEnds[passageId];
     this.meetingChanged(id);
     return { meeting: id, kind: 'passage.removed', id: passageId };
   }
@@ -535,6 +582,7 @@ class VoiceStore {
       if (!keep.has(pid) && !fresh.has(`passage:${pid}`)) {
         delete m.passages[pid];
         delete m.corrections[pid];
+        delete m.correctedEnds[pid];
         touched = true;
       }
     }
@@ -633,6 +681,40 @@ class VoiceStore {
     return true;
   }
 
+  // Which microphone voice is the user, after a split. false for an unknown meeting or a voice not at the microphone.
+  setYou(id, speakerId) {
+    const m = this.data(id);
+    const s = m && this.index.meetings[id] && typeof speakerId === 'string' ? m.speakers[speakerId] : null;
+    if (!s || s.track !== 'mic') return false;
+    m.mic.you = speakerId;
+    // The user isn't one of the people they name.
+    delete m.names[speakerId];
+    this.meetingChanged(id);
+    return true;
+  }
+
+  // Shows a split microphone as one voice again (true), or as its voices (false).
+  setJoined(id, joined) {
+    const m = this.data(id);
+    if (!m || !this.index.meetings[id]) return false;
+    m.mic.joined = joined === true;
+    this.meetingChanged(id);
+    return true;
+  }
+
+  // Voice split the microphone and found this many voices. A split the user asked for shows them, undoing an earlier
+  // join; keepJoined: only the result of a split Rukoo saw before, so a join stays.
+  setSplit(id, voices, { keepJoined = false } = {}) {
+    const m = this.data(id);
+    if (!m || !this.index.meetings[id] || !Number.isInteger(voices) || voices < 1) return false;
+    const joined = keepJoined && m.mic.joined;
+    if (m.mic.voices === voices && m.mic.joined === joined) return false;
+    m.mic.voices = voices;
+    m.mic.joined = joined;
+    this.meetingChanged(id);
+    return true;
+  }
+
   // Saves the notes when rev is the revision the editor started from. {rev} after a save, {conflict: true, rev, text}
   // when someone saved in between, null for an unknown meeting.
   saveNotes(id, value, rev) {
@@ -650,9 +732,16 @@ class VoiceStore {
   correct(id, passageId, value) {
     const m = this.data(id);
     if (!m || !m.passages[passageId]) return false;
-    if (value === null || value === undefined) delete m.corrections[passageId];
-    else m.corrections[passageId] = text(value, CORRECTION_MAX);
     const tick = this.nextTick();
+    if (value === null || value === undefined) {
+      delete m.corrections[passageId];
+      delete m.correctedEnds[passageId];
+    } else {
+      m.corrections[passageId] = text(value, CORRECTION_MAX);
+      // Editing it again keeps what the correction first covered.
+      const was = m.correctedEnds[passageId];
+      m.correctedEnds[passageId] = was ? { end: Math.max(was.end, m.passages[passageId].end), at: was.at } : { end: m.passages[passageId].end, at: tick };
+    }
     m.passages[passageId].changed = tick;
     this.meetingChanged(id, tick);
     return true;
@@ -685,21 +774,64 @@ class VoiceStore {
     return Object.keys(this.index.meetings).map((id) => this.entry(id)).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0) || (a.id < b.id ? 1 : -1));
   }
 
+  // A split can cut a passage the user corrected into pieces: the correction stays whole on the first piece, which
+  // keeps the passage's id, and the later pieces it covers don't show, so no words show twice. Only pieces that came
+  // after the correction, on its track and within what it covered, count: a passage that was there before stays.
+  covered(m) {
+    const out = new Set();
+    for (const [pid, c] of Object.entries(m.correctedEnds)) {
+      const first = m.passages[pid];
+      if (!first || !Object.hasOwn(m.corrections, pid) || c.end <= first.end) continue;
+      for (const p of Object.values(m.passages)) if (p.id !== pid && p.track === first.track && p.start >= first.end && p.start < c.end && int(p.added) > c.at) out.add(p.id);
+    }
+    return out;
+  }
+
+  // Whether this passage's correction hides pieces a split cut from it.
+  hidesPieces(id, passageId) {
+    const m = this.data(id);
+    const c = m && m.correctedEnds[passageId];
+    const first = m && m.passages[passageId];
+    return Boolean(c && first && Object.hasOwn(m.corrections, passageId) && c.end > first.end);
+  }
+
   // Everything about one meeting, with the names and corrections applied; null when Rukoo doesn't have it.
   meeting(id) {
     const e = this.entry(id);
     if (!e) return null;
     const m = this.data(id) || emptyMeeting(id);
-    const speakers = Object.values(m.speakers).map((s) => {
-      const own = m.names[s.id];
-      return { ...s, name: own ? own.name : null, address: own ? own.address || null : null, from: own ? own.from : null };
-    });
+    const mic = micView(m);
+    // A joined microphone is one voice, the user's; its other voices keep their names for when it splits again.
+    const speakers = Object.values(m.speakers)
+      .filter((s) => s.track !== 'mic' || !mic.joined || s.id === mic.you)
+      .map((s) => {
+        const you = s.track === 'mic' && s.id === mic.you;
+        const own = you ? null : m.names[s.id];
+        return { ...s, you, letter: mic.letters[s.id] || null, name: own ? own.name : null, address: own ? own.address || null : null, from: own ? own.from : null };
+      });
+    const covered = this.covered(m);
     const passages = Object.values(m.passages)
-      .map((p) => (Object.prototype.hasOwnProperty.call(m.corrections, p.id) ? { ...p, text: m.corrections[p.id], original: p.text, corrected: true } : { ...p, corrected: false }))
+      .filter((p) => !covered.has(p.id))
+      .map((p) => {
+        // What the user dictated is theirs, whichever voice at the microphone they said is them.
+        const theirs = p.track === 'mic' && p.speaker !== null && (mic.joined || (p.dictation && p.speaker === 'mic'));
+        const v = theirs ? { ...p, speaker: mic.you } : p;
+        if (!Object.prototype.hasOwnProperty.call(m.corrections, p.id)) return { ...v, corrected: false };
+        return { ...v, text: m.corrections[p.id], original: p.text, corrected: true };
+      })
       .sort((a, b) => a.start - b.start || (a.track < b.track ? -1 : 1));
     const marks = Object.values(m.marks).sort((a, b) => a.at - b.at);
     const frames = Object.values(m.frames).sort((a, b) => a.at - b.at);
-    return { meeting: { ...e }, speakers, passages, marks, frames, notes: m.notes ? { ...m.notes } : { text: '', rev: 0, updatedAt: null }, rev: e.rev };
+    return {
+      meeting: { ...e },
+      speakers,
+      passages,
+      marks,
+      frames,
+      notes: m.notes ? { ...m.notes } : { text: '', rev: 0, updatedAt: null },
+      mic: { you: mic.you, joined: mic.joined, split: mic.split, voices: mic.voices },
+      rev: e.rev
+    };
   }
 }
 

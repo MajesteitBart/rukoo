@@ -12,7 +12,7 @@ use crate::message::{
     commands, events, Command, CommandBody, Discovery, ErrorMessage, Event, EventBody, Frame,
     Hello, Mark, MarkKind, MarkTrack, MediaKind, MediaOpenArgs, MeetingStarted, MeetingStarting,
     MeetingState, MeetingStateChange, Message, Object, Passage, PassageRemoved, Replay, Reply,
-    ReplyError, ScreenMode, Speaker, StartArgs, StartedBy, Status, Track, Welcome,
+    ReplyError, ScreenMode, Speaker, SplitResult, StartArgs, StartedBy, Status, Track, Welcome,
 };
 use crate::{
     is_instance, is_media_id, is_token, passage_id, MeetingId, Side, DEFAULT_LIST_LIMIT,
@@ -438,6 +438,15 @@ fn command(f: &Fields) -> Checked<Command> {
                 length,
             }
         }
+        commands::SPEAKERS_SPLIT => {
+            let meeting = a.meeting("meeting")?;
+            // Only the microphone can be split; the call has its own labels.
+            let track = match a.named("track", Track::parse)? {
+                Track::Mic => Track::Mic,
+                Track::Call => return invalid("track"),
+            };
+            CommandBody::SpeakersSplit { meeting, track }
+        }
         unknown => CommandBody::Unknown {
             command: unknown.to_owned(),
             args: args.clone(),
@@ -501,7 +510,25 @@ fn reply_error(error: &Object) -> Option<ReplyError> {
         code: f.id_text("code").ok()?,
         message: f.string("message").ok()?.to_owned(),
         meeting: f.optional_meeting("meeting").ok()?,
+        reason: f.optional_string("reason").ok()?,
     })
+}
+
+/// Checks the result of a `speakers.split` reply: `running` with `at` and `end`, or `done` with
+/// `voices` of 1 or more. A reply doesn't say which command it answers, so the side that sent the
+/// command checks its result with this.
+pub fn validate_split_result(result: &Object) -> Result<SplitResult, Invalid> {
+    let f = Fields(result);
+    match f.string("state")? {
+        "running" => Ok(SplitResult::Running {
+            at: f.uint("at")?,
+            end: f.uint("end")?,
+        }),
+        "done" => Ok(SplitResult::Done {
+            voices: f.positive("voices")?,
+        }),
+        _ => invalid("state"),
+    }
 }
 
 /// Typed reads of an object's fields. Every failure names the field.
@@ -1066,6 +1093,112 @@ mod tests {
         let body = command_body("media.read", args.clone()).unwrap();
         assert_eq!(body.name(), "media.read");
         assert_eq!(body.args(), args);
+    }
+
+    #[test]
+    fn a_split_names_a_meeting_and_the_microphone() {
+        let meeting = "m-20261030-171203-4f2a";
+        let split = |args: Value| command_body("speakers.split", args);
+        let body = split(json!({ "meeting": meeting, "track": "mic" })).unwrap();
+        assert_eq!(
+            body,
+            CommandBody::SpeakersSplit {
+                meeting: MeetingId::parse(meeting).unwrap(),
+                track: Track::Mic,
+            }
+        );
+        assert_eq!(body.name(), "speakers.split");
+        assert_eq!(body.args(), json!({ "meeting": meeting, "track": "mic" }));
+        let reason = |args: Value| split(args).unwrap_err();
+        assert_eq!(
+            reason(json!({ "meeting": meeting, "track": "call" })),
+            "track"
+        );
+        assert_eq!(
+            reason(json!({ "meeting": meeting, "track": "room" })),
+            "track"
+        );
+        assert_eq!(
+            reason(json!({ "meeting": meeting, "track": null })),
+            "track"
+        );
+        assert_eq!(reason(json!({ "meeting": meeting })), "track");
+        // The meeting comes first.
+        assert_eq!(reason(json!({ "track": "call" })), "meeting");
+        assert_eq!(
+            reason(json!({ "meeting": "m-1", "track": "mic" })),
+            "meeting"
+        );
+    }
+
+    #[test]
+    fn a_split_result_is_running_or_done() {
+        let check = |value: Value| validate_split_result(value.as_object().unwrap());
+        assert_eq!(
+            check(json!({ "state": "running", "at": 412_000, "end": 3_605_120 })),
+            Ok(SplitResult::Running {
+                at: 412_000,
+                end: 3_605_120
+            })
+        );
+        assert_eq!(
+            check(json!({ "state": "done", "voices": 1 })),
+            Ok(SplitResult::Done { voices: 1 })
+        );
+        let reason = |value: Value| check(value).unwrap_err().reason;
+        assert_eq!(reason(json!({ "state": "done", "voices": 0 })), "voices");
+        assert_eq!(reason(json!({ "state": "done" })), "voices");
+        assert_eq!(reason(json!({ "state": "running", "end": 5 })), "at");
+        assert_eq!(reason(json!({ "state": "running", "at": 5 })), "end");
+        assert_eq!(reason(json!({ "state": "waiting" })), "state");
+        assert_eq!(reason(json!({})), "state");
+        for result in [
+            SplitResult::Running { at: 1, end: 2 },
+            SplitResult::Done { voices: 3 },
+        ] {
+            assert_eq!(
+                check(result.to_value()),
+                Ok(result),
+                "{result:?} round trips"
+            );
+        }
+    }
+
+    #[test]
+    fn an_error_reason_is_text_when_present() {
+        let reply =
+            |error: Value| json!({ "type": "reply", "id": "c-1", "ok": false, "error": error });
+        let Message::Reply(Reply {
+            outcome: Err(error),
+            ..
+        }) = validate_incoming(
+            Side::Voice,
+            &reply(json!({ "code": "not_available", "message": "x", "reason": "audio" })),
+        )
+        .unwrap()
+        else {
+            panic!("not a failed reply");
+        };
+        assert_eq!(error.reason.as_deref(), Some("audio"));
+        assert_eq!(
+            reason(
+                Side::Voice,
+                reply(json!({ "code": "not_available", "message": "x", "reason": 5 }))
+            ),
+            "error"
+        );
+        // Null counts as left out, and a left-out reason isn't written.
+        let Message::Reply(plain) = validate_incoming(
+            Side::Voice,
+            &reply(json!({ "code": "failed", "message": "x", "reason": null })),
+        )
+        .unwrap() else {
+            panic!("not a reply");
+        };
+        assert_eq!(
+            Message::Reply(plain).to_value()["error"],
+            json!({ "code": "failed", "message": "x" })
+        );
     }
 
     #[test]

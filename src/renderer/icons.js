@@ -103,6 +103,9 @@ export const icons = {
   monitor: p('<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 20.5h8M12 16.5v4"/>'),
   pause: p('<rect x="6.5" y="5" width="3.6" height="14" rx="1.2"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2"/>'),
   play: p('<path d="M7.5 5.6v12.8a1 1 0 0 0 1.5.9l10.2-6.4a1 1 0 0 0 0-1.7L9 4.8a1 1 0 0 0-1.5.8z"/>'),
+  // The previous and next clip in the People card's player.
+  skipBack: p('<path d="M17.5 6.3v11.4a.9.9 0 0 1-1.4.7l-7.9-5.6a1 1 0 0 1 0-1.6l7.9-5.6a.9.9 0 0 1 1.4.7z"/><path d="M6.5 6v12"/>'),
+  skipForward: p('<path d="M6.5 6.3v11.4a.9.9 0 0 0 1.4.7l7.9-5.6a1 1 0 0 0 0-1.6L7.9 5.6a.9.9 0 0 0-1.4.7z"/><path d="M17.5 6v12"/>'),
   stop: p('<rect x="6" y="6" width="12" height="12" rx="2.6"/>'),
   flag: p('<path d="M5.5 21V4M5.5 4.5h11.2a.6.6 0 0 1 .5.9l-2.1 3.6 2.1 3.6a.6.6 0 0 1-.5.9H5.5"/>'),
   repeat: p('<path d="m17 3.5 3 3-3 3"/><path d="M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20"/><path d="m7 20.5-3-3 3-3"/><path d="M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4"/>'),

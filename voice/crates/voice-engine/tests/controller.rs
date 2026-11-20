@@ -20,6 +20,7 @@ use voice_engine::media::{MediaService, NoScreenMedia};
 use voice_engine::meetings::bridge::Control;
 use voice_engine::meetings::controller::{Change, Controller, ControllerOptions, ControllerTiming};
 use voice_engine::meetings::screen::{ScreenOptions, ScreenSupervisor};
+use voice_engine::meetings::split::SplitService;
 use voice_engine::{PillPhase, StopReason};
 use voice_input::Key;
 use voice_protocol::{ErrorCode, ScreenMode, StartArgs, StartedBy, Track};
@@ -709,12 +710,14 @@ fn no_screen(data: &Path) -> Arc<ScreenSupervisor> {
 }
 
 fn control(c: &Arc<Controller>, data: &Path) -> Control {
+    let log = EventLog::open(data).unwrap();
     Control::new(
         Arc::clone(c),
         no_screen(data),
-        EventLog::open(data).unwrap(),
+        log.clone(),
         Arc::default(),
         no_media(data, c),
+        SplitService::unavailable(Arc::clone(c), log),
     )
 }
 
@@ -746,8 +749,16 @@ fn rukoo_commands_go_through_meeting_control() {
     );
     assert_eq!(meeting["context"]["calendarEvent"], "abc");
     wait_clock(&c, 300);
+    // The microphone can't be split while the meeting records or pauses.
+    let split_busy = |what: &str| {
+        let busy = control.split_speakers(&id, Track::Mic).unwrap_err();
+        assert_eq!(busy.code, ErrorCode::Busy, "{what}");
+        assert_eq!(busy.meeting.as_deref(), Some(id.as_str()), "{what}");
+    };
+    split_busy("recording");
     control.pause(&id).unwrap();
     assert_eq!(control.delete(&id).unwrap_err().code, ErrorCode::Busy);
+    split_busy("paused");
     control.resume(&id).unwrap();
     assert_eq!(control.mark(&id, Some("x")).unwrap().0, "k-1");
     // Nothing follows this meeting here, so its snapshot is what meeting.json says.
@@ -776,6 +787,7 @@ fn rukoo_commands_go_through_meeting_control() {
         ErrorCode::Busy,
         "processing data cannot be deleted while a pipeline may write it"
     );
+    split_busy("processing");
     control
         .log
         .append(
@@ -784,7 +796,24 @@ fn rukoo_commands_go_through_meeting_control() {
             json!({"state": "done", "at": 1000, "endedAt": 1793003605120_u64}),
         )
         .unwrap();
+    // Done: the split would run, but Nemotron isn't available to this control.
+    let refused = control.split_speakers(&id, Track::Mic).unwrap_err();
+    assert_eq!(
+        (refused.code, refused.reason.as_deref()),
+        (ErrorCode::NotAvailable, Some("cpu"))
+    );
+    assert_eq!(
+        control
+            .split_speakers("m-20000101-000000-0000", Track::Mic)
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
     control.delete(&id).unwrap();
+    assert_eq!(
+        control.split_speakers(&id, Track::Mic).unwrap_err().code,
+        ErrorCode::NotFound
+    );
     assert!(!meeting_dir(&data, &id).exists());
     assert!(!c.library().root().join(format!(".deleted-{id}")).exists());
     let (_, removed) = control.log.meeting_events(&id).unwrap();

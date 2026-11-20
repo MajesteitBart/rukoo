@@ -27,7 +27,10 @@ use serde_json::Value;
 pub use discovery::Discovery;
 pub use log::{EventLog, LogError, Stored, DB_FILE};
 pub use server::{BridgeServer, Client, Clients, Handle, Options, Refused};
-pub use voice_protocol::{ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, StartArgs, Status};
+pub use voice_protocol::{
+    split_reasons, ErrorCode, MediaKind, MediaOpenArgs, MeetingSummary, SplitResult, StartArgs,
+    Status, Track,
+};
 
 /// What the bridge asks of the app when Rukoo sends a command.
 ///
@@ -150,6 +153,17 @@ pub trait MeetingControl: Send + Sync {
         Err(ControlError::not_found("There is no media with that id."))
     }
 
+    /// `speakers.split`: `{ state: "running", at, end }` while Voice tells the track's voices
+    /// apart, then `{ state: "done", voices }` ([`SplitResult`] builds both). Must answer quickly;
+    /// split on another thread. `busy` with the meeting while it records, pauses or processes,
+    /// and `not_available` with a [`split_reasons`] reason when the split can't run. A Voice that
+    /// doesn't split answers `not_available`.
+    fn split_speakers(&self, _id: &str, _track: Track) -> Result<Value, ControlError> {
+        Err(ControlError::not_available(
+            "This Voice doesn't tell apart the voices on a track.",
+        ))
+    }
+
     fn status(&self) -> Status;
 }
 
@@ -161,6 +175,8 @@ pub struct ControlError {
     pub message: String,
     /// For `busy`: the meeting that is recording.
     pub meeting: Option<String>,
+    /// Why, for an error that says more, as `speakers.split`'s `not_available` does.
+    pub reason: Option<String>,
 }
 
 impl ControlError {
@@ -169,6 +185,15 @@ impl ControlError {
             code,
             message: message.into(),
             meeting: None,
+            reason: None,
+        }
+    }
+
+    /// The same error with a `reason`.
+    pub fn with_reason(self, reason: impl Into<String>) -> ControlError {
+        ControlError {
+            reason: Some(reason.into()),
+            ..self
         }
     }
 

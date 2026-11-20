@@ -1071,6 +1071,49 @@
     "idempotentHint": true,
     "openWorldHint": false
    }
+  },
+  {
+   "name": "name_meeting_speaker",
+   "title": "Name a voice in a meeting",
+   "description": "Gives a voice in a meeting recorded with Rukoo Voice a name, as the user can under People in the meeting view, or takes the name away. speaker is a voice's id from the speakers read_meeting_transcript lists, such as call-2, or mic-2 for someone who shared the user's microphone. Name a voice when the user tells you who it is. When the transcript suggests a name, for example someone says \"thanks, Anna\", ask the user first. Rukoo shows the name in the meeting view and the transcript straight away, and the user can change it there. The user's own voice has no name to give. Without meeting_id: this chat's meeting, else the one recording now, else the newest.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "meeting_id": {
+      "type": "string",
+      "description": "The meeting, e.g. \"m-20261030-171203-4f2a\", from search_meetings or this chat.",
+      "maxLength": 100
+     },
+     "speaker": {
+      "type": "string",
+      "description": "The voice's id from read_meeting_transcript's speakers, e.g. \"call-2\".",
+      "maxLength": 100
+     },
+     "name": {
+      "type": "string",
+      "description": "Who the voice is, e.g. \"Anna de Vries\". Leave it out to take the name away.",
+      "maxLength": 200
+     },
+     "address": {
+      "type": "string",
+      "description": "The person's email address, when you know it.",
+      "maxLength": 320
+     },
+     "conversation_id": {
+      "type": "string",
+      "description": "The Rukoo conversation id from your context (\"c_...\"). Pass it whenever you have one."
+     }
+    },
+    "required": [
+     "speaker"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "idempotentHint": false,
+    "openWorldHint": false
+   }
   }
  ]
 }

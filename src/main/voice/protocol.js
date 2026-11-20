@@ -36,6 +36,8 @@ const MEDIA_KINDS = ['audio', 'frame', 'video'];
 const MEDIA_ID = /^md-[A-Za-z0-9_-]{22}$/;
 const MEDIA_SPAN_MAX = 3600000;
 const MEDIA_READ_MAX = 1024 * 1024;
+// The tracks speakers.split splits.
+const SPLIT_TRACKS = ['mic'];
 
 class Invalid extends Error {
   constructor(reason) {
@@ -177,6 +179,11 @@ const COMMAND_ARGS = {
     int(a, 'offset', 0);
     int(a, 'length', 1);
     check(a.length <= MEDIA_READ_MAX, 'length');
+  },
+  // Only the microphone splits: the call's voices are labelled while it records.
+  'speakers.split': (a) => {
+    pattern(a, 'meeting', MEETING_ID);
+    oneOf(a, 'track', SPLIT_TRACKS);
   }
 };
 
@@ -285,6 +292,8 @@ function reply(m) {
     check(isObj(m.error), 'error');
     check(typeof m.error.code === 'string' && m.error.code !== '' && typeof m.error.message === 'string', 'error');
     check(!given(m.error, 'meeting') || (typeof m.error.meeting === 'string' && MEETING_ID.test(m.error.meeting)), 'error');
+    // Why Voice can't, for speakers.split's not_available: text when present.
+    check(!given(m.error, 'reason') || typeof m.error.reason === 'string', 'error');
   }
 }
 
@@ -363,6 +372,7 @@ module.exports = {
   MEDIA_ID,
   MEDIA_SPAN_MAX,
   MEDIA_READ_MAX,
+  SPLIT_TRACKS,
   validate,
   validateDiscovery,
   negotiate,
