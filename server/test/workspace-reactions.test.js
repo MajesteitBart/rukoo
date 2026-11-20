@@ -182,8 +182,34 @@ describe('marking unread', () => {
     // Nor does marking the same message again.
     expect((await markUnread(mila.person, ws.id, ws.general, message)).body).toEqual({ read: seq - 1, readMark: 1 });
     // Reading works as before afterwards.
-    expect((await api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/read`, { token: mila.person.token, body: { seq: second.seq } })).body).toEqual({ read: second.seq });
+    expect((await api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/read`, { token: mila.person.token, body: { seq: second.seq } })).body).toEqual({ read: second.seq, readMark: 1 });
     expect((await markUnread(mila.person, ws.id, ws.general, second.messageId)).body).toEqual({ read: second.seq - 1, readMark: 2 });
+  });
+
+  it('lets no read from before a mark of unread move the position forward again', async () => {
+    const { ws, mila, message, seq } = await room();
+    const read = (body) => api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/read`, { token: mila.person.token, body });
+    expect((await read({ seq, readMark: 0 })).body).toEqual({ read: seq, readMark: 0 });
+    expect((await markUnread(mila.person, ws.id, ws.general, message)).body).toEqual({ read: seq - 1, readMark: 1 });
+    // A read the device sent while it knew readMark 0 arrives after the mark: nothing moves.
+    expect((await read({ seq, readMark: 0 })).body).toEqual({ read: seq - 1, readMark: 1 });
+    expect((await roomOf(mila.person, ws.id, ws.general)).read).toBe(seq - 1);
+    // One that knows the mark reads as before, and so does one without readMark.
+    expect((await read({ seq, readMark: 1 })).body).toEqual({ read: seq, readMark: 1 });
+    await markUnread(mila.person, ws.id, ws.general, message);
+    expect((await read({ seq })).body).toEqual({ read: seq, readMark: 2 });
+    expect((await read({ seq, readMark: -1 })).body.field).toBe('readMark');
+    expect((await read({ seq, readMark: '2' })).body.field).toBe('readMark');
+  });
+
+  it('starts a grant made by joining again at readMark 0', async () => {
+    const { ws, mila, message, seq } = await room();
+    await api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/read`, { token: mila.person.token, body: { seq } });
+    await markUnread(mila.person, ws.id, ws.general, message);
+    expect((await roomOf(mila.person, ws.id, ws.general)).readMark).toBe(1);
+    await api('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/me`, { token: mila.person.token });
+    await api('POST', `/v1/workspaces/${ws.id}/channels/${ws.general}/join`, { token: mila.person.token });
+    expect((await roomOf(mila.person, ws.id, ws.general)).readMark).toBe(0);
   });
 
   it('stays at or above what the room still holds', async () => {

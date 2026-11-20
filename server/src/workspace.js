@@ -50,8 +50,9 @@ const SWEEP_BATCH = 2000;
 const PROTOCOL = 'rukoo.workspace.v1';
 // Direct messages: how many DMs one member starts in a rolling day. A DM holds 2 to 8 people, which the Worker checks.
 const DM_DAILY = 20;
-// Different emoji one message holds.
+// Different emoji one message holds, and the bytes of UTF-8 its text holds.
 const REACTIONS = 20;
+const TEXT_BYTES = 16384;
 // Files: uploads one member holds open (reserved, under way or ready, and not sent yet), how long a reservation lasts,
 // how many attempts at one upload may be under way at once, and after how long an attempt that never reported back
 // counts as dead.
@@ -1033,6 +1034,8 @@ export class Workspace extends DurableObject {
 
   // ---- Dispatch ----
 
+  // A Worker of an older build may still call this object during a deploy, without the fields that came later: no
+  // attachments on a post, no readMark on a read and no version on events and the feed.
   async #dispatch(op, me, who, a) {
     switch (op) {
       case 'workspace.get':
@@ -1080,11 +1083,11 @@ export class Workspace extends DurableObject {
       case 'unblock':
         return this.#write(() => this.#unblock(me, a.member));
       case 'post':
-        return this.#post(me, a);
+        return this.#post(me, { ...a, attachments: a.attachments ?? [] });
       case 'redact':
         return this.#write(() => this.#redact(me, a.conversation, a.message));
       case 'read':
-        return this.#write(() => this.#read(me, a.conversation, a.seq));
+        return this.#write(() => this.#read(me, a.conversation, a.seq, a.readMark ?? null));
       case 'unread':
         return this.#write(() => this.#unread(me, a.conversation, a.message));
       case 'react':
@@ -1098,11 +1101,11 @@ export class Workspace extends DurableObject {
       case 'previews.remove':
         return this.#write(() => this.#removePreview(me, a.conversation, a.message, a.remove));
       case 'events':
-        return this.#events(me, a);
+        return this.#events(me, { ...a, version: a.version ?? 1 });
       case 'operation':
         return this.#operation(me, a.conversation, a.op);
       case 'changes':
-        return this.#changes(me, a);
+        return this.#changes(me, { ...a, version: a.version ?? 1 });
       case 'ticket':
         return this.#ticket(me, who.session);
       case 'workspace.delete':
@@ -1481,26 +1484,33 @@ export class Workspace extends DurableObject {
   // ---- Deleting the workspace ----
 
   // An owner who is the workspace's only member deletes it. One transaction checks that and withdraws the open
-  // invitations; then the sockets close and the database goes, and with it every file in the bucket. The answer
-  // carries the caller's account reference, which the Worker gives back, as #ticket's answer carries a ticket for the
-  // Worker to sign.
+  // invitations; then every file leaves the bucket, and only then the sockets close and the database goes. A bucket
+  // that fails keeps the workspace, which answers 503, so the owner can try again and no file outlives the database
+  // that knows it. The answer carries the caller's account reference, which the Worker gives back, as #ticket's answer
+  // carries a ticket for the Worker to sign.
   async #deleteWorkspace(me, who) {
     const now = Date.now();
-    const { self: owner, keys } = this.#write(() => {
+    const owner = this.#write(() => {
       const self = this.#member(me.id);
       if (!self || self.role !== 'owner') throw FORBIDDEN('Only an owner deletes a workspace.');
       const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
       this.sql.exec('UPDATE invite SET revokedAt = ? WHERE redeemedAt IS NULL AND revokedAt IS NULL', now);
-      // Every key this workspace ever recorded that may still be in the bucket.
-      const keys = this.sql
-        .exec('SELECT key FROM upload WHERE key IS NOT NULL UNION SELECT key FROM attempt UNION SELECT key FROM trash')
-        .toArray()
-        .map((row) => row.key);
-      return { self, keys };
+      return self;
     });
-    // From here every request, and every join still waiting on its account, finds no workspace.
+    // From here every request, and every join still waiting on its account, finds no workspace, so nothing new lands
+    // in the bucket while it is emptied. An upload that ends meanwhile finds no workspace, and the Worker deletes its
+    // key itself.
     this.present = false;
+    try {
+      await this.#forgetFiles(this.wid);
+    } catch (err) {
+      console.error('Could not delete the files of a workspace, which stays:', err?.message || err);
+      this.present = true;
+      // An alarm that came while the workspace was away set no next one.
+      this.#alarmBy(now + TRASH_RETRY);
+      return reply(503, { error: 'unavailable', message: 'The workspace could not be deleted. Try again shortly.' }, { 'retry-after': '30' });
+    }
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.close(4003, 'deleted');
@@ -1516,28 +1526,20 @@ export class Workspace extends DurableObject {
     this.alarmAt = null;
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    await this.#forgetFiles(this.wid, keys);
     return { status: 204, body: null, account: who.name, incarnation: who.incarnation, ref: owner.ref };
   }
 
-  // A deleted workspace's files leave the bucket at once: every key it recorded, then whatever else is under its
-  // prefix, such as a write that was still landing. The database that would retry is gone, so a delete that fails is
-  // only logged; what it leaves is under ws/<workspace id>/, for the operator. An upload that ends after this finds no
-  // workspace, and the Worker deletes its key itself.
-  async #forgetFiles(wid, keys) {
+  // Every object under the workspace's prefix leaves the bucket, a page of up to 1,000 at a time. Every key this
+  // workspace makes is under it (fileKey). A failure throws.
+  async #forgetFiles(wid) {
     const bucket = this.env.WORKSPACE_FILES;
     if (!bucket || !wid) return;
-    try {
-      for (let i = 0; i < keys.length; i += TRASH_BATCH) await bucket.delete(keys.slice(i, i + TRASH_BATCH));
-      let cursor;
-      do {
-        const page = await bucket.list({ prefix: `ws/${wid}/`, cursor, limit: TRASH_BATCH });
-        if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
-        cursor = page.truncated ? page.cursor : undefined;
-      } while (cursor);
-    } catch (err) {
-      console.error('Could not delete the files of a deleted workspace:', err?.message || err);
-    }
+    let cursor;
+    do {
+      const page = await bucket.list({ prefix: `ws/${wid}/`, cursor, limit: TRASH_BATCH });
+      if (page.objects.length) await bucket.delete(page.objects.map((object) => object.key));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
   }
 
   // ---- Channels ----
@@ -2155,15 +2157,17 @@ export class Workspace extends DurableObject {
   }
 
   // A read position only moves forward and never past what exists. The member's other devices are woken, so a
-  // channel read on the phone stops showing as unread on the desktop.
-  #read(me, conversation, seq) {
+  // channel read on the phone stops showing as unread on the desktop. A read that names a readMark lower than the
+  // room's was made before the member marked something unread, and moves nothing.
+  #read(me, conversation, seq, readMark) {
     const { c, grant } = this.#room(me, conversation);
+    if (readMark !== null && readMark < grant.readMark) return reply(200, { read: grant.readSeq, readMark: grant.readMark });
     const next = Math.min(Math.max(grant.readSeq, seq), c.head);
     if (next !== grant.readSeq) {
       this.sql.exec('UPDATE grants SET readSeq = ?, rev = ? WHERE member = ? AND conversation = ?', next, this.#rev(), me.n, c.n);
       this.wakes.add(me.n);
     }
-    return reply(200, { read: next });
+    return reply(200, { read: next, readMark: grant.readMark });
   }
 
   // Marking a message unread: the read position goes back to just before it, and never below what the room still
@@ -2562,7 +2566,7 @@ export class Workspace extends DurableObject {
     const more = rows.length > a.limit;
     const page = rows.slice(0, a.limit);
     if (a.before !== null) page.reverse();
-    return reply(200, { events: this.#eventsOut(c.n, page), head: c.head, floor: c.floor, more });
+    return reply(200, { events: this.#eventsOut(c.n, page, a.version), head: c.head, floor: c.floor, more });
   }
 
   #eventRows(where, ...args) {
@@ -2576,8 +2580,8 @@ export class Workspace extends DurableObject {
   }
 
   // Events as devices get them, with what a message carries besides its text: its files and its reactions as they are
-  // now, read for the whole page at once. Its link cards are on its own row.
-  #eventsOut(conversation, rows) {
+  // now, read for the whole page at once. Its link cards are on its own row. version is the reader's wire version.
+  #eventsOut(conversation, rows, version) {
     const seqs = rows.filter((row) => row.kind === 'message.posted' && !row.redactedAt).map((row) => row.seq);
     if (!seqs.length) return rows.map((row) => eventOut(row));
     const from = Math.min(...seqs);
@@ -2607,7 +2611,8 @@ export class Workspace extends DurableObject {
     }
     return rows.map((row) => {
       const groups = reactions.get(row.seq);
-      return eventOut(row, files.get(row.seq) ?? [], groups ? [...groups].map(([emoji, actors]) => ({ emoji, actors })) : []);
+      const out = eventOut(row, files.get(row.seq) ?? [], groups ? [...groups].map(([emoji, actors]) => ({ emoji, actors })) : []);
+      return version < 2 ? namedFiles(out) : out;
     });
   }
 
@@ -2672,7 +2677,7 @@ export class Workspace extends DurableObject {
       const c = this.#conversation(a.active);
       if (c && this.#grant(me, c)) {
         const from = a.roomAfter ?? Math.max(c.head - INLINE_EVENTS, 0);
-        body.inlineEvents = this.#eventsOut(c.n, this.#eventRows('e.conversation = ? AND e.seq > ? ORDER BY e.seq LIMIT ?', c.n, from, INLINE_EVENTS));
+        body.inlineEvents = this.#eventsOut(c.n, this.#eventRows('e.conversation = ? AND e.seq > ? ORDER BY e.seq LIMIT ?', c.n, from, INLINE_EVENTS), a.version);
       }
     }
     body.next = more
@@ -2887,4 +2892,13 @@ function eventOut(row, attachments = [], reactions = []) {
     previews: row.previews ? JSON.parse(row.previews) : [],
     reactions
   };
+}
+
+// A message of files without text, for a reader of wire version 1, which takes no message without text: its text is
+// a paperclip and the files' names, cut to fit the text limit. What is stored doesn't change.
+function namedFiles(event) {
+  if (event.kind !== 'message.posted' || event.redacted || event.text !== '' || !event.attachments.length) return event;
+  let text = `📎 ${event.attachments.map((file) => file.name).join(', ')}`;
+  while (utf8(text).length > TEXT_BYTES) text = Array.from(text).slice(0, -1).join('');
+  return { ...event, text, mentions: [] };
 }

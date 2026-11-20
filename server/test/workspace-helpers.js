@@ -148,13 +148,16 @@ export function post(person, id, conversation, text, extra = {}) {
   return send(person, id, conversation, { operationId: uuidv7(), text, ...extra });
 }
 
-export function events(person, id, conversation, query = '') {
-  return api('GET', `/v1/workspaces/${id}/conversations/${conversation}/events${query}`, { token: person.token });
+// version: the wire version the reader names in Rukoo-Workspace-Version, or none.
+export function events(person, id, conversation, query = '', version = null) {
+  return api('GET', `/v1/workspaces/${id}/conversations/${conversation}/events${query}`, { token: person.token, headers: versionHeader(version) });
 }
 
-export function changes(person, id, query = '') {
-  return api('GET', `/v1/workspaces/${id}/changes${query}`, { token: person.token });
+export function changes(person, id, query = '', version = null) {
+  return api('GET', `/v1/workspaces/${id}/changes${query}`, { token: person.token, headers: versionHeader(version) });
 }
+
+const versionHeader = (version) => (version === null ? {} : { 'rukoo-workspace-version': String(version) });
 
 // Follows the feed from a cursor (or from the start) until it has nothing more, as a device does.
 export async function sync(person, id, after = null, limit = 32) {

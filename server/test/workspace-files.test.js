@@ -10,6 +10,7 @@ import {
   api,
   askDownload,
   bucketKeys,
+  changes,
   events,
   fileRequest,
   newMember,
@@ -31,7 +32,7 @@ const text = (s) => new TextEncoder().encode(s);
 const fileBytes = async (id) => (await workspaceSql(id, 'SELECT fileBytes FROM workspace'))[0].fileBytes;
 const alarm = (id) => runDurableObjectAlarm(workspaceStub(id));
 const alarmAt = (id) => runInDurableObject(workspaceStub(id), (instance, state) => state.storage.getAlarm());
-const messageIn = async (person, ws, id) => (await events(person, ws.id, ws.general)).body.events.find((e) => e.id === id);
+const messageIn = async (person, ws, id, version = 2) => (await events(person, ws.id, ws.general, '', version)).body.events.find((e) => e.id === id);
 
 // A file link signed like the server's, with claims of the test's choosing.
 async function signed(id, claims) {
@@ -291,6 +292,59 @@ describe('sending files', () => {
     expect((await post(ws.person, ws.id, ws.general, '')).body.field).toBe('text');
   });
 
+  it("gives a reader of version 1 the files' names as the text of a message without text", async () => {
+    const ws = await newWorkspace();
+    const pdf = await upload(ws.person, ws.id, ws.general, { bytes: text('%PDF-1.7'), name: 'report.pdf', type: 'application/pdf' });
+    const image = await upload(ws.person, ws.id, ws.general, { bytes: text('png bytes'), name: 'chart.png', type: 'image/png' });
+    const sent = (await post(ws.person, ws.id, ws.general, '', { attachments: [pdf.id, image.id] })).body;
+    const withText = await upload(ws.person, ws.id, ws.general, { name: 'notes.txt' });
+    const captioned = (await post(ws.person, ws.id, ws.general, 'The notes', { attachments: [withText.id] })).body;
+    const named = { text: '📎 report.pdf, chart.png', mentions: [], attachments: [{ id: pdf.id }, { id: image.id }] };
+    // No version named means 1.
+    expect(await messageIn(ws.person, ws, sent.messageId, null)).toMatchObject(named);
+    expect(await messageIn(ws.person, ws, sent.messageId, 1)).toMatchObject(named);
+    expect(await messageIn(ws.person, ws, sent.messageId, 2)).toMatchObject({ text: '', mentions: [], attachments: named.attachments });
+    expect((await messageIn(ws.person, ws, captioned.messageId, 1)).text).toBe('The notes');
+    // The feed's events of the open room too.
+    const inline = async (version) =>
+      (await changes(ws.person, ws.id, `?active=${ws.general}`, version)).body.inlineEvents.find((e) => e.id === sent.messageId);
+    expect((await inline(null)).text).toBe(named.text);
+    expect((await inline(2)).text).toBe('');
+    // What is stored doesn't change, and a removed message stays without text for either version.
+    expect(await workspaceSql(ws.id, 'SELECT text FROM event WHERE seq = ?', sent.seq)).toEqual([{ text: '' }]);
+    await api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/messages/${sent.messageId}/redact`, { token: ws.person.token });
+    expect(await messageIn(ws.person, ws, sent.messageId, 1)).not.toHaveProperty('text');
+  });
+
+  it('takes a post and a read from a Worker of an older build, and serves it version 1', async () => {
+    const ws = await newWorkspace();
+    const known = await access(ws.person, ws.id, ws.general);
+    const operationId = uuidv7();
+    const op = Uint8Array.from(operationId.replace(/-/g, '').match(/../g), (h) => parseInt(h, 16));
+    const words = 'from before files';
+    // What the Worker sent before files existed: no attachments.
+    const posted = await workspaceStub(ws.id).request(ws.person.token, 'post', {
+      conversation: ws.general,
+      operationId,
+      op,
+      opTime: Date.now(),
+      ...known,
+      text: words,
+      size: words.length,
+      mentions: [],
+      root: null
+    });
+    expect(posted.status).toBe(201);
+    // And a read without readMark, and events without a version.
+    const read = await workspaceStub(ws.id).request(ws.person.token, 'read', { conversation: ws.general, seq: posted.body.seq });
+    expect(read.body).toEqual({ read: posted.body.seq, readMark: 0 });
+    const files = await upload(ws.person, ws.id, ws.general, { name: 'a.txt' });
+    const bare = (await post(ws.person, ws.id, ws.general, '', { attachments: [files.id] })).body;
+    const page = await workspaceStub(ws.id).request(ws.person.token, 'events', { conversation: ws.general, after: 0, before: null, limit: 50 });
+    expect(page.body.events.find((e) => e.id === posted.body.messageId)).toMatchObject({ text: words, attachments: [] });
+    expect(page.body.events.find((e) => e.id === bare.messageId).text).toBe('📎 a.txt');
+  });
+
   it('checks the list of files', async () => {
     const ws = await newWorkspace();
     const made = await upload(ws.person, ws.id, ws.general);
@@ -487,6 +541,41 @@ describe('the trash', () => {
     expect((await bucketKeys(ws.id)).length).toBe(4);
     expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
     expect(await bucketKeys(ws.id)).toEqual([]);
+  });
+
+  it('keeps the workspace and its files when the bucket fails while it is deleted, so the owner can try again', async () => {
+    const ws = await newWorkspace();
+    const made = await upload(ws.person, ws.id, ws.general);
+    await post(ws.person, ws.id, ws.general, 'kept', { attachments: [made.id] });
+    await env.WORKSPACE_FILES.put(`ws/${ws.id}/stray`, 'stray');
+    // A bucket that lists but can't delete.
+    await runInDurableObject(workspaceStub(ws.id), (instance) => {
+      instance.realEnv = instance.env;
+      const bucket = instance.env.WORKSPACE_FILES;
+      const failing = {
+        list: (options) => bucket.list(options),
+        delete: async () => {
+          throw new Error('bucket down');
+        }
+      };
+      instance.env = { ...instance.env, WORKSPACE_FILES: failing };
+    });
+    const failed = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    await runInDurableObject(workspaceStub(ws.id), (instance) => {
+      instance.env = instance.realEnv;
+    });
+    expect(failed.status).toBe(503);
+    expect(failed.body.error).toBe('unavailable');
+    expect(failed.headers.get('retry-after')).toBe('30');
+    // Nothing went: the workspace, the owner's list, the files and the alarm that sweeps it.
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
+    expect((await api('GET', '/v1/workspaces', { token: ws.person.token })).body.workspaces.map((w) => w.id)).toEqual([ws.id]);
+    expect((await bucketKeys(ws.id)).length).toBe(2);
+    expect(await alarmAt(ws.id)).not.toBeNull();
+    // The next try deletes the files, then the workspace.
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+    expect(await bucketKeys(ws.id)).toEqual([]);
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
   });
 
   it('counts an attempt that never reported back as dead after two hours', async () => {

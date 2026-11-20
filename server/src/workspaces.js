@@ -26,7 +26,8 @@ import { HttpError, invalid } from './input.js';
 import { schedulePreviews } from './previews.js';
 
 // The wire versions this server speaks. A client names the one it uses in Rukoo-Workspace-Version; none means 1.
-export const VERSIONS = [1];
+// A reader of version 2 takes a message with files and no text; one of version 1 gets the files' names as its text.
+export const VERSIONS = [1, 2];
 const PROTOCOL = 'rukoo.workspace.v1';
 const TICKET_PREFIX = 'rukoo.ticket.';
 
@@ -127,6 +128,8 @@ export async function workspaces(request, env, url, ctx) {
       scope: 'workspace'
     });
   }
+  // The workspace shapes the events it serves for this version.
+  const wire = version === null ? 1 : Number(version);
   const method = request.method;
   const parts = url.pathname.slice('/v1/workspaces'.length).split('/').slice(1);
   if (parts.length === 0) {
@@ -173,7 +176,7 @@ export async function workspaces(request, env, url, ctx) {
       return ask('channel.create', { name: name(b.name, 'name'), visibility: oneOf(b.visibility, ['workspace', 'private'], 'visibility') });
     }
     case 'GET /changes':
-      return ask('changes', changesQuery(url));
+      return ask('changes', { ...changesQuery(url), version: wire });
     case 'POST /socket-ticket':
       return ticket(env, id, await stub.request(token, 'ticket'));
     case 'POST /dms':
@@ -236,9 +239,13 @@ export async function workspaces(request, env, url, ctx) {
       if (result.status === 201) schedulePreviews(ctx, env, url, { workspace: id, conversation, message: result.body.messageId }, args.text);
       return send(result);
     }
-    if (rest.length === 3 && b === 'events' && method === 'GET') return ask('events', eventsQuery(conversation, url));
+    if (rest.length === 3 && b === 'events' && method === 'GET') return ask('events', { ...eventsQuery(conversation, url), version: wire });
     if (rest.length === 3 && b === 'read' && method === 'POST') {
-      return ask('read', { conversation, seq: whole((await body()).seq, 'seq') });
+      // readMark: the room's readMark the device knew when it read, so a read from before a mark of unread moves nothing.
+      const fields = await body();
+      const seq = whole(fields.seq, 'seq');
+      const readMark = fields.readMark === undefined || fields.readMark === null ? null : whole(fields.readMark, 'readMark');
+      return ask('read', { conversation, seq, readMark });
     }
     if (rest.length === 3 && b === 'unread' && method === 'POST') {
       return ask('unread', { conversation, message: event((await body()).message, 'message') });

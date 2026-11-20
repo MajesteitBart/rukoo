@@ -384,13 +384,13 @@ describe('the feed', () => {
     const phone = await sync(mila.person, ws.id);
     expect(phone.rooms.get(ws.general)).toMatchObject({ head: 8, read: 3, unread: 5 });
 
-    expect((await read(6)).body).toEqual({ read: 6 });
+    expect((await read(6)).body).toEqual({ read: 6, readMark: 0 });
     // The other device learns of it without a new message.
     const desktop = await sync(mila.person, ws.id, phone.cursor);
     expect(desktop.rooms.get(ws.general)).toMatchObject({ read: 6, unread: 2 });
     // Never backward, never past what exists.
-    expect((await read(4)).body).toEqual({ read: 6 });
-    expect((await read(999)).body).toEqual({ read: 8 });
+    expect((await read(4)).body).toEqual({ read: 6, readMark: 0 });
+    expect((await read(999)).body).toEqual({ read: 8, readMark: 0 });
     expect((await sync(mila.person, ws.id, desktop.cursor)).rooms.get(ws.general)).toMatchObject({ read: 8, unread: 0 });
     // Nobody else's position moved.
     expect((await sync(ws.person, ws.id)).rooms.get(ws.general).read).toBe(8);

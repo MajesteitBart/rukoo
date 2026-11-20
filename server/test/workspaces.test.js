@@ -38,7 +38,7 @@ describe('turning team chat on', () => {
     expect(info.body.protocol).toBe(1);
     expect(info.body.features).toEqual(['booking', 'workspaces-v1']);
     expect(info.body.workspace).toMatchObject({
-      versions: [1],
+      versions: [1, 2],
       home: { origin: 'https://accounts.example' },
       // The tests bind a files bucket; WORKSPACE_PREVIEWS is on.
       capabilities: ['reactions', 'unread', 'files', 'previews'],
@@ -57,11 +57,13 @@ describe('turning team chat on', () => {
 
   it('refuses a version of the protocol it does not speak', async () => {
     const ws = await newWorkspace();
-    const res = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '2' } });
+    const res = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '3' } });
     expect(res.status).toBe(426);
     expect(res.body).toMatchObject({ error: 'upgrade_required', minVersion: 1 });
-    const ok = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': '1' } });
-    expect(ok.status).toBe(200);
+    for (const version of ['1', '2']) {
+      const ok = await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token, headers: { 'rukoo-workspace-version': version } });
+      expect(ok.status).toBe(200);
+    }
   });
 });
 

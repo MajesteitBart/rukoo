@@ -11,6 +11,9 @@
 import { filesOn, ownHosts, previewHosts, previewsOn, workspaceObject } from './config.js';
 
 const MOST = 3;
+// The longest address a card names, in UTF-16 code units, as the apps measure it: a card's url is the address as
+// written, and an app refuses a card with a longer one.
+const ADDRESS_LENGTH = 4096;
 const TOTAL_TIME = 15000;
 const PAGE_TIME = 4000;
 const REDIRECTS = 3;
@@ -54,6 +57,7 @@ export function previewAddresses(text, rules) {
   const seen = new Set();
   for (const match of String(text).matchAll(CANDIDATE)) {
     const address = trimAddress(match[0]);
+    if (address.length > ADDRESS_LENGTH) continue;
     const parsed = URL.parse(address);
     if (!parsed || seen.has(parsed.href) || !allowed(parsed, rules)) continue;
     seen.add(parsed.href);
@@ -172,7 +176,7 @@ async function card(env, stub, ids, address, rules, deadline, discard) {
   const title = clean(tags.get('og:title') ?? tags.get('twitter:title') ?? heading, 200);
   if (!title) return null;
   const description = clean(tags.get('og:description') ?? tags.get('twitter:description') ?? tags.get('description') ?? '', 500);
-  const site = clean(tags.get('og:site_name') ?? '', 100) || url.hostname.replace(/^www\./i, '');
+  const site = clean(tags.get('og:site_name') ?? '', 100) || clean(url.hostname.replace(/^www\./i, ''), 100);
   const video = (tags.get('og:type') ?? '').trim().toLowerCase().startsWith('video') || hasVideo;
   const imageAddress = tags.get('og:image') ?? tags.get('og:image:url') ?? tags.get('og:image:secure_url') ?? tags.get('twitter:image') ?? tags.get('twitter:image:src');
   let image = null;

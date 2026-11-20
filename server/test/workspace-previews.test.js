@@ -4,7 +4,7 @@
 
 import { env } from 'cloudflare:workers';
 import { describe, expect, inject, it } from 'vitest';
-import { allowed, clean, decodeEntities, imageInfo, previewAddresses, trimAddress } from '../src/previews.js';
+import { allowed, clean, decodeEntities, imageInfo, previewAddresses, trimAddress, unfurl } from '../src/previews.js';
 import {
   api,
   askDownload,
@@ -59,6 +59,12 @@ describe('which addresses', () => {
       'https://b.example/',
       'https://c.example/'
     ]);
+  });
+
+  it('skips an address longer than the apps take on a card', () => {
+    const longest = `https://example.com/${'a'.repeat(4096 - 20)}`;
+    expect(longest).toHaveLength(4096);
+    expect(previewAddresses(`${longest}b ${longest}`, RULES)).toEqual([longest]);
   });
 
   it('refuses local, private and odd addresses, and this server itself', () => {
@@ -203,6 +209,24 @@ describe('making cards', () => {
     expect(message.previews[2].video).toBe(true);
     const tagged = await page({ title: 'Another clip', video: true });
     expect((await postLinks(ws, tagged)).message.previews[0].video).toBe(true);
+  });
+
+  it('cuts a long host name to the length of a site', async () => {
+    const ws = await newWorkspace();
+    const sent = (await sendAndWait(ws.person, ws.id, ws.general, { text: 'a card comes' })).body;
+    const host = `${'a'.repeat(60)}.${'b'.repeat(60)}.${'c'.repeat(60)}.${'d'.repeat(60)}.example`;
+    // A host this long can't be reached from a test, so this page comes from a stand-in for fetch.
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => new Response('<title>Far away</title>', { headers: { 'content-type': 'text/html' } });
+    try {
+      await unfurl(env, { workspace: ws.id, conversation: ws.general, message: sent.messageId }, [`https://www.${host}/`], { own: new Set(), exempt: new Set() });
+    } finally {
+      globalThis.fetch = real;
+    }
+    const [card] = (await events(ws.person, ws.id, ws.general)).body.events.find((e) => e.id === sent.messageId).previews;
+    expect(card.title).toBe('Far away');
+    expect(Array.from(card.site)).toHaveLength(100);
+    expect(card.site).toBe(`${host.slice(0, 99)}…`);
   });
 
   it('makes no card of a page without a title, a page that is no HTML, or a page that failed', async () => {
