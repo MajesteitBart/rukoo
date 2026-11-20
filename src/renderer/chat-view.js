@@ -3,7 +3,7 @@ import { icons } from './icons.js';
 import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog } from './ui.js';
 import { h } from './agent/bui.js';
 import { timeline, displayName, memberTag, canRemove } from './chat-model.js';
-import { segments, toParts } from './chat-text.js';
+import { segments, toParts, appendToDraft } from './chat-text.js';
 import { mountChatInput } from './chat-input.js';
 
 // Team chat's pane (contract 5.4 to 5.6, desktop-ui 5.2 to 5.7 and 7): the open conversation's header, the banner,
@@ -1182,12 +1182,23 @@ export function mountView(section, H) {
   }
 
   // Undo of Discard: the message's text and mentions back in the room's composer, or its thread's, after what is there
-  // already. With the room no longer open, they become its draft.
-  function restoreDiscarded(p, ws, c) {
+  // already. With the room no longer open, they go after its kept draft the same way.
+  async function restoreDiscarded(p, ws, c) {
     const parts = toParts(p.text, p.mentions);
-    if (mode !== 'room' || V.ws !== ws || V.c !== c) {
-      api('chatSaveDraft', ws, c, p.root || null, { text: p.text, mentions: p.mentions || [] }).catch(() => {});
-      return;
+    const shown = () => mode === 'room' && V.ws === ws && V.c === c;
+    if (!shown()) {
+      const root = p.root || null;
+      let kept;
+      try {
+        kept = await api('chatDraft', ws, c, root);
+      } catch (_) {
+        return; // The room is gone or the session ended: there is no draft left to put it in.
+      }
+      // The room may have opened meanwhile, its composer loaded from the draft as it was.
+      if (!shown()) {
+        api('chatSaveDraft', ws, c, root, appendToDraft(kept, p.text, p.mentions)).catch(() => {});
+        return;
+      }
     }
     if (p.root && (!T || T.root !== p.root)) openThread(p.root);
     const target = p.root ? T && T.input : input;

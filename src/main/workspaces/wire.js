@@ -922,6 +922,7 @@ const ARGS = {
   chatMarkRead: (w, conv) => [ws(w), c(conv)],
   chatMute: (w, conv, muted) => [ws(w), c(conv), input.bool(muted, 'muted')],
   chatSaveDraft: (w, conv, root, draft) => [ws(w), c(conv), input.root(root), input.draft(draft)],
+  chatDraft: (w, conv, root) => [ws(w), c(conv), input.root(root)],
   chatSend: (w, conv, x) => [ws(w), c(conv), input.send(x)],
   chatResend: (local, opts) => [input.local(local), input.resendOptions(opts)],
   chatDiscard: (local) => [input.local(local)],

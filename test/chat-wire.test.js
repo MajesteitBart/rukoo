@@ -329,10 +329,10 @@ test('the directory, workspace and other answers are checked whole', () => {
 
 // ---- IPC arguments ----
 
-// Every method of contract 4.4.
+// Every method of contract 4.4, and chatDraft (desktop-ui), which Undo of Discard reads a room's kept draft with.
 const METHODS = [
   'chatState', 'chatSelect', 'chatView', 'chatSync', 'chatReload', 'chatOpen', 'chatClose', 'chatOlder', 'chatThread',
-  'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatSend', 'chatResend', 'chatDiscard',
+  'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatDraft', 'chatSend', 'chatResend', 'chatDiscard',
   'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatLeaveWorkspace',
   'chatDeleteWorkspace', 'chatSetMyName', 'chatSetRole', 'chatRemoveMember', 'chatInvites', 'chatCreateInvite',
   'chatWithdrawInvite', 'chatCreateChannel', 'chatRenameChannel', 'chatArchiveChannel', 'chatJoinChannel',
@@ -366,6 +366,7 @@ const CALLS = {
     ],
     bad: [[[W, C, 'e_x', null], 'root'], [[W, C, null, { text: 5 }], 'text'], [[W, C, null, { text: zoe.text, mentions: zoe.utf16 }], 'mentions'], [[W, C, null, 'draft'], 'draft']]
   },
+  chatDraft: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]], [[W, C], [W, C, null]]], bad: [[[W, C, 'e_x'], 'root'], [[W, E, null], 'conversation']] },
   chatSend: {
     ok: [
       [[W, C, { text: zoe.text, mentions: zoe.bytes, root: null }], [W, C, { text: zoe.text, mentions: zoe.bytes, root: null }]],

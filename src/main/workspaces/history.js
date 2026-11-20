@@ -70,7 +70,8 @@ class History {
     chatRead: (svc, ws, c, seq) => svc.history.read(ws, c, seq),
     chatMarkRead: (svc, ws, c) => svc.history.markRead(ws, c),
     chatMute: (svc, ws, c, muted) => svc.history.mute(ws, c, muted),
-    chatSaveDraft: (svc, ws, c, root, draft) => svc.history.saveDraft(ws, c, root, draft)
+    chatSaveDraft: (svc, ws, c, root, draft) => svc.history.saveDraft(ws, c, root, draft),
+    chatDraft: (svc, ws, c, root) => svc.history.storedDraft(ws, c, root)
   };
 
   constructor(svc) {
@@ -685,6 +686,13 @@ class History {
     if (!draft || draft.text === '') store.deleteDraft(ws, c, root);
     else store.putDraft(ws, c, root, { text: draft.text, mentions: draft.mentions });
     return true;
+  }
+
+  // chatDraft: the kept draft of a room that isn't open, or null (desktop-ui "Main can take drafts over later with
+  // chatDraft()"). Undo of Discard reads it to put the discarded text after it instead of over it.
+  storedDraft(ws, c, root) {
+    this.room(ws, c);
+    return this.draft(ws, c, root);
   }
 
   // ---- hooks ----

@@ -206,6 +206,61 @@ test('a mention of someone who left the channel is refused: Discard can be undon
   await expect.poll(async () => (await serverMessages(server, olga, ws.id, ws.general, 'Over to @Zoë for review')).map((e) => e.mentions), { timeout: 15000 }).toEqual([[]]);
 });
 
+test('Undo of Discard from another room puts the message after the draft of its room, mentions and all', async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  await server.seedChannel(olga, ws.id, { name: 'review', members: [bartMe.id] });
+  const zoe = await server.seedMember(ws, await server.seedAccount(), 'Zoë');
+  const joel = await server.seedMember(ws, await server.seedAccount(), 'Joël');
+  ({ app, win } = await launch(server, { dataDir }));
+  await ready(bart);
+  const picker = win.locator('.ch-suggest [role="option"] .mention-name');
+  // A message to Zoë that the server refuses, because she left general before it went.
+  await write('Over to @Zo', { send: false });
+  await expect(picker.first()).toHaveText('Zoë', { timeout: 10000 });
+  await win.keyboard.press('Enter');
+  await win.keyboard.type('for review');
+  const out = await server.call('DELETE', `/v1/workspaces/${ws.id}/channels/${ws.general}/members/${zoe.id}`, { token: olga.token });
+  expect([200, 204]).toContain(out.status);
+  await win.keyboard.press('Enter');
+  const row = message(log(), 'Over to @Zoë for review');
+  await expect(row.locator('[data-ch-act="discard"]')).toBeVisible({ timeout: 15000 });
+  // Bart starts a new draft in general, with a mention after accented letters (bytes and UTF-16 differ).
+  await write('Één @Jo', { send: false });
+  await expect(picker).toHaveText(['Joël'], { timeout: 10000 });
+  await win.keyboard.press('Enter');
+  await win.keyboard.type('kijk even');
+  const draft = 'Één @Joël kijk even';
+  await expect(composer(win)).toHaveJSProperty('value', draft);
+  // Discard the refused message, go to #review, and Undo there.
+  await row.locator('[data-ch-act="discard"]').click();
+  await expect(row).toHaveCount(0);
+  const toastEl = win.locator('#toast');
+  await expect(toastEl).toContainText('Message discarded');
+  await roomRow(win, 'review').click();
+  await expect(pane().locator('.ch-title')).toHaveText('review');
+  await toastEl.locator('button').click();
+  // general's draft keeps what Bart wrote, with the message after it on a new line and both ranges in bytes.
+  const text = `${draft}\nOver to @Zoë for review`;
+  const shift = Buffer.byteLength(`${draft}\nOver to `);
+  const joelAt = Buffer.byteLength('Één ');
+  await expect
+    .poll(() => win.evaluate(([w, c]) => window.mail.call('chatDraft', w, c, null), [ws.id, ws.general]), { timeout: 10000 })
+    .toEqual({
+      text,
+      mentions: [
+        { actor: joel.id, start: joelAt, end: joelAt + Buffer.byteLength('@Joël') },
+        { actor: zoe.id, start: shift, end: shift + Buffer.byteLength('@Zoë') }
+      ]
+    });
+  await expect(composer(win)).toHaveJSProperty('value', '');
+  await roomRow(win, 'general').click();
+  await expect(pane().locator('.ch-title')).toHaveText('general');
+  await expect(composer(win)).toHaveJSProperty('value', text);
+  await expect(composer(win).locator('.ch-chip')).toHaveText(['@Joël', '@Zoë']);
+  await expect(composer(win).locator(`.ch-chip[data-member="${joel.id}"]`)).toHaveCount(1);
+  await expect(composer(win).locator(`.ch-chip[data-member="${zoe.id}"]`)).toHaveCount(1);
+});
+
 test('a message written while the server is down waits for a connection and goes once it is back', async () => {
   const { olga, bart, ws } = await twoPeople(server);
   ({ app, win } = await launch(server, { dataDir }));

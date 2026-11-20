@@ -149,6 +149,18 @@ export function toParts(text, mentions) {
   return parts;
 }
 
+// Undo of Discard into a composer that isn't on screen: the discarded message's text and mentions after the room's
+// kept draft (null for none), on a new line when it holds text, as the draft to save. The message's ranges move by
+// the bytes in front of them; ranges of either that don't hold drop out, as toParts() would drop them.
+export function appendToDraft(kept, text, mentions) {
+  const before = kept && typeof kept.text === 'string' ? kept.text : '';
+  const after = typeof text === 'string' ? text : '';
+  const glue = before ? '\n' : '';
+  const shift = byteLength(before + glue);
+  const moved = (s, list, by) => validMentions(s, list).map(({ actor, start, end }) => ({ actor, start: start + by, end: end + by }));
+  return { text: before + glue + after, mentions: [...moved(before, kept && kept.mentions, 0), ...moved(after, mentions, shift)] };
+}
+
 // Plain text with its web addresses as link segments.
 function withLinks(s, out) {
   let i = 0;

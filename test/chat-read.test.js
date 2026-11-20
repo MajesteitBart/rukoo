@@ -318,6 +318,11 @@ test('mute and drafts persist across a restart', async (t) => {
     svc.api.chatSaveDraft(ws.id, ws.general, null, { text: '@Zoë', mentions: [{ actor: ws.me.id, start: 0, end: 4 }] }),
     (err) => err.code === 'invalid' && err.field === 'mentions'
   );
+  // chatDraft reads a kept draft without opening the room (Undo of Discard from another room).
+  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, null), main);
+  assert.deepEqual(await svc.api.chatDraft(ws.id, ws.general, root), reply);
+  assert.equal(await svc.api.chatDraft(ws.id, ws.general, posts[1].messageId), null);
+  await assert.rejects(svc.api.chatDraft(ws.id, 'c_' + 'x'.repeat(22), null), (err) => err.code === 'not_found');
   svc.close();
 
   const again = serviceFor(account, dir, clock);
@@ -344,5 +349,6 @@ test('mute and drafts persist across a restart', async (t) => {
   assert.equal(await again.api.chatSaveDraft(ws.id, ws.general, root, { text: '', mentions: [] }), true);
   assert.equal(again.store.getDraft(ws.id, ws.general, null), null);
   assert.equal(again.store.getDraft(ws.id, ws.general, root), null);
+  assert.equal(await again.api.chatDraft(ws.id, ws.general, null), null);
   assert.equal(again.state().attention, 1);
 });

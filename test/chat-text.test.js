@@ -189,3 +189,25 @@ test('16,384 bytes fit the text limit and 16,385 do not; 32 mentions fit and 33 
   assert.equal(sendProblem(toWire(chips(33))), 'tooManyMentions');
   assert.equal(sendProblem(toWire([' \n'])), 'empty');
 });
+
+test('Undo of Discard puts the message after a kept draft on a new line, its ranges moved by the bytes before it', async () => {
+  const { appendToDraft, toWire, toParts } = await loading;
+  // A draft with a non-ASCII word before its mention, so UTF-16 and byte offsets differ.
+  const kept = toWire(['Één ', { member: ann, label: '@Joël' }, ' kijk even']);
+  const discarded = toWire(['Over to ', { member: bob, label: '@Zoë' }, ' for review']);
+  const merged = appendToDraft({ text: kept.text, mentions: kept.mentions }, discarded.text, discarded.mentions);
+  assert.equal(merged.text, 'Één @Joël kijk even\nOver to @Zoë for review');
+  const shift = Buffer.byteLength('Één @Joël kijk even\n');
+  assert.deepEqual(merged.mentions, [
+    { actor: ann, start: 6, end: 12 },
+    { actor: bob, start: shift + 8, end: shift + 13 }
+  ]);
+  for (const m of merged.mentions) assert.equal(Buffer.from(merged.text).subarray(m.start, m.end).toString()[0], '@');
+  // The same as appending the parts in the composer of an open room.
+  assert.deepEqual(merged, (({ text, mentions }) => ({ text, mentions }))(toWire([...toParts(kept.text, kept.mentions), '\n', ...toParts(discarded.text, discarded.mentions)])));
+
+  // Without a kept draft, or with an empty one, the message alone; a range of the draft that doesn't hold drops out.
+  assert.deepEqual(appendToDraft(null, discarded.text, discarded.mentions), { text: discarded.text, mentions: discarded.mentions });
+  assert.deepEqual(appendToDraft({ text: '', mentions: [] }, 'Hoi', []), { text: 'Hoi', mentions: [] });
+  assert.deepEqual(appendToDraft({ text: 'Zoë', mentions: [{ actor: ann, start: 0, end: 3 }] }, 'Hoi', undefined), { text: 'Zoë\nHoi', mentions: [] });
+});
