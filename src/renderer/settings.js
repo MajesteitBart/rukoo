@@ -321,13 +321,13 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     // Team chat holds the Join dialog of a sign-up with an invitation link until Settings is gone (chat.js).
     document.dispatchEvent(new Event('rukoo:settings-closed'));
   };
-  // Team chat on screen: the Chat segment of the mode switch, once the server's info has it (after a sign-up with an
+  // Team chat on screen: the Chat tab of the title bar's modes, once the server's info has it (after a sign-up with an
   // invitation link, contract 5.10). It may take a moment to show.
   const showChat = async () => {
     for (let i = 0; i < 50; i++) {
-      const seg = document.querySelector('.sidebar-mode [data-mode="chat"]');
-      if (seg) {
-        if (seg.getAttribute('aria-selected') !== 'true') seg.click();
+      const tab = document.querySelector('.titlebar-modes [data-mode="chat"]');
+      if (tab) {
+        if (tab.getAttribute('aria-selected') !== 'true') tab.click();
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));

@@ -88,6 +88,10 @@ const railState = (id) =>
 test('the rail at 200 percent keeps three rows, scrolls as a column and shows the row that opens', async () => {
   const s = await seed();
   await ready(s);
+  // With the modes in the title bar the rail holds this list at 200 percent in the usual window. A window 620 px high
+  // is short enough that the rail still runs out of height.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1400, 620));
+  await expect.poll(() => win.evaluate(() => window.innerHeight)).toBeLessThan(640);
   await win.locator('.sidebar [data-ch-open]').first().click();
 
   // 100 percent: the full sidebar fits as before, nothing scrolls.

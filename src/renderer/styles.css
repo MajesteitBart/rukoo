@@ -481,8 +481,9 @@ kbd {
     100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 138px)) + 12px
   );
 }
+/* The icon, then the modes and the search. The brand is as wide as its icon, whatever the sidebar's width, so the
+ * modes and the search stay where they are when the sidebar folds to its rail. */
 .titlebar-brand {
-  width: var(--sidebar-w);
   flex: none;
   display: flex;
   align-items: center;
@@ -492,8 +493,7 @@ kbd {
 }
 /* Window buttons on the left, or on both sides, on Linux: bootstrap.js sets data-controls="left". The brand starts
  * after the buttons, and the actions end 12px before any buttons on the right or the window's edge (the padding
- * above). The brand's padding is wider than the icon rail: the brand grows to fit it, which keeps the search clear of
- * the buttons and leaves no room for the icon, as on macOS. */
+ * above). */
 :root[data-controls="left"] .titlebar {
   padding-right: calc(
     100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - env(titlebar-area-x, 0px))) + 12px
@@ -502,8 +502,7 @@ kbd {
 :root[data-controls="left"] .titlebar-brand {
   padding-left: calc(22px + env(titlebar-area-x, 0px));
 }
-/* Traffic lights stay in native screen pixels while page zoom scales this bar.
- * Keep the brand width aligned with the sidebar and reserve the left inset inside it. */
+/* Traffic lights stay in native screen pixels while page zoom scales this bar: the brand starts after them. */
 :root[data-platform="darwin"] .titlebar {
   padding-right: 12px;
 }
@@ -525,9 +524,155 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* The modes: Mail, Calendar, Meet and Chat as tabs beside the icon (app.js renderModeSwitch). They change the sidebar
+ * and the workspace together, so they sit above both, where every tab has room for its label. A tab is as wide as
+ * its label; one highlight glides to the chosen tab, measured by placeModeThumb as --x and --w. */
+.titlebar-modes {
+  -webkit-app-region: no-drag;
+  flex: none;
+  margin: 0 12px 0 2px;
+}
+.titlebar-modes:empty,
+body.no-accounts .titlebar-modes,
+body:has(.page) .titlebar-modes {
+  display: none;
+}
+.mode-tabs {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.mode-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--w, 0);
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  transform: translateX(var(--x, 0));
+  pointer-events: none;
+}
+:root:not(.light) .mode-thumb {
+  background: var(--active);
+}
+.mode-tabs.glides .mode-thumb {
+  transition:
+    transform 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    width 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.mode-tabs button {
+  position: relative;
+  z-index: 1;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    color 120ms ease,
+    background 120ms ease;
+}
+.mode-tabs button:hover {
+  color: var(--text);
+}
+.mode-tabs button:not([aria-selected='true']):hover {
+  background: var(--hover);
+}
+/* The light theme's hover colour is the title bar's own, so a tab there takes the next step. */
+:root.light .mode-tabs button:not([aria-selected='true']):hover {
+  background: var(--active);
+}
+.mode-tabs button[aria-selected='true'] {
+  color: var(--text);
+}
+.mode-ic svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+  display: block;
+}
+/* What waits in a mode, after its label: booking requests on Calendar (orange), and on Chat a count of what asks for
+ * you (accent) or a dot for other unread messages. Dark ink on the orange in both themes; the light theme's panel
+ * colour is white, too faint on it. */
+.mode-badge {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: var(--warn);
+  color: var(--panel);
+}
+:root.light .mode-badge {
+  color: var(--text);
+}
+.mode-badge.is-mention,
+:root.light .mode-badge.is-mention {
+  background: var(--accent);
+  color: var(--panel);
+}
+.mode-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+/* A narrow window gives the room to the search: the tabs show their icons, with the label in the tooltip and a badge
+ * on the icon's corner. Half a 1920px screen, 960px, still has the labels. */
+@media (max-width: 939px) {
+  .mode-tabs button {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .mode-label {
+    display: none;
+  }
+  .mode-badge,
+  .mode-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+  }
+  .mode-badge {
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    font-size: 9.5px;
+  }
+  .mode-dot {
+    top: 3px;
+    right: 4px;
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-tabs.glides .mode-thumb {
+    transition: none;
+  }
+}
+
+/* The search gives way before the bar overflows: at 200 percent in a small window it shrinks below its field's own
+ * width, so the actions stay clear of the window buttons. */
 .titlebar-search {
   -webkit-app-region: no-drag;
   width: min(560px, 100%);
+  min-width: 0;
+  overflow: hidden;
   height: 30px;
   display: flex;
   align-items: center;
@@ -680,14 +825,6 @@ body:has(.page) .titlebar-actions {
   flex-direction: column;
   padding: 2px 10px 8px 10px;
   min-height: 0;
-}
-/* Mail and Calendar. The switch stays put while the rest of the sidebar redraws, so its thumb can slide. */
-.sidebar-mode {
-  padding: 2px 0 6px;
-}
-.sidebar-mode .segmented {
-  display: grid;
-  width: 100%;
 }
 .sidebar-main {
   display: contents;
@@ -902,7 +1039,7 @@ body.dragging-mail .nav-item * {
 }
 
 /* Collapsed: an icon rail. When the rail runs short of height, at 200 percent zoom for one, the list keeps about three
-   rows and the whole column scrolls instead: the mode switch, the tiles and the foot scroll away with the list and keep
+   rows and the whole column scrolls instead: the tiles and the foot scroll away with the list and keep
    their size. The column draws no scrollbar of its own, which would take 9 of the rail's 60px and cut the list's
    tiles; the list's own scrollbar and the rows cut at its edge show that more follows. */
 .shell.collapsed .sidebar {
@@ -996,60 +1133,6 @@ body.dragging-mail .nav-item * {
   width: 32px;
   justify-content: center;
   padding: 0;
-}
-/* In the rail the switch stands upright and shows icons. The track's 12px corners hold 10px segments. */
-.shell.collapsed .sidebar-mode .segmented {
-  width: 40px;
-  height: auto;
-  grid-template-columns: none;
-  grid-template-rows: repeat(var(--n), 34px);
-  border-radius: 12px;
-}
-.shell.collapsed .sidebar-mode .seg-thumb {
-  right: 2px;
-  bottom: auto;
-  width: auto;
-  height: calc((100% - 4px) / var(--n));
-  border-radius: 10px;
-  transform: translateY(calc(var(--i) * 100%));
-}
-.shell.collapsed .sidebar-mode .segmented button {
-  padding: 0;
-  border-radius: 10px;
-}
-.shell.collapsed .sidebar-mode .seg-label {
-  display: none;
-}
-.shell.collapsed .sidebar-mode .seg-ic {
-  display: block;
-}
-/* Four modes, with team chat on the server: four labels side by side don't fit 236 px, so each segment stacks its
-   icon over an 11px label. The track's 12px corners hold 10px segments. Three modes keep the switch above, and the
-   rail keeps its upright icons. */
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked {
-  height: 46px;
-  border-radius: 12px;
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-thumb {
-  border-radius: 10px;
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked button {
-  flex-direction: column;
-  gap: 2px;
-  padding: 0 2px;
-  border-radius: 10px;
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic {
-  display: block;
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic svg {
-  width: 16px;
-  height: 16px;
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-label {
-  max-width: 100%;
-  font-size: 11px;
-  line-height: 13px;
 }
 
 /* ---------- avatars, pills, checkboxes ---------- */
@@ -7101,68 +7184,6 @@ button.cal-title:hover {
   white-space: normal;
 }
 
-/* Booking requests that wait for an answer: a count on the Calendar segment of the mode switch. */
-.seg-badge {
-  min-width: 17px;
-  height: 17px;
-  padding: 0 5px;
-  border-radius: 9999px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  background: var(--warn);
-  color: var(--panel);
-}
-/* Dark ink on the orange in both themes; the light theme's panel colour is white, too faint on it. */
-:root.light .seg-badge {
-  color: var(--text);
-}
-.shell.collapsed .sidebar-mode .seg-badge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  font-size: 9.5px;
-}
-/* Team chat on the Chat segment (contract 3.10): an accent count of what asks for you, else a dot for unread
-   messages. White on the accent in light; the dark panel colour on it in dark. */
-.seg-badge.is-mention,
-:root.light .seg-badge.is-mention {
-  background: var(--accent);
-  color: var(--panel);
-}
-.seg-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px var(--bg);
-  flex: none;
-}
-/* In the stacked switch a badge sits at the top right of its icon, at the rail's size. */
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge,
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-dot {
-  position: absolute;
-  top: 3px;
-  left: calc(50% + 5px);
-}
-.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge {
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  font-size: 9.5px;
-}
-.shell.collapsed .sidebar-mode .seg-dot {
-  position: absolute;
-  top: 5px;
-  right: 6px;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .cal-panel {
     animation: none;
@@ -8950,10 +8971,6 @@ button.cal-gchip-main:hover {
 }
 body.meeting-mode .titlebar-search {
   visibility: hidden;
-}
-/* Three modes share the sidebar's switch, so its segments keep less room around their labels. */
-.sidebar-mode .segmented button {
-  padding: 0 6px;
 }
 
 /* The header: title, state and clock on the left, the recording's controls on the right. */

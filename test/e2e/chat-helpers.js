@@ -68,7 +68,7 @@ async function signIn(win, person) {
 
 // Chat mode, once the server's info says it has team chat.
 async function openChat(win) {
-  const seg = win.locator('.sidebar-mode [data-mode="chat"]');
+  const seg = win.locator('.titlebar-modes [data-mode="chat"]');
   await expect(seg).toBeVisible({ timeout: 15000 });
   await seg.click();
   await expect(seg).toHaveAttribute('aria-selected', 'true');

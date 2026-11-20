@@ -334,7 +334,7 @@ export function setNotices(source, list) {
   if (C.open) render();
 }
 
-// The booking page's state: its requests show on the grid and as a count on the mode switch.
+// The booking page's state: its requests show on the grid and as a count on the title bar's Calendar tab.
 export function setBooking(state) {
   C.booking = state && typeof state === 'object' ? state : null;
   if (C.open) render();

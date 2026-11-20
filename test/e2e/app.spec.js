@@ -75,6 +75,62 @@ test('the title bar keeps its actions clear of window buttons on the right', asy
   expect(await clearance(win)).toEqual({ icon: 22, actions: 12 });
 });
 
+// Mail, Calendar and Meet are tabs in the title bar, beside the icon, with one highlight behind the chosen tab. They
+// stay where they are when the sidebar folds, show icons in a narrow window and go behind Settings with the search.
+test('the modes are tabs in the title bar, with a highlight on the chosen one', async () => {
+  const tabs = win.locator('.titlebar-modes .mode-tabs');
+  const tab = (mode) => tabs.locator(`[data-mode="${mode}"]`);
+  await expect(tabs.locator('.mode-label')).toHaveText(['E-mail', 'Agenda', 'Meet']);
+  await expect(win.locator('.sidebar [data-mode]')).toHaveCount(0);
+  // How far the highlight's sides are from the chosen tab's, in pixels.
+  const off = () =>
+    win.evaluate(() => {
+      const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+      const [thumb, on] = [box('.mode-thumb'), box('.mode-tabs [aria-selected="true"]')];
+      return Math.max(Math.abs(thumb.left - on.left), Math.abs(thumb.right - on.right));
+    });
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(off).toBeLessThan(1);
+  await tab('calendar').click();
+  await expect(win.locator('.shell')).toHaveClass(/calendar-mode/);
+  await expect(tab('calendar')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'false');
+  await expect.poll(off).toBeLessThan(1);
+  await win.keyboard.press('Control+1');
+  await expect(tab('mail')).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(off).toBeLessThan(1);
+
+  // Folding the sidebar moves neither the tabs nor the search.
+  const lefts = () => win.evaluate(() => ['.titlebar-modes', '.titlebar-search'].map((s) => Math.round(document.querySelector(s).getBoundingClientRect().left)));
+  const wide = await lefts();
+  await win.click('[data-action="collapse"]');
+  await expect(win.locator('body')).toHaveClass(/collapsed-sidebar/);
+  expect(await lefts()).toEqual(wide);
+  await win.click('[data-action="collapse"]');
+  await expect(win.locator('body')).not.toHaveClass(/collapsed-sidebar/);
+
+  // A narrow window: icons, named by their tooltips, and the highlight takes the smaller tab's size.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 700));
+  await expect(tabs.locator('.mode-label').first()).toBeHidden();
+  await expect(tab('calendar')).toHaveAttribute('title', /^Agenda/);
+  await expect.poll(off).toBeLessThan(1);
+  // The smallest window at the largest zoom: the search gives way, and nothing runs off the bar.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(760, 560));
+  await win.evaluate(() => window.mail.call('setZoom', 200));
+  await expect.poll(() => win.evaluate(() => innerWidth)).toBeLessThan(400);
+  const overflow = () => win.evaluate(() => document.querySelector('.titlebar').scrollWidth - document.querySelector('.titlebar').clientWidth);
+  await expect.poll(overflow).toBe(0);
+  await expect.poll(off).toBeLessThan(1);
+  await win.evaluate(() => window.mail.call('setZoom', 100));
+
+  // Settings covers the window: the tabs go with the search, and come back with the highlight in place.
+  await win.click('[data-action="settings"]');
+  await expect(tabs).toBeHidden();
+  await win.keyboard.press('Escape');
+  await expect(tabs).toBeVisible();
+  await expect.poll(off).toBeLessThan(1);
+});
+
 // ---------- reading ----------
 
 test('first run shows the demo inbox with the newest message open, still unread', async () => {

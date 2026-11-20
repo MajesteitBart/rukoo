@@ -143,7 +143,7 @@ When a new booking overlaps an event that came after Rukoo last published your t
 
 ## Requests
 
-A type that needs your approval makes requests. A request holds its time on the page. In the calendar it shows as a dashed "Request" block at that time, and the Calendar switch at the top of the sidebar counts the open ones. Accept puts the event in your calendar, and the guest gets the invitation. Decline frees the time. A message you add shows on the guest's confirmation page, where they manage the booking; "Also email this message from …" sends it from the calendar's account as well, and is off by default.
+A type that needs your approval makes requests. A request holds its time on the page. In the calendar it shows as a dashed "Request" block at that time, and the Calendar tab in the title bar counts the open ones. Accept puts the event in your calendar, and the guest gets the invitation. Decline frees the time. A message you add shows on the guest's confirmation page, where they manage the booking; "Also email this message from …" sends it from the calendar's account as well, and is off by default.
 
 A request you don't answer lapses 48 hours after it was made, or at its start minus the minimum notice, whichever comes first.
 

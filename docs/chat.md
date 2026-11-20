@@ -2,7 +2,7 @@
 
 Team chat lets you talk with your colleagues in Rukoo, next to your mail and calendar. A team gets a **workspace** on the server of your Rukoo account. In it you talk in **channels**, which are named conversations for a topic or a project, and in **direct messages** with one person or a small group. Messages arrive live, on your computer and on your phone.
 
-Open it with the Chat segment in the sidebar's mode switch, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on. The server at rukoo.io doesn't have it on yet, so for now you see Chat on a server you or your team runs yourselves ([Running your own server](account.md#running-your-own-server)).
+Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on. The server at rukoo.io doesn't have it on yet, so for now you see Chat on a server you or your team runs yourselves ([Running your own server](account.md#running-your-own-server)).
 
 **The host can read your messages.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change what is written in its workspaces, direct messages included. Rukoo says who hosts a workspace before you join, in the conversation header of every direct message and in Workspace settings. [What the host can read](#what-the-host-can-read) has the details.
 
@@ -114,7 +114,7 @@ When a message holds a web address, the server fetches the page and adds a previ
 ## Unread, notifications and mute
 
 - A channel with unread messages shows bold with a count. A channel where someone mentioned you, and a direct message with unread messages, shows an accent badge with the count.
-- The Chat segment in the mode switch shows the number of mentions and unread direct messages in all your workspaces, or a dot when only channels have unread messages. The taskbar badge counts mail only.
+- The Chat tab in the title bar shows the number of mentions and unread direct messages in all your workspaces, or a dot when only channels have unread messages. The taskbar badge counts mail only.
 - Rukoo marks messages read as you scroll past them while its window has focus. **Mark as read** in the More menu, or `Shift+Esc`, marks the whole conversation read. A read on your phone counts here too.
 - **Mark unread** in a message's More menu makes that message and everything after it unread again: the New line moves there and the badge comes back, also on your other devices. The conversation then stops marking messages read until you open it again, so it stays unread while it's on screen.
 - Rukoo notifies you of new direct messages and of mentions, unless the conversation is on screen. Clicking a notification opens the conversation at that message. When you read the messages here or on another device, the notification goes away. **Settings → General → Team chat notifications** turns these off.

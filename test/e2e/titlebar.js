@@ -5,7 +5,7 @@
 // in CSS pixels at the page's zoom.
 
 // The free part of the bar, the window's width, the side bootstrap.js marked for the buttons, and the visible brand
-// icon, compose title, search and actions in the bar.
+// icon, compose title, mode tabs, search and actions in the bar.
 function titlebar(page) {
   return page.evaluate(() => {
     const area = navigator.windowControlsOverlay.getTitlebarAreaRect();
@@ -21,6 +21,7 @@ function titlebar(page) {
       area: { left: area.x, right: area.x + area.width, height: area.height },
       icon: box('.titlebar-icon'),
       title: box('#compose-title'),
+      modes: box('.titlebar-modes'),
       search: box('.titlebar-search'),
       actions: box('.titlebar-actions')
     };

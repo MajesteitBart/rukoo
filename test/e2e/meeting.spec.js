@@ -247,7 +247,7 @@ async function setTheme(theme) {
 async function setLanguage(language) {
   await win.evaluate((l) => window.mail.call('updateSettings', { language: l }), language);
   await expect(win.locator('html')).toHaveAttribute('lang', language);
-  await expect(win.locator('.sidebar-mode [data-mode="mail"] .seg-label')).toHaveText(language === 'nl' ? 'E-mail' : 'Mail');
+  await expect(win.locator('.titlebar-modes [data-mode="mail"] .mode-label')).toHaveText(language === 'nl' ? 'E-mail' : 'Mail');
 }
 
 async function shot(name) {

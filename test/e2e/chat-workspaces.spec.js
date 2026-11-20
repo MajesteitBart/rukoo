@@ -391,7 +391,7 @@ test('signing up with an invitation link in the invite field ends in the Join di
 
   // Settings closes back to Chat, which opens the Join dialog with the link and its card.
   await expect(page).toHaveCount(0, { timeout: 15000 });
-  await expect(win.locator('.sidebar-mode [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
+  await expect(win.locator('.titlebar-modes [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
   const dialog = dialogBox(win);
   await expect(dialog.locator('h2')).toHaveText('Join a workspace', { timeout: 15000 });
   await expect(dialog.locator('[name="link"]')).toHaveValue(link);

@@ -978,7 +978,7 @@ test('a side panel, open time on the grid, booking requests and calendar-open fr
   await expect(win.locator('.cal-hl')).toHaveCount(0);
   expect(await win.evaluate(() => window.__panel)).toMatchObject({ renders: 1, closes: 1 });
 
-  // A booking request waits for an answer: a dashed block at its time and a count on the mode switch.
+  // A booking request waits for an answer: a dashed block at its time and a count on the Calendar tab.
   const thursday = await shiftDays(wednesday, 1);
   const start = await timeOn(thursday, 11);
   await win.evaluate(async (start) => {
@@ -994,7 +994,7 @@ test('a side panel, open time on the grid, booking requests and calendar-open fr
   // The guest's name is text, never markup.
   await expect(request).toContainText('RequestJane <b>Doe</b>');
   await expect(request).toHaveAttribute('aria-label', /^Booking request from Jane <b>Doe<\/b>, /);
-  await expect(win.locator('[data-mode="calendar"] .seg-badge')).toHaveText('1');
+  await expect(win.locator('[data-mode="calendar"] .mode-badge')).toHaveText('1');
   await expect(win.locator('[data-mode="calendar"]')).toHaveAttribute('aria-label', 'Calendar, 1 booking request');
   await request.click();
   expect(await win.evaluate(() => window.__panel.opened)).toEqual({ id: 'Rf63vMqqWdS0MICDAHKmrw', request: 'Rf63vMqqWdS0MICDAHKmrw' });
@@ -1018,7 +1018,7 @@ test('a side panel, open time on the grid, booking requests and calendar-open fr
 
   // The badge stays in the mailbox; a notification's click comes back as calendar-open.
   await win.keyboard.press('Control+1');
-  await expect(win.locator('[data-mode="calendar"] .seg-badge')).toHaveText('1');
+  await expect(win.locator('[data-mode="calendar"] .mode-badge')).toHaveText('1');
   await win.evaluate(() => (window.__panel.opened = null));
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('mail:event', { type: 'calendar-open', payload: { request: 'Rf63vMqqWdS0MICDAHKmrw' } }));
   await expect(win.locator('.calendar')).toBeVisible();
