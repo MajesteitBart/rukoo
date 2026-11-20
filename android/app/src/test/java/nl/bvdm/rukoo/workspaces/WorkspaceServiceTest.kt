@@ -624,6 +624,37 @@ class WorkspaceServiceTest {
         h.http.verify()
     }
 
+    @Test
+    fun `a workspace waiting for a newer Rukoo refuses writes before they reach the server`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        // The server asks for an update: the feed parks the workspace.
+        h.http.once("GET", h.route(ws, "/changes")) { throw refusal(426, "upgrade_required") }
+        s.refresh(ws)
+        s.state.until("the upgrade state") { it.workspaces.single().status == WorkspaceStatus.UPGRADE }
+        val before = h.http.calls.size
+        for (write in listOf<suspend () -> Unit>(
+            { s.leaveWorkspace(ws) },
+            { s.renameMe(ws, "New name") },
+            { s.createInvite(ws, "member", emptyList(), 86_400) },
+            { s.redact(ws, Ids.GENERAL, Ids.event(1, 1)) },
+        )) {
+            try {
+                write()
+                fail("a write went through in the upgrade state")
+            } catch (e: WorkspaceError) {
+                assertEquals("upgrade_required", e.code)
+            }
+        }
+        assertEquals("nothing reached the server", before, h.http.calls.size)
+        assertTrue(s.state.value.workspaces.isNotEmpty())
+    }
+
     // ---- what the UI reads ----
 
     @Test

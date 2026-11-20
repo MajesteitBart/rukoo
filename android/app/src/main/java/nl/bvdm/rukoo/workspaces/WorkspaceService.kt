@@ -1133,8 +1133,18 @@ class WorkspaceService internal constructor(
         }
     }
 
-    // A write to one workspace's routes, whose 404 for the workspace runs the removal path.
-    private suspend fun <T> write(s: WorkspaceSync, block: suspend WorkspaceClient.() -> T): T = retrying { s.call(block) }
+    // A write to one workspace's routes, whose 404 for the workspace runs the removal path. None leaves for a workspace
+    // that waits for a newer Rukoo, whichever screen asked.
+    private suspend fun <T> write(s: WorkspaceSync, block: suspend WorkspaceClient.() -> T): T {
+        requireWritable(s)
+        return retrying { s.call(block) }
+    }
+
+    // A 426 parked the workspace until Rukoo is updated (§3.15): it is read-only, so a write fails with
+    // `upgrade_required` before it reaches the server, as a send does in the outbox.
+    private suspend fun requireWritable(s: WorkspaceSync) {
+        if (s.store.read { getWs(s.ws) }?.state == FeedApplier.STATE_UPGRADE) throw WorkspaceError("upgrade_required")
+    }
 
     // A write outside one workspace's routes (making a workspace, previewing, joining). A 404 here is about the link's
     // workspace and never removes one the person is in.
@@ -1273,6 +1283,7 @@ class WorkspaceService internal constructor(
     override suspend fun discard(localId: String) = requireLive().outbox.discard(localId)
 
     override suspend fun redact(ws: String, room: String, message: String) = onWs(ws) { l, s ->
+        requireWritable(s)
         l.outbox.redact(ws, room, message)
         // The cache knows the text is gone: an alert that showed it goes now, not when the feed confirms (desktop's
         // outbox does the same).

@@ -134,6 +134,9 @@ enum class MemberAction { MESSAGE, ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER, ROLE_GUE
 /** What a member row's menu in a channel's members offers to its managers (desktop-ui 6.6). */
 enum class ChannelMemberAction { MAKE_MANAGER, MAKE_MEMBER, REMOVE }
 
+/** The workspace drawer's rows for the workspace on screen (contract §5.10, §7.4). */
+enum class WorkspaceAction { RENAME_ME, MEMBERS, INVITE, BLOCKED, LEAVE, DELETE }
+
 /** The sheets' rules (contract §3.3, §3.12, §3.16, §5.10, desktop-ui 6). */
 /** Why a people list is empty: a search found nobody, nobody else is in the workspace, or everyone is in already. */
 enum class PickerEmpty { NONE, NOBODY, EVERYONE }
@@ -291,6 +294,31 @@ object SheetRules {
 
     /** Whether the person invites (desktop-ui 6.3): owners and admins. */
     fun canInvite(role: String?): Boolean = role == "owner" || role == "admin"
+
+    /**
+     * The workspace drawer's rows for the workspace on screen (contract §5.10, §7.4), in order. While it can't take
+     * writes (not [writable]: the server asks for an update, 426) only Members stays, whose sheet then offers Message
+     * and no write: the list is read-only (android.md "Upgrade required").
+     */
+    fun workspaceActions(view: WorkspaceView, writable: Boolean = true): List<WorkspaceAction> {
+        if (!writable) return listOf(WorkspaceAction.MEMBERS)
+        val role = view.me.role
+        return buildList {
+            add(WorkspaceAction.RENAME_ME)
+            add(WorkspaceAction.MEMBERS)
+            if (canInvite(role)) add(WorkspaceAction.INVITE)
+            if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) add(WorkspaceAction.BLOCKED)
+            add(WorkspaceAction.LEAVE)
+            if (role == "owner") add(WorkspaceAction.DELETE)
+        }
+    }
+
+    /**
+     * Whether [sheet] stays open while the selected workspace can't take writes (426): Join and Make aren't about it,
+     * and Details and Members hide their writes then. Every other sheet exists to write in it, and closes.
+     */
+    fun opensWhileReadOnly(sheet: ChatSheet): Boolean =
+        sheet == ChatSheet.JOIN || sheet == ChatSheet.CREATE_WORKSPACE || sheet == ChatSheet.DETAILS || sheet == ChatSheet.MEMBERS
 
     /** Leaving [room]'s body (desktop-ui 6.9). */
     fun leaveBody(room: Room): LeaveBody = when {
@@ -480,6 +508,12 @@ fun ChatSheetHost(app: AppViewModel, sheet: ChatSheet, target: String?, twoPane:
 
 @Composable
 private fun SheetFor(app: AppViewModel, sheet: ChatSheet, target: String?, twoPane: Boolean, close: () -> Unit) {
+    // A sheet that writes in the selected workspace closes once the server asks for an update, also one already open.
+    val nav by app.state.collectAsStateWithLifecycle()
+    if (!SheetRules.opensWhileReadOnly(sheet) && !takesWrites(app, nav.chat.workspaceId.orEmpty())) {
+        LaunchedEffect(sheet, target) { close() }
+        return
+    }
     key(sheet, target) {
         when (sheet) {
             ChatSheet.NEW -> NewSheet(app, twoPane, close)

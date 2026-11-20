@@ -152,37 +152,45 @@ private fun WorkspaceList(app: AppViewModel, modifier: Modifier, pick: (String) 
 @Composable
 private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -> Unit) -> Unit) {
     val ui = app.chatUi
+    val chat by app.chatState.collectAsStateWithLifecycle()
     Column {
         if (view != null) {
             val ws = view.ws.id
-            val role = view.me.role
+            // While the server asks for an update (426) the workspace is read-only: only Members, whose sheet offers no
+            // write then. The service refuses a write all the same.
+            val writable = chat.workspaces.firstOrNull { it.id == ws }?.status != WorkspaceStatus.UPGRADE
             Hairline(Modifier.padding(vertical = 8.dp))
-            DrawerAction(stringResource(R.string.chat_workspace_your_name), RukooIcons.Edit, hint = view.me.name) { act { ui.askRenameMe(ws, view.me.name) } }
-            DrawerAction(stringResource(R.string.chat_workspace_members), RukooIcons.People) { act { app.openChatSheet(ChatSheet.MEMBERS) } }
-            if (SheetRules.canInvite(role)) DrawerAction(stringResource(R.string.chat_workspace_invite), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.INVITE) } }
-            if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) {
-                DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
-            }
-            // The only owner can't leave; the row stays, and opens the dialog that says how to. Alone in the
-            // workspace there is nobody to make owner, and Delete workspace below is the way out.
-            val ownerFirst = SheetRules.ownerFirstHint(view)
-            DrawerAction(
-                stringResource(R.string.chat_workspace_leave),
-                RukooIcons.Back,
-                danger = true,
-                hint = if (ownerFirst) stringResource(R.string.chat_leave_only_owner_hint) else null,
-            ) {
-                act { ui.askLeaveWorkspace(ws, view) { app.openChatSheet(ChatSheet.MEMBERS) } }
-            }
-            if (role == "owner") {
-                val canDelete = SheetRules.canDelete(view)
-                DrawerAction(
-                    stringResource(R.string.chat_workspace_delete),
-                    RukooIcons.Trash,
-                    danger = true,
-                    enabled = canDelete,
-                    hint = if (canDelete) null else stringResource(R.string.chat_delete_only_you),
-                ) { act { ui.askDeleteWorkspace(ws) } }
+            for (action in SheetRules.workspaceActions(view, writable)) {
+                when (action) {
+                    WorkspaceAction.RENAME_ME ->
+                        DrawerAction(stringResource(R.string.chat_workspace_your_name), RukooIcons.Edit, hint = view.me.name) { act { ui.askRenameMe(ws, view.me.name) } }
+                    WorkspaceAction.MEMBERS ->
+                        DrawerAction(stringResource(R.string.chat_workspace_members), RukooIcons.People) { act { app.openChatSheet(ChatSheet.MEMBERS) } }
+                    WorkspaceAction.INVITE ->
+                        DrawerAction(stringResource(R.string.chat_workspace_invite), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.INVITE) } }
+                    WorkspaceAction.BLOCKED ->
+                        DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
+                    // The only owner can't leave; the row stays, and opens the dialog that says how to. Alone in the
+                    // workspace there is nobody to make owner, and Delete workspace below is the way out.
+                    WorkspaceAction.LEAVE -> DrawerAction(
+                        stringResource(R.string.chat_workspace_leave),
+                        RukooIcons.Back,
+                        danger = true,
+                        hint = if (SheetRules.ownerFirstHint(view)) stringResource(R.string.chat_leave_only_owner_hint) else null,
+                    ) {
+                        act { ui.askLeaveWorkspace(ws, view) { app.openChatSheet(ChatSheet.MEMBERS) } }
+                    }
+                    WorkspaceAction.DELETE -> {
+                        val canDelete = SheetRules.canDelete(view)
+                        DrawerAction(
+                            stringResource(R.string.chat_workspace_delete),
+                            RukooIcons.Trash,
+                            danger = true,
+                            enabled = canDelete,
+                            hint = if (canDelete) null else stringResource(R.string.chat_delete_only_you),
+                        ) { act { ui.askDeleteWorkspace(ws) } }
+                    }
+                }
             }
         }
         Hairline(Modifier.padding(vertical = 8.dp))

@@ -1,5 +1,6 @@
 package nl.bvdm.rukoo.ui.chat
 
+import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.workspaces.Block
 import nl.bvdm.rukoo.workspaces.Channel
 import nl.bvdm.rukoo.workspaces.Member
@@ -169,6 +170,26 @@ class ChatSheetRulesTest {
         assertFalse(SheetRules.canDelete(view()))
         // A directory that isn't complete can't vouch that nobody else is in it.
         assertFalse(SheetRules.canDelete(view(members = solo, more = true)))
+    }
+
+    @Test
+    fun `the drawer offers the workspace's actions by role, and only Members while the server asks for an update`() {
+        val all = listOf(WorkspaceAction.RENAME_ME, WorkspaceAction.MEMBERS, WorkspaceAction.INVITE, WorkspaceAction.BLOCKED, WorkspaceAction.LEAVE, WorkspaceAction.DELETE)
+        assertEquals(all, SheetRules.workspaceActions(view()))
+        assertEquals(
+            listOf(WorkspaceAction.RENAME_ME, WorkspaceAction.MEMBERS, WorkspaceAction.BLOCKED, WorkspaceAction.LEAVE),
+            SheetRules.workspaceActions(view(role = "member")),
+        )
+        assertEquals(listOf(WorkspaceAction.RENAME_ME, WorkspaceAction.MEMBERS, WorkspaceAction.LEAVE), SheetRules.workspaceActions(view(role = "guest")))
+        for (role in listOf("owner", "admin", "member", "guest")) {
+            assertEquals("a parked workspace is read-only for $role", listOf(WorkspaceAction.MEMBERS), SheetRules.workspaceActions(view(role = role), writable = false))
+        }
+    }
+
+    @Test
+    fun `while the server asks for an update only the sheets without writes in the workspace stay open`() {
+        val stay = ChatSheet.entries.filter { SheetRules.opensWhileReadOnly(it) }.toSet()
+        assertEquals(setOf(ChatSheet.JOIN, ChatSheet.CREATE_WORKSPACE, ChatSheet.DETAILS, ChatSheet.MEMBERS), stay)
     }
 
     @Test
