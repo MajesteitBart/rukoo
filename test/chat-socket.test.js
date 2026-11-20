@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startRealServer, realServerAvailable, skipWithoutServer } = require('./fixtures/real-server');
-const { attach, chatService, settled, watchCalls, twoPeople, until, sleep, fakeClock, fakeWebSocket } = require('./fixtures/chat-app');
+const { attach, signIn, chatService, settled, watchCalls, twoPeople, until, sleep, fakeClock, fakeWebSocket } = require('./fixtures/chat-app');
 const { WakeSocket, PROTOCOL } = require('../src/main/workspaces/socket');
 const { TIMING } = require('../src/main/workspaces');
 const { ChatError } = require('../src/main/workspaces/wire');
@@ -25,6 +25,35 @@ test.after(() => server?.close());
 
 const FAST = { socketBackoff: [100, 200, 400, 800, 1600, 3200, 6000], syncBackoff: [100, 200, 400, 800, 1600] };
 const route = (ws, rest = '') => `/v1/workspaces/${ws}${rest}`;
+
+// A WebSocket upgrade request by hand, for the status and body of a refusal: { status, body }.
+function rawUpgrade(ws, ticket) {
+  const http = require('http');
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${server.url}${route(ws, '/socket')}`, {
+      headers: {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': require('crypto').randomBytes(16).toString('base64'),
+        'sec-websocket-protocol': PROTOCOL,
+        authorization: `Ticket ${ticket}`
+      }
+    });
+    req.on('upgrade', (res, socket) => {
+      socket.destroy();
+      resolve({ status: res.statusCode, body: null });
+    });
+    req.on('response', (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (text += chunk));
+      res.on('end', () => resolve({ status: res.statusCode, body: text ? JSON.parse(text) : null }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 async function live(t, options = {}) {
   const made = await twoPeople(server, { timing: FAST, WebSocket: globalThis.WebSocket, ...options });
@@ -97,6 +126,71 @@ test('4003 after a removal parks the socket and removes the workspace', async (t
   assert.equal(svc.socketState(ws.id), 'off');
   await sleep(500);
   assert.equal(made.length, before, 'no new socket for the workspace');
+});
+
+// A ticket issued before its workspace was deleted gets 404 at the upgrade (scope workspace), which Node's WebSocket
+// reports only as a close without a status. The backoff's next ticket request answers 404 with scope workspace, and
+// call() runs the removal path: the workspace goes, reason removed, with no loop of tickets and upgrades.
+test('an upgrade for a workspace deleted after its ticket removes the workspace without a reconnect loop', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const upgrades = [];
+  class Spy extends globalThis.WebSocket {
+    constructor(url, init) {
+      super(url, init);
+      const seen = { opened: false, code: null };
+      upgrades.push(seen);
+      this.addEventListener('open', () => (seen.opened = true));
+      this.addEventListener('close', (e) => (seen.code = e.code));
+    }
+  }
+  // The owner signs in on this device (a session of its own) and deletes the workspace with the session of sign-up.
+  const owner = await server.seedAccount({ password: 'a long enough password' });
+  const ws = await server.seedWorkspace(owner, { name: 'Gone', displayName: 'Olga' });
+  const { account, dir } = await signIn(server, owner);
+  let armed = false;
+  let deleted = null;
+  const tickets = [];
+  watchCalls(account, async (method, path, real) => {
+    if (method !== 'POST' || path !== route(ws.id, '/socket-ticket')) return undefined;
+    tickets.push(Date.now());
+    if (!armed) return undefined;
+    armed = false;
+    const answer = await real();
+    const out = await server.call('DELETE', route(ws.id), { token: owner.token });
+    assert.equal(out.status, 204, out.text);
+    deleted = { tickets: tickets.length, upgrades: upgrades.length, refusal: await rawUpgrade(ws.id, answer.ticket) };
+    return answer;
+  });
+  const svc = chatService(account, dir, { timing: FAST, WebSocket: Spy });
+  t.after(() => {
+    svc.close();
+    account.close();
+  });
+  await settled(svc, ws.id);
+  await until(() => svc.socketState(ws.id) === 'open', 10000, 'the socket to open');
+  // The connection drops; the next attempt's ticket is issued, then the workspace is deleted before the upgrade.
+  armed = true;
+  svc.sockets.get(ws.id).socket.close(1000);
+  await until(() => svc.events.some((e) => e.kind === 'removed' && e.ws === ws.id), 10000, 'the removal');
+  assert.ok(deleted, 'the workspace was deleted between a ticket and its upgrade');
+  // What the server answers that ticket's upgrade, which Node's WebSocket doesn't show.
+  assert.equal(deleted.refusal.status, 404);
+  assert.equal(deleted.refusal.body.error, 'not_found');
+  assert.equal(deleted.refusal.body.scope, 'workspace');
+  assert.deepEqual(svc.events.filter((e) => e.kind === 'removed').at(-1), { kind: 'removed', ws: ws.id, reason: 'removed' });
+  assert.equal(svc.store.getWs(ws.id), null);
+  // The upgrade with the ticket from before the deletion was refused: it never opened.
+  const late = upgrades.slice(deleted.upgrades);
+  assert.ok(late.length >= 1, 'the upgrade with the old ticket was tried');
+  assert.equal(late[0].opened, false);
+  // Past several steps of the fast backoff: nothing more for this workspace.
+  await sleep(1500);
+  assert.equal(svc.socketState(ws.id), 'off');
+  const ticketsAfter = tickets.length - deleted.tickets;
+  const upgradesAfter = upgrades.length - deleted.upgrades;
+  assert.ok(ticketsAfter <= 2, `${ticketsAfter} ticket requests after the deletion`);
+  assert.ok(upgradesAfter <= 2, `${upgradesAfter} upgrades after the deletion`);
+  assert.ok(late.every((u) => !u.opened), 'no socket opened after the deletion');
 });
 
 test('the socket connects again after the server stops and starts', async (t) => {
