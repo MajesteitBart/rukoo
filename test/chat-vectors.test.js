@@ -117,16 +117,36 @@ test('the bad mention cases cover every rule the contract lists', () => {
 
 // ---- invitation links ----
 
+// Characters that can't end a link, and the ones that can't start a link written without its scheme.
+const QUOTES = '‘’‚“”„«»‹›';
+const CLOSING = new RegExp(`[.,;:!?)\\]}>'"${QUOTES}]+$`);
+const OPENING = new RegExp(`^[(\\[{<'"${QUOTES}]+`);
+// <host>[:<port>][/<path>]/join#<fragment>, with a host of letters, digits, dots and hyphens.
+const WITHOUT_SCHEME = /^[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?\/join#\S*$/;
+
+// Step 1: the link in pasted text. The first http:// or https:// URL up to white space, without the characters
+// that can't end a link; without one, the first word that is a link without its scheme, read as https.
+function linkIn(text) {
+  const trimmed = String(text).trim();
+  const found = /https?:\/\/\S+/.exec(trimmed);
+  if (found) return found[0].replace(CLOSING, '');
+  for (const word of trimmed.split(/\s+/)) {
+    const bare = word.replace(OPENING, '').replace(CLOSING, '');
+    if (WITHOUT_SCHEME.test(bare)) return `https://${bare}`;
+  }
+  return null;
+}
+
 // The contract's parsing steps for an invitation link, in order. devHosts are the extra local hosts Android allows
 // for http in debug builds.
 function parseInviteLink(text, configured, devHosts = []) {
   const bad = { result: null, error: 'bad_link' };
-  // 1. Trim, then the first http:// or https:// URL, up to white space.
-  const found = /https?:\/\/\S+/.exec(String(text).trim());
+  // 1. Trim, then the link in the text.
+  const found = linkIn(text);
   if (!found) return bad;
   let url;
   try {
-    url = new URL(found[0]);
+    url = new URL(found);
   } catch (_) {
     return bad;
   }
@@ -192,6 +212,15 @@ test('the invitation link cases cover every case the contract lists', () => {
   has('user info', (c) => refused(c) && /:\/\/[^/\s@]+@/.test(c.text));
   has('another server', (c) => c.error === 'other_server');
   has('a server with a base path', (c) => accepted(c) && new URL(c.expect.server).pathname !== '/');
+  // What people paste from sentences and mails: punctuation after the link, and a link without its scheme.
+  // An accepted link whose last value, the secret or the workspace ID, is followed by one of chars in the text.
+  const follows = (c, chars) => accepted(c) && [c.expect.secret, c.expect.workspace].some((v) => [...chars].some((ch) => c.text.includes(v + ch)));
+  has('a full stop after the link', (c) => follows(c, '.'));
+  has('a closing bracket after the link', (c) => follows(c, ')'));
+  has('a quote after the link', (c) => follows(c, '"”'));
+  has('a comma after the link', (c) => follows(c, ','));
+  has('a link without a scheme', (c) => accepted(c) && !/https?:\/\//.test(c.text));
+  has('a link that stays bad without its punctuation', (c) => refused(c) && /https?:\/\/\S+[.,;:!?)\]}>'"‘’‚“”„«»‹›]$/.test(c.text.trim()));
 });
 
 // ---- UUIDv7 ----
@@ -243,7 +272,7 @@ test('the file keeps its shape and holds only made-up IDs and secrets', () => {
   for (const c of vectors.mentions) for (const m of [...c.utf16, ...c.bytes]) assert.match(m.actor, MEMBER_ID, c.name);
   // Hosts are the product's own, documentation domains or local addresses.
   for (const c of vectors.inviteLinks) {
-    for (const u of [c.server, ...(c.text.match(/https?:\/\/\S+/g) || [])]) {
+    for (const u of [c.server, ...(c.text.match(/https?:\/\/\S+/g) || []), linkIn(c.text)].filter(Boolean)) {
       assert.match(new URL(u).hostname.toLowerCase(), /^(rukoo\.io|(chat\.)?example\.(com|net)|localhost|127\.0\.0\.1|\[::1\]|10\.0\.2\.2)$/, `${c.name}: ${u}`);
     }
   }

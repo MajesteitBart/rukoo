@@ -1,5 +1,5 @@
 {
-  "about": "Shared test vectors for team chat, read by desktop (test/chat-vectors.test.js and the chat-wire and chat-text tests) and Android (Utf8OffsetsTest, InviteLinkTest, Uuid7Test) where the file is. Every ID, secret and name is made up. mentions: text with the same mentions as UTF-16 code unit ranges (utf16, what the editors hold) and UTF-8 byte ranges (bytes, the wire form); bytes[k].start equals the UTF-8 length of text.slice(0, utf16[k].start). badMentions: byte ranges that break exactly one wire rule, named in rule: split_character (a start or end inside a character), out_of_order (starts before the previous mention starts), overlap (starts before the previous one ends), past_end, empty (end not after start), too_many (more than 32), bad_actor (not u_ plus 22 base64url characters). Touching ranges are allowed. inviteLinks: text pasted by the person and server, the configured account server; expect is { server, workspace, secret } or null, error is null, bad_link or other_server. android, when present, replaces expect and error on Android in the named build. uuidv7: ms and 10 random bytes as hex give id with the layout of contract section 3.8.",
+  "about": "Shared test vectors for team chat, read by desktop (test/chat-vectors.test.js and the chat-wire and chat-text tests) and Android (Utf8OffsetsTest, InviteLinkTest, Uuid7Test) where the file is. Every ID, secret and name is made up. mentions: text with the same mentions as UTF-16 code unit ranges (utf16, what the editors hold) and UTF-8 byte ranges (bytes, the wire form); bytes[k].start equals the UTF-8 length of text.slice(0, utf16[k].start). badMentions: byte ranges that break exactly one wire rule, named in rule: split_character (a start or end inside a character), out_of_order (starts before the previous mention starts), overlap (starts before the previous one ends), past_end, empty (end not after start), too_many (more than 32), bad_actor (not u_ plus 22 base64url characters). Touching ranges are allowed. inviteLinks: text pasted by the person and server, the configured account server; expect is { server, workspace, secret } or null, error is null, bad_link or other_server. Characters that can't end a link (. , ; : ! ? ) ] } > ' \" and the typographic quotes) are dropped from its end, and a link without https:// or http:// is read as https (contract section 3.2). android, when present, replaces expect and error on Android in the named build. uuidv7: ms and 10 random bytes as hex give id with the layout of contract section 3.8.",
   "mentions": [
     {
       "name": "ASCII",
@@ -1140,11 +1140,138 @@
       "error": "bad_link"
     },
     {
-      "name": "full stop after the link stays part of the secret",
+      "name": "a full stop after the link is dropped",
       "text": "Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8.",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a closing bracket after the link",
+      "text": "(Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8)",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "angle brackets around the link, as plain text mail writes it",
+      "text": "Join here <https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8>",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a quote after the link",
+      "text": "Ann wrote \"https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8\"",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "typographic quotes and a full stop after a link that ends in w",
+      "text": "Klik op „https://rukoo.io/join#i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8&w=w_pr-N6-Je9-yzFeJW__KZ4t”.",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a comma after the link",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8, see you there",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme",
+      "text": "Join us at rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme in brackets, with a full stop",
+      "text": "(rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8).",
+      "server": "https://rukoo.io",
+      "expect": {
+        "server": "https://rukoo.io",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a link without a scheme to a server with a base path",
+      "text": "chat.example.com/rukoo/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://chat.example.com/rukoo",
+      "expect": {
+        "server": "https://chat.example.com/rukoo",
+        "workspace": "w_pr-N6-Je9-yzFeJW__KZ4t",
+        "secret": "9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8"
+      },
+      "error": null
+    },
+    {
+      "name": "a short secret with a full stop after it stays bad",
+      "text": "Join here: https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj.",
       "server": "https://rukoo.io",
       "expect": null,
       "error": "bad_link"
+    },
+    {
+      "name": "a full stop inside the secret stays",
+      "text": "https://rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-F.knjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme with user info",
+      "text": "ann@rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme after a link with one",
+      "text": "See https://rukoo.io/help and rukoo.io/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "bad_link"
+    },
+    {
+      "name": "a link without a scheme to another server",
+      "text": "chat.example.net/join#w=w_pr-N6-Je9-yzFeJW__KZ4t&i=9dxdW1_Wxfh-2GQoj1u-Fknjc2fz4wY8pLiSpj45mj8",
+      "server": "https://rukoo.io",
+      "expect": null,
+      "error": "other_server"
     },
     {
       "name": "an extra fragment key",
