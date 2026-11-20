@@ -10747,6 +10747,14 @@
     "message": "It's removed for everyone in {name}, and {author} sees that it was removed.",
     "description": "Remove a message: confirmation text when a channel manager removes someone else's message. {name}: the channel; {author}: who wrote it. src/renderer/chat-view.js"
   },
+  "chat.remove.quote": {
+    "message": "“{text}”",
+    "description": "Remove a message: first line of the confirmation text, the message being removed, quoted. {text}: its first line, cut to 120 characters. src/renderer/chat-view.js"
+  },
+  "chat.remove.replies": {
+    "message": "Replies to it stay.",
+    "description": "Remove a message: added to the confirmation text when the message has replies in a thread. src/renderer/chat-view.js"
+  },
   "chat.remove.confirm": {
     "message": "Remove",
     "description": "Remove a message: confirmation button. src/renderer/chat-view.js"

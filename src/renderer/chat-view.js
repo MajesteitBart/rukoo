@@ -1,6 +1,6 @@
 import { t, getLocale } from './i18n.js';
 import { icons } from './icons.js';
-import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog } from './ui.js';
+import { api, hhmm, longDate, listTime, groupLabel, hue, initials, showMenu, toast, confirmDialog, dialog, esc } from './ui.js';
 import { h } from './agent/bui.js';
 import { timeline, displayName, memberTag, canRemove, closedBar } from './chat-model.js';
 import { segments, toParts, appendToDraft } from './chat-text.js';
@@ -1145,16 +1145,23 @@ export function mountView(section, H) {
 
   // ---------- message actions ----------
 
-  // Remove (desktop-ui 6.14, contract 3.14): asked first; the row changes when main's redacted event comes back.
+  // Remove (desktop-ui 6.14, contract 3.14): asked first, quoting the message and saying that replies stay, as Android
+  // does; the row changes when main's redacted event comes back.
   async function removeMessage(row) {
     const room = V.room;
     const own = row.actor === H.me();
-    const ok = await confirmDialog(
-      t('chat.remove.title'),
-      t(own ? 'chat.remove.body' : 'chat.remove.bodyOther', { name: roomLabel(room), author: nameOf(row.actor) }),
-      t('chat.remove.confirm'),
-      true
-    );
+    const first = String(row.text || '').split(/\r?\n/).find((line) => line.trim()) || '';
+    const quote = first.length > 120 ? `${first.slice(0, 119).trimEnd()}…` : first;
+    const said = [t(own ? 'chat.remove.body' : 'chat.remove.bodyOther', { name: roomLabel(room), author: nameOf(row.actor) })];
+    if (row.replies && row.replies.count) said.push(t('chat.remove.replies'));
+    const ok = await dialog({
+      title: t('chat.remove.title'),
+      body: `${quote ? `<p class="ch-remove-quote">${esc(t('chat.remove.quote', { text: quote }))}</p>` : ''}<p>${esc(said.join(' '))}</p>`,
+      buttons: [
+        { label: t('common.actions.cancel'), value: false },
+        { label: t('chat.remove.confirm'), value: true, danger: true }
+      ]
+    });
     if (!ok) return;
     const ws = V.ws;
     const c = V.c;

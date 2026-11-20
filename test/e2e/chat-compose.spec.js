@@ -387,7 +387,8 @@ test('removing a message asks first, shows "Message removed" here, and Olga sees
   await menu.locator('[role="menuitem"]', { hasText: 'Remove message' }).click();
   const dialog = win.locator('.scrim .dialog');
   await expect(dialog.locator('h2')).toHaveText('Remove this message?');
-  await expect(dialog.locator('p')).toHaveText("It's removed for everyone in #general. You can't undo this.");
+  // The message is quoted first, as on Android, so it's clear which one goes.
+  await expect(dialog.locator('p')).toHaveText(['“A message to take back”', "It's removed for everyone in #general. You can't undo this."]);
   await dialog.locator('.buttons button').last().click();
   const removed = log().locator(`li.ch-msg[data-id="${id}"]`);
   await expect(removed.locator('.ch-removed')).toHaveText('Message removed', { timeout: 15000 });

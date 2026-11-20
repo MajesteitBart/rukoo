@@ -2770,6 +2770,8 @@
   "chat.remove.title": "Dit bericht verwijderen?",
   "chat.remove.body": "Het verdwijnt voor iedereen in {name}. Dit kun je niet ongedaan maken.",
   "chat.remove.bodyOther": "Het verdwijnt voor iedereen in {name}, en {author} ziet dat het is verwijderd.",
+  "chat.remove.quote": "‘{text}’",
+  "chat.remove.replies": "De antwoorden erop blijven staan.",
   "chat.remove.confirm": "Verwijderen",
   "chat.input.placeholderChannel": "Bericht in #{name}",
   "chat.input.placeholderDirect": "Bericht aan {name}",
