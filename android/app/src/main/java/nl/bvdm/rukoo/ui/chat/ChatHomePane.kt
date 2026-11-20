@@ -36,7 +36,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.pluralStringResource
@@ -419,7 +418,10 @@ private fun rowDescription(row: RoomRow, title: String): String = when {
     else -> title
 }
 
-/** A row's frame: the open room is filled on two panes; muted and closed rows are dimmed (§3.10). */
+/**
+ * A row's frame: the open room is filled on two panes (§3.10). Muted and closed rows draw their names in text2 instead
+ * of fading the whole row, so they keep 4.5:1; the bell-off icon or the Closed tag says which state it is.
+ */
 @Composable
 private fun RowFrame(row: RoomRow, selected: Boolean, description: String, onClick: () -> Unit, minHeight: androidx.compose.ui.unit.Dp, content: @Composable () -> Unit) {
     val c = Rk.colors
@@ -434,7 +436,7 @@ private fun RowFrame(row: RoomRow, selected: Boolean, description: String, onCli
             .padding(horizontal = 12.dp, vertical = 6.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
-        Box(Modifier.alpha(if (row.badge.dim) 0.62f else 1f)) { content() }
+        content()
     }
 }
 
@@ -450,7 +452,7 @@ private fun ChannelRow(row: RoomRow, selected: Boolean, onClick: () -> Unit) {
                 row.title,
                 style = if (strong) Rk.type.text13.semibold else Rk.type.text13,
                 color = when {
-                    row.badge.dim -> c.text3
+                    row.badge.dim -> c.text2
                     strong -> c.text
                     else -> c.text2
                 },
@@ -478,7 +480,7 @@ private fun DmRow(row: RoomRow, members: Map<String, Member>, me: String, dates:
                     Text(
                         row.title,
                         style = if (strong) Rk.type.text13.semibold else Rk.type.text13.medium,
-                        color = if (row.badge.dim) c.text3 else c.text,
+                        color = if (row.badge.dim) c.text2 else c.text,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -500,7 +502,18 @@ private fun DmRow(row: RoomRow, members: Map<String, Member>, me: String, dates:
                 }
             }
             if (row.room.muted) RkIcon(RukooIcons.BellOff, null, size = 14.dp, tint = c.text3)
-            RowBadgeView(row.badge, ring = if (selected) c.active else c.panel)
+            // A closed DM says so where the unread pill would be; the row's description already reads ", closed".
+            if (row.closed) {
+                Text(
+                    stringResource(R.string.chat_sidebar_closed_tag),
+                    style = Rk.type.text11.medium,
+                    color = c.text2,
+                    maxLines = 1,
+                    modifier = Modifier.background(c.chip, Rk.shapes.chip).padding(horizontal = 6.dp, vertical = 1.dp),
+                )
+            } else {
+                RowBadgeView(row.badge, ring = if (selected) c.active else c.panel)
+            }
         }
     }
 }

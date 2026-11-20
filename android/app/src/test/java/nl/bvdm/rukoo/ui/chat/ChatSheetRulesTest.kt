@@ -110,6 +110,44 @@ class ChatSheetRulesTest {
     }
 
     @Test
+    fun `New message shows who you blocked with Unblock and the guests with why, and says why it is empty`() {
+        fun names(p: DmPicker) = listOf(p.pick, p.blocked, p.guests).map { list -> list.map { it.name } }
+
+        // Active full members; the guest waits for a search, and nobody who left shows.
+        val all = SheetRules.dmPicker(people, me, emptySet(), "", byName)
+        assertEquals(listOf(listOf("Ann", "Bo", "Cy"), emptyList(), emptyList()), names(all))
+        assertNull(all.empty)
+        // Someone you blocked moves to the off rows.
+        assertEquals(listOf(listOf("Ann", "Bo"), listOf("Cy"), emptyList()), names(SheetRules.dmPicker(people, me, setOf(cy), "", byName)))
+        // A search shows the guest too, switched off; the blocked person only when they fit it.
+        assertEquals(listOf(emptyList(), emptyList(), listOf("Gus")), names(SheetRules.dmPicker(people, me, setOf(cy), "gu", byName)))
+        assertEquals(listOf(emptyList(), listOf("Cy"), emptyList()), names(SheetRules.dmPicker(people, me, setOf(cy), "cy", byName)))
+        // A search that finds nobody, the person who left included.
+        val none = SheetRules.dmPicker(people, me, emptySet(), "gone", byName)
+        assertEquals(PickerEmpty.NONE, none.empty)
+        // The rank the sheet passes decides the order of the picks while searching.
+        val ranked = SheetRules.dmPicker(people, me, emptySet(), "x", byName) { _, list -> list.reversed() }
+        assertEquals(listOf("Cy", "Bo", "Ann"), ranked.pick.map { it.name })
+
+        // Only a guest besides you: it shows, switched off.
+        val withGuest = listOf(member(me, "Me"), member(guestId, "Gus", role = "guest"))
+        assertEquals(listOf("Gus"), SheetRules.dmPicker(withGuest, me, emptySet(), "", byName).guests.map { it.name })
+        // Nobody else: Nobody else is in the workspace, unless the directory isn't complete.
+        val alone = listOf(member(me, "Me"), member(gone, "Gone", state = "former"))
+        assertEquals(PickerEmpty.NOBODY, SheetRules.dmPicker(alone, me, emptySet(), "", byName).empty)
+        assertEquals(PickerEmpty.NONE, SheetRules.dmPicker(alone, me, emptySet(), "", byName, membersMore = true).empty)
+    }
+
+    @Test
+    fun `Add people says whether nobody else is in the workspace or everyone is in the channel already`() {
+        assertNull(SheetRules.addPeopleEmpty(rows = 2, candidates = 2, others = 4, query = ""))
+        assertEquals(PickerEmpty.NONE, SheetRules.addPeopleEmpty(rows = 0, candidates = 2, others = 4, query = "zz"))
+        assertEquals(PickerEmpty.EVERYONE, SheetRules.addPeopleEmpty(rows = 0, candidates = 0, others = 4, query = ""))
+        assertEquals(PickerEmpty.EVERYONE, SheetRules.addPeopleEmpty(rows = 0, candidates = 0, others = 4, query = "zz"))
+        assertEquals(PickerEmpty.NOBODY, SheetRules.addPeopleEmpty(rows = 0, candidates = 0, others = 0, query = ""))
+    }
+
+    @Test
     fun `an invitation adds to open channels you manage, and a guest needs one`() {
         val rooms = listOf(channel("c1", "plans", role = "manager"), channel("c2", "ads", role = "manager"), channel("c3", "old", role = "manager", archived = true), channel("c4", "other"))
         assertEquals(listOf("ads", "plans"), SheetRules.managedChannels(rooms, byName).map { it.name })

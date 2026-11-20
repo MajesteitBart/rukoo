@@ -44,6 +44,7 @@
     <string name="chat_sidebar_no_direct">No direct messages yet</string><!-- Line under Direct messages. -->
     <string name="chat_sidebar_row_muted">%1$s, muted</string><!-- Accessible name of a muted conversation row. -->
     <string name="chat_sidebar_row_closed">%1$s, closed</string><!-- Accessible name of a closed direct message row. -->
+    <string name="chat_sidebar_closed_tag">Closed</string><!-- Tag at the end of a closed direct message row, where the unread pill would be. -->
     <string name="chat_list_you">You: %1$s</string><!-- Second line of a direct message row in the conversation list when the newest message is the user's own. %1$s: its text. -->
 
     <!-- chat.workspace.* -->
@@ -236,6 +237,7 @@
     <string name="chat_input_closed_left">Someone left, so this conversation is closed. You can still read it.</string><!-- Bar in a direct message closed because someone left. -->
     <string name="chat_input_closed_ineligible">This conversation closed when someone became a guest. You can still read it.</string><!-- Bar in a direct message closed because someone became a guest. -->
     <string name="chat_input_closed_blocked">This conversation is closed. You can still read it.</string><!-- Bar in a direct message closed by a block. -->
+    <string name="chat_input_closed_you_blocked">You blocked %1$s. You can still read this conversation.</string><!-- Bar in a closed direct message with someone the user blocked; its button is Unblock. {name}: that person. -->
     <string name="chat_input_remove_from_list">Remove from list</string><!-- Button on a closed direct message bar. -->
 
     <!-- chat.mentions.* -->
@@ -369,6 +371,7 @@
     <string name="chat_channel_remove_title">Remove %1$s from #%2$s?</string><!-- Confirmation. -->
     <string name="chat_channel_add_title">Add people to #%1$s</string><!-- Button and picker title. -->
     <string name="chat_channel_add_guest_needs_admin">Only an owner or admin can add a guest.</string><!-- Disabled guest row, and the cosign_required error. -->
+    <string name="chat_channel_add_everyone">Everyone in %1$s is already in #%2$s</string><!-- Add people, when every other member is in the channel already. {workspace}, {name}: the channel. -->
     <string name="chat_channel_remove_body">%1$s won\'t be in #%2$s anymore. What they wrote stays.</string><!-- Its text. Desktop chat.channel.removeBody. -->
     <string name="chat_channel_add_failed">Couldn\'t add %1$s.</string><!-- After a partly failed add. -->
 
@@ -400,6 +403,9 @@
     <string name="chat_new_remove_person">Remove %1$s</string><!-- × on a picked person. -->
     <string name="chat_new_limit">A conversation can have 8 people, you included.</string><!-- At the limit. -->
     <string name="chat_new_none">Nobody found</string><!-- Empty list. -->
+    <string name="chat_new_blocked_row">You blocked %1$s</string><!-- A person the user blocked, shown off with Unblock. {name}: that person. -->
+    <string name="chat_new_guest_row">Guests can\'t get direct messages.</string><!-- Under a guest name, shown off. -->
+    <string name="chat_new_nobody">Nobody else is in %1$s yet</string><!-- New message and Add people, when the workspace has nobody else. {workspace}. -->
     <string name="chat_new_start">Start conversation</string><!-- Dialog button. -->
     <string name="chat_new_open">Open conversation</string><!-- Dialog button when that conversation exists. -->
     <string name="chat_new_host_note">Everyone you add can read and post right away. %1$s can read direct messages, like everything in this workspace.</string><!-- Host disclosure under the New message list. -->

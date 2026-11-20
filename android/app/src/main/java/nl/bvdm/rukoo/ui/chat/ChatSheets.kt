@@ -132,6 +132,12 @@ enum class MemberAction { MESSAGE, ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER, ROLE_GUE
 enum class ChannelMemberAction { MAKE_MANAGER, MAKE_MEMBER, REMOVE }
 
 /** The sheets' rules (contract §3.3, §3.12, §3.16, §5.10, desktop-ui 6). */
+/** Why a people list is empty: a search found nobody, nobody else is in the workspace, or everyone is in already. */
+enum class PickerEmpty { NONE, NOBODY, EVERYONE }
+
+/** New message's rows: who can be picked, who you blocked, the guests, and why the list is empty. */
+data class DmPicker(val pick: List<Member>, val blocked: List<Member>, val guests: List<Member>, val empty: PickerEmpty?)
+
 object SheetRules {
     /** §3.16: workspace, channel and display names, trimmed. */
     const val NAME_MAX = 80
@@ -179,6 +185,48 @@ object SheetRules {
     fun dmCandidates(members: List<Member>, me: String?, blocked: Set<String>, compare: Comparator<String>): List<Member> =
         members.filter { it.state == "active" && it.id != me && it.id !in blocked && ChatListModel.isFullMember(it.role) }
             .sortedWith { a, b -> compare.compare(a.name, b.name) }
+
+    /**
+     * New message's list for [query] (desktop chat-model.js dmPicker). [DmPicker.pick]: active full members who aren't
+     * blocked, ranked by [rank] while searching. [DmPicker.blocked]: people [me] blocked, shown off with Unblock.
+     * [DmPicker.guests]: shown off with the reason, while searching or when nobody else would show. [DmPicker.empty]:
+     * NONE for a search that finds nobody, NOBODY when nobody else is in the workspace (a complete directory only).
+     */
+    fun dmPicker(
+        members: List<Member>,
+        me: String?,
+        blocked: Set<String>,
+        query: String,
+        compare: Comparator<String>,
+        membersMore: Boolean = false,
+        rank: (String, List<Member>) -> List<Member> = { q, list -> list.filter { matches(it.name, q) } },
+    ): DmPicker {
+        val others = members.filter { it.state == "active" && it.id != me }.sortedWith { a, b -> compare.compare(a.name, b.name) }
+        val searching = query.isNotBlank()
+        val full = others.filter { ChatListModel.isFullMember(it.role) }
+        val open = full.filter { it.id !in blocked }
+        val pick = if (searching) rank(query, open) else open
+        val off = full.filter { it.id in blocked && matches(it.name, query) }
+        val guests = if (searching || full.isEmpty()) others.filter { !ChatListModel.isFullMember(it.role) && matches(it.name, query) } else emptyList()
+        val empty = when {
+            pick.isNotEmpty() || off.isNotEmpty() || guests.isNotEmpty() -> null
+            searching -> PickerEmpty.NONE
+            others.isEmpty() -> if (membersMore) PickerEmpty.NONE else PickerEmpty.NOBODY
+            else -> null
+        }
+        return DmPicker(pick, off, guests, empty)
+    }
+
+    /**
+     * What Add people says when its list is empty, or null while it has rows: NONE after a search, NOBODY when the
+     * workspace has nobody else, EVERYONE when everyone else is in the channel already.
+     */
+    fun addPeopleEmpty(rows: Int, candidates: Int, others: Int, query: String): PickerEmpty? = when {
+        rows > 0 -> null
+        query.isNotBlank() && candidates > 0 -> PickerEmpty.NONE
+        others > 0 -> PickerEmpty.EVERYONE
+        else -> PickerEmpty.NOBODY
+    }
 
     /** The channels an invitation can add someone to (desktop-ui 6.3): open channels the person manages, by name. */
     fun managedChannels(rooms: List<Room>, compare: Comparator<String>): List<Room> =
@@ -1108,7 +1156,6 @@ private fun NewDmSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Uni
     val compare = rememberCompare()
     val membersById = remember(view) { view.members.associateBy { it.id } }
     val blocked = remember(view) { view.blocks.mapTo(HashSet()) { it.member } }
-    val candidates = remember(view, compare) { SheetRules.dmCandidates(view.members, view.me.id, blocked, compare) }
     var query by remember { mutableStateOf("") }
     var picked by remember { mutableStateOf(listOf<String>()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1116,9 +1163,13 @@ private fun NewDmSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Uni
     val busy = ui.isBusy(KEY_DM)
     val existing = SheetRules.openDmFor(view.rooms, view.me.id, picked)
     val full = picked.size >= SheetRules.DM_OTHERS_MAX
-    val shown = remember(candidates, query) {
-        if (query.isBlank()) candidates else MentionMatch.rank(query, candidates, view.me.id, limit = candidates.size.coerceAtLeast(1))
+    // Everyone in the directory, so the list can say why a blocked person or a guest can't be picked (§3.12).
+    val list = remember(view, compare, query) {
+        SheetRules.dmPicker(view.members, view.me.id, blocked, query, compare, view.membersMore) { q, people ->
+            MentionMatch.rank(q, people, view.me.id, limit = people.size.coerceAtLeast(1))
+        }
     }
+    val shown = list.pick
 
     fun submit() {
         if (picked.isEmpty()) return
@@ -1161,7 +1212,14 @@ private fun NewDmSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Uni
             RkSearchField(query, { query = it }, placeholder = stringResource(R.string.chat_new_search, view.ws.name))
         }
         Column {
-            if (shown.isEmpty()) Form { Help(stringResource(R.string.chat_new_none)) }
+            when (list.empty) {
+                PickerEmpty.NONE -> Form { Help(stringResource(R.string.chat_new_none)) }
+                PickerEmpty.NOBODY, PickerEmpty.EVERYONE -> NobodyElse(
+                    stringResource(R.string.chat_new_nobody, view.ws.name),
+                    invite = SheetRules.canInvite(view.me.role),
+                ) { app.openChatSheet(ChatSheet.INVITE) }
+                null -> Unit
+            }
             for (m in shown) {
                 val on = m.id in picked
                 CheckRow(
@@ -1175,6 +1233,15 @@ private fun NewDmSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Uni
                     leading = { Avatar(m.name, m.id, size = 24.dp) },
                 )
             }
+            // Who can't be picked, and why: someone you blocked (with Unblock) and guests.
+            for (m in list.blocked) {
+                OffRow(m, stringResource(R.string.chat_new_blocked_row, names.display(m)), note = null) {
+                    RkLinkButton(stringResource(R.string.chat_block_unblock), enabled = !ui.isBusy("block:${m.id}"), onClick = {
+                        ui.unblockMember(ws, m.id, names.display(m))
+                    })
+                }
+            }
+            for (m in list.guests) OffRow(m, names.display(m), note = stringResource(R.string.chat_new_guest_row))
         }
         Form {
             if (full) Help(stringResource(R.string.chat_new_limit), warn = true)
@@ -1194,6 +1261,35 @@ private fun NewDmSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Uni
                 }
             }
         }
+    }
+}
+
+/** A person New message can't pick, lined up with the check rows: the avatar faded, the text in text2, and [trailing]. */
+@Composable
+private fun OffRow(member: Member, label: String, note: String?, trailing: (@Composable () -> Unit)? = null) {
+    val c = Rk.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 20.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // The check box's room, so the names line up with the rows above.
+        Box(Modifier.size(18.dp))
+        Box(Modifier.alpha(0.55f)) { Avatar(member.name, member.id, size = 24.dp) }
+        Column(Modifier.weight(1f)) {
+            Text(label, style = Rk.type.text13, color = c.text2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (note != null) Text(note, style = Rk.type.text12, color = c.text2)
+        }
+        trailing?.invoke()
+    }
+}
+
+/** Nobody to pick: the line, and Invite people for those who may invite. */
+@Composable
+private fun NobodyElse(text: String, invite: Boolean, onInvite: () -> Unit) {
+    Form {
+        Help(text)
+        if (invite) RkButton(stringResource(R.string.chat_workspace_invite), onInvite, kind = RkButtonKind.SECONDARY, size = RkButtonSize.SMALL)
     }
 }
 
@@ -1729,7 +1825,20 @@ private fun AddPeopleSheet(app: AppViewModel, target: String, twoPane: Boolean, 
         Column {
             when {
                 candidates == null && error == null -> Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { Spinner(size = 16.dp) }
-                candidates != null && shown.isEmpty() -> Form { Help(stringResource(R.string.chat_new_none)) }
+                candidates != null && shown.isEmpty() -> {
+                    // Nobody to add: say whether the workspace has nobody else or everyone is in already, with Invite people.
+                    val others = view.members.count { it.state == "active" && it.id != view.me.id }
+                    when (SheetRules.addPeopleEmpty(shown.size, candidates.size, others, query)) {
+                        PickerEmpty.NONE -> Form { Help(stringResource(R.string.chat_new_none)) }
+                        PickerEmpty.EVERYONE -> NobodyElse(stringResource(R.string.chat_channel_add_everyone, view.ws.name, room.name.orEmpty()), SheetRules.canInvite(view.me.role)) {
+                            app.openChatSheet(ChatSheet.INVITE)
+                        }
+                        PickerEmpty.NOBODY -> NobodyElse(stringResource(R.string.chat_new_nobody, view.ws.name), SheetRules.canInvite(view.me.role)) {
+                            app.openChatSheet(ChatSheet.INVITE)
+                        }
+                        null -> Unit
+                    }
+                }
             }
             for (m in shown) {
                 val off = SheetRules.guestLocked(m, view.me.role)

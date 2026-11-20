@@ -50,6 +50,31 @@ class ChatComposerRulesTest {
     }
 
     @Test
+    fun `a closed DM's bar names the person you blocked and offers a new conversation only where the server takes one`() {
+        val rob = u("rob")
+        val mila = u("mila")
+        val olga = u("olga")
+        fun m(id: String, name: String, role: String = "member", state: String = "active") = Member(id, "human", name, role, state)
+        val members = listOf(m(me, "Me"), m(sanne, "Sanne"), m(rob, "Rob", role = "admin"), m(mila, "Mila", role = "guest"), m(olga, "Olga", state = "former")).associateBy { it.id }
+        fun dm(reason: String, vararg others: String) = room(RoomKind.DM, closed = reason).copy(participants = listOf(me) + others)
+        fun bar(room: Room, blocked: Set<String> = emptySet(), full: Boolean = true) = ComposerSlots.closedBar(room, me, members, blocked, full)
+
+        // You blocked Sanne: the bar says so and offers Unblock, never a new conversation.
+        assertEquals(ClosedBar(ClosedText.YOU_BLOCKED, sanne, false), bar(dm("closed", sanne), setOf(sanne)))
+        assertEquals(ClosedBar(ClosedText.YOU_BLOCKED, rob, false), bar(dm("closed", sanne, rob), setOf(sanne, rob)))
+        // The block came from the other side: the neutral line, and the same people can start again.
+        assertEquals(ClosedBar(ClosedText.CLOSED, null, true), bar(dm("closed", sanne)))
+        assertEquals(ClosedBar(ClosedText.CLOSED, null, true), bar(dm("closed", sanne, rob)))
+        // Someone became a guest, left or isn't known: the server refuses a new DM, so no button.
+        assertEquals(ClosedBar(ClosedText.INELIGIBLE, null, false), bar(dm("ineligible", mila)))
+        assertEquals(ClosedBar(ClosedText.LEFT, null, false), bar(dm("left", olga)))
+        assertEquals(ClosedBar(ClosedText.LEFT, null, false), bar(dm("left", u("stranger"))))
+        // Everyone came back as an active full member: a new conversation works again; a guest never starts one.
+        assertTrue(bar(dm("left", sanne)).startNew)
+        assertFalse(bar(dm("closed", sanne), full = false).startNew)
+    }
+
+    @Test
     fun `held and failed sends offer what can still help, and every one of them Discard`() {
         assertEquals(listOf(PendingAction.SEND, PendingAction.DISCARD), MessageRules.pendingActions(PendingState.HELD, "stale_grant"))
         assertEquals(listOf(PendingAction.SEND_AGAIN, PendingAction.DISCARD), MessageRules.pendingActions(PendingState.HELD, "unknown"))

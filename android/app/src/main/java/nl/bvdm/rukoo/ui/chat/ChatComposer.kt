@@ -51,6 +51,7 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.Avatar
 import nl.bvdm.rukoo.ui.components.Hairline
@@ -96,6 +97,12 @@ sealed interface ComposerSlot {
     data object RootRemoved : ComposerSlot
 }
 
+/** The line on a closed DM's bar: you blocked someone in it, or the reason it closed. */
+enum class ClosedText { YOU_BLOCKED, LEFT, INELIGIBLE, CLOSED }
+
+/** A closed DM's bar: its line, the person you blocked in it (Unblock), and whether a new conversation can start. */
+data class ClosedBar(val text: ClosedText, val blocked: String?, val startNew: Boolean)
+
 /** Which [ComposerSlot] a room or thread gets, pure for the tests. A stopped workspace wins, as on desktop. */
 object ComposerSlots {
     fun of(room: Room?, notJoined: Channel? = null, paused: Boolean = false, rootRemoved: Boolean = false): ComposerSlot = when {
@@ -106,6 +113,28 @@ object ComposerSlots {
         room.kind == RoomKind.DM && (room.closedReason != null || room.archived) -> ComposerSlot.Closed(room.closedReason)
         rootRemoved -> ComposerSlot.RootRemoved
         else -> ComposerSlot.Composer
+    }
+
+    /**
+     * What a closed DM's bar says and offers (desktop chat-model.js closedBar). [ClosedBar.blocked]: the first person in
+     * it that [me] blocked, by name, whose bar says so and offers Unblock. [ClosedBar.startNew]: Start a new conversation,
+     * only for a full member when every other person is an active full member nobody here blocked, because the server
+     * refuses anything else. A block from the other side keeps the neutral line: the app doesn't know about it.
+     */
+    fun closedBar(room: Room, me: String?, members: Map<String, Member>, blocked: Set<String>, full: Boolean, compare: Comparator<String> = compareBy { it.lowercase() }): ClosedBar {
+        val others = room.participants.orEmpty().distinct().filter { it != me }
+        val mine = others.filter { it in blocked }.sortedWith { a, b -> compare.compare(members[a]?.name.orEmpty(), members[b]?.name.orEmpty()) }.firstOrNull()
+        val text = when {
+            mine != null -> ClosedText.YOU_BLOCKED
+            room.closedReason == "left" -> ClosedText.LEFT
+            room.closedReason == "ineligible" -> ClosedText.INELIGIBLE
+            else -> ClosedText.CLOSED
+        }
+        val startNew = full && others.isNotEmpty() && others.all { id ->
+            val m = members[id]
+            m != null && m.state == "active" && ChatListModel.isFullMember(m.role) && id !in blocked
+        }
+        return ClosedBar(text, mine, startNew)
     }
 
     /** Who posted lately, the latest first and without [me]: among equal matches the picker offers them first. */
@@ -377,16 +406,27 @@ private fun MentionPicker(matches: List<Member>, active: Int, members: Map<Strin
 internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room: Room?, me: String?, workspace: String, inThread: Boolean) {
     val c = Rk.colors
     val ui = app.chatUi
+    val chatView by app.chatView.collectAsStateWithLifecycle()
+    val view = chatView?.takeIf { it.ws.id == ws }
+    val members = remember(view) { view?.members.orEmpty().associateBy { it.id } }
+    val names = rememberChatNames()
+    // You blocked someone in a closed DM: say so and offer Unblock. Start a new conversation only where the server takes it.
+    val closed = if (slot is ComposerSlot.Closed && room != null) {
+        val blocked = remember(view) { view?.blocks.orEmpty().mapTo(HashSet()) { it.member } }
+        val collator = remember { java.text.Collator.getInstance().apply { strength = java.text.Collator.PRIMARY } }
+        ComposerSlots.closedBar(room, me, members, blocked, full = ChatListModel.isFullMember(view?.me?.role), compare = { a, b -> collator.compare(a, b) })
+    } else {
+        null
+    }
     val text = when (slot) {
         is ComposerSlot.NotJoined -> stringResource(R.string.chat_input_not_joined, slot.channel.name)
         ComposerSlot.Archived -> stringResource(R.string.chat_input_archived, room?.name.orEmpty())
-        is ComposerSlot.Closed -> stringResource(
-            when (slot.reason) {
-                "left" -> R.string.chat_input_closed_left
-                "ineligible" -> R.string.chat_input_closed_ineligible
-                else -> R.string.chat_input_closed_blocked
-            },
-        )
+        is ComposerSlot.Closed -> when (closed?.text ?: ClosedText.CLOSED) {
+            ClosedText.YOU_BLOCKED -> stringResource(R.string.chat_input_closed_you_blocked, names.display(members[closed?.blocked]))
+            ClosedText.LEFT -> stringResource(R.string.chat_input_closed_left)
+            ClosedText.INELIGIBLE -> stringResource(R.string.chat_input_closed_ineligible)
+            ClosedText.CLOSED -> stringResource(R.string.chat_input_closed_blocked)
+        }
         ComposerSlot.Paused -> stringResource(R.string.chat_input_paused, workspace)
         ComposerSlot.RootRemoved -> stringResource(R.string.chat_thread_root_removed)
         ComposerSlot.Composer -> return
@@ -405,11 +445,19 @@ internal fun ComposerBar(app: AppViewModel, ws: String, slot: ComposerSlot, room
                         enabled = !ui.isBusy(ui.joinKey(slot.channel.id)),
                     )
                 }
-                slot is ComposerSlot.Closed && room != null && !inThread -> {
+                slot is ComposerSlot.Closed && room != null && closed != null && !inThread -> {
                     val others = room.participants.orEmpty().distinct().filter { it != me }
-                    val full = app.chatView.value?.takeIf { it.ws.id == ws }?.me?.role.let { it != null && it != "guest" }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (full && others.isNotEmpty()) {
+                        val blocked = closed.blocked
+                        if (blocked != null) {
+                            RkButton(
+                                stringResource(R.string.chat_block_unblock),
+                                { ui.unblockMember(ws, blocked, names.display(members[blocked])) },
+                                kind = RkButtonKind.SECONDARY,
+                                size = RkButtonSize.SMALL,
+                                enabled = !ui.isBusy("block:$blocked"),
+                            )
+                        } else if (closed.startNew) {
                             val key = "startDm:${room.id}"
                             RkButton(
                                 stringResource(R.string.chat_input_new_conversation),

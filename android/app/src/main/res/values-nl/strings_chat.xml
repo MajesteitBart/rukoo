@@ -34,6 +34,7 @@
     <string name="chat_sidebar_no_direct">Nog geen directe berichten</string>
     <string name="chat_sidebar_row_muted">%1$s, gedempt</string>
     <string name="chat_sidebar_row_closed">%1$s, gesloten</string>
+    <string name="chat_sidebar_closed_tag">Gesloten</string>
     <string name="chat_list_you">Jij: %1$s</string>
 
     <!-- chat.workspace.* -->
@@ -220,6 +221,7 @@
     <string name="chat_input_closed_left">Iemand is vertrokken, dus dit gesprek is gesloten. Je kunt het nog lezen.</string>
     <string name="chat_input_closed_ineligible">Dit gesprek is gesloten omdat iemand gast werd. Je kunt het nog lezen.</string>
     <string name="chat_input_closed_blocked">Dit gesprek is gesloten. Je kunt het nog lezen.</string>
+    <string name="chat_input_closed_you_blocked">Je hebt %1$s geblokkeerd. Je kunt dit gesprek nog lezen.</string>
     <string name="chat_input_remove_from_list">Uit de lijst halen</string>
 
     <!-- chat.mentions.* -->
@@ -347,6 +349,7 @@
     <string name="chat_channel_remove_title">%1$s verwijderen uit #%2$s?</string>
     <string name="chat_channel_add_title">Mensen toevoegen aan #%1$s</string>
     <string name="chat_channel_add_guest_needs_admin">Alleen een eigenaar of beheerder kan een gast toevoegen.</string>
+    <string name="chat_channel_add_everyone">Iedereen in %1$s zit al in #%2$s</string>
     <string name="chat_channel_remove_body">%1$s zit daarna niet meer in #%2$s. Wat %1$s schreef, blijft staan.</string>
     <string name="chat_channel_add_failed">Kan %1$s niet toevoegen.</string>
 
@@ -378,6 +381,9 @@
     <string name="chat_new_remove_person">%1$s weghalen</string>
     <string name="chat_new_limit">Een gesprek kan 8 mensen hebben, jij meegeteld.</string>
     <string name="chat_new_none">Niemand gevonden</string>
+    <string name="chat_new_blocked_row">Je hebt %1$s geblokkeerd</string>
+    <string name="chat_new_guest_row">Gasten kunnen geen directe berichten krijgen.</string>
+    <string name="chat_new_nobody">Er zit nog niemand anders in %1$s</string>
     <string name="chat_new_start">Gesprek beginnen</string>
     <string name="chat_new_open">Gesprek openen</string>
     <string name="chat_new_host_note">Iedereen die je toevoegt, kan meteen lezen en schrijven. %1$s kan directe berichten lezen, zoals alles in deze werkruimte.</string>
