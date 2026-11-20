@@ -291,6 +291,54 @@ test('opening at a seq while offline opens at it from the cache, or at the newes
   assert.equal(svc.store.getRoom(ws.id, ws.general).lo, lo, 'the cache stayed as it was');
 });
 
+test('opening offline at a seq older than the cache opens at the newest cached event, in a window of 51', async (t) => {
+  if (skipWithoutServer(t)) return;
+  // The default window of 50 before the event opened at, and a cache of over 70 from an online open at 15.
+  const { olga, ws, svc, api, account } = await setup(t, { timing: SMALL });
+  await postMany(olga, ws.id, ws.general, 80);
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general, { at: 15 });
+  await api.chatClose();
+  const { lo, hi, head } = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(hi, head);
+  assert.ok(lo > 3 && lo <= 15, `lo ${lo}`);
+  const cached = cachedSeqs(svc, ws.id, ws.general).length;
+  assert.equal(cached, hi - lo + 1);
+  assert.ok(cached > 51);
+
+  const calls = watchCalls(account, (method, url) => {
+    if (url.includes(`/conversations/${ws.general}/events`)) throw new AccountError('network', 0, 'The server could not be reached.');
+    return undefined;
+  });
+
+  // At head already, so only the backfill is tried, and its first page fails: no pages ran out, so the room opens at
+  // the newest cached event, not the oldest.
+  const at = lo - 3;
+  const view = await api.chatOpen(ws.id, ws.general, { at });
+  assert.deepEqual(eventCalls(calls, ws.general), [`before=${lo}&limit=10`]);
+  assert.equal(view.complete, false);
+  assert.equal(view.at, hi);
+  assert.equal(view.hi, hi);
+  assert.equal(view.events.length, 51);
+  assert.equal(view.events[0].seq, hi - 50);
+  assert.equal(view.lo, hi - 50);
+  assert.equal(view.events.at(-1).seq, hi);
+  assert.equal(view.hasOlder, true);
+  await api.chatClose();
+
+  // Behind head as well: the catch-up fails first, and the room opens at the newest cached event the same way.
+  await postMany(olga, ws.id, ws.general, 2, { prefix: 'later' });
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, ws.general).head, hi + 2);
+  const behind = await api.chatOpen(ws.id, ws.general, { at });
+  assert.equal(behind.complete, false);
+  assert.equal(behind.at, hi);
+  assert.equal(behind.events.length, 51);
+  assert.equal(behind.events.at(-1).seq, hi);
+  await api.chatClose();
+  assert.equal(svc.store.getRoom(ws.id, ws.general).lo, lo, 'the cache stayed as it was');
+});
+
 test('older pages come from the cache, then the server, down to the floor', async (t) => {
   if (skipWithoutServer(t)) return;
   const { olga, ws, svc, api, account } = await setup(t, { timing: SMALL });

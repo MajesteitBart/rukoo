@@ -168,6 +168,64 @@ test("a notification for Olga's direct message opens the conversation at that me
   await expect(target.locator('.ch-text')).toHaveText('Can you call me?');
 });
 
+test("a notification clicked while history can't load opens the conversation at its newest cached message, unmarked", async () => {
+  const { olga, bart, ws, bartMe } = await twoPeople(server);
+  const dm = await server.seedDm(olga, ws.id, [bartMe.id]);
+  for (let i = 1; i <= 10; i++) await server.post(olga, ws.id, dm.conversation, `Earlier note ${i}`);
+  // The newest cached message is a reply, which an open at it as the notified message would open the thread for.
+  const root = await server.post(olga, ws.id, dm.conversation, 'The plan');
+  const reply = await server.post(olga, ws.id, dm.conversation, 'A reply in the plan', { root: root.messageId });
+  await ready(bart, { focus: false });
+  await connected(win);
+  // Bart reads the conversation once, so it is cached through the reply, and goes back to general.
+  await dmRow('Olga Owner').click();
+  await expect(title()).toHaveText('Olga Owner', { timeout: 15000 });
+  const newest = pane().locator(`.ch-main .ch-log li.ch-msg[data-seq="${reply.seq}"]`);
+  await expect(newest).toBeVisible({ timeout: 15000 });
+  await expect(newest).toHaveAttribute('data-root', root.messageId);
+  await roomRow(win, 'general').click();
+  await expect(title()).toHaveText('general', { timeout: 15000 });
+  await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    w.isFocused = () => false;
+    global.__semChat.setFocused(false);
+    // History requests fail as they do offline; the feed still runs, so the notification comes.
+    global.__semChat.history.fetchEvents = async () => {
+      throw Object.assign(new Error('The server could not be reached.'), { code: 'network' });
+    };
+  });
+  const posted = await server.post(olga, ws.id, dm.conversation, 'Can you call me?');
+  await expect.poll(async () => (await notices(app)).find((n) => String(n.body).includes('Can you call me?')), { timeout: 20000 }).toBeTruthy();
+  const notice = (await notices(app)).find((n) => String(n.body).includes('Can you call me?'));
+  expect(notice.open.seq).toBe(posted.seq);
+  const cache = await app.evaluate((_, [w, c]) => global.__semChat.store.getRoom(w, c), [ws.id, dm.conversation]);
+  expect(cache.hi).toBe(reply.seq);
+  expect(cache.head).toBeGreaterThanOrEqual(posted.seq);
+  // The outline lasts two seconds, so the window records whether any row got it, or the thread pane opened.
+  await win.evaluate(() => {
+    window.__marked = [];
+    const section = document.querySelector('section.chat');
+    new MutationObserver(() => {
+      if (section.querySelector('.is-target')) window.__marked.push('outline');
+      if (section.dataset.thread === 'open') window.__marked.push('thread');
+    }).observe(section, { subtree: true, attributes: true, attributeFilter: ['class', 'data-thread'] });
+  });
+
+  // Clicking it: the conversation opens at its end, with nothing outlined and no thread opened, as on Android.
+  await app.evaluate((_, open) => global.__semChatOpen(open), notice.open);
+  await expect(title()).toHaveText('Olga Owner', { timeout: 15000 });
+  await expect(newest).toBeVisible({ timeout: 15000 });
+  await expect(pane().locator('.ch-main .ch-log li.ch-msg', { hasText: 'Can you call me?' })).toHaveCount(0);
+  await win.waitForTimeout(300);
+  expect(await win.evaluate(() => [...new Set(window.__marked)])).toEqual([]);
+  await expect(pane().locator('.ch-thread')).toBeHidden();
+  const gap = await pane().locator('.ch-main .ch-scroll').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+  expect(gap).toBeLessThan(2);
+  await app.evaluate(() => {
+    delete global.__semChat.history.fetchEvents;
+  });
+});
+
 test('blocking from the conversation closes it with its bar, and Workspace settings unblocks', async () => {
   const { olga, bart, ws, bartMe } = await twoPeople(server);
   const dm = await server.seedDm(olga, ws.id, [bartMe.id]);

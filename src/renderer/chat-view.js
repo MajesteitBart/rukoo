@@ -128,6 +128,9 @@ export function mountView(section, H) {
       hasOlder: false,
       readAtOpen: null,
       at: null,
+      // False when the open didn't reach at: at is then the newest cached event or the oldest loaded one, not the
+      // message the notification was about.
+      complete: true,
       pending: [],
       // messageId -> local ID of sends that committed while the room was open, so their rows keep their keys.
       sentLocal: new Map(),
@@ -650,6 +653,7 @@ export function mountView(section, H) {
     V.readAtOpen = rv.readAtOpen;
     V.readBest = V.readSent = rv.room.read || 0;
     V.at = rv.at;
+    V.complete = rv.complete !== false;
     V.pending = rv.pending || [];
     // An uncached room answers with nothing yet; the newest page follows as an events push.
     V.loaded = V.events.length > 0 || rv.hi !== null;
@@ -1296,13 +1300,17 @@ export function mountView(section, H) {
     else toBottom(false);
   }
 
-  // Opening at a notification's message: in view, outlined for two seconds; a reply opens its thread too.
+  // Opening at a notification's message: in view, outlined for two seconds; a reply opens its thread too. When the open
+  // didn't reach it (contract 3.7), the log goes to the event it opened at instead, unmarked and with no thread, as
+  // that is another message: the end when that is the newest cached one (the requests failed), as on Android.
   function positionAt() {
     const at = V.at;
+    if (!V.complete && (at === null || at === V.hi)) return toBottom(false);
     const rows = [...log.querySelectorAll('li[data-seq]')];
     const target = rows.find((li) => Number(li.dataset.seq) === at) || rows.find((li) => Number(li.dataset.seq) >= at) || rows[rows.length - 1];
     if (!target) return positionOpen();
     target.scrollIntoView({ block: 'center' });
+    if (!V.complete) return;
     target.classList.add('is-target');
     clearTimeout(V.targetTimer);
     V.targetTimer = setTimeout(() => target.classList.remove('is-target'), TARGET_MS);
