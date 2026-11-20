@@ -20,6 +20,7 @@ import {
   limitRate,
   positive,
   registryObject,
+  workspaceLimits,
   workspaceOrigin,
   workspacesOn
 } from './config.js';
@@ -69,7 +70,9 @@ async function handle(request, env, ctx) {
   const reading = method === 'GET' || method === 'HEAD';
   if (path === '/' && reading) return html(page(config(env, url)), method);
   if (path === '/privacy' && reading) {
-    return html(privacy(config(env, url), privacyLanguage(url, request.headers.get('accept-language'))), method);
+    // The statement covers team chat only while the server runs it, with the retention it is set to.
+    const chat = workspacesOn(env) ? { retentionDays: workspaceLimits(env).retentionDays, inviteSignups: inviteSignups(env) } : null;
+    return html(privacy({ ...config(env, url), chat }, privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
   // root never redirects it; the link's fragment stays in the browser either way. With team chat off the path is the

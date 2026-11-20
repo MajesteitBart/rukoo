@@ -115,6 +115,69 @@ describe('GET /privacy', () => {
     expect(nl).not.toContain('gebruikt het alleen om te beperken');
   });
 
+  it('covers team chat only while the server runs it, with the retention it is set to', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const languages = {
+      en: {
+        heading: '<h2 id="team-chat">Team chat</h2>',
+        next: '<h2>Security</h2>',
+        name: 'team chat',
+        parts: [
+          'This server also runs team chat',
+          'If you use team chat: the workspaces you are in',
+          'Team chat is readable too',
+          'Team chat isn’t encrypted end to end, unlike your records.',
+          'so we can read and change them, in channels and direct messages alike, and so can Cloudflare',
+          'article 6(1)(b) GDPR',
+          'Only the people in a private channel see its name and messages',
+          'This server keeps a hash of the secret',
+          'Messages are deleted 45 days after they were written',
+          'your direct messages there close and your open invitations stop working',
+          'so it shows as written by a deleted member',
+          'Export my data doesn’t include team chat.',
+          'deletes it when its session ends'
+        ],
+        signups: 'an invitation also works as an invite code'
+      },
+      nl: {
+        heading: '<h2 id="team-chat">Teamchat</h2>',
+        next: '<h2>Beveiliging</h2>',
+        name: 'teamchat',
+        parts: [
+          'Deze server draait ook teamchat',
+          'Als je teamchat gebruikt: de werkruimtes waarin je zit',
+          'Teamchat is ook leesbaar',
+          'Teamchat is niet end-to-end versleuteld, anders dan je records.',
+          'Wij kunnen ze dus lezen en wijzigen',
+          'artikel 6 lid 1 onder b AVG',
+          'Alleen de mensen in een privékanaal zien de naam',
+          'Deze server bewaart een hash van het geheim',
+          'Berichten worden 45 dagen nadat ze zijn geschreven verwijderd',
+          'sluiten je directe berichten daar en werken je openstaande uitnodigingen niet meer',
+          'op naam van een verwijderd lid staat',
+          'Mijn gegevens exporteren neemt teamchat niet mee.',
+          'verwijdert die als de sessie eindigt'
+        ],
+        signups: 'werkt een uitnodiging ook als uitnodigingscode'
+      }
+    };
+    for (const [lang, { heading, next, name, parts, signups }] of Object.entries(languages)) {
+      const on = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_RETENTION_DAYS: '45' });
+      expect(on.indexOf(heading), lang).toBeGreaterThan(on.indexOf('<h2 id="booking-pages">'));
+      expect(on.indexOf(heading), lang).toBeLessThan(on.indexOf(next));
+      for (const part of parts) expect(on, part).toContain(escapeHtml(part));
+      expect(on, lang).toContain(escapeHtml(signups));
+      // Where sign-ups keep to the operator's own codes, the statement doesn't offer invitations as one.
+      const ownCodes = await page(lang, { WORKSPACE_MODE: 'on', WORKSPACE_SIGNUPS: 'off' });
+      expect(ownCodes, lang).toContain(heading);
+      expect(ownCodes, lang).not.toContain(escapeHtml(signups));
+      // With team chat off the statement doesn't mention it at all.
+      const off = await page(lang);
+      expect(off, lang).not.toContain('id="team-chat"');
+      expect(off.toLowerCase(), lang).not.toContain(name);
+    }
+  });
+
   it('speaks Dutch when the browser or the address asks for it', async () => {
     const browser = await call('GET', '/privacy', { headers: { 'accept-language': 'nl-NL,nl;q=0.9,en;q=0.8' } });
     expect(browser.text).toContain('<html lang="nl">');

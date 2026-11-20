@@ -2,7 +2,7 @@
 
 Team chat lets you talk with your colleagues in Rukoo, next to your mail and calendar. A team gets a **workspace** on the server of your Rukoo account. In it you talk in **channels**, which are named conversations for a topic or a project, and in **direct messages** with one person or a small group. Messages arrive live, on your computer and on your phone.
 
-Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on. The server at rukoo.io doesn't have it on yet, so for now you see Chat on a server you or your team runs yourselves ([Running your own server](account.md#running-your-own-server)).
+Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on, as the server at rukoo.io has. On a server you or your team runs yourselves, its operator turns it on ([Running your own server](account.md#running-your-own-server)).
 
 **The host can read your messages.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change what is written in its workspaces, direct messages included. Rukoo says who hosts a workspace before you join, in the conversation header of every direct message and in Workspace settings. [What the host can read](#what-the-host-can-read) has the details.
 

@@ -168,11 +168,11 @@
         "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
         "BOOKING_FORMER_ROOTS": "https://rukoo.io",
         "BLOCKED_HANDLES": "",
-        // Team chat stays off here until the apps have it.
-        "WORKSPACE_MODE": "off",
+        // Team chat is on here: the desktop app and Rukoo for Android have Chat, and /privacy covers it.
+        "WORKSPACE_MODE": "on",
         "WORKSPACE_ORIGIN": "https://rukoo.io",
         // Lets every workspace owner and admin bring new accounts onto this server with an invitation, within
-        // MAX_ACCOUNTS, once team chat is on. Decide before turning WORKSPACE_MODE on (docs/workspace-architecture.md).
+        // MAX_ACCOUNTS (docs/workspace-architecture.md).
         "WORKSPACE_SIGNUPS": "on",
         "MAX_WORKSPACES": 100,
         "MAX_WORKSPACES_PER_ACCOUNT": 3,

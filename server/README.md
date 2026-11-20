@@ -206,9 +206,9 @@ Then try it: paste a page into an assistant and ask for the open times, and fetc
 
 ## Team chat
 
-Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels and direct messages is here, and the Rukoo apps have no Chat or Channels yet, so turning it on today is for trying the API. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
+Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels and direct messages is here. The desktop app and Rukoo for Android have Chat, which shows when the server has team chat on. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
 
-**You can read it.** A workspace's messages and files are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. Say so in your privacy statement before you turn it on.
+**You can read it.** A workspace's messages and files are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. The statement at `/privacy` covers team chat while it is on, with the retention you set; if you use your own with `PRIVACY_URL`, say so there before you turn it on.
 
 What `wrangler.jsonc` already sets up:
 
