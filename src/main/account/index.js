@@ -199,7 +199,13 @@ class AccountService extends EventEmitter {
       if (auth && err instanceof AccountError && err.status === 401) {
         if (session && this.session === session) {
           this.state.error = 'signed_out';
-          this.forget();
+          // The session is over even when account.json can't be written now: the status goes out regardless, so
+          // the services that follow it (team chat deletes its cache) end theirs too. The next write saves the state.
+          try {
+            this.forget();
+          } catch (_) {
+            // forget() cleared the session before it tried to save.
+          }
           this.changedStatus();
         }
         throw fail('signed_out', 401);
@@ -392,8 +398,12 @@ class AccountService extends EventEmitter {
     await this.call('POST', '/v1/logout', undefined, { auth: true, session }).catch(() => {});
     if (this.session === session) {
       this.state.error = null;
-      this.forget();
-      this.changedStatus();
+      // Signed out even when the state can't be saved: the status goes out before that error does.
+      try {
+        this.forget();
+      } finally {
+        this.changedStatus();
+      }
     }
     return this.status();
   }
@@ -468,10 +478,14 @@ class AccountService extends EventEmitter {
     await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey), handleKey }, { auth: true, session });
     if (this.session === session) {
       this.state.error = null;
-      this.forget();
-      this.state.handleKey = { email, key: handleKey };
-      this.saveState();
-      this.changedStatus();
+      // Signed out even when the state can't be saved: the status goes out before that error does.
+      try {
+        this.forget();
+        this.state.handleKey = { email, key: handleKey };
+        this.saveState();
+      } finally {
+        this.changedStatus();
+      }
     }
     return this.status();
   }

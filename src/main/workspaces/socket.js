@@ -70,6 +70,10 @@ class WakeSocket {
     this.quickAt = -Infinity;
     // The delay of the last scheduled attempt, for tests and debugState.
     this.lastDelay = null;
+    // The Retry-After deadline of a 429 to the ticket request, apart from the backoff: no ticket request goes out
+    // before it, whatever asks for one (focus, resume, start, a 4001). A 429 to the GET / after a 4003 limits that
+    // route, not the ticket's, so tryAgain() keeps it as a backoff that focus may skip.
+    this.notBefore = 0;
   }
 
   setState(state) {
@@ -162,6 +166,14 @@ class WakeSocket {
 
   async connect() {
     if (!this.wanted) return;
+    // The server asked to wait: the attempt starts at its deadline, and the backoff isn't touched.
+    const wait = this.notBefore - this.now();
+    if (wait > 0) {
+      this.token += 1;
+      this.closeSocket(1000);
+      this.later(wait);
+      return;
+    }
     const token = ++this.token;
     this.clearTimers();
     this.closeSocket(1000);
@@ -179,7 +191,9 @@ class WakeSocket {
         return;
       }
       if (code === 'rate_limited') {
-        this.later((Number.isSafeInteger(err.retryAfter) ? err.retryAfter : 60) * 1000);
+        const wait = (Number.isSafeInteger(err.retryAfter) ? err.retryAfter : 60) * 1000;
+        this.notBefore = this.now() + wait;
+        this.later(wait);
         return;
       }
       this.backoff();

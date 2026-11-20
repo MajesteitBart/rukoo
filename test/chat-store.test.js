@@ -770,6 +770,43 @@ test('a file that is no database at all is replaced with nothing to count', (t) 
   assert.equal(store.getMeta('schema'), '1');
 });
 
+// Review 206A item 2: a lock another connection held made openStore take the file for broken; when the lock went
+// before the deletion, the unsent message and the draft went with the file and lostUnsent said 0.
+test('a file another connection holds locked is left as it is, and opens once the lock is gone', (t) => {
+  const file = path.join(tempDir('rukoo-chat-store-'), 'chat.db');
+  const store = openStore(file);
+  withRoom(store);
+  store.insertOutbox(outboxRow('locked'));
+  store.putDraft(W, C, null, { text: 'Draft under a lock', mentions: [] });
+  store.close();
+  const holder = new DatabaseSync(file);
+  holder.exec('PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;');
+  let held = true;
+  // The lock goes the moment anything tries to delete the file, as when the other connection finishes just then.
+  const rm = t.mock.method(fs, 'rmSync', function (...args) {
+    if (held) {
+      held = false;
+      holder.close();
+    }
+    return rm.mock.original.apply(this, args);
+  });
+  t.after(() => held && holder.close());
+  assert.throws(
+    () => openStore(file),
+    (err) => !(err instanceof ChatError) && (err.errcode & 0xff) === 5
+  );
+  assert.equal(rm.mock.callCount(), 0, 'nothing tried to delete the file');
+  if (held) {
+    held = false;
+    holder.close();
+  }
+  const again = openStore(file);
+  t.after(() => again.close());
+  assert.equal(again.lostUnsent, 0);
+  assert.equal(again.countUnsent(), 1);
+  assert.equal(again.getDraft(W, C, null).text, 'Draft under a lock');
+});
+
 test('a database without the chat schema is replaced too', (t) => {
   const file = path.join(tempDir('rukoo-chat-store-'), 'chat.db');
   const db = new DatabaseSync(file);

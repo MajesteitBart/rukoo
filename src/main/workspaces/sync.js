@@ -16,9 +16,14 @@
 // page of a pass in progress; droppedSends: per evicted room, the unsent messages that went with it; redacted: per
 // room, cached messages that lost their text.
 //
-// Given expect (position() of the ws row the request was built from), each returns null instead and changes nothing
-// when the row no longer has that position: a Start over, restore or new key outside the run reset it while the page
-// was on its way, and the page belongs to the feed position before that reset.
+// Given expect (position() of the ws row the request was built from) and rev (svc.revision(ws) when the request went
+// out), each returns null instead and changes nothing when the row no longer has that position or the workspace's
+// cache revision moved on: a reset, Start over, restore, new key or park happened while the page was on its way, and
+// the page belongs to the feed as it stood before.
+//
+// The cache revision (svc.revision(ws), shared with the history, outbox and alert modules): it goes up inside every
+// transaction here that resets, restores, starts over, re-keys or quarantines a workspace, and when the service parks
+// or removes one. A fetch records the revision it started under; its answer or error is dropped when it changed.
 const wire = require('./wire');
 const { ChatError } = wire;
 
@@ -33,10 +38,11 @@ function position(row) {
   return out;
 }
 
-// Whether the ws row is still at expect, or there is no expect.
-function atPosition(store, ws, expect) {
+// Whether the ws row is still at expect and the cache revision still rev, or neither is given.
+function atPosition(svc, ws, expect, rev = null) {
+  if (rev !== null && svc.revision(ws) !== rev) return false;
   if (!expect) return true;
-  const row = store.getWs(ws);
+  const row = svc.store.getWs(ws);
   return Boolean(row) && POSITION.every((key) => (row[key] ?? null) === expect[key]);
 }
 
@@ -140,10 +146,10 @@ function appendInline(store, ws, active, events, result) {
 }
 
 // A page outside a pass (passing = 0), in one transaction with its cursor.
-function applyPage(svc, ws, page, { active = null, expect = null } = {}) {
+function applyPage(svc, ws, page, { active = null, expect = null, rev = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
-    if (!atPosition(store, ws, expect)) return null;
+    if (!atPosition(svc, ws, expect, rev)) return null;
     const result = emptyResult();
     const listed = new Set();
     for (const room of page.changes) {
@@ -162,14 +168,24 @@ function applyPage(svc, ws, page, { active = null, expect = null } = {}) {
   });
 }
 
+// The rooms a page of a pass evicted, and didn't list again, leave pass_room (contract 3.6): a room an earlier page
+// staged and the person lost since then must not install. The visible room list waits for the install, which deletes
+// every room without a pass_room row.
+function dropEvictedFromPass(store, ws, page) {
+  const listed = new Set(page.changes.map((room) => room.conversation));
+  const evicted = page.evictions.filter((id) => !listed.has(id));
+  if (evicted.length) store.deletePassRooms(ws, evicted);
+}
+
 // A page of a pass that says more: true. Its rooms wait in pass_room; what it removed and the floors already apply
-// to cached events, and evictions wait for the install, which deletes every room the pass didn't list.
-function applyPassPage(svc, ws, page, { expect = null } = {}) {
+// to cached events, and its evictions take staged rooms out of pass_room.
+function applyPassPage(svc, ws, page, { expect = null, rev = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
-    if (!atPosition(store, ws, expect)) return null;
+    if (!atPosition(svc, ws, expect, rev)) return null;
     const result = emptyResult();
     result.partial = true;
+    dropEvictedFromPass(store, ws, page);
     for (const room of page.changes) {
       store.putPassRoom(ws, room);
       if (store.getRoom(ws, room.conversation)) {
@@ -187,12 +203,13 @@ function applyPassPage(svc, ws, page, { expect = null } = {}) {
 // The page of a pass that says more: false: the pass's rooms replace the workspace's in one transaction. A room the
 // pass didn't list is deleted; the others are upserted with the rules of an incremental page, keeping notified and
 // muted. The pass that first fills a workspace alerts nothing, so every room counts as notified up to its head.
-function installPass(svc, ws, page, { expect = null } = {}) {
+function installPass(svc, ws, page, { expect = null, rev = null } = {}) {
   const store = svc.store;
   return store.tx(() => {
-    if (!atPosition(store, ws, expect)) return null;
+    if (!atPosition(svc, ws, expect, rev)) return null;
     const result = emptyResult();
     result.pass = true;
+    dropEvictedFromPass(store, ws, page);
     for (const room of page.changes) store.putPassRoom(ws, room);
     const rooms = store.listPassRooms(ws);
     const keep = new Set(rooms.map((r) => r.conversation));
@@ -223,6 +240,7 @@ function allRooms(store, ws) {
 function reset(svc, ws) {
   const store = svc.store;
   store.tx(() => {
+    svc.bumpRevision(ws);
     store.run('DELETE FROM notice WHERE ws = ?', ws);
     store.deleteWsEvents(ws);
     store.clearPass(ws);
@@ -236,6 +254,7 @@ function reset(svc, ws) {
 function quarantine(svc, ws) {
   const store = svc.store;
   store.tx(() => {
+    svc.bumpRevision(ws);
     store.updateWs(ws, { state: 'quarantined' });
     store.deleteWsEvents(ws);
     store.run('UPDATE room SET unread = 0, mentions = 0 WHERE ws = ?', ws);
@@ -252,6 +271,7 @@ function quarantine(svc, ws) {
 function startOver(svc, ws) {
   const store = svc.store;
   store.tx(() => {
+    svc.bumpRevision(ws);
     store.run('DELETE FROM notice WHERE ws = ?', ws);
     store.deleteWsEvents(ws);
     store.updateWs(ws, { state: 'ok', cursor: null, passing: 1 });
@@ -266,6 +286,11 @@ function startOver(svc, ws) {
 // they are sent again. A new keyId means a pass too, as cursors sealed with the old key are no good. Either pass lists
 // no removals, and a restored backup may lack messages this device saw, so the cached events and notice rows go as for
 // a 410, and the caller takes the workspace's alerts back. Also measures the clock: server time minus local time.
+//
+// A restore also forgets where this device read and alerted in the discarded generation (contract 3.6 Restore): the
+// restored feed may stand below it, and positions kept from before would hide its unread messages and their alerts.
+// read, readLocal, readSent and notified go to 0, so the pass's install takes them from the restored feed (notify.js
+// counts alerts from max(read, readLocal, notified)). Mute and drafts stay.
 function restore(svc, ws, answer, { t0, t1 }) {
   const store = svc.store;
   const { workspace, me } = answer;
@@ -276,13 +301,16 @@ function restore(svc, ws, answer, { t0, t1 }) {
     let keyChanged = false;
     if (row.generation && row.generation !== workspace.generation) {
       restored = true;
+      svc.bumpRevision(ws);
       store.run('DELETE FROM notice WHERE ws = ?', ws);
       store.deleteWsEvents(ws);
       store.clearPass(ws);
+      store.run('UPDATE room SET read = 0, readLocal = 0, readSent = 0, notified = 0 WHERE ws = ?', ws);
       store.updateWs(ws, { cursor: null, passing: 1, generation: workspace.generation });
       store.markLookup(ws, row.generation);
     } else if (row.keyId && row.keyId !== workspace.keyId) {
       keyChanged = true;
+      svc.bumpRevision(ws);
       store.run('DELETE FROM notice WHERE ws = ?', ws);
       store.deleteWsEvents(ws);
       store.clearPass(ws);
@@ -298,6 +326,7 @@ function restore(svc, ws, answer, { t0, t1 }) {
       limits: workspace.limits,
       retention: workspace.retention
     });
+    store.roleChanged(ws, row.role, me.role);
     store.setMeta('clockOffset', String(Math.round(workspace.time - (t0 + t1) / 2)));
     store.setMeta('clockAt', String(t1));
     return { restored, keyChanged };
@@ -338,10 +367,12 @@ async function afterPage(svc, ws, result) {
 // The directories a page marked stale: GET /members, GET /channels (full members only: guests have none) and GET
 // /blocks. Each answer replaces that workspace's rows in one transaction and clears its flag. A failure leaves the
 // flag for the next run; a server from before blocks (404 without a scope) has none to list. Returns whether
-// anything was replaced, after a directory event.
-async function directory(svc, ws) {
+// anything was replaced, after a directory event. guard() throws after an await when the answer no longer counts: by
+// default when the session ended, and in a run also when the run was stopped.
+async function directory(svc, ws, guard = null) {
   const store = svc.store;
   const epoch = svc.epoch;
+  if (!guard) guard = () => svc.guard(epoch);
   let changed = false;
   const load = async (flag, fetch) => {
     const row = store.getWs(ws);
@@ -356,20 +387,21 @@ async function directory(svc, ws) {
   };
   // The caller's own row carries a role or name someone else changed, which GET / would only bring at the next restore
   // check: the ws row takes them, so the workspace summary says the same as the member list. A role across the guest
-  // line also marks the channels stale, as the server bumps only the members for a role change: a promoted guest has no
-  // channel directory yet and a demoted member one too many. The channels load below reads the row again.
+  // line also changes the channel directory, as the server bumps only the members for a role change: a promoted guest
+  // has no channel directory yet and a demoted member one too many. The channels load below reads the row again.
   let meChanged = false;
   await load('membersStale', async () => {
     const res = wire.checkMembers(await svc.call(ws, 'GET', '/members'));
-    svc.guard(epoch);
+    guard();
     store.tx(() => {
       const row = store.getWs(ws);
       if (!row) return;
       store.replaceMembers(ws, res.members, res.more);
       const mine = row.me && res.members.find((m) => m.id === row.me);
       if (mine && (mine.role !== row.role || mine.name !== row.myName)) {
-        const crossed = (row.role === 'guest') !== (mine.role === 'guest');
-        store.updateWs(ws, { role: mine.role, myName: mine.name, ...(crossed ? { channelsStale: 1 } : {}) });
+        // store.roleChanged clears the directory of a demoted guest and marks it stale for a promoted one.
+        store.updateWs(ws, { role: mine.role, myName: mine.name });
+        store.roleChanged(ws, row.role, mine.role);
         meChanged = true;
       }
     });
@@ -380,7 +412,7 @@ async function directory(svc, ws) {
       return;
     }
     const res = wire.checkChannels(await svc.call(ws, 'GET', '/channels'));
-    svc.guard(epoch);
+    guard();
     if (store.getWs(ws)) store.replaceChannels(ws, res.channels);
   });
   await load('blocksStale', async () => {
@@ -391,7 +423,7 @@ async function directory(svc, ws) {
       if (!(err && err.code === 'not_found' && !err.scope)) throw err;
       res = { blocks: [] };
     }
-    svc.guard(epoch);
+    guard();
     if (store.getWs(ws)) store.replaceBlocks(ws, res.blocks);
   });
   if (changed && store.getWs(ws)) svc.emitChat({ kind: 'directory', ws });
@@ -401,31 +433,43 @@ async function directory(svc, ws) {
 
 // One run for one workspace. Returns { changed, pass } when it got through, { more: true } when it stopped after
 // PAGES_PER_RUN pages, or { skipped | quarantined | gone | upgrade: true }. Throws a ChatError for the service's
-// backoff, or the service's stale marker when the session ended meanwhile.
+// backoff, or the service's stale marker when the session ended or the service stopped the run (Chat turned off)
+// meanwhile.
+//
+// A pass from the start (cursor NULL, passing 1) begins only after a GET / that answered under the current cache
+// revision (svc.detailsCurrent): a 410 whose GET / failed, or a restart in the middle, asks again, so a restore the
+// server made meanwhile is found before the pass installs.
 async function runSync(svc, ws) {
   const store = svc.store;
   const epoch = svc.epoch;
   const runner = svc.runner(ws);
+  const stops = runner.stops;
+  const guard = () => svc.guard(epoch, { runner, stops });
   let row = store.getWs(ws);
   if (!row || row.state !== 'ok' || !svc.live()) return { skipped: true };
-  if (!row.generation || runner.detailsDue) {
-    runner.detailsDue = false;
-    try {
-      await svc.details(ws, { inRun: true });
-    } catch (err) {
-      if (!svc.isStale(err)) runner.detailsDue = true;
-      throw err;
-    }
-    svc.guard(epoch);
-  }
   const changed = new Set();
   let installed = false;
   let resets = 0;
   let pages = 0;
+  let asked = 0;
   for (;;) {
     row = store.getWs(ws);
     if (!row || row.state !== 'ok') return { skipped: true, changed: [...changed] };
     if (pages >= svc.timing.pagesPerRun) return { more: true, changed: [...changed] };
+    // At most three GET / per run, so answers dropped again and again (the revision kept moving) can't keep it going.
+    const needsDetails = !row.generation || runner.detailsDue || (row.passing && !row.cursor && !svc.detailsCurrent(ws));
+    if (needsDetails && asked < 3) {
+      asked += 1;
+      runner.detailsDue = false;
+      try {
+        await svc.details(ws, { inRun: true });
+      } catch (err) {
+        if (!svc.isStale(err)) runner.detailsDue = true;
+        throw err;
+      }
+      guard();
+      continue;
+    }
     const query = new URLSearchParams({ limit: String(svc.timing.feedLimit) });
     if (row.cursor) query.set('after', row.cursor);
     else if (row.passing) store.clearPass(ws);
@@ -443,20 +487,32 @@ async function runSync(svc, ws) {
         if (Number.isSafeInteger(open.roomAfter) && open.roomAfter >= 0) query.set('roomAfter', String(open.roomAfter));
       }
     }
+    // The cache revision this request starts under; see the top of this file.
+    const rev = svc.revision(ws);
     let page;
     try {
       page = wire.checkChanges(await svc.call(ws, 'GET', `/changes?${query}`));
     } catch (err) {
       if (svc.isStale(err)) throw err;
+      guard();
       const code = err && err.code;
+      // The service's call() ran the removal path, or parked the workspace for an update.
+      if (code === 'not_found' && err.scope === 'workspace') return { gone: true };
+      if (code === 'upgrade_required') return { upgrade: true };
+      // Reset, restored, started over or parked meanwhile: the error belongs to the feed as it stood before, so it
+      // neither resets, quarantines nor counts as a failure. The loop goes on from where the row stands now.
+      if (svc.revision(ws) !== rev) {
+        pages += 1;
+        continue;
+      }
       if (code === 'reset_required') {
         if (resets > 0) throw new ChatError('server', { status: 410 });
         resets += 1;
         reset(svc, ws);
         await hook(svc, () => svc.notifier.onReset(ws));
         await hook(svc, () => svc.history.onReset(ws));
-        await svc.details(ws, { inRun: true });
-        svc.guard(epoch);
+        // GET / follows at the top of the loop, as the pass from the start needs one under the new revision.
+        guard();
         continue;
       }
       if (code === 'history_regressed') {
@@ -464,34 +520,31 @@ async function runSync(svc, ws) {
         await hook(svc, () => svc.history.onReset(ws));
         return { quarantined: true };
       }
-      // The service's call() ran the removal path, or parked the workspace for an update.
-      if (code === 'not_found' && err.scope === 'workspace') return { gone: true };
-      if (code === 'upgrade_required') return { upgrade: true };
       throw err;
     }
-    svc.guard(epoch);
+    guard();
     if (!store.getWs(ws)) return { gone: true };
-    // Only while the row is where the request started from; see atPosition().
+    // Only while the row is where the request started from, under the same cache revision; see atPosition().
     const expect = position(row);
     let result;
-    if (!row.passing) result = applyPage(svc, ws, page, { active, expect });
-    else if (page.more) result = applyPassPage(svc, ws, page, { expect });
-    else result = installPass(svc, ws, page, { expect });
+    if (!row.passing) result = applyPage(svc, ws, page, { active, expect, rev });
+    else if (page.more) result = applyPassPage(svc, ws, page, { expect, rev });
+    else result = installPass(svc, ws, page, { expect, rev });
     pages += 1;
     // Reset meanwhile: the page is dropped, and the loop goes on from where the row stands now, a pass from the start.
     if (!result) continue;
     for (const id of result.changed) changed.add(id);
     if (result.pass) installed = true;
     await afterPage(svc, ws, result);
-    svc.guard(epoch);
+    guard();
     if (!page.more) break;
   }
   if (installed) svc.stateChanged();
-  await directory(svc, ws);
-  svc.guard(epoch);
+  await directory(svc, ws, guard);
+  guard();
   await hook(svc, () => svc.history.afterRun(ws));
   await hook(svc, () => svc.notifier.afterRun(ws, [...changed], { pass: installed }));
-  svc.guard(epoch);
+  guard();
   if (store.getWs(ws)) store.updateWs(ws, { syncedAt: svc.now() });
   await hook(svc, () => svc.outbox.kick(ws));
   return { changed: [...changed], pass: installed };

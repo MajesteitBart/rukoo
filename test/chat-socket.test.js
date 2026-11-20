@@ -361,6 +361,42 @@ test('a ticket answered 429 waits for Retry-After before trying again', async ()
   socket.stop();
 });
 
+// Review 206A item 10: focus or resume reset the backoff and asked for a ticket at once, inside the server's
+// Retry-After. The deadline is kept apart from the backoff.
+test('focus, resume and start wait for the Retry-After of a ticket answered 429', async () => {
+  const { clock, WS, socket, seen } = wakeSocket({
+    ticket: (n) => {
+      if (n === 1) throw new ChatError('rate_limited', { retryAfter: 7 });
+      return 'payload.mac';
+    }
+  });
+  WS.auto = (s) => s.open();
+  socket.start();
+  await clock.tick();
+  assert.equal(seen.tickets, 1);
+  socket.nudge();
+  await clock.tick();
+  assert.equal(seen.tickets, 1, 'focus waits for the deadline');
+  await clock.advance(3000);
+  socket.nudge();
+  await clock.tick();
+  assert.equal(seen.tickets, 1, 'so does a resume later on');
+  await clock.advance(3999);
+  assert.equal(seen.tickets, 1);
+  await clock.advance(1);
+  assert.equal(seen.tickets, 2, 'the attempt goes out at the deadline');
+  assert.equal(socket.state, 'open');
+  // Once it passed, a resume reconnects at once again.
+  WS.auto = (s) => s.drop(1006);
+  WS.made.at(-1).drop(1006);
+  await clock.tick();
+  const tickets = seen.tickets;
+  socket.nudge();
+  await clock.tick();
+  assert.equal(seen.tickets, tickets + 1);
+  socket.stop();
+});
+
 test('a ticket refused for good parks the socket', async () => {
   for (const err of [new ChatError('signed_out'), new ChatError('not_found', { scope: 'workspace' }), new ChatError('upgrade_required'), Object.assign(new Error('stale'), { stale: true })]) {
     const { clock, WS, socket, seen } = wakeSocket({

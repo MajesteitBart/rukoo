@@ -610,3 +610,202 @@ function rawRoom(row) {
     removedMore: false
   };
 }
+
+// ---- late answers and recovery the local review 206A found ----
+
+// A promise and the function that resolves it.
+function gate() {
+  let open;
+  const ready = new Promise((resolve) => (open = resolve));
+  return { ready, open };
+}
+
+const passDone = (svc, ws) => svc.store.getWs(ws).passing === 0 && !svc.runners.get(ws).running;
+
+test('a room a pass staged and a later page evicted goes at the install, with its draft and unsent message', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc } = await setup(t, { timing: { minFetchGap: 1 } });
+  holdOutbox(svc);
+  const target = await server.seedChannel(olga, ws.id, { name: 'Middle private', visibility: 'private', members: [bartMe.id] });
+  await server.post(olga, ws.id, target.id, 'Revoked private channel body');
+  await server.seedChannel(olga, ws.id, { name: 'Last room', members: [bartMe.id] });
+  await svc.sync(ws.id);
+  const room = svc.store.getRoom(ws.id, target.id);
+  assert.ok(room);
+  svc.store.putDraft(ws.id, target.id, null, { text: 'unsent draft', mentions: [] });
+  svc.store.insertOutbox({ local: 'IIIIIIIIIIIIIIIIIIIIII', ws: ws.id, room: target.id, actor: bartMe.id, grantId: room.grantId, generation: svc.store.getWs(ws.id).generation, text: 'queued', mentions: [], createdAt: Date.now() });
+  svc.timing.feedLimit = 1;
+  let staged = false;
+  let evictedLater = false;
+  watchCalls(svc.account, async (method, url, real) => {
+    if (!url.startsWith(route(ws.id, '/changes'))) return undefined;
+    const page = await real();
+    if (staged && page.evictions.includes(target.id)) evictedLater = true;
+    if (!staged && page.changes.some((r) => r.conversation === target.id)) {
+      assert.equal(page.more, true);
+      staged = true;
+      // Removed from the private channel after this page staged it.
+      const removed = await server.call('DELETE', route(ws.id, `/channels/${target.id}/members/${bartMe.id}`), { token: olga.token });
+      assert.equal(removed.status, 204);
+    }
+    return page;
+  });
+  await chatApi(() => svc).chatReload(ws.id);
+  await until(() => passDone(svc, ws.id), 15000, 'the pass after Start over');
+  assert.ok(evictedLater, 'a later page of the pass evicted the room');
+  assert.equal(svc.store.getRoom(ws.id, target.id), null);
+  assert.equal(svc.store.getDraft(ws.id, target.id, null), null);
+  assert.equal(svc.store.countUnsent(), 0);
+  assert.equal(svc.store.listPassRooms(ws.id).length, 0);
+  const evicted = ofKind(svc, 'evicted').filter((e) => e.conversation === target.id);
+  assert.equal(evicted.length, 1);
+  assert.equal(evicted[0].droppedSends, 1);
+  // Nothing brings it back.
+  await svc.sync(ws.id);
+  assert.equal(svc.store.getRoom(ws.id, target.id), null);
+});
+
+test('a 409 from before Start over neither quarantines the workspace nor stops the pass', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc } = await setup(t);
+  holdOutbox(svc);
+  const sent = gate();
+  const release = gate();
+  let first = true;
+  watchCalls(svc.account, async (method, url) => {
+    if (!first || !url.startsWith(route(ws.id, '/changes'))) return undefined;
+    first = false;
+    sent.open();
+    await release.ready;
+    throw new AccountError('history_regressed', 409, 'This workspace is behind what this device has seen.', { scope: 'workspace' });
+  });
+  const pending = svc.sync(ws.id);
+  await sent.ready;
+  await chatApi(() => svc).chatReload(ws.id);
+  release.open();
+  const outcome = await pending;
+  assert.notDeepEqual(outcome, { quarantined: true });
+  assert.equal(svc.store.getWs(ws.id).state, 'ok');
+  await until(() => passDone(svc, ws.id), 10000, 'the pass after Start over');
+  assert.equal(svc.store.getWs(ws.id).state, 'ok');
+  assert.ok(svc.store.getWs(ws.id).cursor);
+});
+
+test('a feed page that answers after the workspace was parked for an update changes nothing', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc } = await setup(t);
+  holdOutbox(svc);
+  const cursor = svc.store.getWs(ws.id).cursor;
+  const head = svc.store.getRoom(ws.id, ws.general).head;
+  await server.post(olga, ws.id, ws.general, 'Something new');
+  const held = holdNextPage(svc, ws.id);
+  const pending = svc.sync(ws.id);
+  await until(() => held.waiting, 5000, 'the held page');
+  // Another request of the workspace gets 426.
+  watchCalls(svc.account, (method, url) => {
+    if (url === route(ws.id, '/socket-ticket')) throw new AccountError('upgrade_required', 426, 'Update Rukoo');
+    return undefined;
+  });
+  await assert.rejects(svc.call(ws.id, 'POST', '/socket-ticket'), (err) => err.code === 'upgrade_required');
+  assert.equal(svc.store.getWs(ws.id).state, 'upgrade');
+  held.release();
+  await pending;
+  assert.equal(svc.store.getWs(ws.id).cursor, cursor);
+  assert.equal(svc.store.getRoom(ws.id, ws.general).head, head);
+  assert.equal(svc.store.getWs(ws.id).state, 'upgrade');
+});
+
+test('an older GET / that answers after a newer one installed a restore is dropped', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc } = await setup(t);
+  holdOutbox(svc);
+  const original = svc.store.getWs(ws.id).generation;
+  const restored = (original[0] === 'A' ? 'B' : 'A') + original.slice(1);
+  const sent = gate();
+  const release = gate();
+  let n = 0;
+  watchCalls(svc.account, async (method, url, real) => {
+    if (method !== 'GET' || url !== route(ws.id)) return undefined;
+    const answer = await real();
+    n += 1;
+    if (n === 1) {
+      sent.open();
+      await release.ready;
+    } else {
+      answer.workspace.generation = restored;
+    }
+    return answer;
+  });
+  const older = svc.details(ws.id, { inRun: true });
+  await sent.ready;
+  await svc.details(ws.id, { inRun: true });
+  assert.equal(svc.store.getWs(ws.id).generation, restored);
+  release.open();
+  await older;
+  assert.equal(svc.store.getWs(ws.id).generation, restored, 'the older answer did not put the old generation back');
+  assert.equal(svc.store.getWs(ws.id).passing, 1);
+});
+
+test('a 410 whose GET / failed asks GET / again before the pass, also after a restart', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, account, dir } = await setup(t, { timing: { minFetchGap: 1 } });
+  holdOutbox(svc);
+  // Another member's cursor gets 410 here.
+  const other = await server.call('GET', route(ws.id, '/changes'), { token: olga.token });
+  assert.equal(other.status, 200);
+  svc.store.updateWs(ws.id, { cursor: other.body.next });
+  let saw410 = false;
+  let details = 0;
+  watchCalls(account, async (method, url, real) => {
+    if (url.startsWith(route(ws.id, '/changes'))) {
+      try {
+        return await real();
+      } catch (err) {
+        saw410 ||= err.code === 'reset_required';
+        throw err;
+      }
+    }
+    if (method === 'GET' && url === route(ws.id) && ++details === 1) throw new AccountError('network', 0, 'Connection lost');
+    return undefined;
+  });
+  const first = await svc.sync(ws.id);
+  assert.ok(saw410);
+  assert.equal(first.error.code, 'network');
+  assert.deepEqual([svc.store.getWs(ws.id).passing, svc.store.getWs(ws.id).cursor], [1, null]);
+  // A new start on the same file: its first run asks GET / before the pass from the start.
+  svc.close();
+  const calls = watchCalls(account);
+  const again = chatService(account, dir, { timing: { minFetchGap: 1 } });
+  t.after(() => again.close());
+  holdOutbox(again);
+  await settled(again, ws.id);
+  const mine = calls.map((c) => c.route.split('?')[0]).filter((r) => r.startsWith(route(ws.id)));
+  assert.ok(mine.indexOf(route(ws.id)) !== -1, JSON.stringify(mine));
+  assert.ok(mine.indexOf(route(ws.id)) < mine.indexOf(route(ws.id, '/changes')), JSON.stringify(mine));
+});
+
+test('a restore takes read and alert positions from the restored feed, and keeps mute and drafts', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc } = await setup(t);
+  holdOutbox(svc);
+  await server.post(olga, ws.id, ws.general, 'one');
+  await server.post(olga, ws.id, ws.general, 'two');
+  await svc.sync(ws.id);
+  const before = svc.store.getRoom(ws.id, ws.general);
+  assert.ok(before.unread >= 2);
+  // As if this device had read and been alerted through the head in a generation the server then discarded.
+  const ahead = before.head;
+  svc.store.setRoomFields(ws.id, ws.general, { read: ahead, readLocal: ahead, readSent: ahead, notified: ahead, unread: 0, muted: 1 });
+  svc.store.putDraft(ws.id, ws.general, null, { text: 'kept draft', mentions: [] });
+  svc.store.updateWs(ws.id, { generation: 'OldGenerationXXXXXXXXX' });
+  await svc.details(ws.id);
+  await until(() => passDone(svc, ws.id), 10000, 'the pass after the restore');
+  const after = svc.store.getRoom(ws.id, ws.general);
+  assert.equal(after.read, before.read, 'the restored feed\'s read position');
+  assert.equal(after.readLocal, after.read);
+  assert.equal(after.readSent, after.read);
+  assert.ok(after.notified <= after.read, `notified ${after.notified} counts from the restored read ${after.read}`);
+  assert.equal(after.unread, before.unread, 'the unread messages show again');
+  assert.equal(after.muted, 1);
+  assert.equal(svc.store.getDraft(ws.id, ws.general, null).text, 'kept draft');
+});

@@ -466,3 +466,185 @@ test('close() is synchronous and leaves the cache for the next start', async (t)
   store.close();
   assert.equal(account.signedIn, true);
 });
+
+// ---- late answers, role changes and failures the local review 206A found ----
+
+const wsRoute = (ws, rest = '') => `/v1/workspaces/${ws}${rest}`;
+
+// A promise and the function that resolves it.
+function gate() {
+  let open;
+  const ready = new Promise((resolve) => (open = resolve));
+  return { ready, open };
+}
+
+test('a 401 ends the Chat session even when the account state can\'t be saved', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { bart, ws, svc, account, dir } = await setup(t);
+  assert.equal((await server.call('POST', '/v1/logout', { token: bart.token })).status, 204);
+  const saved = account.saveState;
+  account.saveState = () => {
+    throw Object.assign(new Error('Disk write refused'), { code: 'EACCES' });
+  };
+  t.after(() => (account.saveState = saved));
+  // The call ends as stale or signed_out; either way the session is over.
+  await assert.rejects(svc.call(ws.id, 'GET', ''), (err) => err.stale === true || err.code === 'signed_out');
+  assert.equal(account.signedIn, false);
+  assert.equal(svc.state().signedIn, false);
+  assert.deepEqual(files(dir), []);
+  assert.throws(() => svc.view(ws.id));
+});
+
+test('a listing that demotes me to guest clears the channel directory at once', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, bart, ws, bartMe, svc } = await setup(t);
+  const other = await server.seedChannel(olga, ws.id, { name: 'not for guests' });
+  await svc.sync(ws.id);
+  assert.ok(svc.view(ws.id).channels.some((c) => c.id === other.id && !c.joined));
+  const edited = await server.call('PATCH', wsRoute(ws.id, `/members/${bartMe.id}`), { token: olga.token, body: { role: 'guest' } });
+  assert.equal(edited.status, 200);
+  assert.ok(!(await server.channels(bart, ws.id)).some((c) => c.id === other.id));
+  await svc.list();
+  assert.equal(svc.store.getWs(ws.id).role, 'guest');
+  assert.ok(!svc.view(ws.id).channels.some((c) => c.id === other.id), 'the listing cleared the directory');
+  await svc.sync(ws.id);
+  const view = svc.view(ws.id);
+  assert.equal(view.me.role, 'guest');
+  assert.ok(!view.channels.some((c) => c.id === other.id));
+  // Promoted again: the directory is marked stale and the next run loads it.
+  assert.equal((await server.call('PATCH', wsRoute(ws.id, `/members/${bartMe.id}`), { token: olga.token, body: { role: 'member' } })).status, 200);
+  await svc.list();
+  assert.equal(svc.store.getWs(ws.id).channelsStale, 1);
+  await svc.sync(ws.id);
+  assert.ok(svc.view(ws.id).channels.some((c) => c.id === other.id && !c.joined));
+});
+
+test('a listing of the previous session doesn\'t stand in for the next session\'s', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const a = await server.seedAccount();
+  const b = await server.seedAccount();
+  const aWs = await server.seedWorkspace(a, { name: 'A only' });
+  const bWs = await server.seedWorkspace(b, { name: 'B only' });
+  const { account, dir } = attach(server, a);
+  const svc = chatService(account, dir, { timing: { minFetchGap: 1 } });
+  t.after(() => {
+    svc.close();
+    account.close();
+  });
+  await settled(svc, aWs.id);
+  const answered = gate();
+  const release = gate();
+  let hold = true;
+  watchCalls(account, async (method, url, real) => {
+    if (url !== '/v1/workspaces' || !hold) return undefined;
+    hold = false;
+    const answer = await real();
+    answered.open();
+    await release.ready;
+    return answer;
+  });
+  const old = svc.list();
+  await answered.ready;
+  await account.signOut();
+  account.attach(b.email, b.token, require('crypto').randomBytes(32));
+  // The new session lists on its own, while the old listing still waits.
+  await settled(svc, bWs.id);
+  assert.deepEqual(svc.store.listWs().map((r) => r.id), [bWs.id]);
+  release.open();
+  assert.equal(await old, null);
+  assert.deepEqual(svc.store.listWs().map((r) => r.id), [bWs.id]);
+});
+
+test('turning Chat off and on during a run keeps one run per workspace and drops the stopped run\'s page', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, account } = await setup(t, { timing: { minFetchGap: 1 } });
+  await server.post(olga, ws.id, ws.general, 'On its way');
+  const cursor = svc.store.getWs(ws.id).cursor;
+  const head = svc.store.getRoom(ws.id, ws.general).head;
+  const answered = gate();
+  const release = gate();
+  let requests = 0;
+  watchCalls(account, async (method, url, real) => {
+    if (!url.startsWith(wsRoute(ws.id, '/changes'))) return undefined;
+    requests += 1;
+    const answer = await real();
+    if (requests === 1) {
+      answered.open();
+      await release.ready;
+    }
+    return answer;
+  });
+  const saved = account.state.info;
+  const setChat = (on) => {
+    account.state.info = on ? saved : { ...saved, data: { ...saved.data, features: [] } };
+    account.emit('info');
+  };
+  const pending = svc.sync(ws.id);
+  await answered.ready;
+  setChat(false);
+  assert.equal(svc.live(), false);
+  setChat(true);
+  assert.equal(svc.live(), true);
+  await sleep(300);
+  assert.equal(requests, 1, 'no second run beside the one on its way');
+  setChat(false);
+  release.open();
+  assert.deepEqual(await pending, { stale: true });
+  await sleep(200);
+  assert.equal(svc.store.getWs(ws.id).cursor, cursor, 'the stopped run\'s page was dropped');
+  assert.equal(svc.store.getRoom(ws.id, ws.general).head, head);
+  assert.equal(requests, 1);
+  setChat(true);
+  await until(() => svc.store.getRoom(ws.id, ws.general).head === head + 1 && !svc.runners.get(ws.id).running, 5000, 'the run after Chat came back');
+  assert.equal(requests, 2);
+});
+
+test('a workspace the server removed is hidden at once when its rows can\'t be deleted, and deleted later', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc } = await setup(t, { timing: { wipeRetry: 100 } });
+  await server.post(olga, ws.id, ws.general, 'Cached before removal');
+  await svc.sync(ws.id);
+  await svc.history.catchUp(ws.id, ws.general);
+  assert.ok(svc.store.eventsFrom(ws.id, ws.general, 0, 50).some((e) => e.text === 'Cached before removal'));
+  svc.store.db.exec(`CREATE TRIGGER refuse_ws_delete BEFORE DELETE ON ws BEGIN SELECT RAISE(ABORT, 'simulated write error'); END`);
+  assert.equal((await server.call('DELETE', wsRoute(ws.id, `/members/${bartMe.id}`), { token: olga.token })).status, 204);
+  const outcome = await svc.sync(ws.id);
+  assert.deepEqual(outcome, { gone: true });
+  // Nothing reads the cache of the workspace any more.
+  assert.equal(svc.store.getWs(ws.id), null);
+  assert.deepEqual(svc.state().workspaces, []);
+  assert.throws(() => svc.view(ws.id), (err) => err.code === 'not_found');
+  await assert.rejects(async () => svc.history.openRoom(ws.id, ws.general), (err) => err.code === 'not_found');
+  assert.ok(svc.events.some((e) => e.kind === 'removed' && e.ws === ws.id));
+  const rows = () => svc.store.get('SELECT COUNT(*) AS n FROM ws WHERE id = ?', ws.id).n;
+  assert.equal(rows(), 1, 'the rows are still on disk');
+  // Once SQLite takes the deletion, the retry deletes them.
+  svc.store.db.exec('DROP TRIGGER refuse_ws_delete');
+  await until(() => rows() === 0, 3000, 'the deletion tried again');
+  assert.equal(svc.store.get('SELECT COUNT(*) AS n FROM event WHERE ws = ?', ws.id).n, 0);
+});
+
+test('a feed answering 5xx shows the workspace offline with its error, even with a socket open', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, account } = await setup(t);
+  let fail = true;
+  watchCalls(account, (method, url) => {
+    if (fail && url.startsWith(wsRoute(ws.id, '/changes'))) throw new AccountError('server', 503, 'Service unavailable');
+    return undefined;
+  });
+  const outcome = await svc.sync(ws.id);
+  assert.equal(outcome.error.status, 503);
+  let state = svc.state();
+  assert.equal(state.connection, 'offline');
+  assert.equal(state.workspaces[0].error, 'server');
+  // An open socket doesn't make it online while the feed fails.
+  svc.sockets.set(ws.id, { state: 'open', stop() {}, nudge() {} });
+  assert.equal(svc.state().connection, 'offline');
+  svc.sockets.delete(ws.id);
+  // The next run that gets through clears it.
+  fail = false;
+  await svc.sync(ws.id);
+  state = svc.state();
+  assert.equal(state.workspaces[0].error, null);
+  assert.notEqual(state.connection, 'offline');
+});

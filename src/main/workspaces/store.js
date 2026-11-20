@@ -14,12 +14,13 @@ const { ChatError } = require('./wire');
 const SCHEMA_VERSION = 1;
 const ROOM_CACHE_MAX = 2000;
 
+// busy_timeout first, so a lock another connection holds a moment longer is waited for from the first statement on.
 const PRAGMAS = `
+PRAGMA busy_timeout = 2000;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 PRAGMA secure_delete = ON;
-PRAGMA busy_timeout = 2000;
 `;
 
 const SCHEMA = `
@@ -163,6 +164,12 @@ function bindable(key, value) {
 
 const isSqliteError = (err) => err && typeof err === 'object' && (err.code === 'ERR_SQLITE_ERROR' || typeof err.errcode === 'number');
 
+// SQLite's primary result codes that prove the file itself is bad: SQLITE_CORRUPT and SQLITE_NOTADB. Anything else
+// (SQLITE_BUSY, SQLITE_LOCKED, an I/O error, a full disk) may pass, so the file stays and the caller tries again later.
+const SQLITE_CORRUPT = 11;
+const SQLITE_NOTADB = 26;
+const isBrokenFile = (err) => Boolean(err && typeof err.errcode === 'number' && [SQLITE_CORRUPT, SQLITE_NOTADB].includes(err.errcode & 0xff));
+
 // Deletes the file with its -wal and -shm files. Returns true when none of the three is left: on Windows a virus
 // scanner or the indexer can hold a handle past rmSync's retries, and the file then stays.
 function removeFiles(file) {
@@ -186,6 +193,7 @@ class Store {
     this.statements = new Map();
     this.depth = 0;
     this.closed = false;
+    this.hidden = new Set();
   }
 
   // ---- plumbing ----
@@ -342,18 +350,36 @@ class Store {
 
   // ---- ws ----
 
+  // A workspace the server said is gone but whose rows couldn't be deleted yet (removeWorkspace) is hidden: listWs and
+  // getWs leave it out, so nothing reads its cache, until deleteWs succeeds.
   listWs() {
-    return this.all('SELECT * FROM ws ORDER BY id');
+    const rows = this.all('SELECT * FROM ws ORDER BY id');
+    return this.hidden.size ? rows.filter((r) => !this.hidden.has(r.id)) : rows;
   }
 
   getWs(id) {
+    if (this.hidden.has(id)) return null;
     return this.get('SELECT * FROM ws WHERE id = ?', id);
+  }
+
+  hideWs(id) {
+    this.hidden.add(id);
+  }
+
+  // A role across the guest line changes the channel directory (contract 3.6 Directory): a demoted guest has none, so
+  // it goes at once; a promoted member has none yet, so it is loaded at the next run. Called wherever the role
+  // changes: the listing, GET / and the member list.
+  roleChanged(id, before, after) {
+    if (!before || !after || (before === 'guest') === (after === 'guest')) return;
+    if (after === 'guest') this.replaceChannels(id, []);
+    else this.updateWs(id, { channelsStale: 1 });
   }
 
   // A workspace from the listing. One already here keeps everything but its name and role. Other fields of row are
   // set as updateWs sets them.
   insertWs(row) {
     return this.tx(() => {
+      const before = this.get('SELECT role FROM ws WHERE id = ?', row.id);
       this.run(
         `INSERT INTO ws (id, name, role) VALUES (?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET name = excluded.name, role = excluded.role`,
@@ -366,6 +392,7 @@ class Store {
       delete extra.name;
       delete extra.role;
       this.updateWs(row.id, extra);
+      if (before) this.roleChanged(row.id, before.role, row.role);
       return this.getWs(row.id);
     });
   }
@@ -374,9 +401,11 @@ class Store {
     return this.setFields('ws', fields, WS_FIELDS, 'id = ?', [id]);
   }
 
-  // The workspace and everything under it, through the cascade.
+  // The workspace and everything under it, through the cascade. A hidden one stays hidden while this fails.
   deleteWs(id) {
-    return this.tx(() => Number(this.run('DELETE FROM ws WHERE id = ?', id).changes) > 0);
+    const deleted = this.tx(() => Number(this.run('DELETE FROM ws WHERE id = ?', id).changes) > 0);
+    this.hidden.delete(id);
+    return deleted;
   }
 
   // ---- rooms ----
@@ -474,6 +503,13 @@ class Store {
         JSON.stringify(row)
       )
     );
+  }
+
+  // A room a page of the pass evicted: the install then deletes it with everything under it.
+  deletePassRooms(ws, ids) {
+    this.tx(() => {
+      for (const id of ids) this.run('DELETE FROM pass_room WHERE ws = ? AND id = ?', ws, id);
+    });
   }
 
   listPassRooms(ws) {
@@ -924,8 +960,10 @@ function inspect(db) {
 
 // Opens the cache at file, or makes it. A file that fails PRAGMA quick_check, isn't a database, or has another
 // meta.schema (a newer Rukoo's) is deleted and made again; how many unsent messages it still held is in
-// store.lostUnsent (contract 3.4). Throws when node:sqlite itself can't open a database here, and ChatError('not_saved')
-// when a file to replace can't be deleted; the service then shows the storage state.
+// store.lostUnsent (contract 3.4). Only that proof replaces a file: a lock another connection holds, or an I/O error,
+// is thrown as it is, and the file with its unsent messages and drafts stays for the service's next attempt. Throws
+// too when node:sqlite itself can't open a database here, and ChatError('not_saved') when a file to replace can't be
+// deleted; the service then shows the storage state and tries again.
 function openStore(file, { now = Date.now } = {}) {
   const { DatabaseSync } = require('node:sqlite');
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -935,8 +973,16 @@ function openStore(file, { now = Date.now } = {}) {
   try {
     db = connect(DatabaseSync, file);
     state = inspect(db);
-  } catch (_) {
-    // Not a database, or one SQLite can't read: counted as far as it can be, then replaced.
+  } catch (err) {
+    if (!isBrokenFile(err)) {
+      try {
+        if (db) db.close();
+      } catch (_) {
+        // Closed already.
+      }
+      throw err;
+    }
+    // Not a database, or a corrupt one: counted as far as it can be, then replaced.
     state = 'broken';
   }
   if (state === 'broken') {

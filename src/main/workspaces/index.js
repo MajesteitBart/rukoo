@@ -201,6 +201,16 @@ class WorkspaceService extends EventEmitter {
     this.active = null;
     this.selected = null;
     this.runners = new Map();
+    // The cache revision of each workspace (revision()), from one counter so a value is never used twice; the revision
+    // the last GET / answered under (detailsCurrent()); and per workspace the GET / requests started and the newest one
+    // whose answer was applied, so an older answer that comes later is dropped.
+    this.revisions = new Map();
+    this.revisionSeq = 0;
+    this.detailsRev = new Map();
+    this.detailsStarted = new Map();
+    this.detailsApplied = new Map();
+    // A timer that tries again to delete workspaces the server removed but the cache couldn't delete yet.
+    this.removeTimer = null;
     this.sockets = new Map();
     // The last successful request to each workspace, for the socket lease.
     this.lastOk = new Map();
@@ -250,7 +260,8 @@ class WorkspaceService extends EventEmitter {
     this.intervals = [];
     if (this.flushTimer) this.timers.clearTimeout(this.flushTimer);
     if (this.retryTimer) this.timers.clearTimeout(this.retryTimer);
-    this.flushTimer = this.retryTimer = null;
+    if (this.removeTimer) this.timers.clearTimeout(this.removeTimer);
+    this.flushTimer = this.retryTimer = this.removeTimer = null;
     this.stopNetwork();
     for (const module of [this.history, this.outbox, this.manage, this.notifier]) {
       if (module && typeof module.close === 'function') {
@@ -275,9 +286,33 @@ class WorkspaceService extends EventEmitter {
     return Boolean(err && err.stale === true);
   }
 
-  // Throws Stale when the session moved on since epoch.
-  guard(epoch) {
+  // Throws Stale when the session moved on since epoch, or, given run ({ runner, stops } of a run), when the service
+  // stopped that run since (Chat turned off: stopNetwork).
+  guard(epoch, run = null) {
     if (epoch !== this.epoch || this.closed) throw new Stale();
+    if (run && run.runner.stops !== run.stops) throw new Stale();
+  }
+
+  // ---- the cache revision (contract 3.6) ----
+
+  // A number that changes whenever the workspace's cache is reset (410), started over, restored (new generation),
+  // re-keyed, quarantined (409), parked (426) or removed. Every fetch for the workspace (feed pages, history pages,
+  // alert fetches, GET /) records it before the request and drops its answer or error when it changed meanwhile: that
+  // answer belongs to the cache as it stood before. bumpRevision runs inside the transaction that resets the cache.
+  revision(ws) {
+    return this.revisions.get(ws) || 0;
+  }
+
+  bumpRevision(ws) {
+    this.revisionSeq += 1;
+    this.revisions.set(ws, this.revisionSeq);
+    return this.revisionSeq;
+  }
+
+  // Whether a GET / answered (and was applied) under the workspace's current revision, which a pass from the start
+  // needs before it begins (sync.js runSync).
+  detailsCurrent(ws) {
+    return this.detailsRev.has(ws) && this.detailsRev.get(ws) === this.revision(ws);
   }
 
   // The account said something: a sign-in, a sign-out, a new server, new server info, or a sync. Only the signature
@@ -309,7 +344,7 @@ class WorkspaceService extends EventEmitter {
     } else if (availableChanged) {
       if (available && signedIn && !this.store) this.openCache(server, tag);
       if (this.live()) this.startNetwork();
-      else this.stopNetwork();
+      else this.stopNetwork({ keepRuns: true });
     }
     this.stateChanged();
   }
@@ -321,8 +356,11 @@ class WorkspaceService extends EventEmitter {
     this.active = null;
     this.selected = null;
     this.lastOk.clear();
+    // A listing of the old session may still be on its way: the new session's first listing mustn't wait for it.
+    this.listing = null;
     this.listedAt = -Infinity;
     this.listError = null;
+    this.detailsRev.clear();
     this.pending.rooms.clear();
     try {
       this.notifier.clear();
@@ -445,15 +483,20 @@ class WorkspaceService extends EventEmitter {
     this.updateSockets();
   }
 
-  stopNetwork() {
+  // Sockets close, timers stop, and runs on their way are retired: their answers are dropped (guard with the run's
+  // stops). keepRuns (Chat turned off while signed in): a runner whose run is still on its way stays, marked running,
+  // so a start before that run ends sets again instead of starting a second run of the workspace.
+  stopNetwork({ keepRuns = false } = {}) {
     for (const socket of this.sockets.values()) socket.stop(1000);
     this.sockets.clear();
-    for (const r of this.runners.values()) {
+    for (const [ws, r] of this.runners) {
       if (r.timer) this.timers.clearTimeout(r.timer);
       r.timer = null;
+      r.due = null;
+      r.stops += 1;
       for (const resolve of r.waiters.splice(0)) resolve({ stale: true });
+      if (!keepRuns || !r.running) this.runners.delete(ws);
     }
-    this.runners.clear();
   }
 
   // A request to the workspace routes with the account's session: under /v1/workspaces/{ws} when ws is given (route
@@ -495,7 +538,10 @@ class WorkspaceService extends EventEmitter {
   // 426: the server needs a newer workspace protocol. The workspace waits, socket closed, until Rukoo is updated.
   park(ws) {
     if (!this.store || !this.store.getWs(ws)) return;
-    this.store.updateWs(ws, { state: 'upgrade' });
+    this.store.tx(() => {
+      this.bumpRevision(ws);
+      this.store.updateWs(ws, { state: 'upgrade' });
+    });
     this.updateSockets();
     this.stateChanged();
   }
@@ -503,14 +549,30 @@ class WorkspaceService extends EventEmitter {
   // GET / for a workspace: its name, my member row, generation, keyId, limits and retention, and the clock. A new
   // generation runs the restore path; a new keyId starts a pass. Either asks for a run, which does the pass, unless
   // the run itself asked (inRun: sync.js), as it goes on with the pass. Returns the checked answer.
+  //
+  // An answer is applied only under the cache revision its request started under, and only when no GET / of the same
+  // workspace that started later was applied first: an older answer would put back the generation, keyId or role a
+  // newer one replaced. A dropped answer still measures the clock.
   async details(ws, { goneReason = 'removed', inRun = false } = {}) {
     const epoch = this.epoch;
+    const rev = this.revision(ws);
+    const ticket = (this.detailsStarted.get(ws) || 0) + 1;
+    this.detailsStarted.set(ws, ticket);
     const t0 = this.now();
     const answer = wire.checkWorkspace(await this.call(ws, 'GET', '', undefined, { goneReason }));
     const t1 = this.now();
     this.guard(epoch);
     if (!this.store.getWs(ws)) return answer;
+    if (this.revision(ws) !== rev || ticket < (this.detailsApplied.get(ws) || 0)) {
+      this.store.tx(() => {
+        this.store.setMeta('clockOffset', String(Math.round(answer.workspace.time - (t0 + t1) / 2)));
+        this.store.setMeta('clockAt', String(t1));
+      });
+      return answer;
+    }
+    this.detailsApplied.set(ws, ticket);
     const { restored, keyChanged } = sync.restore(this, ws, answer, { t0, t1 });
+    this.detailsRev.set(ws, this.revision(ws));
     if (restored || keyChanged) {
       this.roomsChanged(ws, this.store.listRooms(ws).map((r) => r.id));
       // Both deleted the notice rows: the pass that follows can't list what was removed meanwhile.
@@ -607,9 +669,13 @@ class WorkspaceService extends EventEmitter {
   }
 
   // The person lost a workspace: removed, left, deleted, or gone from the listing. Its row goes with everything under
-  // it, the WAL is checkpointed so deleted pages don't linger, and the main window hears removed.
+  // it, the WAL is checkpointed so deleted pages don't linger, and the main window hears removed. The workspace is
+  // hidden from every cache read first (store.hideWs), so when SQLite refuses the deletion nothing shows its rows
+  // meanwhile, and the deletion is tried again every wipeRetry until it succeeds.
   removeWorkspace(ws, reason = 'removed') {
     if (!this.store || !this.store.getWs(ws)) return false;
+    this.bumpRevision(ws);
+    this.store.hideWs(ws);
     const socket = this.sockets.get(ws);
     if (socket) socket.stop(1000);
     this.sockets.delete(ws);
@@ -619,12 +685,7 @@ class WorkspaceService extends EventEmitter {
       for (const resolve of r.waiters.splice(0)) resolve({ gone: true });
       this.runners.delete(ws);
     }
-    this.store.deleteWs(ws);
-    try {
-      this.store.checkpoint();
-    } catch (_) {
-      // A reader holds the WAL; the next checkpoint gets it.
-    }
+    this.deleteHidden();
     this.lastOk.delete(ws);
     if (this.active && this.active.ws === ws) this.active = null;
     if (this.selected === ws) this.pickSelected();
@@ -635,6 +696,34 @@ class WorkspaceService extends EventEmitter {
     this.stateChanged();
     if (reason === 'removed') this.list().catch(() => {});
     return true;
+  }
+
+  // Deletes the workspaces removeWorkspace hid, with a checkpoint after. Those SQLite refuses stay hidden and are tried
+  // again after wipeRetry.
+  deleteHidden() {
+    const store = this.store;
+    if (!store || !store.hidden.size) return;
+    let deleted = false;
+    for (const ws of [...store.hidden]) {
+      try {
+        store.deleteWs(ws);
+        deleted = true;
+      } catch (err) {
+        this.hookFailed(err);
+      }
+    }
+    if (deleted) {
+      try {
+        store.checkpoint();
+      } catch (_) {
+        // A reader holds the WAL; the next checkpoint gets it.
+      }
+    }
+    if (!store.hidden.size || this.removeTimer || this.closed) return;
+    this.removeTimer = this.timers.setTimeout(() => {
+      this.removeTimer = null;
+      if (!this.closed && this.store === store) this.deleteHidden();
+    }, this.timing.wipeRetry);
   }
 
   // ---- runs (contract 3.6): one per workspace at a time, at least MIN_FETCH_GAP apart ----
@@ -651,10 +740,14 @@ class WorkspaceService extends EventEmitter {
         failures: 0,
         notBefore: 0,
         error: null,
+        // The last run failed on the network or a 5xx (contract 3.6): the workspace shows offline, error code kept.
+        offline: false,
         ok: false,
         waiters: [],
         detailsDue: false,
-        nudgedAt: -Infinity
+        nudgedAt: -Infinity,
+        // How often stopNetwork retired this runner's runs; a run captures it and drops its answers when it moved.
+        stops: 0
       };
       this.runners.set(ws, r);
     }
@@ -705,6 +798,7 @@ class WorkspaceService extends EventEmitter {
       return;
     }
     const epoch = this.epoch;
+    const stops = r.stops;
     r.running = true;
     r.again = false;
     r.lastStart = this.now();
@@ -714,6 +808,7 @@ class WorkspaceService extends EventEmitter {
     try {
       outcome = await sync.runSync(this, ws);
       r.error = null;
+      r.offline = false;
       r.failures = 0;
       r.ok = true;
     } catch (err) {
@@ -721,6 +816,7 @@ class WorkspaceService extends EventEmitter {
       else {
         const e = chatError(err);
         r.error = wire.isInternal(e.code) ? 'server' : e.code;
+        r.offline = e.code === 'network' || e.status >= 500;
         if (e.code === 'rate_limited') r.notBefore = this.now() + (e.retryAfter || 1) * SECOND;
         else r.failures += 1;
         outcome = { error: e };
@@ -730,6 +826,14 @@ class WorkspaceService extends EventEmitter {
     }
     for (const resolve of waiters) resolve(outcome);
     if (epoch !== this.epoch || this.runners.get(ws) !== r || this.closed) return;
+    if (stops !== r.stops) {
+      // Retired by stopNetwork while it ran. Chat came back meanwhile (startNetwork set again): the next run starts
+      // now, after this one, so there was never a second run beside it. Still off: the runner goes, as stopNetwork
+      // would have let it.
+      if (!this.live()) this.runners.delete(ws);
+      else if (r.again) this.schedule(ws, 0);
+      return;
+    }
     this.stateChanged();
     // A stopped or parked workspace waits for Start over or a newer Rukoo, not for a timer.
     const row = this.store && this.store.getWs(ws);
@@ -978,10 +1082,11 @@ class WorkspaceService extends EventEmitter {
       if (this.listError === 'network') return 'offline';
       return Number.isFinite(this.listedAt) ? 'online' : 'connecting';
     }
-    if (w.error === 'network') return 'offline';
+    const r = this.runners.get(w.id);
+    // The last run failed on the network or with a 5xx: offline, even while a socket is open (contract 3.6).
+    if (w.error === 'network' || (r && r.offline && w.error)) return 'offline';
     if (w.status === 'quarantined' || w.status === 'upgrade') return 'idle';
     if (w.socket === 'open') return 'online';
-    const r = this.runners.get(w.id);
     if (w.socket === 'off' && r && r.ok && !w.error) return 'online';
     return 'connecting';
   }
