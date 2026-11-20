@@ -465,6 +465,7 @@ test('leaving: the only owner, the channels that may need a successor, and who c
   assert.equal(onlyOwner('owner', ME, twoOwners, false), false);
   const formerOwner = new Map(owners).set(OLGA, { ...owners.get(OLGA), role: 'owner' });
   assert.equal(onlyOwner('owner', ME, formerOwner, false), true, 'someone who left is no owner');
+  assert.equal(onlyOwner('owner', ME, new Map(), false), false, "a directory that hasn't loaded yet says nothing");
 
   const ch = (cid, extra = {}) => ({ id: cid, kind: 'channel', role: 'manager', archived: false, members: 3, ...extra });
   const rooms = [ch('c1'), ch('c2', { members: 1 }), ch('c3', { archived: true }), ch('c4', { role: 'member' }), { id: 'd1', kind: 'dm', role: 'member', members: 2 }];

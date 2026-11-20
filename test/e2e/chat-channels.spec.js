@@ -318,6 +318,8 @@ test('muting a conversation dims its row and silences the mode badge', async () 
   const row = roomRow(win, 'Olga Owner');
   await row.click();
   await expect(title()).toHaveText('Olga Owner');
+  // Her message is read (a second after it shows) before Bart leaves the DM, so it doesn't count below.
+  await expect(row).not.toHaveClass(/is-unread/, { timeout: 10000 });
   await roomMenu(win, 'Mute');
   await expect(toast()).toHaveText('Muted Olga Owner. No notifications or counts, even for mentions.');
   await expect(row).toHaveClass(/is-muted/, { timeout: 10000 });

@@ -4,7 +4,7 @@
 const { test, expect } = require('@playwright/test');
 const { tempDir, removeDir } = require('../tmp');
 const { closeApp } = require('./close');
-const { PASSWORD, skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, composer, roomRow, dialogBox, menuItem, workspaceMenu, serverGet } = require('./chat-helpers');
+const { PASSWORD, skipWithoutServer, startServer, launch, signIn, openChat, twoPeople, composer, roomRow, dialogBox, menuItem, workspaceMenu, serverGet, directoryIn } = require('./chat-helpers');
 
 skipWithoutServer();
 
@@ -236,6 +236,8 @@ test("a late answer to blocking someone in one workspace doesn't replace the blo
       });
     };
   });
+  // The message's menu offers Block by the author's name, which the directory brings after the rooms.
+  await expect(row('Hello from Acme').locator('.ch-name')).toHaveText('Olga Owner', { timeout: 15000 });
   await row('Hello from Acme').click({ button: 'right' });
   await menuItem(win, 'Block Olga Owner').click();
   await dialogBox(win).locator('.buttons button').last().click();
@@ -485,6 +487,8 @@ test('the only owner is told before any confirmation, and the menu and Workspace
   await server.seedMember(ws, await server.seedAccount(), 'Olga');
   await ready(bart);
   await expect(switcherName()).toHaveText('Team', { timeout: 15000 });
+  // The hint is drawn when the menu opens, from the directory.
+  await directoryIn(app, win);
 
   await workspaceMenu(win);
   await expect(menuItem(win, 'Leave workspace')).toContainText('Make someone else an owner first.');
@@ -500,6 +504,135 @@ test('the only owner is told before any confirmation, and the menu and Workspace
   await workspaceMenu(win, 'Workspace settings');
   await expect(dialog.locator('#ch-leave-why')).toHaveText('Make someone else an owner first.');
   await expect(dialog.locator('[data-set="leave"]')).toHaveAttribute('aria-describedby', 'ch-leave-why');
+});
+
+// The directory loads at the end of a run, after the rooms: on a slow first sign-in a dialog can open before anyone
+// has a name. It draws its list again when the directory comes, keeping what was typed, and an empty directory says
+// nothing about who else is in the workspace.
+test('dialogs opened before the directory loads fill in when it comes, and an owner is offered no Delete meanwhile', async () => {
+  const bart = await server.seedAccount({ password: PASSWORD });
+  const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
+  const mila = await server.seedAccount();
+  await server.seedMember(ws, mila, 'Mila Bakker', { joinGeneral: false });
+  await server.seedChannel(mila, ws.id, { name: 'design' });
+  ({ app, win } = await launch(server, { dataDir }));
+  // Test hook, before the sign-in: main's GET /members waits until the spec lets it go, and the rest of the run's
+  // directory (channels and blocks) with it.
+  await app.evaluate(() => {
+    const svc = global.__semChat;
+    const call = Object.getPrototypeOf(svc).call;
+    global.__members = { held: true, waiting: [] };
+    svc.call = function (id, method, route, ...rest) {
+      const hold = global.__members;
+      if (!hold.held || method !== 'GET' || route !== '/members') return call.call(this, id, method, route, ...rest);
+      return new Promise((go) => hold.waiting.push(go)).then(() => call.call(this, id, method, route, ...rest));
+    };
+  });
+  const waiting = () => app.evaluate(() => global.__members.waiting.length);
+  const release = () =>
+    app.evaluate(() => {
+      global.__members.held = false;
+      for (const go of global.__members.waiting.splice(0)) go();
+    });
+  // Main forgets the members and channels, as before their first load, and the next run's GET /members waits again.
+  // The window loads the emptied view 300 ms after the directory event; once it has, the dialog opened next draws
+  // from it.
+  const unload = async () => {
+    await app.evaluate((_, id) => {
+      const svc = global.__semChat;
+      global.__members.held = true;
+      svc.store.tx(() => {
+        svc.store.replaceMembers(id, []);
+        svc.store.replaceChannels(id, []);
+        svc.store.updateWs(id, { membersStale: 1, channelsStale: 1 });
+      });
+      svc.emitChat({ kind: 'directory', ws: id });
+      svc.sync(id, 'manual');
+    }, ws.id);
+    await expect.poll(waiting, { timeout: 15000 }).toBeGreaterThan(0);
+    await expect.poll(() => win.evaluate(async () => (await import('./chat.js')).CH.members.size), { timeout: 15000 }).toBe(0);
+  };
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(roomRow(win, 'general')).toBeVisible({ timeout: 15000 });
+  await expect.poll(waiting, { timeout: 15000 }).toBeGreaterThan(0);
+  const dialog = dialogBox(win);
+
+  // Bart is the only owner and Mila is in Acme, but nothing says so yet: the menu has no hint and no Delete, and
+  // leaving asks the server, whose last_owner brings the dialog with Members and without Delete.
+  await workspaceMenu(win);
+  await expect(menuItem(win, 'Leave workspace')).toBeVisible();
+  await expect(menuItem(win, 'Leave workspace')).not.toContainText('Make someone else an owner first.');
+  await expect(menuItem(win, 'Delete workspace')).toHaveCount(0);
+  await menuItem(win, 'Leave workspace').click();
+  await expect(dialog.locator('h2')).toHaveText('Leave Acme?');
+  await dialog.locator('.buttons button').last().click();
+  await expect(dialog.locator('p')).toHaveText("You're the only owner. Make someone else an owner first.", { timeout: 15000 });
+  await expect(dialog.locator('.buttons button')).toHaveText(['Close', 'Members']);
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // New message, searched while the directory is out: Mila comes in under the search, and can be picked.
+  await win.locator('.sidebar [data-ch-side="new-message"]').click();
+  await expect(dialog.locator('h2')).toHaveText('New message');
+  await dialog.locator('[name="to"]').fill('Mi');
+  await expect(dialog.locator('.ch-new-row')).toHaveCount(0);
+  await release();
+  await expect(dialog.locator('[data-list] .ch-new-row .ch-person-name')).toHaveText(['Mila Bakker'], { timeout: 15000 });
+  await expect(dialog.locator('[name="to"]')).toHaveValue('Mi');
+  await win.keyboard.press('Enter');
+  await expect(dialog.locator('.ch-to-chip .ch-to-name')).toHaveText(['Mila Bakker']);
+  await expect(dialog.locator('.buttons button').last()).toBeEnabled();
+  await dialog.locator('.buttons button').first().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+  // Now the directory says so: the hint shows, and Delete still doesn't.
+  await workspaceMenu(win);
+  await expect(menuItem(win, 'Leave workspace')).toContainText('Make someone else an owner first.');
+  await expect(menuItem(win, 'Delete workspace')).toHaveCount(0);
+  await win.keyboard.press('Escape');
+
+  // Workspace settings while the directory is out: Delete is off without saying others are in it, and Leave has no
+  // hint. When the directory comes, both say why, and Leave keeps the focus.
+  await unload();
+  await workspaceMenu(win, 'Workspace settings');
+  await expect(dialog.locator('h2')).toHaveText('Workspace settings');
+  await expect(dialog.locator('[data-set="delete"]')).toBeDisabled();
+  await expect(dialog.locator('[data-set="delete"]')).not.toHaveAttribute('aria-describedby');
+  await expect(dialog.locator('#ch-delete-why')).toHaveCount(0);
+  await expect(dialog.locator('#ch-leave-why')).toHaveCount(0);
+  await dialog.locator('[data-set="leave"]').focus();
+  await release();
+  await expect(dialog.locator('#ch-delete-why')).toHaveText("You can delete a workspace when you're its only member. Remove everyone else first.", { timeout: 15000 });
+  await expect(dialog.locator('[data-set="delete"]')).toBeDisabled();
+  await expect(dialog.locator('[data-set="delete"]')).toHaveAttribute('aria-describedby', 'ch-delete-why');
+  await expect(dialog.locator('#ch-leave-why')).toHaveText('Make someone else an owner first.');
+  await expect(dialog.locator('[data-set="leave"]')).toBeFocused();
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // Browse channels the same way: design comes in under the search.
+  await unload();
+  await win.locator('.sidebar [data-ch-side="browse"]').click();
+  await expect(dialog.locator('h2')).toHaveText('Channels in Acme');
+  await dialog.locator('[name="search"]').fill('des');
+  await expect(dialog.locator('[data-list] .ch-browse-name')).toHaveCount(0);
+  await release();
+  await expect(dialog.locator('[data-list] .ch-browse-name')).toHaveText(['design'], { timeout: 15000 });
+  await expect(dialog.locator('[name="search"]')).toHaveValue('des');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
+
+  // And Members.
+  await unload();
+  await workspaceMenu(win, 'Members');
+  await expect(dialog.locator('h2')).toHaveText('Members of Acme');
+  await dialog.locator('[name="search"]').fill('mila');
+  await expect(dialog.locator('.ch-person')).toHaveCount(0);
+  await release();
+  await expect(dialog.locator('.ch-person .ch-person-name')).toHaveText(['Mila Bakker'], { timeout: 15000 });
+  await expect(dialog.locator('[name="search"]')).toHaveValue('mila');
+  await dialog.locator('.buttons button').last().click();
+  await expect(win.locator('.scrim')).toHaveCount(0);
 });
 
 test('Owner and Guest ask first in a member menu, and Admin and Member apply with Undo that sets the role back', async () => {
@@ -598,6 +731,8 @@ test('an owner deletes a workspace when alone in it, and Delete stays off while 
   // Solo has only Bart: the menu offers Delete, which asks, then the workspace goes and Team opens.
   await workspaceMenu(win, 'Solo');
   await expect(switcherName()).toHaveText('Solo', { timeout: 15000 });
+  // Delete waits for the directory to say nobody else is in it.
+  await directoryIn(app, win);
   await workspaceMenu(win);
   await expect(menuItem(win, 'Delete workspace')).toHaveCount(1);
   await win.keyboard.press('Escape');

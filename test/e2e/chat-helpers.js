@@ -144,6 +144,29 @@ async function connected(win) {
   await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 20000 });
 }
 
+// Waits until main's runs are through for every workspace, directories and all, and the window has loaded the
+// directory of the workspace on screen as main has it: who you are, whether there are more members, and each member's
+// role and state (a directory event reloads the view 300 ms later). What is drawn once, such as a menu's hint, can
+// then count on the members.
+async function directoryIn(app, win) {
+  await expect
+    .poll(() => app.evaluate(() => global.__semChat.debugState().workspaces.every((w) => w.syncedAt && !w.syncing && !w.stale.members && !w.stale.channels && !w.stale.blocks)), { timeout: 15000 })
+    .toBe(true);
+  const loaded = async () => {
+    const shown = await win.evaluate(async () => {
+      const { CH } = await import('./chat.js');
+      return CH.view ? { ws: CH.ws, me: CH.view.me?.id || null, more: CH.view.membersMore, members: [...CH.members.values()].map((m) => `${m.id} ${m.role} ${m.state}`).sort() } : null;
+    });
+    if (!shown) return false;
+    const main = await app.evaluate((_, ws) => {
+      const v = global.__semChat.view(ws);
+      return { ws, me: v.me?.id || null, more: v.membersMore, members: v.members.map((m) => `${m.id} ${m.role} ${m.state}`).sort() };
+    }, shown.ws);
+    return JSON.stringify(main) === JSON.stringify(shown);
+  };
+  await expect.poll(loaded, { timeout: 15000 }).toBe(true);
+}
+
 // Holds main's feed runs for the workspaces, so a change on the server can't be seen halfway (the spec makes two
 // changes in a row that a run between them would see as one: leaving and rejoining). Waits for a run under way to
 // end. release() lets them go and asks for one.
@@ -273,5 +296,6 @@ module.exports = {
   serverEvents,
   serverMessages,
   connected,
+  directoryIn,
   holdRuns
 };

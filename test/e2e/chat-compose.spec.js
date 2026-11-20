@@ -297,6 +297,8 @@ test('a message written while the server is down waits for a connection and goes
   const { olga, bart, ws } = await twoPeople(server);
   ({ app, win } = await launch(server, { dataDir }));
   await ready(bart);
+  // The log has loaded: before that a message sent is drawn only once its first page comes, from the server.
+  await expect(log().locator('li.ch-intro')).toBeVisible({ timeout: 15000 });
   await server.stop();
   let row;
   try {
@@ -318,6 +320,7 @@ test('a message held because Bart left and came back before it went offers Send 
   // The retry after the server comes back waits 8 s: time to leave and rejoin first.
   ({ app, win } = await launch(server, { dataDir, env: { SEM_CHAT_RETRY_DELAY: '8000' } }));
   await ready(bart);
+  await expect(log().locator('li.ch-intro')).toBeVisible({ timeout: 15000 });
   await server.stop();
   let row;
   try {
@@ -392,7 +395,9 @@ test('replying in a thread: docked at 1400px, over the log at 900px, the reply i
 
   // At 900px the view is narrower than 900px: the thread covers the log, with a back button.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(900, 950));
-  await expect.poll(() => win.evaluate(() => window.innerWidth)).toBeLessThan(910);
+  // The width the container query reads: on Windows a shown window's page comes out 16px wider than setSize asks, so
+  // innerWidth says too little.
+  await expect.poll(() => win.evaluate(() => document.querySelector('section.chat').getBoundingClientRect().width)).toBeLessThan(900);
   await top.locator('.ch-replies').click();
   await expect(threadPane()).toBeVisible();
   await expect(threadPane()).toHaveCSS('position', 'absolute');

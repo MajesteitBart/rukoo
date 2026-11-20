@@ -76,6 +76,8 @@ let joinRetry = null;
 let loading = null;
 // openConversation is choosing the room: a workspace switch's own first-room open stands back.
 let routing = 0;
+// What the open dialogs last drew from the directory (directoryDrawn), so a view that changed none of it leaves them be.
+let dialogsDrewFrom = null;
 // Rooms this window is leaving (Leave channel, Leave conversation, Remove from list): their eviction opens the next
 // conversation instead of the gone state.
 const leaving = new Set();
@@ -775,6 +777,30 @@ async function loadView() {
   if (CH.openId) view?.roomChanged(CH.rooms.get(CH.openId), { directory: true });
   redrawSide();
   renderPane();
+  // An open dialog drew its lists from the directory as it stood, which on a first sign-in can be before it loaded.
+  // Only a view that changed what they draw from redraws them: a redraw replaces their lists and buttons, which can
+  // swallow a click between pointer-down and pointer-up.
+  const drawn = directoryDrawn();
+  if (drawn !== dialogsDrewFrom) {
+    dialogsDrewFrom = drawn;
+    D.directoryChanged();
+  }
+}
+
+// What the dialogs draw from the directory, as of the last view: the workspace on screen (by CH.generation, so a switch
+// starts over), who you are, its members, channels, blocks and rooms (with whether each is closed: New message offers
+// to open a DM that is still open).
+function directoryDrawn() {
+  const me = CH.view?.me;
+  return JSON.stringify([
+    CH.generation,
+    me ? [me.id, me.name, me.role] : null,
+    Boolean(CH.view?.membersMore),
+    [...CH.members.values()].map((m) => [m.id, m.name, m.role, m.state]),
+    (CH.view?.channels || []).map((c) => [c.id, c.name, c.joined, c.members, c.visibility, c.archived]),
+    [...CH.blocks].sort(),
+    [...CH.rooms.values()].map((r) => `${r.id}:${r.closedReason || ''}`).sort()
+  ]);
 }
 
 export async function selectWorkspace(ws, { openFirst = true } = {}) {

@@ -372,10 +372,12 @@ export function canRemove(event, me, room) {
 export const SUCCESSOR_SEARCH_FROM = 6;
 
 // Whether you are the workspace's only owner, as far as the directory knows: an owner with no other active owner in
-// a complete directory (membersMore false). Leaving then can't work (409 last_owner), so the app says so first.
+// a complete directory (membersMore false). Leaving then can't work (409 last_owner), so the app says so first. An
+// empty directory hasn't loaded yet (a loaded one holds you): unknown, so the server's 409 decides.
 export function onlyOwner(myRole, me, members, membersMore = false) {
-  if (myRole !== 'owner' || membersMore) return false;
-  return ![...asMap(members).values()].some((m) => m.id !== me && m.state === 'active' && m.role === 'owner');
+  const map = asMap(members);
+  if (myRole !== 'owner' || membersMore || !map.size) return false;
+  return ![...map.values()].some((m) => m.id !== me && m.state === 'active' && m.role === 'owner');
 }
 
 // The channels that may need a successor before you leave: open channels you manage with other people in them.
