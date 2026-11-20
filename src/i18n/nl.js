@@ -2973,6 +2973,7 @@
   "chat.errors.accountScope": "Dit account kan alleen voor teamchat worden gebruikt.",
   "chat.errors.goneWorkspace": "Je zit niet meer in deze werkruimte.",
   "chat.errors.goneConversation": "Je zit niet meer in dit gesprek.",
+  "chat.lostUnsent": { "one": "{count} chatbericht was nog niet verstuurd en is verloren gegaan toen Rukoo de chatopslag moest herstellen.", "other": "{count} chatberichten waren nog niet verstuurd en zijn verloren gegaan toen Rukoo de chatopslag moest herstellen." },
   "chat.errors.notFound": "Dat bestaat niet meer.",
   "chat.errors.inviteGone": "Deze uitnodiging is al gebruikt, ingetrokken of verlopen. Vraag om een nieuwe.",
   "chat.errors.operationConflict": "Dit bericht botst met een bericht dat Rukoo eerder verstuurde. Gooi het weg en schrijf het opnieuw.",

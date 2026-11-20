@@ -11559,6 +11559,10 @@
     "message": "You're not in this conversation anymore.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the user lost access to the conversation (404 with scope conversation). src/renderer/chat.js (chatErrorText)"
   },
+  "chat.lostUnsent": {
+    "message": { "one": "{count} chat message hadn't been sent yet and was lost when Rukoo had to repair its chat storage.", "other": "{count} chat messages hadn't been sent yet and were lost when Rukoo had to repair its chat storage." },
+    "description": "Team chat: toast, shown once, after a damaged chat cache was made again with unsent messages in it (contract 3.4, ChatState.lostUnsent). {count}: the messages lost. Same wording as Android's chat_lost_unsent. src/renderer/chat.js (noticeLostUnsent)"
+  },
   "chat.errors.notFound": {
     "message": "That no longer exists.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: what the action was about no longer exists (404 without a scope). src/renderer/chat.js (chatErrorText)"

@@ -583,3 +583,61 @@ test('Ctrl+4 opens Chat, and Chat stays the mode across a restart', async () => 
   await expect(win.locator('.sidebar-mode [data-mode="chat"]')).toHaveAttribute('aria-selected', 'true', { timeout: 15000 });
   await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
 });
+
+// Breaks the closed app's chat cache as a newer Rukoo's file would be, with count unsent messages in it: the next start
+// replaces it and reports them through ChatState.lostUnsent (contract 3.4).
+function breakCache(count) {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(require('path').join(dataDir, 'data', 'chat.db'));
+  try {
+    db.exec(`UPDATE meta SET value = '99' WHERE key = 'schema'`);
+    const room = db.prepare('SELECT ws, id, grantId FROM room LIMIT 1').get();
+    for (let i = 0; i < count; i++) {
+      db.prepare(`INSERT INTO outbox (local, ws, room, actor, grantId, generation, text, mentions, state, createdAt) VALUES (?, ?, ?, 'u', ?, 'x', 'lost words', '[]', 'queued', 1)`).run(
+        String.fromCharCode(65 + i).repeat(22),
+        room.ws,
+        room.id,
+        room.grantId
+      );
+    }
+  } finally {
+    db.close();
+  }
+}
+
+test('a chat cache made again with unsent messages in it says once how many were lost', async () => {
+  const { bart } = await twoPeople(server);
+  ({ app, win } = await launch(server, { dataDir }));
+  await signIn(win, bart);
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  await closeApp(app);
+  breakCache(2);
+  ({ app, win } = await launch(server, { dataDir }));
+  const toast = win.locator('#toast');
+  const lost = "2 chat messages hadn't been sent yet and were lost when Rukoo had to repair its chat storage.";
+  await expect(toast).toHaveText(lost, { timeout: 15000 });
+  await expect(toast).toHaveClass(/show/);
+  // Taken: main reports it no more, and the state events that follow don't show it again.
+  await expect.poll(() => win.evaluate(() => window.mail.call('chatState').then((s) => s.lostUnsent))).toBe(0);
+  const shownAgain = await win.evaluate(
+    (text) =>
+      new Promise((resolve) => {
+        const el = document.getElementById('toast');
+        const seen = new MutationObserver(() => {
+          if (el.textContent === text) resolve(true);
+        });
+        seen.observe(el, { childList: true, subtree: true, characterData: true });
+        window.mail.call('chatSync').catch(() => {});
+        setTimeout(() => resolve(false), 3000);
+      }),
+    lost
+  );
+  expect(shownAgain).toBe(false);
+  // The next start has nothing to say.
+  await restart();
+  await openChat(win);
+  await expect(pane().locator('.ch-title')).toHaveText('general', { timeout: 15000 });
+  await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Connected', { timeout: 15000 });
+  await expect(win.locator('#toast')).not.toHaveText(lost);
+});

@@ -47,7 +47,9 @@ export const CH = {
   preview: null,
   // Connection history for the foot status and the reconnecting banner.
   wasOnline: false,
-  connectingSince: null
+  connectingSince: null,
+  // The lost-unsent toast showed for the count main reports now (noticeLostUnsent).
+  lostShown: false
 };
 
 // Sidebar and menu entries, filled in by chat-dialogs.js (desktop-ui 6): New message, the Channels plus menu, Browse
@@ -664,6 +666,24 @@ function applyState(state, { openFirst = true } = {}) {
   redrawSide();
   renderPane();
   maybeTakeJoin();
+  noticeLostUnsent(state);
+}
+
+// A broken cache was made again and took unsent messages with it (contract 3.4, ChatState.lostUnsent): one toast says
+// how many. Main reports the count until a chatState call takes it, and a state event can bring it first, so the toast
+// shows once for it and the chatState call that follows takes it, as Android's takeLostUnsent() does.
+function noticeLostUnsent(state) {
+  const count = Number(state.lostUnsent) || 0;
+  if (count <= 0) {
+    CH.lostShown = false;
+    return;
+  }
+  if (CH.lostShown) return;
+  CH.lostShown = true;
+  toast(t('chat.lostUnsent', { count }), 8000);
+  api('chatState')
+    .then(applyState)
+    .catch(() => {});
 }
 
 // The connection as the person sees it: "Reconnecting" once it was online, and the banner after ten seconds of it.
