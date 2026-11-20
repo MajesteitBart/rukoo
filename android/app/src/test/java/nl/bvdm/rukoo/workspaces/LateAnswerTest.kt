@@ -101,6 +101,22 @@ class LateAnswerTest {
     }
 
     @Test
+    fun `a dropped GET slash answer still measures the clock, as on the desktop`() = runTest {
+        val h = SyncHarness(this, db).start()
+        val a = h.sync.applier
+        suspend fun clock() = h.store.read { getMeta(FeedApplier.META_CLOCK_OFFSET) to getMeta(FeedApplier.META_CLOCK_AT) }
+        // Stale: answered after the revision it started under changed.
+        val stale = a.restore(ws, details(generation = Ids.GEN2, time = TestDb.NOW + 3_000), TestDb.NOW, TestDb.NOW + 2_000, revision = h.store.revision(ws) - 1)
+        assertTrue(stale.stale)
+        assertEquals("server time minus the request's midpoint", "2000" to (TestDb.NOW + 2_000).toString(), clock())
+        // Superseded: a GET / that started later was applied first.
+        val superseded = a.restore(ws, details(generation = Ids.GEN2, time = TestDb.NOW + 7_000), TestDb.NOW, TestDb.NOW, newest = { false })
+        assertTrue(superseded.superseded)
+        assertEquals("7000" to TestDb.NOW.toString(), clock())
+        assertEquals("neither answer wrote anything else", Ids.GEN, h.ws().generation)
+    }
+
+    @Test
     fun `a 409 whose quarantine waits behind Start over doesn't stop the started-over cache`() = runTest {
         val io = HoldNext(StandardTestDispatcher(testScheduler))
         val db = TestDb(io)

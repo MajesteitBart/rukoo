@@ -346,6 +346,7 @@ class FeedApplier(
      * [newest], called inside the transaction after the revision check, says whether no `GET /` that started later was
      * applied first, and records this one as applied when so: two answers under the same revision can still arrive out
      * of order, and the older would put back the generation, key or role the newer replaced ([RestoreResult.superseded]).
+     * A dropped answer writes only the clock.
      */
     suspend fun restore(
         ws: String,
@@ -356,8 +357,18 @@ class FeedApplier(
         newest: (() -> Boolean)? = null,
     ): RestoreResult = store.tx {
         val row = getWs(ws) ?: return@tx RestoreResult(restored = false, keyChanged = false, marked = 0)
-        if (revision != null && revision(ws) != revision) return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, stale = true)
-        if (newest != null && !newest()) return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, superseded = true)
+        // A dropped answer still measures the clock, as on the desktop: the server's time is good whatever came since.
+        val offset = (details.workspace.time - (t0 + t1) / 2.0).roundToLong().toString()
+        if (revision != null && revision(ws) != revision) {
+            setMeta(META_CLOCK_OFFSET, offset)
+            setMeta(META_CLOCK_AT, t1.toString())
+            return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, stale = true)
+        }
+        if (newest != null && !newest()) {
+            setMeta(META_CLOCK_OFFSET, offset)
+            setMeta(META_CLOCK_AT, t1.toString())
+            return@tx RestoreResult(restored = false, keyChanged = false, marked = 0, superseded = true)
+        }
         val w = details.workspace
         val restored = row.generation != null && row.generation != w.generation
         val keyChanged = !restored && row.keyId != null && row.keyId != w.keyId
@@ -393,7 +404,7 @@ class FeedApplier(
                 "retention" to RukooJson.encodeToString(WorkspaceRetention.serializer(), w.retention),
             ),
         )
-        setMeta(META_CLOCK_OFFSET, (w.time - (t0 + t1) / 2.0).roundToLong().toString())
+        setMeta(META_CLOCK_OFFSET, offset)
         setMeta(META_CLOCK_AT, t1.toString())
         RestoreResult(restored, keyChanged, marked, dropped, revision = revision(ws))
     }

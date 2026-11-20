@@ -773,8 +773,10 @@ class WorkspaceService internal constructor(
     }
 
     /**
-     * The app left the foreground: the socket closes. Runs and read reports already under way go on; no run, retry or
-     * timed listing starts on its own until the next resume or ChatSyncWorker's window.
+     * The app left the foreground: the socket closes, and no run, retry or timed listing starts on its own until the
+     * next resume or ChatSyncWorker's window. Read reports already under way go on, and so does a run someone waits
+     * for; a run nobody waits for ends its request in flight and stops before the next ([FeedRunner.wanted]), and the
+     * next run continues from its committed cursor.
      */
     fun paused() {
         foreground = false
