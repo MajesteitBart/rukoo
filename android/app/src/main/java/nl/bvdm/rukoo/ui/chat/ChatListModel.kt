@@ -167,10 +167,15 @@ object ChatListModel {
         ChatFilter.UNREAD -> room.id == open || (!room.muted && room.unread > 0)
     }
 
-    /** A DM's preview from its newest cached message; the author's name only in a group and only for others. */
+    /**
+     * A DM's preview from its newest cached message; the author's name only in a group and only for others. None when
+     * the cache is behind: with unread messages, a newest cached message that is already read isn't the newest one,
+     * and showing it next to the unread count would pass it off as the new message (the cache fills when the DM opens).
+     */
     fun preview(room: Room, members: Map<String, Member>, me: String?, names: ChatNames): RoomPreview? {
         if (room.kind != RoomKind.DM) return null
         val e = room.preview ?: return null
+        if (room.unread > 0 && e.seq <= room.read) return null
         val removed = e.redacted || e.text == null
         val group = room.participants.orEmpty().distinct().count { it != me } > 1
         val author = if (group && e.actor != me) names.display(members[e.actor]) else null

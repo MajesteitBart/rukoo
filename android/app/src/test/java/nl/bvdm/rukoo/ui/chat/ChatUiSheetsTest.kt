@@ -60,6 +60,12 @@ class ChatUiSheetsTest {
 
         override suspend fun startDm(ws: String, members: List<String>): String = throw WorkspaceError("blocked", status = 409, member = members.first())
 
+        val unblocked = ArrayList<String>()
+
+        override suspend fun unblock(ws: String, member: String) {
+            unblocked += member
+        }
+
         override suspend fun leaveChannel(ws: String, channel: String, successor: String?) {
             leaves += successor
             if (successor == null) throw WorkspaceError("last_manager", status = 409, channels = listOf("c_" + "x".repeat(22)))
@@ -92,6 +98,20 @@ class ChatUiSheetsTest {
         ui.launch("startDm", ui.context("w1")) { startDm("w1", listOf(MILA)) }
         advanceUntilIdle()
         assertEquals(Strings.get(R.string.chat_errors_blocked, "Mila Bakker"), ui.toasts.current?.message)
+    }
+
+    @Test
+    fun `a refusal for someone you blocked offers Unblock, which unblocks them`() = runTest {
+        val w = FakeWorkspaces(members)
+        val ui = ui(w)
+        ui.launch("startDm", ui.context("w1")) { startDm("w1", listOf(MILA)) }
+        advanceUntilIdle()
+        val toast = ui.toasts.current!!
+        assertEquals(Strings.get(R.string.chat_block_unblock), toast.actionLabel)
+        toast.onAction!!()
+        advanceUntilIdle()
+        assertEquals(listOf(MILA), w.unblocked)
+        assertEquals(Strings.get(R.string.chat_block_unblocked, "Mila Bakker"), ui.toasts.current?.message)
     }
 
     @Test

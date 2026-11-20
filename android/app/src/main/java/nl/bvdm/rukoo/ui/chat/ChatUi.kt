@@ -213,7 +213,17 @@ class ChatUi(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                showError(e, named(w, e, ctx ?: context()))
+                val named = named(w, e, ctx ?: context())
+                val member = (e as? WorkspaceError)?.takeIf { it.code == "blocked" }?.member
+                val ws = state().selected
+                if (member != null && ws != null) {
+                    // §3.12: `blocked` offers Unblock, also where the refusal came from outside a sheet, such as a
+                    // closed DM's Start a new conversation.
+                    val name = named.member.orEmpty()
+                    toasts.showToast(errorText(e, named), strings.get(R.string.chat_block_unblock)) { unblockMember(ws, member, name) }
+                } else {
+                    showError(e, named)
+                }
             } finally {
                 if (key != null) busy = busy - key
             }

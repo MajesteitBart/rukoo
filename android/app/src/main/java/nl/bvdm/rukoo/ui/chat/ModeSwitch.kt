@@ -28,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -136,7 +137,8 @@ private fun Segment(
             color = if (selected) c.text else c.text3,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+            // With a description, which already names the segment ("Chat, unread messages"), the label isn't read twice.
+            modifier = Modifier.weight(1f, fill = false).then(if (description != null) Modifier.clearAndSetSemantics {} else Modifier),
         )
         badge()
     }

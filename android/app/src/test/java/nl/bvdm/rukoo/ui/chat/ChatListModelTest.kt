@@ -164,6 +164,17 @@ class ChatListModelTest {
     }
 
     @Test
+    fun `a DM whose unread messages aren't cached yet shows no stale preview`() {
+        // Seen live: Mila's new message came through the feed (unread 1) while the cache's newest was the read one.
+        val behind = dm("d_1", with = listOf("sanne"), unread = 1, preview = event(u("sanne"), "Old")).copy(read = 9)
+        assertNull(ChatListModel.preview(behind, people, me.id, names))
+        // Once the new message is cached it shows, unread or not.
+        val caught = behind.copy(preview = event(u("sanne"), "New").copy(seq = 10))
+        assertEquals("New", ChatListModel.preview(caught, people, me.id, names)!!.text)
+        assertEquals("Old", ChatListModel.preview(behind.copy(unread = 0), people, me.id, names)!!.text)
+    }
+
+    @Test
     fun `DM titles name the others, with Former and Deleted members`() {
         val m = people
         assertEquals("Sanne", names.dmTitle(listOf(me.id, u("sanne")), m, me.id))
