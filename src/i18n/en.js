@@ -11388,8 +11388,8 @@
     "description": "Block a person: confirmation title. {name}: that person. src/renderer/chat-dialogs.js"
   },
   "chat.block.body": {
-    "message": "{name} can't start conversations with you in {workspace}. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from {name} stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings.",
-    "description": "Block a person: confirmation text with what a block does: it applies to this workspace only, closes every direct message both people are in (group ones too) for everyone in it for good, and is undone in Workspace settings. {name}: that person. {workspace}: the workspace name. Android chat_block_body. src/renderer/chat-dialogs.js"
+    "message": "{name} can't start conversations with you in {workspace}. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. {name} isn't told, but may notice that your conversations closed. Mentions from {name} stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings.",
+    "description": "Block a person: confirmation text with what a block does: it applies to this workspace only, closes every direct message both people are in (group ones too) for everyone in it for good, the other person gets no message about it but may notice the closed conversations, and it is undone in Workspace settings. {name}: that person. {workspace}: the workspace name. Android chat_block_body. src/renderer/chat-dialogs.js"
   },
   "chat.block.confirm": {
     "message": "Block",

@@ -2930,7 +2930,7 @@
   "chat.new.open": "Gesprek openen",
   "chat.new.hostNote": "Iedereen die je toevoegt, kan meteen lezen en schrijven. {host} kan directe berichten lezen, zoals alles in deze werkruimte.",
   "chat.block.title": "{name} blokkeren?",
-  "chat.block.body": "{name} kan in {workspace} geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. Vermeldingen door {name} geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je in Instellingen van de werkruimte.",
+  "chat.block.body": "{name} kan in {workspace} geen gesprekken meer met je beginnen. Elk gesprek waarin jullie allebei zitten, wordt voor iedereen daarin gesloten, ook groepsgesprekken, en blijft gesloten als je deblokkeert. {name} krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten. Vermeldingen door {name} geven je geen melding meer. Jullie zien elkaars berichten in gedeelde kanalen nog. Deblokkeren doe je in Instellingen van de werkruimte.",
   "chat.block.confirm": "Blokkeren",
   "chat.block.done": "{name} geblokkeerd",
   "chat.block.unblock": "Deblokkeren",

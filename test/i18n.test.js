@@ -252,7 +252,7 @@ test('team chat says that closing a DM, blocking and leaving a workspace close c
   assert.equal(i18n.t('chat.leaveDm.removeSubmit'), 'Remove');
   assert.equal(
     i18n.t('chat.block.body', { name: 'Olga', workspace: 'Acme' }),
-    "Olga can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Mentions from Olga stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
+    "Olga can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Olga isn't told, but may notice that your conversations closed. Mentions from Olga stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
   );
   assert.equal(
     i18n.t('chat.leave.body'),
@@ -268,6 +268,6 @@ test('team chat says that closing a DM, blocking and leaving a workspace close c
   assert.equal(i18n.t('chat.leaveDm.submit'), 'Voor iedereen sluiten');
   assert.equal(i18n.t('chat.leaveDm.removeTitle'), 'Uit je lijst halen?');
   assert.equal(i18n.t('chat.leaveDm.removeSubmit'), 'Weghalen');
-  assert.match(i18n.t('chat.block.body', { name: 'Olga', workspace: 'Acme' }), /^Olga kan in Acme geen gesprekken meer met je beginnen\. .* ook groepsgesprekken, en blijft gesloten als je deblokkeert\. .* Deblokkeren doe je in Instellingen van de werkruimte\.$/);
+  assert.match(i18n.t('chat.block.body', { name: 'Olga', workspace: 'Acme' }), /^Olga kan in Acme geen gesprekken meer met je beginnen\. .* ook groepsgesprekken, en blijft gesloten als je deblokkeert\. Olga krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten\. .* Deblokkeren doe je in Instellingen van de werkruimte\.$/);
   assert.match(i18n.t('chat.leave.body'), /de groepsgesprekken waarin je zit, worden ook voor de anderen gesloten/);
 });
