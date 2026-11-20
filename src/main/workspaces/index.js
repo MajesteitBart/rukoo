@@ -374,6 +374,7 @@ class WorkspaceService extends EventEmitter {
   discard() {
     this.lostUnsent = 0;
     let gone = true;
+    this.stopRemoveTimer();
     if (this.store) {
       gone = this.store.wipe();
       this.store = null;
@@ -457,6 +458,7 @@ class WorkspaceService extends EventEmitter {
 
   wipeStore() {
     const store = this.store;
+    this.stopRemoveTimer();
     this.store = null;
     if (store && !store.wipe()) {
       this.wipePending = true;
@@ -504,6 +506,10 @@ class WorkspaceService extends EventEmitter {
   // A 404 with scope workspace runs the removal path, and a 426 parks the workspace, before the error goes on.
   // retry: a 429 waits Retry-After and tries again, up to three times within 30 s (contract 4.4, for writes).
   // goneReason: the reason the removed event gives when the workspace turns out to be gone.
+  //
+  // The 404 and the 426 act only under the cache revision the request went out under: one that answers after a reset,
+  // Start over, restore, new key, park or removal belongs to the workspace as it stood, and goes on marked superseded
+  // without removing or parking anything (contract 3.6). The next request asks again.
   async call(ws, method, route, body, { retry = false, goneReason = 'removed' } = {}) {
     if (!this.store || !this.signedIn) throw new ChatError('signed_out');
     if (!this.available) throw new ChatError('server');
@@ -511,6 +517,7 @@ class WorkspaceService extends EventEmitter {
     const full = ws ? `/v1/workspaces/${ws}${route}` : route;
     const started = this.now();
     for (let attempt = 0; ; attempt++) {
+      const rev = ws ? this.revision(ws) : null;
       try {
         const res = await this.account.workspaceCall(method, full, body);
         this.guard(epoch);
@@ -528,8 +535,10 @@ class WorkspaceService extends EventEmitter {
             continue;
           }
         }
-        if (ws && err.code === 'not_found' && err.scope === 'workspace') this.removeWorkspace(ws, goneReason);
-        if (ws && err.code === 'upgrade_required') this.park(ws);
+        const scoped = ws && ((err.code === 'not_found' && err.scope === 'workspace') || err.code === 'upgrade_required');
+        if (scoped && this.revision(ws) !== rev) err.superseded = true;
+        else if (scoped && err.code === 'upgrade_required') this.park(ws);
+        else if (scoped) this.removeWorkspace(ws, goneReason);
         throw err;
       }
     }
@@ -552,8 +561,9 @@ class WorkspaceService extends EventEmitter {
   //
   // An answer is applied only under the cache revision its request started under, and only when no GET / of the same
   // workspace that started later was applied first: an older answer would put back the generation, keyId or role a
-  // newer one replaced. A dropped answer still measures the clock.
-  async details(ws, { goneReason = 'removed', inRun = false } = {}) {
+  // newer one replaced. A dropped answer still measures the clock. run: { runner, stops } of the run that asks (sync.js),
+  // whose answer is dropped whole, as Stale, when Chat stopped that run meanwhile.
+  async details(ws, { goneReason = 'removed', inRun = false, run = null } = {}) {
     const epoch = this.epoch;
     const rev = this.revision(ws);
     const ticket = (this.detailsStarted.get(ws) || 0) + 1;
@@ -561,7 +571,7 @@ class WorkspaceService extends EventEmitter {
     const t0 = this.now();
     const answer = wire.checkWorkspace(await this.call(ws, 'GET', '', undefined, { goneReason }));
     const t1 = this.now();
-    this.guard(epoch);
+    this.guard(epoch, run);
     if (!this.store.getWs(ws)) return answer;
     if (this.revision(ws) !== rev || ticket < (this.detailsApplied.get(ws) || 0)) {
       this.store.tx(() => {
@@ -724,6 +734,13 @@ class WorkspaceService extends EventEmitter {
       this.removeTimer = null;
       if (!this.closed && this.store === store) this.deleteHidden();
     }, this.timing.wipeRetry);
+  }
+
+  // The retry of deleteHidden belongs to the cache it was set for: when that cache goes, so does the timer, so the
+  // next cache's own failed deletion sets one of its own.
+  stopRemoveTimer() {
+    if (this.removeTimer) this.timers.clearTimeout(this.removeTimer);
+    this.removeTimer = null;
   }
 
   // ---- runs (contract 3.6): one per workspace at a time, at least MIN_FETCH_GAP apart ----
@@ -960,6 +977,9 @@ class WorkspaceService extends EventEmitter {
           },
           (err) => {
             if (this.isStale(err) || !ok()) return;
+            // A 404 or 426 from before a reset (call() left the workspace alone): the socket asks again, and a 4003
+            // then asks GET / under the cache as it is now.
+            if (err && err.superseded) return socket.tryAgain(0);
             const code = err && err.code;
             if (['signed_out', 'not_found', 'forbidden', 'upgrade_required'].includes(code)) return;
             socket.tryAgain(code === 'rate_limited' ? (err.retryAfter || 1) * SECOND : 0);

@@ -648,3 +648,26 @@ test('a feed answering 5xx shows the workspace offline with its error, even with
   assert.equal(state.workspaces[0].error, null);
   assert.notEqual(state.connection, 'offline');
 });
+
+// Follow-up 206 item 4: the retry of a failed deletion belongs to the cache it was set for. A new cache (another
+// session) whose own deletion fails sets its own retry, instead of waiting on the old cache's timer, which then finds
+// its cache gone and does nothing.
+test("a new cache's failed workspace deletion is tried again, also while the old cache's retry was pending", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, account } = await setup(t, { timing: { wipeRetry: 4000 } });
+  svc.store.db.exec(`CREATE TRIGGER refuse_ws_delete BEFORE DELETE ON ws BEGIN SELECT RAISE(ABORT, 'simulated write error'); END`);
+  svc.removeWorkspace(ws.id, 'left');
+  assert.equal(svc.store.get('SELECT COUNT(*) AS n FROM ws WHERE id = ?', ws.id).n, 1, 'the first cache kept its rows');
+  // Another person signs in on this device: the first cache goes, with its pending retry.
+  const other = await server.seedAccount();
+  const otherWs = await server.seedWorkspace(other, { name: 'Next' });
+  await account.signOut();
+  account.attach(other.email, other.token, require('crypto').randomBytes(32));
+  await settled(svc, otherWs.id);
+  svc.store.db.exec(`CREATE TRIGGER refuse_ws_delete BEFORE DELETE ON ws BEGIN SELECT RAISE(ABORT, 'simulated write error'); END`);
+  svc.removeWorkspace(otherWs.id, 'left');
+  const rows = () => svc.store.get('SELECT COUNT(*) AS n FROM ws WHERE id = ?', otherWs.id).n;
+  assert.equal(rows(), 1);
+  svc.store.db.exec('DROP TRIGGER refuse_ws_delete');
+  await until(() => rows() === 0, 9000, "the new cache's deletion tried again");
+});

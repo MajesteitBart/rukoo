@@ -384,7 +384,7 @@ async function directory(svc, ws, guard = null) {
       changed = true;
     } catch (err) {
       if (svc.isStale(err)) throw err;
-      if (err && err.code === 'not_found' && err.scope === 'workspace') throw err;
+      if (err && err.code === 'not_found' && err.scope === 'workspace' && !err.superseded) throw err;
     }
   };
   // The caller's own row carries a role or name someone else changed, which GET / would only bring at the next restore
@@ -413,9 +413,14 @@ async function directory(svc, ws, guard = null) {
       store.replaceChannels(ws, []);
       return;
     }
+    const rev = svc.revision(ws);
     const res = wire.checkChannels(await svc.call(ws, 'GET', '/channels'));
     guard();
-    if (store.getWs(ws)) store.replaceChannels(ws, res.channels);
+    // Demoted to guest meanwhile (the listing or GET / cleared the directory), or the cache moved on: the answer is
+    // from before, and the flag stays for the next run when it is still set.
+    const now = store.getWs(ws);
+    if (!now || now.role === 'guest' || svc.revision(ws) !== rev) return;
+    store.replaceChannels(ws, res.channels);
   });
   await load('blocksStale', async () => {
     let res;
@@ -459,14 +464,22 @@ async function runSync(svc, ws) {
     if (!row || row.state !== 'ok') return { skipped: true, changed: [...changed] };
     if (pages >= svc.timing.pagesPerRun) return { more: true, changed: [...changed] };
     // At most three GET / per run, so answers dropped again and again (the revision kept moving) can't keep it going.
+    // A run that used them up without a current answer goes on later (more), as the pass mustn't begin without one.
     const needsDetails = !row.generation || runner.detailsDue || (row.passing && !row.cursor && !svc.detailsCurrent(ws));
-    if (needsDetails && asked < 3) {
+    if (needsDetails) {
+      if (asked >= 3) return { more: true, changed: [...changed] };
       asked += 1;
       runner.detailsDue = false;
       try {
-        await svc.details(ws, { inRun: true });
+        // The run's own guard: a run Chat stopped while GET / was on its way doesn't apply the answer.
+        await svc.details(ws, { inRun: true, run: { runner, stops } });
       } catch (err) {
         if (!svc.isStale(err)) runner.detailsDue = true;
+        // A 404 or 426 that answered after the cache moved on belongs to it as it stood (call() left it alone).
+        if (err && err.superseded) {
+          guard();
+          continue;
+        }
         throw err;
       }
       guard();
@@ -498,9 +511,10 @@ async function runSync(svc, ws) {
       if (svc.isStale(err)) throw err;
       guard();
       const code = err && err.code;
-      // The service's call() ran the removal path, or parked the workspace for an update.
-      if (code === 'not_found' && err.scope === 'workspace') return { gone: true };
-      if (code === 'upgrade_required') return { upgrade: true };
+      // The service's call() ran the removal path, or parked the workspace for an update. A superseded one it left
+      // alone, as the revision moved: it goes with the other errors from before, below.
+      if (code === 'not_found' && err.scope === 'workspace' && !err.superseded) return { gone: true };
+      if (code === 'upgrade_required' && !err.superseded) return { upgrade: true };
       // Reset, restored, started over or parked meanwhile: the error belongs to the feed as it stood before, so it
       // neither resets, quarantines nor counts as a failure. The loop goes on from where the row stands now.
       if (svc.revision(ws) !== rev) {

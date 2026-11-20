@@ -782,3 +782,51 @@ test('opening at a seq returns detached events as they stand, and tells the rend
     'the renderer heard of the removal'
   );
 });
+
+// Follow-up 206 item 4: a thread or an opening at a seq whose pages were on their way when the workspace was revoked
+// answers nothing of its cache, also when SQLite couldn't delete it yet and the cached text is still on disk.
+test('a thread or an opening at a seq that answers after the workspace was revoked returns no cached text', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, api, account } = await setup(t);
+  const [root] = await postMany(olga, ws.id, ws.general, 1, { prefix: 'revoked root' });
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general);
+  const room = await caughtUp(svc, ws.id, ws.general);
+  assert.equal(svc.store.eventById(ws.id, root.messageId).text, 'revoked root 1');
+  // The cache is one behind, so both catch up first, through one held forward page.
+  svc.store.setRoomFields(ws.id, ws.general, { head: room.head + 1 });
+  const held = holdNext(account, (url) => url.includes(`/conversations/${ws.general}/events?after=`));
+  const thread = api.chatThread(ws.id, ws.general, root.messageId);
+  const opening = api.chatOpen(ws.id, ws.general, { at: root.seq });
+  await until(() => held.waiting, 10000, 'the held page');
+  svc.store.db.exec(`CREATE TRIGGER refuse_ws_delete BEFORE DELETE ON ws BEGIN SELECT RAISE(ABORT, 'simulated write error'); END`);
+  svc.removeWorkspace(ws.id, 'left');
+  assert.ok(svc.store.eventById(ws.id, root.messageId), 'the text is still on disk');
+  held.release();
+  await assert.rejects(thread, (err) => err.code === 'not_found');
+  await assert.rejects(opening, (err) => err.code === 'not_found');
+});
+
+// Follow-up 206 item 6: a removal a history page brings for a message the renderer shows but SQLite trimmed reaches
+// the renderer by ID, as the store's redacted only covers cached messages.
+test('a removal in a history page for a message the cache trimmed tells the renderer', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc, api } = await setup(t, { timing: { ...SMALL, roomCacheMax: 3 } });
+  const notes = await postMany(olga, ws.id, ws.general, 8, { prefix: 'kept outside' });
+  await svc.sync(ws.id);
+  await api.chatOpen(ws.id, ws.general);
+  const room = await caughtUp(svc, ws.id, ws.general);
+  const older = await api.chatOlder(ws.id, ws.general, room.lo);
+  const target = notes.find((n) => n.seq === older.events.at(-1).seq);
+  assert.equal(older.events.at(-1).text, target ? `kept outside ${notes.indexOf(target) + 1}` : null);
+  assert.equal(svc.store.eventById(ws.id, target.messageId), null, 'the renderer holds it, SQLite does not');
+  // Olga removes it; the forward page (not the feed) brings message.redacted.
+  await server.redact(olga, ws.id, ws.general, target.messageId);
+  svc.store.setRoomFields(ws.id, ws.general, { head: room.head + 1 });
+  await svc.history.catchUp(ws.id, ws.general);
+  assert.ok(svc.store.hasTombstone(ws.id, target.messageId));
+  assert.ok(
+    svc.events.some((e) => e.kind === 'redacted' && e.conversation === ws.general && e.ids.includes(target.messageId)),
+    'the renderer heard of the removal'
+  );
+});

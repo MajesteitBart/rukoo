@@ -809,3 +809,133 @@ test('a restore takes read and alert positions from the restored feed, and keeps
   assert.equal(after.muted, 1);
   assert.equal(svc.store.getDraft(ws.id, ws.general, null).text, 'kept draft');
 });
+
+// Follow-up 206 item 3: a 426 or a 404 that answers after Start over belongs to the workspace as it stood. It neither
+// parks nor removes it, and the pass after Start over goes on.
+for (const [code, status, scope] of [
+  ['upgrade_required', 426, undefined],
+  ['not_found', 404, 'workspace']
+]) {
+  test(`a ${status} from before Start over neither parks nor removes the workspace`, async (t) => {
+    if (skipWithoutServer(t)) return;
+    const { ws, svc } = await setup(t, { timing: { minFetchGap: 1 } });
+    holdOutbox(svc);
+    const sent = gate();
+    const release = gate();
+    let first = true;
+    watchCalls(svc.account, async (method, url) => {
+      if (!first || !url.startsWith(route(ws.id, '/changes'))) return undefined;
+      first = false;
+      sent.open();
+      await release.ready;
+      throw new AccountError(code, status, 'From before Start over', scope ? { scope } : {});
+    });
+    const pending = svc.sync(ws.id);
+    await sent.ready;
+    await chatApi(() => svc).chatReload(ws.id);
+    release.open();
+    const outcome = await pending;
+    assert.ok(!outcome.upgrade && !outcome.gone, JSON.stringify(outcome));
+    assert.ok(svc.store.getWs(ws.id), 'the workspace is still there');
+    assert.equal(svc.store.getWs(ws.id).state, 'ok');
+    assert.ok(!ofKind(svc, 'removed').length, 'nothing said it was removed');
+    await until(() => passDone(svc, ws.id), 10000, 'the pass after Start over');
+    assert.equal(svc.store.getWs(ws.id).state, 'ok');
+    assert.ok(svc.store.getWs(ws.id).cursor);
+  });
+}
+
+// Follow-up 206 item 3: Chat turned off while a run's GET / was on its way. The stopped run drops the answer, so a
+// restore it carries doesn't install from a run that no longer counts.
+test("a stopped run's GET / is dropped, restore and all", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, account } = await setup(t, { timing: { minFetchGap: 1 } });
+  holdOutbox(svc);
+  const generation = svc.store.getWs(ws.id).generation;
+  const cursor = svc.store.getWs(ws.id).cursor;
+  const restored = (generation[0] === 'A' ? 'B' : 'A') + generation.slice(1);
+  const sent = gate();
+  const release = gate();
+  let first = true;
+  watchCalls(account, async (method, url, real) => {
+    if (!first || method !== 'GET' || url !== route(ws.id)) return undefined;
+    first = false;
+    const answer = await real();
+    answer.workspace.generation = restored;
+    sent.open();
+    await release.ready;
+    return answer;
+  });
+  const saved = account.state.info;
+  const setChat = (on) => {
+    account.state.info = on ? saved : { ...saved, data: { ...saved.data, features: [] } };
+    account.emit('info');
+  };
+  svc.runner(ws.id).detailsDue = true;
+  const pending = svc.sync(ws.id);
+  await sent.ready;
+  setChat(false);
+  release.open();
+  assert.deepEqual(await pending, { stale: true });
+  const row = svc.store.getWs(ws.id);
+  assert.equal(row.generation, generation, 'the restore of the stopped run did not install');
+  assert.equal(row.passing, 0);
+  assert.equal(row.cursor, cursor);
+});
+
+// Follow-up 206 item 3: a pass from the start needs a GET / answered under the current cache revision. When three in
+// a row are dropped (the revision moved each time), the run stops there and goes on later instead of passing without.
+test('a run whose GET / answers are all superseded defers the pass until one counts', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { ws, svc, account } = await setup(t, { timing: { minFetchGap: 1, moreAfter: 600000 } });
+  holdOutbox(svc);
+  let details = 0;
+  const calls = watchCalls(account, async (method, url, real) => {
+    if (method !== 'GET' || url !== route(ws.id)) return undefined;
+    const answer = await real();
+    details += 1;
+    // As if a reset came while each of the first three was on its way.
+    if (details <= 3) svc.bumpRevision(ws.id);
+    return answer;
+  });
+  require('../src/main/workspaces/sync').startOver(svc, ws.id);
+  const outcome = await svc.sync(ws.id);
+  assert.equal(details, 3);
+  assert.equal(outcome.more, true, JSON.stringify(outcome));
+  assert.ok(!calls.some((c) => c.route.startsWith(route(ws.id, '/changes'))), 'no page of the pass without current details');
+  assert.equal(svc.store.getWs(ws.id).passing, 1);
+  // The next run asks again, gets an answer that counts, and passes.
+  await svc.sync(ws.id);
+  assert.ok(svc.detailsCurrent(ws.id));
+  assert.equal(svc.store.getWs(ws.id).passing, 0);
+  assert.ok(svc.store.getWs(ws.id).cursor);
+});
+
+// Follow-up 206 item 7: GET /channels on its way while a listing demotes me to guest. The listing cleared the
+// directory, and the older answer doesn't bring it back.
+test('a channel directory that answers after a demotion to guest stays empty', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, bartMe, svc, account } = await setup(t);
+  await server.seedChannel(olga, ws.id, { name: 'not for guests' });
+  const sent = gate();
+  const release = gate();
+  let first = true;
+  watchCalls(account, async (method, url, real) => {
+    if (!first || url !== route(ws.id, '/channels')) return undefined;
+    first = false;
+    const answer = await real();
+    sent.open();
+    await release.ready;
+    return answer;
+  });
+  const loading = svc.refreshDirectory(ws.id, { channels: true });
+  await sent.ready;
+  const edited = await server.call('PATCH', route(ws.id, `/members/${bartMe.id}`), { token: olga.token, body: { role: 'guest' } });
+  assert.equal(edited.status, 200);
+  await svc.list();
+  assert.equal(svc.store.getWs(ws.id).role, 'guest');
+  assert.deepEqual(svc.store.listChannels(ws.id), []);
+  release.open();
+  await loading;
+  assert.deepEqual(svc.store.listChannels(ws.id), [], 'the older answer did not restore the directory');
+});

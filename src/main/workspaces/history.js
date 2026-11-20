@@ -217,10 +217,13 @@ class History {
         store.dropRoomCache(ws, c);
         joined = true;
       }
-      // Messages a message.redacted in the page removes, which were cached with their text.
+      // Messages a message.redacted in the page removes: redacted those cached with their text, targets all of them,
+      // as the renderer or a thread may hold one SQLite doesn't (trimmed, or from a page the cache couldn't take).
       const redacted = [];
+      const targets = [];
       for (const e of events) {
         if (e.kind !== 'message.redacted' || !e.target) continue;
+        if (!targets.includes(e.target)) targets.push(e.target);
         const target = store.eventById(ws, e.target);
         if (target && target.room === c && !target.redacted) redacted.push(e.target);
       }
@@ -236,20 +239,17 @@ class History {
           c
         );
         store.trimRoom(ws, c, this.cacheMax);
-      } else if (events.length) {
+      } else if (targets.length) {
         // Not kept, but a removal it carries still counts: its target is tombstoned and loses its text if cached.
-        const targets = events.filter((e) => e.kind === 'message.redacted' && e.target).map((e) => e.target);
-        if (targets.length) {
-          store.addTombstones(ws, targets);
-          store.redact(ws, targets);
-        }
+        store.addTombstones(ws, targets);
+        store.redact(ws, targets);
       }
       recount(store, ws, c);
       const shown = events.map((e) => {
         const row = joined ? store.eventAt(ws, c, e.seq) : null;
         return row && row.id === e.id ? wire.toRenderer(row) : detached(e, store.hasTombstone(ws, e.id));
       });
-      return { events: shown, joined, removed: [...removed, ...redacted], redacted };
+      return { events: shown, joined, removed: [...new Set([...removed, ...targets])], redacted };
     });
     if (out) this.afterApply(ws, c, out);
     return out;
@@ -484,6 +484,8 @@ class History {
       open.quiet = false;
     }
     svc.guard(epoch);
+    // The workspace or the room went meanwhile: nothing of its cache answers (see thread()).
+    this.room(ws, c);
     // The cache was reset meanwhile: the pages loaded before that belong to the cache as it stood, with removals it
     // can no longer list, and only the cache as it is now opens.
     if (svc.revision(ws) !== rev) {
@@ -631,6 +633,9 @@ class History {
       // Offline: the thread shows what the cache has, as incomplete.
     }
     svc.guard(epoch);
+    // The workspace or the room went while the pages were on their way: nothing of its cache answers, also when SQLite
+    // couldn't delete it yet (removeWorkspace hides it).
+    this.room(ws, c);
     // A reset while the pages were on their way: what they found belongs to the cache as it stood.
     if (memory.rev !== svc.revision(ws)) memory = this.threadMemory = fresh();
     settle();
