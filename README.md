@@ -73,7 +73,7 @@ More in [Meetings](docs/meetings.md) and [Rukoo Voice](voice/README.md).
 - You invite colleagues with a link that works once, as a member or as a guest who sees only the channels you pick. Someone without a Rukoo account can sign up with that link.
 - Whoever runs the server can read team chat, unlike your account's own records. Rukoo names the host before you join and in every direct message. Your personal agents don't see team chat.
 - Rukoo for Android has Chat too, with the same workspaces and rules.
-- Chat shows only when your account's server has team chat turned on. rukoo.io doesn't yet.
+- Chat shows only when your account's server has team chat turned on, as rukoo.io has.
 
 More in [Team chat](docs/chat.md).
 

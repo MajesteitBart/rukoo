@@ -115,6 +115,34 @@ describe('GET /privacy', () => {
     expect(nl).not.toContain('gebruikt het alleen om te beperken');
   });
 
+  it('covers team chat only while the server runs it, with the settings it has', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const languages = {
+      en: { heading: '<h2 id="team-chat">Team chat</h2>', name: 'team chat', days: '45 days after they were written', signups: 'an invitation also works as an invite code', previews: 'link preview', image: 'the page’s image', size: 'A file can be up to 10 MiB' },
+      nl: { heading: '<h2 id="team-chat">Teamchat</h2>', name: 'teamchat', days: '45 dagen nadat ze zijn geschreven', signups: 'werkt een uitnodiging ook als uitnodigingscode', previews: 'linkvoorbeeld', image: 'de afbeelding van de pagina', size: 'Een bestand mag tot 10 MiB groot zijn' }
+    };
+    const on = { WORKSPACE_MODE: 'on', WORKSPACE_RETENTION_DAYS: '45', WORKSPACE_FILE_BYTES: '10485760' };
+    for (const [lang, { heading, name, days, signups, previews, image, size }] of Object.entries(languages)) {
+      // The tests bind a files bucket and turn link previews and invitation sign-ups on, so all of them show here.
+      const all = await page(lang, on);
+      for (const part of [heading, days, signups, previews, image, size, 'R2']) expect(all, part).toContain(part);
+      // Each setting turned off takes away its own part and leaves the others. Without a bucket, previews keep no image.
+      for (const [vars, gone, kept] of [
+        [{ WORKSPACE_SIGNUPS: 'off' }, [signups], [previews, size]],
+        [{ WORKSPACE_PREVIEWS: 'off' }, [previews], [signups, size]],
+        [{ WORKSPACE_FILES: undefined }, ['R2', '10 MiB', image], [signups, previews]]
+      ]) {
+        const text = await page(lang, { ...on, ...vars });
+        for (const part of [heading, days, ...kept]) expect(text, part).toContain(part);
+        for (const part of gone) expect(text, part).not.toContain(part);
+      }
+      // With team chat off the statement doesn't mention it at all.
+      const off = await page(lang);
+      expect(off, lang).not.toContain('id="team-chat"');
+      expect(off.toLowerCase(), lang).not.toContain(name);
+    }
+  });
+
   it('speaks Dutch when the browser or the address asks for it', async () => {
     const browser = await call('GET', '/privacy', { headers: { 'accept-language': 'nl-NL,nl;q=0.9,en;q=0.8' } });
     expect(browser.text).toContain('<html lang="nl">');

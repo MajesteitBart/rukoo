@@ -168,11 +168,11 @@
         "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
         "BOOKING_FORMER_ROOTS": "https://rukoo.io",
         "BLOCKED_HANDLES": "",
-        // Team chat stays off here until the apps have it.
-        "WORKSPACE_MODE": "off",
+        // Team chat is on here: the desktop app and Rukoo for Android have Chat, and /privacy covers it.
+        "WORKSPACE_MODE": "on",
         "WORKSPACE_ORIGIN": "https://rukoo.io",
         // Lets every workspace owner and admin bring new accounts onto this server with an invitation, within
-        // MAX_ACCOUNTS, once team chat is on. Decide before turning WORKSPACE_MODE on (docs/workspace-architecture.md).
+        // MAX_ACCOUNTS (docs/workspace-architecture.md).
         "WORKSPACE_SIGNUPS": "on",
         "MAX_WORKSPACES": 100,
         "MAX_WORKSPACES_PER_ACCOUNT": 3,
@@ -181,7 +181,13 @@
         "WORKSPACE_SOCKETS": 200,
         "WORKSPACE_CONVERSATIONS": 8192,
         "WORKSPACE_BYTES": 1073741824,
-        "WORKSPACE_RETENTION_DAYS": 90
+        "WORKSPACE_RETENTION_DAYS": 90,
+        // Files stay off here until a WORKSPACE_FILES bucket is bound; these limits apply from then on.
+        "WORKSPACE_FILE_BYTES": 26214400,
+        "WORKSPACE_FILES_BYTES": 5368709120,
+        "WORKSPACE_PREVIEWS": "on",
+        "WORKSPACE_FILES_ORIGIN": "",
+        "WORKSPACE_PREVIEW_HOSTS": ""
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },

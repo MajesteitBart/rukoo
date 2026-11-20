@@ -2,7 +2,7 @@
 
 Team chat lets you talk with your colleagues in Rukoo, next to your mail and calendar. A team gets a **workspace** on the server of your Rukoo account. In it you talk in **channels**, which are named conversations for a topic or a project, and in **direct messages** with one person or a small group. Messages arrive live, on your computer and on your phone.
 
-Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on. The server at rukoo.io doesn't have it on yet, so for now you see Chat on a server you or your team runs yourselves ([Running your own server](account.md#running-your-own-server)).
+Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on, as the server at rukoo.io has. On a server you or your team runs yourselves, its operator turns it on ([Running your own server](account.md#running-your-own-server)).
 
 **The host can read your messages.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change what is written in its workspaces, direct messages included. Rukoo says who hosts a workspace before you join, in the conversation header of every direct message and in Workspace settings. [What the host can read](#what-the-host-can-read) has the details.
 
@@ -105,11 +105,11 @@ Attach files with the paperclip under the text, by dropping them on the conversa
 - Other files show as a card with their kind, name and size. Clicking the card opens the file in its app; the download button saves it where you choose.
 - A draft keeps its uploaded files for an hour. A draft opened later than that says how many files you need to attach again.
 
-Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone.
+Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone. The server at rukoo.io doesn't store files yet.
 
 ### Link previews
 
-When a message holds a web address, the server fetches the page and adds a preview under the message: the site, the title, a short description and the page's image, for up to three addresses. Clicking the preview opens the page in your browser. The author can remove a preview with the cross on it, and that message gets none again. The server fetches the page, not your computer, so the site sees the server's address instead of yours.
+When a message holds a web address, the server fetches the page and adds a preview under the message: the site, the title, a short description and the page's image, for up to three addresses. Clicking the preview opens the page in your browser. The author can remove a preview with the cross on it, and that message gets none again. The server fetches the page, not your computer, so the site sees the server's address instead of yours. On a server that doesn't store files, such as rukoo.io for now, a preview comes without the image.
 
 ## Unread, notifications and mute
 
