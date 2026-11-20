@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { accountStub, call, signup } from './helpers.js';
 import {
   api,
+  block,
+  blocks,
   channels,
   events,
   invite,
@@ -14,6 +16,7 @@ import {
   newWorkspace,
   openSocket,
   post,
+  startDm,
   sync,
   until,
   workspaceSql,
@@ -323,6 +326,42 @@ describe('the default channel', () => {
     await api('PATCH', `/v1/workspaces/${ws.id}/channels/${ws.general}`, { token: ws.person.token, body: { archived: true } });
     const mila = await newMember(ws, 'Mila');
     expect((await channels(mila.person, ws.id)).filter((c) => c.joined)).toEqual([]);
+  });
+});
+
+describe('a workspace made by the first release of workspaces', () => {
+  it('gets the columns and tables of direct messages and blocks when its object starts, and keeps what it had', async () => {
+    const ws = await newWorkspace();
+    const ada = await newMember(ws, 'Ada');
+    const before = await post(ws.person, ws.id, ws.general, 'Written before the upgrade');
+    expect(before.status).toBe(201);
+    // Back to the first release's schema, then the object starts again on that database.
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(`
+        DROP INDEX conversation_dm_open;
+        DROP TABLE block;
+        DROP TABLE dm_start;
+        ALTER TABLE conversation DROP COLUMN dmSet;
+        ALTER TABLE conversation DROP COLUMN closedWhy;
+        ALTER TABLE member DROP COLUMN blocksRev;
+      `);
+      const columns = (table) => sql.exec(`PRAGMA table_info(${table})`).toArray().map((c) => c.name);
+      expect(columns('member')).not.toContain('blocksRev');
+      new instance.constructor(state, instance.env);
+      // Starting twice changes nothing more.
+      new instance.constructor(state, instance.env);
+      expect(columns('member')).toContain('blocksRev');
+      expect(columns('conversation')).toEqual(expect.arrayContaining(['dmSet', 'closedWhy']));
+    });
+    const after = await post(ws.person, ws.id, ws.general, 'Written after it');
+    expect(after.status, after.text).toBe(201);
+    const dm = await startDm(ws.person, ws.id, [ada.me.id]);
+    expect(dm.status, dm.text).toBe(201);
+    expect((await block(ws.person, ws.id, ada.me.id)).status).toBe(201);
+    expect((await blocks(ws.person, ws.id)).body.blocks.map((b) => b.member)).toEqual([ada.me.id]);
+    const texts = (await events(ws.person, ws.id, ws.general)).body.events.filter((e) => e.kind === 'message.posted').map((e) => e.text);
+    expect(texts).toEqual(expect.arrayContaining(['Written before the upgrade', 'Written after it']));
   });
 });
 

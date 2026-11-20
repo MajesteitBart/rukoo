@@ -311,6 +311,7 @@ export class Workspace extends DurableObject {
     // The workspace's id, kept in memory too: a join still waiting on its account when the workspace is deleted needs
     // it to give the account's reference back, and by then the database is empty.
     this.wid = this.present ? this.#ws().wid : null;
+    if (this.present) this.#upgrade();
     // The accounts of the people in this workspace, so a request can be given its own bucket before any query runs.
     this.accounts = new Set();
     if (this.present) {
@@ -327,6 +328,28 @@ export class Workspace extends DurableObject {
     this.checking = new Set();
     // A device's keepalive is answered without waking this object, and renews nothing.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  // A workspace made by the first release of workspaces has no columns or tables for direct messages and blocks. They
+  // are added before the object answers anything. Each step can run again, so an object stopped halfway finishes the
+  // next time it starts, and one already up to date only reads its table definitions.
+  #upgrade() {
+    const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
+    if (!has('member', 'blocksRev')) this.sql.exec('ALTER TABLE member ADD COLUMN blocksRev INTEGER NOT NULL DEFAULT 0');
+    if (!has('conversation', 'dmSet')) this.sql.exec('ALTER TABLE conversation ADD COLUMN dmSet TEXT');
+    if (!has('conversation', 'closedWhy')) this.sql.exec('ALTER TABLE conversation ADD COLUMN closedWhy TEXT');
+    this.sql.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
+      CREATE TABLE IF NOT EXISTS block (
+        blocker INTEGER NOT NULL,
+        blocked INTEGER NOT NULL,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (blocker, blocked)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS block_blocked ON block (blocked);
+      CREATE TABLE IF NOT EXISTS dm_start (member INTEGER NOT NULL, at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS dm_start_member ON dm_start (member, at);
+    `);
   }
 
   // ---- Called by the Worker ----
