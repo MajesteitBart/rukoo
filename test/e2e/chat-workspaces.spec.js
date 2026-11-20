@@ -640,6 +640,8 @@ test('Owner and Guest ask first in a member menu, and Admin and Member apply wit
   const ws = await server.seedWorkspace(bart, { name: 'Acme', displayName: 'Bart' });
   const mila = await server.seedMember(ws, await server.seedAccount(), 'Mila Bakker');
   const roleOf = async () => (await serverGet(server, bart, ws.id, '/members')).members.find((m) => m.id === mila.id)?.role;
+  // The member menu offers roles from the window's own directory, which a change reaches only after the server has it.
+  const shownRole = () => win.evaluate(async (id) => (await import('./chat.js')).CH.members.get(id)?.role, mila.id);
   await ready(bart);
   await expect(switcherName()).toHaveText('Acme', { timeout: 15000 });
 
@@ -672,6 +674,7 @@ test('Owner and Guest ask first in a member menu, and Admin and Member apply wit
   await pick('Owner');
   await dialog.locator('.buttons button').last().click();
   await expect.poll(roleOf, { timeout: 15000 }).toBe('owner');
+  await expect.poll(shownRole, { timeout: 15000 }).toBe('owner');
 
   // Member from owner: Undo sets owner back, not member.
   await pick('Member');

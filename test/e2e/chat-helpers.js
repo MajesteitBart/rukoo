@@ -223,6 +223,9 @@ const menuItem = (win, text) => win.locator('.menu [role^="menuitem"]', { hasTex
 
 // The workspace menu (desktop-ui 6.17), then one of its items.
 async function workspaceMenu(win, item) {
+  // The menu's own items (Members, Workspace settings, Leave) come from the view of the workspace on screen, which
+  // loads one chatView after the switcher shows its name; the channel list draws with it.
+  await expect(win.locator('.sidebar .ch-nav .nav-section')).not.toHaveCount(0, { timeout: 15000 });
   await win.locator('.sidebar [data-ch-side="workspaces"]').click();
   if (item) await menuItem(win, item).first().click();
 }

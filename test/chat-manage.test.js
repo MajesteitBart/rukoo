@@ -523,15 +523,16 @@ test('a write that gets 429 waits Retry-After and tries again, three times withi
   const { svc, api } = await device(t, bart);
   await settled(svc, ws.id);
 
-  // A real 429: the dm lane takes ten starts at once, then asks for about ten seconds. With a window shorter than
-  // that, the start fails at once with the server's details.
-  for (let i = 0; i < 10; i++) {
-    const started = await server.call('POST', route(ws.id, '/dms'), { token: bart.token, body: { members: [ws.me.id] } });
-    assert.equal(started.status, 201, started.text);
-    await server.call('POST', route(ws.id, `/dms/${started.body.dm.conversation}/leave`), { token: bart.token });
-  }
+  // The first start is refused with 429 and Retry-After 10, as when Bart's dm lane (ten starts, then one every ten
+  // seconds) is used up from another device. The test makes that answer itself: a lane drained beforehand refills on a
+  // slow machine before the app asks. With a window shorter than Retry-After, the start fails at once.
   svc.timing.writeRetryWindow = 2000;
-  const lane = watchCalls(svc.account);
+  let refusedDm = false;
+  const lane = watchCalls(svc.account, async (method, path) => {
+    if (method !== 'POST' || !path.endsWith('/dms') || refusedDm) return undefined;
+    refusedDm = true;
+    throw new AccountError('rate_limited', 429, 'Too many requests.', { retryAfter: 10, scope: 'workspace' });
+  });
   await assert.rejects(api.chatStartDm(ws.id, [ws.me.id]), (err) => {
     fails('rate_limited', { scope: 'workspace' })(err);
     assert.ok(err.retryAfter > 2, String(err.retryAfter));
