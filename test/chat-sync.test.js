@@ -457,6 +457,36 @@ for (const [what, startPass] of [
   });
 }
 
+test('an open room shows again after Start over and loads its messages from the server, without the removed text', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { olga, ws, svc } = await setup(t);
+  const api = chatApi(() => svc);
+  const kept = await server.post(olga, ws.id, ws.general, 'Still here');
+  const gone = await server.post(olga, ws.id, ws.general, 'Removed while away');
+  await svc.sync(ws.id);
+  const view = await api.chatOpen(ws.id, ws.general);
+  await until(() => svc.store.getRoom(ws.id, ws.general).hi === svc.store.getRoom(ws.id, ws.general).head, 5000, 'the open room cached');
+  assert.ok(view.events.some((e) => e.id === gone.messageId) || svc.store.eventById(ws.id, gone.messageId));
+  await server.redact(olga, ws.id, ws.general, gone.messageId);
+  const before = svc.events.length;
+  await api.chatReload(ws.id);
+  // The renderer drops what it showed at once.
+  const replaced = svc.events.slice(before).find((e) => e.kind === 'events' && e.conversation === ws.general && e.replace);
+  assert.ok(replaced, 'the open room was shown again');
+  assert.deepEqual(replaced.events, []);
+  // Then the room loads again from the server, which sends the removed message without its text.
+  await until(() => {
+    const r = svc.store.getRoom(ws.id, ws.general);
+    return svc.store.getWs(ws.id).passing === 0 && r.hi !== null && r.hi === r.head && svc.store.eventById(ws.id, kept.messageId);
+  }, 10000, 'the open room loaded again');
+  assert.equal(svc.store.eventById(ws.id, kept.messageId).text, 'Still here');
+  const removed = svc.store.eventById(ws.id, gone.messageId);
+  assert.ok(!removed || removed.text === null, 'the removed message has no text');
+  await api.chatClose();
+  svc.store.checkpoint();
+  assert.ok(!fs.readFileSync(svc.file).includes(Buffer.from('Removed while away')));
+});
+
 test('a restore or a new key that GET / finds outside a run starts the pass at once', async (t) => {
   if (skipWithoutServer(t)) return;
   const { ws, svc } = await setup(t);
