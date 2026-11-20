@@ -67,6 +67,16 @@ More in [Agents](docs/agents.md).
 
 More in [Meetings](docs/meetings.md) and [Rukoo Voice](voice/README.md).
 
+### Chat
+
+- Team chat (`Ctrl+4`) gives your team a workspace on the server of your Rukoo account, with channels anyone in the workspace can join, private channels and direct messages with up to seven others. Messages arrive live, with threads, mentions, unread counts, notifications and mute.
+- You invite colleagues with a link that works once, as a member or as a guest who sees only the channels you pick. Someone without a Rukoo account can sign up with that link.
+- Whoever runs the server can read team chat, unlike your account's own records. Rukoo names the host before you join and in every direct message. Your personal agents don't see team chat.
+- Rukoo for Android has Chat too, with the same workspaces and rules.
+- Chat shows only when your account's server has team chat turned on. rukoo.io doesn't yet.
+
+More in [Team chat](docs/chat.md).
+
 ### Across devices
 
 - A Rukoo account keeps your categories, your corrections and your booking page the same on every device. It's end-to-end encrypted: the key comes from your password and never reaches the server. The default server at rukoo.io takes new accounts with an invite code for now. See [Rukoo account](docs/account.md).

@@ -188,6 +188,8 @@ let toastAction = null;
 // The toast on screen was one that waits (opts.wait), and the one waiting for the toasts before it to go.
 let toastWaits = false;
 let toastWaiting = null;
+// The tag of the toast on screen (opts.tag), such as a chat alert's id, which dropTaggedToast takes down.
+let toastTag = null;
 
 function showWaiting() {
   const next = toastWaiting;
@@ -198,13 +200,14 @@ function showWaiting() {
 function hideToast({ next = true } = {}) {
   document.getElementById('toast')?.classList.remove('show');
   toastAction = null;
+  toastTag = null;
   if (next) showWaiting();
 }
 
 // opts: a duration in ms, or { ms, action: { label, run, shortcut }, wait }. A toast with an action stays longer
 // and its action also runs on Ctrl+Z (see runToastAction), unless shortcut is false. wait: while a toast with an
 // action is up, such as Undo, this one waits until the toasts before it have gone, instead of taking their place. It
-// does replace a toast that waited itself.
+// does replace a toast that waited itself. tag: a name dropTaggedToast takes the toast down by.
 // It stays while the pointer is on it, and goes 2.5 s after the pointer leaves, or at ms after it showed when that is
 // later.
 export function toast(message, opts = {}) {
@@ -216,6 +219,7 @@ export function toast(message, opts = {}) {
     if (toastWaiting) return;
   }
   toastWaits = Boolean(opts.wait);
+  toastTag = opts.tag ?? null;
   const ms = opts.ms || (opts.action ? 8000 : 2600);
   el.textContent = '';
   const text = document.createElement('span');
@@ -248,6 +252,15 @@ export function showingToast(action) {
 // Takes a toast away before its time, while it still shows action: a newer toast keeps its place.
 export function dropToast(action) {
   if (!showingToast(action)) return;
+  clearTimeout(toastTimer);
+  hideToast();
+}
+
+// Takes the toast with that tag down while it still shows, and drops it from the wait when it waits there.
+export function dropTaggedToast(tag) {
+  if (tag === null || tag === undefined) return;
+  if (toastWaiting && toastWaiting.opts.tag === tag) toastWaiting = null;
+  if (toastTag !== tag || !document.getElementById('toast')?.classList.contains('show')) return;
   clearTimeout(toastTimer);
   hideToast();
 }
@@ -446,7 +459,11 @@ export function setSegmented(el, value) {
 // A button value that keeps the dialog open, for a form that found something to fix.
 export const KEEP_OPEN = Symbol('keep-open');
 
-export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false }) {
+const TABBABLE = 'button, input, textarea, select, summary, a[href], [contenteditable]:not([contenteditable="false"]), [tabindex]';
+
+// beforeClose(value): asked before Escape, a click outside or a button closes the dialog; false, or a promise of
+// false, keeps it open. The done that render gets closes without asking.
+export function dialog({ title, body = '', buttons = [{ get label() { return t('common.actions.ok'); }, value: true }], render, wide = false, beforeClose = null }) {
   return new Promise((resolve) => {
     const before = document.activeElement;
     const scrim = document.createElement('div');
@@ -464,14 +481,30 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
       if (before && document.contains(before)) before.focus();
       resolve(value);
     };
+    let asking = false;
+    const tryClose = (value) => {
+      if (!beforeClose) return done(value);
+      if (asking) return;
+      asking = true;
+      Promise.resolve(beforeClose(value))
+        .catch(() => false)
+        .then((ok) => {
+          asking = false;
+          if (ok && scrim.isConnected) done(value);
+        });
+    };
     const onKey = (e) => {
+      // A dialog opened from another one, such as a confirmation: each dialog listens on the document, so only the one
+      // on top takes keys, and Escape closes it alone.
+      if (scrim !== [...document.querySelectorAll('.scrim')].pop()) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
-        done(null);
+        tryClose(null);
       }
-      // Keep Tab inside the dialog.
+      // Keep Tab inside the dialog, among what Tab can reach now: a step or section that is hidden, and what a closed
+      // <details> holds, take no focus, and a <summary> or a link does.
       if (e.key === 'Tab') {
-        const items = [...scrim.querySelectorAll('button, input, textarea, select')].filter((x) => !x.disabled);
+        const items = [...scrim.querySelectorAll(TABBABLE)].filter((x) => !x.disabled && x.tabIndex >= 0 && x.getClientRects().length > 0 && !x.closest('[inert]'));
         if (!items.length) return;
         const first = items[0];
         const last = items[items.length - 1];
@@ -486,13 +519,13 @@ export function dialog({ title, body = '', buttons = [{ get label() { return t('
     };
     document.addEventListener('keydown', onKey, true);
     scrim.addEventListener('mousedown', (e) => {
-      if (e.target === scrim) done(null);
+      if (e.target === scrim) tryClose(null);
     });
     scrim.querySelectorAll('.buttons button').forEach((b) =>
       b.addEventListener('click', () => {
         const btn = buttons[Number(b.dataset.i)];
         const value = typeof btn.value === 'function' ? btn.value(scrim) : btn.value;
-        if (value !== KEEP_OPEN) done(value);
+        if (value !== KEEP_OPEN) tryClose(value);
       })
     );
     document.body.appendChild(scrim);

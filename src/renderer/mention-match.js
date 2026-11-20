@@ -1,5 +1,5 @@
-// @-mentions in the composer: which text is a mention being typed, and who fits it. No DOM and no imports, so the
-// node tests can load it; mentions.js does the editor's side.
+// @-mentions in the composer and in team chat: which text is a mention being typed, and who fits it. No DOM and no
+// imports, so the node tests can load it; mentions.js and chat-input.js do the editors' side.
 
 // What may come right before the @ of a mention: nothing (the start of a line), white space or an opening bracket or
 // quote. A letter there makes it an email address typed in the text (name@example.com), which never opens the list.
@@ -72,6 +72,27 @@ export function rankPeople({ query = '', thread = [], contacts = [], own = [], l
   const fromThread = pick(thread, true);
   const fromBook = fold(query) ? pick(contacts, false) : [];
   return [...fromThread, ...fromBook].slice(0, limit);
+}
+
+// The team chat members to suggest after an @: members are the conversation's active members without yourself
+// ({ id, name, … }, the caller leaves you out), recent the IDs of who posted in the last loaded messages, the latest
+// first. Better matches come first; among equal ones, recent authors by how recently they posted, then the others
+// in the order given. A bare @ offers everyone. Returns the member objects, at most limit.
+export function rankMembers({ query = '', members = [], recent = [], limit = 8 }) {
+  const rank = new Map();
+  for (const id of recent || []) if (!rank.has(id)) rank.set(id, rank.size);
+  const seen = new Set();
+  const hits = [];
+  (members || []).forEach((m, i) => {
+    if (!m || !m.id || seen.has(m.id)) return;
+    seen.add(m.id);
+    const score = matchScore({ name: m.name, address: '' }, query);
+    if (score) hits.push({ m, score, recent: rank.has(m.id) ? rank.get(m.id) : Infinity, i });
+  });
+  return hits
+    .sort((a, b) => b.score - a.score || a.recent - b.recent || a.i - b.i)
+    .slice(0, limit)
+    .map((x) => x.m);
 }
 
 // The text of a mention: @ and the name, or the part of the address before the @ when there is no name. The address

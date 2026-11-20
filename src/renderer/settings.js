@@ -274,6 +274,9 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // Notification.isSupported()), and what the last test came to (desktop.js testNotice), or testing while one is on its
   // way. Whether the system allows them can't be asked, so the test is how to find out.
   const notices = { supported: null, test: null, testing: false };
+  // Whether the server of the Rukoo account has team chat (chatState().available, contract 3.1): its notifications
+  // row shows only then.
+  let chatOn = false;
   const noticesDesc = () => {
     const r = notices.test;
     if (notices.testing) return t('settings.general.testNotificationSending');
@@ -315,6 +318,20 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
     page.remove();
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('focus', showMailto);
+    // Team chat holds the Join dialog of a sign-up with an invitation link until Settings is gone (chat.js).
+    document.dispatchEvent(new Event('rukoo:settings-closed'));
+  };
+  // Team chat on screen: the Chat segment of the mode switch, once the server's info has it (after a sign-up with an
+  // invitation link, contract 5.10). It may take a moment to show.
+  const showChat = async () => {
+    for (let i = 0; i < 50; i++) {
+      const seg = document.querySelector('.sidebar-mode [data-mode="chat"]');
+      if (seg) {
+        if (seg.getAttribute('aria-selected') !== 'true') seg.click();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   };
   const back = () => {
     if (stack.length > 1) {
@@ -352,7 +369,17 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
   // The Rukoo account's pages (rukoo-account.js).
   // Inbox categories (categories-settings.js); the account's privacy page says when Jev is on.
   const categoriesPage = categoryPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
-  const account = accountPages({ row, go, back, rerender: () => render(), current: () => stack[stack.length - 1], promptDialog, jevOn: () => categoriesPage.jevOn() });
+  const account = accountPages({
+    row,
+    go,
+    back,
+    close: () => close(),
+    showChat: () => showChat(),
+    rerender: () => render(),
+    current: () => stack[stack.length - 1],
+    promptDialog,
+    jevOn: () => categoriesPage.jevOn()
+  });
   // Settings > Calendar (calendar-settings.js) and Settings > Booking page (booking-settings.js), which also draws the
   // booking link rows beside the signature rows.
   const calendarPage = calendarSettingsPages({ row, go, rerender: () => render(), current: () => stack[stack.length - 1] });
@@ -1118,6 +1145,11 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
       view === 'main' || MEETING_VIEWS.includes(view) ? meetingPage.prepare() : null,
       view === 'main' || VIDEO_VIEWS.includes(view) ? videoPage.prepare(view) : null,
       view === 'main' ? api('notificationState').then((n) => (notices.supported = n.supported)).catch(() => null) : null,
+      view === 'main'
+        ? api('chatState')
+            .then((c) => (chatOn = Boolean(c && c.available)))
+            .catch(() => (chatOn = false))
+        : null,
     ]);
     if (stack[stack.length - 1] !== view) return;
     if (view === 'main' || view === 'agents' || view === 'shortcuts') agentState = agents;
@@ -1173,6 +1205,7 @@ export function openSettings(ctx, { view: start, id = null } = {}) {
           ${row({ title: t('settings.general.logos'), desc: t('settings.general.logosHelp'), action: 'toggle:senderLogos', toggle: s.senderLogos !== false })}
           ${row({ title: t('settings.general.notifications'), desc: t('settings.general.notificationsHelp'), action: 'toggle:notifications', toggle: s.notifications })}
           ${row({ title: t('settings.general.newMailSound'), desc: t('settings.general.newMailSoundHelp'), action: 'toggle:newMailSound', toggle: s.newMailSound === true })}
+          ${chatOn ? row({ title: t('settings.general.chatNotifications'), desc: t('settings.general.chatNotificationsHelp'), action: 'toggle:chatNotifications', toggle: s.chatNotifications !== false }) : ''}
           ${row({ title: t('settings.general.testNotification'), desc: esc(noticesDesc()), action: 'notify-test' })}
           ${row({ title: t('settings.general.badge'), value: labelOf(BADGES, s.badge), action: 'badge' })}
           ${row({ title: t('settings.general.sync'), value: labelOf(INTERVALS, Number(s.syncInterval)), action: 'interval' })}

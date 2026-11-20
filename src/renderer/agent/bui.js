@@ -4,8 +4,9 @@
 
 // ---------- helpers ----------
 
-// h('div', { class, text, title, onClick, style: {…} }, ...children). Strings become text nodes.
-function h(tag, props, ...children) {
+// h('div', { class, text, title, onClick, style: {…} }, ...children). Strings become text nodes. Team chat's log
+// (chat-view.js) builds its rows with it too, so people's text reaches the DOM the same way.
+export function h(tag, props, ...children) {
   const el = document.createElement(tag);
   if (props) {
     for (const [key, value] of Object.entries(props)) {

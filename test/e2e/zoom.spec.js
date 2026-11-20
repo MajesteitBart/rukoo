@@ -248,8 +248,13 @@ test('the window buttons grow and shrink with the title bar, in the main window 
   await editor.waitForSelector('.compose .editor');
   for (const level of [150, 80, 100]) {
     await win.evaluate((l) => window.mail.call('setZoom', l), level);
-    await expect.poll(() => buttonsHeight(editor), `compose window at ${level}%`).toBeLessThanOrEqual(39.01);
-    expect(await buttonsHeight(editor), `compose window at ${level}%`).toBeGreaterThanOrEqual(37.5);
+    // Both bounds in the poll: the height at the level before can already meet one of them before the zoom reaches the
+    // compose window (#324). A height out of range comes back as itself, so a failure says what it was.
+    const inRange = async () => {
+      const h = await buttonsHeight(editor);
+      return h >= 37.5 && h <= 39.01 ? 'in range' : h;
+    };
+    await expect.poll(inRange, `compose window at ${level}%`).toBe('in range');
     await expect.poll(() => buttonsHeight(win), `main window at ${level}%`).toBeGreaterThanOrEqual(39);
     expect(await buttonsHeight(win)).toBeLessThanOrEqual(41);
     // The buttons keep their width in screen pixels, so at 80% they take more of the bar: the actions still end 12px

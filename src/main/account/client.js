@@ -8,8 +8,11 @@ const https = require('https');
 const TIMEOUT = 20000;
 const MAX_BYTES = 32 * 1024 * 1024;
 
-// details: what an error answer says besides its code and message, for the booking routes: the refused field, the
-// booking as it is now (stale_version), other times (slot_taken).
+// details: what an error answer says besides its code and message. For the booking routes: the refused field, the
+// booking as it is now (stale_version), other times (slot_taken). For the workspace routes (server/WORKSPACES.md,
+// "Errors"): what the refusal concerns (scope), the protocol version a 426 asks for (minVersion), the channels that
+// need another manager first (channels), the person a block is about (member), the limit that was reached (limit),
+// and how long to wait (retryAfter, from the Retry-After header).
 class AccountError extends Error {
   constructor(code, status = 0, message = '', details = null) {
     super(message || code);
@@ -19,14 +22,48 @@ class AccountError extends Error {
   }
 }
 
-function errorDetails(json) {
-  if (!json || typeof json !== 'object') return null;
+const SCOPES = ['account', 'workspace', 'conversation'];
+const CONVERSATION_ID = /^c_[A-Za-z0-9_-]{22}$/;
+const MEMBER_ID = /^u_[A-Za-z0-9_-]{22}$/;
+
+// Retry-After in whole seconds, 1 to 3600: a number of seconds or an HTTP date. null when there is none to read.
+function retryAfter(res, now = Date.now()) {
+  const raw = res && res.headers ? res.headers['retry-after'] : undefined;
+  const text = String(Array.isArray(raw) ? raw[0] : raw ?? '').trim();
+  if (!text) return null;
+  let seconds;
+  if (/^\d{1,10}$/.test(text)) seconds = Number(text);
+  else {
+    const at = Date.parse(text);
+    if (!Number.isFinite(at)) return null;
+    seconds = Math.ceil((at - now) / 1000);
+  }
+  return Math.min(Math.max(seconds, 1), 3600);
+}
+
+function errorDetails(json, res) {
   const out = {};
-  if (typeof json.field === 'string') out.field = json.field.slice(0, 200);
-  if (json.booking && typeof json.booking === 'object' && !Array.isArray(json.booking)) out.booking = json.booking;
-  if (Array.isArray(json.alternatives)) out.alternatives = json.alternatives.filter(Number.isSafeInteger).slice(0, 3);
+  if (json && typeof json === 'object' && !Array.isArray(json)) {
+    if (typeof json.field === 'string') out.field = json.field.slice(0, 200);
+    if (json.booking && typeof json.booking === 'object' && !Array.isArray(json.booking)) out.booking = json.booking;
+    if (Array.isArray(json.alternatives)) out.alternatives = json.alternatives.filter(Number.isSafeInteger).slice(0, 3);
+    if (SCOPES.includes(json.scope)) out.scope = json.scope;
+    if (Number.isSafeInteger(json.minVersion) && json.minVersion > 0) out.minVersion = json.minVersion;
+    if (Array.isArray(json.channels)) {
+      const channels = json.channels.filter((c) => typeof c === 'string' && CONVERSATION_ID.test(c)).slice(0, 100);
+      if (channels.length) out.channels = channels;
+    }
+    if (typeof json.member === 'string' && MEMBER_ID.test(json.member)) out.member = json.member;
+    if (typeof json.limit === 'string' && /^[A-Za-z]{1,40}$/.test(json.limit)) out.limit = json.limit;
+  }
+  const wait = retryAfter(res);
+  if (wait !== null) out.retryAfter = wait;
   return Object.keys(out).length ? out : null;
 }
+
+// The only header a caller may add: the workspace protocol version (server/WORKSPACES.md). Anything else, such as
+// authorization or accept-encoding, stays as request() sets it.
+const EXTRA_HEADERS = ['rukoo-workspace-version'];
 
 // The server's base URL without a trailing slash, or null when it isn't one Rukoo may talk to.
 function serverUrl(text) {
@@ -43,14 +80,20 @@ function serverUrl(text) {
 }
 
 // meter: { bytes }, which each byte read for the answer is added to, so a caller can bound a run of requests by what
-// they downloaded rather than by the parts it reads.
-function request(server, method, path, { body, token, meter } = {}) {
+// they downloaded rather than by the parts it reads. headers: extra headers, of which only EXTRA_HEADERS are sent.
+function request(server, method, path, { body, token, meter, headers: extra } = {}) {
   const url = new URL(server + path);
   const lib = url.protocol === 'https:' ? https : http;
   const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
   // Answers come as they were sent, so the meter counts what was downloaded. Node never unpacks one; Android's OkHttp
   // would, so both apps ask for none.
   const headers = { accept: 'application/json', 'accept-encoding': 'identity' };
+  if (extra && typeof extra === 'object') {
+    for (const name of EXTRA_HEADERS) {
+      const value = extra[name];
+      if (typeof value === 'string' && /^[\x21-\x7e]{1,40}$/.test(value)) headers[name] = value;
+    }
+  }
   if (payload) {
     headers['content-type'] = 'application/json';
     headers['content-length'] = payload.length;
@@ -80,7 +123,7 @@ function request(server, method, path, { body, token, meter } = {}) {
           json = null;
         }
         if (res.statusCode >= 200 && res.statusCode < 300) return resolve(json);
-        reject(new AccountError((json && json.error) || 'server', res.statusCode, json && json.message, errorDetails(json)));
+        reject(new AccountError((json && json.error) || 'server', res.statusCode, json && json.message, errorDetails(json, res)));
       });
       res.on('error', (err) => reject(new AccountError('network', 0, err.message)));
     });
@@ -104,4 +147,4 @@ function request(server, method, path, { body, token, meter } = {}) {
   });
 }
 
-module.exports = { AccountError, serverUrl, request };
+module.exports = { AccountError, serverUrl, request, errorDetails };

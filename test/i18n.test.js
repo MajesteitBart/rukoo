@@ -203,3 +203,71 @@ test('an email whose date could not be read shows without one, instead of throwi
   const date = new Date(2026, 9, 7, 14, 45).getTime();
   assert.equal(context.format.listTime(date, date), '14:45', 'a real date still shows');
 });
+
+test('Dutch team chat says Inloggen like the account pages and names the Start over button the same as Android', () => {
+  const texts = Object.entries(nl)
+    .filter(([key]) => key.startsWith('chat.') || key === 'settings.rukoo.unsentChat')
+    .flatMap(([key, value]) => forms(value).map((text) => [key, text]));
+  const oldWording = /\b(aanmeld|afmeld|afgemeld|meld je (aan|af)|meld u)|begin opnieuw/i;
+  assert.deepEqual(texts.filter(([, text]) => oldWording.test(text)), []);
+  assert.equal(nl['chat.empty.signInAction'], nl['settings.rukoo.signIn']);
+  assert.equal(nl['chat.status.signedOut'], nl['settings.rukoo.signedOut']);
+  const button = nl['chat.banner.startOver'];
+  assert.equal(button, 'Opnieuw beginnen');
+  assert.ok(nl['chat.banner.paused'].includes(`Kies ${button}`));
+  // Android's chat_errors_paused says the same, with %1$s for {workspace}.
+  assert.equal(nl['chat.errors.paused'], '{workspace} is gepauzeerd. Kies Opnieuw beginnen om de werkruimte weer te gebruiken.');
+});
+
+test('team chat says the host can read private channels, names the server it cannot reach, and that mute silences mentions', () => {
+  // Android's strings_chat.xml carries the same English and Dutch, with %1$s for the placeholder.
+  i18n.setLanguage('en');
+  assert.equal(i18n.t('chat.log.startPrivate', { host: 'Acme' }), 'Only people who are added, and Acme, which hosts this workspace, can read it.');
+  assert.equal(i18n.t('chat.banner.offline', { host: 'chat.example' }), "Rukoo can't reach chat.example. Messages you send wait until it reconnects.");
+  assert.equal(i18n.t('chat.channel.previewTitle', { name: 'roadmap' }), '#roadmap');
+  assert.equal(i18n.t('chat.channel.previewBody', { name: 'roadmap' }), 'Join #roadmap to read its messages and post in it.');
+  assert.equal(i18n.t('chat.log.startChannel', { name: 'roadmap' }), 'This is the start of #roadmap');
+  assert.equal(i18n.t('chat.mute.done', { name: 'Sanne' }), 'Muted Sanne. No notifications or counts, even for mentions.');
+  i18n.setLanguage('nl');
+  assert.equal(i18n.t('chat.log.startPrivate', { host: 'Acme' }), 'Alleen mensen die zijn toegevoegd, en Acme, die deze werkruimte host, kunnen het lezen.');
+  assert.equal(i18n.t('chat.banner.offline', { host: 'chat.example' }), 'Rukoo kan chat.example niet bereiken. Berichten die je verstuurt, wachten tot er weer verbinding is.');
+  assert.equal(i18n.t('chat.channel.previewTitle', { name: 'roadmap' }), '#roadmap');
+  assert.equal(i18n.t('chat.mute.done', { name: 'Sanne' }), 'Sanne gedempt. Geen meldingen of tellers, ook niet bij vermeldingen.');
+  // The offline banner's button is the reconnecting banner's Try now.
+  assert.equal(nl['chat.banner.tryNow'], 'Nu proberen');
+});
+
+test('team chat says that closing a DM, blocking and leaving a workspace close conversations for the others too', () => {
+  // Android's strings_chat.xml carries the same, except that its block text points at Blocked people in the drawer.
+  i18n.setLanguage('en');
+  assert.equal(i18n.t('chat.head.leaveDm'), 'Close conversation');
+  assert.equal(i18n.t('chat.leaveDm.title'), 'Close this conversation for everyone?');
+  assert.equal(
+    i18n.t('chat.leaveDm.body', { names: 'Mila and Sanne' }),
+    'Mila and Sanne can still read it, but nobody can write in it again. To stop notifications only, use Mute.'
+  );
+  assert.equal(i18n.t('chat.leaveDm.submit'), 'Close for everyone');
+  assert.equal(i18n.t('chat.leaveDm.removeTitle'), 'Remove from your list?');
+  assert.equal(i18n.t('chat.leaveDm.bodyClosed'), "You can't read it anymore after this.");
+  assert.equal(i18n.t('chat.leaveDm.removeSubmit'), 'Remove');
+  assert.equal(
+    i18n.t('chat.block.body', { name: 'Olga', workspace: 'Acme' }),
+    "Olga can't start conversations with you in Acme. Every conversation you're both in closes for everyone in it, group ones too, and stays closed if you unblock. Olga isn't told, but may notice that your conversations closed. Mentions from Olga stop notifying you. You still see each other's posts in shared channels. Unblock in Workspace settings."
+  );
+  assert.equal(
+    i18n.t('chat.leave.body'),
+    "You lose access to its channels and direct messages, and the group conversations you're in close for the others too. Messages you wrote stay."
+  );
+  i18n.setLanguage('nl');
+  assert.equal(i18n.t('chat.head.leaveDm'), 'Gesprek sluiten');
+  assert.equal(i18n.t('chat.leaveDm.title'), 'Dit gesprek voor iedereen sluiten?');
+  assert.equal(
+    i18n.t('chat.leaveDm.body', { names: 'Mila' }),
+    'Het blijft leesbaar voor Mila, maar niemand kan er nog in schrijven. Wil je alleen geen meldingen meer, gebruik dan Dempen.'
+  );
+  assert.equal(i18n.t('chat.leaveDm.submit'), 'Voor iedereen sluiten');
+  assert.equal(i18n.t('chat.leaveDm.removeTitle'), 'Uit je lijst halen?');
+  assert.equal(i18n.t('chat.leaveDm.removeSubmit'), 'Weghalen');
+  assert.match(i18n.t('chat.block.body', { name: 'Olga', workspace: 'Acme' }), /^Olga kan in Acme geen gesprekken meer met je beginnen\. .* ook groepsgesprekken, en blijft gesloten als je deblokkeert\. Olga krijgt geen bericht, maar kan merken dat jullie gesprekken zijn gesloten\. .* Deblokkeren doe je in Instellingen van de werkruimte\.$/);
+  assert.match(i18n.t('chat.leave.body'), /de groepsgesprekken waarin je zit, worden ook voor de anderen gesloten/);
+});

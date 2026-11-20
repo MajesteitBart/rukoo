@@ -52,6 +52,8 @@ Cloudflare is a company in the United States. The server in this repository keep
 
 **Export my data** saves everything in your account as a readable JSON file, except your booking page's key pair: its private key opens your guests' details. **Delete account** checks your password and turns your booking page off, which deletes the page and its bookings from the server. Then it removes the account and everything in it at once. When the booking page can't be turned off, the account stays. Your devices keep their own copies.
 
+[Team chat](chat.md) works differently. Its messages live in each workspace, readable by whoever runs the server, and they aren't part of your account's encrypted records or of the export. When you delete your account, you leave every workspace you're in: your direct messages close, and the messages you wrote stay in their workspaces under "Deleted member" until each workspace's retention removes them, after 90 days by default. A workspace where you're the only member stays on the server with nobody in it until retention empties it, so delete it in Chat first if you want it gone at once. Each device deletes its copy of team chat when its session ends.
+
 ## Signing out
 
 **Sign out** stops this computer from syncing. It keeps its own copy, so your categories keep working. Signing in again brings it back in step.

@@ -55,6 +55,10 @@ const { PanelGate } = require('./agents/gate');
 const { free: freeTime } = require('./calendar/free');
 const { Booking } = require('./booking');
 const { ReminderRunner, reminderNotice } = require('./calendar/reminder-runner');
+// ---- chat ----
+const { WorkspaceService, chatTiming } = require('./workspaces');
+const { chatApi } = require('./workspaces/ipc');
+// ---- /chat ----
 // ---- voice ----
 const { VoiceService, VoiceError, bridgePathHere } = require('./voice');
 const { isMeetingId, SCREENS: MEETING_SCREENS } = require('./voice/protocol');
@@ -138,6 +142,8 @@ let agentGate = null;
 // The booking service and the reminder runner. Null until they are made after the categories, so calendarFree can already ask.
 let booking = null;
 let reminders = null;
+// Team chat (workspaces/index.js). Null until it is made after booking.
+let workspaces = null;
 // Invitations in email and .ics files (calendar/invitations.js).
 let invitations = null;
 // ---- voice ----
@@ -426,6 +432,73 @@ function showBookingNotification({ title, body, open }) {
   calendarNotice({ title, body, open });
 }
 
+// ---- chat ----
+// Team chat alerts (workspaces/notify.js), each with a stable id so a read or a removal can take it back. A toast
+// while the main window is focused; nothing while the screen records; recorded in __semNotices in test mode; else a
+// desktop notification whose click opens the conversation at the message.
+const chatNotices = new Map();
+
+// What a click on a chat notification does: the main window comes forward on Chat, at that conversation and message.
+function openChatNotice(open) {
+  const o = plainObject(open);
+  const id = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
+  const payload = {
+    kind: 'open',
+    ws: id(o.ws, /^w_[A-Za-z0-9_-]{22}$/),
+    conversation: id(o.conversation, /^c_[A-Za-z0-9_-]{22}$/),
+    seq: Number.isSafeInteger(o.seq) && o.seq >= 0 ? o.seq : null
+  };
+  showWindow();
+  if (payload.ws && payload.conversation) send('chat', payload);
+}
+
+// A toast carries the alert's id, so taking the alert back (a read, a removal, an eviction, signing out) takes the toast
+// down too when it still shows.
+function showChatNotification({ id, title, body, open } = {}) {
+  const key = String(id || '').slice(0, 200);
+  if (win && !win.isDestroyed() && win.isFocused()) {
+    send('chat-toast', { id: key, body: String(body || '').slice(0, 200) });
+    return;
+  }
+  if (screenRecording()) {
+    heldNotices(1);
+    return;
+  }
+  if (process.env.SEM_HIDDEN) {
+    (global.__semNotices ||= []).push({ chat: true, id: key, title, body, open });
+    return;
+  }
+  if (!Notification.isSupported()) return;
+  closeChatNotification(key);
+  const n = new Notification({ title: String(title || '').slice(0, 200), body: String(body || '').slice(0, 400), icon: nativeImage.createFromPath(ICON), silent: false });
+  chatNotices.set(key, n);
+  const drop = () => {
+    if (chatNotices.get(key) === n) chatNotices.delete(key);
+  };
+  n.on('click', () => {
+    drop();
+    openChatNotice(open);
+  });
+  n.on('close', drop);
+  n.on('failed', drop);
+  n.show();
+}
+
+function closeChatNotification(id) {
+  const key = String(id || '').slice(0, 200);
+  if (process.env.SEM_HIDDEN) (global.__semClosedNotices ||= []).push(key);
+  send('chat-toast-hide', key);
+  const n = chatNotices.get(key);
+  if (!n) return;
+  chatNotices.delete(key);
+  try {
+    n.close();
+  } catch (_) {
+    // Gone already.
+  }
+}
+// ---- /chat ----
+
 function showWindow() {
   if (!win || win.isDestroyed()) {
     createWindow();
@@ -631,6 +704,7 @@ function closeServices() {
   if (mailNotices) mailNotices.close();
   if (reminders) reminders.stop();
   if (booking) booking.close();
+  if (workspaces) workspaces.close();
 }
 
 // Windows is signing out or shutting down. No before-quit or will-quit follows, and Windows ends Rukoo soon after,
@@ -1124,6 +1198,7 @@ const api = {
       voice.refreshProtection();
       send('meeting', { kind: 'state', state: voiceState() });
     }
+    if ('chatNotifications' in patch && workspaces) workspaces.settingsChanged();
     return s;
   },
   // Settings → General resets it; the keys and the wheel go through watchZoom.
@@ -1417,9 +1492,20 @@ const api = {
   accountStatus: () => account.status(),
   accountServerInfo: () => account.serverInfo(),
   accountSetServer: (url) => account.setServer(accountText(url, 2000)),
-  accountSignUp: (input) => {
+  // The invite field takes an invite code or a team chat invitation link (contract 3.3). A link for this server signs
+  // up with workspaceInvite, and the Chat view opens the Join dialog with it afterwards.
+  accountSignUp: async (input) => {
     const i = plainObject(input);
-    return account.signUp({ email: accountText(i.email, 320), password: accountText(i.password, 1000), invite: accountText(i.invite, 200) });
+    const field = accountText(i.invite, 2000);
+    const split = workspaces ? workspaces.manage.splitInvite(field) : { invite: field, workspaceInvite: null, link: null };
+    const res = await account.signUp({
+      email: accountText(i.email, 320),
+      password: accountText(i.password, 1000),
+      invite: accountText(split.invite, 200),
+      workspaceInvite: split.workspaceInvite || undefined
+    });
+    if (split.link && workspaces) workspaces.manage.rememberJoin(split.link);
+    return res;
   },
   accountSignIn: (input) => {
     const i = plainObject(input);
@@ -1520,7 +1606,9 @@ const api = {
     if (res.canceled || !res.filePath) return false;
     fs.writeFileSync(res.filePath, JSON.stringify(account.exportData(), null, 2));
     return res.filePath;
-  }
+  },
+  // Team chat (workspaces/ipc.js): every chat* method, its arguments checked there.
+  ...chatApi(() => workspaces)
 };
 
 // ---- agents ----
@@ -1890,6 +1978,18 @@ function windowError(err) {
   }
   // Video errors (video/oauth.js videoError) pass their code, so a sign-in the user cancelled isn't shown as a failure.
   if (err && err.video === true && typeof err.code === 'string') return { code: err.code.slice(0, 40) };
+  // Team chat errors (workspaces/wire.js ChatError) pass their code and what the window words its text with (contract
+  // 3.15), each checked and kept short.
+  if (err && err.chat === true && typeof err.code === 'string') {
+    const out = { code: err.code.slice(0, 40) };
+    if (typeof err.field === 'string') out.field = err.field.slice(0, 200);
+    if (typeof err.scope === 'string') out.scope = err.scope.slice(0, 20);
+    if (Number.isSafeInteger(err.retryAfter)) out.retryAfter = Math.min(Math.max(err.retryAfter, 0), 3600);
+    if (Array.isArray(err.channels)) out.channels = err.channels.filter((c) => typeof c === 'string').slice(0, 100).map((c) => c.slice(0, 40));
+    if (typeof err.member === 'string') out.member = err.member.slice(0, 40);
+    if (typeof err.limit === 'string') out.limit = err.limit.slice(0, 40);
+    return out;
+  }
   const code = err && WINDOW_CODES.has(err.code) ? err.code : null;
   if (!code) return {};
   return code === 'auth' && typeof err.appPasswordProvider === 'string' ? { code, appPasswordProvider: err.appPasswordProvider } : { code };
@@ -1949,9 +2049,23 @@ function createWindow({ hidden = false } = {}) {
     newSinceFocus.clear();
     refreshBadge();
     syncOnReturn();
+    if (workspaces) workspaces.setFocused(true);
   });
-  win.on('show', syncOnReturn);
-  win.on('restore', syncOnReturn);
+  win.on('show', () => {
+    syncOnReturn();
+    if (workspaces) workspaces.setFocused(true);
+  });
+  win.on('restore', () => {
+    syncOnReturn();
+    if (workspaces) workspaces.setFocused(true);
+  });
+  // Team chat alerts the room on screen only while the window has focus, and its timers slow down without it.
+  win.on('blur', () => {
+    if (workspaces) workspaces.setFocused(false);
+  });
+  win.on('hide', () => {
+    if (workspaces) workspaces.setFocused(false);
+  });
   // Close to the tray: the window hides before its page hears of the close, so nothing asks about unsaved
   // changes and a draft in the reading pane stays as it is. The agents' tools keep their window too.
   win.on('close', (event) => {
@@ -2102,6 +2216,25 @@ app.whenReady().then(() => {
   booking.on('state', (s) => broadcast('booking', s));
   // Deleting the Rukoo account turns the booking page off first, and stops when that fails (decision 22).
   account.beforeDelete = () => booking.disableForDelete();
+  // ---- chat ----
+  // Team chat follows the account's session; its cache goes when the session ends (contract 3.4).
+  workspaces = new WorkspaceService({
+    account,
+    dataDir: path.join(app.getPath('userData'), 'data'),
+    settings: () => engine.settings,
+    timing: chatTiming(process.env)
+  }).init();
+  if (process.env.SEM_HIDDEN) {
+    global.__semChat = workspaces;
+    // What a click on a chat notification does, for a spec that follows one recorded in __semNotices.
+    global.__semChatOpen = (open) => openChatNotice(open);
+  }
+  workspaces.on('event', (payload) => send('chat', payload));
+  workspaces.on('notify', showChatNotification);
+  workspaces.on('unnotify', closeChatNotification);
+  powerMonitor.on('resume', () => workspaces && workspaces.nudge('resume'));
+  powerMonitor.on('unlock-screen', () => workspaces && workspaces.nudge('resume'));
+  // ---- /chat ----
   reminders = new ReminderRunner({ calendars, engine, dataDir: path.join(app.getPath('userData'), 'data'), notify: showReminders, powerMonitor });
   if (process.env.SEM_HIDDEN) global.__semReminders = reminders;
   reminders.start();

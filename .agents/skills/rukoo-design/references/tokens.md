@@ -22,6 +22,7 @@ Dark is the default on `:root`. Light overrides it on `:root.light`, which `ui.j
 | `--text` | `#ecedf1` | `#16181d` | Content, names, titles |
 | `--text-2` | `#a7adba` | `#565c69` | Supporting text, icons in toolbars |
 | `--text-3` | `#7a808e` | `#868b98` | Metadata, timestamps, counts, placeholders |
+| `--ch-text-3` | `#8a909e` | `#666b7a` | Chat's caption grey: replaces `--text-3` inside `.chat`, `.ch-nav`, `.ch-ws-switch` and `.ch-form` so chat's times and counts pass 4.5:1; mail keeps `--text-3` |
 | `--accent` | `#7aa5f5` | `#2f66d6` | Unread dot, unread stack count, accent marks |
 | `--accent-soft` | blue at 15% | blue at 10% | Accent tint behind selected or active items |
 | `--link` | `#8ab0ff` | `#2f63c8` | Links and link buttons |
@@ -29,7 +30,7 @@ Dark is the default on `:root`. Light overrides it on `:root.light`, which `ui.j
 | `--signature-link` | `#2f63c8` | `var(--link)` | Links in a signature, inverted in dark mode like the ink |
 | `--signature-filter` | `invert(1) hue-rotate(180deg)` | `none` | Turns a signature dark the way the reader turns mail dark; pictures get it again to turn back |
 | `--primary` | `#e9ecf5` | `#1c2340` | The one filled button, the active quick filter |
-| `--on-primary` | `#15171c` | `#ffffff` | Text on `--primary` |
+| `--on-primary` | `#15171c` | `#ffffff` | Text on `--primary`, and the label on a filled `--danger` button (dark ink on dark's light red, white on light's red) |
 | `--danger` | `#ff6b6b` | `#d23b3b` | Destructive actions and errors |
 | `--star` | `#ffc23d` | `#e8a200` | The star |
 | `--ok` | `#4ccf8b` | `#1f9d5c` | Success, connected |

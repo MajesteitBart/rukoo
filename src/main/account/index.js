@@ -133,7 +133,7 @@ class AccountService extends EventEmitter {
     if (this.state.email && this.state.token && this.state.dataKey) {
       this.pin();
       try {
-        this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64') });
+        this.open({ token: this.secrets.decrypt(this.state.token), dataKey: Buffer.from(this.secrets.decrypt(this.state.dataKey), 'base64'), server: this.server });
       } catch (_) {
         // Stored under another user or on another computer: the keys don't open here, so this device signs in again.
         this.state.error = 'signed_out';
@@ -188,26 +188,50 @@ class AccountService extends EventEmitter {
 
   // session: the one a signed-in call is made for. Its answer may come after this device signed out or into
   // another account; a 401 then says nothing about the session there is now. meter: { bytes } the answer's size is
-  // added to.
-  async call(method, route, body, { auth = false, server = this.server, session = this.session, meter } = {}) {
-    if (!server) throw fail('no_server');
+  // added to. raw: the server's own error comes back as it is, with its code and details, instead of one of ERRORS;
+  // a 401 still ends the session. headers: extra request headers (client.js lets only a few through). server: where
+  // the call goes; a signed-in call goes to the address its session signed in at, so its token never reaches another.
+  async call(method, route, body, { auth = false, server, session = this.session, meter, raw = false, headers } = {}) {
+    const to = server || (auth && session && session.server) || this.server;
+    if (!to) throw fail('no_server');
     try {
-      return await this.http(server, method, route, { body, token: auth ? session && session.token : undefined, meter });
+      return await this.http(to, method, route, { body, token: auth ? session && session.token : undefined, meter, headers });
     } catch (err) {
       // The session ended elsewhere: this device was removed or the password changed on another one.
       if (auth && err instanceof AccountError && err.status === 401) {
         if (session && this.session === session) {
           this.state.error = 'signed_out';
-          this.forget();
+          // The session is over even when account.json can't be written now: the status goes out regardless, so
+          // the services that follow it (team chat deletes its cache) end theirs too. The next write saves the state.
+          try {
+            this.forget();
+          } catch (_) {
+            // forget() cleared the session before it tried to save.
+          }
           this.changedStatus();
         }
         throw fail('signed_out', 401);
       }
-      throw translated(err);
+      throw raw ? err : translated(err);
     }
   }
 
-  // Who runs the server and where it keeps data; shown before anyone signs up. The current server's is kept.
+  // The workspace routes (server/WORKSPACES.md) with this session, in version 1 of their protocol. Unlike call(),
+  // the server's own error code and details survive, because the team chat service acts on them (stale_grant,
+  // reset_required, scope). A 401 from any of them ends the session, as from every other route.
+  async workspaceCall(method, route, body, { session = this.session } = {}) {
+    if (!this.signedIn || !session) throw fail('signed_out');
+    return this.call(method, route, body, { auth: true, session, raw: true, headers: { 'rukoo-workspace-version': '1' } });
+  }
+
+  // A short, stable tag of the session: the first 22 characters of base64url SHA-256 of its token. The team chat cache
+  // keeps it, so a cache is only ever shown to the session that built it (contract 3.4). null while signed out.
+  get sessionTag() {
+    return this.session ? crypto.createHash('sha256').update(String(this.session.token), 'utf8').digest('base64url').slice(0, 22) : null;
+  }
+
+  // Who runs the server and where it keeps data; shown before anyone signs up. The current server's is kept, and
+  // 'info' tells the services that read it (team chat's availability) that it may have changed.
   async serverInfo(url = this.server) {
     const server = serverUrl(url);
     if (!server) throw fail('no_server');
@@ -216,6 +240,7 @@ class AccountService extends EventEmitter {
     if (server === this.server) {
       this.state.info = { server, data, at: this.now() };
       this.saveState();
+      this.emit('info', data);
     }
     return data;
   }
@@ -250,19 +275,29 @@ class AccountService extends EventEmitter {
     this.secrets.encrypt('rukoo');
   }
 
-  async signUp({ email, password, invite }) {
+  // workspaceInvite: { workspace, invite } from a team chat invitation link, which a server that takes accounts by
+  // invite code accepts in place of one (contract 2.12). Sent instead of invite.
+  //
+  // Sign-up, sign-in and recovery read the server once and use that address for every call and key: the server can
+  // still change while they wait (only a session stops it), and attach() refuses the session when it did.
+  async signUp({ email, password, invite, workspaceInvite }) {
     const address = keys.normalizeEmail(email);
     this.checkNew(address, password);
-    await this.serverInfo();
+    const linked =
+      workspaceInvite && typeof workspaceInvite === 'object' && typeof workspaceInvite.workspace === 'string' && typeof workspaceInvite.invite === 'string'
+        ? { workspace: workspaceInvite.workspace.slice(0, 100), invite: workspaceInvite.invite.slice(0, 100) }
+        : null;
+    const at = this.server;
+    await this.serverInfo(at);
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
     const dataKey = crypto.randomBytes(32);
     const recoveryKey = crypto.randomBytes(20);
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, this.server);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(recoveryKey, at);
     const res = await this.call('POST', '/v1/signup', {
       email: address,
-      ...(invite ? { invite: String(invite).trim() } : {}),
+      ...(linked ? { workspaceInvite: linked } : invite ? { invite: String(invite).trim() } : {}),
       kdf,
       salt: keys.b64u(salt),
       authKey: keys.b64u(authKey),
@@ -270,14 +305,14 @@ class AccountService extends EventEmitter {
       recoveryAuth: keys.b64u(recoveryAuth),
       recoveryWrappedKey: keys.b64u(keys.wrapDataKey(recoveryWrap, dataKey)),
       device: this.device()
-    });
-    this.attach(address, res.token, dataKey);
+    }, { server: at });
+    this.attach(address, res.token, dataKey, at);
     return { recoveryKey: keys.formatRecoveryKey(recoveryKey), account: res.account };
   }
 
-  // authKey for the password, with the parameters the server keeps for the address. Refuses weak ones.
-  async authFor(email, password) {
-    const pre = await this.call('POST', '/v1/prelogin', { email });
+  // authKey for the password, with the parameters the server at keeps for the address. Refuses weak ones.
+  async authFor(email, password, at = this.server) {
+    const pre = await this.call('POST', '/v1/prelogin', { email }, { server: at });
     let kdf;
     try {
       kdf = keys.checkKdf(pre && pre.kdf);
@@ -290,7 +325,7 @@ class AccountService extends EventEmitter {
     } catch (_) {
       throw fail('server');
     }
-    return keys.passwordKeys(password, salt, kdf, this.server);
+    return keys.passwordKeys(password, salt, kdf, at);
   }
 
   async signIn({ email, password }) {
@@ -299,35 +334,39 @@ class AccountService extends EventEmitter {
     if (!validEmail(address)) throw fail('invalid_email');
     if (typeof password !== 'string' || !password) throw fail('unauthorized');
     this.checkStorage();
+    const at = this.server;
     const former = this.state.server ? null : this.state.formerServer;
     try {
-      return await this.login(address, password);
+      return await this.login(address, password, at);
     } catch (err) {
       // This device went back to the default from a former one (forget()). An account made there signs in only
-      // there, as the password proofs include the address: try it once, and keep it when it works.
+      // there, as the password proofs include the address: try it once, and keep it when it works. The address stays
+      // with this attempt until attach() commits it, and only while the attempt is still current: nobody signed in
+      // meanwhile and the server is still the one it began at. A session made meanwhile keeps its own address.
       if (!former || !err || err.code !== 'unauthorized') throw err;
-      this.state.server = former;
+      if (this.signedIn || this.server !== at || this.state.formerServer !== former) throw err;
       try {
-        return await this.login(address, password);
-      } catch (_) {
-        this.state.server = null;
-        this.saveState();
-        throw err;
+        return await this.login(address, password, former, at);
+      } catch (later) {
+        // The former address took the password, but another sign-in got here first: that one says why.
+        throw later && later.code === 'signed_in' ? later : err;
       }
     }
   }
 
-  async login(address, password) {
-    await this.serverInfo();
-    const { authKey, wrapKey } = await this.authFor(address, password);
-    const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() });
+  // A sign-in at the address at. from: the server this device uses that the attempt began at, which differs from at
+  // only for the former-address try of signIn(); attach() takes the session only while the device still uses from.
+  async login(address, password, at = this.server, from = at) {
+    const info = await this.serverInfo(at);
+    const { authKey, wrapKey } = await this.authFor(address, password, at);
+    const res = await this.call('POST', '/v1/login', { email: address, authKey: keys.b64u(authKey), device: this.device() }, { server: at });
     let dataKey;
     try {
       dataKey = keys.unwrapDataKey(wrapKey, keys.unb64u(res.wrappedKey));
     } catch (_) {
       throw fail('server');
     }
-    this.attach(address, res.token, dataKey);
+    this.attach(address, res.token, dataKey, at, { from, info });
     return { account: res.account };
   }
 
@@ -337,9 +376,10 @@ class AccountService extends EventEmitter {
     this.checkNew(address, password);
     const key = keys.parseRecoveryKey(recoveryKey);
     if (!key) throw fail('recovery_key');
-    await this.serverInfo();
-    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, this.server);
-    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) });
+    const at = this.server;
+    await this.serverInfo(at);
+    const { recoveryAuth, recoveryWrap } = keys.recoveryKeys(key, at);
+    const start = await this.call('POST', '/v1/recover/start', { email: address, recoveryAuth: keys.b64u(recoveryAuth) }, { server: at });
     let dataKey;
     try {
       dataKey = keys.unwrapDataKey(recoveryWrap, keys.unb64u(start.recoveryWrappedKey));
@@ -348,7 +388,7 @@ class AccountService extends EventEmitter {
     }
     const salt = crypto.randomBytes(16);
     const kdf = { ...keys.DEFAULT_KDF };
-    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, this.server);
+    const { authKey, wrapKey } = await keys.passwordKeys(password, salt, kdf, at);
     const res = await this.call('POST', '/v1/recover/finish', {
       email: address,
       recoveryAuth: keys.b64u(recoveryAuth),
@@ -357,8 +397,8 @@ class AccountService extends EventEmitter {
       authKey: keys.b64u(authKey),
       wrappedKey: keys.b64u(keys.wrapDataKey(wrapKey, dataKey)),
       device: this.device()
-    });
-    this.attach(address, res.token, dataKey);
+    }, { server: at });
+    this.attach(address, res.token, dataKey, at);
     return { account: res.account };
   }
 
@@ -369,8 +409,12 @@ class AccountService extends EventEmitter {
     await this.call('POST', '/v1/logout', undefined, { auth: true, session }).catch(() => {});
     if (this.session === session) {
       this.state.error = null;
-      this.forget();
-      this.changedStatus();
+      // Signed out even when the state can't be saved: the status goes out before that error does.
+      try {
+        this.forget();
+      } finally {
+        this.changedStatus();
+      }
     }
     return this.status();
   }
@@ -445,10 +489,14 @@ class AccountService extends EventEmitter {
     await this.call('DELETE', '/v1/account', { authKey: keys.b64u(authKey), handleKey }, { auth: true, session });
     if (this.session === session) {
       this.state.error = null;
-      this.forget();
-      this.state.handleKey = { email, key: handleKey };
-      this.saveState();
-      this.changedStatus();
+      // Signed out even when the state can't be saved: the status goes out before that error does.
+      try {
+        this.forget();
+        this.state.handleKey = { email, key: handleKey };
+        this.saveState();
+      } finally {
+        this.changedStatus();
+      }
     }
     return this.status();
   }
@@ -487,8 +535,9 @@ class AccountService extends EventEmitter {
     if (res && typeof res.token === 'string') await this.call('POST', '/v1/logout', undefined, { auth: true, session: { token: res.token } }).catch(() => {});
   }
 
-  open({ token, dataKey }) {
-    this.session = { token, dataKey, keys: keys.recordKeys(dataKey) };
+  // server: the address the session signed in at, where every call made with it goes (call()).
+  open({ token, dataKey, server }) {
+    this.session = { token, dataKey, server, keys: keys.recordKeys(dataKey) };
     this.ids.clear();
     for (const [key, e] of this.entries) {
       e.id = keys.recordId(this.session.keys.indexKey, e.c, e.k);
@@ -499,13 +548,25 @@ class AccountService extends EventEmitter {
     if (this.timers.every.unref) this.timers.every.unref();
   }
 
-  // This device joins the account. Everything it has goes up; what the account has comes down first, so an older
-  // value here doesn't overwrite a newer one there.
-  attach(email, token, dataKey) {
+  // This device joins the account it signed in to at the address at. Everything it has goes up; what the account has
+  // comes down first, so an older value here doesn't overwrite a newer one there. When the server was changed while the sign-in
+  // waited, the session is refused and ended there: its token would otherwise go to the new address. So is one when
+  // another sign-in attached its session first: that session stays, with its address.
+  //
+  // from: the server this device used when the sign-in began; it differs from at only for signIn()'s try at a former
+  // address, whose address becomes this device's server here (info: that server's info, fetched by the sign-in).
+  attach(email, token, dataKey, at = this.server, { from = at, info = null } = {}) {
+    if (from !== this.server || this.signedIn) {
+      const code = this.signedIn ? 'signed_in' : 'server';
+      this.http(at, 'POST', '/v1/logout', { token }).catch(() => {});
+      throw fail(code);
+    }
+    const moved = at !== this.server;
     this.state = {
       ...this.state,
+      ...(moved ? { server: at, info: info ? { server: at, data: info, at: this.now() } : null } : {}),
       email,
-      sessionServer: this.server,
+      sessionServer: at,
       token: this.secrets.encrypt(token),
       dataKey: this.secrets.encrypt(dataKey.toString('base64')),
       cursor: 0,
@@ -526,7 +587,7 @@ class AccountService extends EventEmitter {
       // A first write, unless it is a deletion: that settles by its time, like any other.
       if (FIRST_WRITE_WINS.has(e.c) && !e.deleted) e.ifAbsent = e.first = true;
     }
-    this.open({ token, dataKey });
+    this.open({ token, dataKey, server: at });
     this.saveState();
     this.changedStatus();
     this.sync().catch(() => {});

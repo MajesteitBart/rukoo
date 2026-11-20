@@ -52,6 +52,8 @@
   --text: #ecedf1;
   --text-2: #a7adba;
   --text-3: #7a808e;
+  /* Team chat's caption grey: timestamps and counts in chat pass 4.5:1 on the panel and on dialogs, mail keeps --text-3. */
+  --ch-text-3: #8a909e;
   --accent: #7aa5f5;
   --accent-soft: rgba(122, 165, 245, 0.15);
   --link: #8ab0ff;
@@ -94,6 +96,7 @@
   --text: #16181d;
   --text-2: #565c69;
   --text-3: #868b98;
+  --ch-text-3: #666b7a;
   --accent: #2f66d6;
   --accent-soft: rgba(47, 102, 214, 0.1);
   --link: #2f63c8;
@@ -881,10 +884,19 @@ body.dragging-mail .nav-item * {
   }
 }
 
-/* Collapsed: an icon rail. */
+/* Collapsed: an icon rail. When the rail runs short of height, at 200 percent zoom for one, the list keeps about three
+   rows and the whole column scrolls instead: the mode switch, the tiles and the foot scroll away with the list and keep
+   their size. The column draws no scrollbar of its own, which would take 9 of the rail's 60px and cut the list's
+   tiles; the list's own scrollbar and the rows cut at its edge show that more follows. */
 .shell.collapsed .sidebar {
   padding: 2px 8px 8px;
   align-items: center;
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+.shell.collapsed .sidebar > *,
+.shell.collapsed .sidebar-main > * {
+  flex-shrink: 0;
 }
 .shell.collapsed .account-switch {
   width: 44px;
@@ -907,6 +919,7 @@ body.dragging-mail .nav-item * {
 }
 .shell.collapsed .nav {
   width: 100%;
+  min-height: 120px;
 }
 .shell.collapsed .nav-item {
   justify-content: center;
@@ -992,6 +1005,34 @@ body.dragging-mail .nav-item * {
 }
 .shell.collapsed .sidebar-mode .seg-ic {
   display: block;
+}
+/* Four modes, with team chat on the server: four labels side by side don't fit 236 px, so each segment stacks its
+   icon over an 11px label. The track's 12px corners hold 10px segments. Three modes keep the switch above, and the
+   rail keeps its upright icons. */
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked {
+  height: 46px;
+  border-radius: 12px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-thumb {
+  border-radius: 10px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked button {
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 2px;
+  border-radius: 10px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic {
+  display: block;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-label {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 13px;
 }
 
 /* ---------- avatars, pills, checkboxes ---------- */
@@ -2772,10 +2813,11 @@ body.dragging-mail .nav-item * {
 .dialog .buttons button.left {
   margin-right: auto;
 }
+/* White on the light red, the dark ink on dark's lighter red: both keep the label above 4.5:1. */
 .dialog .buttons button.danger:last-child {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-primary);
 }
 .choices {
   display: flex;
@@ -7070,6 +7112,39 @@ button.cal-title:hover {
   padding: 0 4px;
   font-size: 9.5px;
 }
+/* Team chat on the Chat segment (contract 3.10): an accent count of what asks for you, else a dot for unread
+   messages. White on the accent in light; the dark panel colour on it in dark. */
+.seg-badge.is-mention,
+:root.light .seg-badge.is-mention {
+  background: var(--accent);
+  color: var(--panel);
+}
+.seg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+  flex: none;
+}
+/* In the stacked switch a badge sits at the top right of its icon, at the rail's size. */
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge,
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-dot {
+  position: absolute;
+  top: 3px;
+  left: calc(50% + 5px);
+}
+.shell:not(.collapsed) .sidebar-mode .segmented.is-stacked .seg-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9.5px;
+}
+.shell.collapsed .sidebar-mode .seg-dot {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .cal-panel {
@@ -10376,4 +10451,1962 @@ button.mt-person:disabled {
 }
 .mtset-pill.is-error i {
   background: var(--danger);
+}
+
+/* ---------- team chat ---------- */
+
+/* Team chat takes the place of the list and the reader, as the calendar and meetings do (chat.js, chat-view.js).
+   Search looks through mail, so it waits for Mail. The view is a size container: the thread panel and the narrow
+   rules read its own width, whatever the sidebar and the agent panel take.
+   Layers: sticky day dividers 2, message tools 3, jump pills 5, the narrow thread overlay 6. */
+.chat {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  container: chat / inline-size;
+}
+/* Chat's surfaces draw their captions (times, counts, "Last reply") in chat's own caption grey, which passes 4.5:1;
+   the mail around them keeps --text-3. */
+.chat,
+.ch-nav,
+.ch-ws-switch,
+.ch-form {
+  --text-3: var(--ch-text-3);
+}
+.shell.chat-mode .chat {
+  display: flex;
+}
+.shell.chat-mode .listpane,
+.shell.chat-mode .divider,
+.shell.chat-mode .reader {
+  display: none;
+}
+body.chat-mode .titlebar-search {
+  visibility: hidden;
+}
+
+/* The sidebar: the workspace switcher, then Channels and Direct messages. */
+.ch-ws-tile {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  background: hsl(var(--h) 38% 27%);
+  color: hsl(var(--h) 70% 84%);
+}
+:root.light .ch-ws-tile {
+  background: hsl(var(--h) 60% 93%);
+  color: hsl(var(--h) 45% 32%);
+}
+/* Another workspace asks for you (accent), or this one is stopped (warning). */
+.ch-ws-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.ch-ws-dot.is-warn {
+  background: var(--warn);
+}
+.menu .mi .ch-ws-tile {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 8.5px;
+}
+.ch-nav.no-compose {
+  margin-top: 6px;
+}
+.ch-row.is-unread {
+  color: var(--text);
+  font-weight: 600;
+}
+.ch-row.is-unread .ic {
+  color: var(--text-2);
+}
+.ch-row.is-muted,
+.ch-row.is-closed,
+.ch-row.is-muted:hover,
+.ch-row.is-closed:hover {
+  color: var(--text-3);
+}
+.ch-row.active.is-muted,
+.ch-row.active.is-closed {
+  color: var(--text-2);
+}
+.ch-ic b {
+  display: none;
+}
+.ch-badge {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ch-row-quiet {
+  color: var(--text-2);
+}
+.ch-side-fill {
+  flex: 1;
+  min-height: 0;
+}
+.ch-side-empty {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.avatar.ch-av-14 {
+  width: 14px;
+  height: 14px;
+  font-size: 7px;
+}
+.avatar.ch-av-16 {
+  width: 16px;
+  height: 16px;
+  font-size: 7.5px;
+}
+.avatar.ch-av-18 {
+  width: 18px;
+  height: 18px;
+  font-size: 9px;
+}
+.avatar.ch-av-24 {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+.avatar.ch-av-40 {
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
+}
+.ch-av-group {
+  display: inline-flex;
+  align-items: center;
+}
+.ch-av-group .avatar + .avatar {
+  margin-left: -4px;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+/* The rail: a channel shows its first letter on its hue, a mention count a small pill, a plain count the dot. Browse
+ * channels stays as its search icon: the Channels heading and its plus hide in the rail, and Browse is then the way to
+ * find and make channels. */
+.shell.collapsed .ch-ic svg,
+.shell.collapsed .ch-side-empty {
+  display: none;
+}
+.shell.collapsed .ch-ic b {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: hsl(var(--h) 55% 90%);
+  color: hsl(var(--h) 45% 30%);
+}
+:root:not(.light) .shell.collapsed .ch-ic b {
+  background: hsl(var(--h) 30% 26%);
+  color: hsl(var(--h) 70% 82%);
+}
+/* A closed DM's Closed tag sits where the unread pill goes; the rail has no room for it. */
+.shell.collapsed .ch-row-tag {
+  display: none;
+}
+.shell.collapsed .ch-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9.5px;
+}
+
+/* The pane: header, banner, log, composer. */
+.ch-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ch-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 12px 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ch-titles,
+.ch-thread-titles {
+  flex: 1;
+  min-width: 0;
+}
+.ch-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ch-head-ic {
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-head-ic svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.7;
+}
+.ch-title {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-head-muted {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-head-muted svg {
+  width: 14px;
+  height: 14px;
+}
+.ch-meta,
+.ch-thread-meta {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The header line says who hosts a DM and can read it, or who is in a channel: read, so in the supporting ink. */
+.ch-meta {
+  color: var(--text-2);
+}
+.ch-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.ch-members-n {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A strip under the header: offline, reconnecting, stopped. Its height only while it shows, without motion. */
+.ch-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px 4px 20px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-banner > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-banner-text {
+  flex: 1;
+  min-width: 0;
+  text-wrap: pretty;
+}
+.ch-banner .link-btn {
+  flex: none;
+  min-height: 24px;
+}
+
+.ch-log-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The view keeps the scroll position itself when older rows come in above (chat-view.js render 'anchor'). */
+.ch-scroll,
+.ch-thread-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding-bottom: 12px;
+}
+.ch-log,
+.ch-thread-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ch-older,
+.ch-thread-older {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-older.is-reserved,
+.ch-thread-older.is-reserved {
+  height: 40px;
+}
+.ch-older.is-opening {
+  height: 72px;
+}
+.ch-older-text,
+.ch-thread-older-text {
+  min-width: 0;
+}
+.ch-older .spinner,
+.ch-thread-older .spinner,
+.ch-empty .spinner {
+  margin: 0;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+
+/* Day dividers stay at the top while their day scrolls by. */
+.ch-day {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px 6px;
+  background: var(--panel);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.ch-day::before,
+.ch-day::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+/* The first message after where you had read when you opened the room. It stays put while you read. */
+.ch-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.ch-new::before {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+}
+.ch-floor {
+  padding: 16px 20px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ch-intro {
+  padding: 28px 20px 12px;
+}
+.ch-intro-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: var(--chip);
+  color: var(--text-2);
+}
+.ch-intro-ic svg {
+  width: 22px;
+  height: 22px;
+}
+.ch-intro-ic:has(.avatar) {
+  background: none;
+}
+.ch-intro-ic .avatar + .avatar {
+  margin-left: -8px;
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.ch-intro-title {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+.ch-intro-line {
+  max-width: 64ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+/* A message: the avatar column, then the name line and the text. A continuation shows its time in the avatar column
+   on hover and focus; the time is in the row's text for screen readers either way. */
+.ch-msg {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 2px 20px;
+  outline-offset: -2px;
+  transition: background-color 120ms ease;
+}
+.ch-msg.is-head {
+  padding-top: 8px;
+}
+.ch-msg:hover,
+.ch-msg:focus-within {
+  background: var(--hover);
+}
+.ch-msg > .avatar,
+.ch-msg > .ch-time.is-gutter {
+  grid-column: 1;
+}
+.ch-msg > .ch-body,
+.ch-msg > .ch-context {
+  grid-column: 2;
+  min-width: 0;
+}
+.ch-msg > .avatar {
+  margin-top: 2px;
+}
+.ch-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.ch-time.is-gutter {
+  align-self: start;
+  padding-top: 3px;
+  font-size: 11px;
+  text-align: right;
+  visibility: hidden;
+}
+.ch-msg:hover > .ch-time.is-gutter,
+.ch-msg:focus-within > .ch-time.is-gutter {
+  visibility: visible;
+}
+.ch-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.ch-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-tag {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+.ch-text {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ch-text.sel,
+.ch-title.sel {
+  user-select: text;
+}
+.ch-link {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ch-mention {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--link);
+  font-weight: 500;
+}
+.ch-mention.is-me {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: var(--text);
+}
+/* A message that mentions you: an accent bar on its left edge. */
+.ch-msg.mentions-me {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ch-removed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.ch-removed svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.ch-msg.is-pending .ch-text {
+  color: var(--text-2);
+}
+/* A reply in the main log: "replied to …" above it opens the thread. */
+.ch-context {
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 24px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: left;
+}
+.ch-context svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-context span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+button.ch-context:hover {
+  color: var(--text);
+}
+button.ch-context:hover span {
+  text-decoration: underline;
+}
+/* A thread's summary under its first message. */
+.ch-replies {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 24px;
+  margin: 4px 0 2px -4px;
+  padding: 0 8px 0 4px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  transition: background-color 120ms ease;
+}
+button.ch-replies:hover {
+  background: var(--active);
+}
+.ch-replies-av {
+  display: inline-flex;
+  flex: none;
+}
+.ch-replies-av .avatar + .avatar {
+  margin-left: -4px;
+  box-shadow: 0 0 0 1.5px var(--panel);
+}
+.ch-replies-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.ch-replies-n {
+  flex: none;
+  color: var(--text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+button.ch-replies .ch-replies-n {
+  color: var(--link);
+}
+.ch-replies-at {
+  min-width: 0;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A notification's message, outlined for two seconds after it opened. */
+.ch-msg.is-target {
+  outline: 2px solid var(--focus);
+}
+/* A system event: who joined, left, made or renamed the channel. */
+.ch-sys {
+  display: grid;
+  grid-template-columns: 32px minmax(0, max-content) max-content;
+  column-gap: 10px;
+  align-items: center;
+  padding: 4px 20px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-sys-ic {
+  color: var(--text-3);
+  display: grid;
+  place-items: center;
+}
+.ch-sys-ic svg {
+  width: 14px;
+  height: 14px;
+}
+.ch-sys-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ch-sys .ch-time {
+  font-size: 11.5px;
+}
+.ch-vh,
+.ch-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/*    0ms  a message that arrives while the room is open fades up 8px
+ *  200ms  it rests. Loaded history doesn't move. */
+.ch-msg.is-arriving {
+  animation: ch-arrive 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+@keyframes ch-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* New messages below, or unread ones above: a pill at the log's edge. */
+.ch-jump {
+  position: absolute;
+  left: 50%;
+  z-index: 5;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 9px;
+  border-radius: 9999px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  animation: pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.ch-jump svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-jump.is-up {
+  top: 8px;
+}
+.ch-jump.is-down {
+  bottom: 8px;
+}
+/* The tools over a message on hover and focus, at its top right inside the row, so they never cover the New divider
+   or the row above: Reply in thread, Copy text, More. They take no Tab stop; the row does, and Shift+F10 opens the
+   same actions as a menu. */
+.ch-tools {
+  position: absolute;
+  top: 2px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.ch-tools .icon-btn.sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+.ch-msg:hover > .ch-tools,
+.ch-msg:focus-within > .ch-tools {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* An unsent message's line: on its way, waiting, held or refused, with what the person can do. */
+.ch-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-height: 22px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-state > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-state .spinner {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  border-width: 1.5px;
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-state-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ch-state .link-btn {
+  font-size: 12.5px;
+  min-height: 24px;
+}
+/* An unsent row keeps a little room under its line, so the line reads as its own and not as the next message's. */
+.ch-msg.is-pending {
+  padding-bottom: 6px;
+}
+/* A quick send never shows its line: it appears after a second, in room it already holds. */
+.ch-state.is-sending {
+  animation: ch-state-in 0s linear 1s both;
+}
+@keyframes ch-state-in {
+  from {
+    visibility: hidden;
+  }
+}
+.ch-state.is-stale,
+.ch-state.is-unknown,
+.ch-state.is-failed {
+  color: var(--danger);
+}
+.ch-state.is-stale > svg,
+.ch-state.is-unknown > svg,
+.ch-state.is-failed > svg {
+  color: var(--danger);
+}
+.ch-msg.is-failed .ch-text {
+  color: var(--text-2);
+}
+
+/* The composer: one box under the log, growing with the text up to 40 percent of the window, then scrolling. */
+.ch-compose {
+  padding: 0 20px 16px;
+}
+.ch-compose:empty {
+  display: none;
+}
+.ch-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: box-shadow 120ms ease;
+}
+.ch-box:focus-within {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.ch-box[hidden] {
+  display: none;
+}
+.ch-input {
+  position: relative;
+  min-height: 20px;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 2px 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+  cursor: text;
+}
+.ch-input.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 2px 0 auto 0;
+  color: var(--text-3);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-box-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 28px;
+}
+.ch-limit {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+  text-wrap: pretty;
+}
+.ch-send {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--on-primary);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ch-send svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+.ch-send:disabled {
+  background: var(--chip);
+  color: var(--text-3);
+  cursor: default;
+}
+.ch-send:not(:disabled):active {
+  transform: scale(0.96);
+}
+/* A mention in the composer: one locked piece, as it shows in the log. */
+.ch-chip {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--link);
+  font-weight: 500;
+}
+/* In place of the composer: the workspace stopped, an archived channel, a closed DM, a thread whose root went. */
+.ch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 40px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-bar[hidden] {
+  display: none;
+}
+.ch-bar-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-bar-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-bar-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  text-wrap: pretty;
+}
+.ch-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+/* The people a mention can name, under or over the @ (chat-input.js), on the composer's mention list styles. */
+.ch-suggest .avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+.ch-suggest [role='option'] {
+  min-height: 32px;
+}
+.ch-suggest .ch-suggest-none {
+  cursor: default;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+/* The thread: beside the log from 900px of the view's own width, over it below that. */
+.ch-thread {
+  position: relative;
+  flex: none;
+  width: clamp(320px, 36%, 420px);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+}
+.ch-thread[hidden] {
+  display: none;
+}
+.ch-thread-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 8px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ch-thread-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.ch-thread-back {
+  display: none;
+}
+.ch-thread .ch-msg {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.ch-thread .ch-day {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.ch-thread .ch-thread-div {
+  position: static;
+}
+.ch-thread .ch-tools {
+  right: 12px;
+}
+.ch-thread-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 12px 16px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--chip);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-thread-note[hidden] {
+  display: none;
+}
+.ch-thread-note > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-thread-note .link-btn {
+  font-size: 12.5px;
+}
+.ch-thread-compose {
+  padding: 0 16px 16px;
+}
+@container chat (max-width: 899.98px) {
+  .ch-thread {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    width: auto;
+    border-left: 0;
+  }
+  .ch-thread-back {
+    display: inline-flex;
+  }
+  .ch-thread-close {
+    display: none;
+  }
+  .ch-thread-head {
+    padding-left: 8px;
+  }
+  /*    0ms  the thread fades up 8px over the log
+   *  200ms  it rests. Closing has no animation. */
+  .ch-thread.is-entering {
+    animation: ch-arrive 200ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+}
+
+/* What the pane says when no conversation shows: loading, signed out, no workspace, gone. */
+.ch-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-3);
+}
+.ch-empty > svg {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  opacity: 0.5;
+  stroke-width: 1.3;
+}
+.ch-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-wrap: balance;
+}
+.ch-empty-body {
+  max-width: 420px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.ch-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ch-empty-hint {
+  max-width: 380px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+
+/* Dialogs: make and join a workspace, a room's members. */
+.ch-form {
+  padding: 0;
+}
+.ch-form .error {
+  margin: -8px 0 0;
+}
+/* A chat form's help says what a choice does ("You can't change this later.", what an invitation link gives). */
+.ch-form .field-help {
+  color: var(--text-2);
+}
+.ch-host {
+  font-size: 12.5px;
+}
+.ch-join-preview p {
+  margin: 0 0 4px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ch-join-preview .ch-join-ws {
+  margin-bottom: 6px;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+}
+.ch-members {
+  max-height: 50vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-members[aria-busy='true'] {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+}
+.ch-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+.ch-member-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The rest of the dialogs (chat-dialogs.js, desktop-ui 6): fields, lists of people and channels, invitations,
+ * settings sections and New message's To field. */
+.dialog.ch-quiet-close .buttons button:last-child {
+  background: var(--panel);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.dialog.ch-quiet-close .buttons button:last-child:hover {
+  background: var(--hover);
+}
+.dialog.ch-settings {
+  max-height: calc(100vh - 48px);
+}
+/* A long dialog, such as Workspace settings in a short window or at 200 percent zoom, keeps its title and buttons in
+ * view; the body scrolls between them (desktop-ui 10). The body reaches 8px into the dialog's padding on the sides and
+ * 4px at the top and pads that back: the lists that run 8px into the margin (.ch-browse, .ch-people, .ch-new-list)
+ * stay inside it without a sideways scrollbar, and a field's 3px focus halo stays whole at the top. The -4px top margin
+ * keeps the gap under the title unchanged; overflow-x hidden keeps the body from scrolling sideways. */
+.dialog.ch-dialog {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dialog.ch-dialog > h2,
+.dialog.ch-dialog > .buttons {
+  flex: none;
+}
+.dialog.ch-dialog > .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden auto;
+  margin: -4px -8px 0;
+  padding: 4px 8px;
+}
+/* A body that scrolls shows that it does: the scrollbar stays hidden until it's used, so a cut between two sections
+ * would look like the dialog's end. A hairline above the buttons while the body overflows, and a 16px fade at its
+ * bottom edge while more sits below (chatDialog() in chat-dialogs.js sets both classes). */
+.dialog.ch-dialog.is-scrollable > .buttons {
+  margin-top: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.dialog.ch-dialog.has-more > .dialog-body {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+/* A dialog's error line in danger color (.dialog p would make it grey), and a button that can't be pressed yet looks
+ * it, such as Make link before a guest has a channel. */
+.dialog p.error {
+  color: var(--danger);
+}
+.dialog .buttons button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ch-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+.ch-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.ch-label {
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-warn {
+  color: var(--warn);
+}
+.ch-checking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.ch-checking[hidden] {
+  display: none;
+}
+.ch-checking .spinner,
+.ch-invites-wait .spinner,
+.ch-successors .spinner {
+  color: var(--text-3);
+  border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
+  border-top-color: currentColor;
+}
+.ch-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.ch-join-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ch-join-head .ch-join-ws {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ch-join-preview p:last-child {
+  margin-bottom: 0;
+}
+.ch-other {
+  margin: 0;
+}
+.ch-other[hidden] {
+  display: none;
+}
+/* The name field of Make and Rename a channel: # inside it. */
+.ch-hash-field {
+  position: relative;
+  display: block;
+}
+.ch-hash {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 13.5px;
+  pointer-events: none;
+}
+.form .ch-hash-field input[type='text'] {
+  padding-left: 22px;
+}
+.ch-checks {
+  display: grid;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0 -6px;
+}
+/* The rows reach into the margin for their hover fill; a note in their place lines up with the label above. */
+.ch-checks > p,
+.ch-checks > .ch-invite-none {
+  margin: 0;
+  padding: 0 6px;
+}
+.ch-invite-none p {
+  margin: 0;
+}
+/* .form label lays fields out as a grid; these rows stay a line. */
+.ch-check-row,
+.ch-radio-row,
+.form .ch-check-row,
+.form .ch-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ch-check-row:hover,
+.ch-radio-row:hover {
+  background: var(--hover);
+}
+.ch-check-row.is-disabled {
+  cursor: default;
+  color: var(--text-3);
+}
+.ch-check-row.is-disabled:hover {
+  background: none;
+}
+.ch-check-row input,
+.ch-radio-row input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: inherit;
+}
+.ch-check-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-check-ic svg,
+.ch-radio-label svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-check-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-check-note {
+  flex: 0 1 auto;
+  text-align: right;
+}
+.ch-radio-row,
+.form .ch-radio-row {
+  align-items: flex-start;
+  padding: 6px;
+}
+.ch-radio-row input {
+  margin-top: 2px;
+}
+.ch-radio-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.ch-radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text);
+}
+.ch-radio-label svg {
+  flex: none;
+  color: var(--text-3);
+}
+.form input[type='text'].ch-link-field {
+  font-size: 12.5px;
+}
+/* A withdrawn link stays in its field, struck through, so the line under it has something to point at. */
+.ch-invite-withdrawn input[type='text'].ch-link-field {
+  text-decoration: line-through;
+  color: var(--text-3);
+}
+/* Copy link with "You'll see this link only once." under it; Guest with no channel to pick, with New channel. */
+.ch-invite-copy,
+.ch-invite-none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+/* Invitations: the made link, and the open ones with Withdraw. */
+.ch-open-invites {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ch-set .ch-open-invites {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+.ch-open-invites summary,
+.ch-browse-archived summary {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ch-open-invites summary:hover,
+.ch-browse-archived summary:hover {
+  color: var(--text);
+}
+/* The summary keeps a disclosure mark: a chevron that turns when it opens. */
+.ch-open-invites summary::-webkit-details-marker,
+.ch-browse-archived summary::-webkit-details-marker {
+  display: none;
+}
+.ch-open-invites summary::before,
+.ch-browse-archived summary::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 10px 2px 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+.ch-open-invites[open] summary::before,
+.ch-browse-archived[open] summary::before {
+  transform: rotate(45deg);
+}
+.ch-invites {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ch-invite {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+.ch-invite-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.ch-invite-role {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.ch-invite-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.ch-invite .link-btn.danger {
+  color: var(--danger);
+}
+.ch-invites-none,
+.ch-browse-none {
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-invites-wait {
+  display: grid;
+  place-items: center;
+  min-height: 48px;
+}
+/* Search and a button above a list, and buttons under it. */
+.ch-dlg-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ch-search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+.ch-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.ch-dlg-tools .btn,
+.ch-dlg-foot .btn {
+  flex: none;
+}
+.ch-dlg-tools .btn svg,
+.ch-set .btn svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.dialog .ch-sub {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* Browse channels. */
+.ch-browse,
+.ch-people {
+  display: grid;
+  gap: 1px;
+  max-height: min(48vh, 420px);
+  margin: 0 -8px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-browse-row,
+.ch-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+.ch-browse-row:hover {
+  background: var(--hover);
+}
+.ch-browse-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 40px;
+  text-align: left;
+  border-radius: 6px;
+}
+.ch-browse-ic {
+  display: grid;
+  flex: none;
+  color: var(--text-3);
+}
+.ch-browse-ic svg {
+  width: 16px;
+  height: 16px;
+}
+.ch-browse-text {
+  display: grid;
+  min-width: 0;
+}
+.ch-browse-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-browse-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-browse-none {
+  padding-left: 8px;
+}
+.ch-browse-archived {
+  margin-top: 8px;
+}
+.ch-browse-archived[hidden] {
+  display: none;
+}
+/* People: members, the add picker, successors. */
+.ch-person-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-group {
+  display: flex;
+  align-items: flex-end;
+  min-height: 28px;
+  padding: 6px 8px 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ch-pick .ch-check-row {
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+.ch-successors {
+  display: grid;
+  gap: 2px;
+  max-height: min(40vh, 320px);
+  margin: 0 -6px;
+  overflow-y: auto;
+}
+.ch-successors[aria-busy='true'] {
+  place-items: center;
+  min-height: 56px;
+}
+.ch-person-pick {
+  align-items: center;
+}
+.ch-person-pick input {
+  margin-top: 0;
+}
+.ch-person-pick[hidden],
+.ch-successors-none[hidden] {
+  display: none;
+}
+.ch-successors-none {
+  margin: 0;
+  padding: 4px 6px;
+}
+.ch-successor-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+}
+/* Leaving a workspace as the only manager of channels: a picker under each channel's name. */
+.ch-handover {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+.ch-handover-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ch-handover-name span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-handover .ch-successors {
+  max-height: min(28vh, 240px);
+}
+/* Workspace settings: sections with a hairline between them. */
+.ch-set {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.ch-set:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.ch-set-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ch-set-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 32px;
+}
+.ch-set-text {
+  display: grid;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.ch-set-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.ch-set-value {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.ch-set-why {
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.dialog .ch-set-help {
+  margin: 0;
+}
+.ch-set .ch-people {
+  max-height: 200px;
+}
+.ch-set-leave {
+  justify-items: start;
+}
+.ch-set-end {
+  justify-content: flex-start;
+}
+.ch-browse-row > .btn {
+  flex: none;
+}
+.btn.ch-danger-btn {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--danger);
+}
+.btn.ch-danger-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, var(--panel));
+}
+/* New message: picked people as chips in the To field, and the list under it. */
+.ch-to {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: text;
+}
+.ch-to:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.ch-to-label {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ch-to-chips {
+  display: contents;
+}
+.ch-to-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 2px 0 4px;
+  border-radius: 9999px;
+  background: var(--chip);
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ch-to-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-to-x {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  color: var(--text-3);
+}
+.ch-to-x:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.ch-to-x svg {
+  width: 12px;
+  height: 12px;
+}
+.form .ch-to .ch-to-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.ch-new-list {
+  display: grid;
+  gap: 1px;
+  max-height: min(36vh, 280px);
+  margin: -6px -8px 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.ch-new-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ch-new-row:hover,
+.ch-new-row.is-active {
+  background: var(--hover);
+}
+.ch-new-list.is-full .ch-new-row {
+  opacity: 0.45;
+  cursor: default;
+}
+.ch-new-list.is-full .ch-new-row:hover {
+  background: none;
+}
+/* People who can't be picked (you blocked them, or a guest), with why; Unblock stays fully clickable. */
+.ch-new-off {
+  margin-top: 0;
+}
+/* Right under the people who can be picked, as one list (the form's gap is 14px). */
+.ch-new-list:not([hidden]) + .ch-new-off {
+  margin-top: -13px;
+}
+.ch-new-row.is-off {
+  cursor: default;
+}
+.ch-new-row.is-off:hover {
+  background: none;
+}
+.ch-new-row.is-off > :first-child {
+  opacity: 0.55;
+}
+.ch-new-row.is-off .ch-person-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+}
+.ch-new-off-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  padding: 4px 0;
+}
+/* Nobody to pick: the line, and Invite people for those who may invite. */
+.ch-new-none {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+/* A channel the person isn't in, from Browse: the note fills the log's place and the Join bar sits under it. */
+.ch-main.is-preview .ch-compose {
+  order: 1;
+}
+
+/* A narrow view: the header drops its member count and meta line, rows tighten. */
+@container chat (max-width: 560px) {
+  .ch-head {
+    padding: 8px 8px 8px 12px;
+  }
+  .ch-meta,
+  .ch-members-n {
+    display: none;
+  }
+  .ch-msg {
+    grid-template-columns: 28px minmax(0, 1fr);
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-sys {
+    grid-template-columns: 28px minmax(0, max-content) max-content;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-msg > .avatar.ch-av {
+    width: 28px;
+    height: 28px;
+  }
+  .ch-day,
+  .ch-new,
+  .ch-intro,
+  .ch-floor {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ch-banner {
+    padding-left: 12px;
+  }
+  .ch-compose {
+    padding: 0 12px 12px;
+  }
+  /* Only More stays in the tools; its menu holds the rest. */
+  .ch-tools [data-ch-tool='reply'],
+  .ch-tools [data-ch-tool='copy'] {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-msg.is-arriving,
+  .ch-jump,
+  .ch-thread.is-entering {
+    animation: none;
+  }
+  .ch-msg,
+  .ch-replies,
+  .ch-tools,
+  .ch-box,
+  .ch-send,
+  .ch-open-invites summary::before,
+  .ch-browse-archived summary::before {
+    transition: none;
+  }
 }

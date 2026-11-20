@@ -62,6 +62,8 @@ const DEFAULT_SETTINGS = {
   notifications: true,
   // A short sound for new mail, played by the main window (main.js showMailNotices). Off by default.
   newMailSound: false,
+  // Settings > General > Team chat notifications: alerts for direct messages and mentions (workspaces/notify.js).
+  chatNotifications: true,
   badge: 'new',
   density: 'standard',
   sort: 'date-desc',
@@ -124,6 +126,7 @@ function normalizeSettings(s) {
   s.stackSenders = s.stackSenders === true;
   s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
   s.newMailSound = s.newMailSound === true;
+  s.chatNotifications = s.chatNotifications !== false;
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;
