@@ -6,6 +6,7 @@ import java.net.URI
 import java.text.Collator
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -191,7 +193,9 @@ class WorkspaceService internal constructor(
     @Volatile private var signedIn = false
     @Volatile private var available = false
     @Volatile private var storage = true
-    @Volatile private var lostUnsent = 0
+
+    // Unsent messages broken cache files took with them, until the UI takes the count (§3.4).
+    private val lostUnsent = AtomicInteger()
     @Volatile private var followed: String? = null
     @Volatile private var pending: PendingJoin? = null
     @Volatile private var foreground = false
@@ -210,6 +214,10 @@ class WorkspaceService internal constructor(
     private val _state = MutableStateFlow(ChatState(notifications = settings.value.notifyChat))
     override val state: StateFlow<ChatState> = _state.asStateFlow()
 
+    // Whether ChatSyncWorker should be scheduled, from states computed after the service followed the account once:
+    // null before that, as the first state (signed out, no workspaces) says nothing about the account.
+    private val scheduled = MutableStateFlow<Boolean?>(null)
+
     private val alerts = ChatAlertEngine(sink, words, { settings.value.notifyChat }, ::isOnScreen, timing.notifyRooms)
 
     private data class PendingJoin(val link: InviteLink, val tag: String)
@@ -225,7 +233,11 @@ class WorkspaceService internal constructor(
         scope.launch {
             for (tick in stateTicks) {
                 try {
-                    _state.value = computeState()
+                    // Read before computing: a state begun before the first follow ended may miss the account.
+                    val followedOnce = ready.isCompleted
+                    val s = computeState()
+                    _state.value = s
+                    if (followedOnce) scheduled.value = s.signedIn && s.available && s.workspaces.isNotEmpty()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -330,7 +342,7 @@ class WorkspaceService internal constructor(
 
     // Signed out: the cache file and its -wal and -shm files go, unsent messages with them.
     private suspend fun discard() {
-        lostUnsent = 0
+        lostUnsent.set(0)
         storage = true
         pending = null
         withContext(io) { ChatDb.deleteFiles(file) }
@@ -365,7 +377,7 @@ class WorkspaceService internal constructor(
             return
         }
         storage = true
-        lostUnsent += store.lostUnsent
+        lostUnsent.addAndGet(store.lostUnsent)
         if (pending?.tag != session.tag) pending = null
         val l = Live(session, store)
         l.selected = quietly { store.read { getMeta(META_SELECTED)?.takeIf { getWs(it) != null } } }
@@ -390,9 +402,13 @@ class WorkspaceService internal constructor(
         updateSockets(l)
     }
 
-    // Team chat went off on the server: no request goes out. The cache stays until the session ends.
-    private fun stopNetwork() {
-        live?.stopSyncs()
+    // Team chat went off on the server: no request goes out, the outbox's queued rows and its backoff timer included.
+    // The cache stays until the session ends; when team chat comes back, each workspace's first good run lets its
+    // queue send again.
+    private suspend fun stopNetwork() {
+        val l = live ?: return
+        for (row in quietly { l.store.read { listWs() } }.orEmpty()) l.outbox.forget(row.id)
+        l.stopSyncs()
     }
 
     // ---- one session ----
@@ -472,10 +488,7 @@ class WorkspaceService internal constructor(
 
     /** What the feed tells this service about one workspace. */
     private inner class Events(private val l: Live) : SyncEvents {
-        override suspend fun page(ws: String, result: PageResult) {
-            for ((room, ids) in result.removed) alerts.onRemoved(ws, room, ids, l.store)
-            for (room in result.evicted) alerts.onEvicted(ws, room)
-        }
+        override suspend fun page(ws: String, result: PageResult) = alerts.onPage(ws, result, l.store)
 
         override suspend fun ran(ws: String, outcome: RunOutcome) {
             l.ran += ws
@@ -771,9 +784,13 @@ class WorkspaceService internal constructor(
         }
     }
 
-    /** Whether a workspace is cached while team chat is on, for scheduling ChatSyncWorker. */
+    /**
+     * Whether a workspace is cached while team chat is on, for scheduling ChatSyncWorker. It says nothing until the
+     * service followed the account once, so a process that WorkManager started for the worker doesn't read the empty
+     * first state as "no workspace" and cancel the worker under way.
+     */
     val hasWorkspaces: Flow<Boolean>
-        get() = state.map { it.signedIn && it.available && it.workspaces.isNotEmpty() }.distinctUntilChanged()
+        get() = scheduled.filterNotNull().distinctUntilChanged()
 
     /**
      * ChatSyncWorker's catch-up (android.md "Foreground, background and resume"): list, then the most recently active
@@ -851,7 +868,7 @@ class WorkspaceService internal constructor(
             notifications = settings.value.notifyChat,
             pendingJoin = pendingJoin() != null,
             unsent = unsent,
-            lostUnsent = lostUnsent,
+            lostUnsent = lostUnsent.get(),
             selected = l?.selected,
             connection = connection(l, summaries),
             attention = minOf(attention, BADGE_CAP),
@@ -1302,6 +1319,13 @@ class WorkspaceService internal constructor(
             stateChanged()
         }
         return link
+    }
+
+    // As desktop's chatState call takes it: reported once, then 0. A file broken later in the session adds to it.
+    override fun takeLostUnsent(): Int {
+        val lost = lostUnsent.getAndSet(0)
+        if (lost != 0) stateChanged()
+        return lost
     }
 
     override suspend fun leaveWorkspace(ws: String) {

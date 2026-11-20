@@ -68,6 +68,12 @@ interface Workspaces {
     /** Keeps the link of a sign-up with an invitation in memory, for the Join sheet to take (§3.3). */
     fun rememberJoin(link: InviteLink)
     fun takePendingJoin(): InviteLink?
+
+    /**
+     * [ChatState.lostUnsent] once (§3.4): the count a broken cache took with it, which the state carries until the UI
+     * that showed it takes it here; then it is 0 again.
+     */
+    fun takeLostUnsent(): Int = 0
     suspend fun leaveWorkspace(ws: String)
     suspend fun deleteWorkspace(ws: String)
     suspend fun renameMe(ws: String, name: String)

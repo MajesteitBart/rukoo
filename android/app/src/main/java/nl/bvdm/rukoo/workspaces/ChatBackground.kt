@@ -29,7 +29,8 @@ import nl.bvdm.rukoo.core.AppLog
  * - **Network.** A network that comes back while the app is in the foreground counts as a resume
  *   ([WorkspaceService.nudge]): runs, the socket and the outbox try at once.
  * - **Background.** [ChatSyncWorker] runs every 15 minutes with a network, as unique periodic work, scheduled only
- *   while a workspace is cached and cancelled when none is.
+ *   while a workspace is cached and cancelled when the account, followed at least once, has none: signed out, team
+ *   chat off, no cache or no workspace.
  */
 class ChatBackground(
     private val context: Context,
@@ -55,6 +56,8 @@ class ChatBackground(
                 }
             }
         }
+        // hasWorkspaces stays silent until the service followed the account, so a process WorkManager started for
+        // ChatSyncWorker doesn't cancel that worker on the empty first state, and an app start keeps the work's schedule.
         scope.launch(Dispatchers.Default) {
             service().hasWorkspaces.collect { schedule(it) }
         }

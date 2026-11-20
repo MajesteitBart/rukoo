@@ -14,6 +14,7 @@ import nl.bvdm.rukoo.core.RukooJson
  * - [removed]: per room, the message IDs whose alerts go (`removed`, `removedMore`, a floor, a reset).
  * - [redacted]: per room, cached messages that lost their text.
  * - [pass]: a pass installed. [partial]: a page of a pass in progress, whose rooms wait in `pass_room`.
+ * - [reset]: a `410` reset, which takes back every alert of the workspace (§3.10).
  */
 data class PageResult(
     val changed: Set<String> = emptySet(),
@@ -25,6 +26,7 @@ data class PageResult(
     val redacted: Map<String, List<String>> = emptyMap(),
     val pass: Boolean = false,
     val partial: Boolean = false,
+    val reset: Boolean = false,
 )
 
 /** What `GET /` changed: a new [restored] generation or a new key both start a pass; [marked] unsent rows await a lookup. */
@@ -212,7 +214,7 @@ class FeedApplier(
         deleteWsEvents(ws)
         clearPass(ws)
         updateWs(ws, mapOf("cursor" to null, "passing" to true))
-        out.result()
+        out.result().copy(reset = true)
     }
 
     /**

@@ -156,6 +156,11 @@ interface ChatAlertWords {
  * Where the contract is silent this follows desktop: a due room that is silenced, or whose new messages hold nothing
  * to show, gets `notified = head` without an alert, so unmuting doesn't bring old messages back; one whose messages
  * couldn't load stays due for the next run.
+ *
+ * The summary shows no messages and so has no notice rows: reading every room it counts takes it back, and so do an
+ * eviction, a reset, the workspace going and the end of the session; a removed message doesn't. After a restart the
+ * engine no longer knows which rooms an earlier summary counted, so that one goes once no room of the workspace could
+ * still stand behind it: none unmuted, asking for attention, read to less than `notified`, without an alert of its own.
  */
 class ChatAlertEngine(
     private val sink: ChatAlertSink,
@@ -170,6 +175,10 @@ class ChatAlertEngine(
     private val lock = Any()
     private val shown = HashMap<String, Shown>()
 
+    // Workspaces whose summary this process tracks or already settled; any other may still show one from before the
+    // process started.
+    private val settled = HashSet<String>()
+
     private class Context(val me: String, val myName: String, val members: Map<String, Member>, val blocked: Set<String>, val suffix: String?)
 
     /**
@@ -179,6 +188,7 @@ class ChatAlertEngine(
     suspend fun afterRun(ws: String, store: WorkspaceStore, fetch: suspend (RoomRow) -> EventPage) {
         val row = store.read { getWs(ws) } ?: return
         takeBackRead(ws, store)
+        settleSummary(ws, store)
         val me = row.me ?: return
         if (row.state != FeedApplier.STATE_OK || row.fresh) return
         val due = store.read { listRooms(ws).filter(ChatAlertRules::due) }
@@ -259,35 +269,57 @@ class ChatAlertEngine(
         if (row == null || ChatAlertRules.readTo(row)) takeBack(ws, room, store)
     }
 
+    /** What a feed page, a pass install or a reset of [ws] did: a reset takes back every alert, else removals and evictions. */
+    suspend fun onPage(ws: String, result: PageResult, store: WorkspaceStore) {
+        if (result.reset) {
+            onReset(ws)
+            return
+        }
+        for ((room, ids) in result.removed) onRemoved(ws, room, ids, store)
+        for (room in result.evicted) onEvicted(ws, room)
+    }
+
     /**
-     * Messages of the room were removed (`removed`, `removedMore`, a floor, a reset): an alert that showed one of them
-     * goes. A reset deletes the room's notice rows in its own transaction, so a room left without notice rows loses its
-     * alert too: a room with an alert always has them otherwise.
+     * Messages of the room were removed (`removed`, `removedMore`, a floor): the room's alert goes when it showed one of
+     * them, by its notice rows or what this process showed. The summary showed none, so it keeps counting the room.
      */
     suspend fun onRemoved(ws: String, room: String, ids: Collection<String>, store: WorkspaceStore) {
         if (ids.isEmpty()) return
         val noticed = store.read { if (getRoom(ws, room) != null) noticesForRoom(ws, room).map { it.message }.toSet() else emptySet() }
         val entry = synchronized(lock) { shown[ChatAlertRules.roomKey(ws, room)] }
-        val hit = ids.any { it in noticed || (entry != null && it in entry.messages) }
-        if (hit || noticed.isEmpty()) takeBack(ws, room, store, force = noticed.isEmpty())
+        if (ids.any { it in noticed || (entry != null && it in entry.messages) }) takeBack(ws, room, store, summary = false)
     }
 
-    /** The person lost the room: its alert goes. Its notice rows went with the room. */
+    /** The person lost the room: its alert goes, and the summary stops counting it. Its notice rows went with the room. */
     fun onEvicted(ws: String, room: String) {
         forget(ws, room)
         sink.hide(ChatAlertRules.roomKey(ws, room))
     }
 
+    /**
+     * A `410` reset of [ws]: the removals missed before it can't be listed, so every alert of the workspace goes, the
+     * summary and those posted before this process started included (§3.10). The reset deleted the notice rows.
+     */
+    fun onReset(ws: String) = dropWorkspace(ws)
+
     /** The person lost the workspace: every alert of it goes. */
-    fun onWorkspaceGone(ws: String) {
-        synchronized(lock) { shown.entries.removeAll { it.value.ws == ws } }
-        sink.hideAll(ChatAlertRules.workspacePrefix(ws))
-    }
+    fun onWorkspaceGone(ws: String) = dropWorkspace(ws)
 
     /** The session ended: every chat alert goes. The service deletes the cache with its notice rows. */
     fun clear() {
-        synchronized(lock) { shown.clear() }
+        synchronized(lock) {
+            shown.clear()
+            settled.clear()
+        }
         sink.hideAll(ChatAlertRules.PREFIX)
+    }
+
+    private fun dropWorkspace(ws: String) {
+        synchronized(lock) {
+            shown.entries.removeAll { it.value.ws == ws }
+            settled += ws
+        }
+        sink.hideAll(ChatAlertRules.workspacePrefix(ws))
     }
 
     // ---- alerts ----
@@ -379,6 +411,8 @@ class ChatAlertEngine(
         val count = synchronized(lock) {
             val entry = shown.getOrPut(key) { Shown(ws, null, emptySet(), HashSet()) }
             entry.rooms += rooms.map { it.id }
+            // This summary replaces one from before the process started, and is tracked from here on.
+            settled += ws
             entry.rooms.size
         }
         val title = w.summaryTitle().let { if (ctx.suffix != null) "$it · ${ctx.suffix}" else it }
@@ -400,14 +434,14 @@ class ChatAlertEngine(
 
     // ---- taking back ----
 
-    // Drops the room from what is on screen; the summary goes once it stands for no room. True when the room had an
-    // alert of its own here.
-    private fun forget(ws: String, room: String): Boolean {
+    // Drops the room's own alert from what is on screen and, with [summary], the room from the summary, which goes once
+    // it stands for no room. True when the room had an alert of its own here.
+    private fun forget(ws: String, room: String, summary: Boolean = true): Boolean {
         var hideSummary = false
         val had = synchronized(lock) {
             val had = shown.remove(ChatAlertRules.roomKey(ws, room)) != null
-            val summary = shown[ChatAlertRules.summaryKey(ws)]
-            if (summary != null && summary.rooms.remove(room) && summary.rooms.isEmpty()) {
+            val entry = if (summary) shown[ChatAlertRules.summaryKey(ws)] else null
+            if (entry != null && entry.rooms.remove(room) && entry.rooms.isEmpty()) {
                 shown.remove(ChatAlertRules.summaryKey(ws))
                 hideSummary = true
             }
@@ -417,9 +451,9 @@ class ChatAlertEngine(
         return had
     }
 
-    // The room's alert goes, with its notice rows.
-    private suspend fun takeBack(ws: String, room: String, store: WorkspaceStore, force: Boolean = false) {
-        var had = forget(ws, room)
+    // The room's alert goes, with its notice rows; with [summary] the summary stops counting the room too.
+    private suspend fun takeBack(ws: String, room: String, store: WorkspaceStore, force: Boolean = false, summary: Boolean = true) {
+        var had = forget(ws, room, summary)
         val deleted = try {
             store.tx { if (getRoom(ws, room) != null) deleteNotices(ws, room).isNotEmpty() else false }
         } catch (e: WorkspaceError) {
@@ -443,6 +477,24 @@ class ChatAlertEngine(
             val row = store.read { getRoom(ws, room) }
             if (row == null || ChatAlertRules.readTo(row)) takeBack(ws, room, store, force = row == null)
         }
+    }
+
+    // A summary posted before this process started, which nothing here tracks: it goes once no room of the workspace
+    // could still stand behind it. Until then each run looks again; a new summary takes its place and is tracked.
+    private suspend fun settleSummary(ws: String, store: WorkspaceStore) {
+        if (synchronized(lock) { ws in settled }) return
+        val waiting = store.read {
+            val alerted = sql.query("SELECT DISTINCT room FROM notice WHERE ws = ?", ws) { it.text(0) }.toHashSet()
+            listRooms(ws).any { r ->
+                r.id !in alerted && !r.muted && !ChatAlertRules.readTo(r) &&
+                    (if (r.kind == RoomKind.DM.wire) r.unread > 0 else r.mentions > 0)
+            }
+        }
+        if (waiting) return
+        synchronized(lock) {
+            if (!settled.add(ws)) return
+        }
+        sink.hide(ChatAlertRules.summaryKey(ws))
     }
 }
 

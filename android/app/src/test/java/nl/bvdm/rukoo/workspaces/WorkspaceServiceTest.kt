@@ -4,8 +4,10 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -231,6 +233,97 @@ class WorkspaceServiceTest {
             assertEquals("server", e.code)
         }
         assertTrue("the server's info is asked again every hour", h.account.infoRefreshes >= 2)
+    }
+
+    @Test
+    fun `team chat turned off on the server stops the outbox's queued rows and its timer until it is back`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs()
+            upsertRoom(ws, room())
+            setMeta(Outbox.CLOCK_OFFSET, "0")
+            setMeta(Outbox.CLOCK_AT, TestDb.NOW.toString())
+            // Waiting out a backoff: the outbox's timer sends it in 30 s.
+            insertOutbox(OutboxRow("local1", ws, Ids.GENERAL, Ids.ME, Ids.grant(1), Ids.GEN, "hello", emptyList(), null, nextAt = TestDb.NOW + 30_000, createdAt = 1))
+        }
+        h.list(ws)
+        h.workspace(ws, room())
+        val post = h.route(ws, "/conversations/${Ids.GENERAL}/messages")
+        h.http.on("POST", post) { ok(SendAck.serializer(), SendAck(messageId = Ids.event(11), seq = 11), status = 201) }
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        runCurrent()
+        assertTrue("not due yet", h.http.calls("POST", post).isEmpty())
+
+        h.account.statusFlow.value = h.account.statusFlow.value.copy(info = ServerInfo(protocol = 1, features = listOf("booking")))
+        s.state.until("team chat off") { !it.available }
+        runCurrent()
+        val before = h.http.calls.size
+        advanceTimeBy(2 * ChatTiming.MINUTE)
+        assertEquals("no workspace request while team chat is off, the outbox's timer included", before, h.http.calls.size)
+        assertEquals(1, s.state.value.unsent)
+
+        h.account.statusFlow.value = h.account.statusFlow.value.copy(info = CHAT_INFO)
+        withTimeout(10_000) { while (h.http.calls("POST", post).isEmpty()) delay(100) }
+        s.state.until("sent once team chat is back") { it.unsent == 0 }
+        h.http.verify()
+    }
+
+    @Test
+    fun `ChatSyncWorker's schedule waits for the account, so a cached workspace never reads as none at start`() = runTest {
+        val h = Harness(this, db)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        h.account.signIn("mine")
+        val s = h.start()
+        val seen = CopyOnWriteArrayList<Boolean>()
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { s.hasWorkspaces.collect { seen += it } }
+        assertTrue("nothing before the service followed the account", seen.isEmpty())
+        s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        runCurrent()
+        assertEquals(listOf(true), seen.toList())
+
+        h.account.signOut()
+        s.state.until { !it.signedIn }
+        runCurrent()
+        assertEquals(listOf(true, false), seen.toList())
+    }
+
+    @Test
+    fun `signed out at start, ChatSyncWorker's schedule says no workspace once the account was followed`() = runTest {
+        val h = Harness(this, db)
+        val s = h.start()
+        val seen = CopyOnWriteArrayList<Boolean>()
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { s.hasWorkspaces.collect { seen += it } }
+        assertTrue(seen.isEmpty())
+        assertTrue(s.awaitReady())
+        runCurrent()
+        assertEquals(listOf(false), seen.toList())
+    }
+
+    @Test
+    fun `unsent messages a broken cache took are reported once, until the UI takes the count`() = runTest {
+        val h = Harness(this, db)
+        h.seed {
+            syncedWs()
+            upsertRoom(ws, room())
+            for (local in listOf("l1", "l2")) {
+                insertOutbox(OutboxRow(local, ws, Ids.GENERAL, Ids.ME, Ids.grant(1), Ids.GEN, "hi", emptyList(), null, createdAt = 1))
+            }
+            // A newer Rukoo's file: replaced, its outbox counted first.
+            sql.exec("UPDATE meta SET value = '2' WHERE key = 'schema'")
+        }
+        h.list()
+        h.account.signIn("mine")
+        val s = h.start()
+        val state = s.state.until("listed after the cache was made again") { it.signedIn && it.connection == Connection.ONLINE }
+        assertEquals("later states still carry it", 2, state.lostUnsent)
+        assertTrue(state.workspaces.isEmpty())
+        assertEquals(2, s.takeLostUnsent())
+        assertEquals(0, s.state.until { it.lostUnsent == 0 }.lostUnsent)
+        assertEquals(0, s.takeLostUnsent())
     }
 
     @Test

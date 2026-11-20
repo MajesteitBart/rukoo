@@ -104,6 +104,24 @@ class ChatAlertRulesTest {
         }
     }
 
+    /** [n] channels that each mention me once, the later ones more recently active. */
+    private suspend fun Setup.mentionRooms(n: Int): List<String> {
+        val ids = (0 until n).map { Ids.id("c", 11 + it) }
+        ids.forEachIndexed { i, id ->
+            val head = 10L + i
+            room(
+                room(id, name = "room$i", head = head, unread = 1, mentions = 1).copy(lastAt = 1_000L + i),
+                msg(head, room = 5 + i, mentions = listOf(Mention(Ids.ME, 0, 3))),
+            )
+        }
+        return ids
+    }
+
+    /** The room read on this phone up to its head. */
+    private suspend fun Setup.readAll(id: String) {
+        store.tx { setRoomFields(ws, id, mapOf("readLocal" to getRoom(ws, id)!!.head)) }
+    }
+
     private suspend fun Setup.row(id: String = Ids.GENERAL): RoomRow = store.read { getRoom(ws, id)!! }
 
     private suspend fun Setup.notices(id: String = Ids.GENERAL): List<Notice> = store.read { noticesForRoom(ws, id) }
@@ -283,20 +301,69 @@ class ChatAlertRulesTest {
         s.run()
         val applier = FeedApplier(s.store, Clock { TestDb.NOW })
         val result = applier.apply(ws, feed(room(Ids.DM, dm = true, head = 3, unread = 1, removed = listOf(Ids.event(2, 4))), next = "p1"), sentCursor = "c0")!!
-        for ((room, ids) in result.removed) s.engine.onRemoved(ws, room, ids, s.store)
+        assertFalse(result.reset)
+        s.engine.onPage(ws, result, s.store)
         assertTrue(s.sink.activeKeys().isEmpty())
     }
 
     @Test
-    fun `a reset takes back the alerts whose notices it deleted`() = runTest {
+    fun `a reset takes back every alert of the workspace, its summary and those from before a restart included`() = runTest {
         val s = setup()
-        s.room(room(Ids.DM, dm = true, head = 2, unread = 2), msg(1, room = 4), msg(2, room = 4))
+        s.mentionRooms(5)
         s.run()
-        // As after a restart: the engine no longer knows what it showed, only the notice rows do.
+        assertEquals("three alerts and a summary", 4, s.sink.activeKeys().size)
+        // As after a restart: the engine no longer knows what it showed, and the summary has no notice rows.
         val restarted = ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false })
         val result = FeedApplier(s.store, Clock { TestDb.NOW }).reset(ws)
-        for ((room, ids) in result.removed) restarted.onRemoved(ws, room, ids, s.store)
+        assertTrue(result.reset)
+        restarted.onPage(ws, result, s.store)
         assertTrue(s.sink.activeKeys().isEmpty())
+        assertEquals(ChatAlertRules.workspacePrefix(ws), s.sink.cleared.last())
+    }
+
+    @Test
+    fun `removing messages in the rooms a summary counts leaves the summary, and reading them takes it back`() = runTest {
+        val s = setup()
+        val ids = s.mentionRooms(5)
+        s.run()
+        val summary = ChatAlertRules.summaryKey(ws)
+        assertTrue(summary in s.sink.activeKeys())
+        // The two least recently active rooms are the summary's. Their messages go; the mentions stay unread.
+        s.engine.onRemoved(ws, ids[0], listOf(Ids.event(10, 5)), s.store)
+        s.engine.onRemoved(ws, ids[1], listOf(Ids.event(11, 6)), s.store)
+        assertTrue("a removal doesn't take the summary back", summary in s.sink.activeKeys())
+
+        s.readAll(ids[0])
+        s.engine.onRead(ws, ids[0], s.store)
+        assertTrue("one of its rooms is still unread", summary in s.sink.activeKeys())
+        s.readAll(ids[1])
+        s.engine.onRead(ws, ids[1], s.store)
+        assertFalse(summary in s.sink.activeKeys())
+    }
+
+    @Test
+    fun `after a restart, a summary goes once every room that could stand behind it was read`() = runTest {
+        val s = setup()
+        val ids = s.mentionRooms(5)
+        s.run()
+        val summary = ChatAlertRules.summaryKey(ws)
+        assertTrue(summary in s.sink.activeKeys())
+        val restarted = ChatAlertEngine(s.sink, { Words }, { true }, { _, _ -> false })
+        val run: suspend () -> Unit = { restarted.afterRun(ws, s.store) { throw WorkspaceError("network") } }
+
+        run()
+        assertTrue("its rooms are still unread", summary in s.sink.activeKeys())
+        s.readAll(ids[0])
+        run()
+        assertTrue(summary in s.sink.activeKeys())
+        s.readAll(ids[1])
+        run()
+        assertFalse(summary in s.sink.activeKeys())
+        assertEquals(
+            "the rooms with an alert of their own keep theirs",
+            ids.drop(2).map { ChatAlertRules.roomKey(ws, it) }.toSet(),
+            s.sink.activeKeys(),
+        )
     }
 
     @Test
@@ -322,14 +389,7 @@ class ChatAlertRulesTest {
     @Test
     fun `three rooms alert, newest first, and a fourth or more make one summary`() = runTest {
         val s = setup(workspaces = 2)
-        val ids = listOf(Ids.id("c", 11), Ids.id("c", 12), Ids.id("c", 13), Ids.id("c", 14), Ids.id("c", 15))
-        ids.forEachIndexed { i, id ->
-            val head = 10L + i
-            s.room(
-                room(id, name = "room$i", head = head, unread = 1, mentions = 1).copy(lastAt = 1_000L + i),
-                msg(head, room = 5 + i, mentions = listOf(Mention(Ids.ME, 0, 3))),
-            )
-        }
+        val ids = s.mentionRooms(5)
         s.run()
         val rooms = s.sink.shown.filter { !it.summary }
         assertEquals("the three most recently active rooms", listOf(ids[4], ids[3], ids[2]), rooms.map { it.room })
@@ -342,8 +402,7 @@ class ChatAlertRulesTest {
 
         // A summary goes once every room it stands for was read.
         for (id in listOf(ids[0], ids[1])) {
-            val head = s.row(id).head
-            s.store.tx { setRoomFields(ws, id, mapOf("readLocal" to head)) }
+            s.readAll(id)
             s.engine.onRead(ws, id, s.store)
         }
         assertFalse(ChatAlertRules.summaryKey(ws) in s.sink.activeKeys())
