@@ -3,7 +3,7 @@ import { icons } from './icons.js';
 import { fileSize } from './ui.js';
 import { h } from './agent/bui.js';
 import { parse } from './chat-markdown.js';
-import { fileLayout, fitBox, fileKind, cardImage, reactionNames, REACTION_LIMIT } from './chat-model.js';
+import { fileLayout, fitBox, fileKind, cardImage, reactionNames, REACTION_LIMIT, VIEWABLE } from './chat-model.js';
 import { FORMATS, SHORTCUTS } from './chat-format.js';
 
 // Team chat's rich messages (contract 3.3 to 3.6, 5.2): a message's Markdown as DOM, its files, link cards and
@@ -14,6 +14,9 @@ import { FORMATS, SHORTCUTS } from './chat-format.js';
 // h()'s text prop and text nodes, never as HTML. Icons are the app's own static markup.
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Rukoo in the browser (src/web): a page can't open a file in an app on the computer, so Open shows an image in a new
+// tab and downloads anything else, and Save is the browser's download (src/web/host.js chatFile).
+const WEB = window.mail?.platform === 'web';
 
 export function svg(name) {
   const tpl = document.createElement('template');
@@ -209,32 +212,48 @@ function observeImage(img, load) {
   lazy.observe(img);
 }
 
+// The promise of file's address: the one kept for the session, else a new one from url(file).
+function imageUrl(file, url) {
+  let p = imageUrls.get(file.id);
+  if (!p && url) {
+    p = Promise.resolve()
+      .then(() => url(file))
+      .then((r) => (r && typeof r.url === 'string' ? r.url : typeof r === 'string' ? r : null));
+    imageUrls.set(file.id, p);
+  }
+  return Promise.resolve(p);
+}
+// An address that failed is asked for again next time, unless another one replaced it meanwhile.
+const forgetUrl = (file, p) => {
+  if (imageUrls.get(file.id) === p) imageUrls.delete(file.id);
+};
+
 // Puts the picture of file into img once it's near the view. url(file) answers main's address for it. The tile shows
-// a quiet placeholder until then, and an icon when the file can't load.
+// a quiet placeholder until then, and an icon when the file can't load. A kept address can stop working: the file left
+// the download cache (files.js trim), which takes its address with it. So a picture that doesn't load asks main once
+// more, which downloads it again, before the tile gives up.
 export function loadImage(img, file, url) {
   const box = img.parentElement;
-  const done = (src) => {
-    if (!src) return failed();
-    img.addEventListener('load', () => box && box.classList.add('is-loaded'), { once: true });
-    img.addEventListener('error', failed, { once: true });
-    img.src = src;
-  };
-  function failed() {
-    imageUrls.delete(file.id);
-    if (box) box.classList.add('is-failed');
-  }
-  const known = imageUrls.get(file.id);
+  let tries = 0;
   const run = () => {
-    let p = imageUrls.get(file.id);
-    if (!p) {
-      p = Promise.resolve()
-        .then(() => url(file))
-        .then((r) => (r && typeof r.url === 'string' ? r.url : typeof r === 'string' ? r : null));
-      imageUrls.set(file.id, p);
-    }
-    p.then(done, failed);
+    tries += 1;
+    const p = imageUrl(file, url);
+    const failed = () => {
+      forgetUrl(file, p);
+      if (box) box.classList.add('is-failed');
+    };
+    p.then((src) => {
+      if (!src) return failed();
+      img.onload = () => box && box.classList.add('is-loaded');
+      img.onerror = () => {
+        forgetUrl(file, p);
+        if (tries < 2) run();
+        else failed();
+      };
+      img.src = src;
+    }, failed);
   };
-  if (known) run();
+  if (imageUrls.get(file.id)) run();
   else observeImage(img, run);
 }
 
@@ -279,7 +298,11 @@ function fileCard(f, { unsent, onOpen, onSave }) {
   const tile = h('span', { class: 'ch-file-ic', 'aria-hidden': 'true' }, svg(fileIcon(f)));
   const text = h('span', { class: 'ch-file-text' }, h('span', { class: 'ch-file-name', text: f.name || '', title: f.name || '' }), h('span', { class: 'ch-file-meta', text: meta }));
   if (unsent) return h('div', { class: 'ch-file is-unsent', 'data-file': f.id }, tile, text);
-  const open = h('button', { type: 'button', class: 'ch-file-main', 'data-roving': '', tabindex: '-1', 'aria-label': t('chat.files.open', { name: f.name || '', size: meta }), title: t('chat.files.openTitle') }, tile, text);
+  const label = { name: f.name || '', size: meta };
+  const tab = WEB && VIEWABLE.has(String(f.type || '').toLowerCase());
+  const openLabel = WEB ? t(tab ? 'chat.files.webOpenImage' : 'chat.files.webOpen', label) : t('chat.files.open', label);
+  const openTitle = WEB ? t(tab ? 'chat.files.webOpenImageTitle' : 'chat.files.webOpenTitle') : t('chat.files.openTitle');
+  const open = h('button', { type: 'button', class: 'ch-file-main', 'data-roving': '', tabindex: '-1', 'aria-label': openLabel, title: openTitle }, tile, text);
   const save = h('button', { type: 'button', class: 'ch-file-dl', 'data-roving': '', tabindex: '-1', 'aria-label': t('chat.files.save', { name: f.name || '' }), title: t('chat.files.saveTitle') }, svg('download'));
   const card = h('div', { class: 'ch-file', 'data-file': f.id }, open, save);
   open.addEventListener('click', () => onOpen && onOpen(f, card));
@@ -370,8 +393,8 @@ export function openViewer(images, index, { url, onOpen, onSave } = {}) {
     if (text) b.append(h('span', { text }));
     return b;
   };
-  const openB = btn('open', 'popOut', t('chat.viewer.openTitle'), t('chat.viewer.open'));
-  const saveB = btn('save', 'download', t('chat.viewer.saveTitle'), t('chat.viewer.save'));
+  const openB = btn('open', 'popOut', t(WEB ? 'chat.viewer.webOpenTitle' : 'chat.viewer.openTitle'), t('chat.viewer.open'));
+  const saveB = btn('save', 'download', t(WEB ? 'chat.viewer.webSaveTitle' : 'chat.viewer.saveTitle'), t(WEB ? 'chat.viewer.webSave' : 'chat.viewer.save'));
   const closeB = btn('close', 'close', t('chat.viewer.close'));
   const bar = h('div', { class: 'ch-viewer-bar' }, h('div', { class: 'ch-viewer-titles' }, name, meta), h('div', { class: 'ch-viewer-actions' }, openB, saveB, closeB));
   const img = h('img', { class: 'ch-viewer-img', alt: '', draggable: 'false' });
@@ -397,22 +420,27 @@ export function openViewer(images, index, { url, onOpen, onSave } = {}) {
     const box = fitBox(f.width, f.height, f.width || 360, f.height || 280);
     img.width = box.width;
     img.height = box.height;
-    let p = imageUrls.get(f.id);
-    if (!p && url) {
-      p = Promise.resolve()
-        .then(() => url(f))
-        .then((r) => (r && typeof r.url === 'string' ? r.url : typeof r === 'string' ? r : null));
-      imageUrls.set(f.id, p);
-    }
-    Promise.resolve(p).then(
-      (src) => {
+    // As loadImage: an address that stopped working is asked for once more before the picture shows as failed.
+    const attempt = (n) => {
+      const p = imageUrl(f, url);
+      const failed = () => {
+        forgetUrl(f, p);
+        if (my === token) stage.classList.add('is-failed');
+      };
+      p.then((src) => {
         if (my !== token) return;
-        if (!src) return stage.classList.add('is-failed');
-        img.addEventListener('load', () => my === token && stage.classList.add('is-loaded'), { once: true });
+        if (!src) return failed();
+        img.onload = () => my === token && stage.classList.add('is-loaded');
+        img.onerror = () => {
+          if (my !== token) return;
+          forgetUrl(f, p);
+          if (n === 0 && url) attempt(1);
+          else failed();
+        };
         img.src = src;
-      },
-      () => my === token && stage.classList.add('is-failed')
-    );
+      }, failed);
+    };
+    attempt(0);
     prev.disabled = at === 0;
     next.disabled = at === list.length - 1;
   }
@@ -557,7 +585,14 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
   function onDown(e) {
     if (!root.contains(e.target) && !(anchor && anchor.contains(e.target))) close({ refocus: false });
   }
-  const onResize = () => close({ refocus: false });
+  // A resize moves the anchor, so the picker closes. In the browser a phone's keyboard, which opens for the search
+  // field, only makes the page shorter (interactive-widget=resizes-content in src/web/index.html): the picker moves
+  // with its anchor then, and only a change of width (a phone turned, a window resized) closes it.
+  const openWidth = window.innerWidth;
+  const onResize = () => {
+    if (WEB && window.innerWidth === openWidth) place();
+    else close({ refocus: false });
+  };
 
   function pick(e) {
     const char = withTone(e, tone);
@@ -702,22 +737,29 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
       else if (cells.length) pick(cells[0].__emoji);
     }
   });
+  // The cells in a row: COLUMNS, or the grid's own count where the page lays it out with another (web.css fits 44px
+  // cells on a phone). Read from the focused cell's row, which is on screen and laid out.
+  const columns = (cell) => {
+    const tracks = cell && cell.parentElement ? getComputedStyle(cell.parentElement).gridTemplateColumns : '';
+    return /^[\d.]+px( [\d.]+px)*$/.test(tracks) ? tracks.split(' ').length : COLUMNS;
+  };
   grid.addEventListener('keydown', (e) => {
     const i = cells.indexOf(document.activeElement);
     if (i < 0) return;
-    // Rows hold COLUMNS cells within a section; Up and Down move to the same column of the row above or below.
-    const move = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -COLUMNS, ArrowDown: COLUMNS }[e.key];
+    const cols = columns(cells[i]);
+    // Rows hold cols cells within a section; Up and Down move to the same column of the row above or below.
+    const move = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols }[e.key];
     if (move) {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === 'ArrowUp' && i < COLUMNS) return search.focus();
+      if (e.key === 'ArrowUp' && i < cols) return search.focus();
       setActive(i + move);
     } else if (e.key === 'Home' || e.key === 'End') {
       e.preventDefault();
       setActive(e.key === 'Home' ? 0 : cells.length - 1);
     } else if (e.key === 'PageDown' || e.key === 'PageUp') {
       e.preventDefault();
-      setActive(i + (e.key === 'PageDown' ? 1 : -1) * COLUMNS * 5);
+      setActive(i + (e.key === 'PageDown' ? 1 : -1) * cols * 5);
     }
   });
   root.addEventListener('keydown', (e) => {
@@ -738,17 +780,23 @@ export function openEmojiPicker({ anchor, onPick, onClose, label = t('chat.emoji
   picker = api;
   document.body.append(root);
   // Beside the anchor: under it when it fits, else above; its right edge with the anchor's where the window is narrow.
-  const place = () => {
+  // Never over the title bar, which lies above it (and drags the desktop's window, a tap there goes Back on a phone):
+  // at most from 8px under the bar, as the shared menus keep (ui.js), and as tall as the room left there.
+  function place() {
     const r = anchor ? anchor.getBoundingClientRect() : { left: 8, right: 8, top: 8, bottom: 8 };
+    const bar = document.querySelector('.titlebar');
+    const top = Math.max(8, (bar ? bar.getBoundingClientRect().bottom : 0) + 8);
+    const bottom = window.innerHeight - 8;
+    root.style.maxHeight = `${Math.max(0, bottom - top)}px`;
     const w = root.offsetWidth;
     const hgt = root.offsetHeight;
-    const below = r.bottom + 6 + hgt <= window.innerHeight - 8;
+    const below = r.bottom + 6 + hgt <= bottom;
     let left = r.left;
     if (left + w > window.innerWidth - 8) left = r.right - w;
     root.style.left = `${Math.max(8, Math.min(left, window.innerWidth - w - 8))}px`;
-    root.style.top = `${Math.max(8, below ? r.bottom + 6 : r.top - hgt - 6)}px`;
+    root.style.top = `${Math.max(top, Math.min(below ? r.bottom + 6 : r.top - hgt - 6, bottom - hgt))}px`;
     root.style.transformOrigin = below ? 'top left' : 'bottom left';
-  };
+  }
   place();
   if (anchor) anchor.setAttribute('aria-expanded', 'true');
   document.addEventListener('pointerdown', onDown, true);
@@ -821,9 +869,13 @@ export function mountTray(handlers) {
   const el = h('div', { class: 'ch-tray', role: 'list', 'aria-label': t('chat.files.trayLabel'), hidden: true });
   const items = new Map();
 
+  // A browser tells the page nothing of an upload until the server answers (src/web/engine/shims/http.js), so the web
+  // shows that it uploads, without a share.
+  const unmeasured = (s) => WEB && s.state === 'uploading';
   function stateText(s) {
     if (s.state === 'failed') return handlers.errorText ? handlers.errorText(s.error) : t('chat.files.failed');
     if (s.state === 'measuring') return t('chat.files.preparing');
+    if (unmeasured(s)) return t('chat.files.webUploading');
     if (s.state === 'uploading') return t('chat.files.uploading', { percent: percent(s) });
     return t('chat.files.ready');
   }
@@ -858,16 +910,21 @@ export function mountTray(handlers) {
   function update(item, s) {
     const text = stateText(s);
     const size = fileSize(Number(s.size) || 0);
-    // A thumbnail has no room for the line: it's the accessible name and the tooltip instead.
+    // A thumbnail has no room for the line: it's the accessible name and the tooltip instead. In the browser a failed
+    // picture shows it (web.css), as a touch screen has no tooltip.
     if (item.image) item.sub.textContent = s.state === 'failed' ? text : '';
     else item.sub.textContent = `${size} · ${text}`;
     item.node.classList.toggle('is-busy', s.state === 'measuring' || s.state === 'uploading');
     item.node.classList.toggle('is-failed', s.state === 'failed');
     item.node.classList.toggle('is-ready', s.state === 'ready');
+    item.node.classList.toggle('is-unmeasured', unmeasured(s));
     item.node.setAttribute('aria-label', `${s.name || ''}, ${size}, ${text}`);
     item.node.title = `${s.name || ''} · ${size} · ${text}`;
-    item.bar.firstChild.style.width = `${s.state === 'uploading' ? percent(s) : s.state === 'measuring' ? 0 : 100}%`;
-    item.retry.hidden = s.state !== 'failed';
+    // An upload of unknown share leaves the bar to web.css, which runs a light along it.
+    item.bar.firstChild.style.width = unmeasured(s) ? '' : `${s.state === 'uploading' ? percent(s) : s.state === 'measuring' ? 0 : 100}%`;
+    // A browser can't read a picked file again once it changed on disk (only the file chooser hands out a new one), so
+    // Retry, which reads it again, can't help there; the text says to attach it again (chat.errors.webFileUnreadable).
+    item.retry.hidden = s.state !== 'failed' || (WEB && s.error === 'unreadable');
   }
 
   function set(list) {

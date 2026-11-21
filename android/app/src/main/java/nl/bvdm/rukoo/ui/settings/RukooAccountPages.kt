@@ -117,6 +117,7 @@ private fun platformName(platform: String): String = when (platform) {
     "darwin" -> stringResource(R.string.settings_rukoo_platform_darwin)
     "linux" -> stringResource(R.string.settings_rukoo_platform_linux)
     "android" -> stringResource(R.string.settings_rukoo_platform_android)
+    "web" -> stringResource(R.string.settings_rukoo_platform_web)
     else -> platform
 }
 

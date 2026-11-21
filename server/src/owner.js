@@ -36,7 +36,8 @@ function refuse(result) {
   return new HttpError(STATUS[error] ?? 409, error, MESSAGES[error] ?? 'The request was refused.', {}, extra);
 }
 
-// The session's account and what it says about its booking page, or a 401.
+// The session's account and what it says about its booking page, or a 401. A session made in a browser gets 403
+// browser_session here, before anything about the page is read (account.js, bookingAuth).
 async function signedIn(request, env) {
   const match = (request.headers.get('authorization') || '').match(TOKEN);
   if (!match || !ACCOUNT_NAME.test(match[1])) throw new HttpError(401, 'unauthorized', 'Sign in first.');

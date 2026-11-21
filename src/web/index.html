@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  Rukoo in the browser, served at /app/. website/tools/build-app.mjs copies this file to website/site/app/index.html,
+  next to a copy of src/renderer, so the relative addresses below are the same files the desktop window loads.
+
+  What differs from src/renderer/index.html, and why:
+  - No meta Content-Security-Policy. The site Worker sends the policy as a header (website/cloudflare/web-app.js); a
+    meta policy would be enforced on top of it, and the desktop one blocks every connection (connect-src 'none').
+  - data-platform="web" is set here already, so the web styles apply from the first paint; bootstrap.js isn't loaded.
+  - A viewport for phones. interactive-widget=resizes-content shrinks the page when the on-screen keyboard opens, so
+    the composer stays above it.
+  - A tab icon and a home screen icon; the desktop window has its own.
+  - No agent.css: the agent pane isn't part of the web app, and Chat uses none of its styles.
+  - The i18n catalogs are in i18n/ beside the renderer files, not in ../i18n/.
+  - web/bridge.js, a classic script, defines window.mail before any module runs, as src/main/preload.js does on the
+    desktop. web-shell.js takes the place of bootstrap.js and app.js: Chat and the Rukoo account only.
+  - The title bar keeps the brand and an empty actions slot; the mail search box is left out.
+-->
+<html lang="en" data-platform="web">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="robots" content="noindex" />
+    <title>Rukoo</title>
+    <link rel="icon" href="assets/rukoo-icon-dark.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="web.css" />
+  </head>
+  <body class="main-window">
+    <div class="titlebar">
+      <div class="titlebar-brand">
+        <img class="titlebar-icon brand-dark" src="assets/rukoo-icon-dark.svg" alt="" />
+        <img class="titlebar-icon brand-light" src="assets/rukoo-icon.svg" alt="" />
+      </div>
+      <div class="titlebar-actions"></div>
+    </div>
+    <div id="app"></div>
+    <div id="overlays"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="i18n/en.js"></script>
+    <script src="i18n/nl.js"></script>
+    <script src="i18n/index.js"></script>
+    <script src="web/bridge.js"></script>
+    <script type="module" src="web-shell.js"></script>
+  </body>
+</html>

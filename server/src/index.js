@@ -22,6 +22,7 @@ import {
   positive,
   previewsOn,
   registryObject,
+  webAppOn,
   workspaceLimits,
   workspaceOrigin,
   workspacesOn
@@ -84,7 +85,9 @@ async function handle(request, env, ctx) {
           files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null
         }
       : null;
-    return html(privacy({ ...config(env, url), chat }, privacyLanguage(url, request.headers.get('accept-language'))), method);
+    // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
+    // says so with WEB_APP, which the statement then covers.
+    return html(privacy({ ...config(env, url), chat, web: webAppOn(env) }, privacyLanguage(url, request.headers.get('accept-language'))), method);
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
   // root never redirects it; the link's fragment stays in the browser either way. With team chat off the path is the
@@ -95,6 +98,9 @@ async function handle(request, env, ctx) {
   if (path === '/join' && reading && workspacesOn(env) && !bookingHere) {
     const cfg = { ...config(env, url), host: url.host, inviteSignups: inviteSignups(env) };
     const response = html(joinPage(cfg, privacyLanguage(url, request.headers.get('accept-language'))), method);
+    // Tells the rukoo.io site Worker this is the invitation page, so it can send the browser to the web app; a booking
+    // page under the handle join never carries it (website/cloudflare/web-app.js).
+    response.headers.set('x-rukoo-workspace-invite', '1');
     response.headers.set('referrer-policy', 'no-referrer');
     for (const [name, value] of Object.entries(NOINDEX)) response.headers.set(name, value);
     return response;

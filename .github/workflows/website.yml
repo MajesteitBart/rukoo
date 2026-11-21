@@ -2,15 +2,41 @@ name: Website
 
 # Tests the website on every change to it. A change that reaches main also deploys it to rukoo.io, once the tests
 # pass. Run the workflow by hand on main to deploy without a change, for example after a server deploy.
+# Rukoo in the browser (rukoo.io/app) is built from the desktop's renderer, catalogs and chat engine, so a change to
+# those is a change to the website too. A server change only runs the tests: the browser tests run against it, but
+# the server deploys separately. The tests also start the server from its wrangler.jsonc and seed it with
+# test/fixtures/real-server.js.
 on:
   pull_request:
     paths:
       - 'website/**'
+      - 'src/renderer/**'
+      - 'src/i18n/**'
+      - 'src/web/**'
+      - 'src/main/workspaces/**'
+      - 'server/src/**'
+      - 'server/wrangler.jsonc'
+      - 'server/package-lock.json'
+      # What the website's tests hold the browser's ports to, or load to run: the desktop's account code and the
+      # vectors it shares with the browser's port, the account server fixtures and what they require.
+      - 'src/main/account/**'
+      - 'src/main/booking/rules.js'
+      - 'src/main/calendar/zone.js'
+      - 'src/main/calendar/availability.js'
+      - 'test/fixtures/real-server.js'
+      - 'test/fixtures/account-server.js'
+      - 'test/fixtures/account-vectors.json'
+      - 'test/fixtures/chat-vectors.json'
+      - 'test/tmp.js'
       - '.github/workflows/website.yml'
   push:
     branches: [main]
     paths:
       - 'website/**'
+      - 'src/renderer/**'
+      - 'src/i18n/**'
+      - 'src/web/**'
+      - 'src/main/workspaces/**'
       - '.github/workflows/website.yml'
   workflow_dispatch:
 
@@ -26,12 +52,12 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: website
     env:
-      # The image and screenshot tools use Playwright; the tests don't need a browser.
+      # The image and screenshot tools use Playwright; only the browser tests need a browser, installed below.
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v7
@@ -41,9 +67,23 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: |
+            website/package-lock.json
+            server/package-lock.json
       - run: npm ci
+      # Wrangler and the local Workers runtime, which the browser tests run the account server in.
+      - run: npm ci --prefix ../server
+      - run: npm run app:build
       - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      # The deploy job takes the app from here, so it is the build these tests ran against.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rukoo-app
+          path: website/site/app
+          if-no-files-found: error
+          retention-days: 3
 
   deploy:
     needs: test
@@ -64,8 +104,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      # No npm ci: deploying needs only Wrangler, so no other package runs next to the token.
-      - run: npm run deploy
+      - uses: actions/download-artifact@v8
+        with:
+          name: rukoo-app
+          path: website/site/app
+      # site/app is gitignored: without the artifact Wrangler would deploy the site without the app and not say so.
+      - run: test -f site/app/index.html
+      # No npm ci and no build: deploying needs only Wrangler, so no other package runs next to the token. That is
+      # also why this isn't npm run deploy, which builds the app first.
+      - run: npx --yes wrangler@4 deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

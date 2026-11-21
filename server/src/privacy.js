@@ -102,6 +102,15 @@ const TEXT = {
       provider && place
         ? { at: `${provider} in ${place}`, who: provider, keeps: `${provider} keeps them on our behalf under its data processing terms.` }
         : { at: 'the S3-compatible service this server uses', who: 'that service', keeps: 'That service keeps them on our behalf.' },
+    web: 'In a browser',
+    // files: whether the server keeps team chat's files (they then pass through the page too).
+    webText: (files) => [
+      `This server’s website also runs Rukoo in a browser, at /app/: team chat, signing up and signing in, without installing anything. The browser keeps a few things in this site’s storage on your computer: the server’s address, your email address and the session’s token; your language, theme and whether chat notifications are on, and whether this browser can show them; whether the sidebar is folded, whether the formatting bar shows and whether you closed the notice about the Rukoo apps; the emoji you used last and the skin tone you picked for them; the IDs of the workspaces you are in and of the conversation you last had open in each; for each open tab, how many messages it still has to send; and, in the tab alone, the invitation link it was opened with until you use it. They are there because the page needs them to work, not to follow you: the site sets no cookies and runs no analytics. Messages and drafts are only in the page’s memory, and go when you close it.${files ? ' So are the files you attach and the ones the page downloads to show them to you: closing the page clears them. An image you open in a new tab stays in that tab until you close it. A file you download is a copy your browser saves on your device, and it stays there.' : ''}`,
+      'Signing out removes the session, the invitation link and the counts of messages still to send. The rest stays in the browser, without names or messages, so Chat opens where you were, as you set it up, when you sign in again.',
+      'The server knows a session made in a browser as one, and lets it use team chat, see the account and its devices, sign devices out, sign out and delete the account. It can’t read or change your encrypted records or use your booking page. The browser never keeps your password or your data key, and doesn’t show What’s stored and shared or Export my data, nor change your password or recovery key; use the Rukoo app for those.',
+      'The page’s code comes from this site each time you open it. Whoever runs the site, or someone who broke into it, could change that code to read your password as you type it, and with it open your encrypted records. The Rukoo apps run the code you installed. If that matters to you, use team chat in one of them.'
+    ],
+    webSecurity: 'In a browser that holds only as long as the page’s code is what this site published (see In a browser).',
     security: 'Security',
     securityText: (protocol) =>
       `Your password goes through Argon2id on your device, and your records are encrypted with AES-256-GCM before they leave it. We can’t reset your password: without your password or your recovery key, nobody can open your records, including us. ${protocol} describes exactly how it works.`,
@@ -192,6 +201,14 @@ const TEXT = {
       provider && place
         ? { at: `${provider} in ${place}`, who: provider, keeps: `${provider} bewaart ze namens ons onder zijn verwerkersvoorwaarden.` }
         : { at: 'de S3-compatibele dienst die deze server gebruikt', who: 'die dienst', keeps: 'Die dienst bewaart ze namens ons.' },
+    web: 'In een browser',
+    webText: (files) => [
+      `De website van deze server draait Rukoo ook in een browser, op /app/: teamchat, een account maken en inloggen, zonder iets te installeren. De browser bewaart een paar dingen in de opslag van deze site op je computer: het adres van de server, je e-mailadres en het token van de sessie; je taal, thema en of chatmeldingen aanstaan, en of deze browser ze kan tonen; of de zijbalk is ingeklapt, of de opmaakbalk zichtbaar is en of je de melding over de Rukoo-apps hebt gesloten; de emoji die je het laatst gebruikte en de huidskleur die je ervoor koos; de ID’s van de werkruimtes waarin je zit en van het gesprek dat je in elk ervan het laatst open had; per open tabblad hoeveel berichten het nog moet versturen; en, alleen in dat tabblad, de uitnodigingslink waarmee het werd geopend, tot je die gebruikt. Ze staan er omdat de pagina ze nodig heeft om te werken, niet om je te volgen: de site zet geen cookies en doet geen analyses. Berichten en concepten staan alleen in het geheugen van de pagina, en verdwijnen als je die sluit.${files ? ' Dat geldt ook voor de bestanden die je toevoegt en de bestanden die de pagina downloadt om ze je te laten zien: sluit je de pagina, dan zijn ze weg. Een afbeelding die je in een nieuw tabblad opent, blijft in dat tabblad tot je het sluit. Een bestand dat je downloadt, is een kopie die je browser op je apparaat opslaat, en die blijft staan.' : ''}`,
+      'Uitloggen verwijdert de sessie, de uitnodigingslink en de tellingen van berichten die nog moeten worden verstuurd. De rest blijft in de browser staan, zonder namen of berichten, zodat Chat opent waar je was en zoals je het had ingesteld als je weer inlogt.',
+      'De server kent een sessie die in een browser is gemaakt als zodanig, en laat die teamchat gebruiken, het account en de apparaten erin tonen, apparaten afmelden, uitloggen en het account verwijderen. Zo’n sessie kan je versleutelde records niet lezen of wijzigen en je afsprakenpagina niet gebruiken. De browser bewaart nooit je wachtwoord of je gegevenssleutel, en toont Wat er wordt opgeslagen en gedeeld en Mijn gegevens exporteren niet, en wijzigt je wachtwoord of herstelsleutel niet; gebruik daarvoor de Rukoo-app.',
+      'De code van de pagina komt elke keer dat je hem opent van deze site. Wie de site beheert, of iemand die erop heeft ingebroken, zou die code zo kunnen veranderen dat hij je wachtwoord leest terwijl je het typt, en daarmee je versleutelde records openen. De Rukoo-apps draaien de code die je hebt geïnstalleerd. Vind je dat belangrijk, gebruik teamchat dan in een van de apps.'
+    ],
+    webSecurity: 'In een browser geldt dat alleen zolang de code van de pagina is wat deze site publiceerde (zie In een browser).',
     security: 'Beveiliging',
     securityText: (protocol) =>
       `Je wachtwoord gaat op je apparaat door Argon2id, en je records worden met AES-256-GCM versleuteld voordat ze het verlaten. We kunnen je wachtwoord niet resetten: zonder je wachtwoord of je herstelsleutel kan niemand je records openen, wij ook niet. ${protocol} beschrijft precies hoe het werkt.`,
@@ -232,8 +249,9 @@ function bytesText(bytes, lang) {
 // chat: null while team chat is off, else { retentionDays, inviteSignups, previews, files } (index.js), files null
 // without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
 // (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
-// files only where the server makes or keeps them.
-export function privacy({ operator, jurisdiction, chat = null }, lang = 'en') {
+// files only where the server makes or keeps them. web: Rukoo in the browser runs on this server's website (WEB_APP,
+// with team chat on), which the statement then covers too.
+export function privacy({ operator, jurisdiction, chat = null, web = false }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
   const contact = operator.contact ? T.contact(contactLink(operator.contact)) : '';
@@ -248,6 +266,12 @@ export function privacy({ operator, jurisdiction, chat = null }, lang = 'en') {
     : null;
   const teamChat = chat
     ? `<h2 id="team-chat">${escape(T.chat)}</h2>\n${T.chatText(chat.retentionDays, chat.inviteSignups, chat.previews, files)
+        .map((p) => `<p>${escape(p)}</p>`)
+        .join('\n')}\n\n`
+    : '';
+  const inBrowser = chat && web;
+  const browser = inBrowser
+    ? `<h2 id="in-a-browser">${escape(T.web)}</h2>\n${T.webText(Boolean(files))
         .map((p) => `<p>${escape(p)}</p>`)
         .join('\n')}\n\n`
     : '';
@@ -294,8 +318,8 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <h2 id="booking-pages">${escape(T.booking)}</h2>
 ${T.bookingText.map((p) => `<p>${escape(p)}</p>`).join('\n')}
 
-${teamChat}<h2>${escape(T.security)}</h2>
-<p>${T.securityText(link(PROTOCOL_URL, T.protocol))}</p>
+${teamChat}${browser}<h2>${escape(T.security)}</h2>
+<p>${T.securityText(link(PROTOCOL_URL, T.protocol))}${inBrowser ? ` ${escape(T.webSecurity)}` : ''}</p>
 
 <h2>${escape(T.changes)}</h2>
 <p>${escape(T.changesText)}</p>

@@ -1,3 +1,5 @@
 .wrangler/
 .netlify/
 .dev.vars
+# Built by npm run app:build (tools/build-app.mjs).
+site/app/

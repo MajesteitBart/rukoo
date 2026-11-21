@@ -66,6 +66,49 @@ Earlier versions of Rukoo used `https://rukoo-account.bvdm.ai`, which reaches th
 
 An account made at the old address doesn't sign in at rukoo.io, and the server holds one account per email address for both addresses. To move yours, delete the account on a device that is still signed in at the old address, then create it again at rukoo.io. That device keeps its own copy and sends it to the new account. Deleting also turns your booking page off and deletes its bookings, so turn the page on again afterwards. The handle stays yours when you make the account again on the same computer: that computer keeps a key for it, because anyone could sign up with your email address in between. Your other devices are signed out and now use rukoo.io, so sign them in again with the new account. On any other device, sign in to the old account by choosing the server row while signed out and entering the old address.
 
+## In a browser
+
+On rukoo.io, a [team chat](chat.md) invitation link opens Chat in the browser at `rukoo.io/app/`, so the person invited can start without installing Rukoo. Chat is the only part of Rukoo there. You sign up or sign in with the same Rukoo account. Once you're signed in, a notice above the page lists the Rukoo apps in the order to get them: the desktop app for mail, calendar and meetings, then Rukoo for Android, then Rukoo Voice for dictation and meeting recording. The desktop step links the download for your system. Close the notice and it stays gone in that browser. [website/README.md](../website/README.md#rukoo-in-the-browser) explains how the page is built and served.
+
+The page needs Chrome or Edge 112, Firefox 119, Safari 17 or a newer version. An older browser lacks what the chat code uses to check emoji and message text, and the page says to update it.
+
+The browser keeps these in the site's storage:
+
+- `rukoo.web.session` in local storage: the server's address, your email address, the session token and when you signed in.
+- `rukoo.web.settings` in local storage: the language, the theme and whether chat notifications are on.
+- `rukoo.web.layout` in local storage: whether the sidebar is collapsed.
+- `rukoo.web.apps` in local storage: `dismissed` once you close the notice about the Rukoo apps, so it doesn't show again in this browser.
+- `rukoo.chat.open` in local storage: the IDs of each workspace you're in and of the conversation you last had open there.
+- `rukoo.chat.emoji.recent` in local storage: the emoji you used last in reactions and messages, at most 24.
+- `rukoo.chat.emoji.skin` in local storage: the skin tone you picked for emoji.
+- `rukoo.chat.formatBar` in local storage: whether the formatting bar above the text shows.
+- `rukoo.web.unsent.` and a random ID for each open tab, in local storage: how many chat messages that tab still has to send, with a tag of the session (the first 22 characters of a SHA-256 hash of the session token), so that signing out in one tab can count the messages waiting in the others. It holds no message text, and goes when the tab closes or has sent everything.
+- `rukoo.web.notifications` in local storage: `unsupported` once the browser refused to show a notification the page made, as Chrome on Android does, so Settings stops offering notifications there.
+- `rukoo.web.join` in the tab's session storage: the invitation link the page was opened with, its secret included. Other tabs don't see it. It goes when you join with it, sign out, delete the account or close the tab.
+
+Messages, channels, members and drafts are only in the page's memory. They load from the server again each time you open the page, and messages that haven't been sent yet are lost when the page closes; the browser asks before it closes the page while there are any. The browser doesn't keep your password or the account's data key. At sign-in the page checks that the key the server sent opens with your password, then forgets the key, so the browser never reads or changes your categories or corrections.
+
+Team chat's files work as in the app where the server stores them: attach them, drop them on the conversation or paste them, and images show in the message. A file you pick with the paperclip is read from your disk as it uploads; a dropped or pasted one is copied into the page's memory first. While a file uploads, the tray says so without a percentage: a page learns how much of an upload went only when the server answers. So the page also can't tell a slow upload from one that stalled. It gives the files uploading together the time they take at about 128 kbit/s, plus a minute, and on a slower connection their uploads fail. A picked file that changes on your disk before it is sent can't be read again: remove it and attach it again.
+
+Files waiting under the text are lost with the page, so the browser also asks before it closes the page while there are any. When the page closes anyway, it asks the server to drop their uploads, in requests the browser sends after the page has gone. That is best effort: a browser can leave them unsent, and a file whose reservation the server hadn't answered yet has no upload to name. Such an upload expires on the server an hour after it was reserved, and until then counts against your 20 unsent files.
+
+The files the page downloads to show or save are kept in its memory too: at most 256 MiB of them, the least recently used going first, and they go when the page closes. The limit is on that cache. A download holds its own reference to the file's bytes for 60 seconds, so for that long the bytes stay in memory after the cache let them go. An image opened in a new tab belongs to that tab: it stays there until you close the tab, also after the page closes, while its address stops working after 60 seconds. **Download** saves a copy through the browser, to the place it saves downloads, and that copy stays on your device after the page closes.
+
+A new tab opens signed in, and signing out in one tab signs out every tab. **Sign out** tells the server, then removes the session entry, the invitation link and the session's unsent counts. Its confirmation counts the unsent messages of every tab, and a tab that lost unsent messages to a sign-out in another one says how many. The settings, the sidebar, the formatting bar, the closed apps notice, the recent emoji and the skin tone, and the last open conversations stay. A session that ended elsewhere, for example when another device signs the browser out under **Devices**, is removed the next time the page talks to the server. In a private window, the browser deletes all of it once you close every private window. When the browser blocks site data, the page keeps the sign-in in memory only, until you close or reload the tab.
+
+The server knows the browser's session as one made in a browser, from the moment you sign in ([`server/PROTOCOL.md`](../server/PROTOCOL.md#sessions-made-in-a-browser)). That session can use Chat as you, show the account and its devices, sign devices out and sign out. It can't read or change your encrypted records, and it can't use the booking page: it can't see, change or turn off the page, and can't see or handle its bookings. Deleting the account needs your password too, and deleting it in the browser also deletes your booking page and its bookings, as on any device. Like anything in local storage, a script running on the site could read the token and do what the session can. On a shared computer, sign out when you're done. The browser shows in **Devices** under its name and system, such as "Firefox · Windows".
+
+The page's code comes from the server's site each time you open it. Whoever runs the site, or someone who broke into it, could change that code to capture your password as you type it, and with the password open your encrypted records. The desktop and Android apps run the code you installed. If that risk matters to you, use Chat in one of them.
+
+What the browser leaves out:
+
+- **Change password**, **New recovery key**, **Export my data** and **Sync now**. Use the desktop or Android app for these. The first two need the data key, which the browser doesn't keep.
+- **What's stored and shared**, the page about where the account's data lives. This section and [What's stored and shared](#whats-stored-and-shared) cover it. The signed-out page and the sign-up form link the server's privacy statement instead. On a server whose operator sets `WEB_APP` to `on`, as rukoo.io does, the statement has a section on the browser too.
+- Opening a chat file in its app. A page can't hand a file to a program on your computer, so **Open** shows an image in a new tab and downloads any other file, and **Save** is the browser's own download. The file cards and the image viewer say **Download** and **Open in a new tab**.
+- Files on a server that keeps them at an address of their own (`WORKSPACE_FILES_ORIGIN`). The page may only connect to the address it came from, and the file routes answer no other site, so the paperclip doesn't show there and opening a file says the app can.
+- Choosing another server. The server row only shows the server, because the page talks only to the server whose site it came from, so an account made at the former address, `https://rukoo-account.bvdm.ai`, can't sign in from the browser at rukoo.io.
+- The key for your booking page's handle. **Delete account** works in the browser, but it keeps no key, so a new account with your email address can't take the handle back. Delete the account on your computer if you want to keep the handle.
+
 ## Running your own server
 
 The server is in [`server/`](../server). [Its README](../server/README.md) explains how to deploy it to your own Cloudflare account.

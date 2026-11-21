@@ -108,7 +108,10 @@
     // and the place, such as "Frankfurt am Main". With either one empty, /privacy names neither and calls it the
     // S3-compatible service this server uses. They don't turn files on or off.
     "WORKSPACE_FILES_S3_PROVIDER": "",
-    "WORKSPACE_FILES_S3_PLACE": ""
+    "WORKSPACE_FILES_S3_PLACE": "",
+    // "on" when Rukoo's website runs in front of this server with Rukoo in the browser at /app/ (website/), as on
+    // rukoo.io. The privacy statement then covers what the browser keeps. "off" for a server on its own.
+    "WEB_APP": "off"
   },
 
   // Files in team chat live in a private R2 bucket, or in the S3-compatible bucket the WORKSPACE_FILES_S3_* settings
@@ -210,7 +213,9 @@
         // Who keeps the files and where, as /privacy names them: UpCloud Ltd, a Finnish company, in its Frankfurt am Main
         // data centre (europe-2).
         "WORKSPACE_FILES_S3_PROVIDER": "UpCloud",
-        "WORKSPACE_FILES_S3_PLACE": "Frankfurt am Main"
+        "WORKSPACE_FILES_S3_PLACE": "Frankfurt am Main",
+        // The website in front of this server runs team chat in the browser at rukoo.io/app/.
+        "WEB_APP": "on"
       },
       "ratelimits": [
         { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },

@@ -743,5 +743,7 @@ module.exports = {
   claimPort,
   releasePort,
   INVITE,
-  PEPPER
+  PEPPER,
+  // For website/test/browser/harness.mjs, which writes its own copy of the server config.
+  parseJsonc
 };

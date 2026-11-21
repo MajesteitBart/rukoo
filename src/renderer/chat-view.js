@@ -36,6 +36,9 @@ const ANNOUNCE_CHARS = 120;
 const RECENT_MESSAGES = 50;
 
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+// Rukoo in a browser (src/web) keeps nothing on disk and updates by reloading the page: the states that say "this
+// computer", "Restart Rukoo" or "Check for updates" have a web version.
+const WEB = window.mail?.platform === 'web';
 const behavior = () => (reduced() ? 'auto' : 'smooth');
 
 // The app's icon markup as an element. Static strings from icons.js only.
@@ -330,9 +333,10 @@ export function mountView(section, H) {
     if (hint) empty.append(h('p', { class: 'ch-empty-hint', text: hint }));
   }
 
-  // kind: loading, signedOut, storage, upgrade, noWorkspace, pick. opts: { inviteSignups }.
+  // kind: loading, signedOut, storage, upgrade, noWorkspace, pick. opts: { inviteSignups, invitation }, invitation only
+  // on the web: the page holds the invitation link it was opened with.
   function showState(kind, opts = {}) {
-    const key = `${kind}|${getLocale()}|${opts.inviteSignups ? 1 : 0}|${H.workspaceName()}|${H.state()?.host || ''}`;
+    const key = `${kind}|${getLocale()}|${opts.inviteSignups ? 1 : 0}|${opts.invitation ? 1 : 0}|${H.workspaceName()}|${H.state()?.host || ''}`;
     if (mode === 'state' && key === stateKey) return;
     if (V.c || mode === 'preview') dropRoom();
     token++;
@@ -343,24 +347,29 @@ export function mountView(section, H) {
     switch (kind) {
       case 'loading':
         return emptyBox({ title: t('chat.empty.loading'), busy: true });
-      case 'signedOut':
+      case 'signedOut': {
+        // Opened from an invitation link, the page most likely has a newcomer: creating an account comes first, and
+        // the hint says the link is kept instead of asking to paste it. The hint asks to sign in or create an account
+        // then, so the text above it only says where team chat runs.
+        const invited = WEB && Boolean(opts.invitation);
         return emptyBox({
           title: t('chat.empty.signedOutTitle'),
-          body: t('chat.empty.signedOutBody', { host }),
-          hint: opts.inviteSignups ? t('chat.empty.inviteHint') : '',
+          body: invited ? t('chat.empty.webInvitedBody', { host }) : t('chat.empty.signedOutBody', { host }),
+          hint: invited ? t('chat.empty.webInvitedHint') : opts.inviteSignups ? t('chat.empty.inviteHint') : '',
           actions: [
-            { id: 'sign-up', label: t('chat.empty.signUpAction'), run: () => H.signUp() },
-            { id: 'sign-in', label: t('chat.empty.signInAction'), primary: true, run: () => H.signIn() }
+            { id: 'sign-up', label: t('chat.empty.signUpAction'), primary: invited, run: () => H.signUp() },
+            { id: 'sign-in', label: t('chat.empty.signInAction'), primary: !invited, run: () => H.signIn() }
           ]
         });
+      }
       case 'storage':
-        return emptyBox({ icon: 'warning', title: t('chat.empty.storageTitle'), body: t('chat.empty.storageBody') });
+        return emptyBox({ icon: 'warning', title: t('chat.empty.storageTitle'), body: WEB ? t('chat.empty.webStorageBody') : t('chat.empty.storageBody') });
       case 'upgrade':
         return emptyBox({
-          icon: 'download',
-          title: t('chat.empty.upgradeTitle'),
-          body: t('chat.empty.upgradeBody', { host }),
-          actions: [{ id: 'updates', label: t('chat.empty.upgradeAction'), run: () => H.checkUpdates() }]
+          icon: WEB ? 'sync' : 'download',
+          title: WEB ? t('chat.empty.webUpgradeTitle') : t('chat.empty.upgradeTitle'),
+          body: WEB ? t('chat.empty.webUpgradeBody', { host }) : t('chat.empty.upgradeBody', { host }),
+          actions: [{ id: 'updates', label: WEB ? t('chat.empty.webUpgradeAction') : t('chat.empty.upgradeAction'), run: () => H.checkUpdates() }]
         });
       case 'noWorkspace':
         return emptyBox({
@@ -423,7 +432,7 @@ export function mountView(section, H) {
     emptyBox({
       icon: 'leave',
       title: label ? t('chat.gone.conversationTitle', { name: label }) : t('chat.errors.goneConversation'),
-      body: t('chat.gone.conversationBody'),
+      body: WEB ? t('chat.gone.webConversationBody') : t('chat.gone.conversationBody'),
       actions: [{ id: 'gone-ok', label: t('common.actions.ok'), primary: true, run: () => H.goneOk() }]
     });
     if (focus) empty.querySelector('button')?.focus();
@@ -440,7 +449,7 @@ export function mountView(section, H) {
     emptyBox({
       icon: 'leave',
       title: t('chat.gone.workspaceTitle', { workspace: name }),
-      body: t('chat.gone.workspaceBody'),
+      body: WEB ? t('chat.gone.webWorkspaceBody') : t('chat.gone.workspaceBody'),
       actions: [{ id: 'gone-ok', label: t('common.actions.ok'), primary: true, run: () => H.goneWorkspaceOk() }]
     });
   }
@@ -1818,7 +1827,7 @@ export function mountView(section, H) {
       const days = H.state()?.retention?.contentDays;
       if (T.expired && days) tNote.append(svg('info'), h('span', { text: t('chat.thread.rootExpired', { count: days }) }));
       else if (!T.complete || T.expired) {
-        tNote.append(svg('info'), h('span', { text: t('chat.thread.partial') }));
+        tNote.append(svg('info'), h('span', { text: WEB ? t('chat.thread.webPartial') : t('chat.thread.partial') }));
         if (!T.expired) {
           const more = h('button', { type: 'button', class: 'link-btn', 'data-ch': 'thread-earlier', text: t('chat.thread.loadEarlier') });
           if (T.loading) more.disabled = true;

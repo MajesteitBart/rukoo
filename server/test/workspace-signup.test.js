@@ -213,6 +213,21 @@ describe('the join page', () => {
     expect((await call('POST', '/join', { vars: ON, body: {} })).status).toBe(404);
   });
 
+  it('marks the invitation page for the site in front, and only that page', async () => {
+    // The rukoo.io site Worker sends a browser on to the web app only when this header is there.
+    expect((await call('GET', '/join', { vars: ON })).headers.get('x-rukoo-workspace-invite')).toBe('1');
+    expect((await call('HEAD', '/join', { vars: ON })).headers.get('x-rukoo-workspace-invite')).toBe('1');
+    const off = await call('GET', '/join', { vars: { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://accounts.example' } });
+    expect(off.status).toBe(404);
+    expect(off.headers.get('x-rukoo-workspace-invite')).toBeNull();
+    const moved = await call('GET', '/join', {
+      vars: { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://meet.example', BOOKING_FORMER_ROOTS: 'https://accounts.example' }
+    });
+    expect(moved.status).toBe(301);
+    expect(moved.headers.get('x-rukoo-workspace-invite')).toBeNull();
+    expect((await call('GET', '/', { vars: ON })).headers.get('x-rukoo-workspace-invite')).toBeNull();
+  });
+
   it('leaves /join to the booking pages while team chat is off', async () => {
     // A former booking root still sends it on to BOOKING_ORIGIN, where a page made under the handle join before the
     // handle was reserved would answer.
@@ -260,6 +275,7 @@ describe('the join page', () => {
     expect(booking.status).toBe(200);
     expect(booking.text).toContain('Still here');
     expect(booking.text).not.toContain('Invitation to team chat');
+    expect(booking.headers.get('x-rukoo-workspace-invite')).toBeNull();
     const invitation = await call('GET', '/join', { origin: 'https://accounts.example', vars: apart });
     expect(invitation.text).toContain('Invitation to team chat in Rukoo');
     // Where both are one address, the invitation page wins there.
