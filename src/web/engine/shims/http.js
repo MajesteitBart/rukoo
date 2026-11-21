@@ -1,12 +1,10 @@
 'use strict';
 
 // http and https for the browser build: the request() of Node's client, as far as files.js's transfer() uses it to move
-// a file's bytes (the account's own calls go through the web account service). A request without a body (a download)
-// goes out with fetch, which streams the answer and can refuse a redirect; one with a body (an upload's PUT) with
-// XMLHttpRequest, the one browser API that reports upload progress, or with fetch where there is none (Node, for the
-// tests). fetch sends no cookies, no referrer and caches nothing, as transfer() asks of Node. XMLHttpRequest can't
-// leave out the site's own cookies on a same-origin request, and the links are same-origin on rukoo.io, but the site
-// sets none; the page's Referrer-Policy (no-referrer) keeps the referrer out, and a PUT is never cached.
+// a file's bytes (the account's own calls go through the web account service). Every request goes out with fetch:
+// redirect 'manual', so a redirect is refused before the browser follows it (with an upload's body, to wherever it
+// points); credentials 'omit', so no cookie goes, the site's own included; no referrer; and nothing cached, as
+// transfer() asks of Node. The answer is read as a stream, so transfer() stops reading at its own limits.
 //
 // What matches Node: request(url, options, onResponse) returns a request with end(), destroy(err) and the events
 // 'error', 'timeout' (options.timeout ms without bytes going either way) and 'close'; the answer has statusCode,
@@ -14,10 +12,13 @@
 // stream.pipeline. A body is piped in from fs.createReadStream (shims/fs.js), which hands its Blob over with sendBlob().
 // What differs, because a page can't do it:
 // - Headers a browser sets itself (content-length, accept-encoding and the rest of the Fetch standard's forbidden
-//   names) are left out, which also keeps XMLHttpRequest from logging "Refused to set unsafe header". The browser sends
-//   the Blob's own length, and takes compressed answers apart before the page sees them.
-// - XMLHttpRequest follows a redirect by itself; an answer from anywhere but the request's own address counts as a
-//   redirect (302) afterwards, which transfer() refuses. fetch's redirect: 'manual' refuses it before it is followed.
+//   names) are left out. The browser sends the Blob's own length, and takes compressed answers apart before the page
+//   sees them.
+// - fetch says nothing of a body while it goes, so the body counts as sent once the answer comes (sendBlob's onSent),
+//   and until then the idle timer also gives it the time every body on its way would take at a slow connection's pace
+//   (UPLOAD_RATE, the backlog below). XMLHttpRequest reports upload progress, but it follows a redirect with the body
+//   and sends the site's cookies.
+// - A redirect's answer is opaque to the page (status 0): it counts as a 302, which transfer() refuses.
 const EventEmitter = require('./events');
 const { Buffer } = require('./buffer');
 
@@ -45,6 +46,40 @@ const FORBIDDEN = new Set([
   'via'
 ]);
 const allowedHeader = (name) => !FORBIDDEN.has(name) && !name.startsWith('proxy-') && !name.startsWith('sec-');
+
+// The slowest pace, in bytes a second, of a connection whose uploads count as still going while the page can't see
+// them: about 128 kbit/s for all of them together, under a weak mobile connection's upload. A 25 MiB file alone then
+// has 27 minutes before its request times out. A slower connection fails the upload, where desktop sees each byte go.
+const UPLOAD_RATE = 16 * 1024;
+
+// The bodies on their way share one connection: files.js sends up to three at once (TRANSFERS), each at a share of its
+// pace. So a request's allowance runs until every body on its way would have gone at UPLOAD_RATE (backlog), and a body
+// that starts moves the others' timers on with it. A body that is done frees its share: the others then need at most
+// their own bytes at that pace from then on.
+// request -> its body's size.
+const sending = new Map();
+// When, in Date.now() ms, every body in sending would have gone at UPLOAD_RATE.
+let backlog = 0;
+const paced = (bytes) => Math.ceil((bytes / UPLOAD_RATE) * 1000);
+
+function rearmSending() {
+  const left = Math.max(0, backlog - Date.now());
+  for (const req of sending.keys()) req.arm(req.timeout + left);
+}
+
+function startSending(req, size) {
+  backlog = Math.max(backlog, Date.now()) + paced(size);
+  sending.set(req, size);
+  rearmSending();
+}
+
+function stopSending(req) {
+  if (!sending.delete(req)) return;
+  let rest = 0;
+  for (const size of sending.values()) rest += size;
+  backlog = Math.min(backlog, Date.now() + paced(rest));
+  rearmSending();
+}
 
 const later = (fn) => Promise.resolve().then(fn);
 const toBuffer = (bytes) => new Buffer(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -125,27 +160,6 @@ function headersOf(fetchHeaders) {
   return out;
 }
 
-function parseHeaders(text) {
-  const out = {};
-  for (const line of String(text || '').split(/\r?\n/)) {
-    const at = line.indexOf(':');
-    if (at > 0) out[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
-  }
-  return out;
-}
-
-const sameAddress = (a, b) => {
-  try {
-    const x = new URL(a);
-    const y = new URL(b);
-    x.hash = '';
-    y.hash = '';
-    return x.href === y.href;
-  } catch (_) {
-    return false;
-  }
-};
-
 class ClientRequest extends EventEmitter {
   constructor(url, options, onResponse) {
     super();
@@ -167,17 +181,16 @@ class ClientRequest extends EventEmitter {
     this.res = null;
     this.timer = null;
     this.controller = new AbortController();
-    this.xhr = null;
   }
 
-  // The idle timer: 'timeout' once nothing went either way for options.timeout ms.
-  arm() {
+  // The idle timer: 'timeout' once nothing went either way for options.timeout ms, or for ms.
+  arm(ms = this.timeout) {
     if (!this.timeout || this.destroyed) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
       if (!this.destroyed) this.emit('timeout');
-    }, this.timeout);
+    }, ms);
   }
 
   disarm() {
@@ -192,7 +205,7 @@ class ClientRequest extends EventEmitter {
     later(() => this.emit('close'));
   }
 
-  // The body as one Blob (fs.createReadStream's pipe). onSent(bytes) for each part the browser reports as sent.
+  // The body as one Blob (fs.createReadStream's pipe). onSent(bytes) with its whole size once the answer came.
   sendBlob(blob, onSent) {
     this.body = blob;
     this.onSent = onSent;
@@ -217,6 +230,7 @@ class ClientRequest extends EventEmitter {
   fail(err) {
     if (this.destroyed) return;
     this.destroyed = true;
+    stopSending(this);
     this.disarm();
     if (this.res) this.res.destroy(err);
     if (this.listenerCount('error')) this.emit('error', err);
@@ -226,15 +240,9 @@ class ClientRequest extends EventEmitter {
   destroy(err) {
     if (this.destroyed) return this;
     this.destroyed = true;
+    stopSending(this);
     this.disarm();
     this.controller.abort(err || hangUp());
-    if (this.xhr) {
-      try {
-        this.xhr.abort();
-      } catch (_) {
-        // Done already.
-      }
-    }
     if (this.res) this.res.destroy(err);
     // Destroyed before an answer, as Node: an error even without one given.
     const reported = err || (this.res ? null : hangUp());
@@ -259,15 +267,12 @@ class ClientRequest extends EventEmitter {
     if (bytes > 0 && this.onSent) this.onSent(bytes);
   }
 
-  start() {
+  async start() {
     if (this.destroyed) return;
-    this.arm();
-    if (this.body && typeof globalThis.XMLHttpRequest === 'function') this.startXhr();
-    else this.startFetch();
-  }
-
-  async startFetch() {
     const body = this.body;
+    // Until the answer, nothing the page can see goes either way while the browser sends a body.
+    if (body) startSending(this, body.size);
+    else this.arm();
     let answer;
     try {
       answer = await globalThis.fetch(this.url, {
@@ -285,7 +290,9 @@ class ClientRequest extends EventEmitter {
       return;
     }
     if (this.destroyed) return;
-    // fetch sends the body before it gives an answer.
+    // An answer: the body went, or the server refused it early, which fails the upload anyway. Either way there is no
+    // finer count to give.
+    stopSending(this);
     if (body) this.sent(body.size);
     this.arm();
     const status = answer.type === 'opaqueredirect' ? 302 : answer.status;
@@ -311,54 +318,6 @@ class ClientRequest extends EventEmitter {
       }
     });
     this.respond(res);
-  }
-
-  startXhr() {
-    const xhr = new globalThis.XMLHttpRequest();
-    this.xhr = xhr;
-    const size = this.body.size;
-    let reported = 0;
-    xhr.open(this.method, this.url, true);
-    xhr.responseType = 'arraybuffer';
-    xhr.withCredentials = false;
-    for (const [name, value] of Object.entries(this.headers)) xhr.setRequestHeader(name, value);
-    xhr.upload.onprogress = (e) => {
-      this.arm();
-      const loaded = Math.min(size, Number(e.loaded) || 0);
-      if (loaded > reported) {
-        const delta = loaded - reported;
-        reported = loaded;
-        this.sent(delta);
-      }
-    };
-    xhr.onprogress = () => this.arm();
-    xhr.onerror = () => {
-      if (!this.destroyed) this.fail(new Error('The upload failed: no answer from the server'));
-    };
-    xhr.onload = () => {
-      if (this.destroyed) return;
-      if (reported < size) {
-        this.sent(size - reported);
-        reported = size;
-      }
-      const status = xhr.responseURL && !sameAddress(xhr.responseURL, this.url) ? 302 : xhr.status;
-      let bytes = xhr.response instanceof ArrayBuffer ? new Uint8Array(xhr.response) : new Uint8Array(0);
-      if (status === 302) bytes = new Uint8Array(0);
-      let given = false;
-      const res = new IncomingMessage(status, status === 302 ? {} : parseHeaders(xhr.getAllResponseHeaders()), {
-        next: async () => {
-          if (given || !bytes.length) {
-            this.close();
-            return null;
-          }
-          given = true;
-          return toBuffer(bytes);
-        },
-        stop: () => this.close()
-      });
-      this.respond(res);
-    };
-    xhr.send(this.body);
   }
 }
 

@@ -74,8 +74,9 @@ class ReadStream extends EventEmitter {
   }
 
   // The stream's bytes into dest. A request of shims/http.js takes them as one Blob (sendBlob), which the browser
-  // uploads itself; 'data' then reports what went as it goes, as chunks of zeros of that length: files.js counts them
-  // for the upload's progress and reads nothing else of them. Any other writable gets the bytes chunk by chunk.
+  // uploads itself; 'data' then reports what went once the server answered, as chunks of zeros of that length:
+  // files.js counts them for the upload's progress and reads nothing else of them. Any other writable gets the bytes
+  // chunk by chunk.
   pipe(dest) {
     if (!this.blob) return dest;
     const slice = this.blob.slice(this.start, this.stop);

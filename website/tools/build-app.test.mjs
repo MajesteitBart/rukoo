@@ -228,3 +228,30 @@ test('the real sources build into a complete app', async () => {
   assert.match(await read(path.join(out, 'web/hash-wasm.LICENSE.txt')), /MIT License[\s\S]*Permission is hereby granted/);
   assert.match(await read(path.join(out, 'web/bridge.js')), /sql\.js [\d.]+ .*MIT license/);
 });
+
+// What the page keeps in the browser's storage, by key: the renderer modules web-shell.js reaches and src/web name each
+// key as a string literal ('rukoo.' and a name). docs/account.md lists every one under In a browser, which the
+// privacy statement's In a browser follows.
+test('every key the page keeps in the browser\'s storage is listed in docs/account.md', async () => {
+  const renderer = path.join(ROOT, 'src/renderer');
+  const reached = new Set();
+  const queue = ['web-shell.js'];
+  while (queue.length) {
+    const file = queue.pop();
+    if (reached.has(file)) continue;
+    reached.add(file);
+    const text = await readFile(path.join(renderer, file), 'utf8');
+    for (const m of text.matchAll(/(?:import|from)\s*\(?\s*['"](\.[^'"]+)['"]/g)) queue.push(path.posix.normalize(path.posix.join(path.posix.dirname(file), m[1])));
+  }
+  const web = readdirSync(path.join(ROOT, 'src/web'), { recursive: true }).filter((f) => f.endsWith('.js')).map((f) => path.join(ROOT, 'src/web', f));
+  const keys = new Set();
+  for (const file of [...[...reached].map((f) => path.join(renderer, f)), ...web]) {
+    for (const m of (await readFile(file, 'utf8')).matchAll(/['"`](rukoo\.[A-Za-z.]+)['"`]/g)) keys.add(m[1]);
+  }
+  // The WebSocket's ticket protocol (src/web/engine/websocket.js), which is no storage key.
+  keys.delete('rukoo.ticket.');
+  assert.ok(keys.size >= 10, `found ${[...keys]}`);
+  const docs = await readFile(path.join(ROOT, 'docs/account.md'), 'utf8');
+  const section = docs.slice(docs.indexOf('## In a browser'), docs.indexOf('\n## ', docs.indexOf('## In a browser') + 1));
+  for (const key of keys) assert.ok(section.includes(`\`${key}\``), `${key} is missing from docs/account.md, In a browser`);
+});

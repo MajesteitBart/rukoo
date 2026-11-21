@@ -1,7 +1,7 @@
 // Team chat's files in the browser build: src/main/workspaces/files.js bundled with the web's stand-ins for what it takes
 // from Node (src/web/build-options.mjs): files in memory (shims/vfs.js under shims/fs.js and fs-promises.js), SHA-256 in
-// JavaScript (shims/crypto.js), Buffer's reads (shims/buffer.js), and the transfers on fetch and XMLHttpRequest
-// (shims/http.js, shims/stream.js). Each stand-in is compared with Node's own where Node can answer, and files.js runs
+// JavaScript (shims/crypto.js), Buffer's reads (shims/buffer.js), and the transfers on fetch (shims/http.js,
+// shims/stream.js). Each stand-in is compared with Node's own where Node can answer, and files.js runs
 // on them against a server on 127.0.0.1 that plays the Worker's links, as test/chat-files.test.js does for desktop.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -277,18 +277,54 @@ test('a pipeline ends its streams once, on success and on an error of any of the
 
 // The Worker's links on 127.0.0.1, as test/chat-files.test.js has them. behave: per upload or download what to do
 // instead of answering normally, once.
+// target: the requests that reached a redirect's target, with their bodies. huge: what the server wrote of a too long
+// answer before the other side closed.
 async function linkServer(t) {
-  const state = { put: new Map(), headers: new Map(), files: new Map(), behave: new Map() };
+  const state = { put: new Map(), headers: new Map(), files: new Map(), behave: new Map(), target: [], huge: null };
   const server = http.createServer(async (req, res) => {
     const [, kind, key] = req.url.split('/');
     const act = state.behave.get(key);
     state.behave.delete(key);
+    if (kind === 'target') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      state.target.push({ method: req.method, key, bytes: Buffer.concat(chunks) });
+      return reply(res, 200, { upload: { id: key, ready: true } });
+    }
     if (kind === 'put') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       state.headers.set(key, req.headers);
       if (act === 'expired') return reply(res, 410, { error: 'expired' }, { 'retry-after': '3' });
+      // A redirect of the PUT to another address of this server that keeps the method and body (307 and 308).
+      if (act === '307' || act === '308') {
+        res.writeHead(Number(act), { location: `${state.base}/target/${key}`, 'content-length': 0 });
+        return res.end();
+      }
+      // An answer of 64 MiB, written as fast as the other side reads it, until it closes.
+      if (act === 'huge') {
+        const huge = (state.huge = { written: 0, closed: false });
+        res.on('close', () => (huge.closed = true));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        const chunk = Buffer.alloc(64 * 1024, 0x20);
+        const drained = () =>
+          new Promise((resolve) => {
+            const go = () => {
+              res.off('drain', go);
+              res.off('close', go);
+              resolve();
+            };
+            res.on('drain', go);
+            res.on('close', go);
+          });
+        while (huge.written < 64 * 1024 * 1024 && !huge.closed) {
+          huge.written += chunk.length;
+          if (!res.write(chunk)) await drained();
+        }
+        return res.end();
+      }
+      if (act === 'slow') await sleep(400);
       if (Number(req.headers['content-length']) !== body.length) return reply(res, 400, { error: 'invalid', field: 'size' });
       state.put.set(key, body);
       return reply(res, 200, { upload: { id: key, ready: true } });
@@ -341,8 +377,8 @@ async function setup(t, { host = {} } = {}) {
   const calls = [];
   const downloads = new Map();
   // download: what the next download links do instead of answering normally; expireNext: the next upload's link
-  // answers 410 expired once.
-  const answer = { download: [], expireNext: false };
+  // answers 410 expired once; put: what the next upload links do instead (linkServer).
+  const answer = { download: [], expireNext: false, put: [] };
   const svc = {
     store,
     epoch: 1,
@@ -369,6 +405,8 @@ async function setup(t, { host = {} } = {}) {
           answer.expireNext = false;
           links.behave.set(id, 'expired');
         }
+        const act = answer.put.shift();
+        if (act) links.behave.set(id, act);
         return { upload: { id, expiresAt: Date.now() + 3600000 }, put: { url: `${links.base}/put/${id}`, expiresAt: Date.now() + 3600000 } };
       }
       if (method === 'DELETE') return null;
@@ -505,10 +543,11 @@ test("files.js on fetch: an expired link is reserved again, a redirect and a wro
   assert.deepEqual(web.fs.readdirSync(`${dir}/chat-files`).filter((n) => n.endsWith('.part')), []);
 });
 
-// XMLHttpRequest as a browser has it, over Node's http: upload progress in pieces, responseURL after a redirect it
-// followed, and the headers the page asked for.
-function fakeXhr(record) {
-  return class FakeXMLHttpRequest {
+// XMLHttpRequest as a browser has it, over Node's fetch: it follows a redirect by itself, a 307 or 308 with the same
+// method and body, and reads all of the answer before onload. A page has it, so the tests below put it in place, and
+// an upload must not go through it.
+function browserXhr(record) {
+  return class BrowserXMLHttpRequest {
     constructor() {
       this.upload = {};
       this.headers = {};
@@ -520,7 +559,6 @@ function fakeXhr(record) {
       this.url = url;
     }
     setRequestHeader(name, value) {
-      if (/^(content-length|accept-encoding|cookie|host)$/i.test(name)) throw new Error(`Refused to set unsafe header "${name}"`);
       this.headers[name] = value;
     }
     getAllResponseHeaders() {
@@ -531,15 +569,10 @@ function fakeXhr(record) {
     }
     async send(body) {
       const bytes = Buffer.from(await body.arrayBuffer());
-      // Progress in three pieces short of the whole, as a browser reports a slow upload: further apart than the 100 ms
-      // files.js holds progress events back for, so each one reaches the tray. The rest comes with the answer.
-      for (let i = 1; i <= 3; i++) {
-        await sleep(150);
-        this.upload.onprogress?.({ loaded: Math.floor((bytes.length * i) / 4), total: bytes.length });
-      }
-      const res = await fetch(this.url, { method: this.method, headers: this.headers, body: bytes });
+      this.upload.onprogress?.({ loaded: bytes.length, total: bytes.length });
+      const res = await fetch(this.url, { method: this.method, headers: this.headers, body: bytes, redirect: 'follow' });
       this.status = res.status;
-      this.responseURL = this.redirectTo || res.url;
+      this.responseURL = res.url;
       this.responseHeaders = Object.fromEntries(res.headers);
       this.response = await res.arrayBuffer();
       this.onload?.();
@@ -547,34 +580,132 @@ function fakeXhr(record) {
   };
 }
 
-test('an upload through XMLHttpRequest reports its progress, sets only headers a page may, and refuses an answer from elsewhere', async (t) => {
+test('an upload goes with fetch: only headers a page may set, and the tray counts the bytes once the server answered', async (t) => {
   const record = [];
-  globalThis.XMLHttpRequest = fakeXhr(record);
+  globalThis.XMLHttpRequest = browserXhr(record);
   t.after(() => delete globalThis.XMLHttpRequest);
   const { svc, links, ready } = await setup(t);
   const bytes = crypto.randomBytes(400 * 1024);
   const staged = await svc.files.stage(W, C, null, { name: 'big.bin', type: 'application/octet-stream', bytes: new Uint8Array(bytes) });
   const done = await ready(staged.stage);
   assert.equal(done.state, 'ready', done.error);
-  assert.equal(record.length, 1);
-  assert.equal(record[0].method, 'PUT');
-  assert.deepEqual(record[0].headers, { 'content-type': 'application/octet-stream', accept: 'application/json' });
+  assert.equal(record.length, 0, 'no XMLHttpRequest');
   assert.ok(links.put.get(done.file).equals(bytes));
-  // The progress files.js saw: rising through each of the browser's pieces.
+  const headers = links.headers.get(done.file);
+  assert.equal(headers['content-type'], 'application/octet-stream');
+  assert.equal(headers.accept, 'application/json');
+  for (const name of ['cookie', 'authorization', 'referer']) assert.equal(headers[name], undefined, name);
+  // What the tray saw while the file uploaded: nothing sent until the answer, then all of it, and no share in between
+  // that the page can't know.
   const loaded = svc.events.filter((e) => e.kind === 'staged').map((e) => e.staged[0]).filter((s) => s.state === 'uploading').map((s) => s.loaded);
-  assert.ok(loaded.every((n, i) => i === 0 || n >= loaded[i - 1]), loaded.join(' '));
-  const quarter = Math.floor(bytes.length / 4);
-  for (const part of [quarter, 2 * quarter, 3 * quarter]) assert.ok(loaded.includes(part), `the tray saw ${part} of ${bytes.length}: ${loaded.join(' ')}`);
+  assert.ok(loaded.length > 0, 'the tray saw the upload');
+  assert.ok(loaded.every((n) => n === 0 || n === bytes.length), loaded.join(' '));
+});
 
-  // A PUT the browser followed somewhere else counts as a redirect, which files.js refuses.
-  globalThis.XMLHttpRequest = class extends fakeXhr(record) {
-    async send(body) {
-      this.redirectTo = `${links.base}/elsewhere`;
-      return super.send(body);
+test('an upload refuses a 307 or 308 before its body goes anywhere else',async (t) => {
+  const record = [];
+  globalThis.XMLHttpRequest = browserXhr(record);
+  t.after(() => delete globalThis.XMLHttpRequest);
+  const { svc, links, answer, ready } = await setup(t);
+  const bytes = crypto.randomBytes(100 * 1024);
+  for (const status of ['307', '308']) {
+    answer.put.push(status);
+    const moved = await svc.files.stage(W, C, null, { name: `moved-${status}.bin`, type: 'application/octet-stream', bytes: new Uint8Array(bytes) });
+    const refused = await ready(moved.stage);
+    assert.equal(refused.state, 'failed', status);
+    assert.equal(refused.error, 'server', status);
+    // The PUT got the redirect, and nothing reached where it pointed.
+    assert.ok(links.headers.has(refused.file), `${status}: the PUT reached the server`);
+    assert.deepEqual(links.target, [], `${status}: nothing may reach the redirect's target`);
+  }
+  // transfer() itself rejects with the redirect's error.
+  await web.fsp.writeFile('rukoo-web/redirect/body', new Uint8Array(bytes));
+  links.behave.set('direct', '308');
+  const err = await web.files
+    .transfer(`${links.base}/put/direct`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: web.fs.createReadStream('rukoo-web/redirect/body') })
+    .then(() => null, (e) => e);
+  assert.deepEqual([err && err.code, err && err.status, err && err.message], ['server', 308, 'redirect refused']);
+  assert.deepEqual(links.target, []);
+  web.fs.rmSync('rukoo-web/redirect', { recursive: true, force: true });
+  assert.equal(record.length, 0, 'no XMLHttpRequest');
+});
+
+test("an upload's answer is read as it comes, and reading stops past transfer()'s 1 MiB", async (t) => {
+  const record = [];
+  globalThis.XMLHttpRequest = browserXhr(record);
+  t.after(() => delete globalThis.XMLHttpRequest);
+  const { svc, links, answer, ready } = await setup(t);
+  const bytes = crypto.randomBytes(100 * 1024);
+  // An answer of 64 MiB: reading stops at 1 MiB, the connection closes, and the upload fails.
+  answer.put.push('huge');
+  const flood = await svc.files.stage(W, C, null, { name: 'flood.bin', type: 'application/octet-stream', bytes: new Uint8Array(bytes) });
+  const cut = await ready(flood.stage);
+  assert.equal(cut.state, 'failed');
+  await until(() => links.huge && links.huge.closed, 5000, 'the answer to close');
+  assert.ok(links.huge.written < 16 * 1024 * 1024, `the server wrote ${links.huge.written} bytes of the answer before it closed`);
+  assert.equal(record.length, 0, 'no XMLHttpRequest');
+});
+
+test("the idle timer gives an upload's body time to go, which the page can't watch", async (t) => {
+  const links = await linkServer(t);
+  // Whether a request whose answer comes 400 ms after the server took the body times out at 100 ms.
+  const timesOut = (method, body) =>
+    new Promise((resolve, reject) => {
+      const key = `${method}-${crypto.randomBytes(4).toString('hex')}`;
+      links.behave.set(key, 'slow');
+      const req = web.http.request(`${links.base}/put/${key}`, { method, timeout: 100 }, (res) => {
+        res.resume();
+        resolve(false);
+      });
+      req.on('timeout', () => {
+        req.destroy(new Error('timeout'));
+        resolve(true);
+      });
+      req.on('error', (e) => (e.message === 'timeout' ? null : reject(e)));
+      req.end(body);
+    });
+  // 64 KiB to send: the timer allows 100 ms and the body's 4 s at 16 KiB/s.
+  assert.equal(await timesOut('PUT', new Uint8Array(64 * 1024)), false);
+  // Without a body nothing is on its way: no answer for 100 ms is a timeout.
+  assert.equal(await timesOut('GET'), true);
+});
+
+// files.js sends three uploads at once (TRANSFERS). On one connection of 24 KiB/s, above the shim's 16 KiB/s, each gets
+// 8 KiB/s: none may time out for going at its share of the pace.
+test('uploads that share a slow connection get the time all of them take, and all arrive', { timeout: 60000 }, async (t) => {
+  const links = await linkServer(t);
+  const STEP = 4 * 1024;
+  const SIZE = 48 * 1024;
+  // The connection: one STEP at a time, in turn, at 24 KiB/s. A body's fetch starts once all of it went.
+  const queue = [];
+  const link = setInterval(() => queue.shift()?.(), (STEP / (24 * 1024)) * 1000);
+  t.after(() => clearInterval(link));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = init && init.body;
+    for (let sent = 0; body && sent < body.size; sent += STEP) {
+      await new Promise((resolve) => queue.push(resolve));
+      if (init.signal && init.signal.aborted) throw init.signal.reason;
     }
+    return realFetch(url, init);
   };
-  const moved = await svc.files.stage(W, C, null, { name: 'moved.bin', type: 'application/octet-stream', bytes: new Uint8Array(bytes.subarray(0, 100)) });
-  const refused = await ready(moved.stage);
-  assert.equal(refused.state, 'failed');
-  assert.equal(refused.error, 'server');
+  t.after(() => (globalThis.fetch = realFetch));
+  const started = Date.now();
+  const upload = (n) =>
+    new Promise((resolve) => {
+      const req = web.http.request(`${links.base}/put/shared-${n}`, { method: 'PUT', timeout: 500 }, (res) => {
+        res.resume();
+        resolve(`answered ${res.statusCode}`);
+      });
+      req.on('timeout', () => {
+        resolve(`timeout after ${Date.now() - started} ms`);
+        req.destroy(new Error('timeout'));
+      });
+      req.on('error', () => {});
+      req.end(new Uint8Array(SIZE).fill(n));
+    });
+  // Alone, each would have 500 ms and 3 s for its 48 KiB; together they take about 6 s.
+  assert.deepEqual(await Promise.all([1, 2, 3].map(upload)), ['answered 200', 'answered 200', 'answered 200']);
+  assert.ok(Date.now() - started > 5000, 'the connection was as slow as it says');
+  for (const n of [1, 2, 3]) assert.equal(links.put.get(`shared-${n}`).length, SIZE);
 });

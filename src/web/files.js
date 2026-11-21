@@ -16,8 +16,10 @@
 // - saveDialog(name): a name under downloads/ for files.js to copy the file to; the copy landing there is the browser
 //   download (watch below), so the person's browser decides where it goes, as for any download.
 // - openPath(file): the file downloads, as no page may hand a file to an app on the computer.
-// - viewUrl(path, type): a blob: URL of a downloaded file for an <img>, in place of desktop's rukoo-chat-file: link.
+// - viewUrl(token, path, type): a blob: URL for an <img> of a downloaded file, in place of desktop's rukoo-chat-file:
+//   link with that token. checkViews(valid) revokes the URLs whose link files.js serve() no longer answers.
 // - openTab(path, type): an image of a type the viewer shows in a new tab, for chatFile 'open' (src/web/host.js).
+// - readable(path): whether the browser still reads the file, for a picked file whose upload failed (src/web/host.js).
 //
 // Security: a blob: URL is of the page's origin, so a file opened as what it says it is could run script with the
 // page's session (text/html, an SVG). Only the image types of files.js VIEW_TYPES ever get their own type, for <img>
@@ -39,11 +41,12 @@ function randomName(page) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// A File's name as one name in the memory files: no folders, nothing path.normalize would take apart.
+// A File's name as one name in the memory files: no folders, nothing path.normalize would take apart ('.' and '..';
+// '...' is a name like any other, as on desktop).
 function flat(name) {
   const text = String(name || '')
     .replace(/[\\/]/g, '_')
-    .replace(/^\.+$/, '_');
+    .replace(/^\.\.?$/, '_');
   return text || 'file';
 }
 
@@ -52,17 +55,23 @@ function createWebFiles(page, { log = console } = {}) {
   const doc = page.document;
   const URLs = page.URL;
   const canBlobUrl = Boolean(URLs && typeof URLs.createObjectURL === 'function');
-  // `${path}\n${type}` -> blob: URL, for the files the log shows; revoked when the file leaves the cache.
+  // A view link's token -> { url, path }: the blob: URL that stands in for desktop's rukoo-chat-file: link with that
+  // token (files.js viewLink). Desktop's serve() checks the link's attachment on every load; a browser loads a blob:
+  // URL without asking the page, so each link gets a URL of its own, revoked once serve() would refuse the link: its
+  // file's row went (a removed message), the token went (files.js keeps 500, and none past a session), or the bytes
+  // left the cache. Two attachments with the same bytes share the Blob and never a URL.
   const views = new Map();
 
+  function revoke(url) {
+    try {
+      URLs.revokeObjectURL(url);
+    } catch (_) {
+      // Gone already.
+    }
+  }
+
   function revokeLater(url) {
-    page.setTimeout(() => {
-      try {
-        URLs.revokeObjectURL(url);
-      } catch (_) {
-        // Gone already.
-      }
-    }, HAND_OVER_MS);
+    page.setTimeout(() => revoke(url), HAND_OVER_MS);
   }
 
   // A file the browser downloads: its bytes as application/octet-stream, so no browser shows it in place of saving.
@@ -83,17 +92,18 @@ function createWebFiles(page, { log = console } = {}) {
     }
   }
 
-  // A copy files.js made in downloads/ is downloaded and goes again: saveAs copied it there (saveDialog).
+  // A copy files.js made in downloads/ is downloaded and goes again: saveAs copied it there (saveDialog). Bytes that
+  // left the cache take their view URLs with them at once, as serve() would refuse those links, so no URL keeps them in
+  // memory. A cached file written over (two downloads of the same bytes, named by their digest, landing one after the
+  // other) still has bytes there, and serve() still answers its links: their URLs stay, on the first download's Blob,
+  // until checkViews or the bytes leaving revoke them.
   const stopWatching = vfs.watch(({ type, path: name, blob }) => {
     if (type === 'remove') {
-      for (const [key, url] of views) {
-        if (key.slice(0, key.indexOf('\n')) !== name) continue;
-        views.delete(key);
-        try {
-          URLs.revokeObjectURL(url);
-        } catch (_) {
-          // Gone already.
-        }
+      if (vfs.get(name)) return;
+      for (const [token, v] of views) {
+        if (v.path !== name) continue;
+        views.delete(token);
+        revoke(v.url);
       }
       return;
     }
@@ -137,15 +147,11 @@ function createWebFiles(page, { log = console } = {}) {
       // Still inside the click that asked: the browser opens the chooser only for a user's own action.
       input.click();
     });
-    const dir = `${PICKED}/${randomName(page)}`;
-    const used = new Set();
+    // Each file in a folder of its own: files.js takes the name, and from it the type, from the path's last part, so
+    // two picked files with one name (from two folders) both keep it whole.
     const out = [];
     for (const file of files) {
-      let name = flat(file.name);
-      // Two picked files with one name (from two folders) each keep theirs.
-      for (let n = 2; used.has(name); n++) name = `${flat(file.name)} (${n})`;
-      used.add(name);
-      const at = `${dir}/${name}`;
+      const at = `${PICKED}/${randomName(page)}/${flat(file.name)}`;
       vfs.put(at, file);
       out.push(at);
     }
@@ -229,19 +235,38 @@ function createWebFiles(page, { log = console } = {}) {
 
   // ---- the page's side of chatFile 'view' ----
 
-  // A blob: URL for <img> of a file in the cache: path and type as files.js serve() answers them. The same file keeps
-  // its URL until it leaves the cache.
-  function viewUrl(file, type) {
+  // A blob: URL for <img> of the view link with this token: path and type as files.js serve() answers them for it.
+  // The Blob is a view of the cached one, without a copy of its bytes.
+  function viewUrl(token, file, type) {
     const blob = vfs.get(file);
-    if (!blob || !canBlobUrl) return null;
-    const as = VIEW_TYPES.has(type) ? type : OCTET;
-    const key = `${path.normalize(file)}\n${as}`;
-    let url = views.get(key);
-    if (!url) {
-      url = URLs.createObjectURL(new page.Blob([blob], { type: as }));
-      views.set(key, url);
-    }
+    if (!blob || !canBlobUrl || !token) return null;
+    const known = views.get(token);
+    if (known) return known.url;
+    const url = URLs.createObjectURL(new page.Blob([blob], { type: VIEW_TYPES.has(type) ? type : OCTET }));
+    views.set(token, { url, path: path.normalize(file) });
     return url;
+  }
+
+  // valid(token): whether files.js serve() still answers the link with this token. The others' URLs are revoked.
+  function checkViews(valid) {
+    for (const [token, v] of views) {
+      if (valid(token)) continue;
+      views.delete(token);
+      revoke(v.url);
+    }
+  }
+
+  // Whether the file at a path can still be read. A browser refuses to read a picked File again once it changed or
+  // went on disk (Chromium: NotReadableError), and only the chooser hands out a new one.
+  async function readable(file) {
+    const blob = vfs.get(file);
+    if (!blob) return false;
+    try {
+      await blob.slice(0, 1).arrayBuffer();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   // The files picked in a session that ended: files.js forgets the paths at once (Files.clear), and the page lets go
@@ -259,23 +284,21 @@ function createWebFiles(page, { log = console } = {}) {
 
   function dispose() {
     stopWatching();
-    for (const url of views.values()) {
-      try {
-        URLs.revokeObjectURL(url);
-      } catch (_) {
-        // Gone already.
-      }
-    }
+    for (const v of views.values()) revoke(v.url);
     views.clear();
   }
 
   return {
     host: { pickFiles, thumbnail, askRisky, saveDialog, openPath },
     viewUrl,
+    checkViews,
     openTab,
+    readable,
     dropPicked,
     prunePicked,
     dispose,
+    // How many view URLs work now (checkViews has nothing to do without any).
+    views: () => views.size,
     // For the bridge's tests: what lives in memory now.
     stored: () => vfs.size()
   };

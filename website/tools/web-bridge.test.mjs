@@ -1530,7 +1530,7 @@ test('the file host: the browser file chooser, thumbnails, and downloads as appl
   assert.deepEqual(Object.keys(host).sort(), ['askRisky', 'openPath', 'pickFiles', 'saveDialog', 'thumbnail']);
 
   // The chooser: a hidden <input type=file multiple> in the page, clicked at once; what the person picks becomes paths
-  // files.js may stage, named as picked (two of one name each keep theirs).
+  // files.js may stage, each in a folder of its own under the name it was picked with (two of one name both keep it).
   const picking = host.pickFiles();
   assert.equal(page.record.choosers.length, 1, 'clicked in the same turn as the call');
   const input = page.record.choosers[0];
@@ -1542,10 +1542,8 @@ test('the file host: the browser file chooser, thumbnails, and downloads as appl
   input.dispatch('change');
   const paths = await picking;
   assert.equal(paths.length, 3);
-  assert.match(paths[0], /^rukoo-web\/picked\/[0-9a-f]{18}\/notes\.txt$/);
-  assert.equal(paths[1].replace(/[^/]+$/, ''), paths[0].replace(/[^/]+$/, ''));
-  assert.match(paths[1], /\/plan\.png$/);
-  assert.match(paths[2], /\/notes\.txt \(2\)$/);
+  for (const [at, name] of [[0, 'notes.txt'], [1, 'plan.png'], [2, 'notes.txt']]) assert.match(paths[at], new RegExp(`^rukoo-web/picked/[0-9a-f]{18}/${name.replace('.', '\\.')}$`));
+  assert.equal(new Set(paths.map((p) => p.replace(/[^/]+$/, ''))).size, 3, 'a folder for each file');
   assert.equal(input.removed, true, 'the input leaves the page');
   // Cancelled: the cancel event.
   const cancelled = host.pickFiles();
@@ -1576,6 +1574,12 @@ test('the file host: the browser file chooser, thumbnails, and downloads as appl
   const againPaths = await again;
   assert.equal(againPaths.length, 1);
   assert.match(againPaths[0], /\/new\.txt$/);
+  // '.' and '..' would be taken apart as a path, so they become '_'; '...' is a name like any other, as on desktop.
+  const dots = host.pickFiles();
+  page.record.choosers.at(-1).files = [new File(['a'], '...'), new File(['b'], '..'), new File(['c'], '.')];
+  page.record.choosers.at(-1).dispatch('change');
+  assert.deepEqual([...(await dots)].map((p) => p.split('/').at(-1)), ['...', '_', '_']);
+  assert.equal(require('../../src/main/workspaces/files.js').nameOf('/home/me/...'), '...', "desktop's name for it");
 
   // Thumbnails: the image fit in side by side pixels, as a PNG data URL; none where the browser can't decode it.
   const thumb = await host.thumbnail(paths[1], 192);
@@ -1607,14 +1611,25 @@ test('the file host: the browser file chooser, thumbnails, and downloads as appl
 
 test('window.mail.chatPickFiles answers the chooser\'s files with their names, sizes and types', async (t) => {
   if (skipWithoutServer(t)) return;
-  const { page } = await filesPage(t);
+  const { page, ws } = await filesPage(t);
   const picking = page.call('chatPickFiles');
   await until(() => page.record.choosers.length === 1, 2000, 'the chooser');
-  page.record.choosers[0].files = [new File([pngBytes(10, 10)], 'a.png', { type: 'image/png' }), new File(['%PDF-1.7'], 'Plan.PDF')];
+  // Two files of one name, from two folders, keep it, and the type it gives.
+  page.record.choosers[0].files = [new File([pngBytes(10, 10)], 'a.png', { type: 'image/png' }), new File(['%PDF-1.7'], 'Plan.PDF'), new File(['%PDF-1.7 one'], 'report.pdf'), new File(['%PDF-1.7 other'], 'report.pdf')];
   page.record.choosers[0].dispatch('change');
   const picked = await picking;
-  assert.deepEqual([...picked].map((f) => [f.name, f.size, f.type]), [['a.png', pngBytes(10, 10).length, 'image/png'], ['Plan.PDF', 8, 'application/pdf']]);
+  assert.deepEqual([...picked].map((f) => [f.name, f.size, f.type]), [
+    ['a.png', pngBytes(10, 10).length, 'image/png'],
+    ['Plan.PDF', 8, 'application/pdf'],
+    ['report.pdf', 12, 'application/pdf'],
+    ['report.pdf', 14, 'application/pdf']
+  ]);
   for (const f of picked) assert.match(f.path, /^rukoo-web\/picked\//);
+  // Staged, each is what was picked.
+  for (const f of picked.slice(2)) {
+    const s = await page.call('chatStage', ws.id, ws.general, null, { path: f.path });
+    assert.deepEqual([s.name, s.type, s.size], ['report.pdf', 'application/pdf', f.size]);
+  }
 });
 
 // A page signed up and in Olga's workspace, with general open: { page, olga, ws, me }.
@@ -1761,6 +1776,57 @@ test('the real server: files in a tray warn before the page goes, and their rese
   assert.deepEqual(page.logs.error, []);
 });
 
+test('the real server: a picked file the browser no longer reads, after it was measured, fails as unreadable; a network failure stays one', async (t) => {
+  if (skipWithoutServer(t)) return;
+  // What Chromium does once a picked file changed on disk: its upload fails (ERR_UPLOAD_FILE_CHANGED, a TypeError to
+  // the page) and the File refuses every read after (NotReadableError).
+  class ChangingFile extends File {
+    changed = false;
+    slice(...args) {
+      if (!this.changed) return super.slice(...args);
+      const refuse = () => Promise.reject(new DOMException('The requested file could not be read.', 'NotReadableError'));
+      return { size: 0, type: '', arrayBuffer: refuse, text: refuse, slice: () => this.slice() };
+    }
+  }
+  // What the next uploads' PUTs do before they fail as the browser fails them.
+  const failPut = [];
+  const serve = async (target, init) => {
+    if (init && init.method === 'PUT' && failPut.length) {
+      failPut.shift()();
+      throw new TypeError('Failed to fetch');
+    }
+    return undefined;
+  };
+  const { page, ws } = await filesPage(t, { serve });
+  const changing = new ChangingFile(['the first version\n'], 'changing.txt', { type: 'text/plain' });
+  const steady = new ChangingFile(['a file that stays\n'], 'steady.txt', { type: 'text/plain' });
+  const picking = page.call('chatPickFiles');
+  await until(() => page.record.choosers.length === 1, 2000, 'the chooser');
+  page.record.choosers[0].files = [changing, steady];
+  page.record.choosers[0].dispatch('change');
+  const [a, b] = await picking;
+
+  // Changed as its upload starts: measured already, so files.js fails it as a network error, and the page, finding the
+  // File unreadable, makes that unreadable: the tray says to attach it again and shows no Retry.
+  failPut.push(() => (changing.changed = true));
+  const one = await page.call('chatStage', ws.id, ws.general, null, { path: a.path });
+  assert.equal((await settled(page, one.stage)).state, 'failed');
+  await until(() => stagedOf(page, one.stage).error === 'unreadable', 5000, 'the error to say unreadable');
+  assert.equal([...(await page.call('chatStaged', ws.id, ws.general, null))].find((s) => s.stage === one.stage).error, 'unreadable');
+
+  // A network failure of a file the browser still reads stays one, and Retry sends it.
+  failPut.push(() => {});
+  const two = await page.call('chatStage', ws.id, ws.general, null, { path: b.path });
+  const failed = await settled(page, two.stage);
+  assert.deepEqual([failed.state, failed.error], ['failed', 'network']);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(stagedOf(page, two.stage).error, 'network');
+  assert.equal((await page.call('chatRetryStage', two.stage)).state, 'uploading');
+  const sent = await until(() => stagedOf(page, two.stage)?.state === 'ready' && stagedOf(page, two.stage), 15000, 'the retried upload');
+  assert.ok(sent.file);
+  assert.deepEqual(page.logs.error, []);
+});
+
 test("the real server: a received file is shown from a blob: URL, opened in a tab or downloaded, and reactions, Mark unread and link cards work", async (t) => {
   if (skipWithoutServer(t)) return;
   const { page, olga, ws } = await filesPage(t);
@@ -1778,7 +1844,10 @@ test("the real server: a received file is shown from a blob: URL, opened in a ta
   const view = await page.call('chatFile', ws.id, ws.general, pic.id, 'view');
   assert.match(view.url, /^blob:/);
   assert.deepEqual(await blobAt(view.url), { type: 'image/png', bytes: image });
-  assert.equal((await page.call('chatFile', ws.id, ws.general, pic.id, 'view')).url, view.url, 'the same file keeps its URL');
+  // Each view link has a URL of its own, as each of desktop's links has its own token.
+  const again = await page.call('chatFile', ws.id, ws.general, pic.id, 'view');
+  assert.notEqual(again.url, view.url);
+  assert.deepEqual(await blobAt(again.url), { type: 'image/png', bytes: image });
   const htmlView = await page.call('chatFile', ws.id, ws.general, page2.id, 'view');
   assert.equal((await blobAt(htmlView.url)).type, 'application/octet-stream');
 
@@ -1829,6 +1898,90 @@ test("the real server: a received file is shown from a blob: URL, opened in a ta
   assert.equal(await page.call('chatRemovePreview', ws.id, ws.general, id, card.url), true);
   await until(async () => ((await serverEvents(olga, ws, ws.general)).find((e) => e.id === id)?.previews || []).length === 0, 10000, 'the card gone on the server');
   assert.equal(vm.runInContext('document.title', page.context), 'Rukoo', 'no file ran in the page');
+  assert.deepEqual(page.logs.error, []);
+});
+
+test("the real server: a view URL works only while files.js would serve its link: a removed message's goes, the same bytes in another stay", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page, olga, ws } = await filesPage(t);
+  const svc = page.test.engine.svc;
+  // Two attachments with the same bytes, in two messages: one cached file, two rows.
+  const image = pngBytes(40, 20, 300);
+  const first = await real.upload(olga, ws.id, ws.general, { name: 'same.png', type: 'image/png', bytes: image, width: 40, height: 20 });
+  const second = await real.upload(olga, ws.id, ws.general, { name: 'copy.png', type: 'image/png', bytes: image, width: 40, height: 20 });
+  const one = await real.post(olga, ws.id, ws.general, 'First copy', { attachments: [first.id] });
+  await real.post(olga, ws.id, ws.general, 'Second copy', { attachments: [second.id] });
+  await until(async () => (await page.call('chatOpen', ws.id, ws.general)).events.filter((e) => /copy/.test(e.text || '')).length === 2, 15000, 'both messages in the room');
+  const a = (await page.call('chatFile', ws.id, ws.general, first.id, 'view')).url;
+  const b = (await page.call('chatFile', ws.id, ws.general, second.id, 'view')).url;
+  assert.notEqual(a, b);
+  assert.deepEqual(await blobAt(a), { type: 'image/png', bytes: image });
+  assert.deepEqual(await blobAt(b), { type: 'image/png', bytes: image });
+  assert.equal(svc.store.getCachedFile(ws.id, first.id).sha256, svc.store.getCachedFile(ws.id, second.id).sha256);
+  assert.equal(svc.store.cachedFiles().length, 1, 'the bytes once');
+
+  // Olga removes the first message: its file's row goes, and the URL with it, while the bytes stay for the other.
+  await real.redact(olga, ws.id, ws.general, one.messageId);
+  await until(() => !resolveObjectURL(a), 15000, "the removed message's URL to stop working");
+  assert.equal(svc.store.getCachedFile(ws.id, first.id), null);
+  assert.deepEqual(await blobAt(b), { type: 'image/png', bytes: image });
+  assert.equal(svc.store.cachedFiles().length, 1);
+  await assert.rejects(page.call('chatFile', ws.id, ws.general, first.id, 'view'));
+
+  // A link files.js no longer keeps (it keeps the newest 500) loses its URL with it.
+  const oldest = (await page.call('chatFile', ws.id, ws.general, second.id, 'view')).url;
+  const urls = [];
+  for (let i = 0; i < 500; i++) urls.push((await page.call('chatFile', ws.id, ws.general, second.id, 'view')).url);
+  await until(() => !resolveObjectURL(oldest), 2000, 'the oldest link to go');
+  assert.ok(resolveObjectURL(b) === undefined, 'b was older still');
+  const newest = (await page.call('chatFile', ws.id, ws.general, second.id, 'view')).url;
+  assert.ok(resolveObjectURL(newest));
+  await until(() => !resolveObjectURL(urls[0]), 2000, 'the link the newest pushed out to go');
+  // Opening the file makes a link too, which pushes the oldest out the same way: its URL is gone by the time the open
+  // answers, without waiting for an engine event to check the links.
+  assert.ok(resolveObjectURL(urls[1]));
+  assert.equal(await page.call('chatFile', ws.id, ws.general, second.id, 'open'), 'tab');
+  assert.equal(resolveObjectURL(urls[1]), undefined, 'the link the open pushed out still has its URL');
+  assert.ok(resolveObjectURL(urls[2]), 'the next oldest stays');
+  // The session's end ends them all.
+  await page.call('accountSignOut');
+  await until(() => !resolveObjectURL(newest), 5000, 'the URLs to go with the session');
+  assert.deepEqual(page.logs.error, []);
+});
+
+test('the real server: two attachments of the same bytes viewed at once keep both view URLs, though the second download lands over the first', async (t) => {
+  if (skipWithoutServer(t)) return;
+  // Both downloads check the cache before either lands: the first answers after 300 ms, the second after 1.5 s.
+  let gets = 0;
+  const serve = async (target, init) => {
+    if (((init && init.method) || 'GET') === 'GET' && /\/v1\/workspaces\/[^/]+\/files\/[^/]+$/.test(target.pathname)) {
+      gets += 1;
+      await new Promise((resolve) => setTimeout(resolve, gets === 1 ? 300 : 1500));
+    }
+    return undefined;
+  };
+  const { page, olga, ws } = await filesPage(t, { serve });
+  const svc = page.test.engine.svc;
+  const image = pngBytes(30, 30, 200);
+  const first = await real.upload(olga, ws.id, ws.general, { name: 'twin.png', type: 'image/png', bytes: image, width: 30, height: 30 });
+  const second = await real.upload(olga, ws.id, ws.general, { name: 'twin-copy.png', type: 'image/png', bytes: image, width: 30, height: 30 });
+  await real.post(olga, ws.id, ws.general, 'One twin', { attachments: [first.id] });
+  await real.post(olga, ws.id, ws.general, 'Other twin', { attachments: [second.id] });
+  await until(async () => (await page.call('chatOpen', ws.id, ws.general)).events.filter((e) => /twin/.test(e.text || '')).length === 2, 15000, 'both twins in the room');
+  const one = page.call('chatFile', ws.id, ws.general, first.id, 'view');
+  const other = page.call('chatFile', ws.id, ws.general, second.id, 'view');
+  const a = (await one).url;
+  assert.ok(resolveObjectURL(a), 'the first URL works once it is given');
+  const b = (await other).url;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(gets, 2, 'both downloaded');
+  // The second landed on the same cache file: files.js still serves both links, so both URLs work.
+  for (const [id, url] of [[first.id, a], [second.id, b]]) {
+    const token = [...svc.files.views].find(([, v]) => v.file === id)[0];
+    assert.ok(svc.files.serve(`rukoo-chat-file://view/${token}`), `files.js serves ${id}'s link`);
+    assert.deepEqual(await blobAt(url), { type: 'image/png', bytes: image });
+  }
+  assert.equal(svc.store.cachedFiles().length, 1, 'the bytes once in the cache');
   assert.deepEqual(page.logs.error, []);
 });
 

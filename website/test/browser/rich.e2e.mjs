@@ -1,12 +1,13 @@
 // Rich team chat in the browser, end to end: files, images, reactions, Markdown and link cards, against the real site
 // and account Workers (harness.mjs) with a files bucket and the link card pages, in headless Chromium. Olga uses the
 // page; Piet is the other member, acted for over the server's API, and every outcome the page causes is checked from
-// his side too. The tests run in order on one page: a file through Attach (a), an image dropped on the conversation and
-// shown in the viewer, downloaded and opened (b), a pasted file (c), Piet's files arriving and downloading (d),
-// reactions both ways and the emoji picker under the title bar (e), Markdown both ways (f), link cards and their
-// removal (g), the same conversation and the picker on a phone in Dutch (h), a picked file that changed on disk (i), a
-// reload with files in the tray (j), and, on a page of its own, a picture that left the download cache (k). Each test
-// fails on a console or page error and on horizontal overflow.
+// his side too. The tests run in order on one page: a file through Attach, uploading without a percentage (a), an image
+// dropped on the conversation and shown in the viewer, downloaded and opened (b), a pasted file (c), Piet's files
+// arriving and downloading (d), reactions both ways and the emoji picker under the title bar (e), Markdown both ways
+// (f), link cards and their removal (g), the same conversation, the picker and a picture whose upload is redirected on
+// a phone in Dutch (h), a picked file that changed on disk (i), a reload with files in the tray (j), and, on a page of
+// its own, a picture that left the download cache (k). Each test fails on a console or page error and on horizontal
+// overflow.
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,6 +75,8 @@ async function sentId(row) {
 }
 
 const tray = (page) => page.locator('section.chat .ch-main .ch-tray');
+// The account server's upload and download links (server/src/files.js fileLink): a PUT uploads, a GET downloads.
+const FILE_LINK = /\/v1\/workspaces\/[^/]+\/files\/[^/?]+$/;
 const composer = (page) => page.locator('section.chat .ch-main .ch-input');
 
 async function write(page, text, { send = true } = {}) {
@@ -171,7 +174,8 @@ async function uploadOpen(token, id) {
 }
 
 test('a: a file attached with Attach uploads in the tray, goes with the message and reaches the other member whole', async () => {
-  view = await openPage(env.browser);
+  // Test i changes a picked file under the browser, which logs the upload it refuses.
+  view = await openPage(env.browser, { allow: [/^Failed to load resource: net::ERR_UPLOAD_FILE_CHANGED$/] });
   const p = view.page;
   await p.goto(`${env.origin}/app/`);
   await signIn(p, olga);
@@ -182,13 +186,32 @@ test('a: a file attached with Attach uploads in the tray, goes with the message 
   const attach = p.locator('.ch-main [data-ch-compose="attach"]');
   await expect(attach).toBeVisible();
   const notes = Buffer.from('Launch notes\n- landing page\n- pricing\n');
+  // The upload held at the server's door: until it answers, the tray says the file uploads, without a percentage the
+  // page can't know, and the bar runs without one.
+  let release = null;
+  const held = new Promise((resolve) => (release = resolve));
+  let passed = null;
+  await p.route(FILE_LINK, (route) => {
+    if (route.request().method() !== 'PUT') return route.continue();
+    passed = held.then(() => route.continue());
+    return passed;
+  });
   const chooser = p.waitForEvent('filechooser');
   await attach.click();
   await (await chooser).setFiles([{ name: 'notes.txt', mimeType: 'text/plain', buffer: notes }]);
   const item = tray(p).locator('.ch-tray-item');
   await expect(item).toHaveCount(1);
   await expect(item.locator('.ch-file-name')).toHaveText('notes.txt');
+  await expect(item).toHaveClass(/is-unmeasured/, { timeout: LIVE_MS });
+  await expect(item.locator('.ch-tray-sub')).toContainText(tr('en', 'chat.files.webUploading'));
+  await expect(item.locator('.ch-tray-sub')).not.toContainText('%');
+  assert.equal(await item.locator('.ch-tray-bar i').evaluate((el) => getComputedStyle(el).animationName), 'shimmer');
+  await shot(p, 'rich-a0-uploading');
+  release();
+  await passed;
+  await p.unroute(FILE_LINK);
   await expect(tray(p).locator('.ch-tray-item.is-ready')).toHaveCount(1, { timeout: LIVE_MS });
+  await expect(item).not.toHaveClass(/is-unmeasured/);
   await write(p, 'Notes for the launch', { send: false });
   await shot(p, 'rich-a1-tray');
   await p.keyboard.press('Enter');
@@ -563,6 +586,87 @@ test('h: on a phone in Dutch the rich conversation keeps 44px targets, the viewe
   await tray(p).locator('.ch-tray-x').tap();
   await expect(tray(p)).toBeHidden();
 
+  // A picture and a document whose uploads the server redirects (307, which keeps the method and body): the page refuses
+  // them before the browser follows, so nothing reaches where they point. Each failed one takes the row and says why in
+  // full, as a touch screen has no tooltip, with a 44px Retry of its own under the reason.
+  const target = `${env.origin}/app/moved-upload`;
+  const followed = [];
+  const onRequest = (req) => req.url() === target && followed.push(req.method());
+  p.on('request', onRequest);
+  await p.route(FILE_LINK, (route) => (route.request().method() === 'PUT' ? route.fulfill({ status: 307, headers: { location: target } }) : route.continue()));
+  const pick = p.waitForEvent('filechooser');
+  await p.locator('.ch-main [data-ch-compose="attach"]').tap();
+  await (await pick).setFiles([
+    { name: 'moved.png', mimeType: 'image/png', buffer: png(64, 64, [214, 102, 47]) },
+    { name: 'quarterly-report.pdf', mimeType: 'application/pdf', buffer: pdf('Moved') }
+  ]);
+  await expect(tray(p).locator('.ch-tray-item.is-failed')).toHaveCount(2, { timeout: LIVE_MS });
+  await p.unroute(FILE_LINK);
+  p.off('request', onRequest);
+  assert.deepEqual(followed, [], 'the browser followed the redirect');
+  const failedItems = [tray(p).locator('.ch-tray-item.is-image'), tray(p).locator('.ch-tray-item.is-file')];
+  const trayBox = await tray(p).boundingBox();
+  for (const failed of failedItems) {
+    const reason = failed.locator('.ch-tray-sub');
+    await expect(reason).toBeVisible();
+    await expect(reason).toContainText(tr('nl', 'chat.errors.failed'));
+    const fit = await reason.evaluate((el) => ({ width: el.clientWidth, cut: el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight }));
+    assert.equal(fit.cut, false, 'the reason shows whole');
+    assert.ok(fit.width > 200, `the reason has the row's width (${fit.width}px)`);
+    const box = await failed.boundingBox();
+    assert.ok(Math.abs(box.width - trayBox.width) < 6, `a failed item takes the row (${box.width} of ${trayBox.width})`);
+    await expect(failed.locator('.ch-tray-retry')).toBeVisible();
+    // The reason beside the picture or the file's icon, and Retry on a line of its own under it, in line with it; also
+    // with the longest reason the tray gives, set in its place for the measure.
+    for (const text of [null, tr('nl', 'chat.errors.webFileUnreadable')]) {
+      const [icon, said, again] = await failed.evaluate((el, longer) => {
+        const sub = el.querySelector('.ch-tray-sub');
+        const before = sub.textContent;
+        if (longer) sub.textContent = longer;
+        const boxes = ['.ch-tray-thumb, .ch-file-ic', '.ch-tray-sub', '.ch-tray-retry'].map((sel) => {
+          const r = el.querySelector(sel).getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        });
+        sub.textContent = before;
+        return boxes;
+      }, text);
+      assert.ok(said.x >= icon.x + icon.width && said.y < icon.y + icon.height, `the reason sits beside the icon (${JSON.stringify([icon, said])})`);
+      assert.ok(again.y >= said.y + said.height - 1 && Math.abs(again.x - said.x) < 2, `Retry sits under the reason, in line with it (${JSON.stringify([said, again])})`);
+    }
+  }
+  await targets(p, 'failed files in the tray on a phone');
+  // targets() passes over a control that another one's area covers: each Retry's middle is its own, and each remove
+  // button's is the remove button's.
+  for (const failed of failedItems) {
+    for (const [locator, cls] of [[failed.locator('.ch-tray-retry'), 'ch-tray-retry'], [failed.locator('.ch-tray-x'), 'ch-tray-x']]) {
+      const box = await locator.boundingBox();
+      const hit = await p.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.className || '', [box.x + box.width / 2, box.y + box.height / 2]);
+      assert.match(hit, new RegExp(`\\b${cls}\\b`), `${cls} gets a tap on its middle`);
+    }
+  }
+  // English's Retry is much shorter than Dutch's Opnieuw proberen: it stays a 44px target.
+  const retryWith = (label) =>
+    failedItems[1].locator('.ch-tray-retry').evaluate((el, text) => {
+      const before = el.textContent;
+      el.textContent = text;
+      const r = el.getBoundingClientRect();
+      el.textContent = before;
+      return [Math.round(r.width), Math.round(r.height)];
+    }, label);
+  const [w, h] = await retryWith(tr('en', 'common.actions.retry'));
+  assert.ok(w >= 44 && h >= 44, `the English Retry is ${w}x${h}`);
+  await shot(p, 'rich-h4-phone-failed-files');
+  await p.emulateMedia({ colorScheme: 'dark' });
+  await expect(p.locator('html')).not.toHaveClass(/\blight\b/);
+  await p.waitForTimeout(300);
+  await shot(p, 'rich-h5-phone-failed-files-dark');
+  await p.emulateMedia({ colorScheme: 'light' });
+  // Retry sends each again, now to the server itself.
+  for (const failed of failedItems) await failed.locator('.ch-tray-retry').tap();
+  await expect(tray(p).locator('.ch-tray-item.is-ready')).toHaveCount(2, { timeout: LIVE_MS });
+  while (await tray(p).locator('.ch-tray-x').count()) await tray(p).locator('.ch-tray-x').first().tap();
+  await expect(tray(p)).toBeHidden();
+
   // A file let go of outside the chat doesn't leave the page (the browser would open it in the tab).
   await p.locator('[data-web="back"]').click();
   const refused = await p.locator('.sidebar').evaluate((el) => {
@@ -606,6 +710,33 @@ test('i: a picked file that changed on disk says to attach it again, without a R
     await (await again).setFiles(file);
     await expect(tray(p).locator('.ch-tray-item.is-ready')).toHaveCount(1, { timeout: 60000 });
     await tray(p).locator('.ch-tray-x').click();
+    await expect(tray(p)).toBeHidden();
+
+    // Changed after it was measured, while its reservation was on its way: Chromium refuses the upload
+    // (ERR_UPLOAD_FILE_CHANGED), which files.js reports as a network failure, and the page then finds the File
+    // unreadable: the tray says the same, without a Retry.
+    const notes = path.join(dir, 'notes.txt');
+    writeFileSync(notes, 'the first version of the notes\n');
+    let release = null;
+    const held = new Promise((resolve) => (release = resolve));
+    const RESERVE = /\/conversations\/[^/]+\/uploads$/;
+    await p.route(RESERVE, async (route) => {
+      if (route.request().method() === 'POST') await held;
+      return route.continue();
+    });
+    const late = p.waitForEvent('filechooser');
+    await p.locator('.ch-main [data-ch-compose="attach"]').click();
+    await (await late).setFiles(notes);
+    await p.waitForFunction(() => [...window.__rukooWebTest.engine.svc.files.staged.values()].some((e) => e.sha256), null, { timeout: LIVE_MS });
+    writeFileSync(notes, 'a second version, longer than the first\n');
+    release();
+    const changed = tray(p).locator('.ch-tray-item');
+    await expect(changed.locator('.ch-tray-sub')).toContainText(tr('en', 'chat.errors.webFileUnreadable'), { timeout: LIVE_MS });
+    await expect(changed.locator('.ch-tray-retry')).toBeHidden();
+    await p.unroute(RESERVE);
+    assert.equal(view.allowed.filter((text) => /ERR_UPLOAD_FILE_CHANGED/.test(text)).length, 1, 'the browser refused the changed upload');
+    await shot(p, 'rich-i2-changed-after-measuring');
+    await changed.locator('.ch-tray-x').click();
     await expect(tray(p)).toBeHidden();
   } finally {
     rmSync(dir, { recursive: true, force: true });

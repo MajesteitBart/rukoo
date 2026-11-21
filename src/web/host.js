@@ -34,7 +34,7 @@ const { createAccountService, ERRORS, SESSION_KEY } = require('./account/service
 const { createArgon2 } = require('./account/argon2');
 const { createWebEngine } = require('./engine');
 const { createJoin } = require('./join');
-const { createWebFiles } = require('./files');
+const { createWebFiles, PICKED } = require('./files');
 const { VIEW_SCHEME, VIEW_TYPES } = require('../main/workspaces/files');
 const vfs = require('./engine/shims/vfs');
 
@@ -543,6 +543,31 @@ function createHost(page) {
     for (const e of files.staged.values()) if (e.path === name) return true;
     return false;
   }
+  // A picked file that changed or went on disk after files.js measured it fails its upload as a network error: the
+  // browser refuses to send it (Chromium: ERR_UPLOAD_FILE_CHANGED), and transfer() reports any failed request so. Retry
+  // would send the same File and fail the same way. So once the File can't be read any more, the error becomes
+  // unreadable, as for a file that changed before it was measured: the tray says to attach it again, without Retry.
+  // A failure looked at already, while it lasts.
+  const lookedAt = new WeakSet();
+  function checkFailedPicks(list) {
+    const files = engine && engine.svc.files;
+    if (!files || !Array.isArray(list)) return;
+    for (const s of list) {
+      const entry = s && files.staged.get(s.stage);
+      if (!entry) continue;
+      if (entry.state !== 'failed') {
+        lookedAt.delete(entry);
+        continue;
+      }
+      if (entry.error !== 'network' || lookedAt.has(entry) || typeof entry.path !== 'string' || !entry.path.startsWith(`${PICKED}/`)) continue;
+      lookedAt.add(entry);
+      webFiles.readable(entry.path).then((ok) => {
+        if (ok || entry.gone || files.staged.get(entry.stage) !== entry || entry.state !== 'failed' || entry.error !== 'network') return;
+        entry.error = 'unreadable';
+        files.emit(entry);
+      });
+    }
+  }
   const stagedCount = () => (engine && engine.svc.files ? engine.svc.files.staged.size : 0);
   // The page goes for good with files in a tray. Their reservations would count against the person's 20 open uploads
   // and the workspace's files for an hour (server/src/workspace.js), and nothing can send them any more: the page's
@@ -577,13 +602,20 @@ function createHost(page) {
         settings: () => settings,
         // main.js 2232-2234. Every state also says how many messages this tab still has to send, for the other tabs.
         onEvent: (payload) => {
+          // Removed messages, a lost room or workspace and a session's end each come with an event, and may have
+          // taken a view link's file with them.
+          if (webFiles.views()) checkViewsSoon();
           if (payload && payload.kind === 'state' && payload.state) {
             publishUnsent(payload.state.unsent);
             emit('chat', { ...payload, state: webState(payload.state) });
             return;
           }
-          // A tray changed: a picked file it sent or let go of may be needed by nothing any more.
-          if (payload && payload.kind === 'staged') webFiles.prunePicked(pickedInUse);
+          // A tray changed: a picked file it sent or let go of may be needed by nothing any more, and one that failed
+          // may be one the browser can't read any more.
+          if (payload && payload.kind === 'staged') {
+            webFiles.prunePicked(pickedInUse);
+            checkFailedPicks(payload.staged);
+          }
           emit('chat', payload);
         },
         onNotify: showChatNotification,
@@ -638,16 +670,22 @@ function createHost(page) {
   };
   // chatFile (chat-view.js viewUrl and fileAction). 'view': main.js serves desktop's rukoo-chat-file: link
   // (serveChatFile), which no page can load, so the link becomes a blob: URL of the same file here, typed as serve()
-  // types it. 'open': a page can't hand a file to an app, so an image of a type the viewer shows opens in a new tab and
-  // anything else downloads, as 'save' does (src/web/files.js). Both answer 'download' or 'tab' instead of true: the
-  // browser shows the download itself, and chat-view.js's "Saved" toast would say it twice.
+  // types it: one per link, working while serve() would answer the link (checkViewsSoon). 'open': a page can't hand a
+  // file to an app, so an image of a type the viewer shows opens in a new tab and anything else downloads, as 'save'
+  // does (src/web/files.js). Both answer 'download' or 'tab' instead of true: the browser shows the download itself,
+  // and chat-view.js's "Saved" toast would say it twice.
   methods.chatFile = async (ws, c, file, action, ...rest) => {
     if (filesElsewhere()) throw filesElsewhereError();
     if (action === 'open') return openFile(ws, c, file);
     const res = await chat().chatFile(ws, c, file, action, ...rest);
     if (action === 'view') {
-      const hit = res && typeof res.url === 'string' ? servedView(res.url) : null;
-      return { url: hit ? webFiles.viewUrl(hit.path, hit.type) : null };
+      const link = res && typeof res.url === 'string' ? res.url : '';
+      const token = VIEW_LINK.exec(link);
+      const hit = token ? servedView(link) : null;
+      const url = hit ? webFiles.viewUrl(token[1], hit.path, hit.type) : null;
+      // This link may have pushed the oldest out of files.js's views.
+      checkViewsSoon();
+      return { url };
     }
     return res === true ? 'download' : res;
   };
@@ -656,6 +694,8 @@ function createHost(page) {
   // to open one, becomes a download.
   async function openFile(ws, c, file) {
     const res = await chat().chatFile(ws, c, file, 'view');
+    // Its link counts toward files.js's views as any view's does, and may have pushed the oldest out.
+    checkViewsSoon();
     const hit = res && typeof res.url === 'string' ? servedView(res.url) : null;
     if (hit && VIEW_TYPES.has(hit.type) && webFiles.openTab(hit.path, hit.type)) return 'tab';
     const saved = await chat().chatFile(ws, c, file, 'save');
@@ -697,6 +737,19 @@ function createHost(page) {
     const row = svc.store.getCachedFile(v.ws, v.file);
     if (!row || row.room !== v.room || row.sha256 !== v.sha256 || !vfs.get(v.path)) return null;
     return { path: v.path, type: VIEW_TYPES.has(v.type) ? v.type : 'application/octet-stream', name: v.name };
+  }
+
+  // The blob: URLs of view links that servedView no longer answers are revoked (src/web/files.js checkViews), once
+  // whatever changed has run to its end: a removal of messages reaches the page as events before files.js drops their
+  // files' rows, in the same turn (history.js afterApply).
+  let viewCheck = false;
+  function checkViewsSoon() {
+    if (viewCheck) return;
+    viewCheck = true;
+    later(() => {
+      viewCheck = false;
+      webFiles.checkViews((token) => Boolean(servedView(`${VIEW_SCHEME}://view/${token}`)));
+    });
   }
 
   // The Rukoo account (main.js 1491-1523). The service cleans its input as main.js's handlers do.

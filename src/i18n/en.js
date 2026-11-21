@@ -10919,6 +10919,10 @@
     "message": "Uploading {percent}%",
     "description": "State of an attached file above the composer while it uploads. {percent}: 0 to 100. src/renderer/chat-rich.js"
   },
+  "chat.files.webUploading": {
+    "message": "Uploading",
+    "description": "Rukoo in the browser: state of an attached file above the composer while it uploads, in place of chat.files.uploading. A page learns how much went only once the server answers, so there is no percentage; the progress bar moves without one. src/renderer/chat-rich.js"
+  },
   "chat.files.ready": {
     "message": "Ready",
     "description": "State of an attached file above the composer once it's uploaded and goes with the next message. src/renderer/chat-rich.js"

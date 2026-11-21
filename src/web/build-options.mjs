@@ -3,7 +3,7 @@
 //
 // - node:sqlite             src/web/engine/sqlite.js (sql.js, in memory)
 // - fs, fs/promises, os,    src/web/engine/shims/*.js: files in memory (shims/vfs.js), SHA-256 in JavaScript, and
-//   path, events, crypto,   the transfers of team chat's files on fetch and XMLHttpRequest
+//   path, events, crypto,   the transfers of team chat's files on fetch
 //   http, https, stream,
 //   buffer
 // - src/main/account/client.js   src/web/engine/shims/account-client.js (AccountError and errorDetails)

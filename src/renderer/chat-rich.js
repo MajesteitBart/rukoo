@@ -869,9 +869,13 @@ export function mountTray(handlers) {
   const el = h('div', { class: 'ch-tray', role: 'list', 'aria-label': t('chat.files.trayLabel'), hidden: true });
   const items = new Map();
 
+  // A browser tells the page nothing of an upload until the server answers (src/web/engine/shims/http.js), so the web
+  // shows that it uploads, without a share.
+  const unmeasured = (s) => WEB && s.state === 'uploading';
   function stateText(s) {
     if (s.state === 'failed') return handlers.errorText ? handlers.errorText(s.error) : t('chat.files.failed');
     if (s.state === 'measuring') return t('chat.files.preparing');
+    if (unmeasured(s)) return t('chat.files.webUploading');
     if (s.state === 'uploading') return t('chat.files.uploading', { percent: percent(s) });
     return t('chat.files.ready');
   }
@@ -906,15 +910,18 @@ export function mountTray(handlers) {
   function update(item, s) {
     const text = stateText(s);
     const size = fileSize(Number(s.size) || 0);
-    // A thumbnail has no room for the line: it's the accessible name and the tooltip instead.
+    // A thumbnail has no room for the line: it's the accessible name and the tooltip instead. In the browser a failed
+    // picture shows it (web.css), as a touch screen has no tooltip.
     if (item.image) item.sub.textContent = s.state === 'failed' ? text : '';
     else item.sub.textContent = `${size} · ${text}`;
     item.node.classList.toggle('is-busy', s.state === 'measuring' || s.state === 'uploading');
     item.node.classList.toggle('is-failed', s.state === 'failed');
     item.node.classList.toggle('is-ready', s.state === 'ready');
+    item.node.classList.toggle('is-unmeasured', unmeasured(s));
     item.node.setAttribute('aria-label', `${s.name || ''}, ${size}, ${text}`);
     item.node.title = `${s.name || ''} · ${size} · ${text}`;
-    item.bar.firstChild.style.width = `${s.state === 'uploading' ? percent(s) : s.state === 'measuring' ? 0 : 100}%`;
+    // An upload of unknown share leaves the bar to web.css, which runs a light along it.
+    item.bar.firstChild.style.width = unmeasured(s) ? '' : `${s.state === 'uploading' ? percent(s) : s.state === 'measuring' ? 0 : 100}%`;
     // A browser can't read a picked file again once it changed on disk (only the file chooser hands out a new one), so
     // Retry, which reads it again, can't help there; the text says to attach it again (chat.errors.webFileUnreadable).
     item.retry.hidden = s.state !== 'failed' || (WEB && s.error === 'unreadable');

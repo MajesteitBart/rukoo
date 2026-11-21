@@ -2813,6 +2813,7 @@
   "chat.files.trayLabel": "Bestanden om te versturen",
   "chat.files.preparing": "Voorbereiden",
   "chat.files.uploading": "Uploaden {percent}%",
+  "chat.files.webUploading": "Uploaden",
   "chat.files.ready": "Klaar",
   "chat.files.failed": "Uploaden mislukt",
   "chat.files.remove": "{name} weghalen",

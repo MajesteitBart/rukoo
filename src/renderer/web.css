@@ -55,13 +55,73 @@ html[data-platform='web'] .scrim.ch-viewer {
 }
 
 /* A file in the composer's tray that failed says why in full, over more lines: the desktop shows the rest in a tooltip,
-   which a touch screen doesn't have, and the browser's reasons say what to do (chat.errors.webFileUnreadable). */
-html[data-platform='web'] .ch-tray-item.is-file.is-failed {
+   which a touch screen doesn't have, and the browser's reasons say what to do (chat.errors.webFileUnreadable). Retry
+   gets a line of its own under the reason, in line with the text, so a long label (Dutch Opnieuw proberen) leaves the
+   reason its width. A picture that failed becomes such a card too, with the picture where the file's icon is. */
+html[data-platform='web'] .ch-tray-item.is-file.is-failed,
+html[data-platform='web'] .ch-tray-item.is-image.is-failed {
+  flex-wrap: wrap;
+  row-gap: 0;
   height: auto;
   min-height: 52px;
 }
 html[data-platform='web'] .ch-tray-item.is-failed .ch-tray-sub {
   white-space: normal;
+}
+html[data-platform='web'] .ch-tray-item.is-file.is-failed .ch-file-text,
+html[data-platform='web'] .ch-tray-item.is-image.is-failed .ch-tray-sub {
+  flex: 1 1 calc(100% - 50px);
+}
+html[data-platform='web'] .ch-tray-item.is-failed .ch-tray-retry {
+  margin-left: 50px;
+}
+html[data-platform='web'] .ch-tray-item.is-image.is-failed {
+  display: flex;
+  align-items: center;
+  column-gap: 10px;
+  width: 248px;
+  max-width: 100%;
+  padding: 6px 30px 6px 6px;
+}
+html[data-platform='web'] .ch-tray-item.is-image.is-failed .ch-tray-thumb {
+  position: relative;
+  inset: auto;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+html[data-platform='web'] .ch-tray-item.is-image.is-failed .ch-tray-sub {
+  display: block;
+  min-width: 0;
+}
+html[data-platform='web'] .ch-tray-item.is-image.is-failed .ch-tray-retry {
+  position: static;
+  transform: none;
+  min-height: 24px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+}
+html[data-platform='web'] .ch-tray-item.is-image.is-failed .ch-tray-x {
+  top: 50%;
+  right: 6px;
+  margin-top: -10px;
+}
+/* A file uploading: the page learns how much went only once the server answers (chat-rich.js unmeasured), so the bar
+   runs full length with a light moving along it, as the loading bar's shimmer does. */
+html[data-platform='web'] .ch-tray-item.is-unmeasured .ch-tray-bar i {
+  width: 100%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-platform='web'] .ch-tray-item.is-unmeasured .ch-tray-bar i {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 50%, transparent);
+  }
 }
 
 /* ---------- title bar: Back and Settings on a phone ---------- */
@@ -219,8 +279,16 @@ body.web-phone .ch-card-x::after {
   position: absolute;
   inset: -12px;
 }
-body.web-phone .ch-tray-retry {
+body.web-phone .ch-tray-retry,
+body.web-phone .ch-tray-item.is-image.is-failed .ch-tray-retry {
+  min-width: 44px;
   min-height: 44px;
+  justify-content: center;
+}
+/* A failed file or picture takes the whole row, and its Retry line is 44px high (above). */
+body.web-phone .ch-tray-item.is-file.is-failed,
+body.web-phone .ch-tray-item.is-image.is-failed {
+  width: 100%;
 }
 /* A picture smaller than a fingertip keeps its own size, with an invisible area around it that makes the tap target
    44px each way (as the banner's action below). The tile lets that area out; the picture keeps its round corners. */
