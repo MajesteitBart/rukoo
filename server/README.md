@@ -10,7 +10,7 @@ It is not a mail server. No one's mail, mail passwords or Google tokens pass thr
 
 It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`, or at `/<handle>` on a booking address you set up (`BOOKING_ORIGIN`). A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
 
-It can also host team chat: workspaces with channels that people on your server make and invite others into. That is off until you turn it on, and it is the one part where your server holds readable content. [Team chat](#team-chat) below covers it.
+It can also host team chat: workspaces with channels that people on your server make and invite others into. That is off until you turn it on, and it is the one part where your server holds readable content. [Team chat](#team-chat) below covers it. Workspaces can be billed per member through Stripe, which is off as well; [Billing](#billing) covers it.
 
 It can't reset a password either. A person who forgets their password needs their recovery key. Without both, their synced data is gone. Their mail is not affected.
 
@@ -386,6 +386,61 @@ Anyone with an account on your server can make a workspace, within those limits,
 
 Cloudflare keeps that 30-day history whether you use it or not, so a message someone removed can be restored by you for 30 days. `GET /v1/info` tells the apps so, as `platformHistoryDays`.
 
+## Billing
+
+Billing lets the owners of team workspaces on your server pay for them per member through Stripe. It is off until you turn it on, and it needs team chat. While it is off the billing routes answer 404, `GET /v1/info` lists no `billing` capability, and the statement at `/privacy` doesn't mention Stripe. Personal accounts, sync and booking pages never cost anything here; only workspaces are billed.
+
+How it bills:
+
+- Every active member of a workspace is a paid seat, guests included. An open invitation holds no seat.
+- A workspace has one Stripe subscription with one recurring line, whose quantity is its paid seats. The price lives in Stripe, with its amount, currency and whether tax is included, and `STRIPE_PRICE_ID` names it. The server never names an amount itself. The apps show the monthly total as the seats times the price the server reads from Stripe once an hour; while Stripe can't be asked they show EUR 19.50 including VAT, which only affects what is shown.
+- A member who joins raises the seats at once, prorated on the next invoice. A member who leaves leaves a vacant seat: whoever joins next takes it at no extra charge, and seats still vacant three hours before the renewal they belong to leave the bill, without a credit for those hours. If Stripe can't be reached in those three hours, the seat leaves as soon as it can, with a proration that credits it on the next invoice, and the Worker logs that a renewal billed a vacant seat.
+- Seat changes go to Stripe from the workspace's alarm, so a join never waits for Stripe. A failed change is tried again after a minute, then after two, four and so on up to six hours, and at most every fifteen minutes while a vacant seat's three hours run. Setting the seats is absolute, so each try reads the subscription first and sends a new idempotency key: Stripe keeps its answer to a key for a day, an error included, so the same key would only get the same error back. The server sends a key again only when no answer came, after a 429, or while Stripe still runs the first request.
+- Owners set up billing in Stripe Checkout and manage it in Stripe's customer portal: the payment method, invoices and cancelling. Admins see the status in Workspace settings. Members and guests don't see billing at all.
+- Nothing is locked when a workspace doesn't pay. The server records the subscription's status and the last payment, and the apps show them.
+- A workspace can be deleted only once its subscription has ended; a subscription set to end with its period can still be taken back, so it counts as live until then. A live-mode subscription keeps the workspace also while the server has no live key. Every Checkout page that is still open is expired before a single file goes, and one that was paid meanwhile stops the deletion.
+- When the last owner's account is deleted, nobody in the workspace can manage billing any more: the server sets its subscription to end with its period, and the workspace keeps what it paid for until then. So it does with a subscription that starts after that, from a Checkout page the owner had opened.
+- At most one Checkout page per workspace is open. Each workspace has a Stripe customer of its own, made with only the workspace's ID, and every page belongs to it. An open page is handed out again while it has the same number of seats and ten minutes left; otherwise every open page of that customer is expired at Stripe before a new one is made, also one that an answer Stripe lost or answered with an error may have made.
+
+The settings:
+
+| Setting | Kind | What it is |
+|---|---|---|
+| `BILLING` | var | `on` or `off`. Off by default. |
+| `STRIPE_PRICE_ID` | var | The price of one seat a month (`price_…`): recurring, per unit. |
+| `STRIPE_TAX` | var | VAT at Checkout, chosen on purpose: `automatic` for Stripe Tax, the ID of a tax rate (`txr_…`) that every seat carries, or `none` for nothing on top of the price. Empty keeps billing off. |
+| `STRIPE_SECRET_KEY` | secret | The secret key (`sk_test_…`, `sk_live_…`), or a restricted key (`rk_…`) that may write Customers, Checkout Sessions, Customer portal sessions and Subscriptions, and read Prices. |
+| `STRIPE_WEBHOOK_SECRET` | secret | The webhook endpoint's signing secret (`whsec_…`). While you roll it, put the old and the new one here, separated by a comma. |
+| `STRIPE_API` | var | For tests only: the address of a stand-in for Stripe's API. Leave it empty. |
+
+With `BILLING` on and one of `STRIPE_PRICE_ID`, `STRIPE_TAX`, `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` missing, billing stays off and the Worker logs once which settings are missing, never their values. Before each Checkout the server checks that the price is an active monthly price per unit, with its tax behavior set when Stripe Tax is on; while it isn't, Checkout answers that billing isn't set up correctly and the Worker logs why.
+
+### Set up Stripe
+
+Do all of this in test mode first, with test keys, and switch to live keys only once a test checkout, a webhook and a seat change have worked.
+
+1. In the Stripe dashboard, make a product, such as "Rukoo workspace seat", with a recurring monthly price per unit. For rukoo.io that is EUR 19.50 with "Include tax in price" chosen, so its tax behavior is inclusive. Put the price's ID in `STRIPE_PRICE_ID`.
+2. Decide how invoices show VAT. Either turn on Stripe Tax with your registrations and set `STRIPE_TAX` to `automatic`, or make a tax rate (for rukoo.io: 21%, the Netherlands, inclusive) and set `STRIPE_TAX` to its ID. `none` is for a server that charges no tax on top of its price; an invoice then shows no VAT line.
+3. Set up the customer portal (Settings, Billing, Customer portal): let customers update payment methods, see invoices and cancel subscriptions, and turn off changing quantities and switching plans, because seats follow the members. Fill in your business details and the links to your terms and privacy statement.
+4. Add a webhook endpoint at `https://<your address>/v1/billing/webhook`, with API version `2025-03-31.basil` or later, for these events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid` and `invoice.payment_failed`. The server reads the shapes of older versions too, but asks for that one itself. Copy the endpoint's signing secret.
+5. Store the two secrets:
+
+   ```sh
+   npx wrangler secret put STRIPE_SECRET_KEY
+   npx wrangler secret put STRIPE_WEBHOOK_SECRET
+   ```
+
+6. Set `BILLING` to `on` and deploy. `GET /v1/info` then lists `billing` in `workspace.capabilities`, and `/privacy` has a Billing section that names Stripe.
+7. Try it: as the owner of a workspace, open Workspace settings, choose Set up billing, and pay with Stripe's test card 4242 4242 4242 4242. The status turns Active within seconds. Invite someone and let them join: the paid seats go up. Manage billing opens the portal.
+
+Checkout and the portal send people back to `/billing` on `WORKSPACE_ORIGIN`, or on the address the app called, a short page in English or Dutch that says to go back to Rukoo. On rukoo.io the site Worker passes `/billing` on to this server, because the website has no such path; keep it that way.
+
+The webhook checks Stripe's signature over the body's exact bytes, with HMAC-SHA256 in constant time, and refuses a signature older or newer than five minutes. Each event counts once, however often Stripe sends it. An event older than the state the workspace holds changes nothing, an ended subscription never comes back from an event, and after every subscription event the workspace reads the subscription back from Stripe, so events in any order end at Stripe's state. An invoice that arrives before its subscription's own events is kept for that subscription. Events of another mode (a live event on a server with a test key, or the other way round), events for something that isn't a workspace here, and events billing doesn't follow get 200 and are ignored. A workspace keeps its billing for the mode of the key it was made with: switching a server from test keys to live ones starts every workspace's billing over, since test IDs mean nothing in live mode.
+
+The server sends Stripe a workspace's ID and its number of seats, and nothing about the members or what they write. The owner enters the payment method, the invoice name and address and an optional VAT number on Stripe's own pages; the server never receives card or bank details. Each workspace keeps the IDs of its Stripe customer, subscription and open Checkout page, the subscription's status, the seats Stripe bills, when the period ends, whether the last payment went through, and the IDs of the Stripe events it handled for 30 days. The statement at `/privacy` says so while billing is on; if you use your own with `PRIVACY_URL`, add Stripe there first.
+
+Turning billing on needs no migration: a workspace adds its billing table when it starts. Deploy this version with `BILLING` off, then turn it on.
+
 ## The server Rukoo uses
 
 The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code until the apps ask for the emailed code at sign-up; then `SIGNUPS` there becomes `"verified"`. Its codes go out from `account@bvdm.ai` once the `RESEND_API_KEY` secret is set. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
@@ -447,7 +502,7 @@ Run the tests with:
 npm test
 ```
 
-They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. They bind a local files bucket themselves, and serve the pages link cards are made of from `test/fixtures/preview-pages.cjs` on `127.0.0.1`. A second project runs `test/s3-*.test.js` without the bucket and with an S3-compatible store instead, answered inside the runtime by the stand-in in `test/fixtures/fake-s3.js`, which checks every request's signature and every upload's digest. `npm run dev` has no files bucket unless you uncomment `r2_buckets` in `wrangler.jsonc`, which then uses a local one in `.wrangler/`. To check that the server bundles without deploying it:
+They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. They bind a local files bucket themselves, and serve the pages link cards are made of from `test/fixtures/preview-pages.cjs` on `127.0.0.1`. A second project runs `test/s3-*.test.js` without the bucket and with an S3-compatible store instead, answered inside the runtime by the stand-in in `test/fixtures/fake-s3.js`, which checks every request's signature and every upload's digest. A third runs `test/billing-*.test.js` with billing on, against the stand-in for Stripe in `test/fixtures/fake-stripe.js`, which checks the key, the API version and an idempotency key on every POST. No test reaches Stripe. `npm run dev` has no files bucket unless you uncomment `r2_buckets` in `wrangler.jsonc`, which then uses a local one in `.wrangler/`. To check that the server bundles without deploying it:
 
 ```sh
 npx wrangler deploy --dry-run --outdir /tmp/rukoo-account-dry

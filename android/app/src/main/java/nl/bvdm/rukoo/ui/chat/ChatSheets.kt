@@ -135,7 +135,7 @@ enum class MemberAction { MESSAGE, ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER, ROLE_GUE
 enum class ChannelMemberAction { MAKE_MANAGER, MAKE_MEMBER, REMOVE }
 
 /** The workspace drawer's rows for the workspace on screen (contract §5.10, §7.4). */
-enum class WorkspaceAction { RENAME_ME, MEMBERS, INVITE, BLOCKED, LEAVE, DELETE }
+enum class WorkspaceAction { RENAME_ME, MEMBERS, INVITE, BILLING, BLOCKED, LEAVE, DELETE }
 
 /** The sheets' rules (contract §3.3, §3.12, §3.16, §5.10, desktop-ui 6). */
 /** Why a people list is empty: a search found nobody, nobody else is in the workspace, or everyone is in already. */
@@ -300,13 +300,15 @@ object SheetRules {
      * writes (not [writable]: the server asks for an update, 426) only Members stays, whose sheet then offers Message
      * and no write: the list is read-only (android.md "Upgrade required").
      */
-    fun workspaceActions(view: WorkspaceView, writable: Boolean = true): List<WorkspaceAction> {
+    fun workspaceActions(view: WorkspaceView, writable: Boolean = true, billing: Boolean = false): List<WorkspaceAction> {
         if (!writable) return listOf(WorkspaceAction.MEMBERS)
         val role = view.me.role
         return buildList {
             add(WorkspaceAction.RENAME_ME)
             add(WorkspaceAction.MEMBERS)
             if (canInvite(role)) add(WorkspaceAction.INVITE)
+            // Billing (server/WORKSPACES.md "Billing"): owners and admins, on a server that bills workspaces.
+            if (billing && canInvite(role)) add(WorkspaceAction.BILLING)
             if (ChatListModel.isFullMember(role) || view.blocks.isNotEmpty()) add(WorkspaceAction.BLOCKED)
             add(WorkspaceAction.LEAVE)
             if (role == "owner") add(WorkspaceAction.DELETE)

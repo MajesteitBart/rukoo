@@ -449,6 +449,30 @@
     <string name="chat_name_title">Your name in %1$s</string><!-- Dialog title and settings row. -->
     <string name="chat_name_hint">People in this workspace see this name. It doesn\'t change your mail or account name.</string><!-- Its hint. -->
 
+    <!-- chat.billing.* (server/WORKSPACES.md "Billing"): the billing row in the workspace drawer, for owners and admins
+         while the server bills workspaces. The phone shows a summary; owners set up and manage billing in Stripe. -->
+    <string name="chat_billing_title">Billing</string><!-- Drawer row label for an admin, who can't change billing. -->
+    <string name="chat_billing_loading">Loading billing…</string><!-- Drawer row hint while the billing status loads. -->
+    <string name="chat_billing_status_none">Not set up</string><!-- Billing status: no subscription. -->
+    <string name="chat_billing_status_incomplete">Waiting for payment</string><!-- Billing status: the first payment hasn't gone through yet. -->
+    <string name="chat_billing_status_trialing">Trial</string><!-- Billing status: a free trial. -->
+    <string name="chat_billing_status_active">Active</string><!-- Billing status: paid and running. -->
+    <string name="chat_billing_status_past_due">Payment overdue</string><!-- Billing status: a renewal payment failed and Stripe is retrying. -->
+    <string name="chat_billing_status_unpaid">Unpaid</string><!-- Billing status: Stripe stopped retrying a failed payment. -->
+    <string name="chat_billing_status_paused">Paused</string><!-- Billing status: paused in Stripe. -->
+    <string name="chat_billing_status_canceled">Ended</string><!-- Billing status: cancelled and ended. -->
+    <string name="chat_billing_status_unknown">Unknown</string><!-- Billing status this version doesn't know. -->
+    <string name="chat_billing_total">%1$s a month</string><!-- Monthly total when the price says nothing about VAT. %1$s: such as €58.50. -->
+    <string name="chat_billing_total_incl">%1$s a month, VAT included</string><!-- Monthly total including VAT. %1$s: such as €58.50. -->
+    <string name="chat_billing_total_excl">%1$s a month plus VAT</string><!-- Monthly total without VAT. %1$s: the amount. -->
+    <string name="chat_billing_owners_only">Only owners can change billing.</string><!-- Drawer row hint for an admin. -->
+    <string name="chat_billing_set_up">Set up billing</string><!-- Drawer row for an owner: opens Stripe Checkout in the browser. -->
+    <string name="chat_billing_manage">Manage billing</string><!-- Drawer row for an owner: opens Stripe's customer portal in the browser. -->
+    <string name="chat_errors_billing_active">This workspace still has billing. Cancel it in Manage billing, and delete the workspace once billing has ended.</string><!-- 409 billing_active: deleting a workspace Stripe can still charge. -->
+    <string name="chat_errors_billing_none">This workspace has no billing yet.</string><!-- 409 billing_none. -->
+    <string name="chat_errors_billing_unavailable">Stripe couldn\'t be reached. Try again in a moment.</string><!-- 502 billing_unavailable. -->
+    <string name="chat_billing_opened">Stripe opened in your browser. Come back here when you\'re done.</string><!-- Toast after the browser opened a Stripe page. -->
+
     <!-- chat.settings.* -->
     <string name="chat_settings_you">You</string><!-- Settings section. -->
     <string name="chat_settings_role">Your role</string><!-- Settings row. -->
@@ -548,4 +572,10 @@
         <item quantity="one">%d chat message hadn\'t been sent yet and was lost when Rukoo had to repair its chat storage.</item>
         <item quantity="other">%d chat messages hadn\'t been sent yet and were lost when Rukoo had to repair its chat storage.</item>
     </plurals>
+    <!-- The billing row's seat count (chat.billing.*); the desktop shows it as a label and a number. -->
+    <plurals name="chat_billing_seats">
+        <item quantity="one">%d paid seat</item>
+        <item quantity="other">%d paid seats</item>
+    </plurals>
+    <string name="chat_billing_unavailable">Billing couldn\'t load.</string><!-- Drawer row hint when the billing status failed to load. -->
 </resources>

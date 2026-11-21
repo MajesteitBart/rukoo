@@ -151,6 +151,17 @@ A workspace has **owners**, **admins**, **members** and **guests**.
 
 When you're removed from a workspace or a conversation, Rukoo removes its messages from your computer at once and says so.
 
+## Billing
+
+A server can bill its workspaces per member through Stripe, once its operator turns that on ([the server's README](../server/README.md#billing)). Billing is off until then. Personal use of Rukoo stays free; only team workspaces are billed.
+
+- Every member who joined is a paid seat, the owner and guests included. An open invitation costs nothing until someone joins with it.
+- **Workspace settings → Billing** shows owners and admins the status, the paid seats, the monthly total and when the subscription renews. Members and guests don't see it.
+- An owner chooses **Set up billing**, which opens Stripe's checkout in the browser for one seat per member, and later **Manage billing**, which opens Stripe's portal for the payment method, invoices and cancelling. Admins can only read it.
+- Someone who joins adds a seat at once, charged for the rest of the month on the next invoice. Someone who leaves leaves a vacant seat, which the next person to join takes at no extra charge; a seat still vacant at renewal leaves the bill.
+- While Stripe can still charge a workspace, its owner can't delete it: cancel in Manage billing, and delete it once the subscription has ended.
+- If the last owner deletes their Rukoo account, the workspace's subscription ends with the period that was paid.
+
 ## What the host can read
 
 The workspace lives on one server, the host: the server of the Rukoo account of whoever made it. The host's operator can read and change every message in it, in channels and direct messages, including its files and link previews, and sees who is in which conversation. That's different from your personal Rukoo account, which encrypts its records on your device ([What's stored and shared](account.md#whats-stored-and-shared)).

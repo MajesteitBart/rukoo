@@ -82,6 +82,12 @@ interface Workspaces {
     fun takeLostUnsent(): Int = 0
     suspend fun leaveWorkspace(ws: String)
     suspend fun deleteWorkspace(ws: String)
+
+    /** The workspace's billing, for an owner or admin while [ChatState.billing] (server/WORKSPACES.md "Billing"). */
+    suspend fun billing(ws: String): WorkspaceBilling = throw WorkspaceError("not_found")
+
+    /** The address of Stripe's Checkout ([kind] `checkout`) or customer portal (`portal`), for an owner. */
+    suspend fun billingLink(ws: String, kind: String, locale: String): String = throw WorkspaceError("not_found")
     suspend fun renameMe(ws: String, name: String)
     suspend fun setRole(ws: String, member: String, role: String)
     suspend fun removeMember(ws: String, member: String)
@@ -130,6 +136,8 @@ data class ChatState(
     val signups: String? = null,
     /** `info.workspace.inviteSignups` (§2.12). */
     val inviteSignups: Boolean = false,
+    /** The server bills workspaces per member: `billing` in `info.workspace.capabilities`. */
+    val billing: Boolean = false,
     val retention: ChatRetention? = null,
     val limits: ChatLimits? = null,
     /** Settings > Notifications > Team chat. */

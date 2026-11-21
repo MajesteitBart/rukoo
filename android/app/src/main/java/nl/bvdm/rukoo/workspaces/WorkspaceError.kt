@@ -54,6 +54,8 @@ class WorkspaceError(
             "workspace_limit", "workspaces_full", "workspace_account_scope", "dm_unavailable", "blocked", "name_taken",
             "last_owner", "last_manager", "members_remain", "archived", "invite_gone", "quota", "invalid", "bad_link",
             "other_server", "not_saved", "paused", "server",
+            // Billing (server/WORKSPACES.md "Billing").
+            "billing_active", "billing_none", "billing_unavailable",
         )
 
         /** Answers the feed and the outbox handle themselves; none is ever shown as a call error (§3.15). */

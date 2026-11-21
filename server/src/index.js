@@ -9,12 +9,14 @@
 // live in owner.js and meet.js, with one Booking object per handle.
 
 import pkg from '../package.json' with { type: 'json' };
+import { billingPageResponse, stripeWebhook } from './billing.js';
 import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import { codePurposes, codesInfo, emailCodeField, requestCode, settleCode, signupCode, unlocked } from './codes.js';
 import {
   ACCOUNT_NAME,
   accountName,
   accountObject,
+  billingOn,
   bookingFormerRoots,
   bookingRoot,
   checkConfig,
@@ -82,12 +84,14 @@ async function handle(request, env, ctx) {
     // while it makes them and files while it has a bucket for them, with their limits and the store that holds them.
     const limits = workspaceLimits(env);
     const storage = filesStorage(env);
+    // Billing through Stripe only while it is on (config.js, billingOn).
     const chat = workspacesOn(env)
       ? {
           retentionDays: limits.retentionDays,
           inviteSignups: inviteSignups(env),
           previews: previewsOn(env),
-          files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null
+          files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null,
+          billing: billingOn(env)
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
@@ -120,6 +124,11 @@ async function handle(request, env, ctx) {
     for (const [name, value] of Object.entries(NOINDEX)) response.headers.set(name, value);
     return response;
   }
+  // Where Stripe sends an owner back to after Checkout or the portal (billing.js). Off with billing, so the path stays
+  // a booking page's then, as /join does with team chat off.
+  if (path === '/billing' && reading && billingOn(env) && !bookingHere) {
+    return billingPageResponse(config(env, url), url, privacyLanguage(url, request.headers.get('accept-language')), method);
+  }
   if (path === '/v1/info' && method === 'GET') return json(200, await info(env, url));
   const account = path === '/v1' || path.startsWith('/v1/');
   const root = bookingRoot(env);
@@ -141,6 +150,8 @@ async function handle(request, env, ctx) {
 
   // Team chat: workspaces, channels and messages (workspaces.js).
   if (path === '/v1/workspaces' || path.startsWith('/v1/workspaces/')) return workspaces(request, env, url, ctx);
+  // Stripe's events for billing (billing.js). Signed by Stripe, so no session and no rate limit.
+  if (path === '/v1/billing/webhook' && method === 'POST') return stripeWebhook(request, env);
 
   const route = `${method} ${path}`;
   switch (route) {

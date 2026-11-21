@@ -21,19 +21,26 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.ui.components.DotTone
@@ -50,6 +57,7 @@ import nl.bvdm.rukoo.ui.root.AppViewModel
 import nl.bvdm.rukoo.ui.root.ChatSheet
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.semibold
+import nl.bvdm.rukoo.workspaces.WorkspaceBilling
 import nl.bvdm.rukoo.workspaces.WorkspaceStatus
 import nl.bvdm.rukoo.workspaces.WorkspaceSummary
 import nl.bvdm.rukoo.workspaces.WorkspaceView
@@ -160,7 +168,7 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
             // write then. The service refuses a write all the same.
             val writable = chat.workspaces.firstOrNull { it.id == ws }?.status != WorkspaceStatus.UPGRADE
             Hairline(Modifier.padding(vertical = 8.dp))
-            for (action in SheetRules.workspaceActions(view, writable)) {
+            for (action in SheetRules.workspaceActions(view, writable, billing = chat.billing)) {
                 when (action) {
                     WorkspaceAction.RENAME_ME ->
                         DrawerAction(stringResource(R.string.chat_workspace_your_name), RukooIcons.Edit, hint = view.me.name) { act { ui.askRenameMe(ws, view.me.name) } }
@@ -168,6 +176,7 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
                         DrawerAction(stringResource(R.string.chat_workspace_members), RukooIcons.People) { act { app.openChatSheet(ChatSheet.MEMBERS) } }
                     WorkspaceAction.INVITE ->
                         DrawerAction(stringResource(R.string.chat_workspace_invite), RukooIcons.Plus) { act { app.openChatSheet(ChatSheet.INVITE) } }
+                    WorkspaceAction.BILLING -> BillingAction(app, ws, view.me.role, act)
                     WorkspaceAction.BLOCKED ->
                         DrawerAction(stringResource(R.string.chat_block_list), RukooIcons.Ban) { act { app.openChatSheet(ChatSheet.BLOCKED) } }
                     // The only owner can't leave; the row stays, and opens the dialog that says how to. Alone in the
@@ -199,16 +208,81 @@ private fun WorkspaceActions(app: AppViewModel, view: WorkspaceView?, act: (() -
     }
 }
 
-/** A row of the drawer's actions: icon and label, a quiet [hint] under it, red when it removes something. */
+/**
+ * The billing row (server/WORKSPACES.md "Billing"): the status, the paid seats and the monthly total from the server's
+ * price, loaded when the drawer shows the workspace. For an owner it sets up or manages billing in Stripe, in the
+ * browser; an admin reads it. The phone shows no more than this; the desktop's Workspace settings has the details.
+ */
 @Composable
-private fun DrawerAction(label: String, icon: ImageVector, danger: Boolean = false, enabled: Boolean = true, hint: String? = null, onClick: () -> Unit) {
+private fun BillingAction(app: AppViewModel, ws: String, role: String, act: (() -> Unit) -> Unit) {
+    var billing by remember(ws) { mutableStateOf<WorkspaceBilling?>(null) }
+    var failed by remember(ws) { mutableStateOf(false) }
+    LaunchedEffect(ws) {
+        billing = try {
+            app.chatUi.workspaces?.billing(ws)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            null
+        }
+    }
+    val locale = LocalConfiguration.current.locales[0]
+    val b = billing
+    val hint = when {
+        b != null -> {
+            val total = BillingLine.money(BillingLine.totalCents(b), b.price.currency, locale)
+            val totalText = stringResource(
+                when (b.price.taxBehavior) {
+                    "inclusive" -> R.string.chat_billing_total_incl
+                    "exclusive" -> R.string.chat_billing_total_excl
+                    else -> R.string.chat_billing_total
+                },
+                total,
+            )
+            val seats = BillingLine.seats(b)
+            val line = listOf(stringResource(BillingLine.statusText(b.status)), pluralStringResource(R.plurals.chat_billing_seats, seats, seats), totalText).joinToString(" · ")
+            if (role == "owner") line else line + "\n" + stringResource(R.string.chat_billing_owners_only)
+        }
+        failed -> stringResource(R.string.chat_billing_unavailable)
+        else -> stringResource(R.string.chat_billing_loading)
+    }
+    val kind = b?.let { BillingLine.action(it, role) }
+    val label = stringResource(
+        when (kind) {
+            "checkout" -> R.string.chat_billing_set_up
+            "portal" -> R.string.chat_billing_manage
+            else -> R.string.chat_billing_title
+        },
+    )
+    val language = if (locale.language == "nl") "nl" else "en"
+    val opened = stringResource(R.string.chat_billing_opened)
+    val open: (() -> Unit)? = kind?.let {
+        {
+            act {
+                app.chatUi.launch("billing:$ws") {
+                    app.openUrl(billingLink(ws, it, language))
+                    app.chatUi.toasts.showToast(opened)
+                }
+            }
+        }
+    }
+    DrawerAction(label, RukooIcons.Info, hint = hint, onClick = open)
+}
+
+/**
+ * A row of the drawer's actions: icon and label, a quiet [hint] under it, red when it removes something. Without
+ * [onClick] it is a line to read, not a button.
+ */
+@Composable
+private fun DrawerAction(label: String, icon: ImageVector, danger: Boolean = false, enabled: Boolean = true, hint: String? = null, onClick: (() -> Unit)?) {
     val c = Rk.colors
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .alpha(if (enabled) 1f else 0.5f)
-            .rkClickable(Rk.shapes.control, enabled = enabled, onClick = onClick)
+            .then(if (onClick != null) Modifier.rkClickable(Rk.shapes.control, enabled = enabled, onClick = onClick) else Modifier)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,

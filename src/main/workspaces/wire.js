@@ -128,7 +128,11 @@ const KEYS = {
   files_unavailable: 'chat.errors.filesUnavailable',
   invalid_state: 'chat.errors.failed',
   expired: 'chat.errors.failed',
-  unreadable: 'chat.errors.fileUnreadable'
+  unreadable: 'chat.errors.fileUnreadable',
+  // Billing (server/WORKSPACES.md, Billing).
+  billing_active: 'chat.errors.billingActive',
+  billing_none: 'chat.errors.billingNone',
+  billing_unavailable: 'chat.errors.billingUnavailable'
 };
 // Never call errors: the engines turn these into outbox rows and workspace states (contract 3.15).
 const INTERNAL = new Set(['operation_conflict', 'submission_expired', 'stale_grant', 'stale_generation', 'history_regressed', 'reset_required']);
@@ -915,6 +919,44 @@ function checkTicket(v) {
   };
 }
 
+// GET /billing: { billing } for an owner or admin (server/WORKSPACES.md, Billing). price is what one seat costs a
+// month, amount in cents; seats is what Stripe bills, null without a subscription that can still charge.
+const BILLING_STATUS = /^[a-z_]{1,32}$/;
+function checkBilling(v) {
+  obj(v, 'billing');
+  const b = obj(v.billing, 'billing.billing');
+  const price = obj(b.price, 'billing.price');
+  return {
+    billing: {
+      status: id(b.status, BILLING_STATUS, 'billing.status'),
+      members: int(b.members, 'billing.members'),
+      pending: int(b.pending, 'billing.pending'),
+      seats: intOrNull(b.seats, 'billing.seats'),
+      periodEnd: b.periodEnd === null || b.periodEnd === undefined ? null : time(b.periodEnd, 'billing.periodEnd'),
+      cancelAtPeriodEnd: bool(b.cancelAtPeriodEnd, 'billing.cancelAtPeriodEnd'),
+      payment: b.payment === null || b.payment === undefined ? null : oneOf(b.payment, ['paid', 'failed'], 'billing.payment'),
+      paymentAt: b.paymentAt === null || b.paymentAt === undefined ? null : time(b.paymentAt, 'billing.paymentAt'),
+      syncing: bool(b.syncing, 'billing.syncing'),
+      canCheckout: bool(b.canCheckout, 'billing.canCheckout'),
+      canManage: bool(b.canManage, 'billing.canManage'),
+      price: {
+        amount: int(price.amount, 'billing.price.amount', 0, 100000000),
+        currency: id(price.currency, /^[a-z]{3}$/, 'billing.price.currency'),
+        interval: oneOf(price.interval, ['day', 'week', 'month', 'year'], 'billing.price.interval'),
+        taxBehavior: oneOf(price.taxBehavior, ['inclusive', 'exclusive', 'unspecified'], 'billing.price.taxBehavior')
+      }
+    }
+  };
+}
+
+// POST /billing/checkout and /billing/portal: { url }, a Stripe page the window opens in the browser.
+function checkBillingLink(v) {
+  obj(v, 'billingLink');
+  const url = str(v.url, 'billingLink.url', URL_LENGTH, 9);
+  if (!/^https:\/\//.test(url)) throw refused('billingLink.url');
+  return { url };
+}
+
 // POST /conversations/{c}/messages/{m}/react: { messageId, emoji, on, changed } (rich contract 2.4).
 function checkReact(v) {
   obj(v, 'react');
@@ -1328,7 +1370,10 @@ const ARGS = {
   chatRetryStage: (stage) => [input.stage(stage)],
   chatStaged: (w, conv, root) => [ws(w), c(conv), input.root(root)],
   chatFile: (w, conv, file, action) => [ws(w), c(conv), input.file(file), input.fileAction(action)],
-  chatRemovePreview: (w, conv, message, url) => [ws(w), c(conv), input.message(message), input.previewUrl(url)]
+  chatRemovePreview: (w, conv, message, url) => [ws(w), c(conv), input.message(message), input.previewUrl(url)],
+  // Billing (server/WORKSPACES.md, Billing).
+  chatBilling: (w) => [ws(w)],
+  chatBillingLink: (w, kind, locale) => [ws(w), oneOfInput(kind, ['checkout', 'portal'], 'kind'), locale === undefined || locale === null ? 'auto' : oneOfInput(locale, ['auto', 'en', 'nl'], 'locale')]
 };
 
 // The checked arguments of one IPC call, or ChatError('invalid') with the field that failed. An unknown method is
@@ -1386,6 +1431,8 @@ module.exports = {
   checkUploaded,
   checkDownload,
   checkPreviewsAnswer,
+  checkBilling,
+  checkBillingLink,
   toRenderer,
   toRoom,
   toPending,

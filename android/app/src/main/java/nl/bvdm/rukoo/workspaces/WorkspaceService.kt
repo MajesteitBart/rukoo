@@ -1098,6 +1098,7 @@ class WorkspaceService internal constructor(
             jurisdiction = i?.hosting?.jurisdiction?.takeIf { it in JURISDICTIONS },
             signups = i?.signups?.takeIf { it in SIGNUPS },
             inviteSignups = w?.inviteSignups == true,
+            billing = w?.capabilities?.contains("billing") == true,
             retention = w?.retention?.let { ChatRetention(it.contentDays, it.feedDays) },
             limits = w?.limits?.let { ChatLimits(it.workspacesPerAccount, it.members) },
             notifications = settings.value.notifyChat,
@@ -1689,6 +1690,10 @@ class WorkspaceService internal constructor(
     // ---- invitations ----
 
     override suspend fun invites(ws: String): List<Invite> = onWs(ws) { _, s -> s.call { invites(ws) } }
+
+    override suspend fun billing(ws: String): WorkspaceBilling = onWs(ws) { _, s -> s.call { billing(ws) } }
+
+    override suspend fun billingLink(ws: String, kind: String, locale: String): String = onWs(ws) { _, s -> s.call { billingLink(ws, kind, locale) } }
 
     override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): MadeInvite = onWs(ws) { l, s ->
         val made = write(s) { createInvite(ws, role, channels, expiresIn) }

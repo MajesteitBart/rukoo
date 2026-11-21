@@ -425,7 +425,9 @@ const METHODS = [
   'chatBlock', 'chatUnblock',
   // Rich messages (rich contract 4.3).
   'chatReact', 'chatMarkUnread', 'chatPickFiles', 'chatStage', 'chatUnstage', 'chatRetryStage', 'chatStaged', 'chatFile',
-  'chatRemovePreview'
+  'chatRemovePreview',
+  // Billing (server/WORKSPACES.md, Billing).
+  'chatBilling', 'chatBillingLink'
 ];
 
 const zoe = vectors.mentions.find((c) => c.text.includes('Zoë') && c.bytes.length === 1);
@@ -563,8 +565,62 @@ const CALLS = {
   chatRetryStage: { ok: [[[LOCAL], [LOCAL]]], bad: [[[null], 'stage']] },
   chatStaged: { ok: [[[W, C, null], [W, C, null]], [[W, C, E], [W, C, E]]], bad: [[[W, C, 'e_x'], 'root']] },
   chatFile: { ok: [[[W, C, F, 'view'], [W, C, F, 'view']], [[W, C, F, 'save'], [W, C, F, 'save']]], bad: [[[W, C, E, 'view'], 'file'], [[W, C, F, 'delete'], 'action']] },
-  chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] }
+  chatRemovePreview: { ok: [[[W, C, E, 'https://example.com/a'], [W, C, E, 'https://example.com/a']]], bad: [[[W, C, E, 'javascript:alert(1)'], 'url'], [[W, C, E, 5], 'url']] },
+  chatBilling: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
+  chatBillingLink: {
+    ok: [
+      [[W, 'checkout', 'nl'], [W, 'checkout', 'nl']],
+      [[W, 'portal'], [W, 'portal', 'auto']]
+    ],
+    bad: [[[W, 'refund', 'en'], 'kind'], [[W, 'portal', 'de'], 'locale']]
+  }
 };
+
+test('billing answers are checked before the window gets them', () => {
+  const billing = {
+    status: 'active',
+    members: 3,
+    pending: 1,
+    seats: 4,
+    periodEnd: 1795000000000,
+    cancelAtPeriodEnd: false,
+    payment: 'paid',
+    paymentAt: 1794000000000,
+    syncing: false,
+    canCheckout: false,
+    canManage: true,
+    price: { amount: 1950, currency: 'eur', interval: 'month', taxBehavior: 'inclusive' }
+  };
+  assert.deepEqual(wire.checkBilling({ billing }).billing, billing);
+  assert.equal(wire.checkBilling({ billing: { ...billing, seats: null, periodEnd: null, payment: null, paymentAt: null } }).billing.seats, null);
+  for (const bad of [
+    { ...billing, status: 'Active!' },
+    { ...billing, members: -1 },
+    { ...billing, payment: 'maybe' },
+    { ...billing, canManage: 'yes' },
+    { ...billing, price: { ...billing.price, currency: 'euro' } },
+    { ...billing, price: { ...billing.price, amount: 19.5 } },
+    { ...billing, price: undefined }
+  ]) {
+    assert.throws(() => wire.checkBilling({ billing: bad }), (err) => err instanceof ChatError && err.code === 'server');
+  }
+  assert.deepEqual(wire.checkBillingLink({ url: 'https://checkout.stripe.com/c/pay/cs_1' }), { url: 'https://checkout.stripe.com/c/pay/cs_1' });
+  for (const url of ['http://checkout.stripe.com/x', 'javascript:alert(1)', '', 5]) {
+    assert.throws(() => wire.checkBillingLink({ url }), (err) => err instanceof ChatError && err.code === 'server');
+  }
+});
+
+test('the billing error codes pick their keys', () => {
+  for (const [code, key] of [
+    ['billing_active', 'chat.errors.billingActive'],
+    ['billing_none', 'chat.errors.billingNone'],
+    ['billing_unavailable', 'chat.errors.billingUnavailable']
+  ]) {
+    const err = wire.chatError(new AccountError(code, 409, 'server words'));
+    assert.equal(err.code, code);
+    assert.equal(wire.errorKey(err.code, err), key);
+  }
+});
 
 test('every IPC method of the contract has an argument check, and nothing else does', () => {
   assert.deepEqual(Object.keys(wire.ARGS).sort(), [...METHODS].sort());

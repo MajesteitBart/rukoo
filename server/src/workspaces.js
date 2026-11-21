@@ -3,10 +3,12 @@
 // do what. Making a workspace and listing an account's workspaces happen here, because they span the account, the
 // registry and the workspace.
 
+import { billingRoute } from './billing.js';
 import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
 import {
   ACCOUNT_NAME,
   accountObject,
+  billingOn,
   filesOn,
   filesOrigin,
   limitRate,
@@ -95,8 +97,9 @@ export async function workspaceInfo(env, url) {
   };
 }
 
+// billing: owners pay per member through Stripe, and owners and admins see the Billing section (billing.js).
 export function capabilities(env) {
-  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : [])];
+  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : []), ...(billingOn(env) ? ['billing'] : [])];
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
@@ -160,6 +163,7 @@ export async function workspaces(request, env, url, ctx) {
   const stub = workspaceObject(env, id);
   const ask = async (op, args) => send(await stub.request(token, op, args));
   const body = () => input.readJson(request);
+  if (rest[0] === 'billing') return billingRoute(request, env, url, rest, (op, args) => stub.request(token, op, args));
 
   switch (route) {
     case 'GET /':
