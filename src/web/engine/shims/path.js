@@ -1,7 +1,8 @@
 'use strict';
 
-// path for the browser build: '/'-separated names for the in-memory cache, which the WorkspaceService builds with
-// join(dataDir, 'chat.db') and store.js takes apart with dirname(). No name here reaches a disk.
+// path for the browser build: '/'-separated names for the in-memory cache and files (shims/vfs.js). The WorkspaceService
+// builds them with join(dataDir, 'chat.db'), store.js takes them apart with dirname(), and files.js names files with
+// basename() and extname(). No name here reaches a disk.
 const sep = '/';
 
 function normalize(name) {
@@ -34,4 +35,11 @@ function basename(name) {
   return text.slice(text.lastIndexOf('/') + 1);
 }
 
-module.exports = { sep, join, dirname, basename, normalize };
+// From the last '.' of the last part on, as Node's: '' for 'a', '.bashrc' or 'a/', '.' for 'a.'.
+function extname(name) {
+  const base = basename(name);
+  const at = base.lastIndexOf('.');
+  return at <= 0 ? '' : base.slice(at);
+}
+
+module.exports = { sep, join, dirname, basename, extname, normalize };

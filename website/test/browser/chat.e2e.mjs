@@ -113,6 +113,14 @@ test('a: the owner makes an invitation, and the link signs a new person up and i
   await expect(form.locator('[data-invitation]')).toHaveText(tr('en', 'settings.rukoo.webInvitation'));
   await expect(form.locator('input[name="invite"]')).toBeHidden();
   await expect(form.locator('button[type="submit"]')).toHaveClass(/\bprimary\b/);
+  // The server's privacy statement is a row away before the account exists: the browser has no privacy page.
+  const policyRow = m.locator('#overlays .page.settings [data-a="rukoo-link:policy"]');
+  await expect(policyRow).toContainText(tr('en', 'settings.rukoo.policy'));
+  const statement = m.waitForEvent('popup');
+  await policyRow.click();
+  const opened = await statement;
+  assert.equal(opened.url(), `${env.origin}/privacy`);
+  await opened.close();
   await shot(m, 'a2-sign-up-invitation');
   await form.locator('input[name="email"]').fill(MAYA.email);
   await form.locator('input[name="password"]').fill(MAYA.password);
@@ -130,6 +138,11 @@ test('a: the owner makes an invitation, and the link signs a new person up and i
   await expect(m.locator('#overlays .page.settings')).toHaveCount(0);
   const join = m.locator('.scrim .dialog');
   await expect(join.locator('.ch-join-ws')).toHaveText(WORKSPACE);
+  // The workspace's card lays its lines out one under the other, the name on one line (not a link card's two columns).
+  const card = await join.locator('[data-preview]').boundingBox();
+  const head = await join.locator('[data-preview] .ch-join-head').boundingBox();
+  assert.ok(head.width > card.width - 40, `the card's head spans the card (${head.width} of ${card.width})`);
+  assert.ok((await join.locator('.ch-join-ws').boundingBox()).height < 32, 'the name on one line');
   await join.locator('input[name="name"]').fill(MAYA.name);
   await shot(m, 'a4-join-dialog');
   await join.getByRole('button', { name: tr('en', 'chat.join.submit', { name: WORKSPACE }) }).click();
@@ -243,8 +256,15 @@ test('d: signing out and in again through Settings brings the history back', asy
   await shot(m, 'd1-settings-signed-in');
   await settings.locator('[data-a="rukoo"]').click();
   await settings.locator('[data-a="rukoo-signout"]').click();
+  const before = member.problems.length;
   await m.locator('.scrim').getByRole('button', { name: tr('en', 'settings.rukoo.signOut') }).click();
   await expect(settings.locator('[data-a="rukoo-go:rukoo-signin"]')).toBeVisible();
+  // A sync the engine had on its way when the sign-out ended the session gets a 401 from the workspace route, which
+  // the engine takes as the end it already knows of; Chromium logs every 4xx answer as a console error. Only that one,
+  // in this window, is allowed.
+  const raced = member.problems.slice(before).filter((p) => /status of 401 .*\/v1\/workspaces\/w_[\w-]+\/(changes|conversations\/)/.test(p));
+  member.problems.splice(before, member.problems.length - before, ...member.problems.slice(before).filter((p) => !raced.includes(p)));
+  member.allowed.push(...raced);
   await settings.locator('[data-a="back"]').click();
   await settings.locator('[data-a="back"]').click();
   await expect(settings).toHaveCount(0);

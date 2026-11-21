@@ -13,7 +13,7 @@ const k = require('../../src/web/account/crypto.js');
 const { AccountError, serverUrl, createRequest, MAX_BYTES } = require('../../src/web/account/client.js');
 const { handle } = require('../../src/web/account/argon2-worker.js');
 const { createArgon2 } = require('../../src/web/account/argon2.js');
-const { createAccountService, SESSION_KEY, browserDevice } = require('../../src/web/account/service.js');
+const { createAccountService, SESSION_KEY, browserDevice, WORKSPACE_VERSIONS } = require('../../src/web/account/service.js');
 const { startAccountServer } = require('../../test/fixtures/account-server.js');
 const { startRealServer, realServerAvailable, skipWithoutServer } = require('../../test/fixtures/real-server.js');
 
@@ -439,6 +439,50 @@ test('a 401 ends the session, also from the workspace routes, which keep the ser
   assert.equal(desk.status().error, null);
 });
 
+test('the workspace routes go in the newest protocol version both the page and the server list, else 1', async (t) => {
+  const srv = await fixture(t);
+  const seen = [];
+  const desk = browser(srv.url, {
+    fetch: (input, init) => {
+      seen.push({ url: String(input), headers: { ...((init && init.headers) || {}) } });
+      return globalThis.fetch(input, init);
+    }
+  });
+  await desk.signUp({ email: 'versions@example.com', password: PASSWORD });
+  // GET /v1/info as the server answers it, with the workspace versions it lists; the workspace list answers empty (the
+  // in-memory server has no workspace routes).
+  let versions = null;
+  srv.fail = ({ route }) => {
+    if (route === 'GET /v1/info') return [200, { protocol: 1, signups: 'open', features: ['workspaces-v1'], ...(versions ? { workspace: { versions } } : {}) }];
+    if (route === 'GET /v1/workspaces') return [200, { workspaces: [] }];
+    return null;
+  };
+  const header = async () => {
+    await desk.workspaceCall('GET', '/v1/workspaces');
+    return seen.filter((r) => r.url.endsWith('/v1/workspaces')).at(-1).headers['rukoo-workspace-version'];
+  };
+  // Before the server said anything: version 1, which every server reads.
+  assert.equal(await header(), '1');
+  assert.deepEqual(WORKSPACE_VERSIONS, [1, 2]);
+  for (const [listed, expected] of [
+    [[1, 2], '2'],
+    [[1], '1'],
+    [[2, 3], '2'],
+    [[3], '1'],
+    [null, '1']
+  ]) {
+    versions = listed;
+    await desk.serverInfo();
+    assert.equal(await header(), expected, `the server lists ${JSON.stringify(listed)}`);
+  }
+  // The info of another server says nothing about this one's.
+  versions = [1, 2];
+  await desk.serverInfo();
+  assert.equal(desk.workspaceVersion('https://elsewhere.example'), 1);
+  assert.equal(desk.workspaceVersion(srv.url), 2);
+  srv.fail = null;
+});
+
 test('a request sends only the workspace protocol header, and an error answer keeps its details and Retry-After', async () => {
   const seen = [];
   let next = null;
@@ -464,10 +508,15 @@ test('a request sends only the workspace protocol header, and an error answer ke
   assert.equal(first.init.redirect, 'manual');
   assert.equal(first.init.cache, 'no-store');
   assert.ok(first.init.signal instanceof AbortSignal);
+  assert.equal('keepalive' in first.init, false, 'a request ends with the page unless asked');
+  // keepalive: a request the page sends as it goes away (src/web/host.js releaseStaged).
+  next = [204, {}, undefined];
+  await request('https://rukoo.example', 'DELETE', '/v1/workspaces/w_1/conversations/c_1/uploads/f_1', { token: 'the-token', keepalive: true });
+  assert.equal(seen.at(-1).init.keepalive, true);
   next = [201, {}, {}];
   await request('https://rukoo.example', 'POST', '/v1/signup', { body: { email: 'x' }, headers: { 'rukoo-workspace-version': 'a b' } });
-  assert.deepEqual(seen[1].init.headers, { accept: 'application/json', 'content-type': 'application/json' });
-  assert.equal(seen[1].init.body, '{"email":"x"}');
+  assert.deepEqual(seen.at(-1).init.headers, { accept: 'application/json', 'content-type': 'application/json' });
+  assert.equal(seen.at(-1).init.body, '{"email":"x"}');
 
   const fails = async (status, headers, body) => {
     next = [status, headers, body];

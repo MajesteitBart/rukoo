@@ -70,6 +70,8 @@ An account made at the old address doesn't sign in at rukoo.io, and the server h
 
 On rukoo.io, a [team chat](chat.md) invitation link opens Chat in the browser at `rukoo.io/app/`, so the person invited can start without installing Rukoo. Chat is the only part of Rukoo there. You sign up or sign in with the same Rukoo account. [website/README.md](../website/README.md#rukoo-in-the-browser) explains how the page is built and served.
 
+The page needs Chrome or Edge 112, Firefox 119, Safari 17 or a newer version. An older browser lacks what the chat code uses to check emoji and message text, and the page says to update it.
+
 The browser keeps these in the site's storage:
 
 - `rukoo.web.session` in local storage: the server's address, your email address, the session token and when you signed in.
@@ -80,7 +82,7 @@ The browser keeps these in the site's storage:
 - `rukoo.web.notifications` in local storage: `unsupported` once the browser refused to show a notification the page made, as Chrome on Android does, so Settings stops offering notifications there.
 - `rukoo.web.join` in the tab's session storage: the invitation link the page was opened with, its secret included. Other tabs don't see it. It goes when you join with it, sign out, delete the account or close the tab.
 
-Messages, channels, members and drafts are only in the page's memory. They load from the server again each time you open the page, and messages that haven't been sent yet are lost when the page closes; the browser asks before it closes the page while there are any. The browser doesn't keep your password or the account's data key. At sign-in the page checks that the key the server sent opens with your password, then forgets the key, so the browser never reads or changes your categories or corrections.
+Messages, channels, members and drafts are only in the page's memory. They load from the server again each time you open the page, and messages that haven't been sent yet are lost when the page closes; the browser asks before it closes the page while there are any. Team chat's files work as in the app where the server stores them: attach them, drop them on the conversation or paste them, and images show in the message. A file you pick with the paperclip is read from your disk as it uploads; a dropped or pasted one is copied into the page's memory first. Files waiting under the text are lost with the page too, so the browser also asks while there are any; when the page closes anyway, it tells the server to drop their uploads, which would otherwise count against your 20 unsent files for an hour. A picked file that changes on your disk before it is sent can't be read again: remove it and attach it again. The files the page downloads to show or save stay in its memory too, at most 256 MiB, the least recently used going first, and go when the page closes. The browser doesn't keep your password or the account's data key. At sign-in the page checks that the key the server sent opens with your password, then forgets the key, so the browser never reads or changes your categories or corrections.
 
 A new tab opens signed in, and signing out in one tab signs out every tab. **Sign out** tells the server, then removes the session entry, the invitation link and the session's unsent counts. Its confirmation counts the unsent messages of every tab, and a tab that lost unsent messages to a sign-out in another one says how many. The settings, the sidebar and the last open conversations stay. A session that ended elsewhere, for example when another device signs the browser out under **Devices**, is removed the next time the page talks to the server. In a private window, the browser deletes all of it once you close every private window. When the browser blocks site data, the page keeps the sign-in in memory only, until you close or reload the tab.
 
@@ -91,7 +93,9 @@ The page's code comes from the server's site each time you open it. Whoever runs
 What the browser leaves out:
 
 - **Change password**, **New recovery key**, **Export my data** and **Sync now**. Use the desktop or Android app for these. The first two need the data key, which the browser doesn't keep.
-- **What's stored and shared**, the page about where the account's data lives. This section and [What's stored and shared](#whats-stored-and-shared) cover it.
+- **What's stored and shared**, the page about where the account's data lives. This section and [What's stored and shared](#whats-stored-and-shared) cover it. The signed-out page and the sign-up form link the server's privacy statement instead. On a server whose operator sets `WEB_APP` to `on`, as rukoo.io does, the statement has a section on the browser too.
+- Opening a chat file in its app. A page can't hand a file to a program on your computer, so **Open** shows an image in a new tab and downloads any other file, and **Save** is the browser's own download. The file cards and the image viewer say **Download** and **Open in a new tab**.
+- Files on a server that keeps them at an address of their own (`WORKSPACE_FILES_ORIGIN`). The page may only connect to the address it came from, and the file routes answer no other site, so the paperclip doesn't show there and opening a file says the app can.
 - Choosing another server. The server row only shows the server, because the page talks only to the server whose site it came from, so an account made at the former address, `https://rukoo-account.bvdm.ai`, can't sign in from the browser at rukoo.io.
 - The key for your booking page's handle. **Delete account** works in the browser, but it keeps no key, so a new account with your email address can't take the handle back. Delete the account on your computer if you want to keep the handle.
 

@@ -25,13 +25,18 @@ async function loadState() {
   return S.data;
 }
 
-// The language and theme from the bridge, before the modules that draw labels load (as bootstrap.js does).
+// The language and theme from the bridge, before the modules that draw labels load (as bootstrap.js does). A browser
+// too old for team chat (web/bridge.js, code browser_old) gets the page that says so (gate 'old'), in the language the
+// bridge chose; it has no settings to give.
+let oldBrowser = false;
 try {
   await loadState();
 } catch (err) {
-  toast(err.message, 8000);
+  oldBrowser = err.code === 'browser_old';
+  if (!oldBrowser) toast(err.message, 8000);
 }
-setLanguage(S.data.settings.language);
+document.body.classList.toggle('web-old', oldBrowser);
+if (S.data.settings.language || !oldBrowser) setLanguage(S.data.settings.language);
 applyTheme(S.data.settings.theme);
 let drawnLanguage = S.data.settings.language;
 
@@ -134,6 +139,7 @@ const engineFailed = () => chat.known() && (!chat.CH.state || chat.CH.state.engi
 
 // What the page shows in place of chat while it isn't available: null when chat shows.
 function gateKind() {
+  if (oldBrowser) return 'old';
   if (chat.available()) return null;
   if (engineFailed()) return 'failed';
   if (server.info === 'off' || server.info === 'unreachable') return server.info;
@@ -158,6 +164,9 @@ function drawGate(kind) {
     gateEl.innerHTML = box('chat', t('chat.web.offTitle'), t('chat.web.offBody', { host: host() }), signedIn() ? [{ id: 'sign-out', label: t('chat.web.signOut') }, settings] : [settings]);
   } else if (kind === 'unreachable') {
     gateEl.innerHTML = box('warning', t('chat.web.unreachableTitle', { host: host() }), t('chat.web.unreachableBody'), [settings, { id: 'retry', label: t('chat.web.tryAgain'), primary: true }]);
+  } else if (kind === 'old') {
+    // Nothing on the page works in this browser, Settings and a reload included.
+    gateEl.innerHTML = box('warning', t('chat.web.oldTitle'), t('chat.web.oldBody'), []);
   } else {
     // 'failed': no spinner that never ends, but the way out.
     gateEl.innerHTML = box('warning', t('chat.empty.storageTitle'), t('chat.empty.webStorageBody'), [settings, { id: 'reload', label: t('chat.web.reload'), primary: true }]);
@@ -203,6 +212,7 @@ function gateStatus(kind) {
   if (kind === 'off') return { cls: '', text: t('chat.web.statusOff'), title: t('chat.web.offBody', { host: host() }) };
   if (kind === 'unreachable') return { cls: '', text: t('chat.status.offline'), title: t('chat.errors.network', { host: host() }) };
   if (kind === 'failed') return { cls: 'error', text: t('chat.web.statusFailed'), title: t('chat.empty.webStorageBody') };
+  if (kind === 'old') return { cls: 'error', text: t('chat.web.statusFailed'), title: t('chat.web.oldBody') };
   return { cls: 'busy', text: t('chat.status.connecting'), title: '' };
 }
 
@@ -516,6 +526,21 @@ function updateBadge() {
 document.addEventListener('visibilitychange', updateBadge);
 window.addEventListener('focus', updateBadge);
 window.addEventListener('blur', updateBadge);
+
+// ---------- files dropped outside the chat ----------
+
+// A file let go of anywhere but where chat takes it would make the browser open it in place of the page, and the
+// conversation, its draft and the files held in memory would go with it. The desktop window refuses that navigation
+// itself (main.js will-navigate). Chat's own drop areas handle their files first (chat-view.js); everywhere else the
+// pointer says nothing can be dropped there, and nothing happens.
+const dragsFiles = (e) => Boolean(e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files'));
+for (const type of ['dragover', 'drop']) {
+  window.addEventListener(type, (e) => {
+    if (!dragsFiles(e) || e.defaultPrevented) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'none';
+  });
+}
 
 // ---------- settings: language, theme, notifications, the Rukoo account ----------
 

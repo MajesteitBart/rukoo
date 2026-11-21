@@ -405,7 +405,7 @@ export async function joinWorkspace(link = '') {
         <label>${esc(t('chat.join.link'))}<input type="text" name="link" autocomplete="off" spellcheck="false" placeholder="https://…/join#w=…" value="${esc(link)}"/></label>
         <p class="error" data-error="link" hidden></p>
         <p class="ch-checking" data-checking hidden><span class="spinner"></span><span>${esc(t('chat.join.checking'))}</span></p>
-        <div class="ch-card ch-join-preview" data-preview hidden></div>
+        <div class="ch-join-preview" data-preview hidden></div>
         <p class="note ch-other" data-other hidden></p>
         <label data-name hidden>${esc(t('chat.make.yourName'))}<input type="text" name="name" autocomplete="off" spellcheck="false" maxlength="200" value="${esc(yourName)}"/></label>
         <p class="error" data-error="name" hidden></p>

@@ -11930,7 +11930,8 @@ button.ch-replies .ch-replies-n {
   border-color: color-mix(in srgb, var(--text-3) 30%, transparent);
   border-top-color: currentColor;
 }
-.ch-card {
+/* The workspace an invitation is for, in the Join dialog. Not .ch-card, which is a link card under a message. */
+.ch-join-preview {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;

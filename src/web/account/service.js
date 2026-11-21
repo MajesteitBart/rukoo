@@ -30,6 +30,9 @@ const keysModule = require('./crypto');
 const { normalizeEmail, checkKdf, unb64u, b64u, formatRecoveryKey, parseRecoveryKey, DEFAULT_KDF, createKeys } = keysModule;
 
 const PROTOCOL = 1;
+// The workspace protocol versions this Rukoo speaks, as src/main/account/index.js WORKSPACE_VERSIONS: the page runs the
+// desktop's own chat engine, so it reads what desktop reads.
+const WORKSPACE_VERSIONS = [1, 2];
 const MIN_PASSWORD = 12;
 const SESSION_KEY = 'rukoo.web.session';
 const PLATFORM = 'web';
@@ -309,11 +312,11 @@ class WebAccountService extends Emitter {
   // As desktop's call(): session is the one a signed-in call is made for, and its answer may come after this page
   // signed out or into another account, when a 401 says nothing about the session there is now. raw: the server's own
   // error comes back with its code and details instead of one of ERRORS; a 401 still ends the session.
-  async call(method, route, body, { auth = false, server, session = this.session, raw = false, headers } = {}) {
+  async call(method, route, body, { auth = false, server, session = this.session, raw = false, headers, keepalive = false } = {}) {
     const to = server || (auth && session && session.server) || this.server;
     if (!to) throw fail('no_server');
     try {
-      return await this.http(to, method, route, { body, token: auth ? session && session.token : undefined, headers });
+      return await this.http(to, method, route, { body, token: auth ? session && session.token : undefined, headers, keepalive });
     } catch (err) {
       // The session ended elsewhere: this browser was removed from the devices, or the password changed elsewhere.
       if (auth && err instanceof AccountError && err.status === 401) {
@@ -330,11 +333,23 @@ class WebAccountService extends Emitter {
     }
   }
 
-  // The workspace routes (server/WORKSPACES.md) with this session, in version 1 of their protocol. The server's own
-  // error code and details survive, because the team chat engine acts on them. A 401 ends the session.
-  async workspaceCall(method, route, body, { session = this.session } = {}) {
+  // The workspace routes (server/WORKSPACES.md) with this session, in the newest version of their protocol both this
+  // page and the server speak (workspaceVersion). The server's own error code and details survive, because the team
+  // chat engine acts on them. A 401 ends the session. keepalive (web only): for a request the page sends as it goes away
+  // (src/web/host.js releaseStaged).
+  async workspaceCall(method, route, body, { session = this.session, keepalive = false } = {}) {
     if (!this.signedIn || !session) throw fail('signed_out');
-    return this.call(method, route, body, { auth: true, session, raw: true, headers: { 'rukoo-workspace-version': '1' } });
+    const headers = { 'rukoo-workspace-version': String(this.workspaceVersion(session.server)) };
+    return this.call(method, route, body, { auth: true, session, raw: true, headers, keepalive });
+  }
+
+  // The highest workspace protocol version this page and the server's GET /v1/info both list, else 1 (desktop's
+  // workspaceVersion). Asked in version 1, the server gives a message with files and no text its file names as text
+  // ("📎 plan.png"), which the page would show above the files themselves.
+  workspaceVersion(server) {
+    const info = this.info && this.info.server === server ? this.info.data : null;
+    const theirs = info && info.workspace && Array.isArray(info.workspace.versions) ? info.workspace.versions : [];
+    return Math.max(1, ...WORKSPACE_VERSIONS.filter((v) => theirs.includes(v)));
   }
 
   // The first 22 characters of base64url SHA-256 of the session's token, made when the session starts (Web Crypto has
@@ -646,4 +661,4 @@ function createAccountService(deps = {}) {
   return new WebAccountService(deps);
 }
 
-module.exports = { createAccountService, WebAccountService, AccountError, SESSION_KEY, browserDevice, ERRORS };
+module.exports = { createAccountService, WebAccountService, AccountError, SESSION_KEY, browserDevice, ERRORS, WORKSPACE_VERSIONS };

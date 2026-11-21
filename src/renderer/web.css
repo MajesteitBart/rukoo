@@ -34,6 +34,12 @@ html[data-platform='web'] .page {
   left: env(safe-area-inset-left, 0px);
   right: env(safe-area-inset-right, 0px);
 }
+/* The image viewer starts under the title bar too (styles.css puts it under the desktop's 40px), so the bar, which
+   stays above every scrim, leaves its Close, Open and Download alone on a phone's 48px bar and below a notch. */
+html[data-platform='web'] .scrim.ch-viewer {
+  top: calc(var(--web-bar) + var(--web-top));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
 
 /* The state that stands in for chat while it isn't there (web-shell.js gate): the chat pane's empty state. */
 .web-gate {
@@ -46,6 +52,16 @@ html[data-platform='web'] .page {
 .web-gate .ch-empty > svg {
   width: 44px;
   height: 44px;
+}
+
+/* A file in the composer's tray that failed says why in full, over more lines: the desktop shows the rest in a tooltip,
+   which a touch screen doesn't have, and the browser's reasons say what to do (chat.errors.webFileUnreadable). */
+html[data-platform='web'] .ch-tray-item.is-file.is-failed {
+  height: auto;
+  min-height: 52px;
+}
+html[data-platform='web'] .ch-tray-item.is-failed .ch-tray-sub {
+  white-space: normal;
 }
 
 /* ---------- title bar: Back and Settings on a phone ---------- */
@@ -92,7 +108,6 @@ body.web-phone .web-bar-settings {
 /* ---------- a phone: the list or the conversation ---------- */
 
 body.web-phone .titlebar-brand {
-  width: auto;
   padding-left: calc(16px + env(safe-area-inset-left, 0px));
 }
 .web-shell.web-phone .sidebar {
@@ -141,7 +156,7 @@ body.web-phone .dialog .buttons button {
 body.web-phone .icon-btn,
 body.web-phone .icon-btn.sm,
 body.web-phone .icon-btn.xs,
-body.web-phone .ch-tools .icon-btn.sm {
+body.web-phone .ch-tool {
   width: 44px;
   height: 44px;
 }
@@ -163,6 +178,81 @@ body.web-phone .ch-send {
   width: 44px;
   height: 44px;
   border-radius: 10px;
+}
+/* The composer's Mention, Attach, Emoji and Formatting, a file card's Download and the viewer's buttons: 44px round
+   buttons, as Send. */
+body.web-phone .ch-tb,
+body.web-phone .ch-file-dl {
+  width: 44px;
+  height: 44px;
+}
+body.web-phone .ch-box-tools {
+  margin-left: -10px;
+}
+/* Reactions keep their pill, a little taller; an invisible area makes each one 44px high, and the gap between the
+   rows of a wrapped list keeps their areas apart. */
+body.web-phone .ch-reacts {
+  gap: 8px 6px;
+}
+body.web-phone .ch-react,
+body.web-phone .ch-react-add {
+  position: relative;
+  height: 32px;
+  min-width: 44px;
+  justify-content: center;
+}
+body.web-phone .ch-react::after,
+body.web-phone .ch-react-add::after {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
+}
+/* A touch screen has no hover: a staged file's remove button and a link card's always show, with a 44px area around
+   their small circles. */
+body.web-phone .ch-tray-x,
+body.web-phone .ch-card-x {
+  opacity: 1;
+}
+body.web-phone .ch-tray-x::after,
+body.web-phone .ch-card-x::after {
+  content: '';
+  position: absolute;
+  inset: -12px;
+}
+body.web-phone .ch-tray-retry {
+  min-height: 44px;
+}
+/* A picture smaller than a fingertip keeps its own size, with an invisible area around it that makes the tap target
+   44px each way (as the banner's action below). The tile lets that area out; the picture keeps its round corners. */
+body.web-phone .ch-media.is-n1 .ch-img {
+  overflow: visible;
+  /* What overflow: hidden gave it: no taller than the picture for the placeholder icon inside. */
+  min-height: 0;
+}
+body.web-phone .ch-media.is-n1 .ch-img img {
+  border-radius: inherit;
+}
+body.web-phone .ch-media.is-n1 .ch-img::before {
+  content: '';
+  position: absolute;
+  inset: min(0px, calc((100% - 44px) / 2));
+}
+/* The emoji picker: as wide as the screen allows, with a 44px search field, skin tones and group tabs, and as many
+   44px cells to a row as fit (chat-rich.js reads that count for the arrow keys). */
+body.web-phone .ch-emoji {
+  width: calc(100vw - 16px);
+}
+body.web-phone .ch-emoji-search {
+  height: 44px;
+}
+body.web-phone .ch-emoji-tone,
+body.web-phone .ch-emoji-tone-opt,
+body.web-phone .ch-emoji-tab {
+  width: 44px;
+  height: 44px;
+}
+body.web-phone .ch-emoji-cells {
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
 }
 body.web-phone .ch-jump {
   height: 44px;
@@ -197,6 +287,7 @@ body.web-phone .form input[type='password'],
 body.web-phone .form textarea,
 body.web-phone .form-input,
 body.web-phone .ch-search,
+body.web-phone .ch-emoji-search,
 body.web-phone .ch-input {
   font-size: 16px;
 }
@@ -232,4 +323,11 @@ body.web-phone .ch-context::after {
   body.web-phone .web-back:hover {
     background: transparent;
   }
+}
+
+/* A browser too old for the app (web-shell.js gate 'old'): nothing in Settings works there either. After the phone's
+   rules, which show the title bar's Settings. */
+body.web-old .web-foot-settings,
+body.web-old .web-bar-settings {
+  display: none;
 }

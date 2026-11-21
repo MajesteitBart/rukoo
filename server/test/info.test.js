@@ -253,6 +253,30 @@ describe('GET /privacy', () => {
     }
   });
 
+  it('covers Rukoo in the browser only where the operator runs it in front of team chat', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const on = { WORKSPACE_MODE: 'on', WEB_APP: 'on' };
+    const languages = {
+      en: { heading: '<h2 id="in-a-browser">In a browser</h2>', storage: 'this site’s storage on your computer', cookies: 'sets no cookies', code: 'The page’s code comes from this site each time you open it', security: 'In a browser that holds only as long as', files: 'Messages, files and drafts' },
+      nl: { heading: '<h2 id="in-a-browser">In een browser</h2>', storage: 'de opslag van deze site op je computer', cookies: 'zet geen cookies', code: 'De code van de pagina komt elke keer dat je hem opent van deze site', security: 'In een browser geldt dat alleen zolang', files: 'Berichten, bestanden en concepten' }
+    };
+    for (const [lang, { heading, storage, cookies, code, security, files }] of Object.entries(languages)) {
+      const text = await page(lang, on);
+      for (const part of [heading, storage, cookies, code, security, files]) expect(text, part).toContain(part);
+      // After team chat, before Security.
+      expect(text.indexOf('id="team-chat"')).toBeLessThan(text.indexOf('id="in-a-browser"'));
+      // Without a files bucket the browser holds no files either; with an S3-compatible bucket in place of R2 it does.
+      expect(await page(lang, { ...on, WORKSPACE_FILES: undefined }), lang).not.toContain(files);
+      expect(await page(lang, { ...on, WORKSPACE_FILES: undefined, ...s3Vars() }), lang).toContain(files);
+      // A server on its own, or one without team chat, says nothing about a browser app.
+      for (const vars of [{ WORKSPACE_MODE: 'on' }, { WORKSPACE_MODE: 'on', WEB_APP: 'off' }, { WEB_APP: 'on' }]) {
+        const without = await page(lang, vars);
+        expect(without, JSON.stringify(vars)).not.toContain('id="in-a-browser"');
+        expect(without, JSON.stringify(vars)).not.toContain(security);
+      }
+    }
+  });
+
   it('speaks Dutch when the browser or the address asks for it', async () => {
     const browser = await call('GET', '/privacy', { headers: { 'accept-language': 'nl-NL,nl;q=0.9,en;q=0.8' } });
     expect(browser.text).toContain('<html lang="nl">');

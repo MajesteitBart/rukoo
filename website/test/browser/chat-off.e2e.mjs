@@ -1,6 +1,6 @@
-// Rukoo Chat in the browser against an account server with team chat off (WORKSPACE_MODE off), as rukoo.io runs
-// today: the page says so in the browser's language instead of showing an empty chat, and /join is the server's own
-// page, not a redirect into the app.
+// Rukoo Chat in the browser against an account server with team chat off (WORKSPACE_MODE off), as a server that runs
+// no team chat has it: the page says so in the browser's language instead of showing an empty chat, and /join is the
+// server's own page, not a redirect into the app.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { clean, expect, makeAccount, openPage, openTab, shot, startWorkers, tr } from './harness.mjs';
@@ -38,6 +38,39 @@ test('e: a server without team chat shows the chat-off state, in English and in 
   assert.equal(join.headers.get('x-rukoo-workspace-invite'), null);
 });
 
+test('e3: a browser too old for team chat says so in its language, with nothing on the page that could not work', async () => {
+  const view = await openPage(env.browser, { locale: 'nl-NL' });
+  const p = view.page;
+  try {
+    // As Safari 16, Chrome 111 or Firefox 115 have it: no RegExp v flag, which the chat's emoji check needs.
+    await view.context.addInitScript(() => {
+      const Native = RegExp;
+      window.RegExp = new Proxy(Native, {
+        construct(target, args) {
+          if (String(args[1] || '').includes('v')) throw new SyntaxError(`Invalid flags supplied to RegExp constructor '${args[1]}'`);
+          return Reflect.construct(target, args);
+        }
+      });
+    });
+    await p.goto(`${env.origin}/app/`);
+    const gate = p.locator('.web-gate');
+    await expect(gate.locator('.ch-empty-title')).toHaveText(tr('nl', 'chat.web.oldTitle'));
+    await expect(gate.locator('.ch-empty-body')).toHaveText(tr('nl', 'chat.web.oldBody'));
+    await expect(gate.locator('[data-gate]')).toHaveCount(0);
+    await expect(p.locator('.sidebar .sync-status .t')).toHaveText(tr('nl', 'chat.web.statusFailed'));
+    // Settings neither: nothing in it works there.
+    const gears = await p.locator('[data-web="settings"], .web-foot-settings').all();
+    assert.ok(gears.length >= 2, 'the title bar and the sidebar foot each have one');
+    for (const gear of gears) await expect(gear).toBeHidden();
+    // No raw error in a toast either.
+    await expect(p.locator('#toast.show')).toHaveCount(0);
+    await shot(p, 'e3-old-browser-nl');
+    clean(view);
+  } finally {
+    await view.context.close();
+  }
+});
+
 // The account the page shows, as the bridge has it.
 const signedInAs = (p) => p.evaluate(async () => (await window.mail.invoke('accountStatus')).result.email);
 
@@ -54,6 +87,8 @@ test("e2: the chat-off page's Sign out stops when another tab signed this browse
     const settings = p.locator('#overlays .page.settings');
     await gate.locator('[data-gate="settings"]').click();
     await settings.locator('[data-a="rukoo"]').click();
+    // The signed-out page has the server's privacy statement a row away, as the browser has no privacy page.
+    await expect(settings.locator('[data-a="rukoo-link:policy"]')).toContainText(tr('en', 'settings.rukoo.policy'));
     await settings.locator('[data-a="rukoo-go:rukoo-signin"]').click();
     const form = settings.locator('form[data-form="rukoo-signin"]');
     await form.locator('input[name="email"]').fill(first.email);

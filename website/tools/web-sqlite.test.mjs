@@ -265,8 +265,8 @@ test('the real Store runs on the adapter as it runs on node:sqlite', () => {
   assert.deepEqual(ours.out, desktop.out);
   // And what that session was meant to show, so a regression on both sides doesn't pass as agreement.
   const o = ours.out;
-  assert.equal(o.schema, '1');
-  assert.deepEqual(o.tables, ['block', 'channel', 'draft', 'event', 'member', 'meta', 'notice', 'outbox', 'pass_room', 'room', 'tombstone', 'ws']);
+  assert.equal(o.schema, String(web.store.SCHEMA_VERSION));
+  assert.deepEqual(o.tables, ['block', 'channel', 'draft', 'event', 'file_cache', 'member', 'meta', 'notice', 'outbox', 'pass_room', 'room', 'tombstone', 'ws']);
   assert.equal(o.quickCheck, true);
   assert.equal(o.ws.syncedAt, 1800000000123);
   assert.equal(o.ws.limits, '{"members":50}');
@@ -290,6 +290,114 @@ test('a wiped cache opens again empty, as a file deleted on desktop does', () =>
   assert.equal(first.wipe(), true);
   const second = web.store.openStore('rukoo-web/chat.db');
   assert.equal(second.getMeta('session'), null);
-  assert.equal(second.getMeta('schema'), '1');
+  assert.equal(second.getMeta('schema'), String(web.store.SCHEMA_VERSION));
   second.close();
+});
+
+// Rich messages (schema versions 2 and 3): files, link cards and reactions on cached messages, their asOf, Mark unread's
+// readMark, drafts that keep files, and the cache of downloaded files with its upserts and partial index, scripted as
+// one session as above.
+const FILE_A = 'f_AAAAAAAAAAAAAAAAAAAAAA';
+const FILE_B = 'f_BBBBBBBBBBBBBBBBBBBBBB';
+const SHA_A = 'a'.repeat(64);
+const SHA_B = 'b'.repeat(64);
+const eid = (seq) => `e_${String(seq).padStart(22, '0')}`;
+
+function richSession({ openStore }, file) {
+  let clock = 1800000000000;
+  const store = openStore(file, { now: () => clock });
+  const out = {};
+  out.columns = Object.fromEntries(
+    ['event', 'outbox', 'draft', 'room', 'file_cache'].map((t) => [t, store.all(`SELECT name FROM pragma_table_info('${t}') ORDER BY cid`).map((r) => r.name)])
+  );
+  out.indexes = store.all(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'file_cache' ORDER BY name`);
+  store.insertWs({ id: WS, name: 'Acme', role: 'member', me: ME, myName: 'Me' });
+  const feed = { conversation: ROOM, kind: 'channel', name: 'general', visibility: 'workspace', archived: false, grant: 'g_AAAAAAAAAAAAAAAAAAAAAA', role: 'member', members: 2, head: 2, floor: 1, lastAt: clock, read: 0, unread: 2, mentions: 0, readMark: 1 };
+  store.upsertRoom(WS, feed);
+  out.readMark = store.get('SELECT readMark, readPaused FROM room WHERE ws = ? AND id = ?', WS, ROOM);
+  // A newer readMark than the cached one: the person marked the room unread on another device.
+  store.upsertRoom(WS, { ...feed, readMark: 2 });
+  out.readMarkAfter = store.get('SELECT readMark, readPaused FROM room WHERE ws = ? AND id = ?', WS, ROOM);
+
+  const image = { id: FILE_A, name: 'plan.png', type: 'image/png', size: 4, width: 64, height: 32 };
+  const card = { url: 'https://example.test/plan', title: 'Plan', image: { id: FILE_B, name: 'card.png', type: 'image/png', size: 4 } };
+  store.appendEvents(
+    WS,
+    ROOM,
+    [
+      { seq: 1, id: eid(1), kind: 'message.posted', actor: OTHER, at: clock + 1, text: 'Look', mentions: [], attachments: [image], reactions: [{ emoji: '\u{1F44D}', actors: [OTHER] }] },
+      { seq: 2, id: eid(2), kind: 'message.posted', actor: ME, at: clock + 2, text: 'https://example.test/plan', mentions: [], previews: [card] }
+    ],
+    { asOf: 2 }
+  );
+  // A reaction event in the feed (seq 3), another person's reaction applied without a seq, and an older page that must
+  // not take either back.
+  const touched = new Set();
+  store.appendEvents(WS, ROOM, [{ seq: 3, id: eid(3), kind: 'reaction.added', actor: ME, at: clock + 3, target: eid(1), emoji: '\u{1F44D}' }], { touched });
+  out.touched = [...touched];
+  out.reacted = store.react(WS, ROOM, eid(1), '\u{1F389}', OTHER, true);
+  out.message = store.get('SELECT attachments, previews, reactions, asOf FROM event WHERE ws = ? AND id = ?', WS, eid(1));
+  out.cardRemoved = store.setPreviews(WS, ROOM, eid(2), []);
+  out.cards = store.get('SELECT previews, asOf FROM event WHERE ws = ? AND id = ?', WS, eid(2));
+  out.withFile = store.messageWithFile(WS, ROOM, FILE_A);
+  out.withoutFile = store.messageWithFile(WS, ROOM, FILE_B);
+
+  store.putDraft(WS, ROOM, null, { text: 'draft', mentions: [], attachments: [{ ...image, expiresAt: clock + 3600000 }] });
+  out.draft = store.getDraft(WS, ROOM, null);
+
+  // The download cache: an upsert keeps the message it knew, two files with the same bytes count once, and the least
+  // recently used comes first.
+  store.putCachedFile({ ws: WS, room: ROOM, file: FILE_A, message: eid(1), sha256: SHA_A, size: 4, name: 'plan.png', type: 'image/png' });
+  clock += 10;
+  store.putCachedFile({ ws: WS, room: ROOM, file: FILE_A, message: null, sha256: SHA_A, size: 4, name: 'plan.png', type: 'image/png' });
+  store.putCachedFile({ ws: WS, room: ROOM, file: FILE_B, message: eid(2), sha256: SHA_B, size: 7, name: 'card.png', type: 'image/png', usedAt: clock - 100 });
+  out.cached = store.getCachedFile(WS, FILE_A);
+  out.lru = store.cachedFiles();
+  store.touchCachedFile(WS, FILE_B, clock + 50);
+  out.lruAfter = store.cachedFiles().map((f) => f.sha256);
+  out.hasA = store.hasCachedSha(SHA_A);
+  out.dropped = store.dropCachedFilesOf(WS, [eid(2)]);
+  out.hasB = store.hasCachedSha(SHA_B);
+  store.forgetCachedSha(SHA_A);
+  out.left = store.cachedFiles().length;
+  out.queryPlan = store.all(`EXPLAIN QUERY PLAN SELECT file FROM file_cache WHERE ws = ? AND message = ?`, WS, eid(1)).map((r) => r.detail);
+  out.wiped = store.wipe();
+  return out;
+}
+
+test('rich messages: files, cards, reactions and the download cache run on the adapter as on node:sqlite', () => {
+  const ours = richSession(web.store, 'rukoo-web/rich/chat.db');
+  const desktop = richSession(require('../../src/main/workspaces/store.js'), path.join(temp, 'rich', 'chat.db'));
+  assert.deepEqual(ours, desktop);
+  // What the session was meant to show, so a regression on both sides doesn't pass as agreement.
+  assert.ok(ours.columns.event.includes('attachments') && ours.columns.event.includes('asOf'), ours.columns.event.join(', '));
+  assert.ok(ours.columns.outbox.includes('attachments') && ours.columns.draft.includes('attachments'));
+  assert.ok(ours.columns.room.includes('readMark') && ours.columns.room.includes('readPaused'));
+  assert.deepEqual(ours.indexes.map((i) => i.name), ['file_cache_message', 'file_cache_sha']);
+  assert.match(ours.indexes[0].sql, /WHERE message IS NOT NULL/);
+  assert.deepEqual(ours.readMark, { readMark: 1, readPaused: 0 });
+  assert.deepEqual(ours.readMarkAfter, { readMark: 2, readPaused: 1 });
+  assert.deepEqual(ours.touched, [eid(1)]);
+  assert.equal(ours.reacted, true);
+  assert.deepEqual(JSON.parse(ours.message.reactions), [
+    { emoji: '\u{1F44D}', actors: [OTHER, ME] },
+    { emoji: '\u{1F389}', actors: [OTHER] }
+  ]);
+  assert.equal(ours.message.asOf, 3);
+  assert.equal(JSON.parse(ours.message.attachments)[0].id, FILE_A);
+  assert.equal(ours.cardRemoved, true);
+  assert.equal(ours.cards.previews, null);
+  assert.equal(ours.withFile.file.id, FILE_A);
+  assert.equal(ours.withoutFile, null, 'the card that held it was removed');
+  assert.equal(ours.draft.attachments[0].id, FILE_A);
+  assert.equal(ours.cached.message, eid(1), 'an upsert without a message keeps the one it knew');
+  assert.equal(ours.cached.usedAt, 1800000000010);
+  assert.deepEqual(ours.lru.map((f) => f.sha256), [SHA_B, SHA_A]);
+  assert.deepEqual(ours.lruAfter, [SHA_A, SHA_B]);
+  assert.equal(ours.hasA, true);
+  assert.equal(ours.dropped, 1);
+  assert.equal(ours.hasB, false);
+  assert.equal(ours.left, 0);
+  assert.ok(ours.queryPlan.some((d) => d.includes('file_cache_message')), ours.queryPlan.join('; '));
+  assert.equal(ours.wiped, true);
 });

@@ -247,6 +247,15 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
     return row({ title: esc(t('settings.rukoo.title')), desc: desc + error, action: 'rukoo' });
   }
 
+  // The browser shows no privacy page (What's stored and shared), so before anyone makes an account there the
+  // operator's statement is a row away, on the signed-out page and under the sign-up form.
+  function webPolicyCard() {
+    if (!WEB() || !(info && info.operator && info.operator.privacy)) return '';
+    const operator = info.operator.name || hostOf(status && status.server);
+    return `<div class="settings-group-title"></div>
+      <div class="card">${row({ title: esc(t('settings.rukoo.policy')), desc: esc(t('settings.rukoo.policyHelp', { operator })), action: 'rukoo-link:policy' })}</div>`;
+  }
+
   function signedOutPage() {
     return `
       <p class="settings-text">${esc(WEB() ? t('settings.rukoo.webIntro') : t('settings.rukoo.intro'))}</p>
@@ -261,7 +270,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       </div>
       ${
         WEB()
-          ? ''
+          ? webPolicyCard()
           : `<div class="settings-group-title"></div>
       <div class="card">${row({ title: esc(t('settings.rukoo.privacy')), desc: esc(t('settings.rukoo.privacyHelp')), action: 'rukoo-go:rukoo-privacy' })}</div>`
       }`;
@@ -346,7 +355,7 @@ export function accountPages({ row, go, back, close = back, showChat = () => {},
       }
       <label class="inline"><input type="checkbox" name="understand"/> ${esc(t('settings.rukoo.understand'))}</label>
       ${submitRow(t('settings.rukoo.create'))}
-    </form></div>`;
+    </form></div>${webPolicyCard()}`;
   }
 
   function signInPage() {

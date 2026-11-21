@@ -135,11 +135,12 @@ async function readText(res, maxBytes, status) {
   return new TextDecoder().decode(joined(chunks, size));
 }
 
-// request(server, method, path, { body, token, headers }) as desktop's, on the fetch given. A redirect is an answer
-// like any other non-2xx (desktop's Node client follows none either); in a browser it reads as status 0.
+// request(server, method, path, { body, token, headers, keepalive }) as desktop's, on the fetch given. A redirect is an
+// answer like any other non-2xx (desktop's Node client follows none either); in a browser it reads as status 0.
+// keepalive (web only): the browser still sends the request when the page goes away meanwhile.
 function createRequest({ fetch: fetchFn, now = Date.now, timeout = TIMEOUT, maxBytes = MAX_BYTES } = {}) {
   if (typeof fetchFn !== 'function') throw new TypeError('createRequest needs fetch');
-  return async function request(server, method, path, { body, token, headers: extra } = {}) {
+  return async function request(server, method, path, { body, token, headers: extra, keepalive = false } = {}) {
     const url = new URL(server + path).href;
     const headers = { accept: 'application/json' };
     if (extra && typeof extra === 'object') {
@@ -165,7 +166,8 @@ function createRequest({ fetch: fetchFn, now = Date.now, timeout = TIMEOUT, maxB
           credentials: 'omit',
           cache: 'no-store',
           redirect: 'manual',
-          referrerPolicy: 'no-referrer'
+          referrerPolicy: 'no-referrer',
+          ...(keepalive ? { keepalive: true } : {})
         });
       } catch (err) {
         throw new AccountError('network', 0, messageOf(err));

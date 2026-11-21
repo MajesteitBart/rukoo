@@ -8,7 +8,10 @@
 // The calls the page answers (the rest get { ok: false, error } and a console warning, never a throw):
 // - chat*: every method of src/main/workspaces/ipc.js chatApi, over the web chat engine (src/web/engine). chatJoin
 //   also clears the page's stored invitation once it is used. chatState and the state events carry what the page
-//   adds to ChatState (webState below).
+//   adds to ChatState (webState below). Team chat's files run through the page's file host (src/web/files.js), which
+//   does what main.js's chatHost does: chatPickFiles opens the browser's file chooser, and chatFile answers 'view'
+//   with a blob: URL in place of desktop's rukoo-chat-file: link, 'open' with a new tab for an image and a download
+//   for anything else, and 'save' with a download.
 // - account*: the Rukoo account (src/web/account/service.js) with main.js's handlers around it: the invite field's
 //   invitation link is split out at sign-up (main.js 1497-1508), and the page's invitation (src/web/join.js) becomes
 //   a pending join after a sign-up, a sign-in or a recovery. Signing out clears it. accountStatus and the 'account'
@@ -31,8 +34,11 @@ const { createAccountService, ERRORS, SESSION_KEY } = require('./account/service
 const { createArgon2 } = require('./account/argon2');
 const { createWebEngine } = require('./engine');
 const { createJoin } = require('./join');
+const { createWebFiles } = require('./files');
+const { VIEW_SCHEME, VIEW_TYPES } = require('../main/workspaces/files');
+const vfs = require('./engine/shims/vfs');
 
-const SETTINGS_KEY = 'rukoo.web.settings';
+const { SETTINGS_KEY, firstLanguage } = require('./language');
 // Each open tab's count of chat messages still to send, as { tag, count } under this prefix and the tab's own id.
 // All tabs share the session, so a sign-out in one loses what the others hold too, and its confirmation counts them.
 const UNSENT_PREFIX = 'rukoo.web.unsent.';
@@ -42,6 +48,20 @@ const THEMES = ['system', 'light', 'dark'];
 const UNAVAILABLE = 'Not available in the browser';
 const WORKSPACE_ID = /^w_[A-Za-z0-9_-]{22}$/;
 const CONVERSATION_ID = /^c_[A-Za-z0-9_-]{22}$/;
+// The most the page keeps of downloaded chat files, in memory (src/web/engine/shims/vfs.js), against desktop's 1 GiB
+// on disk (TIMING.fileCacheMax); the least recently used go first, and come again from the server when asked for.
+const FILE_CACHE_MAX = 256 * 1024 * 1024;
+// Whether this browser parses the host of a URL whose scheme it doesn't know, as the URL standard says and Chromium
+// does since version 130: files.js serve() reads a view link's token from new URL(link), which the older parser
+// leaves without a host.
+const VIEW_LINK = new RegExp(`^${VIEW_SCHEME}://view/([A-Za-z0-9_-]{1,64})$`);
+const standardUrls = (() => {
+  try {
+    return new URL(`${VIEW_SCHEME}://view/x`).hostname === 'view';
+  } catch (_) {
+    return false;
+  }
+})();
 
 // What main.js's IPC handlers make of the renderer's arguments (main.js 883-885).
 const plainObject = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -70,17 +90,6 @@ function serverAddress(doc, location) {
   }
   const content = meta ? (typeof meta.getAttribute === 'function' ? meta.getAttribute('content') : meta.content) : '';
   return String(content || '').trim() || String((location && location.origin) || '');
-}
-
-// The first of the browser's languages Rukoo has, nl or en, else English (desktop asks on first run instead).
-function firstLanguage(navigator) {
-  const list = navigator && Array.isArray(navigator.languages) && navigator.languages.length ? navigator.languages : [navigator && navigator.language];
-  for (const tag of list) {
-    const code = String(tag || '').toLowerCase();
-    if (code.startsWith('nl')) return 'nl';
-    if (code.startsWith('en')) return 'en';
-  }
-  return 'en';
 }
 
 // Chromium on Android (Chrome, Samsung Internet, a WebView) has Notification and its permission, but its constructor
@@ -205,6 +214,7 @@ function createHost(page) {
     t
   });
   const join = createJoin({ location, history: page.history, storage: storageOf(page, 'sessionStorage'), server: location && location.origin });
+  const webFiles = createWebFiles(page, { log });
 
   let engine = null;
   // Why createWebEngine failed (its message), or null: chat then can't start in this page (webState engineFailed).
@@ -293,6 +303,7 @@ function createHost(page) {
   // Registered before the engine's own 'status' listener (svc.init()), so the engine still holds the old cache here.
   account.on('status', (status) => {
     const tag = status && status.signedIn ? account.sessionTag : null;
+    if (statusTag && tag !== statusTag) webFiles.dropPicked();
     if (statusTag && tag !== statusTag && engine) {
       const own = endingHere.get(statusTag);
       if (own) own.took = engine.unsentIds();
@@ -351,6 +362,35 @@ function createHost(page) {
     }
   }
 
+  // The server's files are at another origin than the page's (/v1/info workspace.files.origin, an operator's
+  // WORKSPACE_FILES_ORIGIN): the app's policy lets the page connect to its own origin only, and the file routes send no
+  // CORS headers, so no upload or download could get there. Attach then hides (webState), and opening a file says why.
+  function filesElsewhere() {
+    let info = null;
+    try {
+      info = engine ? engine.svc.filesInfo() : null;
+    } catch (_) {
+      info = null;
+    }
+    return Boolean(info && info.origin && location && location.origin && info.origin !== location.origin);
+  }
+  function filesElsewhereError() {
+    const host = (() => {
+      try {
+        return new URL(account.status().server).host;
+      } catch (_) {
+        return '';
+      }
+    })();
+    let message;
+    try {
+      message = t('chat.errors.webFilesElsewhere', { host });
+    } catch (_) {
+      message = 'Files are kept at another address';
+    }
+    return Object.assign(new Error(message), { chat: true, code: 'files_web' });
+  }
+
   // ChatState with what only the page knows (web only):
   // - invitation: the page holds an invitation link, so the signed-out chat pane says it is kept (chat-view.js)
   //   instead of asking for it;
@@ -359,9 +399,13 @@ function createHost(page) {
   //   (webLostUnsentShown);
   // - engineFailed and engineError: team chat couldn't start in this page (createWebEngine failed, such as the
   //   WebAssembly not loading) while the server has it, and why. The shell offers a reload then.
+  // - capabilities without 'files' when the server keeps its files where the page can't reach them (filesElsewhere).
   function webState(state) {
     if (!state || typeof state !== 'object') return state;
     const out = { ...state, invitation: Boolean(join.peek()) };
+    if (Array.isArray(state.capabilities) && state.capabilities.includes('files') && filesElsewhere()) {
+      out.capabilities = state.capabilities.filter((c) => c !== 'files');
+    }
     if (lostElsewhere > 0) {
       out.lostUnsent = (Number(state.lostUnsent) || 0) + lostElsewhere;
       out.lostUnsentElsewhere = lostElsewhere;
@@ -487,10 +531,37 @@ function createHost(page) {
     dropNotice(key);
   }
 
+  // ---- team chat's files ----
+
+  // Whether a picked file (src/web/files.js) is still needed: files.js may stage its path for ten minutes after the
+  // pick (PICK_TTL), and a staged file reads it until it leaves the tray, also for a Retry.
+  function pickedInUse(name) {
+    const files = engine && engine.svc.files;
+    if (!files) return false;
+    const until = files.picked.get(name);
+    if (until && until >= engine.svc.now()) return true;
+    for (const e of files.staged.values()) if (e.path === name) return true;
+    return false;
+  }
+  const stagedCount = () => (engine && engine.svc.files ? engine.svc.files.staged.size : 0);
+  // The page goes for good with files in a tray. Their reservations would count against the person's 20 open uploads
+  // and the workspace's files for an hour (server/src/workspace.js), and nothing can send them any more: the page's
+  // cache and drafts are in memory, where desktop's draft keeps its ready files over a restart. So each one is cancelled
+  // as files.js does for a removed file, with requests the browser still sends after the page has gone. A file whose
+  // reservation is still on its way, or a message in the outbox, isn't reached; beforeunload warned about those.
+  function releaseStaged() {
+    const files = engine && engine.svc.files;
+    if (!files) return;
+    for (const e of files.staged.values()) {
+      if (!e.file) continue;
+      account.workspaceCall('DELETE', `/v1/workspaces/${e.ws}/conversations/${e.conversation}/uploads/${e.file}`, undefined, { keepalive: true }).catch(() => {});
+    }
+  }
+
   // ---- start ----
 
-  let timing = {};
-  if (test && test.chatFast === true) timing = chatTiming({ SEM_HIDDEN: '1', SEM_CHAT_FAST: '1' });
+  let timing = { fileCacheMax: FILE_CACHE_MAX };
+  if (test && test.chatFast === true) timing = { ...timing, ...chatTiming({ SEM_HIDDEN: '1', SEM_CHAT_FAST: '1' }) };
   if (test && test.timing && typeof test.timing === 'object') timing = { ...timing, ...test.timing };
 
   const ready = (async () => {
@@ -509,11 +580,16 @@ function createHost(page) {
           if (payload && payload.kind === 'state' && payload.state) {
             publishUnsent(payload.state.unsent);
             emit('chat', { ...payload, state: webState(payload.state) });
-          } else emit('chat', payload);
+            return;
+          }
+          // A tray changed: a picked file it sent or let go of may be needed by nothing any more.
+          if (payload && payload.kind === 'staged') webFiles.prunePicked(pickedInUse);
+          emit('chat', payload);
         },
         onNotify: showChatNotification,
         onUnnotify: closeChatNotification,
-        timing
+        timing,
+        host: webFiles.host
       });
     } catch (err) {
       // Chat stays unavailable (chatState is the blank state, as before main.js made the service, with engineFailed
@@ -539,12 +615,52 @@ function createHost(page) {
     const state = webState(await chat().chatState(...args));
     return state && typeof state === 'object' ? { ...state, unsentElsewhere: unsentElsewhere() } : state;
   };
+  // Attach is hidden where the files are out of reach (webState); a drop or paste the renderer still sends says why.
+  for (const name of ['chatPickFiles', 'chatStage']) {
+    const run = methods[name];
+    methods[name] = (...args) => {
+      if (filesElsewhere()) throw filesElsewhereError();
+      return run(...args);
+    };
+  }
+  // A new pick: what earlier picks left that nothing needs any more goes (files.js has the new paths by now).
+  const pick = methods.chatPickFiles;
+  methods.chatPickFiles = async (...args) => {
+    const res = await pick(...args);
+    webFiles.prunePicked(pickedInUse);
+    return res;
+  };
   // chat.js noticeLostUnsent (web only): its toast said that count of lostUnsentElsewhere, so the page stops reporting
   // those. A loss that came after the toast stays for the next one. Answers what is left.
   methods.webLostUnsentShown = (count) => {
     if (Number.isSafeInteger(count) && count > 0) lostElsewhere -= Math.min(count, lostElsewhere);
     return lostElsewhere;
   };
+  // chatFile (chat-view.js viewUrl and fileAction). 'view': main.js serves desktop's rukoo-chat-file: link
+  // (serveChatFile), which no page can load, so the link becomes a blob: URL of the same file here, typed as serve()
+  // types it. 'open': a page can't hand a file to an app, so an image of a type the viewer shows opens in a new tab and
+  // anything else downloads, as 'save' does (src/web/files.js). Both answer 'download' or 'tab' instead of true: the
+  // browser shows the download itself, and chat-view.js's "Saved" toast would say it twice.
+  methods.chatFile = async (ws, c, file, action, ...rest) => {
+    if (filesElsewhere()) throw filesElsewhereError();
+    if (action === 'open') return openFile(ws, c, file);
+    const res = await chat().chatFile(ws, c, file, action, ...rest);
+    if (action === 'view') {
+      const hit = res && typeof res.url === 'string' ? servedView(res.url) : null;
+      return { url: hit ? webFiles.viewUrl(hit.path, hit.type) : null };
+    }
+    return res === true ? 'download' : res;
+  };
+  // The file's type is the one the server named, as the log decides whether it shows as an image (chat-model.js
+  // VIEWABLE, files.js VIEW_TYPES). A tab the browser refused, after a download that outlasted the click's permission
+  // to open one, becomes a download.
+  async function openFile(ws, c, file) {
+    const res = await chat().chatFile(ws, c, file, 'view');
+    const hit = res && typeof res.url === 'string' ? servedView(res.url) : null;
+    if (hit && VIEW_TYPES.has(hit.type) && webFiles.openTab(hit.path, hit.type)) return 'tab';
+    const saved = await chat().chatFile(ws, c, file, 'save');
+    return saved === true ? 'download' : saved;
+  }
   methods.chatJoin = async (...args) => {
     const res = await chat().chatJoin(...args);
     joined(args[0]);
@@ -566,6 +682,22 @@ function createHost(page) {
     dropInvitation();
     return true;
   };
+
+  // What main.js's serveChatFile serves for a view link: files.js serve(link), which checks that the link's file is
+  // still in the cache, of the same room and with the same bytes. A browser whose URL parser reads no host in a link of
+  // a scheme it doesn't know (Chromium before 130) gets the same checks here, on the token read by its pattern: serve()
+  // would refuse every link there.
+  function servedView(link) {
+    const svc = engine && engine.svc;
+    if (!svc || !svc.files) return null;
+    if (standardUrls) return svc.files.serve(link);
+    const m = VIEW_LINK.exec(link);
+    const v = m ? svc.files.views.get(m[1]) : null;
+    if (!v || v.epoch !== svc.epoch || !svc.store) return null;
+    const row = svc.store.getCachedFile(v.ws, v.file);
+    if (!row || row.room !== v.room || row.sha256 !== v.sha256 || !vfs.get(v.path)) return null;
+    return { path: v.path, type: VIEW_TYPES.has(v.type) ? v.type : 'application/octet-stream', name: v.name };
+  }
 
   // The Rukoo account (main.js 1491-1523). The service cleans its input as main.js's handlers do.
   // invitation (web only): the page holds an invitation link (src/web/join.js) that a sign-up uses, so the sign-up form
@@ -771,7 +903,7 @@ function createHost(page) {
       listeners.add(entry);
       return () => listeners.delete(entry);
     },
-    // No file system: dropped files have no path (chat ignores dropped files).
+    // A page has no file paths: a dropped or pasted file has none, and chat-input.js stages its bytes instead.
     pathForFile() {
       return '';
     }
@@ -806,14 +938,16 @@ function createHost(page) {
     engine.nudge('resume');
   });
   // The tab closes, reloads or goes into the back-forward cache: its messages no longer count for the other tabs.
-  // pagehide rather than beforeunload, which the person can still answer by staying.
-  on(page, 'pagehide', () => {
+  // pagehide rather than beforeunload, which the person can still answer by staying. Unless the page waits in the
+  // back-forward cache (persisted), it won't come back, and its staged files' reservations go (releaseStaged).
+  on(page, 'pagehide', (event) => {
     published = null;
     try {
       if (local) local.removeItem(unsentKey);
     } catch (_) {
       // Refused storage held no count either.
     }
+    if (!(event && event.persisted)) releaseStaged();
   });
   // Another tab signed in or out (key null: it cleared the site's storage), or changed the settings.
   on(page, 'storage', (event) => {
@@ -835,9 +969,9 @@ function createHost(page) {
       if (settings.chatNotifications !== before.chatNotifications && engine) engine.settingsChanged();
     }
   });
-  // The chat cache is in memory, so unsent messages go with the page: the browser asks first.
+  // The chat cache is in memory, so unsent messages and the files in a tray go with the page: the browser asks first.
   on(page, 'beforeunload', (event) => {
-    if (!engine || !(engine.unsent() > 0)) return;
+    if (!engine || !(engine.unsent() > 0 || stagedCount() > 0)) return;
     event.preventDefault();
     event.returnValue = true;
   });

@@ -45,9 +45,11 @@ test('the engine bundles src/main/workspaces for the browser with nothing of Nod
   for (const file of fs.readdirSync(path.join(root, 'src', 'main', 'workspaces'))) {
     assert.ok(inputs.includes(`src/main/workspaces/${file}`), `${file} is bundled`);
   }
-  for (const file of ['sqlite.js', 'websocket.js', 'shims/fs.js', 'shims/path.js', 'shims/events.js', 'shims/crypto.js', 'shims/buffer.js', 'shims/i18n.js', 'shims/account-client.js']) {
+  for (const file of ['sqlite.js', 'websocket.js', 'shims/fs.js', 'shims/fs-promises.js', 'shims/vfs.js', 'shims/os.js', 'shims/stream.js', 'shims/http.js', 'shims/path.js', 'shims/events.js', 'shims/crypto.js', 'shims/buffer.js', 'shims/i18n.js', 'shims/account-client.js']) {
     assert.ok(inputs.includes(`src/web/engine/${file}`), `${file} is bundled`);
   }
+  // files.js's helpers (RISKY, safeName) come along as they are; markOfTheWeb reads process.platform, defined away.
+  assert.ok(inputs.includes('src/main/files.js'), 'src/main/files.js is bundled');
   // The catalogs come from the page's scripts, and Node's HTTP client never comes along.
   for (const file of ['src/i18n/index.js', 'src/i18n/en.js', 'src/i18n/nl.js', 'src/main/account/client.js']) assert.ok(!inputs.includes(file), `${file} is not bundled`);
   assert.ok(!engineText.includes('errors.invite.unreadable'), 'no catalog text in the bundle');
@@ -56,7 +58,7 @@ test('the engine bundles src/main/workspaces for the browser with nothing of Nod
   const nodeRequire = new RegExp(String.raw`\brequire\(\s*["'](?:node:)?(?:${names}|sqlite)["']\s*\)`);
   assert.equal(nodeRequire.exec(engineText), null, 'no require of a Node built-in');
   assert.ok(!engineText.includes('Dynamic require of'), "no require esbuild couldn't bundle");
-  assert.ok(!/\bprocess\.env\b/.test(engineText), 'process.env.SEM_TRACE is defined away');
+  assert.ok(!/\bprocess\.(env|platform)\b/.test(engineText), 'process.env.SEM_TRACE and process.platform are defined away');
 });
 
 test('the build options name the two bundles and the files to copy', () => {

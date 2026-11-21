@@ -2,14 +2,16 @@
 // chat engine is src/main/workspaces itself, bundled with the web's stand-ins for what it takes from Node:
 //
 // - node:sqlite             src/web/engine/sqlite.js (sql.js, in memory)
-// - fs, path, events,       src/web/engine/shims/*.js
-//   crypto, http, https,
+// - fs, fs/promises, os,    src/web/engine/shims/*.js: files in memory (shims/vfs.js), SHA-256 in JavaScript, and
+//   path, events, crypto,   the transfers of team chat's files on fetch and XMLHttpRequest
+//   http, https, stream,
 //   buffer
-// - src/main/account/client.js   src/web/engine/shims/account-client.js (AccountError only)
+// - src/main/account/client.js   src/web/engine/shims/account-client.js (AccountError and errorDetails)
 // - src/i18n/index.js       src/web/engine/shims/i18n.js (the page's RukooI18n): the catalogs are classic scripts of
 //                           the page and are never bundled; importing en.js or nl.js fails the build
 // - Buffer                  src/web/engine/shims/buffer.js, injected
 // - process.env.SEM_TRACE   undefined
+// - process.platform        'browser', which src/main/files.js's markOfTheWeb checks for Windows
 //
 // Bare imports (sql.js, hash-wasm) resolve from website/node_modules only, where package.json pins them, so CI needs
 // no npm ci at the root and a local build can't pick up the root's copy, or one in a folder above the checkout.
@@ -36,6 +38,9 @@ export function webEnginePlugin({ root }) {
   const shim = (name) => path.join(engine, 'shims', name);
   const builtins = {
     fs: shim('fs.js'),
+    'fs/promises': shim('fs-promises.js'),
+    os: shim('os.js'),
+    stream: shim('stream.js'),
     path: shim('path.js'),
     events: shim('events.js'),
     crypto: shim('crypto.js'),
@@ -53,7 +58,7 @@ export function webEnginePlugin({ root }) {
     name: 'rukoo-web-engine',
     setup(build) {
       // node:sqlite exists only with its prefix; the others with or without it.
-      build.onResolve({ filter: /^(node:)?(fs|path|events|crypto|http|https|buffer)$|^node:sqlite$/ }, (args) => ({
+      build.onResolve({ filter: /^(node:)?(fs|fs\/promises|os|stream|path|events|crypto|http|https|buffer)$|^node:sqlite$/ }, (args) => ({
         path: builtins[args.path.replace(/^node:/, '')]
       }));
       build.onResolve({ filter: /^\.\.?(\/|$)/ }, (args) => {
@@ -97,7 +102,7 @@ export function webEngineOptions({ root, websiteDir }) {
     // The stand-ins first: their names (fs, crypto, ...) would otherwise be looked up as packages.
     plugins: [webEnginePlugin({ root }), websiteModulesPlugin({ websiteDir })],
     inject: [path.join(root, 'src', 'web', 'engine', 'shims', 'buffer.js')],
-    define: { 'process.env.SEM_TRACE': 'undefined' },
+    define: { 'process.env.SEM_TRACE': 'undefined', 'process.platform': '"browser"' },
     nodePaths: [path.join(websiteDir, 'node_modules')],
     // sql.js and hash-wasm are MIT: their notices stay, at the end of each file.
     legalComments: 'eof'

@@ -121,6 +121,13 @@ export function filesOrigin(env, url) {
   return originOf(text(env.WORKSPACE_FILES_ORIGIN)) ?? workspaceOrigin(env) ?? url.origin;
 }
 
+// Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js, at /app/), as on
+// rukoo.io. Only the operator knows: WEB_APP "on" says so, and the privacy statement then covers the browser too.
+// It needs team chat, which is all the browser app does.
+export function webAppOn(env) {
+  return workspacesOn(env) && String(env.WEB_APP ?? '').trim().toLowerCase() === 'on';
+}
+
 // Link cards are made unless WORKSPACE_PREVIEWS is "off".
 export function previewsOn(env) {
   return String(env.WORKSPACE_PREVIEWS ?? '').trim().toLowerCase() !== 'off';

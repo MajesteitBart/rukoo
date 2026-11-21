@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import { resolveObjectURL } from 'node:buffer';
 import * as esbuild from 'esbuild';
 import { webBuildOptions, sqlWasm } from '../../src/web/build-options.mjs';
 
@@ -115,8 +116,11 @@ function eventTarget(target = {}) {
 // A page at url that has loaded i18n/*.js and then web/bridge.js. local and session are its storage (share them for
 // another tab or a reload); test is window.__rukooWebTest, which gives the test the engine to look into and close.
 // serve(url, init): an answer of the test's own for a request, or undefined for the usual one. userAgent: the
-// browser's. notificationThrows: Notification constructs none, as on Android's Chrome.
+// browser's. notificationThrows: Notification constructs none, as on Android's Chrome. imageBitmap(blob): the page's
+// createImageBitmap, or none. popups: false when the browser refuses every window.open. before: a script the page runs
+// before web/bridge.js, such as one that takes a feature away.
 function openPage({
+  before = null,
   url = 'https://rukoo.example/app/',
   local = memoryStorage(),
   session = memoryStorage(),
@@ -131,12 +135,16 @@ function openPage({
   serve = null,
   userAgent = UA,
   notificationThrows = false,
+  imageBitmap = null,
+  popups = true,
   test: hook = { timing: { coalesce: 5 } }
 } = {}) {
   let href = new URL(url);
   const state = { visible, focused, network };
   const logs = { warn: [], error: [], debug: [] };
-  const record = { opened: [], focus: 0, reloads: 0, replaced: [], notifications: [], workers: [], asked: 0, fetched: [] };
+  // choosers: the file inputs the page clicked; downloads: { href, download, blob } of each <a download> it clicked;
+  // canvases: the size each thumbnail was drawn at; requests: { url, method, headers } of each fetch.
+  const record = { opened: [], focus: 0, reloads: 0, replaced: [], notifications: [], workers: [], asked: 0, fetched: [], choosers: [], downloads: [], canvases: [], requests: [] };
   const events = [];
   let pageRealm = null;
 
@@ -169,7 +177,26 @@ function openPage({
     }
   };
   const metaElement = meta ? { getAttribute: (name) => (name === 'content' ? meta : null) } : null;
+  // The elements the file host makes: a file input it clicks, a link it clicks to download, and a canvas.
+  const body = { children: [], append: (el) => void body.children.push(el) };
+  function createElement(tag) {
+    const el = eventTarget({ tagName: String(tag).toUpperCase(), style: {}, hidden: false });
+    el.remove = () => {
+      const at = body.children.indexOf(el);
+      if (at >= 0) body.children.splice(at, 1);
+      el.removed = true;
+    };
+    if (el.tagName === 'INPUT') el.click = () => void record.choosers.push(el);
+    if (el.tagName === 'A') el.click = () => void record.downloads.push({ href: el.href, download: el.download, blob: resolveObjectURL(el.href), attached: body.children.includes(el) });
+    if (el.tagName === 'CANVAS') {
+      el.getContext = () => ({ drawImage: (_bitmap, _x, _y, w, h) => void record.canvases.push([w, h]) });
+      el.toDataURL = (type) => `data:${type};base64,${Buffer.from(`${el.width}x${el.height}`).toString('base64')}`;
+    }
+    return el;
+  }
   const document = eventTarget({
+    body,
+    createElement,
     title: 'Rukoo',
     currentScript: null,
     get baseURI() {
@@ -220,11 +247,21 @@ function openPage({
   async function pageFetch(input, init) {
     const target = new URL(String(input), href);
     record.fetched.push(target.href);
+    record.requests.push({ url: target.href, method: (init && init.method) || 'GET', headers: { ...((init && init.headers) || {}) }, keepalive: Boolean(init && init.keepalive) });
     const own = serve ? await serve(target, init) : undefined;
     if (own) return own;
     if (target.pathname === '/app/web/sql-wasm.wasm') return new Response(wasm, { headers: { 'content-type': 'application/wasm' } });
     if (!state.network) throw new TypeError('Failed to fetch');
     return fetch(target, init);
+  }
+
+  function inPage(value) {
+    if (value instanceof Uint8Array) return new pageRealm.Uint8Array(value);
+    if (Array.isArray(value)) return value.map(inPage);
+    if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+      for (const key of Object.keys(value)) value[key] = inPage(value[key]);
+    }
+    return value;
   }
 
   const console = {
@@ -242,7 +279,9 @@ function openPage({
     setInterval,
     clearInterval,
     queueMicrotask,
-    structuredClone,
+    // A browser's structuredClone makes its copies in the page; Node's makes them out here, so a Uint8Array (a dropped
+    // file's bytes, chat-input.js) is made again in the page, where wire.js checks it with instanceof.
+    structuredClone: (value) => inPage(structuredClone(value)),
     TextEncoder,
     TextDecoder,
     URL,
@@ -265,7 +304,17 @@ function openPage({
     Notification,
     Worker,
     matchMedia: () => media,
-    open: (...args) => void record.opened.push(args),
+    // A window for a blob: address, as a browser opens one; the page may cut its way back (opener).
+    open: (...args) => {
+      record.opened.push(args);
+      if (!popups) return null;
+      const tab = { url: args[0], opener: 'the page' };
+      record.tabs = [...(record.tabs || []), tab];
+      return tab;
+    },
+    Blob,
+    File,
+    ...(imageBitmap ? { createImageBitmap: imageBitmap } : {}),
     focus: () => void (record.focus += 1),
     addEventListener: window.addEventListener,
     removeEventListener: window.removeEventListener,
@@ -274,6 +323,7 @@ function openPage({
   vm.runInContext('globalThis.window = globalThis; globalThis.self = globalThis;', context);
   pageRealm = { Uint8Array: vm.runInContext('Uint8Array', context) };
   if (catalogs) for (const [file, text] of i18nText) vm.runInContext(text, context, { filename: `i18n/${file}` });
+  if (before) vm.runInContext(before, context, { filename: 'before.js' });
   document.currentScript = { src: new URL('web/bridge.js', href).href };
   vm.runInContext(bridgeText, context, { filename: 'web/bridge.js' });
   document.currentScript = null;
@@ -364,7 +414,7 @@ test('every chat*, account and host method answers; anything else says it is not
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
-  assert.equal(CHAT_METHODS.length, 43);
+  assert.equal(CHAT_METHODS.length, 52);
   for (const name of CHAT_METHODS) {
     const res = await page.invoke(name);
     if (name === 'chatState') {
@@ -429,6 +479,35 @@ test('a page without its catalogs still gets a window.mail, which says why nothi
   await assert.rejects(page.call('chatState'), /RukooI18n is missing/);
   assert.ok(page.logs.error.some((l) => l.includes('[web] Rukoo could not start')));
   page.close();
+});
+
+// A browser before Chrome 112, Firefox 116 or Safari 17 refuses the RegExp v flag, which wire.js compiles as it loads.
+const NO_V_FLAG = `{
+  const Native = RegExp;
+  globalThis.RegExp = new Proxy(Native, {
+    construct(target, args) {
+      if (String(args[1] || '').includes('v')) throw new SyntaxError("Invalid flags supplied to RegExp constructor '" + args[1] + "'");
+      return Reflect.construct(target, args);
+    }
+  });
+}`;
+
+test('a browser too old for team chat gets every call refused as browser_old, worded in its language or the chosen one', async () => {
+  const old = openPage({ languages: ['nl-NL', 'en'], test: null, before: NO_V_FLAG });
+  assert.equal(old.mail.platform, 'web');
+  assert.deepEqual({ ...(await old.invoke('state')) }, { ok: false, error: tr('nl', 'chat.web.oldBody'), code: 'browser_old' });
+  assert.equal((await old.invoke('chatState')).code, 'browser_old');
+  await assert.rejects(old.call('accountStatus'), (err) => err.message === tr('nl', 'chat.web.oldBody'));
+  // The shell keeps the language the bridge set (web-shell.js), as no settings come.
+  assert.equal(vm.runInContext('RukooI18n.getLanguage()', old.context), 'nl');
+  assert.deepEqual(old.logs.error, [], 'a known limit, not an error');
+  old.close();
+  // Without String isWellFormed (Firefox before 119), which checks every message, the same.
+  const local = memoryStorage();
+  local.setItem('rukoo.web.settings', JSON.stringify({ language: 'en' }));
+  const firefox = openPage({ languages: ['nl-NL'], local, test: null, before: 'delete String.prototype.isWellFormed;' });
+  assert.deepEqual({ ...(await firefox.invoke('state')) }, { ok: false, error: tr('en', 'chat.web.oldBody'), code: 'browser_old' });
+  firefox.close();
 });
 
 // The calls the renderer modules the web app loads make, by name: each must reach a handler. The desktop-only rows of
@@ -1415,4 +1494,384 @@ test("the real server: a sign-out that another tab's sign-in to another account 
   assert.equal(event.payload.state.lostUnsentElsewhere, 1);
   assert.equal((await b.call('accountStatus')).email, other, 'the other account stays signed in');
   assert.deepEqual(a.logs.error, []);
+});
+
+// ---- team chat's files: the page's file host (src/web/files.js) and the chat methods over it ----
+
+// A PNG header with its size, and bytes after it.
+function pngBytes(width, height, extra = 64) {
+  const b = Buffer.alloc(33 + extra);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write('IHDR', 12, 'latin1');
+  b.writeUInt32BE(width, 16);
+  b.writeUInt32BE(height, 20);
+  return b;
+}
+// The bytes of a blob: URL the page made, and its type.
+async function blobAt(url) {
+  const blob = resolveObjectURL(url);
+  assert.ok(blob, `${url} is a live blob: URL`);
+  return { type: blob.type, bytes: Buffer.from(await blob.arrayBuffer()) };
+}
+
+test('the file host: the browser file chooser, thumbnails, and downloads as application/octet-stream', async (t) => {
+  const bitmaps = [];
+  const page = openPage({
+    imageBitmap: async (blob) => {
+      bitmaps.push(blob.size);
+      if (blob.size === 3) throw new Error('The source image could not be decoded.');
+      return { width: 400, height: 200, close() {} };
+    }
+  });
+  t.after(() => page.close());
+  await page.ready();
+  const host = page.test.engine.svc.host;
+  assert.deepEqual(Object.keys(host).sort(), ['askRisky', 'openPath', 'pickFiles', 'saveDialog', 'thumbnail']);
+
+  // The chooser: a hidden <input type=file multiple> in the page, clicked at once; what the person picks becomes paths
+  // files.js may stage, named as picked (two of one name each keep theirs).
+  const picking = host.pickFiles();
+  assert.equal(page.record.choosers.length, 1, 'clicked in the same turn as the call');
+  const input = page.record.choosers[0];
+  assert.equal(input.type, 'file');
+  assert.equal(input.multiple, true);
+  assert.equal(input.hidden, true);
+  assert.ok(page.document.body.children.includes(input));
+  input.files = [new File(['abc'], 'notes.txt', { type: 'text/plain' }), new File([pngBytes(400, 200)], 'plan.png', { type: 'image/png' }), new File(['xyz'], 'notes.txt')];
+  input.dispatch('change');
+  const paths = await picking;
+  assert.equal(paths.length, 3);
+  assert.match(paths[0], /^rukoo-web\/picked\/[0-9a-f]{18}\/notes\.txt$/);
+  assert.equal(paths[1].replace(/[^/]+$/, ''), paths[0].replace(/[^/]+$/, ''));
+  assert.match(paths[1], /\/plan\.png$/);
+  assert.match(paths[2], /\/notes\.txt \(2\)$/);
+  assert.equal(input.removed, true, 'the input leaves the page');
+  // Cancelled: the cancel event.
+  const cancelled = host.pickFiles();
+  page.record.choosers.at(-1).dispatch('cancel');
+  assert.deepEqual([...(await cancelled)], []);
+  // The window's focus coming back ends nothing: a phone can send it well before the files, while it copies one.
+  const late = host.pickFiles();
+  const lateInput = page.record.choosers.at(-1);
+  page.window.dispatch('focus');
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  lateInput.files = [new File(['late'], 'late.txt')];
+  lateInput.dispatch('change');
+  const latePaths = await late;
+  assert.equal(latePaths.length, 1, 'files that came after the focus are picked');
+  assert.match(latePaths[0], /\/late\.txt$/);
+  // A chooser that closed without a word (no change, no cancel): the next Attach ends that pick empty and opens
+  // another, whose files count; a change the old one sends after that changes nothing.
+  const lost = host.pickFiles();
+  const lostInput = page.record.choosers.at(-1);
+  const again = host.pickFiles();
+  assert.equal(page.record.choosers.length, 5, 'a new chooser opened');
+  assert.deepEqual([...(await lost)], []);
+  assert.equal(lostInput.removed, true);
+  lostInput.files = [new File(['old'], 'old.txt')];
+  lostInput.dispatch('change');
+  page.record.choosers.at(-1).files = [new File(['new'], 'new.txt')];
+  page.record.choosers.at(-1).dispatch('change');
+  const againPaths = await again;
+  assert.equal(againPaths.length, 1);
+  assert.match(againPaths[0], /\/new\.txt$/);
+
+  // Thumbnails: the image fit in side by side pixels, as a PNG data URL; none where the browser can't decode it.
+  const thumb = await host.thumbnail(paths[1], 192);
+  assert.match(thumb, /^data:image\/png;base64,/);
+  assert.deepEqual([...page.record.canvases.at(-1)], [192, 96]);
+  assert.equal(await host.thumbnail(paths[0], 192), null, 'not an image');
+  assert.equal(await host.thumbnail('rukoo-web/picked/none', 192), null);
+  const noBitmap = openPage({ test: { timing: { coalesce: 5 } } });
+  t.after(() => noBitmap.close());
+  await noBitmap.ready();
+  assert.equal(await noBitmap.test.engine.svc.host.thumbnail(paths[1], 192), null, 'no createImageBitmap, no thumbnail');
+
+  // Risky files are only ever saved, and saving is a download: the place files.js copies to is downloaded and goes.
+  assert.equal(await host.askRisky('setup.exe'), 'save');
+  assert.match(await host.saveDialog('report.pdf'), /^rukoo-web\/downloads\/[0-9a-f]{18}\/report\.pdf$/);
+  assert.match(await host.saveDialog('a/b'), /\/a_b$/);
+  // openPath downloads what files.js hands it, whatever its type, and the copy goes.
+  assert.equal(await host.openPath(paths[1]), '');
+  const d = page.record.downloads.at(-1);
+  assert.equal(d.download, 'plan.png');
+  assert.equal(d.attached, true, 'clicked while in the page, as Firefox needs');
+  assert.equal(d.blob.type, 'application/octet-stream', 'a download never opens in place');
+  assert.ok(Buffer.from(await d.blob.arrayBuffer()).equals(pngBytes(400, 200)));
+  // The folder went with it: the PNG that had a thumbnail above is gone.
+  assert.equal(await host.thumbnail(paths[1], 192), null, "the picked folder went with openPath's copy");
+  assert.equal(await host.openPath('rukoo-web/picked/none'), 'The file is gone');
+  assert.deepEqual(page.logs.error, []);
+});
+
+test('window.mail.chatPickFiles answers the chooser\'s files with their names, sizes and types', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page } = await filesPage(t);
+  const picking = page.call('chatPickFiles');
+  await until(() => page.record.choosers.length === 1, 2000, 'the chooser');
+  page.record.choosers[0].files = [new File([pngBytes(10, 10)], 'a.png', { type: 'image/png' }), new File(['%PDF-1.7'], 'Plan.PDF')];
+  page.record.choosers[0].dispatch('change');
+  const picked = await picking;
+  assert.deepEqual([...picked].map((f) => [f.name, f.size, f.type]), [['a.png', pngBytes(10, 10).length, 'image/png'], ['Plan.PDF', 8, 'application/pdf']]);
+  for (const f of picked) assert.match(f.path, /^rukoo-web\/picked\//);
+});
+
+// A page signed up and in Olga's workspace, with general open: { page, olga, ws, me }.
+async function filesPage(t, options = {}) {
+  const olga = await real.seedAccount();
+  const ws = await real.seedWorkspace(olga, { name: 'Acme', displayName: 'Olga Owner' });
+  const invitation = await real.createInvite(olga, ws.id);
+  const page = serverPage({ url: `${real.url}/app/`, ...options });
+  t.after(() => page.close());
+  await page.ready();
+  await until(async () => (await page.chatState()).available, 15000, 'team chat on this server');
+  await page.call('accountSignUp', { email: `files-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`, password: PASSWORD, invite: real.inviteCode });
+  const joined = await page.call('chatJoin', { link: invitation.link, name: 'Web Person' });
+  assert.equal(joined.ws, ws.id);
+  await until(async () => (await page.chatState()).workspaces.find((w) => w.id === ws.id && w.status === 'ok'), 15000, 'the workspace in the cache');
+  await until(async () => (await page.call('chatView', ws.id)).rooms.some((r) => r.id === ws.general), 15000, 'general in the cache');
+  await page.call('chatOpen', ws.id, ws.general);
+  const caps = (await page.chatState()).capabilities;
+  assert.ok(caps.includes('files'), `the server takes files: ${caps}`);
+  return { page, olga, ws };
+}
+
+const stagedOf = (page, stage) => {
+  const events = page.events.filter((e) => e.type === 'chat' && e.payload.kind === 'staged');
+  for (let i = events.length - 1; i >= 0; i--) {
+    const hit = events[i].payload.staged.find((s) => s.stage === stage);
+    if (hit) return hit;
+  }
+  return null;
+};
+const settled = (page, stage) => until(() => ['ready', 'failed'].includes(stagedOf(page, stage)?.state) && stagedOf(page, stage), 20000, `stage ${stage}`);
+
+// The conversation's events as the server has them for person.
+async function serverEvents(person, ws, conversation) {
+  const res = await real.call('GET', `/v1/workspaces/${ws.id}/conversations/${conversation}/events?after=0&limit=100`, { token: person.token });
+  assert.equal(res.status, 200, res.text);
+  return res.body.events;
+}
+
+test('the real server: files picked, dropped or pasted stage, upload and go with a message; the tray follows', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page, olga, ws } = await filesPage(t, { imageBitmap: async () => ({ width: 320, height: 200, close() {} }) });
+  // Picked: staged by path. The page's thumbnail comes with the staged image.
+  const picking = page.call('chatPickFiles');
+  await until(() => page.record.choosers.length === 1, 2000, 'the chooser');
+  const image = pngBytes(320, 200, 2000);
+  page.record.choosers[0].files = [new File([image], 'plan.png', { type: 'image/png' })];
+  page.record.choosers[0].dispatch('change');
+  const [picked] = await picking;
+  const a = await page.call('chatStage', ws.id, ws.general, null, { path: picked.path });
+  assert.equal(a.state, 'measuring');
+  const one = await settled(page, a.stage);
+  assert.equal(one.state, 'ready', one.error);
+  assert.deepEqual([one.width, one.height, one.type], [320, 200, 'image/png']);
+  assert.match(one.thumb, /^data:image\/png;base64,/);
+  // Dropped or pasted: staged by its bytes, as chat-input.js sends them (a Uint8Array survives the copy).
+  const text = Buffer.from('Launch notes\n');
+  const b = await page.call('chatStage', ws.id, ws.general, null, { name: 'notes.txt', type: 'text/plain', bytes: new Uint8Array(text) });
+  const two = await settled(page, b.stage);
+  assert.equal(two.state, 'ready', two.error);
+  // A third, unstaged again before it is sent; Retry of a ready one answers it as it is.
+  const c = await page.call('chatStage', ws.id, ws.general, null, { name: 'extra.txt', type: 'text/plain', bytes: new Uint8Array(Buffer.from('extra')) });
+  await settled(page, c.stage);
+  assert.equal((await page.call('chatRetryStage', a.stage)).state, 'ready');
+  assert.deepEqual([...(await page.call('chatStaged', ws.id, ws.general, null))].map((s) => s.name), ['plan.png', 'notes.txt', 'extra.txt']);
+  assert.equal(await page.call('chatUnstage', c.stage), true);
+  assert.deepEqual([...(await page.call('chatStaged', ws.id, ws.general, null))].map((s) => s.name), ['plan.png', 'notes.txt']);
+  // A path the chooser didn't answer with is refused before anything is read.
+  const unpicked = await page.invoke('chatStage', ws.id, ws.general, null, { path: 'rukoo-web/picked/not-picked.txt' });
+  assert.deepEqual([unpicked.ok, unpicked.code, unpicked.field], [false, 'invalid', 'path']);
+
+  const sent = await page.call('chatSend', ws.id, ws.general, { text: 'Files from the browser', attachments: [one.file, two.file] });
+  const done = await until(() => page.events.find((e) => e.type === 'chat' && e.payload.kind === 'sent' && e.payload.local === sent.local), 15000, 'the send');
+  const posted = (await serverEvents(olga, ws, ws.general)).find((e) => e.id === done.payload.messageId);
+  assert.deepEqual(posted.attachments.map((f) => [f.name, f.type, f.size, f.width ?? null]), [['plan.png', 'image/png', image.length, 320], ['notes.txt', 'text/plain', text.length, null]]);
+  // Olga gets exactly those bytes.
+  const got = await real.download(olga, ws.id, ws.general, one.file);
+  assert.ok(got.bytes.equals(image));
+  assert.ok((await real.download(olga, ws.id, ws.general, two.file)).bytes.equals(text));
+  assert.deepEqual([...(await page.call('chatStaged', ws.id, ws.general, null))], [], 'the tray emptied with the send');
+  // The page asked for workspace protocol 2, the newest both sides speak, so a message with only files has no text.
+  // (The upload and download links carry no session and no version: they are the Worker's own links.)
+  const versions = new Set(page.record.requests.filter((r) => r.url.includes('/v1/workspaces') && r.headers.authorization).map((r) => r.headers['rukoo-workspace-version']));
+  assert.deepEqual([...versions], ['2']);
+  // Signing out lets go of what was picked: its path names nothing any more.
+  const host = page.test.engine.svc.host;
+  assert.match(await host.thumbnail(picked.path, 64), /^data:image\/png;base64,/);
+  await page.call('accountSignOut');
+  assert.equal(await host.thumbnail(picked.path, 64), null);
+  assert.deepEqual(page.logs.error, []);
+});
+
+test('the real server: files in a tray warn before the page goes, and their reservations go with it; a picked file goes once nothing needs it', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page, ws } = await filesPage(t, { imageBitmap: async () => ({ width: 10, height: 10, close() {} }) });
+  const token = JSON.parse(page.local.getItem('rukoo.web.session')).token;
+  // Nothing staged: nothing to warn about.
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, false);
+  // Three files in the tray, a picked image among them.
+  const picking = page.call('chatPickFiles');
+  await until(() => page.record.choosers.length === 1, 2000, 'the chooser');
+  page.record.choosers[0].files = [new File([pngBytes(10, 10)], 'picked.png', { type: 'image/png' })];
+  page.record.choosers[0].dispatch('change');
+  const [picked] = await picking;
+  const stages = [(await page.call('chatStage', ws.id, ws.general, null, { path: picked.path })).stage];
+  for (let i = 1; i < 3; i++) stages.push((await page.call('chatStage', ws.id, ws.general, null, { name: `f${i}.txt`, type: 'text/plain', bytes: new Uint8Array(Buffer.from(`file ${i}`)) })).stage);
+  const ids = [];
+  for (const s of stages) {
+    const done = await settled(page, s);
+    assert.equal(done.state, 'ready');
+    ids.push(done.file);
+  }
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, true, 'the browser asks before the files go');
+  // Into the back-forward cache: the page may come back, so the reservations stay.
+  page.window.dispatch('pagehide', { persisted: true });
+  assert.equal(page.record.requests.filter((r) => r.method === 'DELETE').length, 0);
+  // For good: each one is cancelled, in a request the browser sends after the page has gone.
+  const from = page.record.requests.length;
+  page.window.dispatch('pagehide', { persisted: false });
+  const deletes = () => page.record.requests.slice(from).filter((r) => r.method === 'DELETE' && /\/uploads\/f_/.test(r.url));
+  await until(() => deletes().length === 3, 5000, 'the cancelled reservations');
+  assert.ok(deletes().every((r) => r.keepalive && r.headers.authorization), 'keepalive requests with the session');
+  assert.deepEqual(deletes().map((r) => r.url.split('/').at(-1)).sort(), [...ids].sort());
+  // On the server they are gone: a message can't take any of them any more (each would still go, uncancelled).
+  for (const id of ids) {
+    await until(
+      () => real.post({ token }, ws.id, ws.general, 'With a cancelled file', { attachments: [id] }).then(() => assert.fail(`${id} was still open`), (err) => /409 .*files_unavailable/.test(err.message)),
+      5000,
+      `${id} gone on the server`
+    );
+  }
+
+  // The picked file stays while the tray holds it and files.js may still stage it (ten minutes after the pick), and
+  // goes at the next change of a tray once neither holds.
+  const host = page.test.engine.svc.host;
+  const exists = async () => Boolean(await host.thumbnail(picked.path, 16));
+  assert.equal(await exists(), true);
+  await page.call('chatUnstage', stages[0]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(await exists(), true, 'files.js may still stage it');
+  page.test.engine.svc.files.picked.set(picked.path, 0);
+  await page.call('chatUnstage', stages[1]);
+  await until(async () => !(await exists()), 2000, 'the picked file gone');
+  assert.deepEqual(page.logs.error, []);
+});
+
+test("the real server: a received file is shown from a blob: URL, opened in a tab or downloaded, and reactions, Mark unread and link cards work", async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page, olga, ws } = await filesPage(t);
+  const image = pngBytes(64, 32, 500);
+  const report = Buffer.from('%PDF-1.7 a small report');
+  const html = Buffer.from('<script>parent.document.title="owned"</script>');
+  const pic = await real.upload(olga, ws.id, ws.general, { name: 'site.png', type: 'image/png', bytes: image, width: 64, height: 32 });
+  const doc = await real.upload(olga, ws.id, ws.general, { name: 'report.pdf', type: 'application/pdf', bytes: report });
+  const page2 = await real.upload(olga, ws.id, ws.general, { name: 'page.html', type: 'text/html', bytes: html });
+  const posted = await real.post(olga, ws.id, ws.general, 'Three files', { attachments: [pic.id, doc.id, page2.id] });
+  await until(async () => (await page.call('chatOpen', ws.id, ws.general)).events.some((e) => e.id === posted.messageId), 15000, "Olga's files in the room");
+
+  // View: a blob: URL of the page's own, of the file's type for the viewer's images and application/octet-stream for
+  // anything else, so no file of another kind runs in the page's origin.
+  const view = await page.call('chatFile', ws.id, ws.general, pic.id, 'view');
+  assert.match(view.url, /^blob:/);
+  assert.deepEqual(await blobAt(view.url), { type: 'image/png', bytes: image });
+  assert.equal((await page.call('chatFile', ws.id, ws.general, pic.id, 'view')).url, view.url, 'the same file keeps its URL');
+  const htmlView = await page.call('chatFile', ws.id, ws.general, page2.id, 'view');
+  assert.equal((await blobAt(htmlView.url)).type, 'application/octet-stream');
+
+  // Save downloads, under the file's name, as application/octet-stream; the answer isn't true, so no "Saved" toast.
+  assert.equal(await page.call('chatFile', ws.id, ws.general, doc.id, 'save'), 'download');
+  let d = page.record.downloads.at(-1);
+  assert.equal(d.download, 'report.pdf');
+  assert.equal(d.blob.type, 'application/octet-stream');
+  assert.ok(Buffer.from(await d.blob.arrayBuffer()).equals(report));
+  // Open: the image in a new tab, with no way back to the page; a document downloads; an HTML page too.
+  assert.equal(await page.call('chatFile', ws.id, ws.general, pic.id, 'open'), 'tab');
+  const tab = page.record.tabs.at(-1);
+  assert.equal(tab.opener, null);
+  assert.equal(page.record.opened.at(-1)[1], '_blank');
+  assert.deepEqual(await blobAt(tab.url), { type: 'image/png', bytes: image });
+  assert.equal(await page.call('chatFile', ws.id, ws.general, doc.id, 'open'), 'download');
+  assert.equal(page.record.downloads.at(-1).download, 'report.pdf');
+  assert.equal(await page.call('chatFile', ws.id, ws.general, page2.id, 'open'), 'download');
+  d = page.record.downloads.at(-1);
+  assert.equal(d.download, 'page.html');
+  assert.equal(d.blob.type, 'application/octet-stream');
+
+  // Reactions both ways, and Mark unread.
+  assert.equal(await page.call('chatReact', ws.id, ws.general, posted.messageId, '\u{1F44D}', true), true);
+  await until(async () => (await serverEvents(olga, ws, ws.general)).find((e) => e.id === posted.messageId)?.reactions?.length === 1, 10000, 'the reaction on the server');
+  await real.react(olga, ws.id, ws.general, posted.messageId, '\u{1F389}', true);
+  await until(async () => {
+    const room = await page.call('chatOpen', ws.id, ws.general);
+    return (room.events.find((e) => e.id === posted.messageId)?.reactions || []).length === 2;
+  }, 15000, "Olga's reaction in the page");
+  const unread = await page.call('chatMarkUnread', ws.id, ws.general, posted.messageId);
+  assert.ok(Number.isSafeInteger(unread.read));
+
+  // A link card under the page's own link, which its author removes.
+  const url = await real.previewPage({ title: 'Quarterly plan', description: 'Next quarter', image: true });
+  const sent = await page.call('chatSend', ws.id, ws.general, { text: `See ${url}` });
+  const done = await until(() => page.events.find((e) => e.type === 'chat' && e.payload.kind === 'sent' && e.payload.local === sent.local), 15000, 'the send');
+  const id = done.payload.messageId;
+  const card = await until(async () => {
+    const room = await page.call('chatOpen', ws.id, ws.general);
+    const e = room.events.find((x) => x.id === id);
+    return e && e.previews && e.previews.length && e.previews[0];
+  }, 30000, 'the link card');
+  assert.equal(card.title, 'Quarterly plan');
+  // Its image is a file of the workspace, shown like any image.
+  const cardView = await page.call('chatFile', ws.id, ws.general, card.image.id, 'view');
+  assert.equal((await blobAt(cardView.url)).type, 'image/png');
+  assert.equal(await page.call('chatRemovePreview', ws.id, ws.general, id, card.url), true);
+  await until(async () => ((await serverEvents(olga, ws, ws.general)).find((e) => e.id === id)?.previews || []).length === 0, 10000, 'the card gone on the server');
+  assert.equal(vm.runInContext('document.title', page.context), 'Rukoo', 'no file ran in the page');
+  assert.deepEqual(page.logs.error, []);
+});
+
+test('the real server: an image whose tab the browser refused downloads instead', async (t) => {
+  if (skipWithoutServer(t)) return;
+  const { page, olga, ws } = await filesPage(t, { popups: false });
+  const image = pngBytes(20, 20);
+  const pic = await real.upload(olga, ws.id, ws.general, { name: 'shot.png', type: 'image/png', bytes: image, width: 20, height: 20 });
+  const posted = await real.post(olga, ws.id, ws.general, 'One picture', { attachments: [pic.id] });
+  await until(async () => (await page.call('chatOpen', ws.id, ws.general)).events.some((e) => e.id === posted.messageId), 15000, 'the picture in the room');
+  assert.equal(await page.call('chatFile', ws.id, ws.general, pic.id, 'open'), 'download');
+  assert.equal(page.record.opened.length, 1, 'it tried a tab first');
+  const d = page.record.downloads.at(-1);
+  assert.equal(d.download, 'shot.png');
+  assert.ok(Buffer.from(await d.blob.arrayBuffer()).equals(image));
+});
+
+test('a server that keeps its files at another address: Attach hides, and a file says why in the page language', async (t) => {
+  const infoFor = (origin) => ({
+    protocol: 1,
+    signups: 'open',
+    features: ['workspaces-v1'],
+    workspace: { versions: [1, 2], capabilities: ['reactions', 'files'], files: { maxBytes: 1000, workspaceBytes: 10000, origin } }
+  });
+  const elsewhere = openPage({ languages: ['nl-NL'], serve: (url) => (url.pathname === '/v1/info' ? json(infoFor('https://files.elsewhere.example')) : undefined) });
+  t.after(() => elsewhere.close());
+  await elsewhere.ready();
+  await elsewhere.call('accountServerInfo');
+  await until(async () => (await elsewhere.chatState()).available, 5000, 'team chat on this server');
+  assert.deepEqual([...(await elsewhere.chatState()).capabilities], ['reactions'], 'no files in the state the renderer reads');
+  const file = `f_${'F'.repeat(22)}`;
+  const refused = await elsewhere.invoke('chatFile', W('a'), C('b'), file, 'view');
+  assert.deepEqual({ ...refused }, { ok: false, error: i18n.translate('nl', 'chat.errors.webFilesElsewhere', { host: 'rukoo.example' }), code: 'files_web' });
+  assert.equal((await elsewhere.invoke('chatPickFiles')).code, 'files_web');
+  assert.equal(elsewhere.record.choosers.length, 0, 'no chooser opened');
+  assert.equal((await elsewhere.invoke('chatStage', W('a'), C('b'), null, { name: 'a.txt', type: 'text/plain', bytes: new Uint8Array(1) })).code, 'files_web');
+
+  // The same origin as the page's: files stay.
+  const here = openPage({ serve: (url) => (url.pathname === '/v1/info' ? json(infoFor('https://rukoo.example')) : undefined) });
+  t.after(() => here.close());
+  await here.ready();
+  await here.call('accountServerInfo');
+  await until(async () => (await here.chatState()).available, 5000, 'team chat on this server');
+  assert.deepEqual([...(await here.chatState()).capabilities], ['reactions', 'files']);
+  assert.equal((await here.invoke('chatFile', W('a'), C('b'), file, 'view')).code, 'signed_out');
 });

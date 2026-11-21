@@ -199,12 +199,15 @@ export function chatErrorText(err, context = {}) {
       return t('chat.errors.reactionLimit');
     case 'files_off':
       return t('chat.errors.filesOff', { host });
+    // Only the browser's host says this (src/web/host.js): the server's files are at an address the page can't reach.
+    case 'files_web':
+      return t('chat.errors.webFilesElsewhere', { host });
     case 'too_large': {
       const max = fileLimit();
       return max ? t('chat.errors.fileTooLargeSize', { size: fileSize(max) }) : t('chat.errors.fileTooLarge');
     }
     case 'unreadable':
-      return t('chat.errors.fileUnreadable');
+      return WEB ? t('chat.errors.webFileUnreadable') : t('chat.errors.fileUnreadable');
     case 'files_unavailable':
       return t('chat.errors.filesUnavailable');
     case 'invalid_state':

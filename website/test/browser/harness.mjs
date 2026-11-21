@@ -6,6 +6,10 @@
 // People other than the ones the test drives are made through the server's own API: an account the page can sign in
 // to with makeAccount (src/web/account's key derivation, from Node), the rest with test/fixtures/real-server.js's
 // seeding against the harness (connectRealServer).
+//
+// By default the account server runs as rukoo.io does: no files bucket, so no files. startWorkers({ files: true })
+// binds a local bucket as WORKSPACE_FILES, and starts the link card pages of server/test/fixtures/preview-pages.cjs on
+// 127.0.0.1 for the server to fetch (WORKSPACE_PREVIEW_HOSTS), as test/fixtures/real-server.js does for desktop.
 import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -42,7 +46,7 @@ function buildOnce() {
 
 // The account server's settings for the tests: invite-only sign-ups with one code for any number of accounts, team
 // chat on or off, and a workspace invitation standing in for the code (WORKSPACE_SIGNUPS).
-const serverVars = (workspaceMode) => ({
+const serverVars = (workspaceMode, previewHost = '') => ({
   JURISDICTION: '',
   SIGNUPS: 'invite',
   INVITE_USES: 0,
@@ -54,14 +58,16 @@ const serverVars = (workspaceMode) => ({
   WORKSPACE_ORIGIN: '',
   BOOKING_ORIGIN: '',
   BOOKING_ALIASES: '',
-  BOOKING_FORMER_ROOTS: ''
+  BOOKING_FORMER_ROOTS: '',
+  WORKSPACE_PREVIEW_HOSTS: previewHost
 });
 
 // The account server's config without its per-address rate limiters, written under the ignored server/.wrangler/.
 // Every request in these tests comes from 127.0.0.1, and the suite signs up, signs in and joins more than the 30 a
 // minute RATE_LIMITER allows; test/fixtures/real-server.js drops them for the same reason. limitRate() in
-// server/src/config.js skips without the binding. Returns the path relative to ROOT, as createTestHarness takes it.
-function serverConfig() {
+// server/src/config.js skips without the binding. files: a local bucket as WORKSPACE_FILES, which wrangler.jsonc leaves
+// commented out. Returns the path relative to ROOT, as createTestHarness takes it.
+function serverConfig({ files = false } = {}) {
   const { parseJsonc } = require(path.join(ROOT, 'test', 'fixtures', 'real-server.js'));
   const config = parseJsonc(readFileSync(path.join(ROOT, 'server', 'wrangler.jsonc'), 'utf8'));
   delete config.ratelimits;
@@ -70,25 +76,31 @@ function serverConfig() {
   config.main = path.join(ROOT, 'server', 'src', 'index.js');
   // fallthrough: false silences wrangler's warning about the shadowed default rule, as in real-server.js.
   config.rules = (config.rules || []).map((rule) => ({ ...rule, fallthrough: false }));
+  if (files) config.r2_buckets = [{ binding: 'WORKSPACE_FILES', bucket_name: 'rukoo-workspace-files-browser-test' }];
+  else delete config.r2_buckets;
   const dir = path.join(ROOT, 'server', '.wrangler', 'browser-tests');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, 'wrangler.json'), JSON.stringify(config));
-  return path.relative(ROOT, path.join(dir, 'wrangler.json')).split(path.sep).join('/');
+  const name = files ? 'wrangler.files.json' : 'wrangler.json';
+  writeFileSync(path.join(dir, name), JSON.stringify(config));
+  return path.relative(ROOT, path.join(dir, name)).split(path.sep).join('/');
 }
 
-// Both Workers and a headless Chromium. Returns { origin, browser, seed, close }.
-export async function startWorkers({ workspaceMode = 'on' } = {}) {
+// Both Workers and a headless Chromium. files: the account server has a files bucket and makes link cards of the
+// pages in pages (preview-pages.cjs: pages.page(spec) answers a page's address). Returns { origin, browser, seed,
+// pages, close }.
+export async function startWorkers({ workspaceMode = 'on', files = false } = {}) {
   await buildOnce();
   process.env.CLOUDFLARE_CF_FETCH_ENABLED = 'false';
   process.env.WRANGLER_SEND_METRICS = 'false';
   const { createTestHarness } = createRequire(path.join(ROOT, 'server', 'package.json'))('wrangler');
+  const pages = files ? await require(path.join(ROOT, 'server', 'test', 'fixtures', 'preview-pages.cjs')).startPreviewServer() : null;
   const harness = createTestHarness({
     root: ROOT,
     workers: [
       { configPath: 'website/wrangler.jsonc' },
       {
-        configPath: serverConfig(),
-        vars: serverVars(workspaceMode),
+        configPath: serverConfig({ files }),
+        vars: serverVars(workspaceMode, pages ? pages.host : ''),
         secrets: { PEPPER: randomBytes(32).toString('base64'), INVITE_CODES: INVITE }
       }
     ]
@@ -101,15 +113,18 @@ export async function startWorkers({ workspaceMode = 'on' } = {}) {
     return {
       origin,
       browser,
-      seed: connectRealServer(origin),
+      seed: connectRealServer(origin, { previews: pages ? pages.origin : null }),
+      pages,
       async close() {
         await browser.close().catch(() => {});
         await harness.close();
+        await pages?.close();
       }
     };
   } catch (err) {
     await browser?.close().catch(() => {});
     await harness.close().catch(() => {});
+    await pages?.close();
     throw err;
   }
 }
@@ -231,8 +246,9 @@ export async function browserBack(page) {
 }
 
 // Every control a finger can reach on screen now is at least 44 by 44 CSS pixels (the design's phone target; a
-// ::before or ::after touch area around it counts). Links in message text, a switch drawn inside its row and the
-// composer's text field are no targets of their own; a checkbox counts with its label.
+// ::before or ::after touch area around it counts). Links in message text, a link card's title (the whole card takes
+// the tap), a switch drawn inside its row and the composer's text field are no targets of their own; a checkbox counts
+// with its label.
 export async function targets(page, label) {
   const small = await page.evaluate(() => {
     const out = [];
@@ -240,7 +256,7 @@ export async function targets(page, label) {
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
     for (let el of document.querySelectorAll(sel)) {
-      if (el.matches('.ch-text a, .ch-text *, .switch, .ch-input')) continue;
+      if (el.matches('.ch-text a, .ch-text *, .ch-card-title, .switch, .ch-input')) continue;
       if (el.matches('input[type="checkbox"], input[type="radio"]')) el = el.closest('label, .row, .radio-row') || el;
       if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
       const r = el.getBoundingClientRect();

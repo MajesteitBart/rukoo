@@ -2833,6 +2833,13 @@
   "chat.viewer.close": "Sluiten (Esc)",
   "chat.viewer.previous": "Vorige afbeelding (pijl links)",
   "chat.viewer.next": "Volgende afbeelding (pijl rechts)",
+  "chat.files.webOpen": "{name} downloaden, {size}",
+  "chat.files.webOpenTitle": "Downloaden",
+  "chat.files.webOpenImage": "{name} openen in een nieuw tabblad, {size}",
+  "chat.files.webOpenImageTitle": "Openen in een nieuw tabblad",
+  "chat.viewer.webOpenTitle": "Openen in een nieuw tabblad",
+  "chat.viewer.webSave": "Downloaden",
+  "chat.viewer.webSaveTitle": "Downloaden",
   "chat.viewer.position": "{n} van {count} · {size}",
   "chat.emoji.label": "Emoji",
   "chat.emoji.composerLabel": "Emoji invoegen",
@@ -3099,6 +3106,7 @@
   "chat.errors.quotaBytes": "{workspace} heeft geen ruimte meer voor berichten.",
   "chat.errors.upgrade": "Werk Rukoo bij om teamchat op {host} te blijven gebruiken.",
   "chat.errors.webUpgrade": "Laad de pagina opnieuw om teamchat op {host} te blijven gebruiken.",
+  "chat.errors.webFilesElsewhere": "{host} bewaart zijn bestanden op een ander adres, dat Rukoo in de browser niet kan bereiken. Open ze in de Rukoo-app.",
   "chat.errors.rateLimited": { "one": "Te veel verzoeken. Rukoo probeert het over {count} seconde opnieuw.", "other": "Te veel verzoeken. Rukoo probeert het over {count} seconden opnieuw." },
   "chat.errors.network": "Rukoo kan {host} niet bereiken.",
   "chat.errors.signedOut": "Je bent uitgelogd. Log in om teamchat te blijven gebruiken.",
@@ -3116,6 +3124,7 @@
   "chat.errors.uploadGone": "Deze upload is gestopt. Voeg het bestand opnieuw toe.",
   "chat.errors.fileExpired": "De link naar het bestand is verlopen. Probeer het opnieuw.",
   "chat.errors.fileUnreadable": "Rukoo kon dit bestand niet lezen.",
+  "chat.errors.webFileUnreadable": "Rukoo kan dit bestand niet meer lezen. Verwijder het en voeg het opnieuw toe.",
   "chat.errors.failed": "Er ging iets mis. Probeer het opnieuw.",
   "chat.web.offTitle": "Teamchat staat niet aan",
   "chat.web.offBody": "De Rukoo-accountserver op {host} draait geen teamchat. Zodra dat wel zo is, staan je werkruimtes hier.",
@@ -3127,6 +3136,8 @@
   "chat.web.settings": "Instellingen",
   "chat.web.statusOff": "Teamchat uit",
   "chat.web.statusFailed": "Kan niet starten",
+  "chat.web.oldTitle": "Rukoo werkt niet in deze browser",
+  "chat.web.oldBody": "Rukoo heeft Chrome of Edge 112, Firefox 119, Safari 17 of nieuwer nodig. Werk deze browser bij, of open deze pagina in een andere browser.",
   "chat.web.backTitle": "Terug naar gesprekken"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

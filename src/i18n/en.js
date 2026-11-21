@@ -11003,6 +11003,34 @@
     "message": "{n} of {count} · {size}",
     "description": "Image viewer with several images: under the name, which image shows and its size. {n}: its place; {count}: the images; {size}: the file size. src/renderer/chat-rich.js"
   },
+  "chat.files.webOpen": {
+    "message": "Download {name}, {size}",
+    "description": "Rukoo in the browser: accessible name of a file card in a message, in place of chat.files.open. A page can't open a file in an app on the computer, so the card downloads it. {name}: the file name; {size}: its size, such as \"250 KB\". src/renderer/chat-rich.js"
+  },
+  "chat.files.webOpenTitle": {
+    "message": "Download",
+    "description": "Rukoo in the browser: tooltip of a file card in a message, in place of chat.files.openTitle. src/renderer/chat-rich.js"
+  },
+  "chat.files.webOpenImage": {
+    "message": "Open {name} in a new tab, {size}",
+    "description": "Rukoo in the browser: accessible name of a file card for an image the log doesn't show as a picture (its size is unknown), in place of chat.files.open. {name}: the file name; {size}: its size. src/renderer/chat-rich.js"
+  },
+  "chat.files.webOpenImageTitle": {
+    "message": "Open in a new tab",
+    "description": "Rukoo in the browser: tooltip of a file card for an image, in place of chat.files.openTitle. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.webOpenTitle": {
+    "message": "Open in a new tab",
+    "description": "Rukoo in the browser: image viewer, tooltip of the Open button (chat.viewer.open), in place of chat.viewer.openTitle. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.webSave": {
+    "message": "Download",
+    "description": "Rukoo in the browser: image viewer, the button that downloads the image, in place of chat.viewer.save. The browser decides where downloads go. src/renderer/chat-rich.js"
+  },
+  "chat.viewer.webSaveTitle": {
+    "message": "Download",
+    "description": "Rukoo in the browser: image viewer, tooltip of the Download button, in place of chat.viewer.saveTitle. src/renderer/chat-rich.js"
+  },
   "chat.emoji.label": {
     "message": "Emoji",
     "description": "Accessible name of the emoji picker and its grid. src/renderer/chat-rich.js"
@@ -12063,6 +12091,10 @@
     "message": "Reload the page to keep using team chat on {host}.",
     "description": "Team chat error in the browser, shown in the dialog, message row or toast of the failed action: the server needs a newer Rukoo (426); the browser version of chat.errors.upgrade. {host}: the server's host name. src/renderer/chat.js (chatErrorText)"
   },
+  "chat.errors.webFilesElsewhere": {
+    "message": "{host} keeps its files at another address, which Rukoo in the browser can't reach. Open them in the Rukoo app.",
+    "description": "Team chat error in the browser, as a toast when a file or image in a message can't be opened or downloaded: the server's operator set a separate address for files (WORKSPACE_FILES_ORIGIN), which the page may not connect to. Attach is hidden then. {host}: the server's host name. src/renderer/chat.js (chatErrorText); src/web/host.js"
+  },
   "chat.errors.rateLimited": {
     "message": { "one": "Too many requests. Rukoo tries again in {count} second.", "other": "Too many requests. Rukoo tries again in {count} seconds." },
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action: the server asked Rukoo to slow down (429). {count}: seconds until Rukoo tries again. src/renderer/chat.js (chatErrorText)"
@@ -12131,6 +12163,10 @@
     "message": "Rukoo couldn't read this file.",
     "description": "Team chat error, in a toast or under an attached file: Rukoo couldn't read a file on this computer to upload it (code unreadable). src/renderer/chat.js (chatErrorText); src/main/workspaces/wire.js"
   },
+  "chat.errors.webFileUnreadable": {
+    "message": "Rukoo can't read this file any more. Remove it and attach it again.",
+    "description": "Team chat error in the browser, in a toast or under an attached file: the browser refused to read a picked file again, which happens once the file changed or went on disk after it was picked (code unreadable). The browser version of chat.errors.fileUnreadable; the tray shows no Retry then, since only attaching it again gives the page a readable file. src/renderer/chat.js (chatErrorText), src/renderer/chat-rich.js (mountTray)"
+  },
   "chat.errors.failed": {
     "message": "Something went wrong. Try again.",
     "description": "Team chat error, shown in the dialog, message row or toast of the failed action, for anything the other chat.errors keys don't cover. src/renderer/chat.js (chatErrorText)"
@@ -12173,7 +12209,15 @@
   },
   "chat.web.statusFailed": {
     "message": "Can't start",
-    "description": "Rukoo in the browser: short status line in the sidebar foot when team chat couldn't start in this browser (for example a file it needs didn't load); the page beside it says so and offers Reload page. src/renderer/web-shell.js (gateStatus)"
+    "description": "Rukoo in the browser: short status line in the sidebar foot when team chat couldn't start in this browser (for example a file it needs didn't load, or the browser is too old: chat.web.oldTitle); the page beside it says why. src/renderer/web-shell.js (gateStatus)"
+  },
+  "chat.web.oldTitle": {
+    "message": "Rukoo doesn't work in this browser",
+    "description": "Rukoo in the browser: title of the page when the browser lacks what team chat needs (an older Chrome, Edge, Firefox or Safari); the text under it is chat.web.oldBody. No buttons: nothing on the page works there. src/renderer/web-shell.js (gate)"
+  },
+  "chat.web.oldBody": {
+    "message": "Rukoo needs Chrome or Edge 112, Firefox 119, Safari 17 or newer. Update this browser, or open this page in another one.",
+    "description": "Rukoo in the browser: text under chat.web.oldTitle, also the tooltip of the sidebar's status line then. Keep the version numbers: they are the oldest versions with what the page needs. src/web/bridge.js, src/renderer/web-shell.js (gate, gateStatus)"
   },
   "chat.web.backTitle": {
     "message": "Back to conversations",

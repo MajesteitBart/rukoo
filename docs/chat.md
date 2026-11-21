@@ -30,7 +30,7 @@ A link looks like `https://your-server/join#w=…&i=…` and works once. The par
 
 Rukoo for desktop and Android doesn't open these links itself yet, so a link opens in a browser. What it shows there depends on the server:
 
-- Where the account server runs behind Rukoo's website (`website/`), as rukoo.io does, the website sends the link on to Chat in the browser at `/app/`. The person creates a Rukoo account or signs in there, and the Join dialog opens with the link filled in, without installing anything. [In a browser](account.md#in-a-browser) says what the browser keeps. On rukoo.io this starts once team chat is on there.
+- Where the account server runs behind Rukoo's website (`website/`), as rukoo.io does, the website sends the link on to Chat in the browser at `/app/`. The person creates a Rukoo account or signs in there, and the Join dialog opens with the link filled in, without installing anything. [In a browser](account.md#in-a-browser) says what the browser keeps. The website does this only when the account server marks its invitation page with `X-Rukoo-Workspace-Invite`, so an account server deployed before that header keeps showing its own page.
 - A server you run from `server/` alone, without the website in front of it, shows a page that explains what to do: install Rukoo, then paste the page's address into Chat's Join dialog.
 
 **A colleague without a Rukoo account** can use the link to sign up. On a server where new accounts need an invite code, an invitation link works as the code: paste it into the invite code field when you create the account. Each link makes one account. After the sign-up, Settings closes and Chat opens the Join dialog with the link filled in. If you restart Rukoo in between, paste the link again. The server's operator can turn this off, and then only their own invite codes work.
@@ -105,7 +105,7 @@ Attach files with the paperclip under the text, by dropping them on the conversa
 
 - A message holds up to 10 files of at most 25 MiB each, unless the server sets another limit.
 - Images show in the message: one at its own shape, two to four in a grid, more with "+n" on the fourth. Clicking one opens it large, with **Open** and **Save**; the arrow keys step through the message's images and `Esc` closes it.
-- Other files show as a card with their kind, name and size. Clicking the card opens the file in its app; the download button saves it where you choose.
+- Other files show as a card with their kind, name and size. Clicking the card opens the file in its app; the download button saves it where you choose. In the browser, **Open** shows an image in a new tab and downloads any other file, and saving is the browser's download ([In a browser](account.md#in-a-browser)).
 - A draft keeps its uploaded files for an hour. A draft opened later than that says how many files you need to attach again.
 
 Files need a server that stores them. Without that, the paperclip doesn't show and dropped or pasted files are left alone. The server at rukoo.io doesn't store files yet.
