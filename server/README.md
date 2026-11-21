@@ -76,9 +76,9 @@ The `vars` block holds the server's settings:
 | `PRIVACY_URL` | Your own privacy statement. Leave it empty to use the one the server shows at `/privacy` (step 8). |
 | `JURISDICTION` | See step 3. |
 | `INVITE_USES` | How many accounts one invite code may make: `1` by default, `0` for any number. A used-up code is refused like a wrong one. Needs the `REGISTRY` binding, which keeps the count. |
-| `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)). `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`. |
+| `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)); `GET /v1/info` reports it as `"invite"`, so older apps keep their invite code field. `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`. |
 | `MAIL_FROM` | The sender of the codes the server mails, such as `"Rukoo <account@example.com>"`, on a domain your Resend account has verified. Empty sends no mail ([Codes by email](#codes-by-email)). |
-| `EMAIL_CODES_PER_HOUR` | The most codes of one purpose (sign-up or unlock) the whole server mails in an hour: `100` by default. |
+| `EMAIL_CODES_PER_HOUR` | The most emails with codes of one purpose (sign-up or unlock) the whole server sends in an hour: `100` by default. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
 | `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address that reads its mail, so for a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
@@ -159,10 +159,10 @@ To make your server the default in your own build of Rukoo, set `rukoo.accountSe
 
 ## Codes by email
 
-The server can mail a six-digit code to an address, through [Resend](https://resend.com). It does so for two things:
+The server can mail codes to an address, through [Resend](https://resend.com): six digits for the device that asked, and a long code that works on any device for a day. It does so for two things:
 
 - With `SIGNUPS` on `"verified"`, a new account needs a code sent to its address, unless it comes with an invite code or a workspace invitation. This is what lets a server on the internet take sign-ups from anyone: invented addresses can't fill `MAX_ACCOUNTS`.
-- On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock an account's sign-ins for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
+- On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock an account's sign-ins for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it, and they can't keep the owner from it either: every email holds a long code the owner can use, also an email the stranger asked for. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
 
 To turn it on, verify a sending domain in Resend, set `MAIL_FROM` to an address on it, and store the API key:
 
@@ -172,7 +172,9 @@ npx wrangler secret put RESEND_API_KEY
 
 The key needs sending access to that domain only. Until both are set, the server sends no mail, `GET /v1/info` lists no `email-codes`, and `"verified"` works as `"invite"`.
 
-What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code a minute, five an hour and ten a day, and the server at most `EMAIL_CODES_PER_HOUR` of each purpose in an hour. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them when the code expires and a day after an address's last code. Resend sees each address and the mail it sends; `/privacy` names it while mail is on, in English and Dutch. Someone who keeps asking for codes for one address can use up its ten a day, and the owner gets those mails. The account lock itself still ends after 15 minutes.
+What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code of each purpose a minute, five an hour and ten a day, and the server sends at most `EMAIL_CODES_PER_HOUR` emails of each purpose in an hour, counting only emails that go out. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them a day after each request. Resend sees each address and the mail it sends, and keeps it for 30 days; `/privacy` says so while mail is on, in English and Dutch.
+
+What a stranger can still do: ask for an address's ten codes of the day, which sends the owner ten emails, or use up an hour's emails of the whole server with requests for many addresses that have an account. In the first case the owner can use the long code from any of those emails. In the second, codes wait for the next hour.
 
 The tests answer Resend themselves (`test/fixtures/fake-resend.js`) and never send mail. A `RESEND_API_KEY` in `.dev.vars` does send real mail from `npm run dev`.
 

@@ -1,8 +1,8 @@
 // Resend in memory, for the tests of codes by email (test/email-codes.test.js). installFakeResend() points the
 // runtime's fetch at it for requests to api.resend.com and lets every other request through, so no test reaches the
 // real Resend. The Worker, the Durable Objects and the tests share one isolate, so the server's own requests reach it.
-// It checks the key and the fields Resend needs, keeps every message it took, and answers with status when that is
-// set to an error.
+// It checks the key and the fields Resend needs and keeps every message it took. status set to an error fails every
+// request; failNext() fails only the next ones, the way Resend answers its own limits.
 
 export const RESEND_ORIGIN = 'https://api.resend.com';
 
@@ -11,8 +11,20 @@ export const MAIL_VARS = { RESEND_API_KEY: 're_test_not_a_real_key', MAIL_FROM: 
 
 export class FakeResend {
   constructor() {
+    this.reset();
+  }
+
+  reset() {
     this.sent = [];
     this.status = 200;
+    this.queue = [];
+    // The Idempotency-Key of every request, also the ones that failed.
+    this.keys = [];
+  }
+
+  // The next answers, in order: { status, name, retryAfter } each.
+  failNext(...answers) {
+    this.queue.push(...answers);
   }
 
   async handle(request) {
@@ -22,6 +34,7 @@ export class FakeResend {
     if (request.headers.get('authorization') !== `Bearer ${MAIL_VARS.RESEND_API_KEY}`) {
       return Response.json({ statusCode: 401, name: 'missing_api_key', message: 'Missing API key' }, { status: 401 });
     }
+    this.keys.push(request.headers.get('idempotency-key'));
     const body = await request.json();
     const complete =
       typeof body.from === 'string' &&
@@ -31,9 +44,14 @@ export class FakeResend {
       typeof body.text === 'string' &&
       typeof body.html === 'string';
     if (!complete) return Response.json({ statusCode: 422, name: 'validation_error', message: 'Invalid body' }, { status: 422 });
-    if (this.status !== 200) {
+    const failure = this.queue.shift() ?? (this.status !== 200 ? { status: this.status, name: 'application_error' } : null);
+    if (failure) {
+      const headers = failure.retryAfter === undefined ? {} : { 'retry-after': String(failure.retryAfter) };
       // Resend's errors can name the recipient; the server must not log this message.
-      return Response.json({ statusCode: this.status, name: 'application_error', message: `Could not send to ${body.to[0]}` }, { status: this.status });
+      return Response.json(
+        { statusCode: failure.status, name: failure.name, message: `Could not send to ${body.to[0]}` },
+        { status: failure.status, headers }
+      );
     }
     this.sent.push(body);
     return Response.json({ id: crypto.randomUUID() });
@@ -45,8 +63,12 @@ export class FakeResend {
 
   // The six digits in the last message to an address, or null.
   code(address) {
-    const last = this.to(address).at(-1);
-    return last?.text.match(/^\d{6}$/m)?.[0] ?? null;
+    return this.to(address).at(-1)?.text.match(/^\d{6}$/m)?.[0] ?? null;
+  }
+
+  // The long code in the last message to an address, or null.
+  token(address) {
+    return this.to(address).at(-1)?.text.match(/^[A-Za-z0-9_-]{43}$/m)?.[0] ?? null;
   }
 }
 

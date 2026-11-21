@@ -10,7 +10,7 @@
 
 import pkg from '../package.json' with { type: 'json' };
 import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { codePurposes, codesInfo, emailCodeField, requestCode, signupCode, unlocked, useCode } from './codes.js';
+import { codePurposes, codesInfo, emailCodeField, requestCode, settleCode, signupCode, unlocked } from './codes.js';
 import {
   ACCOUNT_NAME,
   accountName,
@@ -237,9 +237,19 @@ async function signup(request, env) {
     recoveryWrappedKey: input.sealed(body.recoveryWrappedKey, 'recoveryWrappedKey'),
     device: input.device(body.device)
   };
-  // With neither an invite code nor an invitation, a verified server needs a code sent to the address (codes.js). It
-  // is used up once the account exists, and stays for another try when the sign-up fails.
-  const challenge = mode === 'verified' && !invite ? await signupCode(env, fields.email, body.emailCode) : null;
+  // With neither an invite code nor an invitation, a verified server needs a code sent to the address (codes.js),
+  // held for this sign-up alone. It is used up once the account exists, and given back when the sign-up fails.
+  const code = mode === 'verified' && !invite ? await signupCode(env, fields.email, body.emailCode) : null;
+  let result;
+  try {
+    result = await makeAccount(env, fields, invite, uses, workspaceInvite);
+  } finally {
+    if (code) await settleCode(env, code, result?.status === 201 ? 'used' : 'keep');
+  }
+  return send(result);
+}
+
+async function makeAccount(env, fields, invite, uses, workspaceInvite) {
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryObject(env);
@@ -254,8 +264,7 @@ async function signup(request, env) {
   } finally {
     if (registry && (!result || result.status !== 201)) await registry.release(invite);
   }
-  if (challenge && result.status === 201) await useCode(env, challenge);
-  return send(result);
+  return result;
 }
 
 async function login(request, env) {
@@ -414,7 +423,9 @@ function limits(env) {
 }
 
 // workspace and the workspaces-v1 feature are there only while the operator has team chat turned on, and emailCodes
-// and the email-codes feature only while the server sends codes by email.
+// and the email-codes feature only while the server sends codes by email. A verified server says invite in signups:
+// apps from before emailed codes then still show the invite code field, which works there too, and newer ones find
+// signup in emailCodes.purposes.
 async function info(env, url) {
   const { operator, jurisdiction: where, signups: mode } = config(env, url);
   const workspace = await workspaceInfo(env, url);
@@ -424,7 +435,7 @@ async function info(env, url) {
     version: pkg.version,
     operator,
     hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction: where },
-    signups: mode,
+    signups: mode === 'verified' ? 'invite' : mode,
     limits: limits(env),
     features: [...FEATURES, ...(workspace ? ['workspaces-v1'] : []), ...(emailCodes ? ['email-codes'] : [])],
     ...(emailCodes ? { emailCodes } : {}),

@@ -1,15 +1,17 @@
-// Codes sent by email (PROTOCOL.md, POST /v1/email-code): six digits that show someone reads the mail of an address.
-// With SIGNUPS on verified, a new account without an invite code needs one (purpose signup). On every server that
-// sends mail, one also lets the owner sign in or recover while other people's failed attempts lock the account
-// (purpose unlock).
+// Codes sent by email (PROTOCOL.md, POST /v1/email-code): proof that someone reads the mail of an address. With
+// SIGNUPS on verified, a new account without an invite code needs one (purpose signup). On every server that sends
+// mail, one also lets the owner sign in or recover while other people's failed attempts lock the account (purpose
+// unlock).
 //
-// Asking for a code answers with a challenge: 32 random bytes that only the asking device knows. A code counts only
-// together with its challenge, and wrong tries count against that challenge alone, so nobody can use up the tries of
-// a code someone else asked for.
+// Each email holds two codes. The six digits are for the device that asked: they count only together with the
+// challenge, 32 random bytes that only that device got back, and wrong tries count against that challenge alone, so
+// nobody can use up the tries of a code someone else asked for. The long code, 32 random bytes, works on its own on
+// any device for a day. It can't be guessed, so it needs no limit on tries, and it is what lets the owner of the
+// address get in with any email they got, also one a stranger asked for to use up the address's codes.
 //
-// The registry keeps each code as three hashes: of the challenge, of the address, and of the code bound to the
-// challenge, the address and the purpose. The last two are made with PEPPER, so a copy of the registry gives away
-// neither the address nor, by trying all million codes, the code.
+// The registry keeps each code as hashes: of the challenge, of the long code, of the address and of the six digits
+// bound to the challenge, the address and the purpose. The last two are made with PEPPER, so a copy of the registry
+// gives away neither the address nor, by trying all million, the six digits.
 //
 // Asking gets the same answer, just as fast, whether or not the address has an account: the mail goes out after the
 // answer. A sign-up code asked for an address with an account becomes a note saying so, and an unlock code for an
@@ -26,12 +28,14 @@ import { language } from './privacy.js';
 
 export const PURPOSES = ['signup', 'unlock'];
 export const DIGITS = 6;
-// How long a code works, and how many wrong tries one challenge gets.
+// How long the six digits work, how long the long code works, and how many wrong tries each code gets: of the six
+// digits, and of the password or recovery key sent with a right code.
 export const CODE_TTL = 10 * 60 * 1000;
+export const TOKEN_TTL = 24 * 60 * 60 * 1000;
 export const ATTEMPTS = 5;
-// To one address, whatever the purpose: at least a minute apart, at most five in an hour and ten in a day.
-export const CODE_RULES = { ttl: CODE_TTL, gap: 60 * 1000, hourly: 5, daily: 10 };
-// The most codes of one purpose the whole server hands out in an hour, unless EMAIL_CODES_PER_HOUR says otherwise.
+// To one address, for each purpose: at least a minute apart, at most five in an hour and ten in a day.
+export const CODE_RULES = { ttl: CODE_TTL, tokenTtl: TOKEN_TTL, gap: 60 * 1000, hourly: 5, daily: 10 };
+// The most emails of one purpose the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise.
 const PER_HOUR = 100;
 
 // What this server sends codes for: nothing without mail and the registry, unlock wherever it sends mail, and signup
@@ -44,7 +48,7 @@ export function codePurposes(env) {
 // emailCodes in GET /v1/info, or null where the server sends no codes.
 export function codesInfo(env) {
   const purposes = codePurposes(env);
-  return purposes.length > 0 ? { purposes, digits: DIGITS, expiresIn: CODE_TTL / 1000 } : null;
+  return purposes.length > 0 ? { purposes, digits: DIGITS, expiresIn: CODE_TTL / 1000, tokenExpiresIn: TOKEN_TTL / 1000 } : null;
 }
 
 // POST /v1/email-code. max: MAX_ACCOUNTS, so a full server sends no sign-up codes.
@@ -59,42 +63,52 @@ export async function requestCode(request, env, ctx, max) {
   if (!purposes.includes(purpose)) throw invalid('This server does not use codes to make accounts.', 'purpose');
   const lang = language(body.lang, request.headers.get('accept-language'));
   const challenge = toBase64url(randomBytes(32));
+  const token = toBase64url(randomBytes(32));
   const code = newCode();
-  const issued = await registryObject(env).issueCode(await hashes(env, email, purpose, challenge, code), {
-    ...CODE_RULES,
-    perHour: positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR),
-    max: purpose === 'signup' ? max : 0
-  });
+  const issued = await registryObject(env).issueCode(
+    { ...(await codeHashes(env, email, purpose, challenge, code)), token: await tokenHash(token) },
+    { ...CODE_RULES, max: purpose === 'signup' ? max : 0 }
+  );
   if (issued.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
   if (issued.result !== 'ok') {
-    const message =
-      issued.result === 'busy'
-        ? 'This server has sent too many codes this hour. Try again later.'
-        : 'This address got too many codes. Try again later.';
-    throw new HttpError(429, 'rate_limited', message, { 'retry-after': String(issued.retryAfter) });
+    throw new HttpError(429, 'rate_limited', 'This address got too many codes. Try again later.', {
+      'retry-after': String(issued.retryAfter)
+    });
   }
   const host = new URL(request.url).host;
   ctx.waitUntil(
-    deliver(env, { email, purpose, code, lang, host }).catch((err) => console.error('Sending a code failed:', err?.stack || err))
+    deliver(env, { email, purpose, code, token, lang, host }).catch((err) =>
+      console.error('Sending a code failed:', err?.stack || err)
+    )
   );
   return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
 }
 
-// Whether the address has an account decides what goes out, so this runs after the answer.
-async function deliver(env, { email, purpose, code, lang, host }) {
+// Whether the address has an account decides what goes out, so this runs after the answer. Only an email that goes
+// out counts toward the hourly limit.
+async function deliver(env, { email, purpose, code, token, lang, host }) {
   const exists = await accountObject(env, await accountName(env, email)).exists();
   const kind = purpose === 'signup' ? (exists ? 'exists' : 'signup') : exists ? 'unlock' : null;
   if (!kind) return;
+  if (!(await registryObject(env).chargeMail(purpose, positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR)))) {
+    console.error(`An email with a code was not sent: this hour's ${purpose} emails are used up (EMAIL_CODES_PER_HOUR).`);
+    return;
+  }
   const operator = typeof env.OPERATOR_NAME === 'string' && env.OPERATOR_NAME.trim() ? env.OPERATOR_NAME.trim() : null;
-  const mail = codeMail(kind, { code: kind === 'exists' ? null : code, host, operator, lang });
-  await sendMail(env, { to: email, ...mail });
+  const codes = kind === 'exists' ? {} : { code, token };
+  await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
 }
 
-// emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code }. Spaces and dashes in
-// the code are left out, as people type them.
+// emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code } for the six digits or
+// { token } for the long code. Spaces and dashes in the six digits are left out, as people type them.
 export function emailCodeField(value) {
   if (value === undefined || value === null) return null;
-  if (!input.isObjectValue(value)) throw invalid('emailCode must be an object with a challenge and a code.', 'emailCode');
+  if (!input.isObjectValue(value)) throw invalid('emailCode must be an object with a challenge and a code, or a token.', 'emailCode');
+  if (value.token !== undefined) {
+    const bytes = fromBase64url(typeof value.token === 'string' ? value.token.trim() : '');
+    if (!bytes || bytes.length !== 32) throw invalid('emailCode.token must be 32 bytes in base64url.', 'emailCode');
+    return { token: value.token.trim() };
+  }
   const challenge = typeof value.challenge === 'string' ? value.challenge : '';
   const bytes = fromBase64url(challenge);
   if (!bytes || bytes.length !== 32) throw invalid('emailCode.challenge must be 32 bytes in base64url.', 'emailCode');
@@ -103,43 +117,52 @@ export function emailCodeField(value) {
   return { challenge, code };
 }
 
-// Checks a code for an address and purpose, and returns its challenge's hash for useCode and failCode. A wrong code
-// is 403 code_wrong, with the tries its challenge has left; one that expired, was used or has no tries left is 403
-// code_expired.
-export async function checkCode(env, email, purpose, emailCode) {
+// Claims a code for an address and purpose for this one request, and returns its id for settleCode. Six digits that
+// don't match are 403 code_wrong, with the tries their challenge has left. A code that is unknown, expired, used or
+// out of tries is 403 code_expired, and one another request is using right now 409 code_in_use.
+export async function claimCode(env, email, purpose, emailCode) {
   const registry = registryObject(env);
   if (!registry) throw expired();
-  const entry = await hashes(env, email, purpose, emailCode.challenge, emailCode.code);
-  const checked = await registry.checkCode(entry, ATTEMPTS);
-  if (checked.result === 'wrong') {
-    throw new HttpError(403, 'code_wrong', 'The code is wrong.', {}, { attemptsLeft: checked.attemptsLeft });
+  const entry = emailCode.token
+    ? { token: await tokenHash(emailCode.token), address: await addressHash(env, email), purpose }
+    : await codeHashes(env, email, purpose, emailCode.challenge, emailCode.code);
+  const claimed = await registry.claimCode(entry, ATTEMPTS);
+  if (claimed.result === 'ok') return claimed.id;
+  if (claimed.result === 'wrong') {
+    throw new HttpError(403, 'code_wrong', 'The code is wrong.', {}, { attemptsLeft: claimed.attemptsLeft });
   }
-  if (checked.result !== 'ok') throw expired();
-  return entry.challenge;
+  if (claimed.result === 'busy') {
+    throw new HttpError(409, 'code_in_use', 'This code is being used by another request. Try again in a moment.');
+  }
+  throw expired();
 }
 
-// For POST /v1/signup on a verified server, without an invite code or invitation that works.
+// outcome: 'used', 'failed' (a wrong password or recovery key with the code) or 'keep'.
+export async function settleCode(env, id, outcome) {
+  await registryObject(env)?.settleCode(id, outcome, ATTEMPTS);
+}
+
+// For POST /v1/signup on a verified server, without an invite code or invitation that works: the claimed code's id.
 export async function signupCode(env, email, value) {
   const emailCode = emailCodeField(value);
   if (!emailCode) {
     throw new HttpError(403, 'code_required', 'This server checks the email address first. Ask for a code and sign up with it.');
   }
-  return checkCode(env, email, 'signup', emailCode);
+  return claimCode(env, email, 'signup', emailCode);
 }
 
-export async function useCode(env, challenge) {
-  await registryObject(env)?.useCode(challenge);
-}
-
-// Runs a sign-in or recovery past the account's lock once emailCode checks out for unlock. run gets the option the
-// account object takes for that. A wrong password or recovery key (401) costs the challenge a try, as a wrong code
-// does. Success uses the code up, unless keep: recover/start leaves it for recover/finish.
+// Runs a sign-in or recovery past the account's lock with a code for unlock, which it holds for the whole call. run
+// gets the option the account object takes for that. A wrong password or recovery key (401) costs the code a try.
+// Success uses the code up, unless keep: recover/start leaves it for recover/finish.
 export async function unlocked(env, email, emailCode, run, keep = false) {
-  const challenge = await checkCode(env, email, 'unlock', emailCode);
-  const result = await run({ unlocked: true });
-  const registry = registryObject(env);
-  if (result.status === 401) await registry.failCode(challenge, ATTEMPTS);
-  else if (result.status === 200 && !keep) await registry.useCode(challenge);
+  const id = await claimCode(env, email, 'unlock', emailCode);
+  let result = null;
+  try {
+    result = await run({ unlocked: true });
+  } finally {
+    const outcome = result?.status === 401 ? 'failed' : result?.status === 200 && !keep ? 'used' : 'keep';
+    await settleCode(env, id, outcome);
+  }
   return result;
 }
 
@@ -157,10 +180,18 @@ function newCode() {
   }
 }
 
-async function hashes(env, email, purpose, challenge, code) {
+async function addressHash(env, email) {
+  return toBase64url(await hmac(env.PEPPER, `email-code address\n${email}`));
+}
+
+async function tokenHash(token) {
+  return toBase64url(await sha256(utf8(token)));
+}
+
+async function codeHashes(env, email, purpose, challenge, code) {
   return {
     challenge: toBase64url(await sha256(utf8(challenge))),
-    address: toBase64url(await hmac(env.PEPPER, `email-code address\n${email}`)),
+    address: await addressHash(env, email),
     purpose,
     code: toBase64url(await hmac(env.PEPPER, `email-code\n${purpose}\n${challenge}\n${email}\n${code}`))
   };

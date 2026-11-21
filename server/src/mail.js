@@ -4,7 +4,11 @@
 // no codes.
 
 const RESEND = 'https://api.resend.com/emails';
-const TIMEOUT = 10000;
+// Codes go out after the answer, in the time the platform gives a request's waitUntil (30 seconds): three tries of at
+// most 6 seconds each, with at most 3 seconds between them.
+const TIMEOUT = 6000;
+const TRIES = 3;
+const MAX_WAIT = 3000;
 
 function text(value) {
   const s = typeof value === 'string' ? value.trim() : '';
@@ -18,33 +22,53 @@ export function mailer(env) {
   return key && from ? { key, from } : null;
 }
 
-// Sends one message and says whether Resend took it. A failure is logged with Resend's status and error name only:
-// never the address, the text or the key.
+// Sends one message and says whether Resend took it. A failure that may pass, such as Resend's limit of requests per
+// second or a server error, is tried again, under one idempotency key so a message never goes out twice. A failure
+// is logged with Resend's status and error name only: never the address, the text or the key.
 export async function sendMail(env, { to, subject, text: plain, html }) {
   const mail = mailer(env);
   if (!mail) return false;
+  const body = JSON.stringify({ from: mail.from, to: [to], subject, text: plain, html });
+  const idempotency = `email-code/${crypto.randomUUID()}`;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await post(mail.key, body, idempotency);
+    if (outcome.ok) return true;
+    if (!outcome.again || attempt >= TRIES) {
+      console.error('Sending mail failed: Resend answered', outcome.status ?? 'nothing', outcome.name ?? '');
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, outcome.wait ?? attempt * 1000));
+  }
+}
+
+// One request to Resend: { ok } or { ok: false, again, wait, status, name }.
+async function post(key, body, idempotency) {
   let res;
   try {
     res = await fetch(RESEND, {
       method: 'POST',
       signal: AbortSignal.timeout(TIMEOUT),
-      headers: { authorization: `Bearer ${mail.key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: mail.from, to: [to], subject, text: plain, html })
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'idempotency-key': idempotency },
+      body
     });
   } catch (err) {
-    console.error('Sending mail failed: Resend could not be reached.', err?.name);
-    return false;
+    return { ok: false, again: true, name: err?.name };
   }
   if (res.ok) {
     await res.body?.cancel();
-    return true;
+    return { ok: true };
   }
   let name = null;
   try {
-    name = (await res.json())?.name ?? null;
+    const value = (await res.json())?.name;
+    name = typeof value === 'string' ? value.slice(0, 60) : null;
   } catch {
     // Not JSON; the status says enough.
   }
-  console.error('Sending mail failed: Resend answered', res.status, typeof name === 'string' ? name.slice(0, 60) : '');
-  return false;
+  // A daily or monthly quota doesn't pass in seconds. Resend's own limit per second does, and says when.
+  const quota = name === 'daily_quota_exceeded' || name === 'monthly_quota_exceeded';
+  const again = (res.status === 429 && !quota) || res.status >= 500 || (res.status === 409 && name === 'concurrent_idempotent_requests');
+  const after = Number(res.headers.get('retry-after'));
+  const wait = res.headers.has('retry-after') && Number.isFinite(after) && after >= 0 ? Math.min(after * 1000, MAX_WAIT) : undefined;
+  return { ok: false, again, wait, status: res.status, name };
 }

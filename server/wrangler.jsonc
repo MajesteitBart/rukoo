@@ -37,14 +37,14 @@
     "JURISDICTION": "eu",
     // "verified" (anyone who proves their address with a code sent there, or brings an invite code), "invite" (codes
     // from the INVITE_CODES secret), "open" (anyone, unchecked) or "closed". "verified" needs mail: without
-    // RESEND_API_KEY and MAIL_FROM it works as "invite".
+    // RESEND_API_KEY and MAIL_FROM it works as "invite". GET /v1/info reports it as "invite" for older apps.
     "SIGNUPS": "invite",
     // How many accounts each invite code may make; 0 for any number.
     "INVITE_USES": 1,
     // Codes by email (README.md, "Codes by email"), for "verified" sign-ups and for signing in while an account is
     // locked: the sender, such as "Rukoo <account@example.com>", on a domain verified in Resend. The Resend API key is
-    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most codes
-    // of one purpose (sign-up or unlock) the whole server sends in an hour.
+    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most emails
+    // with codes of one purpose (sign-up or unlock) the whole server sends in an hour.
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
     // Per account: live records, and their total size in bytes.
