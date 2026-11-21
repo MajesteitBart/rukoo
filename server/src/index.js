@@ -491,16 +491,20 @@ const ROOT_FILE = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.
 // The pages' own script, icons and fonts at the root.
 const PAGE_ASSET = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.png|assets\/fonts\/[^/]+)$/;
 
+// A page's JSON reads and its llms.txt (meet.js), which answer for themselves at BOOKING_ORIGIN, a 404 in JSON included.
+const BOOKING_READ = /^\/(?:llms\.txt|api|api\/slots|api\/bookings\/[^/]+)$/;
+
 // Whether a read on a former root is an address of the booking pages, which moved to BOOKING_ORIGIN: /mcp, /llms.txt,
-// a page's JSON routes, llms.txt and calendar files (they answer their own 404 there, in JSON), and a page people open,
-// /<handle> or /<handle>/<type>, while that handle has a page or moved to another. A handle that can't be one, or that
-// has no page, isn't.
+// a handle's JSON reads and llms.txt, and a page people open, /<handle> or /<handle>/<type>, while that handle has a page
+// or moved to another. A handle that can't be one, one without a page, and any other path under a handle aren't. The
+// lookup is the one a read of the page at BOOKING_ORIGIN makes anyway, without its open times.
 async function movedBookingPath(env, method, path) {
   if (path === '/mcp' || path === '/llms.txt') return true;
   const match = path.match(/^\/([^/]+)(\/.*)?$/);
   if (!match || input.handleCheck(match[1], blockedHandles(env), true)) return false;
   const rest = match[2] ?? '';
-  if (!isPage(method, rest)) return true;
+  if (BOOKING_READ.test(rest)) return true;
+  if (!isPage(method, rest)) return false;
   const view = await bookingObject(env, match[1]).view(bookingTimes(env));
   return view.state !== 'none';
 }

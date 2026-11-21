@@ -444,6 +444,9 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
       ['/login', MOVED],
       ['/download/voice', MOVED],
       ['/wp-login.php', MOVED],
+      ['/nobody-has-this/random/deeper', MOVED],
+      [`/${handle}/random/deeper`, MOVED],
+      [`/${handle}/`, MOVED],
       [`/${handle}`, blocked]
     ];
     for (const [path, vars] of cases) {
@@ -468,8 +471,10 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
     // The page itself still redirects, and so do the JSON routes of a handle without a page: they answer for
     // themselves at BOOKING_ORIGIN, in JSON.
     expect((await was('GET', `/${handle}`)).headers.get('location')).toBe(`${BOOKING}/${handle}`);
-    const api = await was('GET', '/nobody-has-this/api/slots');
-    expect([api.status, api.headers.get('location')]).toEqual([301, `${BOOKING}/nobody-has-this/api/slots`]);
+    for (const rest of ['/api', '/api/slots', '/api/bookings/Rf63vMqqWdS0MICDAHKmrw', '/llms.txt']) {
+      const api = await was('GET', `/nobody-has-this${rest}`);
+      expect([api.status, api.headers.get('location')], rest).toEqual([301, `${BOOKING}/nobody-has-this${rest}`]);
+    }
     // The booking address answers its own paths, as before.
     const there = await now('GET', '/nobody-has-this');
     expect(there.status).toBe(404);
