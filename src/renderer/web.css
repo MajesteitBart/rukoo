@@ -574,9 +574,13 @@ body.web-phone .web-apps-link {
 body.web-phone .web-apps-links {
   margin-top: 0;
 }
-body.web-phone .web-apps-intro,
 body.web-phone .web-apps-desc {
   font-size: 13px;
+}
+/* The numbers show the order and each step says what its app is for, so a phone, where the notice pushes the list
+   down, leaves out the sentence under the title. */
+body.web-phone .web-apps-intro {
+  display: none;
 }
 /* While a phone's on-screen keyboard is up for the composer, the conversation needs the room. */
 body.web-phone:has(.workspace .ch-input:focus) .web-apps-slot {
