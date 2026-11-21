@@ -419,13 +419,13 @@ html[data-platform='web'] #app > .web-shell {
 .web-apps-slot[hidden] {
   display: none;
 }
-/* At most a little under half the window's height: on a short screen, such as a phone turned sideways, the steps
-   scroll under the title and its close button, and chat keeps the rest. */
+/* At most a little under half the window's height, and never so tall that chat's header, a few lines and the composer
+   lose their room (about 260px): on a short window the steps scroll under the title and its close button. */
 .web-apps {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 45dvh;
+  max-height: min(45dvh, calc(100dvh - 260px));
   padding: 12px 8px 8px 16px;
   border-radius: 10px;
   background: var(--panel);
@@ -570,11 +570,15 @@ html[data-platform='web'] #app > .web-shell {
 /* A phone: 44px targets, without the notice growing by as much: a link's extra height reaches 10px into the line
    above and below it. Links that wrap get 20px between their lines, so no two targets overlap, and the steps keep 10px
    at their end, so the last link's target isn't cut off where they scroll. */
+/* Under it, a phone's list keeps the workspace, New message, the Channels heading and its first row whole (about
+   300px with the title bar). */
 body.web-phone .web-apps {
+  max-height: min(45dvh, calc(100dvh - 300px));
   padding: 12px 4px 2px 14px;
 }
+/* 10px for the last link's target and 3px more for its focus ring. */
 body.web-phone .web-apps-steps {
-  padding-bottom: 10px;
+  padding-bottom: 13px;
 }
 body.web-phone .web-apps-close {
   width: 44px;
@@ -597,9 +601,10 @@ body.web-phone .web-apps-desc {
 body.web-phone .web-apps-intro {
   display: none;
 }
-/* A screen under 480px tall, such as a phone turned sideways, has no room for the notice and chat together: it waits
-   until the window is taller again. */
-@media (max-height: 479.98px) {
+/* A narrow window under 480px tall, such as a phone turned sideways, has no room for the notice and chat together,
+   since there its steps stand one under the other: it waits until the window is taller again. A wide window, where
+   they stand side by side, keeps it down to 400px. */
+@media (max-height: 479.98px) and (max-width: 900px), (max-height: 399.98px) {
   .web-apps-slot {
     display: none;
   }

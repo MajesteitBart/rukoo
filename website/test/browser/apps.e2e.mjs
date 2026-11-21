@@ -202,6 +202,64 @@ test('b2: on a narrow phone the links stay apart; a short screen keeps chat whol
   }
 });
 
+test('b3: at 480px tall the list keeps its first row, a wide short window keeps the notice whole, and Enter on close with a thread open goes to the thread', async () => {
+  // A phone 480px tall: the notice shows, and the first channel can be tapped as it is.
+  for (const [width, height] of [
+    [320, 480],
+    [667, 480]
+  ]) {
+    const label = `apps-${width}x${height}`;
+    const view = await open({ width, height, phone: true });
+    const p = view.page;
+    await signIn(p, await member());
+    await expect(notice(p)).toBeVisible();
+    await apart(p, label);
+    const rowEl = p.locator('.sidebar .ch-row', { hasText: 'general' }).first();
+    const hit = await rowEl.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { whole: r.top >= 0 && r.bottom <= innerHeight, mine: Boolean(at && (at === el || el.contains(at))) };
+    });
+    assert.ok(hit.whole && hit.mine, `${label}: the first channel shows whole and takes a tap (${JSON.stringify(hit)})`);
+    await shot(p, label);
+    await rowEl.tap();
+    await expect(p.locator('.ch-compose .ch-input')).toBeInViewport();
+    clean(view);
+    await view.context.close();
+  }
+  // A wide window 450px tall: the steps side by side fit without scrolling, and chat keeps its composer.
+  {
+    const view = await open({ width: 1280, height: 450 });
+    const p = view.page;
+    await signIn(p, await member());
+    const box = notice(p);
+    await expect(box).toBeVisible();
+    assert.ok(await box.locator('.web-apps-steps').evaluate((el) => el.scrollHeight <= el.clientHeight + 1), 'the steps fit without scrolling');
+    for (const a of await box.locator('a').all()) await expect(a).toBeInViewport();
+    await expect(p.locator('.ch-compose .ch-input')).toBeInViewport();
+    await shot(p, 'apps-1280x450');
+    clean(view);
+    await view.context.close();
+  }
+  // A window where an open thread covers the conversation: Enter on close moves the keyboard to the thread's text, not
+  // to the covered composer.
+  {
+    const view = await open({ width: 900, height: 800 });
+    const p = view.page;
+    await signIn(p, await member());
+    const root = p.locator('.ch-log .ch-msg', { has: p.locator('.ch-text', { hasText: 'Morning all.' }) });
+    await root.hover();
+    await root.locator('[data-ch-tool="reply"]').click();
+    await expect(p.locator('.ch-thread:not([hidden])')).toBeVisible();
+    await notice(p).locator('[data-web-apps="dismiss"]').focus();
+    await p.keyboard.press('Enter');
+    await expect(notice(p)).toHaveCount(0);
+    assert.ok(await p.evaluate(() => Boolean(document.activeElement?.closest('.ch-thread-compose'))), 'the focus went to the thread composer');
+    clean(view);
+    await view.context.close();
+  }
+});
+
 test('c: a sign-out hides it until the next sign-in; closing it lasts in every tab, after a reload and a new sign-in', async () => {
   const view = await open({});
   const p = view.page;

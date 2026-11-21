@@ -461,6 +461,7 @@ let appsClosed = appsWereDismissed(appsStorage);
 let appsDrawn = null;
 
 function renderApps() {
+  syncTyping();
   const show = !appsClosed && !gateKind() && signedIn();
   if (show && (!appsDrawn || appsDrawn.language !== drawnLanguage)) {
     appsSlot.innerHTML = noticeHtml({ t, esc, icons, platform: platformOf(navigator) });
@@ -478,7 +479,8 @@ function closeApps(byKeyboard = false) {
   appsClosed = true;
   const had = appsSlot.contains(document.activeElement);
   renderApps();
-  const shown = (el) => el.offsetParent !== null;
+  // Not the conversation's composer under an open thread, which is inert then.
+  const shown = (el) => el.offsetParent !== null && !el.closest('[inert]');
   if (had && byKeyboard) ([...shell.querySelectorAll('.chat .ch-input')].find(shown) || [...shell.querySelectorAll('.sidebar button')].find(shown))?.focus({ preventScroll: true });
 }
 
@@ -493,9 +495,14 @@ window.addEventListener('storage', (e) => {
   if (e.key === DISMISSED_KEY && appsWereDismissed(appsStorage)) closeApps();
 });
 // While the composer has the focus, a phone's on-screen keyboard is up and the notice makes way (web.css). A class
-// rather than :has(), which Firefox only has from 121 on.
-document.addEventListener('focusin', (e) => document.body.classList.toggle('web-typing', Boolean(e.target.closest?.('.workspace .ch-input'))));
-document.addEventListener('focusout', (e) => document.body.classList.toggle('web-typing', Boolean(e.relatedTarget?.closest?.('.workspace .ch-input'))));
+// rather than :has(), which Firefox only has from 121 on. A focused composer that a redraw removes fires no focusout in
+// WebKit and Firefox, so every chat redraw (renderApps) checks the focus again.
+const typingIn = (el) => Boolean(el && el.closest && el.closest('.workspace .ch-input'));
+function syncTyping(el = document.activeElement) {
+  document.body.classList.toggle('web-typing', typingIn(el));
+}
+document.addEventListener('focusin', (e) => syncTyping(e.target));
+document.addEventListener('focusout', (e) => syncTyping(e.relatedTarget));
 
 // ---------- the sidebar ----------
 
