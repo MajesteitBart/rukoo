@@ -9,7 +9,7 @@ import { html, json, send } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
 import { escape, link } from './page.js';
-import { seatPrice, verifySignature } from './stripe.js';
+import { priceOut, seatPrice, stripe, verifySignature } from './stripe.js';
 
 const WORKSPACE_ID = /^w_[A-Za-z0-9_-]{22}$/;
 const EVENT_ID = /^evt_[A-Za-z0-9]{1,64}$/;
@@ -52,8 +52,9 @@ export async function billingRoute(request, env, url, rest, ask) {
     if (result.status !== 200) return send(result);
     // A subscription is shown at the price on its own item, which Stripe goes on charging when STRIPE_PRICE_ID names
     // another; a workspace without one at the price Checkout would sell it.
-    const price = result.body.billing.price ?? (await seatPrice(env));
-    return json(200, { billing: { ...result.body.billing, price } });
+    const { source, ...shown } = result.body.billing;
+    const price = shown.price ?? (source ? await subscriptionPrice(env, source) : null) ?? (await seatPrice(env));
+    return json(200, { billing: { ...shown, price } });
   }
   if (route === 'POST billing/checkout') {
     if (!billingOn(env)) throw notFound();
@@ -61,6 +62,21 @@ export async function billingRoute(request, env, url, rest, ask) {
   }
   if (route === 'POST billing/portal') return send(await ask('billing.portal', { origin: origin(env, url), locale: await locale(request) }));
   throw notFound();
+}
+
+// The price on a subscription's item ({ subscription, item }), read from Stripe for a workspace that hasn't read it
+// yet, as just after its Checkout page was paid; the workspace's alarm keeps it once it reads the subscription. null
+// when Stripe can't say, and the configured price is shown meanwhile, which only affects what is shown.
+async function subscriptionPrice(env, { subscription, item }) {
+  try {
+    const sub = await stripe(env).get(`/v1/subscriptions/${encodeURIComponent(subscription)}`);
+    const items = Array.isArray(sub?.items?.data) ? sub.items.data : [];
+    const found = items.find((i) => item && i?.id === item) ?? items.find((i) => i?.price?.id === String(env.STRIPE_PRICE_ID || '').trim()) ?? items[0];
+    return priceOut(found?.price);
+  } catch (err) {
+    console.error('Could not read the price of a workspace subscription from Stripe:', err?.message || err);
+    return null;
+  }
 }
 
 // The workspace a Stripe event is about, from the metadata the server put on the Checkout session and the

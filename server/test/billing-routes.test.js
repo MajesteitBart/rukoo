@@ -2,11 +2,12 @@
 // member, the customer portal, who may do what, and what /v1/info, /privacy and /billing say while billing is on and
 // off. Stripe is test/fixtures/fake-stripe.js.
 
+import { runInDurableObject } from 'cloudflare:test';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { forgetPrice } from '../src/stripe.js';
 import { FAKE_STRIPE, billing, billingRow, checkout, deliver, installFakeStripe, portal, settle, stripeFake, subscribe } from './billing-helpers.js';
 import { call } from './helpers.js';
-import { ON, api, guest, invite, newMember, newWorkspace } from './workspace-helpers.js';
+import { ON, api, guest, invite, newMember, newWorkspace, workspaceSql, workspaceStub } from './workspace-helpers.js';
 
 const now = () => Math.floor(Date.now() / 1000);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,6 +97,16 @@ describe('GET /billing', () => {
     expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'canceled', price: configured });
   });
 
+  it('asks Stripe for the price of a subscription the workspace hasn’t read yet', async () => {
+    const ws = await newWorkspace();
+    const { subscription } = await subscribe(ws);
+    const kept = stripeFake.subscriptions.get(subscription.id);
+    kept.items.data[0].price = { ...structuredClone(stripeFake.prices.get(FAKE_STRIPE.priceId)), id: 'price_usdSeat', unit_amount: 1500, currency: 'usd', tax_behavior: 'exclusive' };
+    // As right after the page's event, before the alarm read the subscription.
+    await workspaceSql(ws.id, 'UPDATE billing SET price = NULL');
+    expect((await billing(ws.person, ws.id)).body.billing.price).toEqual({ amount: 1500, currency: 'usd', interval: 'month', taxBehavior: 'exclusive' });
+  });
+
   it('answers 404 for someone outside the workspace', async () => {
     const { ws } = await team();
     const other = await newWorkspace('Other');
@@ -111,13 +122,14 @@ describe('POST /billing/checkout', () => {
     expect(res.status, res.text).toBe(200);
     expect(res.body.url).toMatch(/^https:\/\/checkout\.stripe-fake\.test\/c\/pay\/cs_test_/);
     // The seat price is checked first. The workspace gets a customer of its own, with nothing on it but its ID, and
-    // its open pages are looked for before a new one is made.
+    // its pages are looked for before a new one is made, which carries the ID of its attempt.
     const [price, customer, list, session] = stripeFake.log.slice(before);
     expect(price).toMatchObject({ method: 'GET', path: `/v1/prices/${FAKE_STRIPE.priceId}` });
     expect(customer).toMatchObject({ method: 'POST', path: '/v1/customers', params: { metadata: { workspace: ws.id } } });
     expect(Object.keys(customer.params)).toEqual(['metadata']);
     const row = await billingRow(ws.id);
-    expect(list).toMatchObject({ method: 'GET', path: '/v1/checkout/sessions', params: { customer: row.customer, status: 'open' } });
+    expect(list).toMatchObject({ method: 'GET', path: '/v1/checkout/sessions', params: { customer: row.customer, limit: '100' } });
+    expect(row.checkoutAttempt).toMatch(/^[A-Za-z0-9_-]{16}$/);
     expect(session.path).toBe('/v1/checkout/sessions');
     expect(session.params).toEqual({
       mode: 'subscription',
@@ -125,7 +137,7 @@ describe('POST /billing/checkout', () => {
       customer_update: { name: 'auto', address: 'auto' },
       client_reference_id: ws.id,
       line_items: [{ price: FAKE_STRIPE.priceId, quantity: '4', tax_rates: [FAKE_STRIPE.taxRate] }],
-      metadata: { workspace: ws.id },
+      metadata: { workspace: ws.id, attempt: row.checkoutAttempt },
       subscription_data: { metadata: { workspace: ws.id } },
       billing_address_collection: 'required',
       tax_id_collection: { enabled: 'true' },
@@ -175,6 +187,51 @@ describe('POST /billing/checkout', () => {
     expect(res.body.error).toBe('billing_active');
     expect(stripeFake.sessions.size).toBe(sessions);
     expect(await billingRow(ws.id)).toMatchObject({ subscription: done.subscription.id, checkoutId: null });
+  });
+
+  it('takes the subscription of a page Stripe made without saying so, from its event or before the next page', async () => {
+    for (const event of [true, false]) {
+      const ws = await newWorkspace();
+      // Stripe makes the page and answers 500; nobody should have its address, but it gets paid all the same.
+      stripeFake.fail(1, 'after', (method, path) => method === 'POST' && path === '/v1/checkout/sessions');
+      expect((await checkout(ws.person, ws.id)).status).toBe(502);
+      const stray = stripeFake.lastSession();
+      expect(stray.metadata).toMatchObject({ workspace: ws.id, attempt: expect.any(String) });
+      const done = stripeFake.completeCheckout(stray.id);
+      if (event) {
+        expect((await deliver(stripeFake.event('checkout.session.completed', done.session))).status).toBe(200);
+        expect(await billingRow(ws.id)).toMatchObject({ subscription: done.subscription.id, checkoutPending: 0 });
+      }
+      const sessions = stripeFake.sessions.size;
+      const again = await checkout(ws.person, ws.id);
+      expect(again.status, `event: ${event}`).toBe(409);
+      expect(again.body.error).toBe('billing_active');
+      expect(stripeFake.sessions.size).toBe(sessions);
+      // The attempt is settled, so the alarm has nothing more to ask Stripe about it.
+      expect(await billingRow(ws.id)).toMatchObject({ subscription: done.subscription.id, checkoutPending: 0, checkoutId: null });
+    }
+  });
+
+  it('leaves alone the pages another integration made for the workspace’s customer', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const { customer } = await billingRow(ws.id);
+    const params = {
+      mode: 'subscription',
+      customer,
+      line_items: [{ price: FAKE_STRIPE.priceId, quantity: '1' }],
+      metadata: {},
+      success_url: 'https://elsewhere.example/done',
+      cancel_url: 'https://elsewhere.example/cancel'
+    };
+    const open = await stripeFake.createSession(params).json();
+    const paid = await stripeFake.createSession(params).json();
+    stripeFake.completeCheckout(paid.id);
+    // A new number of seats, so Checkout makes another page and expires the workspace's own.
+    await newMember(ws, 'Mila');
+    expect((await checkout(ws.person, ws.id)).status).toBe(200);
+    expect(stripeFake.sessions.get(open.id).status).toBe('open');
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: null, status: 'none' });
   });
 
   it('opens no other page when the open one is paid while Checkout waits on Stripe', async () => {
@@ -348,5 +405,23 @@ describe('with billing off', () => {
       expect(privacy).not.toContain('Stripe');
       expect((await call('GET', '/billing?checkout=done', { vars: { ...ON, ...vars } })).text).not.toContain('Stripe is setting up');
     }
+  });
+});
+
+describe('a workspace whose billing table came before a column', () => {
+  it('gets the column when its object starts, and bills as before', async () => {
+    const ws = await newWorkspace();
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const sql = state.storage.sql;
+      const columns = () => sql.exec('PRAGMA table_info(billing)').toArray().map((c) => c.name);
+      for (const column of ['price', 'checkoutAttempt', 'checkoutUntil']) sql.exec(`ALTER TABLE billing DROP COLUMN ${column}`);
+      expect(columns()).not.toContain('price');
+      new instance.constructor(state, instance.env);
+      // Starting twice changes nothing more.
+      new instance.constructor(state, instance.env);
+      expect(columns()).toEqual(expect.arrayContaining(['price', 'checkoutAttempt', 'checkoutUntil']));
+    });
+    await subscribe(ws);
+    expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'active', price: { amount: 1950 } });
   });
 });

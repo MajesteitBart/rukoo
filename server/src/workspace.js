@@ -94,6 +94,10 @@ const BILLING_EVENT_DAYS = 30;
 // An open Checkout page is handed out again while it has this long left and the same seats; otherwise every open page
 // of the workspace is expired and a new one made.
 const CHECKOUT_LEFT = 10 * 60 * 1000;
+// A Checkout page expires 24 hours after it was made unless it says otherwise; this long after that, Stripe is asked
+// what became of a page the workspace still knows (#reconcileCheckout).
+const CHECKOUT_LIFE = DAY;
+const CHECKOUT_GRACE = 10 * 60 * 1000;
 // The subscription statuses whose seats follow the members. In every status but the ended ones Stripe can still charge,
 // a status Stripe adds later included (billingLive). An ended subscription never comes back.
 const BILLING_SYNC = new Set(['trialing', 'active', 'past_due']);
@@ -123,10 +127,12 @@ function invoiceSubscription(invoice) {
 // The billing state, one row, made the first time an owner sets billing up, for the mode of the server's key (live).
 // stateAt is the Stripe time, in seconds, of the subscription state it holds, so an older event arriving late can't
 // overwrite a newer one; every event also has the alarm read the subscription back from Stripe (syncAt). checkoutId
-// is the Checkout page last made, with its address and seats; every page belongs to the workspace's own customer, so
-// a page an ambiguous answer left behind is found by listing the customer's open pages. checkoutPending is set while
-// a page is being made, and stays set until Stripe confirmed which pages are open. trimBy is the renewal before
-// which vacant seats leave the bill, trimMissed one that billed them anyway. syncRev counts the times something asked
+// is the Checkout page last made, with its address and seats; every page belongs to the workspace's own customer and
+// carries the workspace's ID and checkoutAttempt, a random ID of the attempt that made it, in its metadata, so a page
+// an ambiguous answer left behind is found by listing the customer's pages and known as the workspace's own.
+// checkoutPending is set while a page is being made, and stays set until Stripe confirmed which pages are open.
+// checkoutUntil is when the page, or the page an unanswered attempt may have made, has expired at the latest. trimBy
+// is the renewal before which vacant seats leave the bill, trimMissed one that billed them anyway. syncRev counts the times something asked
 // the alarm to come (syncAt): a run that waited on Stripe meanwhile leaves the newer request, and its answer, to the
 // next run. orphaned: no owner is left, and the alarm sets the subscription to end with its period. price is the price
 // on the subscription's item, as JSON { amount, currency, interval, taxBehavior }, which Stripe keeps charging when
@@ -148,6 +154,8 @@ const BILLING_TABLES = `
     checkoutUrl TEXT,
     checkoutSeats INTEGER,
     checkoutPending INTEGER NOT NULL DEFAULT 0,
+    checkoutAttempt TEXT,
+    checkoutUntil INTEGER,
     syncAt INTEGER,
     syncRev INTEGER NOT NULL DEFAULT 0,
     tries INTEGER NOT NULL DEFAULT 0,
@@ -544,6 +552,8 @@ export class Workspace extends DurableObject {
     this.checking = new Set();
     // A Checkout page being made: a second owner's click meanwhile gets the same page, never a second subscription.
     this.checkout = null;
+    // The alarm closing a Checkout page that expired (#reconcileCheckout), which a click waits for.
+    this.closing = null;
     // A device's keepalive is answered without waking this object, and renews nothing.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -574,6 +584,10 @@ export class Workspace extends DurableObject {
     if (!has('workspace', 'landingUntil')) this.sql.exec('ALTER TABLE workspace ADD COLUMN landingUntil INTEGER NOT NULL DEFAULT 0');
     this.sql.exec(RICH_TABLES);
     this.sql.exec(BILLING_TABLES);
+    // Columns billing gained after its table was first made.
+    if (!has('billing', 'price')) this.sql.exec('ALTER TABLE billing ADD COLUMN price TEXT');
+    if (!has('billing', 'checkoutAttempt')) this.sql.exec('ALTER TABLE billing ADD COLUMN checkoutAttempt TEXT');
+    if (!has('billing', 'checkoutUntil')) this.sql.exec('ALTER TABLE billing ADD COLUMN checkoutUntil INTEGER');
     this.sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
       CREATE TABLE IF NOT EXISTS block (
@@ -932,7 +946,8 @@ export class Workspace extends DurableObject {
       failed = true;
       console.error('A workspace could not delete files from its bucket:', err?.message || err);
     }
-    // The seats Stripe bills, after the files: a Stripe that is down holds up neither. It sets its own retry time.
+    // Billing, after the files: a Stripe that is down holds up neither. Each sets its own retry time.
+    await this.#reconcileCheckout();
     await this.#syncBilling();
     this.alarmAt = null;
     if (this.present) await this.ctx.storage.setAlarm(this.#nextAlarm(now, more, failed));
@@ -1874,10 +1889,42 @@ export class Workspace extends DurableObject {
   #billingAlarm(now) {
     if (!stripeOn(this.env)) return null;
     const b = this.#billing();
+    const times = [this.#syncDue(b, now), this.#checkoutDue(b)].filter((t) => t !== null);
+    return times.length ? Math.min(...times) : null;
+  }
+
+  // When the subscription is to be read or its seats changed, or null.
+  #syncDue(b, now) {
     if (!b || !b.subscription) return null;
     if (b.syncAt !== null) return b.syncAt;
     if (BILLING_SYNC.has(b.status) && b.trimBy !== null) return Math.max(now, b.trimBy - TRIM_BEFORE);
     return null;
+  }
+
+  // When Stripe is to be asked what became of the Checkout page the workspace knows, or of an attempt it never heard
+  // back from: once it can only have expired or been paid. null without one.
+  #checkoutDue(b) {
+    return b && (b.checkoutId || b.checkoutPending) && b.checkoutUntil !== null ? b.checkoutUntil : null;
+  }
+
+  // A Checkout page past that time is closed as a deletion would close it (#closeCheckout): a page paid without its
+  // event brings its subscription, and one that expired is let go of, so it never keeps the workspace from being
+  // deleted, also after BILLING went off and before the secrets go. Not while Checkout or a deletion runs, which close
+  // pages themselves. When Stripe can't say, it asks again in a quarter of an hour.
+  async #reconcileCheckout() {
+    if (!this.present || !stripeOn(this.env) || this.checkout || this.deleting) return;
+    const due = this.#checkoutDue(this.#billing());
+    if (due === null || due > Date.now()) return;
+    this.closing = this.#closeCheckout();
+    try {
+      await this.closing;
+    } catch {
+      // billing_active: a page was paid, and its subscription is taken. Either way the alarm doesn't come back for the
+      // page sooner than this.
+      if (this.present) this.#write(() => this.sql.exec('UPDATE billing SET checkoutUntil = ? WHERE id = 1 AND checkoutUntil = ?', Date.now() + SYNC_RETRY_TRIM, due));
+    } finally {
+      this.closing = null;
+    }
   }
 
   // Brings the subscription Stripe holds and this workspace's view of it together: reads it, ends it with its period
@@ -1888,7 +1935,7 @@ export class Workspace extends DurableObject {
   async #syncBilling() {
     if (!this.present || !stripeOn(this.env)) return;
     let b = this.#billing();
-    const due = b ? this.#billingAlarm(Date.now()) : null;
+    const due = this.#syncDue(b, Date.now());
     if (due === null || due > Date.now()) return;
     const api = stripe(this.env);
     const asked = b.subscription;
@@ -2007,46 +2054,53 @@ export class Workspace extends DurableObject {
     return true;
   }
 
-  // A Checkout page that completed: the workspace has its subscription, which the alarm reads from Stripe now. Only a
-  // page of the workspace's own customer counts, which only this server makes; from an event (event: true) only the
-  // page the workspace keeps, with the workspace in its metadata. Anyone can pay one of the operator's Payment Links
-  // with the workspace's ID as client_reference_id, and that page is ignored. A page read from Stripe here
-  // (#paidMeanwhile) is one the workspace keeps or one its customer has open. A second subscription while one is live
-  // is left at Stripe and logged.
-  #sessionCompleted(session, now, event = false) {
+  // Whether session is a Checkout page this workspace made: of its own customer, which only this server makes pages
+  // for, with the workspace's ID in its metadata, and the page it keeps or one of its latest attempt. Anyone can pay
+  // one of the operator's Payment Links with the workspace's ID as client_reference_id, and another integration with
+  // access to the Stripe account could make a page for the same customer; neither counts.
+  #ownPage(session, b) {
+    if (!b?.customer || stripeIdOf(session?.customer) !== b.customer || session.metadata?.workspace !== this.wid) return false;
+    return (typeof session.id === 'string' && session.id === b.checkoutId) || (Boolean(b.checkoutAttempt) && session.metadata?.attempt === b.checkoutAttempt);
+  }
+
+  // A Checkout page that completed, from its event or a read (#paidMeanwhile): when it is the workspace's own
+  // (#ownPage), the workspace has its subscription, which the alarm reads from Stripe now. Anything else is ignored and
+  // logged. A second subscription while one is live is left at Stripe and logged.
+  #sessionCompleted(session, now) {
     if (session?.mode !== 'subscription' || typeof session.subscription !== 'string' || !STRIPE_ID.sub.test(session.subscription)) return false;
     const b = this.#billing();
-    const own = Boolean(b?.customer) && stripeIdOf(session.customer) === b.customer;
-    if (own && b.subscription === session.subscription) {
-      // Taken already, from a read of the page before its event came.
+    // The page is done, and so is the attempt that made it.
+    const done = () => {
       this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
+      const attempt = typeof session.metadata?.attempt === 'string' ? session.metadata.attempt : null;
+      if (attempt) this.sql.exec('UPDATE billing SET checkoutPending = 0 WHERE id = 1 AND checkoutAttempt = ?', attempt);
+    };
+    if (b?.customer && stripeIdOf(session.customer) === b.customer && b.subscription === session.subscription) {
+      // Taken already, from a read of the page before its event came.
+      if (session.metadata?.workspace === this.wid) done();
       return false;
     }
-    if (!own || (event && (session.id !== b.checkoutId || session.metadata?.workspace !== this.wid))) {
+    if (!this.#ownPage(session, b)) {
       console.error('A completed Checkout session named a workspace, but is not a page the workspace made; ignored.');
       return false;
     }
-    // The page's subscription ended already: the page is done, and nothing else changes.
-    if (this.#ended(session.subscription)) {
-      this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
-      return false;
-    }
+    done();
     if (b.subscription && billingLive(b.status)) {
       console.error('A workspace with a subscription completed a second Checkout; it keeps the first.');
       return false;
     }
-    // Another subscription after one that ended starts from nothing of the old one's.
+    // Another subscription after one that ended starts from nothing of the old one's. One whose end came before its
+    // page's event is kept ended, so its owner still reaches its invoices in the portal; the alarm reads its status.
+    const ended = this.#ended(session.subscription);
     this.sql.exec(
-      `UPDATE billing SET subscription = ?, item = NULL, status = 'incomplete', seats = NULL, periodEnd = NULL,
+      `UPDATE billing SET subscription = ?, item = NULL, status = ?, seats = NULL, periodEnd = NULL,
          cancelAtPeriodEnd = 0, stateAt = 0, trimBy = NULL, trimMissed = NULL, orphaned = 0, tries = 0, price = NULL WHERE id = 1`,
-      session.subscription
+      session.subscription,
+      ended ? 'canceled' : 'incomplete'
     );
-    if (b.checkoutId === session.id) {
-      this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1');
-    }
     this.#refreshBilling(now);
-    if (this.#owners() === 0) this.#orphanBilling(now);
-    return true;
+    if (!ended && this.#owners() === 0) this.#orphanBilling(now);
+    return !ended;
   }
 
   // A Stripe event for this workspace, its signature checked by the Worker (billing.js): { id, type, created, object }.
@@ -2065,7 +2119,7 @@ export class Workspace extends DurableObject {
   #billingEvent({ type, created, object }, now) {
     switch (type) {
       case 'checkout.session.completed':
-        return this.#sessionCompleted(object, now, true);
+        return this.#sessionCompleted(object, now);
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted':
@@ -2098,8 +2152,9 @@ export class Workspace extends DurableObject {
   }
 
   // GET /billing, for owners and admins: what Stripe bills and what the workspace has, for the Billing section. price:
-  // the price on a live subscription's item, else null, and the Worker adds the configured one (billing.js). With
-  // BILLING off an owner can still manage billing that exists, but not set it up.
+  // the price on a live subscription's item, else null. For a live subscription whose price the workspace hasn't read
+  // yet, source names it, and the Worker reads it from Stripe; without a live subscription it adds the configured
+  // price (billing.js). With BILLING off an owner can still manage billing that exists, but not set it up.
   #billingGet(me) {
     if (!ADMIN.has(me.role)) throw FORBIDDEN('Only owners and admins see billing.');
     const b = this.#billing();
@@ -2129,7 +2184,8 @@ export class Workspace extends DurableObject {
         syncing: target !== null && target !== b.seats,
         canCheckout: me.role === 'owner' && !live && billingOn(this.env),
         canManage: me.role === 'owner' && Boolean(b?.customer && b?.subscription),
-        price
+        price,
+        source: live && !price ? { subscription: b.subscription, item: b.item } : null
       }
     });
   }
@@ -2140,6 +2196,8 @@ export class Workspace extends DurableObject {
   async #checkout(me, a) {
     if (me.role !== 'owner') throw FORBIDDEN('Only owners set up billing.');
     if (!billingOn(this.env)) throw new Refusal(404, 'not_found', 'There is nothing here.');
+    // The alarm closing a page that expired finishes first, so it never expires the page made now.
+    if (this.closing) await this.closing.catch(() => {});
     this.#mayCheckout();
     this.checkout ??= this.#openCheckout(a).finally(() => {
       this.checkout = null;
@@ -2172,11 +2230,17 @@ export class Workspace extends DurableObject {
       await this.#closeCheckout();
       const tax = billingTax(this.env);
       const quantity = Math.max(1, this.#paidMembers());
-      // Until Stripe answers, a page may exist that this workspace doesn't know: the next close looks for it. Checked
-      // in the same step, so nothing can come between the last check and the page.
+      // Until Stripe answers, a page may exist that this workspace doesn't know: the next close, or the alarm once it
+      // must have expired, looks for it by its attempt's ID. Checked in the same step, so nothing can come between the
+      // last check and the page.
+      const attempt = toBase64url(randomBytes(12));
       this.#write(() => {
         this.#mayCheckout();
-        this.sql.exec('UPDATE billing SET checkoutPending = 1 WHERE id = 1');
+        this.sql.exec(
+          'UPDATE billing SET checkoutPending = 1, checkoutAttempt = ?, checkoutUntil = ? WHERE id = 1',
+          attempt,
+          Date.now() + CHECKOUT_LIFE + CHECKOUT_GRACE
+        );
       });
       const session = await api.post('/v1/checkout/sessions', {
         mode: 'subscription',
@@ -2185,7 +2249,7 @@ export class Workspace extends DurableObject {
         client_reference_id: this.wid,
         line_items: [{ price: String(this.env.STRIPE_PRICE_ID).trim(), quantity, tax_rates: tax?.rate ? [tax.rate] : undefined }],
         automatic_tax: tax?.automatic ? { enabled: true } : undefined,
-        metadata: { workspace: this.wid },
+        metadata: { workspace: this.wid, attempt },
         subscription_data: { metadata: { workspace: this.wid } },
         billing_address_collection: 'required',
         tax_id_collection: { enabled: true },
@@ -2196,12 +2260,14 @@ export class Workspace extends DurableObject {
       if (typeof session?.id !== 'string' || !STRIPE_ID.cs.test(session.id) || typeof session.url !== 'string' || !/^https:\/\//.test(session.url)) {
         throw new Error('Stripe answered without a Checkout page.');
       }
+      const until = Number.isSafeInteger(session.expires_at) ? session.expires_at * 1000 + CHECKOUT_GRACE : Date.now() + CHECKOUT_LIFE + CHECKOUT_GRACE;
       this.#write(() =>
         this.sql.exec(
-          'UPDATE billing SET checkoutId = ?, checkoutUrl = ?, checkoutSeats = ?, checkoutPending = 0 WHERE id = 1',
+          'UPDATE billing SET checkoutId = ?, checkoutUrl = ?, checkoutSeats = ?, checkoutPending = 0, checkoutUntil = ? WHERE id = 1',
           session.id,
           session.url,
-          quantity
+          quantity,
+          until
         )
       );
       // A subscription that came while Stripe made the page: the page is expired before anyone sees it.
@@ -2262,45 +2328,64 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // Expires every Checkout page of the workspace that is still open: the one kept and any other open page of its
-  // customer, such as one an answer that got lost left behind. Answers billing_active when one was paid first, and
-  // billing_unavailable when Stripe can't say. It needs only Stripe's secrets, so a page left open when BILLING went off
-  // is closed too, and the workspace can be deleted. Without them nothing can be asked, and a page the workspace knows
-  // keeps it from being deleted (#deleteWorkspace).
+  // Closes the workspace's Checkout pages: each of its own that is still open is expired, the one kept and any other of
+  // its customer with the workspace's ID in its metadata, such as one an answer that got lost left behind. A page that
+  // was paid, the one kept or one of the latest attempt (#ownPage), brings its subscription and answers billing_active.
+  // A page another integration made for the same customer is left alone. Answers billing_unavailable when Stripe can't
+  // say. It needs only Stripe's secrets, so a page left open when BILLING went off is closed too, and the workspace can
+  // be deleted. Without them nothing can be asked, and a page the workspace knows keeps it from being deleted
+  // (#deleteWorkspace).
   async #closeCheckout() {
     if (!stripeOn(this.env)) return;
     const b = this.#billing();
     if (!b?.checkoutId && !b?.customer) return;
     const api = stripe(this.env);
     const kept = b.checkoutId;
+    const attempt = b.checkoutAttempt;
     try {
-      const pages = new Set();
-      if (b.checkoutId) pages.add(b.checkoutId);
+      const listed = new Map();
       if (b.customer) {
-        const list = await api.get('/v1/checkout/sessions', { customer: b.customer, status: 'open', limit: 100 });
+        const list = await api.get('/v1/checkout/sessions', { customer: b.customer, limit: 100 });
         for (const page of Array.isArray(list?.data) ? list.data : []) {
-          if (typeof page?.id === 'string' && STRIPE_ID.cs.test(page.id)) pages.add(page.id);
+          if (typeof page?.id === 'string' && STRIPE_ID.cs.test(page.id) && page.metadata?.workspace === this.wid) listed.set(page.id, page);
         }
       }
-      for (const id of pages) {
-        try {
-          await api.post(`/v1/checkout/sessions/${encodeURIComponent(id)}/expire`, {});
-        } catch (err) {
-          // It may have completed or expired in between: the read below says which.
-          if (!(err instanceof StripeError && err.status === 400)) throw err;
+      const pages = [...listed.values()].filter((page) => page.status === 'open' || (page.status === 'complete' && this.#ownPage(page, b)));
+      // The page kept, when the listing doesn't say what became of it.
+      if (kept && !listed.has(kept)) pages.push({ id: kept, status: null });
+      // Every open page is expired before anything else, so none stays payable next to a page that was paid.
+      const paid = [];
+      let stuck = false;
+      for (let page of pages) {
+        if (page.status !== 'complete') {
+          try {
+            await api.post(`/v1/checkout/sessions/${encodeURIComponent(page.id)}/expire`, {});
+          } catch (err) {
+            // It may have completed or expired in between: the read below says which.
+            if (!(err instanceof StripeError && err.status === 400)) throw err;
+          }
+          page = await api.get(`/v1/checkout/sessions/${encodeURIComponent(page.id)}`);
         }
-        const page = await api.get(`/v1/checkout/sessions/${encodeURIComponent(id)}`);
         if (!this.present) throw NO_WORKSPACE();
-        if (page.status === 'complete') await this.#paidMeanwhile(page);
-        if (page.status === 'open') throw new Error('A Checkout page stayed open after Stripe was asked to expire it.');
+        if (page.status === 'complete') paid.push(page);
+        else if (page.status === 'open') stuck = true;
       }
-      // Stripe has no open page of the workspace any more: the page kept goes, and so does an attempt that left none.
+      if (paid.length) this.#write(() => paid.forEach((page) => this.#sessionCompleted(page, Date.now())));
+      if (stuck) throw new Error('A Checkout page stayed open after Stripe was asked to expire it.');
+      // Stripe has no open page of the workspace any more: the page kept goes, and so does an attempt that left none,
+      // unless another attempt began meanwhile.
       this.#write(() =>
         this.sql.exec(
-          'UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL, checkoutPending = 0 WHERE id = 1 AND checkoutId IS ?',
+          `UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL, checkoutPending = 0, checkoutUntil = NULL
+           WHERE id = 1 AND checkoutAttempt IS ? AND (checkoutId IS ? OR checkoutId IS NULL)`,
+          attempt,
           kept
         )
       );
+      if (paid.length) {
+        await this.#settle();
+        if (billingLive(this.#billing()?.status ?? 'none')) throw new Refusal(409, 'billing_active', 'This workspace has billing already. Use Manage billing.');
+      }
     } catch (err) {
       if (err instanceof Refusal) throw err;
       console.error('Could not close the open Checkout pages of a workspace:', err?.message || err);

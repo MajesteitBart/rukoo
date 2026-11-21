@@ -3,7 +3,7 @@
 
 import { runDurableObjectAlarm } from 'cloudflare:test';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { FAKE_STRIPE, billing, billingRow, checkout, deliver, installFakeStripe, settle, stripeFake, subscribe } from './billing-helpers.js';
+import { FAKE_STRIPE, billing, billingRow, checkout, deliver, installFakeStripe, portal, settle, stripeFake, subscribe } from './billing-helpers.js';
 import { newMember, newWorkspace, workspaceSql, workspaceStub } from './workspace-helpers.js';
 
 let restore;
@@ -315,6 +315,19 @@ describe('whose events count', () => {
     const done = stripeFake.completeCheckout(own.id);
     await deliver(stripeFake.event('checkout.session.completed', done.session));
     expect(await billingRow(ws.id)).toMatchObject({ customer: before.customer, subscription: done.subscription.id, checkoutId: null });
+  });
+
+  it('keeps a paid page’s subscription that ended before the page’s event, so the owner still reaches its invoices', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const done = stripeFake.completeCheckout(stripeFake.lastSession().id);
+    const sub = stripeFake.subscriptions.get(done.subscription.id);
+    sub.status = 'canceled';
+    await deliver(stripeFake.event('customer.subscription.deleted', sub, { created: now() + 1 }));
+    await deliver(stripeFake.event('checkout.session.completed', done.session));
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: sub.id, status: 'canceled', checkoutId: null });
+    expect((await portal(ws.person, ws.id)).status).toBe(200);
+    expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'canceled', canCheckout: true, canManage: true });
   });
 
   it('ignores subscription and invoice events about a subscription the workspace doesn’t have', async () => {

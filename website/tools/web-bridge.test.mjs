@@ -414,7 +414,9 @@ test('every chat*, account and host method answers; anything else says it is not
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
-  assert.equal(CHAT_METHODS.length, 55);
+  // chatBilling and chatBillingLink among them: the browser draws Workspace settings' Billing section too.
+  assert.equal(CHAT_METHODS.length, 57);
+  assert.ok(CHAT_METHODS.includes('chatBilling') && CHAT_METHODS.includes('chatBillingLink'));
   for (const name of CHAT_METHODS) {
     const res = await page.invoke(name);
     if (name === 'chatState') {

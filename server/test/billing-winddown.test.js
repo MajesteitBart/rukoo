@@ -119,6 +119,37 @@ describe('with BILLING off and Stripe’s secrets still set', () => {
     expect(stripeFake.sessions.get(page.id).status).toBe('expired');
   });
 
+  it('lets go of a page once it can only have expired, while Stripe can still be asked', async () => {
+    const ws = await newWorkspace();
+    const { customer, page } = await openedWhileOn(ws);
+    await workspaceSql(
+      ws.id,
+      'INSERT INTO billing (id, live, customer, checkoutId, checkoutUrl, checkoutSeats, checkoutUntil) VALUES (1, 0, ?, ?, ?, 1, ?)',
+      customer,
+      page.id,
+      page.url,
+      Date.now() - 1000
+    );
+    stripeFake.sessions.get(page.id).status = 'expired';
+    // Nobody deletes the workspace; the alarm asks Stripe, so the page doesn't outlive the secrets.
+    expect(await settle(ws.id, async () => (await billingRow(ws.id)).checkoutId === null)).toBe(true);
+    expect(await billingRow(ws.id)).toMatchObject({ checkoutPending: 0, subscription: null });
+    // And a page that was paid without its event gives the workspace its subscription.
+    const other = await newWorkspace('Other');
+    const left = await openedWhileOn(other);
+    await workspaceSql(
+      other.id,
+      'INSERT INTO billing (id, live, customer, checkoutId, checkoutUrl, checkoutSeats, checkoutUntil) VALUES (1, 0, ?, ?, ?, 1, ?)',
+      left.customer,
+      left.page.id,
+      left.page.url,
+      Date.now() - 1000
+    );
+    const done = stripeFake.completeCheckout(left.page.id);
+    expect(await settle(other.id, async () => (await billingRow(other.id)).status === 'active')).toBe(true);
+    expect(await billingRow(other.id)).toMatchObject({ subscription: done.subscription.id, checkoutId: null });
+  });
+
   it('keeps a workspace whose left-open page was paid, and takes its subscription', async () => {
     const ws = await newWorkspace();
     const { customer, page } = await openedWhileOn(ws);
