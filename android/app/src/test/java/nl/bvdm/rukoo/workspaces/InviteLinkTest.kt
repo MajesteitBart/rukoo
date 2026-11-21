@@ -71,4 +71,38 @@ class InviteLinkTest {
         val link = InviteLink.parse(c.text, devHosts = false)!!
         assertFalse(link.toString().contains(link.secret))
     }
+
+    // rukoo.io and rukoo-account.bvdm.ai are one server (RUK-234); desktop's chat-wire.test.js checks the same.
+    private val w = "w_" + "A".repeat(22)
+    private val secret = "S".repeat(43)
+    private fun at(server: String) = "$server/join#w=$w&i=$secret"
+
+    @Test
+    fun `a link from the home or a former address of the server is its own, both ways`() {
+        assertEquals("https://rukoo.io", InviteLink.homeOf("https://rukoo.io"))
+        for (bad in listOf(null, "", "ftp://rukoo.io", "http://rukoo.io", "https://user@rukoo.io")) assertNull(bad, InviteLink.homeOf(bad))
+        assertEquals("http://10.0.2.2:38850", InviteLink.homeOf("http://10.0.2.2:38850"))
+
+        val atNew = InviteLink.sameServers("https://rukoo.io", "https://rukoo.io")
+        assertEquals(listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai"), atNew)
+        assertEquals("https://rukoo-account.bvdm.ai", InviteLink.check(at("https://rukoo-account.bvdm.ai"), atNew, devHosts = false).server)
+        val atOld = InviteLink.sameServers("https://rukoo-account.bvdm.ai", "https://rukoo.io")
+        assertEquals(listOf("https://rukoo-account.bvdm.ai", "https://rukoo.io"), atOld)
+        assertEquals("https://rukoo.io", InviteLink.check(at("https://rukoo.io"), atOld, devHosts = false).server)
+        assertEquals(listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai"), InviteLink.sameServers("https://rukoo.io", null))
+        try {
+            InviteLink.check(at("https://chat.example.net"), atOld, devHosts = false)
+            fail("other_server expected")
+        } catch (e: WorkspaceError) {
+            assertEquals("other_server", e.code)
+        }
+        assertEquals(listOf("https://chat.example.com"), InviteLink.sameServers("https://chat.example.com", "https://chat.example.com"))
+    }
+
+    @Test
+    fun `new links name the home, unless the server lives under a path of its own`() {
+        assertEquals("https://rukoo.io", InviteLink.inviteServer("https://rukoo-account.bvdm.ai", "https://rukoo.io"))
+        assertEquals("https://rukoo-account.bvdm.ai", InviteLink.inviteServer("https://rukoo-account.bvdm.ai", null))
+        assertEquals("https://example.com/rukoo", InviteLink.inviteServer("https://example.com/rukoo", "https://example.com"))
+    }
 }

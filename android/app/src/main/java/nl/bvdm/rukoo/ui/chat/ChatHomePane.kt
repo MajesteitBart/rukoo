@@ -1,6 +1,7 @@
 package nl.bvdm.rukoo.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -65,8 +66,10 @@ import nl.bvdm.rukoo.ui.components.RkButtonSize
 import nl.bvdm.rukoo.ui.components.RkIcon
 import nl.bvdm.rukoo.ui.components.RkIconButton
 import nl.bvdm.rukoo.ui.components.RkIconButtonSize
+import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.components.ShimmerText
 import nl.bvdm.rukoo.ui.components.rkClickable
+import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.mail.CornerButton
 import nl.bvdm.rukoo.ui.mail.MailDates
@@ -116,6 +119,7 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val settings by app.services.settingsSnapshot.collectAsStateWithLifecycle()
 
     Box(modifier.background(c.panel)) {
         Column(Modifier.fillMaxSize()) {
@@ -172,6 +176,7 @@ fun ChatHomePane(app: AppViewModel, modifier: Modifier = Modifier) {
                         me = view.me,
                         dates = dates,
                         state = listState,
+                        appsTip = settings.chatAppsTip == "show",
                     )
                 }
             }
@@ -281,6 +286,7 @@ internal fun ChatLoading(label: String, modifier: Modifier = Modifier) {
 private fun RoomList(
     app: AppViewModel,
     sections: ChatSections,
+    appsTip: Boolean,
     filter: ChatFilter,
     selected: String?,
     members: Map<String, Member>,
@@ -340,6 +346,36 @@ private fun RoomList(
                 items(sections.archived, key = { "a:${it.key}" }) { row -> ChannelRow(row, selected = row.room.id == selected, onClick = { open(row.room.id) }) }
             }
         }
+        if (all && appsTip) item(key = "apps") { AppsCard(onOpen = app::openDesktopApp, onHide = app::hideAppsTip) }
+    }
+}
+
+/**
+ * Rukoo on the computer (RUK-234), once after the first workspace joined or made here, until hidden: mail, calendar
+ * and meetings, from rukoo.io. Desktop names the phone app and Rukoo Voice in the same place.
+ */
+@Composable
+private fun AppsCard(onOpen: () -> Unit, onHide: () -> Unit) {
+    val c = Rk.colors
+    Row(
+        Modifier
+            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .fillMaxWidth()
+            .background(c.panel2, Rk.shapes.panel)
+            .border(1.dp, c.border, Rk.shapes.panel)
+            .padding(start = 14.dp, top = 12.dp, bottom = 8.dp, end = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(Modifier.size(32.dp).background(c.chip, Rk.shapes.control), contentAlignment = Alignment.Center) {
+            RkIcon(PanelIcons.Terminal, null, size = 18.dp, tint = c.text2)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.chat_apps_title), style = Rk.type.text13_5.medium, color = c.text, modifier = Modifier.semantics { heading() })
+            Text(stringResource(R.string.chat_apps_body), style = Rk.type.text12_5, color = c.text2)
+            RkLinkButton(stringResource(R.string.chat_apps_open), onClick = onOpen, modifier = Modifier.offset(x = (-4).dp), icon = RukooIcons.PopOut)
+        }
+        RkIconButton(RukooIcons.Close, stringResource(R.string.chat_apps_hide), onClick = onHide, size = RkIconButtonSize.SMALL)
     }
 }
 

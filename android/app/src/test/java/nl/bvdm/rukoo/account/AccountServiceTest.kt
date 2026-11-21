@@ -90,7 +90,8 @@ class AccountServiceTest {
         invites: List<String> = emptyList(),
         limit: Int = 1000,
         kdf: JsonObject = AccountKeys.DEFAULT_KDF.toJson(),
-    ) = FakeAccountServer(signups, invites, limit, kdf = kdf).also { servers += it }
+        home: String? = null,
+    ) = FakeAccountServer(signups, invites, limit, kdf = kdf, home = home).also { servers += it }
 
     private fun device(
         srv: FakeAccountServer?,
@@ -1464,6 +1465,22 @@ class AccountServiceTest {
         }
         assertEquals(1, srv.calls.count { it.route == "POST /v1/signup" })
         assertFalse(srv.calls.any { it.body.contains(link.secret) && it.route != "POST /v1/signup" })
+    }
+
+    @Test
+    fun `a workspace invitation from the server's home or its former address signs up here (RUK-234)`() = runBlocking {
+        // This server says its home is rukoo.io, whose former address is rukoo-account.bvdm.ai: links from both are its.
+        val srv = server(home = "https://rukoo.io")
+        val desk = device(srv)
+        desk.serverInfo()
+        val w = "w_" + "A".repeat(22)
+        desk.signUp("alias@example.com", PASSWORD, workspaceInvite = InviteLink("https://rukoo-account.bvdm.ai", w, "c".repeat(43)))
+        val sent = RukooJson.parseToJsonElement(srv.calls.single { it.route == "POST /v1/signup" }.body).jsonObject
+        assertEquals(JsonPrimitive("c".repeat(43)), sent.getValue("workspaceInvite").jsonObject["invite"])
+        // Still refused for a server that is neither.
+        val other = device(srv)
+        other.serverInfo()
+        rejects("invalid") { other.signUp("other2@example.com", PASSWORD, workspaceInvite = InviteLink("https://elsewhere.example", w, "d".repeat(43))) }
     }
 
     /**

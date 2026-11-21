@@ -51,6 +51,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
         private val MCP_PORT = intPreferencesKey("mcp_port")
         private val DENSITY = stringPreferencesKey("density")
         private val SORT = stringPreferencesKey("sort")
+        private val CHAT_APPS_TIP = stringPreferencesKey("chat_apps_tip")
 
         private inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E =
             name?.let { n -> enumValues<E>().firstOrNull { it.name == n } } ?: default
@@ -73,6 +74,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
                 mcpPort = (prefs[MCP_PORT] ?: d.mcpPort).takeIf { it in 1024..65535 } ?: d.mcpPort,
                 density = enumOr(prefs[DENSITY], d.density),
                 sort = enumOr(prefs[SORT], SortOrder.DATE_DESC),
+                chatAppsTip = prefs[CHAT_APPS_TIP]?.takeIf { it == "show" || it == "done" } ?: d.chatAppsTip,
             )
         }
 
@@ -92,6 +94,7 @@ class SettingsStore(private val store: DataStore<Preferences>) {
             prefs[MCP_PORT] = s.mcpPort
             prefs[DENSITY] = s.density.name
             prefs[SORT] = s.sort.name
+            if (s.chatAppsTip.isEmpty()) prefs.remove(CHAT_APPS_TIP) else prefs[CHAT_APPS_TIP] = s.chatAppsTip
         }
     }
 }

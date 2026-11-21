@@ -538,10 +538,18 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
     fun set(name: String, value: String) {
         model.fields[name] = value
     }
-    fun submit() = model.submit(form) { text ->
+    val carried by app.carriedJoin.collectAsStateWithLifecycle()
+    fun submit() = model.submit(form, carried) { text ->
         // A new account shows its recovery key first; the page goes back, and says so, once it is saved.
         if (form != RukooAccountModel.Form.SIGN_UP) {
-            nav.pop()
+            // A sign-in that carried an invitation link closes Settings back to Chat, which opens Join (RUK-234).
+            if (model.ui.value.joinWithLink) {
+                model.joinShown()
+                app.closeOverlay()
+                app.setMode(AppMode.CHAT)
+            } else {
+                nav.pop()
+            }
             toast.showToast(res.getString(text))
         }
     }
@@ -568,6 +576,8 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
             return@SettingsPageBody
         }
         if (form == RukooAccountModel.Form.RECOVER) SettingsText(stringResource(R.string.settings_rukoo_recover_help))
+        // The link onboarding's team chat step carried: the workspace opens after this form (RUK-234).
+        if (carried != null && form != RukooAccountModel.Form.RECOVER) NoteBox(stringResource(R.string.settings_rukoo_link_note, hostOf(status.server)))
         Spacer(Modifier.height(12.dp))
         Column(
             Modifier.fillMaxWidth().rkSurface(null, Rk.shapes.panel, Rk.colors.panel).border(1.dp, Rk.colors.border, Rk.shapes.panel).padding(16.dp),
@@ -612,9 +622,10 @@ fun RukooFormPage(app: AppViewModel, nav: SettingsNav, form: RukooAccountModel.F
                     enabled = !working,
                 )
             }
-            if (form == RukooAccountModel.Form.SIGN_UP && info?.signups == "invite") {
-                // A workspace invitation link works here too, where the server takes one (contract §2.12, §3.3).
-                val linkWorks = info?.let { it.teamChat && it.workspace?.inviteSignups == true } == true
+            // A workspace invitation link works here too, where the server takes one (contract §2.12, §3.3); a
+            // carried link already does, so the field asks for nothing then.
+            val linkWorks = info?.let { it.teamChat && it.workspace?.inviteSignups == true } == true
+            if (form == RukooAccountModel.Form.SIGN_UP && info?.signups == "invite" && !(carried != null && linkWorks)) {
                 RkTextField(
                     value = field("invite"),
                     onValueChange = { set("invite", it) },

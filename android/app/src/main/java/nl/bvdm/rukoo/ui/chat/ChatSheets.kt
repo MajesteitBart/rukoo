@@ -904,6 +904,16 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
     var name by remember { mutableStateOf(SheetRules.defaultName(app.services.account?.status?.value?.email)) }
     val checking = ui.isBusy(KEY_PREVIEW)
     val joining = ui.isBusy(KEY_JOIN)
+    // The sheet shows the pending link of a sign-up or sign-in (RUK-234): closing it without joining lets the link go,
+    // which otherwise waits on disk for the next start.
+    var fromPending by remember { mutableStateOf(false) }
+    // The pending link as it came: only that text, refused, lets it go; another one typed over it doesn't.
+    var pendingText by remember { mutableStateOf<String?>(null) }
+    var joined by remember { mutableStateOf(false) }
+    val dismiss = {
+        if (fromPending && !joined) workspaces.dropPendingJoin()
+        onDismiss()
+    }
 
     fun reset() {
         checkedText = null
@@ -918,9 +928,13 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
         val t = value.trim()
         reset()
         val parsed = InviteLink.parse(t, BuildConfig.DEBUG)
+        // rukoo.io and its former address are one server (InviteLink.sameServers).
+        val ours = parsed != null && parsed.server in chat.linkServers.ifEmpty { listOf(chat.server) }
+        // The pending link of a sign-up that this sheet can't use goes now, not after the next restart.
+        if (fromPending && !ours && t == pendingText) workspaces.dropPendingJoin()
         when {
             parsed == null -> linkError = badLink
-            parsed.server != chat.server -> elsewhere = hostOf(parsed.server)
+            !ours -> elsewhere = hostOf(parsed.server)
             else -> ui.attempt(KEY_PREVIEW, failed = { e ->
                 when {
                     codeOf(e) == "other_server" -> elsewhere = hostOf(parsed.server)
@@ -945,6 +959,8 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
     // The link of a sign-up with an invitation (§3.3), taken once.
     LaunchedEffect(Unit) {
         workspaces.takePendingJoin()?.let {
+            fromPending = true
+            pendingText = it.text
             text = it.text
             check(it.text)
         }
@@ -974,6 +990,8 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
             }
         }) {
             val ws = join(l, name.trim())
+            joined = true
+            app.firstWorkspace()
             ui.arrive(ws)
         }
     }
@@ -981,7 +999,7 @@ private fun JoinSheet(app: AppViewModel, twoPane: Boolean, onDismiss: () -> Unit
     SheetFrame(
         twoPane,
         stringResource(R.string.chat_join_title),
-        onDismiss,
+        dismiss,
         buttons = { close ->
             if (elsewhere != null) {
                 Primary(stringResource(R.string.common_actions_close), busy = false) { close() }
@@ -1110,6 +1128,7 @@ private fun CreateWorkspaceSheet(app: AppViewModel, twoPane: Boolean, onDismiss:
             }
         }) {
             val ws = createWorkspace(name.trim(), yourName.trim())
+            app.firstWorkspace()
             ui.arrive(ws)
         }
     }

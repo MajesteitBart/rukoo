@@ -112,6 +112,47 @@ test('parseInviteLink refuses what is no text and names the other server', () =>
   assert.throws(() => wire.parseInviteLink(`ws://127.0.0.1/join#w=${W}&i=${SECRET}`), { code: 'bad_link' });
 });
 
+// rukoo.io and rukoo-account.bvdm.ai are one server (RUK-234): /v1/info on both names the home https://rukoo.io.
+const HOME = { workspace: { versions: [1], home: { origin: 'https://rukoo.io', installation: 'x' } } };
+const linkAt = (server) => `${server}/join#w=${W}&i=${SECRET}`;
+
+test('a link from the home or a former address of the server is its own, both ways', () => {
+  assert.deepEqual(wire.homeOf(HOME), 'https://rukoo.io');
+  for (const bad of [null, {}, { workspace: {} }, { workspace: { home: { origin: 'ftp://rukoo.io' } } }, { workspace: { home: { origin: 'http://rukoo.io' } } }, { workspace: { home: { origin: 42 } } }]) {
+    assert.equal(wire.homeOf(bad), null, JSON.stringify(bad));
+  }
+  assert.equal(wire.homeOf({ workspace: { home: { origin: 'http://127.0.0.1:38811' } } }), 'http://127.0.0.1:38811');
+
+  // A device at the new address takes links made at the old one, and one at the old address takes links from the home.
+  const atNew = wire.sameServers('https://rukoo.io', HOME);
+  assert.deepEqual(atNew, ['https://rukoo.io', 'https://rukoo-account.bvdm.ai']);
+  assert.deepEqual(wire.parseInviteLink(linkAt('https://rukoo-account.bvdm.ai'), atNew), { server: 'https://rukoo-account.bvdm.ai', workspace: W, secret: SECRET });
+  const atOld = wire.sameServers('https://rukoo-account.bvdm.ai', HOME);
+  assert.deepEqual(atOld, ['https://rukoo-account.bvdm.ai', 'https://rukoo.io']);
+  assert.deepEqual(wire.parseInviteLink(linkAt('https://rukoo.io'), atOld).server, 'https://rukoo.io');
+  // Before the info is in, the former address of the configured server still counts.
+  assert.deepEqual(wire.sameServers('https://rukoo.io', null), ['https://rukoo.io', 'https://rukoo-account.bvdm.ai']);
+  // Another server stays another server, and the message names the configured one.
+  assert.throws(() => wire.parseInviteLink(linkAt('https://chat.example.net'), atOld), (err) => {
+    assert.equal(err.code, 'other_server');
+    assert.match(err.message, /chat\.example\.net/);
+    assert.match(err.message, /rukoo-account\.bvdm\.ai/);
+    return true;
+  });
+  // A self-hosted server with a home of its own counts that home, and no former address.
+  const own = { workspace: { home: { origin: 'https://chat.example.com' } } };
+  assert.deepEqual(wire.sameServers('https://chat.example.com', own), ['https://chat.example.com']);
+  assert.throws(() => wire.parseInviteLink(linkAt('https://rukoo.io'), wire.sameServers('https://chat.example.com', own)), { code: 'other_server' });
+});
+
+test('new links name the home, unless the server lives under a path of its own', () => {
+  assert.equal(wire.inviteServer('https://rukoo-account.bvdm.ai', HOME), 'https://rukoo.io');
+  assert.equal(wire.inviteServer('https://rukoo.io', HOME), 'https://rukoo.io');
+  assert.equal(wire.inviteServer('https://rukoo-account.bvdm.ai', null), 'https://rukoo-account.bvdm.ai');
+  assert.equal(wire.inviteServer('https://example.com/rukoo', { workspace: { home: { origin: 'https://example.com' } } }), 'https://example.com/rukoo');
+  assert.equal(wire.inviteLink(wire.inviteServer('https://rukoo-account.bvdm.ai', HOME), W, SECRET), linkAt('https://rukoo.io'));
+});
+
 // ---- UUIDv7 and local IDs ----
 
 test('uuidv7 keeps the version, the variant and the time, and refuses what it cannot encode', () => {
@@ -346,7 +387,7 @@ test('the directory, workspace and other answers are checked whole', () => {
 const METHODS = [
   'chatState', 'chatSelect', 'chatView', 'chatSync', 'chatReload', 'chatOpen', 'chatClose', 'chatOlder', 'chatThread',
   'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatDraft', 'chatSend', 'chatResend', 'chatDiscard',
-  'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatLeaveWorkspace',
+  'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatDropPendingJoin', 'chatCheckLink', 'chatLeaveWorkspace',
   'chatDeleteWorkspace', 'chatSetMyName', 'chatSetRole', 'chatRemoveMember', 'chatInvites', 'chatCreateInvite',
   'chatWithdrawInvite', 'chatCreateChannel', 'chatRenameChannel', 'chatArchiveChannel', 'chatJoinChannel',
   'chatAddToChannel', 'chatSetChannelRole', 'chatRemoveFromChannel', 'chatLeaveChannel', 'chatStartDm', 'chatLeaveDm',
@@ -427,6 +468,8 @@ const CALLS = {
   chatPreviewInvite: { ok: [[[link], [link]]], bad: [[[''], 'link'], [['x'.repeat(2001)], 'link'], [[{}], 'link']] },
   chatJoin: { ok: [[[{ link, name: ' Joël ' }], [{ link, name: 'Joël' }]]], bad: [[[{ link: '', name: 'Joël' }], 'link'], [[{ link, name: '' }], 'name']] },
   chatTakePendingJoin: { ok: [[[], []]], bad: [] },
+  chatDropPendingJoin: { ok: [[[], []]], bad: [] },
+  chatCheckLink: { ok: [[[link], [link]]], bad: [[[''], 'link'], [[{}], 'link']] },
   chatLeaveWorkspace: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
   chatDeleteWorkspace: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
   chatSetMyName: { ok: [[[W, ' Mila '], [W, 'Mila']]], bad: [[[W, '   '], 'name']] },

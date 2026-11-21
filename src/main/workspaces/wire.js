@@ -280,8 +280,9 @@ function linkInText(text) {
 }
 
 // An invitation link in pasted text (contract 3.2): { server, workspace, secret }. Throws ChatError('bad_link') for
-// text that holds none, and ChatError('other_server') for a link to another server than server, the configured
-// account server as serverUrl() writes it. Without server, any server is accepted.
+// text that holds none, and ChatError('other_server') for a link to another server than server: the configured
+// account server as serverUrl() writes it, or a list of the addresses that count as that server (sameServers()), the
+// configured one first. Without server, any server is accepted.
 function parseInviteLink(text, server = null) {
   const bad = () => new ChatError('bad_link');
   if (typeof text !== 'string') throw bad();
@@ -312,9 +313,10 @@ function parseInviteLink(text, server = null) {
   if (!WORKSPACE_ID.test(fragment.w || '') || !SECRET.test(fragment.i || '')) throw bad();
   // 5. The server: the origin and the path without /join and a trailing slash.
   const linkServer = url.origin + url.pathname.slice(0, -'/join'.length).replace(/\/+$/, '');
-  // 6. One server in v1: the person's own.
-  if (server !== null && server !== undefined && linkServer !== server) {
-    throw new ChatError('other_server', { host: url.host, own: hostOf(server) });
+  // 6. One server in v1: the person's own, under any address it answers at.
+  const accepted = server === null || server === undefined ? null : [].concat(server).filter((s) => typeof s === 'string' && s);
+  if (accepted && !accepted.includes(linkServer)) {
+    throw new ChatError('other_server', { host: url.host, own: hostOf(accepted[0] || '') });
   }
   return { server: linkServer, workspace: fragment.w, secret: fragment.i };
 }
@@ -324,6 +326,58 @@ function hostOf(server) {
     return new URL(server).host;
   } catch (_) {
     return String(server);
+  }
+}
+
+// Addresses a home answered at before (contract 3.2), keyed by the home's origin. rukoo.io was
+// rukoo-account.bvdm.ai, which still serves the same accounts and workspaces (account/index.js FORMER_SERVERS), so a
+// link made on a device that still uses the old address opens on one that uses the new, and the other way round.
+// Android's InviteLink.FORMER_ADDRESSES is the same list.
+const FORMER_ADDRESSES = Object.freeze({ 'https://rukoo.io': Object.freeze(['https://rukoo-account.bvdm.ai']) });
+
+// The workspace home of a server's GET /v1/info (workspace.home.origin, server/WORKSPACES.md): an https origin, or
+// http on this computer. null without one.
+function homeOf(info) {
+  const home = info && info.workspace && typeof info.workspace === 'object' && info.workspace.home;
+  const origin = home && typeof home === 'object' ? home.origin : null;
+  if (typeof origin !== 'string' || !origin || origin.length > 2000) return null;
+  let url;
+  try {
+    url = new URL(origin);
+  } catch (_) {
+    return null;
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOCAL_HOSTS.includes(url.hostname))) return null;
+  if (url.username || url.password) return null;
+  return url.origin;
+}
+
+// The addresses an invitation link may name for the configured server: that server first, the home its saved
+// /v1/info names, and the former addresses of either. Every request still goes to the configured server; these only
+// decide which links are its own.
+function sameServers(server, info = null) {
+  const out = [];
+  const add = (s) => {
+    if (typeof s === 'string' && s && !out.includes(s)) out.push(s);
+  };
+  const home = homeOf(info);
+  add(server);
+  add(home);
+  for (const s of [server, home]) for (const former of FORMER_ADDRESSES[s] || []) add(former);
+  return out;
+}
+
+// Where a new invitation link points: the home the server's /v1/info names, so every device of the server reads the
+// link as its own, whichever address it signed in at. A server with a path of its own (https://host/rukoo) keeps it:
+// its home is only an origin, and the join page lives under that path.
+function inviteServer(server, info = null) {
+  const home = homeOf(info);
+  if (!home || typeof server !== 'string') return server;
+  try {
+    const url = new URL(server);
+    return url.pathname.replace(/\/+$/, '') === '' ? home : server;
+  } catch (_) {
+    return server;
   }
 }
 
@@ -1233,6 +1287,8 @@ const ARGS = {
   chatPreviewInvite: (link) => [input.link(link)],
   chatJoin: (x) => [input.join(x)],
   chatTakePendingJoin: () => [],
+  chatDropPendingJoin: () => [],
+  chatCheckLink: (link) => [input.link(link)],
   chatLeaveWorkspace: (w) => [ws(w)],
   chatDeleteWorkspace: (w) => [ws(w)],
   chatSetMyName: (w, n) => [ws(w), name(n, 'name')],
@@ -1281,6 +1337,10 @@ module.exports = {
   checkMentions,
   parseInviteLink,
   inviteLink,
+  homeOf,
+  sameServers,
+  inviteServer,
+  FORMER_ADDRESSES,
   uuidv7,
   localId,
   checkChanges,

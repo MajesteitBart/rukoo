@@ -83,10 +83,59 @@ data class InviteLink(val server: String, val workspace: String, val secret: Str
          * [parse], then step six: a link for a server other than [configured], the account's credential URL, is
          * `other_server`. Throws [WorkspaceError] with `bad_link` or `other_server`.
          */
-        fun check(text: String, configured: String, devHosts: Boolean): InviteLink {
+        fun check(text: String, configured: String, devHosts: Boolean): InviteLink = check(text, listOf(configured), devHosts)
+
+        /** [check] against every address that counts as the configured server ([sameServers]). */
+        fun check(text: String, servers: List<String>, devHosts: Boolean): InviteLink {
             val link = parse(text, devHosts) ?: throw WorkspaceError("bad_link")
-            if (link.server != configured) throw WorkspaceError("other_server")
+            if (link.server !in servers) throw WorkspaceError("other_server")
             return link
+        }
+
+        /**
+         * Addresses a home answered at before (RUK-234), keyed by the home's origin. rukoo.io was
+         * rukoo-account.bvdm.ai, which still serves the same accounts and workspaces (AccountService.FORMER_SERVERS),
+         * so a link made on a device at the old address opens on one at the new, and the other way round. Desktop's
+         * wire.js FORMER_ADDRESSES is the same list.
+         */
+        val FORMER_ADDRESSES: Map<String, List<String>> = mapOf("https://rukoo.io" to listOf("https://rukoo-account.bvdm.ai"))
+
+        /**
+         * The workspace home of a server's `GET /v1/info` (`workspace.home.origin`) as an origin: https, or http on
+         * this computer or the emulator's. Null without one.
+         */
+        fun homeOf(origin: String?): String? {
+            if (origin.isNullOrEmpty() || origin.length > 2000) return null
+            val url = origin.toHttpUrlOrNull() ?: return null
+            val host = url.host.lowercase()
+            val local = host in LOCAL || host == EMULATOR_HOST
+            if (url.scheme != "https" && !(url.scheme == "http" && local)) return null
+            if (url.username.isNotEmpty() || url.password.isNotEmpty()) return null
+            val defaultPort = if (url.scheme == "https") 443 else 80
+            return "${url.scheme}://${if (host.contains(':')) "[$host]" else host}${if (url.port != defaultPort) ":${url.port}" else ""}"
+        }
+
+        /**
+         * The addresses an invitation link may name for [configured]: that server first, the [home] its info names,
+         * and the former addresses of either. Every request still goes to the configured server; these only decide
+         * which links are its own.
+         */
+        fun sameServers(configured: String, home: String?): List<String> {
+            val out = LinkedHashSet<String>()
+            if (configured.isNotEmpty()) out += configured
+            if (!home.isNullOrEmpty()) out += home
+            for (s in listOfNotNull(configured, home)) FORMER_ADDRESSES[s]?.let { out += it }
+            return out.toList()
+        }
+
+        /**
+         * Where a new invitation link points: the [home], so every device of the server reads it as its own, whichever
+         * address it signed in at. A server under a path of its own keeps it: the home is only an origin.
+         */
+        fun inviteServer(server: String, home: String?): String {
+            if (home.isNullOrEmpty()) return server
+            val url = server.toHttpUrlOrNull() ?: return server
+            return if (url.encodedPath.trimEnd('/').isEmpty()) home else server
         }
 
         fun format(server: String, workspace: String, secret: String): String = "$server/join#w=$workspace&i=$secret"

@@ -58,6 +58,11 @@ data class AppSettings(
     val mcpPort: Int = DEFAULT_MCP_PORT,
     val density: Density = Density.STANDARD,
     val sort: SortOrder = SortOrder.DATE_DESC,
+    /**
+     * The card in Chat that names Rukoo on the computer (RUK-234, desktop's `chatAppsTip`): "" before the first
+     * workspace, "show" after the first one joined or made here, "done" once dismissed.
+     */
+    val chatAppsTip: String = "",
 ) {
     companion object {
         /** Desktop Rukoo's port; Clark's bridge looks for every Rukoo on it (rukoo_bridge.py). */

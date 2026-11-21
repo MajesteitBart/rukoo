@@ -1578,23 +1578,33 @@ const api = {
   accountServerInfo: () => account.serverInfo(),
   accountSetServer: (url) => account.setServer(accountText(url, 2000)),
   // The invite field takes an invite code or a team chat invitation link (contract 3.3). A link for this server signs
-  // up with workspaceInvite, and the Chat view opens the Join dialog with it afterwards.
+  // up with workspaceInvite, and the Chat view opens the Join dialog with it afterwards, also after a restart.
+  // join: a link the setup page's team chat step carried apart from the invite field. It signs up as the invite when
+  // the field is empty, and is joined afterwards either way.
   accountSignUp: async (input) => {
     const i = plainObject(input);
     const field = accountText(i.invite, 2000);
-    const split = workspaces ? workspaces.manage.splitInvite(field) : { invite: field, workspaceInvite: null, link: null };
+    const none = { invite: field, workspaceInvite: null, link: null };
+    const split = workspaces ? workspaces.manage.splitInvite(field) : none;
+    const carried = workspaces && !split.link && accountText(i.join, 2000) ? workspaces.manage.splitInvite(accountText(i.join, 2000)) : none;
+    const workspaceInvite = split.workspaceInvite || (!split.invite.trim() ? carried.workspaceInvite : null);
     const res = await account.signUp({
       email: accountText(i.email, 320),
       password: accountText(i.password, 1000),
       invite: accountText(split.invite, 200),
-      workspaceInvite: split.workspaceInvite || undefined
+      workspaceInvite: workspaceInvite || undefined
     });
-    if (split.link && workspaces) workspaces.manage.rememberJoin(split.link);
+    const link = split.link || carried.link;
+    if (link && workspaces) workspaces.manage.rememberJoin(link);
     return res;
   },
-  accountSignIn: (input) => {
+  // join: an invitation link the setup page's team chat step carried to the sign-in, which Chat then opens as a sign-up's.
+  accountSignIn: async (input) => {
     const i = plainObject(input);
-    return account.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000) });
+    const res = await account.signIn({ email: accountText(i.email, 320), password: accountText(i.password, 1000) });
+    const join = accountText(i.join, 2000);
+    if (join && workspaces) workspaces.manage.rememberJoin(join);
+    return res;
   },
   accountRecover: (input) => {
     const i = plainObject(input);
@@ -2308,7 +2318,9 @@ app.whenReady().then(() => {
     dataDir: path.join(app.getPath('userData'), 'data'),
     settings: () => engine.settings,
     timing: chatTiming(process.env),
-    host: chatHost
+    host: chatHost,
+    // Whether the server has team chat is asked at start, signed in or not. Tests ask only a server of their own.
+    autoInfo: !process.env.SEM_HIDDEN || Boolean(process.env.RUKOO_ACCOUNT_SERVER)
   }).init();
   protocol.handle(CHAT_FILE_SCHEME, serveChatFile);
   if (process.env.SEM_HIDDEN) {

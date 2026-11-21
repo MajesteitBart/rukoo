@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.mail.model.MailProviders
 import nl.bvdm.rukoo.settings.Language
@@ -58,7 +59,17 @@ import nl.bvdm.rukoo.ui.components.settingsDividerInset
 import nl.bvdm.rukoo.ui.components.StatusPill
 import nl.bvdm.rukoo.ui.icons.PanelIcons
 import nl.bvdm.rukoo.ui.icons.RukooIcons
+import nl.bvdm.rukoo.ui.root.AppMode
 import nl.bvdm.rukoo.ui.root.AppViewModel
+import nl.bvdm.rukoo.ui.chat.ChatIcons
+import nl.bvdm.rukoo.ui.components.RkButton
+import nl.bvdm.rukoo.ui.components.RkButtonKind
+import nl.bvdm.rukoo.ui.components.RkTextField
+import nl.bvdm.rukoo.ui.settings.SettingsRoutes
+import nl.bvdm.rukoo.ui.settings.hostOf
+import nl.bvdm.rukoo.workspaces.InviteLink
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import nl.bvdm.rukoo.ui.settings.Choice
 import nl.bvdm.rukoo.ui.settings.ChoiceSheet
 import nl.bvdm.rukoo.ui.settings.ErrorLine
@@ -82,6 +93,7 @@ private const val PAIR = "pair"
 private const val ADD = "add"
 private const val GOOGLE = "google"
 private const val IMAP = "imap:"
+private const val CHAT = AppViewModel.ONBOARDING_CHAT
 
 /** One step up in the setup flow. */
 private fun parent(step: String): String = when {
@@ -98,7 +110,8 @@ private fun parent(step: String): String = when {
 @Composable
 fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     val model: SetupModel = viewModel { SetupModel(app.services) }
-    var step by rememberSaveable { mutableStateOf(HOME) }
+    // Chat's Join with an invitation link opens straight on the team chat step.
+    var step by rememberSaveable { mutableStateOf(app.takeOnboardingStart() ?: HOME) }
     val context = LocalContext.current
     DisposableEffect(Unit) {
         onDispose {
@@ -152,7 +165,8 @@ fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
                 ) { current ->
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         when {
-                            current == HOME -> Home(app, model, onPair = { step = PAIR }, onAdd = { step = ADD })
+                            current == HOME -> Home(app, model, onPair = { step = PAIR }, onAdd = { step = ADD }, onChat = { step = CHAT })
+                            current == CHAT -> ChatStep(app)
                             current == PAIR -> PairComputerFlow(
                                 model,
                                 onDone = {
@@ -179,6 +193,7 @@ fun OnboardingScreen(app: AppViewModel, modifier: Modifier = Modifier) {
 @Composable
 private fun stepTitle(step: String): String = when {
     step == PAIR -> stringResource(R.string.onboarding_pair_title)
+    step == CHAT -> stringResource(R.string.onboarding_chat)
     step == ADD -> stringResource(R.string.settings_accounts_add)
     step == GOOGLE -> stringResource(R.string.settings_setup_google_title)
     step.startsWith(IMAP) -> stringResource(R.string.settings_setup_sign_in_title, providerLabel(MailProviders.preset(step.removePrefix(IMAP))))
@@ -224,9 +239,10 @@ private fun Brand() {
 }
 
 @Composable
-private fun Home(app: AppViewModel, model: SetupModel, onPair: () -> Unit, onAdd: () -> Unit) {
+private fun Home(app: AppViewModel, model: SetupModel, onPair: () -> Unit, onAdd: () -> Unit, onChat: () -> Unit) {
     val agentSettings by app.services.agentSettings.settings.collectAsStateWithLifecycle()
     val add by model.add.collectAsStateWithLifecycle()
+    val chat by app.chatState.collectAsStateWithLifecycle()
     val paired = agentSettings.computers.maxByOrNull { it.pairedAt }
     if (paired != null) NoteBox(stringResource(R.string.onboarding_paired_note, paired.name), tone = NoteTone.OK)
     SettingsCard {
@@ -247,12 +263,66 @@ private fun Home(app: AppViewModel, model: SetupModel, onPair: () -> Unit, onAdd
             recommended = false,
             onClick = onAdd,
         )
+        // Team chat without a mail account (RUK-234), on a server that has it: a link and a Rukoo account are enough.
+        if (chat.available) {
+            Option(
+                title = stringResource(if (chat.signedIn) R.string.onboarding_chat_open else R.string.onboarding_chat),
+                description = if (chat.signedIn) stringResource(R.string.onboarding_chat_open_help, chat.host) else stringResource(R.string.onboarding_chat_help),
+                icon = ChatIcons.Bubble,
+                recommended = false,
+                onClick = { if (chat.signedIn) app.setMode(AppMode.CHAT) else onChat() },
+            )
+        }
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
         if (add.working == SetupModel.AddKind.DEMO) Spinner(size = 14.dp, modifier = Modifier.padding(end = 8.dp))
         RkLinkButton(stringResource(R.string.onboarding_demo), model::addDemo, enabled = add.working == null)
     }
     add.error?.takeIf { add.working == null }?.let { ErrorLine(errorText(it)) }
+}
+
+/**
+ * Team chat's first step (RUK-234): the invitation link a colleague sent, checked here, then Settings' account form
+ * (new or existing) carries it. After it Chat opens with the Join sheet, also after a restart.
+ */
+@Composable
+private fun ChatStep(app: AppViewModel) {
+    val chat by app.chatState.collectAsStateWithLifecycle()
+    var text by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val badLink = stringResource(R.string.chat_join_bad_link)
+    val otherServer = stringResource(R.string.onboarding_chat_other_server)
+    // A link for this server, or null with the reason in error.
+    fun checked(): InviteLink? {
+        val link = InviteLink.parse(text.trim(), BuildConfig.DEBUG)
+        error = when {
+            link == null -> badLink
+            link.server !in chat.linkServers.ifEmpty { listOf(chat.server) } -> otherServer.format(hostOf(link.server), chat.host)
+            else -> null
+        }
+        return link?.takeIf { error == null }
+    }
+    // Without a link the form opens plain; a link is checked first and carried to it.
+    fun go(page: String) {
+        if (text.isBlank()) return app.openAccountWithLink(page, null)
+        checked()?.let { app.openAccountWithLink(page, it) }
+    }
+    Text(stringResource(R.string.onboarding_chat_link_help), style = Rk.type.text13, color = Rk.colors.text2)
+    RkTextField(
+        value = text,
+        onValueChange = {
+            text = it
+            error = null
+        },
+        label = stringResource(R.string.chat_join_link),
+        placeholder = "https://…/join#w=…",
+        error = error,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+        RkButton(stringResource(R.string.onboarding_chat_have_account), { go(SettingsRoutes.RUKOO_SIGNIN) }, kind = RkButtonKind.SECONDARY)
+        RkButton(stringResource(R.string.chat_empty_sign_up_action), { go(SettingsRoutes.RUKOO_SIGNUP) }, kind = RkButtonKind.PRIMARY)
+    }
 }
 
 /**

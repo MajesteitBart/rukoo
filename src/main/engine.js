@@ -64,6 +64,9 @@ const DEFAULT_SETTINGS = {
   newMailSound: false,
   // Settings > General > Team chat notifications: alerts for direct messages and mentions (workspaces/notify.js).
   chatNotifications: true,
+  // The card in Chat that names Rukoo's other apps (chat.js appsCard): '' before the first workspace, 'show' after the
+  // first join or new workspace, 'done' once dismissed.
+  chatAppsTip: '',
   badge: 'new',
   density: 'standard',
   sort: 'date-desc',
@@ -127,6 +130,7 @@ function normalizeSettings(s) {
   s.undoSend = UNDO_SEND_SECONDS.includes(s.undoSend) ? s.undoSend : UNDO_SEND_DEFAULT;
   s.newMailSound = s.newMailSound === true;
   s.chatNotifications = s.chatNotifications !== false;
+  s.chatAppsTip = ['show', 'done'].includes(s.chatAppsTip) ? s.chatAppsTip : '';
   s.signatureHtml = typeof s.signatureHtml === 'string' ? s.signatureHtml : '';
   s.swipeRight = SWIPE_ACTIONS.includes(s.swipeRight) ? s.swipeRight : DEFAULT_SETTINGS.swipeRight;
   s.swipeLeft = SWIPE_ACTIONS.includes(s.swipeLeft) ? s.swipeLeft : DEFAULT_SETTINGS.swipeLeft;

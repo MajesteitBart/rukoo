@@ -39,6 +39,7 @@ import nl.bvdm.rukoo.ui.components.Hairline
 import nl.bvdm.rukoo.ui.components.RkButton
 import nl.bvdm.rukoo.ui.components.RkButtonKind
 import nl.bvdm.rukoo.ui.components.RkIcon
+import nl.bvdm.rukoo.ui.components.RkLinkButton
 import nl.bvdm.rukoo.ui.icons.RukooIcons
 import nl.bvdm.rukoo.ui.mail.CornerButton
 import nl.bvdm.rukoo.ui.root.AppViewModel
@@ -201,15 +202,13 @@ private fun ChatGateView(app: AppViewModel, gate: ChatGate, chat: ChatState, mod
                             primary = stringResource(R.string.chat_empty_sign_up_action) to { app.openSettings(listOf(SettingsRoutes.RUKOO, SettingsRoutes.RUKOO_SIGNUP)) },
                             secondary = stringResource(R.string.chat_empty_sign_in_action) to { app.openSettings(listOf(SettingsRoutes.RUKOO, SettingsRoutes.RUKOO_SIGNIN)) },
                         )
-                        if (chat.inviteSignups) {
-                            Text(
-                                stringResource(R.string.chat_empty_invite_hint),
-                                style = Rk.type.text12_5,
-                                color = Rk.colors.text3,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(horizontal = 32.dp, vertical = 12.dp),
-                            )
-                        }
+                        // A link a colleague sent: onboarding's team chat steps check it, then sign up or in with it.
+                        RkLinkButton(
+                            stringResource(R.string.chat_workspace_join),
+                            onClick = app::openChatJoin,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                            icon = RukooIcons.Link,
+                        )
                     }
                     ChatGate.NO_WORKSPACE -> {
                         EmptyState(

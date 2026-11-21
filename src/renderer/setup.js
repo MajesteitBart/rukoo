@@ -1,28 +1,222 @@
 import { t, languages, getLanguage, setLanguage, localize } from './i18n.js';
 import { icons, providerLogos } from './icons.js';
 import { api, brandLogo, esc, $, toast } from './ui.js';
+import { showRecoveryKey } from './rukoo-account.js';
 
 const ORDER = ['google', 'yahoo', 'outlook', 'exchange', 'office365', 'other'];
+const MIN_PASSWORD = 12;
 
-export function openSetup(ctx, { first = false } = {}) {
+// The setup page on screen: { page, first, close, chatChanged }, or null.
+let current = null;
+
+// Closes the setup page; firstOnly: only the first-run one, which a Rukoo account alone makes way for (app.js).
+export function closeSetup({ firstOnly = false } = {}) {
+  if (current && (!firstOnly || current.first)) current.close();
+}
+
+// Team chat's state changed: the grid's way in to team chat comes or goes with it.
+export function setupChatChanged() {
+  current?.chatChanged();
+}
+
+// first: the first-run page, without a way back. chat: open straight on team chat's steps, 'link' or 'account', as
+// Chat's signed-out state does; back closes the page then. added(): after a mail account was added here.
+export function openSetup(ctx, { first = false, chat = null, added = null } = {}) {
+  // Without a mail account and outside Chat, the page that replaces a first-run one is first-run too: nothing behind
+  // it to go back to.
+  if (current && current.first) first = true;
+  // Replaced by this one: no setup-closed, the window stays covered.
+  current?.close({ quiet: true });
   document.querySelector('.page.setup')?.remove();
   const page = document.createElement('div');
   page.className = 'page setup';
+  if (first) page.dataset.first = '1';
   document.getElementById('overlays').appendChild(page);
   let providers = ctx.S.data.providers;
+  // The invitation link the team chat steps carry to the account form: { link, host } as main read it.
+  let chatLink = null;
 
-  const close = () => {
+  const close = ({ quiet = false } = {}) => {
     api('googleCancel').catch(() => {});
     page.remove();
     document.removeEventListener('keydown', onKey, true);
+    if (current && current.page === page) current = null;
+    // A pending join that waited for this page goes on (chat.js maybeTakeJoin).
+    if (!quiet) document.dispatchEvent(new Event('rukoo:setup-closed'));
+  };
+  // One step back: the account form goes back to the link it carries, the rest to the grid; a page opened straight on
+  // team chat closes from its first step.
+  const back = () => {
+    const step = page.querySelector('[data-chat-step]')?.dataset.chatStep;
+    if (step === 'account' && chatLink) return showChatLink(chatLink.link);
+    if (chat && step) return close();
+    showGrid();
   };
   const onKey = (e) => {
     if (e.key !== 'Escape' || document.querySelector('.scrim')) return;
     e.stopPropagation();
-    if (page.querySelector('.login')) showGrid();
+    if (page.querySelector('.login')) back();
     else if (!first) close();
   };
   document.addEventListener('keydown', onKey, true);
+  current = { page, first, close, chatChanged: () => renderChatOffer() };
+
+  // Team chat without a mail account (RUK-234): on a server that has it, for someone not signed in to Rukoo yet.
+  function renderChatOffer() {
+    const box = page.querySelector('[data-setup-chat]');
+    if (!box) return;
+    const on = ctx.chatOffer();
+    if (on === !box.hidden && box.childElementCount) return;
+    box.hidden = !on;
+    box.innerHTML = on
+      ? `<span class="setup-chat-ic" aria-hidden="true">${icons.chat}</span>
+        <div class="setup-chat-text">
+          <h2 id="setup-chat-title">${esc(t('setup.chat.title'))}</h2>
+          <p>${esc(t('setup.chat.body'))}</p>
+          <div class="setup-chat-actions">
+            <button class="btn secondary" data-s="chat-link">${icons.link}<span>${esc(t('chat.workspace.join'))}</span></button>
+            <button class="link-btn" data-s="chat-account">${esc(t('setup.chat.account'))}</button>
+          </div>
+        </div>`
+      : '';
+  }
+
+  const backButton = (s = 'grid') =>
+    `<button class="icon-btn setup-back" data-s="${s}" data-i18n-title="common.actions.back" title="${esc(t('common.actions.back'))}">${icons.back}</button>`;
+  const chatHead = (title) => `<div class="login-head"><span class="logo setup-chat-logo">${icons.chat}</span><h2>${esc(title)}</h2></div>`;
+
+  // Team chat, step 1: the invitation link a colleague sent, checked by main before an account exists.
+  function showChatLink(value = '') {
+    page.innerHTML = `
+      ${backButton('chat-back')}
+      <div class="setup-inner login" data-chat-step="link">
+        ${chatHead(t('setup.chat.linkTitle'))}
+        <form class="form" data-form="chat-link" autocomplete="off">
+          <p class="setup-chat-lead">${esc(t('setup.chat.linkHelp'))}</p>
+          <label>${esc(t('chat.join.link'))}<input type="text" name="link" spellcheck="false" placeholder="https://…/join#w=…" value="${esc(value)}"/></label>
+          <div class="error" data-error></div>
+          <div class="actions">
+            <button type="button" class="link-btn" data-s="chat-nolink">${esc(t('setup.chat.noLink'))}</button>
+            <span></span>
+            <button class="btn" type="submit">${esc(t('setup.chat.continue'))}</button>
+          </div>
+        </form>
+      </div>`;
+    const field = page.querySelector('[name="link"]');
+    field.focus();
+    if (value) field.select();
+  }
+
+  async function checkChatLink(form) {
+    const err = form.querySelector('[data-error]');
+    const btn = form.querySelector('button[type=submit]');
+    const text = String(new FormData(form).get('link') || '').trim();
+    err.textContent = '';
+    if (!text) {
+      err.textContent = t('chat.join.badLink');
+      return form.querySelector('[name="link"]').focus();
+    }
+    btn.disabled = true;
+    try {
+      chatLink = await api('chatCheckLink', text);
+      showChatAccount({ mode: 'signup' });
+    } catch (ex) {
+      if (!page.isConnected) return;
+      btn.disabled = false;
+      const own = ctx.chatHost();
+      if (ex.code === 'other_server') err.textContent = t('setup.chat.otherServer', { host: linkHost(text) || '?', own });
+      else if (ex.code === 'bad_link' || ex.code === 'invalid') err.textContent = t('chat.join.badLink');
+      else err.textContent = ex.message;
+      form.querySelector('[name="link"]').focus();
+    }
+  }
+
+  // Team chat, step 2: a Rukoo account, new or existing, which carries the link (main remembers it as a pending join,
+  // which Chat opens as soon as it shows, also after a restart).
+  async function showChatAccount({ mode = 'signup' } = {}) {
+    const status = await api('accountStatus').catch(() => null);
+    let info = status && status.info;
+    if (!info && status && status.server) info = await api('accountServerInfo').catch(() => null);
+    if (!page.isConnected) return;
+    const signups = info && info.signups;
+    const closed = signups === 'closed';
+    const signIn = mode === 'signin' || closed;
+    // On an invite-only server an invitation link stands in for the invite code where the server says so (contract
+    // 2.12); without one, or where it doesn't, the form asks for the code.
+    const linkIsCode = Boolean(chatLink && info && info.workspace && info.workspace.inviteSignups);
+    const askCode = !signIn && signups === 'invite' && !linkIsCode;
+    const host = ctx.chatHost() || hostOf(status && status.server);
+    const lead = chatLink ? t('setup.chat.accountLeadLink', { host }) : t('setup.chat.accountLead', { host });
+    page.innerHTML = `
+      ${backButton('chat-back')}
+      <div class="setup-inner login" data-chat-step="account">
+        ${chatHead(signIn ? t('setup.chat.signInTitle') : t('setup.chat.signUpTitle'))}
+        <form class="form" data-form="${signIn ? 'chat-signin' : 'chat-signup'}" autocomplete="off">
+          <p class="setup-chat-lead">${esc(lead)}</p>
+          ${closed && mode !== 'signin' ? `<p class="setup-chat-lead">${esc(t('settings.rukoo.closed'))}</p>` : ''}
+          <label>${esc(t('setup.fields.email'))}<input type="email" name="email" autocomplete="username" spellcheck="false" placeholder="${esc(t('setup.fields.emailExample'))}"/></label>
+          <label>${esc(t('setup.fields.password'))}<input type="password" name="password" autocomplete="${signIn ? 'current-password' : 'new-password'}"/>
+            ${signIn ? '' : `<span class="field-help">${esc(t('settings.rukoo.passwordHelp'))}</span>`}</label>
+          ${signIn ? '' : `<label>${esc(t('settings.rukoo.repeat'))}<input type="password" name="repeat" autocomplete="new-password"/></label>`}
+          ${askCode ? `<label>${esc(t('settings.rukoo.invite'))}<input type="text" name="invite" spellcheck="false" autocomplete="off"/></label>` : ''}
+          ${signIn ? '' : `<label class="inline"><input type="checkbox" name="understand"/> ${esc(t('settings.rukoo.understand'))}</label>`}
+          <div class="error" data-error></div>
+          <div class="actions">
+            ${
+              closed
+                ? '<span></span>'
+                : `<button type="button" class="link-btn" data-s="${signIn ? 'chat-to-signup' : 'chat-to-signin'}">${esc(t(signIn ? 'setup.chat.toSignUp' : 'setup.chat.toSignIn'))}</button>`
+            }
+            <span></span>
+            <button class="btn" type="submit">${esc(signIn ? t('settings.rukoo.signIn') : t('settings.rukoo.create'))}</button>
+          </div>
+        </form>
+      </div>`;
+    page.querySelector('[name="email"]').focus();
+  }
+
+  async function submitChatAccount(form) {
+    const f = new FormData(form);
+    const err = form.querySelector('[data-error]');
+    const btn = form.querySelector('button[type=submit]');
+    const label = btn.textContent;
+    const signIn = form.dataset.form === 'chat-signin';
+    const email = String(f.get('email') || '').trim();
+    const password = String(f.get('password') || '');
+    const stop = (message, name) => {
+      err.textContent = message;
+      if (name) form.querySelector(`[name="${name}"]`)?.focus();
+    };
+    err.textContent = '';
+    if (!email) return stop(t('account.errors.invalid_email'), 'email');
+    if (signIn && !password) return stop(t('account.errors.unauthorized'), 'password');
+    if (!signIn) {
+      if ([...password].length < MIN_PASSWORD) return stop(t('account.errors.weak_password'), 'password');
+      if (password !== f.get('repeat')) return stop(t('settings.rukoo.mismatch'), 'repeat');
+      if (f.get('understand') !== 'on') return stop(t('settings.rukoo.needUnderstand'), 'understand');
+    }
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.rukoo.working'))}`;
+    const join = chatLink ? chatLink.link : '';
+    try {
+      if (signIn) {
+        await api('accountSignIn', { email, password, join });
+        toast(t('settings.rukoo.signedIn'));
+      } else {
+        const res = await api('accountSignUp', { email, password, invite: String(f.get('invite') || '').trim(), join });
+        await showRecoveryKey(res.recoveryKey);
+        toast(t('settings.rukoo.welcome'));
+      }
+    } catch (ex) {
+      if (!page.isConnected) return;
+      btn.disabled = false;
+      btn.textContent = label;
+      return stop(ex.message);
+    }
+    close();
+    // Chat opens, and with a link its Join dialog (chat.js maybeTakeJoin).
+    await ctx.enterChat();
+  }
 
   function showGrid() {
     page.innerHTML = `
@@ -43,7 +237,9 @@ export function openSetup(ctx, { first = false } = {}) {
         </div>
         <button class="setup-demo" data-s="demo" data-i18n="setup.demo.action">${esc(t('setup.demo.action'))}</button>
         ${ctx.S.data.googleAvailable ? '' : `<button class="setup-demo" style="margin-top:4px" data-s="import-google" data-i18n="setup.google.import">${esc(t('setup.google.import'))}</button>`}
+        <section class="setup-chat" data-setup-chat aria-labelledby="setup-chat-title" hidden></section>
       </div>`;
+    renderChatOffer();
   }
 
   // Google accounts sign in through the browser (OAuth); a password form stays available as fallback.
@@ -154,6 +350,8 @@ export function openSetup(ctx, { first = false } = {}) {
   page.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.target;
+    if (form.dataset.form === 'chat-link') return checkChatLink(form);
+    if (form.dataset.form === 'chat-signup' || form.dataset.form === 'chat-signin') return submitChatAccount(form);
     const id = page.dataset.provider;
     const f = new FormData(form);
     const err = form.querySelector('[data-error]');
@@ -213,6 +411,7 @@ export function openSetup(ctx, { first = false } = {}) {
     ctx.S.scope = 'all';
     ctx.S.view = 'inbox';
     await ctx.refresh();
+    added?.();
   }
 
   page.addEventListener('click', async (e) => {
@@ -222,6 +421,19 @@ export function openSetup(ctx, { first = false } = {}) {
     switch (b.dataset.s) {
       case 'close':
         return close();
+      case 'chat-link':
+        chatLink = null;
+        return showChatLink();
+      case 'chat-account':
+      case 'chat-nolink':
+        chatLink = null;
+        return showChatAccount({ mode: 'signup' });
+      case 'chat-to-signin':
+        return showChatAccount({ mode: 'signin' });
+      case 'chat-to-signup':
+        return showChatAccount({ mode: 'signup' });
+      case 'chat-back':
+        return back();
       case 'grid':
         api('googleCancel').catch(() => {});
         return showGrid();
@@ -274,5 +486,23 @@ export function openSetup(ctx, { first = false } = {}) {
     }
   });
 
-  showGrid();
+  if (chat === 'link') showChatLink();
+  else if (chat === 'account') showChatAccount({ mode: 'signup' });
+  else showGrid();
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch (_) {
+    return '';
+  }
+}
+
+// The host of the link in text, for the other-server message; a link pasted without https:// has one too.
+function linkHost(text) {
+  const s = String(text || '');
+  const m = s.match(/https?:\/\/\S+/) || s.match(/[A-Za-z0-9.-]+(?::[0-9]+)?\/\S*join#\S*/);
+  if (!m) return '';
+  return hostOf(/^https?:\/\//.test(m[0]) ? m[0] : `https://${m[0]}`);
 }

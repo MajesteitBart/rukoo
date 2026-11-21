@@ -242,6 +242,9 @@ class AccountService(
         }
     }
 
+    /** When the current server's saved `GET /v1/info` was fetched, or null without one. */
+    fun infoAt(): Long? = synchronized(lock) { state.info?.takeIf { it.server == (state.server ?: defaultServer) }?.at }
+
     /** Who runs the server and where it keeps data; shown before anyone signs up. The current server's is kept. */
     suspend fun serverInfo(url: String = server): ServerInfo {
         val target = AccountServers.serverUrl(url, devHosts) ?: throw fail("no_server")
@@ -320,7 +323,9 @@ class AccountService(
         val address = AccountKeys.normalizeEmail(email)
         checkNew(address, password)
         val at = server
-        if (workspaceInvite != null && workspaceInvite.server != at) throw fail("invalid")
+        // rukoo.io and its former address are one server (InviteLink.sameServers); the request still goes to at.
+        val home = InviteLink.homeOf(status().info?.workspace?.home?.origin)
+        if (workspaceInvite != null && workspaceInvite.server !in InviteLink.sameServers(at, home)) throw fail("invalid")
         serverInfo(at)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF

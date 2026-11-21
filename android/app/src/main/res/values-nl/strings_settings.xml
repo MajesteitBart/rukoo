@@ -285,6 +285,13 @@
     <string name="onboarding_add_help">Google, Outlook, Yahoo of een ander mailaccount</string>
     <string name="onboarding_demo">Het demo-account proberen</string>
     <string name="onboarding_pair_title">Verbinden met je computer</string>
+    <string name="onboarding_chat">Deelnemen aan de teamchat</string>
+    <string name="onboarding_chat_help">Heb je een uitnodigingslink van een collega? Teamchat werkt ook zonder mailaccount.</string>
+    <string name="onboarding_chat_open">Teamchat openen</string>
+    <string name="onboarding_chat_open_help">Teamchat op je Rukoo-account bij %1$s</string>
+    <string name="onboarding_chat_link_help">Plak de uitnodigingslink die je van een collega kreeg, als je die hebt. Maak daarna een Rukoo-account of log in op het jouwe: daarop draait teamchat.</string>
+    <string name="onboarding_chat_have_account">Ik heb al een account</string>
+    <string name="onboarding_chat_other_server">Deze uitnodiging is voor %1$s, en Rukoo gebruikt %2$s voor teamchat. Je kunt de server wijzigen via Instellingen > Rukoo-account.</string>
     <string name="settings_swipe_right">Naar rechts vegen</string>
     <string name="settings_swipe_left">Naar links vegen</string>
     <string name="settings_actions_none">Niets</string>

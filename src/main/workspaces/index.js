@@ -203,7 +203,8 @@ function filesOf(info) {
 class WorkspaceService extends EventEmitter {
   // settings: () => engine.settings. timing: overrides of TIMING (chatTiming). WebSocket, now, random and timers can
   // be replaced in tests. host: what only Electron does for files.js (dialogs, opening a file, nativeImage), which
-  // main.js gives and tests replace.
+  // main.js gives and tests replace. autoInfo: GET /v1/info by itself, signed in or not (refreshInfo), which main.js
+  // turns off for tests that didn't name a server of their own.
   constructor({
     account,
     dataDir,
@@ -213,11 +214,17 @@ class WorkspaceService extends EventEmitter {
     now = Date.now,
     random = Math.random,
     timers = realTimers,
-    host = {}
+    host = {},
+    autoInfo = true
   }) {
     super();
     this.account = account;
     this.dataDir = dataDir;
+    this.autoInfo = autoInfo;
+    // The last GET /v1/info this service asked for by itself: when it began and for which server, and the one on its
+    // way, which a second ask shares (maybeRefreshInfo, refreshInfo).
+    // Per server: { at, asking }, so switching servers and back doesn't ask the first one twice.
+    this.infoTries = new Map();
     this.file = path.join(dataDir, 'chat.db');
     this.settings = typeof settings === 'function' ? settings : () => settings || {};
     this.timing = { ...TIMING, ...timing };
@@ -283,9 +290,8 @@ class WorkspaceService extends EventEmitter {
       this.timers.setInterval(() => {
         if (this.live()) this.list().catch(() => {});
       }, this.timing.listEvery),
-      this.timers.setInterval(() => {
-        if (this.signedIn) this.refreshInfo();
-      }, this.timing.infoEvery)
+      // Every hour, unless something else asked within the last 54 minutes.
+      this.timers.setInterval(() => this.maybeRefreshInfo({ maxAge: Math.round(this.timing.infoEvery * 0.9) }), this.timing.infoEvery)
     );
     return this;
   }
@@ -379,7 +385,8 @@ class WorkspaceService extends EventEmitter {
         this.discard();
       } else {
         this.openCache(server, tag);
-        this.refreshInfo();
+        // At start signed in, and after a sign-in, which fetched it a moment ago itself.
+        this.maybeRefreshInfo({ maxAge: MINUTE });
         this.startNetwork();
       }
     } else if (availableChanged) {
@@ -387,6 +394,8 @@ class WorkspaceService extends EventEmitter {
       if (this.live()) this.startNetwork();
       else this.stopNetwork({ keepRuns: true });
     }
+    // Signed out too: whether the server has team chat decides whether Chat shows, and the setup page's way to it.
+    if (!signedIn) this.maybeRefreshInfo();
     this.stateChanged();
   }
 
@@ -421,6 +430,11 @@ class WorkspaceService extends EventEmitter {
     this.lostUnsent = 0;
     let gone = true;
     this.stopRemoveTimer();
+    try {
+      this.manage.onSignedOut();
+    } catch (err) {
+      this.hookFailed(err);
+    }
     if (this.store) {
       gone = this.store.wipe();
       this.store = null;
@@ -517,14 +531,41 @@ class WorkspaceService extends EventEmitter {
     }
   }
 
-  // GET /v1/info again: at start signed in, after a sign-in and every hour (contract 3.1). The account says 'info',
-  // which follow() reads.
+  // GET /v1/info again: at start signed in, after a sign-in and every hour (contract 3.1). With autoInfo also while
+  // signed out, so Chat shows on a server that has it before anyone signs in. The account says 'info', which follow()
+  // reads.
   refreshInfo() {
-    if (!this.signedIn || this.closed) return Promise.resolve();
-    return this.account.serverInfo().then(
+    if ((!this.signedIn && !this.autoInfo) || this.closed) return Promise.resolve();
+    const status = this.account.status();
+    if (!status || !status.server) return Promise.resolve();
+    const server = status.server;
+    const tried = this.infoTries.get(server);
+    if (tried && tried.asking) return tried.asking;
+    const asking = this.account.serverInfo(server).then(
       () => {},
       () => {}
     );
+    const entry = { at: this.now(), asking };
+    this.infoTries.set(server, entry);
+    asking.then(() => {
+      if (entry.asking === asking) entry.asking = null;
+    });
+    return asking;
+  }
+
+  // GET /v1/info when the saved answer is missing or older than maxAge, at most once a minute per server, so a start,
+  // a sign-in or a new server learns whether there is team chat without asking a server that doesn't answer over and
+  // over. Signed out only with autoInfo.
+  maybeRefreshInfo({ maxAge = this.timing.infoEvery } = {}) {
+    if ((!this.signedIn && !this.autoInfo) || this.closed) return;
+    const status = this.account.status();
+    const server = status && status.server;
+    if (!server) return;
+    const tried = this.infoTries.get(server);
+    if (tried && (tried.asking || this.now() - tried.at < MINUTE)) return;
+    const at = typeof this.account.infoAt === 'function' ? this.account.infoAt() : null;
+    if (this.info && Number.isFinite(at) && this.now() - at < maxAge) return;
+    this.refreshInfo();
   }
 
   // ---- the network ----

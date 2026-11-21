@@ -36,7 +36,7 @@ import {
 import { fillFrame } from './mailframe.js';
 import { mountComposer } from './composer.js';
 import { openSettings, promptDialog } from './settings.js';
-import { openSetup } from './setup.js';
+import { openSetup, closeSetup, setupChatChanged } from './setup.js';
 import { openWhatsNew } from './whats-new.js';
 import { actionFor, keyLabel, tip, setKeymap } from './keymap.js';
 import { initSortActivity, setActivity, setCategories, sortStatusHtml, toggleSortPanel, sortPanelOpen } from './sort-activity.js';
@@ -303,10 +303,7 @@ async function refreshOnce() {
   renderShell();
   // After the shell, which holds the reading pane; the newest email that opens below makes way for the editor.
   if (first) takeSendFailures();
-  if (!data.accounts.length) {
-    if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
-    return;
-  }
+  if (!data.accounts.length) return noMailAccount();
   renderSearch();
   renderSidebar();
   renderList();
@@ -330,6 +327,8 @@ async function refreshOnce() {
   if (meetingMode() && !meeting.isOpen()) meeting.show();
   if (chatMode() && !chat.isOpen()) chat.show();
   restoreChat();
+  // Chat's state may have come before the mailbox did: a pending join opens Chat now (chat.js maybeTakeJoin).
+  chat.offerPendingJoin();
 }
 
 // Chat was the mode when the window last closed: once chat's state says it is there, and the mailbox is up, the window
@@ -340,13 +339,70 @@ function restoreChat() {
   if (chat.available() && prefs.mode === 'mail') setMode('chat');
 }
 
-// Chat's state changed whether it is there (chat.js): the switch gains or loses its segment, and a window in Chat
-// mode without it goes to Mail.
+// Chat's state changed whether it is there or signed in (chat.js): the switch gains or loses its segment, and a window
+// in Chat mode without it goes to Mail. Without a mail account, a Rukoo account alone opens Chat (noMailAccount).
 function chatAvailability() {
-  if (!S.data || !S.data.accounts.length) return;
+  setupChatChanged();
+  if (!S.data) return;
+  if (!S.data.accounts.length) return noMailAccount();
   if (chatMode() && !chat.available()) setMode('mail');
   else renderSidebar();
   restoreChat();
+}
+
+// Team chat without a mail account (RUK-234): signed in to a Rukoo account whose server has team chat. The window
+// runs in Chat; Mail, Calendar and Meetings open the setup page to add a mail account first (setMode).
+const chatOnly = () => Boolean(S.data && !S.data.accounts.length && chat.known() && chat.available() && chat.signedIn());
+// The window runs: with a mail account, or with Chat alone. The first-run page covers it otherwise.
+const windowRuns = () => Boolean(S.data && (S.data.accounts.length || chatOnly()));
+
+let setupAfterSettings = false;
+
+// No mail account: Chat with a Rukoo account, else the first-run setup page. The window waits for chat's state before
+// it picks, so a restart in Chat doesn't show the setup page first.
+function noMailAccount() {
+  if (!chat.known()) return;
+  // The title bar's classes follow (chat-only, no-accounts).
+  if (S.data) renderShell();
+  if (!chatOnly()) {
+    // Signed out in Settings: the first-run page waits until Settings closes, so one page at a time takes Escape.
+    if (document.querySelector('#overlays .page.settings')) {
+      if (!setupAfterSettings) {
+        setupAfterSettings = true;
+        document.addEventListener(
+          'rukoo:settings-closed',
+          () => {
+            setupAfterSettings = false;
+            noMailAccount();
+          },
+          { once: true }
+        );
+      }
+      return;
+    }
+    if (!document.querySelector('.page.setup')) openSetup(ctx, { first: true });
+    return;
+  }
+  // A setup page the person opened to add mail stays; the first-run one makes way.
+  closeSetup({ firstOnly: true });
+  chatWanted = false;
+  if (!chatMode()) {
+    const was = prefs.mode;
+    prefs.mode = 'chat';
+    savePrefs();
+    if (was === 'calendar') calendar.hide();
+    if (was === 'meeting') meeting.hide();
+    renderShell();
+  }
+  renderSidebar();
+  if (!chat.isOpen()) chat.show();
+}
+
+// After a sign-up or sign-in from the setup page's team chat steps: Chat, with the Join dialog when a link came along.
+async function enterChat() {
+  await chat.refreshState();
+  await refresh().catch(() => {});
+  if (S.data && S.data.accounts.length && chat.available()) setMode('chat');
 }
 
 // ---------- older mail ----------
@@ -652,7 +708,9 @@ function renderShell() {
     b.classList.toggle('on', Boolean(prefs.agentOpen));
     b.setAttribute('aria-pressed', String(Boolean(prefs.agentOpen)));
   }
-  document.body.classList.toggle('no-accounts', !S.data?.accounts.length);
+  // Chat with a Rukoo account alone keeps the mode tabs, which lead to adding mail, and leaves out the mail search.
+  document.body.classList.toggle('no-accounts', !S.data?.accounts.length && !chatOnly());
+  document.body.classList.toggle('chat-only', chatOnly());
   document.body.classList.toggle('collapsed-sidebar', collapsed);
 }
 
@@ -1039,6 +1097,11 @@ function watchModeTabs(tabs) {
 
 function setMode(mode) {
   if (mode === prefs.mode || !modes().includes(mode)) return;
+  // Chat with a Rukoo account alone: the other modes need a mail account, which the setup page adds; Mail opens on it.
+  if (chatOnly() && mode !== 'chat') {
+    openSetup(ctx, { added: () => setMode('mail') });
+    return;
+  }
   const was = prefs.mode;
   prefs.mode = mode;
   savePrefs();
@@ -3474,7 +3537,7 @@ document.addEventListener('keydown', (e) => {
     return setAgentOpen(true, { focus: true });
   }
   if (e.target.closest && e.target.closest('.composer')) return;
-  if (!S.data || !S.data.accounts.length) return;
+  if (!windowRuns()) return;
   // Ctrl+1 and Ctrl+2 switch between Mail and Calendar, as in Outlook; Ctrl+3 opens the meetings and Ctrl+4 the chat,
   // while the server has team chat.
   if (ctrl && !e.shiftKey && !e.altKey && (e.key === '1' || e.key === '2' || e.key === '3' || (e.key === '4' && chat.available()))) {
@@ -3769,7 +3832,7 @@ window.mail.on(async ({ type, payload }) => {
   // that conversation and message (contract 5.7).
   if (type === 'chat' && payload && typeof payload === 'object') {
     if (payload.kind === 'open') {
-      if (S.data && S.data.accounts.length && chat.available()) {
+      if (windowRuns() && chat.available()) {
         setMode('chat');
         chat.openConversation(payload.ws, payload.conversation, Number.isSafeInteger(payload.seq) ? payload.seq : null);
       }
@@ -3924,7 +3987,18 @@ export const ctx = {
   // Team chat (chat.js): whether it is on screen, its badge on the Chat tab in every mode, and whether it is there.
   chatMode: () => chatMode(),
   renderModeSwitch: () => renderModeSwitch(),
-  chatAvailability: () => chatAvailability()
+  chatAvailability: () => chatAvailability(),
+  windowRuns: () => windowRuns(),
+  // A pending join (chat.js maybeTakeJoin): Chat opens for its Join dialog, from whatever mode the window is in.
+  showChatForJoin: () => {
+    if (windowRuns() && chat.available() && !chatMode()) setMode('chat');
+  },
+  // The setup page's way in to team chat (setup.js): whether to offer it, the server's host, and Chat after it.
+  chatOffer: () => chat.known() && chat.available() && !chat.signedIn(),
+  chatHost: () => chat.host(),
+  enterChat: () => enterChat(),
+  // Chat's signed-out state: the same steps, on the setup page opened straight on them.
+  openChatSetup: (step = 'link') => openSetup(ctx, { chat: step })
 };
 
 calendar.init(ctx);

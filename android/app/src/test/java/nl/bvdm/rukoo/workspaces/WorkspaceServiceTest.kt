@@ -605,6 +605,90 @@ class WorkspaceServiceTest {
     }
 
     @Test
+    fun `the pending join waits on disk across a restart until it is joined or let go`() = runTest {
+        val h = Harness(this, db)
+        h.list()
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.connection == Connection.ONLINE }
+        val link = InviteLink(SERVER, ws, "s".repeat(43))
+        s.rememberJoin(link)
+        assertTrue(File(db.file.parentFile, "chat-join.json").exists())
+        assertEquals(link, s.takePendingJoin())
+        // Shown once in this process; it stays on disk.
+        assertFalse(s.state.until { !it.pendingJoin }.pendingJoin)
+        s.close()
+
+        // The next start of the same session offers it again; Cancel in the Join sheet lets it go.
+        val again = h.start()
+        assertTrue(again.state.until { it.pendingJoin }.pendingJoin)
+        assertEquals(link, again.takePendingJoin())
+        again.dropPendingJoin()
+        assertFalse(File(db.file.parentFile, "chat-join.json").exists())
+        again.close()
+        val third = h.start()
+        third.state.until { it.connection == Connection.ONLINE }
+        assertFalse(third.state.value.pendingJoin)
+        assertNull(third.takePendingJoin())
+    }
+
+    @Test
+    fun `a pending join older than an invitation lasts, or of another session, is no pending join`() = runTest {
+        val h = Harness(this, db)
+        h.list()
+        val file = File(db.file.parentFile, "chat-join.json")
+        file.parentFile?.mkdirs()
+        val link = "$SERVER/join#w=$ws&i=${"s".repeat(43)}"
+        file.writeText("""{"link":"$link","tag":"mine","at":${TestDb.NOW - 8 * 24 * 60 * 60 * 1000L}}""")
+        h.account.signIn("mine")
+        val s = h.start()
+        s.state.until { it.connection == Connection.ONLINE }
+        assertFalse(s.state.value.pendingJoin)
+        assertNull(s.takePendingJoin())
+        assertFalse(file.exists())
+        s.close()
+
+        file.writeText("""{"link":"$link","tag":"someone-else","at":${TestDb.NOW}}""")
+        val other = h.start()
+        other.state.until { it.connection == Connection.ONLINE }
+        assertFalse(other.state.value.pendingJoin)
+        assertFalse("another session's join goes once the cache opens", file.exists())
+    }
+
+    @Test
+    fun `links from the home and its former address are this server's, and new links name the home`() = runTest {
+        val info = CHAT_INFO.copy(workspace = CHAT_INFO.workspace!!.copy(home = WorkspaceHome("https://rukoo.io")))
+        val h = Harness(this, db, info)
+        h.seed { syncedWs() }
+        h.list(ws)
+        h.workspace(ws, room())
+        val secret = "s".repeat(43)
+        h.http.on("POST", h.route(ws, "/invites/preview")) {
+            ok(InvitePreview.serializer(), InvitePreview(WorkspaceRef(ws, "Team"), "member", 1, IssuerName("Olga"), 0))
+        }
+        h.http.on("POST", h.route(ws, "/invites")) { ok(CreatedInvite.serializer(), CreatedInvite(Invite("i_" + "A".repeat(22), "member"), secret), status = 201) }
+        h.account.signIn("mine")
+        val s = h.start()
+        val state = s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
+        assertEquals(listOf(SERVER, "https://rukoo.io", "https://rukoo-account.bvdm.ai"), state.linkServers)
+        // A link made at the former address previews here, as one made at the home does.
+        assertTrue(s.previewInvite(InviteLink("https://rukoo-account.bvdm.ai", ws, secret)).already)
+        assertTrue(s.previewInvite(InviteLink("https://rukoo.io", ws, secret)).already)
+        // A pending link the service refuses as another server's goes, so a restart doesn't offer it again.
+        s.rememberJoin(InviteLink("https://elsewhere.example", ws, secret))
+        assertTrue(s.state.until { it.pendingJoin }.pendingJoin)
+        try {
+            s.previewInvite(InviteLink("https://elsewhere.example", ws, secret))
+            fail("a link for another server")
+        } catch (e: WorkspaceError) {
+            assertEquals("other_server", e.code)
+        }
+        assertFalse(s.state.until { !it.pendingJoin }.pendingJoin)
+        assertFalse(File(db.file.parentFile, "chat-join.json").exists())
+        assertEquals("https://rukoo.io/join#w=$ws&i=$secret", s.createInvite(ws, "member", emptyList(), 86_400).link)
+    }
+
+    @Test
     fun `leaving a workspace removes it and its alerts, then lists again`() = runTest {
         val h = Harness(this, db)
         h.seed { syncedWs() }

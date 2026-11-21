@@ -355,9 +355,12 @@ export function mountView(section, H) {
         return emptyBox({
           title: t('chat.empty.signedOutTitle'),
           body: invited ? t('chat.empty.webInvitedBody', { host }) : t('chat.empty.signedOutBody', { host }),
-          hint: invited ? t('chat.empty.webInvitedHint') : opts.inviteSignups ? t('chat.empty.inviteHint') : '',
+          // Desktop offers Join with an invitation link (joinSignedOut) instead of the hint; the browser has no setup page.
+          hint: invited ? t('chat.empty.webInvitedHint') : opts.inviteSignups && !H.joinSignedOut ? t('chat.empty.inviteHint') : '',
           actions: [
             { id: 'sign-up', label: t('chat.empty.signUpAction'), primary: invited, run: () => H.signUp() },
+            // A link sent by a colleague: the setup page's steps check it, then sign up or in with it (RUK-234).
+            ...(H.joinSignedOut ? [{ id: 'join', label: t('chat.workspace.join'), run: () => H.joinSignedOut() }] : []),
             { id: 'sign-in', label: t('chat.empty.signInAction'), primary: !invited, run: () => H.signIn() }
           ]
         });

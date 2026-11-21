@@ -67,7 +67,9 @@ import nl.bvdm.rukoo.ui.mail.DialogRequest
 import nl.bvdm.rukoo.ui.mail.ListModel
 import nl.bvdm.rukoo.ui.mail.MailUi
 import nl.bvdm.rukoo.ui.mail.MailUiHost
+import nl.bvdm.rukoo.ui.settings.SettingsRoutes
 import nl.bvdm.rukoo.workspaces.ChatState
+import nl.bvdm.rukoo.workspaces.InviteLink
 import nl.bvdm.rukoo.workspaces.RoomKind
 import nl.bvdm.rukoo.workspaces.RoomTimeline
 import nl.bvdm.rukoo.workspaces.WorkspaceView
@@ -190,7 +192,43 @@ class AppViewModel(
      */
     val chatEmails: StateFlow<List<String>> = _chatEmails.asStateFlow()
 
+    // Declared before init: its collectors run at once and read these.
+    // Chat opened by itself for a Rukoo account without a mail account, in this process.
+    private var chatOnlyOpened = false
+
+    private val _carriedJoin = MutableStateFlow<InviteLink?>(null)
+
+    /**
+     * The invitation link onboarding's team chat step checked, for the account form Settings opens next (RUK-234). It
+     * goes when Settings closes, so it only reaches the sign-up or sign-in it was carried to.
+     */
+    val carriedJoin: StateFlow<InviteLink?> = _carriedJoin.asStateFlow()
+
     init {
+        // The carried link goes with the Settings visit it was carried to.
+        viewModelScope.launch {
+            _state.map { it.overlay == Overlay.SETTINGS }.distinctUntilChanged().collect { open -> if (!open) _carriedJoin.value = null }
+        }
+        // A pending join (RUK-234): Chat opens for its Join sheet, from Mail too and after a restart, once nothing covers
+        // the window. The sheet takes it once per process (WorkspaceService.takePendingJoin).
+        viewModelScope.launch {
+            combine(chatState, _state.map { it.overlay }.distinctUntilChanged()) { s, overlay -> s.pendingJoin && s.signedIn && s.available && overlay == null }
+                .distinctUntilChanged()
+                .collect { due -> if (due && _state.value.mode != AppMode.CHAT) setMode(AppMode.CHAT) }
+        }
+        // Team chat without a mail account (RUK-234): a Rukoo account on a server with team chat opens Chat by itself,
+        // once per start, so onboarding (which is about mail) doesn't stand in front of it. Mail, from the drawer, goes
+        // back to onboarding to add an account.
+        viewModelScope.launch {
+            combine(chatState, services.mail.accounts, services.mail.loaded) { s, accounts, loaded -> loaded && accounts.isEmpty() && s.available && s.signedIn }
+                .distinctUntilChanged()
+                .collect { chatOnly ->
+                    if (chatOnly && !chatOnlyOpened) {
+                        chatOnlyOpened = true
+                        if (_state.value.mode != AppMode.CHAT) setMode(AppMode.CHAT)
+                    }
+                }
+        }
         // The composer can open without the UI: an agent's write_draft calls ComposerController.open.
         viewModelScope.launch {
             services.composer.state.map { it != null }.distinctUntilChanged().collect { open ->
@@ -1291,6 +1329,42 @@ class AppViewModel(
 
     fun openOnboarding() = set { it.openOverlay(Overlay.ONBOARDING) }
 
+
+    /** The account form the link was carried to was left. */
+    fun dropCarriedJoin() {
+        _carriedJoin.value = null
+    }
+
+    /** Opens Settings on the Rukoo account's [page] with [link] carried to it, or none. */
+    fun openAccountWithLink(page: String, link: InviteLink?) {
+        _carriedJoin.value = link
+        openSettings(listOf(SettingsRoutes.RUKOO, page))
+    }
+
+    // The step onboarding opens on next, taken once by the screen: "chat" for Chat's Join with an invitation link.
+    private var onboardingStart: String? = null
+
+    /** Chat's Join with an invitation link while signed out: onboarding's team chat steps (RUK-234). */
+    fun openChatJoin() {
+        onboardingStart = ONBOARDING_CHAT
+        openOnboarding()
+    }
+
+    fun takeOnboardingStart(): String? = onboardingStart.also { onboardingStart = null }
+
+    /** The first workspace joined or made here: Chat's card about Rukoo on the computer shows from now on. */
+    fun firstWorkspace() {
+        viewModelScope.launch { runCatching { services.settings.update { if (it.chatAppsTip.isEmpty()) it.copy(chatAppsTip = "show") else it } } }
+    }
+
+    fun hideAppsTip() {
+        viewModelScope.launch { runCatching { services.settings.update { it.copy(chatAppsTip = "done") } } }
+    }
+
+    fun openDesktopApp() {
+        _effects.tryEmit(UiEffect.OpenUrl(DESKTOP_APP_URL))
+    }
+
     fun closeOverlay() = set { it.closeOverlay() }
 
     fun openDrawer() = set { it.copy(drawerOpen = true) }
@@ -1343,6 +1417,12 @@ class AppViewModel(
 
         // How long a notification tap waits for the accounts on a cold start.
         private const val LOAD_WAIT_MS = 5_000L
+
+        /** takeOnboardingStart(): onboarding opens on its team chat step. */
+        const val ONBOARDING_CHAT = "chat"
+
+        /** Rukoo for the computer: mail, calendar and meetings (Chat's card after the first workspace). */
+        const val DESKTOP_APP_URL = "https://rukoo.io"
 
         fun factory(services: AppServices): ViewModelProvider.Factory = viewModelFactory {
             initializer { AppViewModel(services, createSavedStateHandle()) }

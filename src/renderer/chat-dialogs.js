@@ -237,6 +237,7 @@ export async function makeWorkspace() {
     setBusy(scrim, true);
     try {
       const made = await api('chatCreateWorkspace', { name, displayName });
+      K.firstWorkspace?.();
       finish(made && made.ws);
     } catch (err) {
       busy = false;
@@ -385,6 +386,7 @@ export async function joinWorkspace(link = '') {
     setBusy(scrim, true);
     try {
       const joined = await api('chatJoin', { link: text, name });
+      K.firstWorkspace?.();
       finish({ ...joined, name: preview.workspace.name });
     } catch (err) {
       busy = false;

@@ -32,6 +32,8 @@ class FakeAccountServer(
     private val limit: Int = 1000,
     private val jurisdiction: String? = "eu",
     private val kdf: JsonObject = AccountKeys.DEFAULT_KDF.toJson(),
+    /** The workspace home `GET /v1/info` names, with team chat listed; none without. */
+    private val home: String? = null,
 ) : AutoCloseable {
     class Stored(var seq: Long, var data: String?)
 
@@ -98,6 +100,13 @@ class FakeAccountServer(
             put("bytes", 104857600)
             put("recordBytes", 16384)
             put("batch", 500)
+        }
+        if (home != null) {
+            putJsonArray("features") { add(JsonPrimitive("workspaces-v1")) }
+            putJsonObject("workspace") {
+                putJsonArray("versions") { add(JsonPrimitive(1)) }
+                putJsonObject("home") { put("origin", home) }
+            }
         }
     }
 

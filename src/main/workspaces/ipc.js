@@ -24,6 +24,9 @@ const CORE = {
   chatReload: (svc, ws) => svc.reload(ws)
 };
 
+// Methods that work without a cache.
+const SIGNED_OUT = new Set(['chatCheckLink']);
+
 function callError(err) {
   if (err && err.stale === true) return new ChatError('signed_out');
   const e = chatError(err);
@@ -40,7 +43,8 @@ function chatApi(get) {
       const checked = checkArgs(name, args);
       const svc = get();
       if (name === 'chatState') return svc ? svc.state({ take: true }) : blankState();
-      if (!svc || !svc.store) throw new ChatError('signed_out');
+      // Reading a link needs no session: the setup page checks one before there is an account.
+      if (!svc || (!svc.store && !SIGNED_OUT.has(name))) throw new ChatError('signed_out');
       try {
         return await fn(svc, ...checked);
       } catch (err) {

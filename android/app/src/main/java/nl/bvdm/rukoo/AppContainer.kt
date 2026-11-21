@@ -221,6 +221,7 @@ class AppContainer(context: Context) : AppServices {
             sink = notifier,
             words = { notifier },
             clock = clock,
+            autoInfo = true,
         ).start()
     }
 

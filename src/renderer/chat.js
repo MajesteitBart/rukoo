@@ -288,6 +288,7 @@ export function init(context) {
     afterLeave: (id) => afterLeave(id),
     expectGone: (ws) => goingAway.add(ws),
     cancelGone: (ws) => goingAway.delete(ws),
+    firstWorkspace: () => firstWorkspace(),
     reload: () => reloadView(),
     refreshState: () =>
       api('chatState')
@@ -306,6 +307,7 @@ export function init(context) {
   });
   // A pending join waits while Settings covers the window (the sign-up that made it is still on screen there).
   document.addEventListener('rukoo:settings-closed', () => maybeTakeJoin());
+  document.addEventListener('rukoo:setup-closed', () => maybeTakeJoin());
   api('chatState')
     .then(applyState)
     .catch(() => {
@@ -318,6 +320,14 @@ export function init(context) {
 export const isOpen = () => CH.open;
 export const known = () => CH.known;
 export const available = () => Boolean(CH.state && CH.state.available);
+export const signedIn = () => Boolean(CH.state && CH.state.signedIn);
+// The host of the account server team chat runs on, for the setup page's team chat steps.
+export const host = () => (CH.state && CH.state.host) || '';
+// Chat's state from main now, for a caller that needs it before the next state event (the setup page after a sign-in).
+export const refreshState = () =>
+  api('chatState')
+    .then(applyState)
+    .catch(() => {});
 
 export function show() {
   CH.open = true;
@@ -564,7 +574,42 @@ export function sidebarHtml() {
       : '';
   return `${sw}${compose}<nav class="nav ch-nav${compose ? '' : ' no-compose'}" aria-label="${esc(t('chat.sidebar.label'))}">
     <div class="nav-section"><span>${esc(t('chat.sidebar.channels'))}</span>${addChannel}</div>${channelRows}${browse}${dmSection}
-  </nav>`;
+  </nav>${appsCardHtml()}`;
+}
+
+// Rukoo's other apps (RUK-234), once after the first workspace this person joined or made here, until they hide it:
+// the phone app and Rukoo Voice. settings.chatAppsTip is '' before, 'show' after and 'done' once hidden.
+const APPS = {
+  android: 'https://rukoo.io/download/android',
+  voice: 'https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.2.0'
+};
+
+function appsCardHtml() {
+  if (ctx.S.data?.settings?.chatAppsTip !== 'show' || !(CH.state?.workspaces || []).length) return '';
+  const row = (id, icon, title, body) =>
+    `<button class="ch-apps-row" data-ch-side="apps-${id}" title="${esc(APPS[id])}"><span class="ch-apps-ic" aria-hidden="true">${icons[icon]}</span><span class="ch-apps-text"><span class="ch-apps-name">${esc(title)}</span><span class="ch-apps-desc">${esc(body)}</span></span><span class="ch-apps-out" aria-hidden="true">${icons.popOut}</span></button>`;
+  return `<section class="ch-apps" aria-labelledby="ch-apps-title">
+    <div class="ch-apps-head"><h2 id="ch-apps-title">${esc(t('chat.apps.title'))}</h2><button class="icon-btn xs" data-ch-side="apps-hide" title="${esc(t('chat.apps.dismiss'))}" aria-label="${esc(t('chat.apps.dismiss'))}">${icons.close}</button></div>
+    ${row('android', 'phone', t('chat.apps.android'), t('chat.apps.androidBody'))}
+    ${row('voice', 'mic', t('chat.apps.voice'), t('chat.apps.voiceBody'))}
+  </section>`;
+}
+
+// The first workspace this person joined or made here: the card above shows from now on, until hidden.
+function firstWorkspace() {
+  if (ctx.S.data?.settings && !ctx.S.data.settings.chatAppsTip) {
+    ctx.S.data.settings.chatAppsTip = 'show';
+    api('updateSettings', { chatAppsTip: 'show' }).catch(() => {});
+    redrawSide();
+  }
+}
+
+function hideApps() {
+  if (ctx.S.data?.settings) ctx.S.data.settings.chatAppsTip = 'done';
+  api('updateSettings', { chatAppsTip: 'done' }).catch(() => {});
+  redrawSide();
+  // The focus was on the card's button, which went with it.
+  document.querySelector('.sidebar .ch-ws-switch')?.focus();
 }
 
 function roomRow(room) {
@@ -628,6 +673,13 @@ export function sidebarClick(btn, e = null) {
       return true;
     case 'browse':
       ACTIONS.browse?.();
+      return true;
+    case 'apps-android':
+    case 'apps-voice':
+      api('openExternal', APPS[btn.dataset.chSide.slice(5)]).catch(() => {});
+      return true;
+    case 'apps-hide':
+      hideApps();
       return true;
     default:
       return false;
@@ -697,6 +749,7 @@ export async function openConversation(ws, c, seq = null) {
 function applyState(state, { openFirst = true } = {}) {
   if (!state || typeof state !== 'object') return;
   const wasAvailable = available();
+  const wasSignedIn = signedIn();
   const first = !CH.known;
   CH.state = state;
   CH.known = true;
@@ -715,7 +768,8 @@ function applyState(state, { openFirst = true } = {}) {
       if (want && want !== state.selected) api('chatSelect', want).catch(() => {});
     }
   }
-  if (first || available() !== wasAvailable) ctx.chatAvailability?.();
+  // Signing in or out decides too whether a window without a mail account shows Chat (app.js noMailAccount).
+  if (first || available() !== wasAvailable || signedIn() !== wasSignedIn) ctx.chatAvailability?.();
   else ctx.renderModeSwitch?.();
   redrawSide();
   renderPane();
@@ -912,10 +966,10 @@ const upgradeNeeded = () => summary()?.status === 'upgrade';
 
 // ---------- drawing ----------
 
-// Only once the shell has its sidebar: app.js draws it once the window has its accounts. The browser's shell
-// (web-shell.js) has no mail accounts and says itself when its sidebar is there (ctx.sidebarReady).
+// Only once the window runs, with a mail account or with Chat alone: before that app.js has no sidebar to draw. The
+// browser's shell (web-shell.js) has no mail accounts and says itself when its sidebar is there (ctx.sidebarReady).
 function redrawSide() {
-  if (!ctx || !(ctx.sidebarReady ? ctx.sidebarReady() : ctx.S && ctx.S.data && ctx.S.data.accounts.length)) return;
+  if (!ctx || !(ctx.sidebarReady ? ctx.sidebarReady() : ctx.windowRuns?.())) return;
   if (ctx.chatMode?.() && document.querySelector('.sidebar-main')) ctx.renderSidebar();
   else ctx.renderModeSwitch?.();
 }
@@ -974,6 +1028,9 @@ function ensureView() {
     goneError: (err, ws, c) => goneError(err, ws, c),
     signIn: () => ctx.openSettings('rukoo-signin'),
     signUp: () => ctx.openSettings('rukoo-signup'),
+    // An invitation link before there is an account: the setup page's team chat steps, which sign up or in with it.
+    // Desktop only: the browser has no setup page, and keeps the invitation it was opened with (src/web/join.js).
+    joinSignedOut: WEB ? null : () => ctx.openChatSetup('link'),
     makeWorkspace: () => D.makeWorkspace(),
     joinWorkspace: () => D.joinWorkspace(),
     browse: () => (isGuest() ? null : ACTIONS.browse()),
@@ -1145,17 +1202,25 @@ function workspaceMenu(anchor) {
 // Make a workspace and Join with an invitation link (chat-dialogs.js), for the empty states and the menu.
 export const makeWorkspace = () => D.makeWorkspace();
 export const openJoin = (link = '') => D.joinWorkspace(link);
+// The window runs now (app.js): a pending join that came before it gets its turn.
+export const offerPendingJoin = () => maybeTakeJoin();
 
-// A sign-up with an invitation link left a pending join: the next time Chat shows, the Join dialog opens with it
-// (contract 3.3, 5.8). Not while Settings covers the window, where the sign-up still shows: closing it brings the
-// dialog (rukoo:settings-closed). Not over another dialog either: it opens once that one closes.
+// A sign-up or sign-in with an invitation link left a pending join: Chat opens, also from Mail after a restart, and
+// the Join dialog with it (contract 3.3, 5.8; RUK-234). Not while Settings or the setup page covers the window, where
+// the sign-up still shows: closing it brings the dialog (rukoo:settings-closed, rukoo:setup-closed). Not over another
+// dialog either: it opens once that one closes.
 function maybeTakeJoin() {
   clearTimeout(joinRetry);
   joinRetry = null;
-  if (!CH.open || takingJoin || !CH.state || !CH.state.pendingJoin || !CH.state.signedIn) return;
-  if (document.querySelector('#overlays .page.settings')) return;
+  if (takingJoin || !CH.state || !CH.state.pendingJoin || !CH.state.signedIn || !CH.state.available) return;
+  if (document.querySelector('#overlays .page')) return;
   if (document.querySelector('.scrim')) {
     joinRetry = setTimeout(maybeTakeJoin, 400);
+    return;
+  }
+  // Chat shows first; showing it comes back here.
+  if (!CH.open) {
+    ctx.showChatForJoin?.();
     return;
   }
   takingJoin = true;
@@ -1163,7 +1228,10 @@ function maybeTakeJoin() {
     .then(async (r) => {
       if (!r || !r.link) return null;
       try {
-        return await D.joinWorkspace(r.link);
+        // Main keeps the link until it is joined, so a restart with the dialog open offers it again. Cancel lets it go.
+        const joined = await D.joinWorkspace(r.link);
+        if (!joined) api('chatDropPendingJoin').catch(() => {});
+        return joined;
       } finally {
         // The browser keeps the invitation it was opened with through reloads (src/web/join.js) until the person
         // chose in this dialog: joined, opened a workspace they were in, or cancelled.
