@@ -202,9 +202,11 @@ async function addressHash(env, email) {
 }
 
 // The mailbox an address reaches, as far as the address itself shows: the name without a +tag, on every domain, and
-// at Gmail without dots, with googlemail.com as gmail.com. Only the limits per address use it. A code stays bound to
-// the address as typed, as does the account (config.js, accountName).
-export function mailbox(email) {
+// at Gmail without dots, with googlemail.com as gmail.com. Fullwidth letters and dots become plain ones first, as mail
+// systems read a domain. Only the limits per address use it. A code stays bound to the address as typed, as does the
+// account (config.js, accountName).
+export function mailbox(typed) {
+  const email = typed.normalize('NFKC').toLowerCase().replace(/[。．｡]/g, '.');
   const at = email.lastIndexOf('@');
   let name = email.slice(0, at);
   let domain = email.slice(at + 1);

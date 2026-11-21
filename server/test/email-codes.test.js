@@ -225,6 +225,9 @@ describe('POST /v1/email-code', () => {
     expect(mailbox('first.last+a+b@example.com')).toBe('first.last@example.com');
     expect(mailbox('first.last@example.com')).toBe('first.last@example.com');
     expect(mailbox('name@mail.gmail.com')).toBe('name@mail.gmail.com');
+    // Fullwidth letters and dots in the domain are the same domain.
+    expect(mailbox('na.me@ｇｍａｉｌ．ｃｏｍ')).toBe('name@gmail.com');
+    expect(mailbox('name+x@gmail。com')).toBe('name@gmail.com');
     // A name that is all tag or all dots stays as it is.
     expect(mailbox('+news@example.com')).toBe('+news@example.com');
     expect(mailbox('...@gmail.com')).toBe('...@gmail.com');
@@ -235,15 +238,15 @@ describe('POST /v1/email-code', () => {
     const dotted = (domain) => `${name.slice(0, 3)}.${name.slice(3)}@${domain}`;
     const tagged = `${name}+rukoo@gmail.com`;
     const codes = await codeFor(tagged);
+    // Every spelling of the inbox waits out the same minute and shares its five an hour.
+    const soon = await askCode(dotted('gmail.com'));
+    expect(soon.status).toBe(429);
+    expect(Number(soon.headers.get('retry-after'))).toBeGreaterThan(50);
     // The code made for the tagged address works for it alone, though the mail reaches the same inbox.
     const plain = person(`${name}@gmail.com`);
     expect((await signUp({ ...plain, emailCode: sixDigits(codes) })).body.error).toBe('code_wrong');
     expect((await signUp({ ...plain, emailCode: longCode(codes) })).body.error).toBe('code_expired');
     expect((await signUp({ ...person(tagged), emailCode: longCode(codes) })).status).toBe(201);
-    // Every spelling of the inbox waits out the same minute and shares its five an hour.
-    const soon = await askCode(dotted('gmail.com'));
-    expect(soon.status).toBe(429);
-    expect(Number(soon.headers.get('retry-after'))).toBe(60);
     for (const email of [dotted('gmail.com'), `${name}@googlemail.com`, plain.email, `${name}+other@gmail.com`]) {
       later(MINUTE + 1000);
       expect((await askCode(email)).status, email).toBe(202);

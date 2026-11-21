@@ -250,7 +250,7 @@ The settings in `vars`:
 |---|---|
 | `WORKSPACE_MODE` | `on` or `off`. Off by default: the routes answer 404 and `GET /v1/info` doesn't mention workspaces. |
 | `WORKSPACE_ORIGIN` | The one address workspaces on this server are known by, such as `https://accounts.example.org`. Empty means the address each request came in on. Set it when your server answers on more than one address. |
-| `WORKSPACE_SIGNUPS` | `on` or `off`. With `SIGNUPS` on `invite`, `on` lets an open workspace invitation stand in for an invite code when someone signs up, once per invitation. That lets every workspace owner and admin bring new accounts onto your server, within `MAX_ACCOUNTS`. With `SIGNUPS` on `verified`, the person still confirms their address with an emailed code, and a server that can't send mail takes no invitations at sign-up. `off` keeps sign-ups to your own codes. On by default. |
+| `WORKSPACE_SIGNUPS` | `on` or `off`. With `SIGNUPS` on `invite`, `on` lets an open workspace invitation stand in for an invite code when someone signs up, once per invitation. That lets every workspace owner and admin bring new accounts onto your server, within `MAX_ACCOUNTS`. With `SIGNUPS` on `verified`, the person still confirms their address with an emailed code, and a server that can't send mail takes no invitations at sign-up. `off` takes no workspace invitations at sign-up: an `invite` server then takes only your own codes, and a `verified` server your codes and emailed codes. On by default. |
 | `MAX_WORKSPACES` | The most workspaces the server holds. Default 100. |
 | `MAX_WORKSPACES_PER_ACCOUNT` | How many workspaces one account may make. Default 3. |
 | `MAX_WORKSPACE_MEMBERSHIPS` | How many workspaces one account may be in at once. Default 50. |
