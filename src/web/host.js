@@ -1022,9 +1022,18 @@ function createHost(page) {
       if (settings.chatNotifications !== before.chatNotifications && engine) engine.settingsChanged();
     }
   });
-  // The chat cache is in memory, so unsent messages and the files in a tray go with the page: the browser asks first.
+  // The chat cache is in memory, so unsent messages, drafts and the files in a tray go with the page: the browser asks
+  // first. A composer with text counts too, since its draft is saved a moment after the last key (chat-input.js).
+  const typing = () => {
+    try {
+      return Boolean(doc && typeof doc.querySelector === 'function' && doc.querySelector('.ch-input:not(.is-empty)'));
+    } catch (_) {
+      return false;
+    }
+  };
+  const drafts = () => (engine && typeof engine.drafts === 'function' ? engine.drafts() : 0);
   on(page, 'beforeunload', (event) => {
-    if (!engine || !(engine.unsent() > 0 || stagedCount() > 0)) return;
+    if (!engine || !(engine.unsent() > 0 || stagedCount() > 0 || drafts() > 0 || typing())) return;
     event.preventDefault();
     event.returnValue = true;
   });

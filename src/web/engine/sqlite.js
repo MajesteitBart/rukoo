@@ -277,6 +277,7 @@ class DatabaseSync {
     this.options = options || {};
     this.db = null;
     this.rowid = null;
+    this.statements = new Map();
     if (this.options.open !== false) this.open();
   }
 
@@ -313,11 +314,19 @@ class DatabaseSync {
     }
   }
 
+  // One statement per SQL text, kept until close(). sql.js holds every statement in WebAssembly memory until it's freed
+  // or the database closes, and a discarded wrapper frees nothing, so preparing the same text again (store.js
+  // countOutbox, the schema checks) reuses it instead of growing the heap. Sharing is safe: every call() resets the
+  // statement before and after, and all of it runs synchronously.
   prepare(sql) {
     this.check();
     const text = String(sql);
+    const kept = this.statements.get(text);
+    if (kept) return kept;
     try {
-      return new StatementSync(this, this.db.prepare(text), text);
+      const statement = new StatementSync(this, this.db.prepare(text), text);
+      this.statements.set(text, statement);
+      return statement;
     } catch (err) {
       throw mapError(err);
     }
@@ -339,6 +348,7 @@ class DatabaseSync {
     const db = this.db;
     this.db = null;
     this.rowid = null;
+    this.statements = new Map();
     try {
       db.close();
     } catch (err) {

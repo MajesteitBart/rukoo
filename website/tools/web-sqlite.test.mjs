@@ -152,6 +152,27 @@ test('rows, bindings and a closed database behave as in node:sqlite', () => {
   }
 });
 
+// sql.js keeps a statement in WebAssembly memory until it's freed or the database closes, and a discarded wrapper
+// frees nothing: preparing the same text again must reuse it, or a long-open tab grows with every repeat.
+test('preparing the same text again reuses its statement, also after a failed call', () => {
+  const db = new WebDatabase();
+  db.exec('CREATE TABLE r (n INTEGER NOT NULL)');
+  const insert = db.prepare('INSERT INTO r (n) VALUES (?)');
+  for (let i = 0; i < 500; i++) assert.equal(db.prepare('INSERT INTO r (n) VALUES (?)'), insert);
+  assert.equal(thrown(() => insert.run(null)).code, 'ERR_SQLITE_ERROR');
+  assert.deepEqual(db.prepare('INSERT INTO r (n) VALUES (?)').run(7), { changes: 1, lastInsertRowid: 1 });
+  const count = db.prepare('SELECT COUNT(*) AS n FROM r');
+  assert.equal(count.get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM r').get().n, 1);
+  assert.equal(db.statements.size, 2);
+  db.close();
+  db.open();
+  db.exec('CREATE TABLE r (n INTEGER NOT NULL)');
+  assert.notEqual(db.prepare('SELECT COUNT(*) AS n FROM r'), count, 'a reopened database prepares its own');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM r').get().n, 0);
+  db.close();
+});
+
 test('the codes store.js treats as a broken file are read from their messages', () => {
   const { errcodeOf } = web.sqlite;
   assert.equal(errcodeOf('database disk image is malformed'), 11);
@@ -250,6 +271,12 @@ function storeSession({ openStore }, file) {
   }
   store.putDraft(WS, ROOM, null, { text: 'draft', mentions: [] });
   out.draft = store.getDraft(WS, ROOM, null);
+  // The count the browser's beforeunload warning reads (src/web/engine/index.js drafts()).
+  const DRAFTS = `SELECT COUNT(*) AS n FROM draft WHERE text <> '' OR attachments <> '[]'`;
+  out.drafts = store.get(DRAFTS).n;
+  store.putDraft(WS, ROOM, 'thread-root', { text: '', mentions: [] });
+  out.draftsWithEmpty = store.get(DRAFTS).n;
+  store.deleteDraft(WS, ROOM, 'thread-root');
   out.deletedRoom = store.deleteRoom(WS, ROOM);
   out.cascade = store.get('SELECT (SELECT COUNT(*) FROM event) + (SELECT COUNT(*) FROM outbox) + (SELECT COUNT(*) FROM draft) AS n').n;
   out.wiped = store.wipe();
@@ -277,6 +304,8 @@ test('the real Store runs on the adapter as it runs on node:sqlite', () => {
   assert.deepEqual(o.blockedBadges, { unread: 2, mentions: 0 });
   assert.deepEqual(o.due, ['L'.repeat(22)]);
   assert.equal(o.unsent, 2);
+  assert.equal(o.drafts, 1);
+  assert.equal(o.draftsWithEmpty, 1, 'an empty draft is nothing to warn about');
   assert.deepEqual(o.duplicate, { chat: true, code: 'not_saved', cause: 'ERR_SQLITE_ERROR', primary: 19 });
   assert.deepEqual(o.badState, { chat: true, code: 'not_saved', cause: 'ERR_SQLITE_ERROR', primary: 19 });
   assert.equal(o.deletedRoom, 2);

@@ -735,6 +735,22 @@ test('focus, visibility, going online and leaving with unsent messages reach the
   const leaving = page.window.dispatch('beforeunload');
   assert.equal(leaving.defaultPrevented, true);
   assert.ok(leaving.returnValue);
+
+  // A draft is in the same in-memory cache, so a text-only draft asks too. Signed out there's no cache and no draft.
+  engine.unsent = () => 0;
+  assert.equal(engine.drafts(), 0);
+  const drafts = engine.drafts;
+  engine.drafts = () => 1;
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, true, 'a text-only draft');
+  engine.drafts = drafts;
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, false);
+
+  // Text in a composer counts before its draft is saved (chat-input.js saves a moment after the last key).
+  const query = page.document.querySelector;
+  page.document.querySelector = (selector) => (selector === '.ch-input:not(.is-empty)' ? {} : query(selector));
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, true, 'a composer with text');
+  page.document.querySelector = query;
+  assert.equal(page.window.dispatch('beforeunload').defaultPrevented, false);
 });
 
 test('the account status reaches the page as main.js broadcasts it, also for another tab\'s sign-in and sign-out', async (t) => {

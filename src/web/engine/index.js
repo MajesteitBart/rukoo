@@ -104,6 +104,16 @@ async function createWebEngine({
     // How many messages wait to be sent (index.js state(): ChatState.unsent), for the page's beforeunload warning:
     // the cache is in memory, so they go with the page.
     unsent: () => (disposed ? 0 : Number(svc.outbox.unsent()) || 0),
+    // Drafts that hold text or files (store.js draft), for the same warning: they're in the in-memory cache as well.
+    drafts: () => {
+      if (disposed || !svc.store) return 0;
+      try {
+        const row = svc.store.get(`SELECT COUNT(*) AS n FROM draft WHERE text <> '' OR attachments <> '[]'`);
+        return Number(row && row.n) || 0;
+      } catch (_) {
+        return 0;
+      }
+    },
     // Those messages by their outbox id, for telling the ones a sign-out's confirmation counted from any sent after it.
     unsentIds: () => (disposed || !svc.store ? [] : svc.store.all('SELECT local FROM outbox').map((row) => row.local)),
     // main.js 707: the service closes at quit, with its timers, sockets and cache.
