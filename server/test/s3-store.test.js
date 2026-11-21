@@ -3,6 +3,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DigestMismatch, S3Error, S3Unreachable, S3_TIME, decodeXml, fileStore, readList } from '../src/filestore.js';
+import { ATTEMPT_TIME } from '../src/workspace.js';
 import { FAKE_S3, FakeS3, installFakeS3, s3Vars } from './fixtures/fake-s3.js';
 
 const enc = new TextEncoder();
@@ -160,6 +161,32 @@ describe('listing', () => {
     expect(readList('<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>\n')).toEqual({ keys: [], cursor: null });
   });
 
+  it('reads every entry whatever whitespace and attributes its tags have, and checks the count against KeyCount', () => {
+    const list = (body, truncated = 'false') => `<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>${truncated}</IsTruncated>${body}</ListBucketResult>`;
+    const variants = {
+      'a space before >': '<Contents ><Key>a</Key></Contents >',
+      'a namespace': '<Contents xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Key>a</Key></Contents>',
+      'a line break and attributes on the key': '<Contents\n  class="x"><Key xml:space="preserve">a</Key\n></Contents>'
+    };
+    for (const [variant, entry] of Object.entries(variants)) {
+      expect(readList(list(`${entry}<Contents><Key>b</Key></Contents>`)), variant).toEqual({ keys: ['a', 'b'], cursor: null });
+      expect(readList(list(`<KeyCount>2</KeyCount>${entry}<Contents><Key>b</Key></Contents>`)), variant).toEqual({ keys: ['a', 'b'], cursor: null });
+    }
+    const refused = {
+      'an empty key': ['<Contents><Key></Key></Contents>', /without a key/],
+      'two keys in one entry': ['<Contents><Key>a</Key><Key>b</Key></Contents>', /without a key/],
+      'a key that closes itself': ['<Contents><Key/><Size>1</Size></Contents>', /without a key/],
+      'an entry that closes itself': ['<Contents/><Contents><Key>a</Key></Contents>', /without a key/],
+      'a KeyCount above the entries': ['<KeyCount>3</KeyCount><Contents xmlns="x"><Key>a</Key></Contents>', /KeyCount/],
+      'a KeyCount below the entries': ['<KeyCount>0</KeyCount><Contents ><Key>a</Key></Contents>', /KeyCount/],
+      'a KeyCount that is no number': ['<KeyCount>two</KeyCount><Contents><Key>a</Key></Contents>', /KeyCount/],
+      'two KeyCounts': ['<KeyCount>1</KeyCount><KeyCount>1</KeyCount><Contents><Key>a</Key></Contents>', /KeyCount/]
+    };
+    for (const [shape, [body, error]] of Object.entries(refused)) {
+      expect(() => readList(list(body)), shape).toThrow(error);
+    }
+  });
+
   it('throws on an answer that is not a whole list, rather than taking it for the last page', async () => {
     const head = '<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">';
     const entry = '<Contents><Key>ws/w_2/a</Key><Size>1</Size></Contents>';
@@ -302,6 +329,29 @@ describe('time limits', () => {
     expect(s3.keys()).toEqual([]);
   });
 
+  it('stops an upload that keeps moving but takes longer in all than its deadline, and stores nothing', async () => {
+    S3_TIME.idle = 400;
+    S3_TIME.upload = 300;
+    const bytes = enc.encode('a slow but steady upload '.repeat(500));
+    const started = Date.now();
+    // Twelve pieces 60 ms apart: never idle for long, but longer in all than the deadline.
+    const err = await store()
+      .put('ws/w_9/endless', dripping(bytes, 12, 60), await opts(bytes))
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(S3Unreachable);
+    expect(err.message).toBe('S3 PUT failed: no answer in time');
+    expect(Date.now() - started).toBeLessThan(600);
+    expect(s3.keys()).toEqual([]);
+  });
+
+  it('ends every upload within the time a workspace counts its attempt as under way, with an hour to spare', () => {
+    // Deleting a workspace waits only for attempts younger than ATTEMPT_TIME: an upload still writing after that could
+    // outlive the workspace. The deadline runs to S3's answer.
+    expect(saved.upload).toBeLessThanOrEqual(ATTEMPT_TIME - 60 * 60 * 1000);
+    // And the deadline still takes the largest file, 25 MiB, over a slow connection of 8 KB/s.
+    expect((26214400 / 8000) * 1000).toBeLessThan(saved.upload);
+  });
+
   it('waits for the answer to an upload a limited time after its last byte', async () => {
     S3_TIME.request = 150;
     s3.intercept = async (request, op) => {
@@ -390,6 +440,33 @@ describe('what errors say', () => {
     expect(err.message).toBe('S3 GET failed: the request did not complete');
     const said = `${err.message} ${err.stack} ${JSON.stringify(err)}`;
     for (const secret of [signature, FAKE_S3.secretAccessKey, 'Signature=', 'Network connection lost']) expect(said).not.toContain(secret);
+  });
+
+  it('looks for the code in the first 16 KiB of an error answer only, in chunks of any size', async () => {
+    // A code placed at, in a body of 128 KiB sent in chunks of size.
+    const answer = (at, size) => {
+      const bytes = new Uint8Array(1 << 17).fill(0x20);
+      bytes.set(enc.encode('<Code>SlowDown</Code>'), at);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            for (let i = 0; i < bytes.length; i += size) controller.enqueue(bytes.slice(i, i + size));
+            controller.close();
+          }
+        }),
+        { status: 503 }
+      );
+    };
+    const code = async (at, size) => {
+      s3.intercept = async () => answer(at, size);
+      return (await store().get('ws/w_8/x').catch((e) => e)).code;
+    };
+    const fits = 16384 - '<Code>SlowDown</Code>'.length;
+    for (const size of [1 << 17, 10000, 7]) {
+      expect(await code(0, size), `chunks of ${size}`).toBe('SlowDown');
+      expect(await code(fits, size), `chunks of ${size}`).toBe('SlowDown');
+      expect(await code(fits + 1, size), `chunks of ${size}`).toBeNull();
+    }
   });
 
   it('keeps only a code that looks like an S3 error code, never a hex string such as a signature', async () => {

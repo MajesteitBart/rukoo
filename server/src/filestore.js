@@ -36,9 +36,15 @@ const S3_BATCH = 40;
 const DELETES_AT_ONCE = 8;
 // How long S3 may take. request: a list, a delete, the headers of a download, and the answer to an upload once its
 // last byte went. idle: how long an upload may go without a byte moving. error: the body of a refusal, read for its
-// code. None caps how long a device takes to send or fetch a file, which R2 doesn't either. Tests shorten them.
-export const S3_TIME = { request: 30 * 1000, idle: 60 * 1000, error: 5 * 1000 };
-// Bytes the Worker holds itself, such as a link card's image, go to S3 within a minute plus a second per 64 KiB.
+// code. upload: all of an upload, from its first byte to S3's answer, which lets 25 MiB through at 8 KB/s. It must
+// stay well below the two hours a workspace counts an upload's attempt as under way (ATTEMPT_TIME in workspace.js):
+// deleting a workspace waits for every attempt younger than that, and an upload still writing after it could land
+// once the deletion has listed the bucket, and outlive the workspace. The hour between them leaves time for the
+// attempt's ending to reach the workspace. Nothing caps how long a device takes to fetch a file, which R2 doesn't
+// either. Tests shorten them.
+export const S3_TIME = { request: 30 * 1000, idle: 60 * 1000, error: 5 * 1000, upload: 60 * 60 * 1000 };
+// Bytes the Worker holds itself, such as a link card's image, go to S3 within a minute plus a second per 64 KiB, and
+// within S3_TIME.upload.
 const putTime = (size) => 60 * 1000 + Math.ceil(size / 65536) * 1000;
 // Bytes of an error answer read for its code, at most.
 const ERROR_BYTES = 16384;
@@ -184,12 +190,13 @@ function s3Code(text) {
   return /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(text) && !/^[0-9A-Fa-f]+$/.test(text) ? text : null;
 }
 
-// The first bytes of an error answer, for its <Code>, within S3_TIME.error. The rest of it, which can repeat the
-// string S3 signed, is dropped unread. A body that doesn't arrive in time, or breaks off, has no code.
+// The first ERROR_BYTES of an error answer, for its <Code>, within S3_TIME.error. Only those are copied, whatever the
+// size of the chunks they come in. The rest, which can repeat the string S3 signed, is dropped unread. A body that
+// doesn't arrive in time, or breaks off, has no code.
 async function errorCode(res) {
   if (!res.body) return null;
   const reader = res.body.getReader();
-  const chunks = [];
+  const head = new Uint8Array(ERROR_BYTES);
   let length = 0;
   let timer;
   const late = new Promise((resolve) => {
@@ -200,8 +207,9 @@ async function errorCode(res) {
       const step = await Promise.race([reader.read(), late]);
       if (step === null) return null;
       if (step.done) break;
-      chunks.push(step.value);
-      length += step.value.byteLength;
+      const chunk = step.value.subarray(0, ERROR_BYTES - length);
+      head.set(chunk, length);
+      length += chunk.byteLength;
     }
   } catch {
     return null;
@@ -209,7 +217,7 @@ async function errorCode(res) {
     clearTimeout(timer);
     reader.cancel().catch(() => {});
   }
-  const text = new TextDecoder().decode(new Uint8Array(await new Blob(chunks).arrayBuffer()).subarray(0, ERROR_BYTES));
+  const text = new TextDecoder().decode(head.subarray(0, length));
   const code = /<Code>([^<]*)<\/Code>/.exec(text)?.[1];
   return code === undefined ? null : s3Code(code);
 }
@@ -235,17 +243,25 @@ export function decodeXml(text) {
 
 // A ListObjectsV2 answer: the keys of its <Contents>, and the continuation token when <IsTruncated> says there is
 // more. Only a whole answer counts: one cut short would pass for the last page, and deleting a workspace would then
-// leave objects behind. It must end its <ListBucketResult>, give every entry a key, and say true or false in
-// <IsTruncated>, with a continuation token when true. Anything else throws.
+// leave objects behind. It must end its <ListBucketResult>, give every entry exactly one key that isn't empty, agree
+// with its <KeyCount> when it has one, and say true or false in <IsTruncated>, with a continuation token when true.
+// An element counts with or without attributes and whitespace in its tags, as in <Contents xmlns="…">: missing one
+// would leave its object behind. Anything else throws.
+const opening = (name) => new RegExp(`<${name}(?=[\\s>/])`, 'g');
+const element = (name) => new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}\\s*>`, 'g');
 export function readList(xml) {
   if (!/<ListBucketResult[\s>]/.test(xml)) throw new Error('S3 LIST answered something other than a list.');
   if (!/<\/ListBucketResult>\s*$/.test(xml)) throw new Error('S3 LIST answered a list that ends too soon.');
-  const keys = [];
-  for (const [, contents] of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-    const key = /<Key>([\s\S]*?)<\/Key>/.exec(contents);
-    if (key) keys.push(decodeXml(key[1]));
+  const entries = [...xml.matchAll(element('Contents'))].map((match) => match[1]);
+  const keys = entries.map((entry) => {
+    const found = [...entry.matchAll(element('Key'))];
+    return found.length === 1 && (entry.match(opening('Key')) ?? []).length === 1 && found[0][1] ? decodeXml(found[0][1]) : null;
+  });
+  if (keys.includes(null) || keys.length !== (xml.match(opening('Contents')) ?? []).length) throw new Error('S3 LIST answered an entry without a key.');
+  const counts = [...xml.matchAll(element('KeyCount'))].map((match) => match[1].trim());
+  if (counts.length > 1 || (counts.length === 1 && counts[0] !== String(keys.length))) {
+    throw new Error('S3 LIST answered a KeyCount that is not the number of its entries.');
   }
-  if (keys.length !== (xml.match(/<Contents>/g) ?? []).length) throw new Error('S3 LIST answered an entry without a key.');
   const truncated = /<IsTruncated>\s*(true|false)\s*<\/IsTruncated>/.exec(xml)?.[1];
   if (!truncated) throw new Error('S3 LIST did not say whether there is more.');
   const token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1];
@@ -300,7 +316,8 @@ function s3Store(s) {
       if (!(body instanceof ReadableStream)) {
         const bytes = bytesOf(body);
         if (hex(await crypto.subtle.digest('SHA-256', bytes)) !== sha256) throw new DigestMismatch();
-        const res = await request('PUT', 'PUT', path, { headers, payloadHash: sha256, body: bytes, signal: AbortSignal.timeout(putTime(bytes.byteLength)) });
+        const time = Math.min(putTime(bytes.byteLength), S3_TIME.upload);
+        const res = await request('PUT', 'PUT', path, { headers, payloadHash: sha256, body: bytes, signal: AbortSignal.timeout(time) });
         if (!res.ok) throw mismatchOr(await refusal('PUT', res));
         await res.body?.cancel();
         return;
@@ -311,15 +328,17 @@ function s3Store(s) {
       // own, such as a DigestStream or a second FixedLengthStream, and a pipe from a stream that waits for a device
       // doesn't stop until the device sends again.
       //
-      // Only the transfer's progress is timed, never its length: the request stops when no byte moved for
-      // S3_TIME.idle, or S3 hasn't answered S3_TIME.request after the last one.
+      // The request stops when no byte moved for S3_TIME.idle, S3 hasn't answered S3_TIME.request after the last one,
+      // or the whole of it took S3_TIME.upload.
       const late = new AbortController();
+      const stop = () => late.abort(new DOMException('No answer in time.', 'TimeoutError'));
       let timer = null;
       let settled = false;
       const watch = (ms) => {
         clearTimeout(timer);
-        if (!settled) timer = setTimeout(() => late.abort(new DOMException('No answer in time.', 'TimeoutError')), ms);
+        if (!settled) timer = setTimeout(stop, ms);
       };
+      const deadline = setTimeout(stop, S3_TIME.upload);
       const digest = new crypto.DigestStream('SHA-256');
       // Rejects once the digest is aborted, which nobody waits for then.
       digest.digest.catch(() => {});
@@ -373,6 +392,7 @@ function s3Store(s) {
       } finally {
         settled = true;
         clearTimeout(timer);
+        clearTimeout(deadline);
       }
       if (!res.ok) {
         await halt();

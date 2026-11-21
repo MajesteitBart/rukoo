@@ -626,6 +626,70 @@ describe('the trash', () => {
     await alarm(ws.id);
     expect(await bucketKeys(ws.id)).toEqual([]);
   });
+
+  it('deletes a write that lands while the workspace is deleted, after the listing went past its key', async () => {
+    const ws = await newWorkspace();
+    const bytes = text('later than two hours');
+    const reserved = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    const stuck = new FixedLengthStream(bytes.length);
+    const pending = fileRequest(reserved.put.url, { method: 'PUT', body: stuck.readable, length: bytes.length });
+    expect(await until(async () => (await workspaceSql(ws.id, 'SELECT * FROM attempt')).length === 1)).toBe(true);
+    // Given up on as dead, which no longer holds a deletion back, and its key deleted from the trash.
+    await workspaceSql(ws.id, 'UPDATE attempt SET at = ?', Date.now() - 3 * 60 * 60 * 1000);
+    await alarm(ws.id);
+    expect(await workspaceSql(ws.id, 'SELECT key FROM attempt UNION ALL SELECT key FROM trash')).toEqual([]);
+    // A bucket whose listing, once it has listed, waits for the write to land and the workspace to hear how it ended.
+    await runInDurableObject(workspaceStub(ws.id), (instance) => {
+      const bucket = instance.env.WORKSPACE_FILES;
+      const waiting = {
+        list: async (options) => {
+          const page = await bucket.list(options);
+          instance.listed = true;
+          while (instance.sql.exec('SELECT 1 FROM trash').toArray().length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+          return page;
+        },
+        delete: (keys) => bucket.delete(keys)
+      };
+      instance.env = { ...instance.env, WORKSPACE_FILES: waiting };
+    });
+    const deleted = api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(await until(() => runInDurableObject(workspaceStub(ws.id), (instance) => instance.listed === true))).toBe(true);
+    const writer = stuck.writable.getWriter();
+    await writer.write(bytes);
+    await writer.close();
+    expect((await deleted).status).toBe(204);
+    // The workspace answered gone, so the Worker deleted the key itself.
+    expect((await pending).status).toBe(409);
+    expect(await bucketKeys(ws.id)).toEqual([]);
+  });
+
+  it('publishes no link cards while the workspace is deleted, and leaves their images to the Worker to delete', async () => {
+    const ws = await newWorkspace();
+    const sent = (await post(ws.person, ws.id, ws.general, 'cards soon')).body;
+    const stub = workspaceStub(ws.id);
+    const image = await stub.previewKey(ws.general, sent.messageId, 3);
+    const failed = await stub.previewKey(ws.general, sent.messageId, 2);
+    const card = {
+      url: 'https://example.com/',
+      title: 'Example',
+      description: null,
+      site: null,
+      image: { key: image, type: 'image/png', ext: 'png', size: 3, sha256: 'a'.repeat(64), width: 1, height: 1 },
+      video: false
+    };
+    const answer = await runInDurableObject(stub, async (instance) => {
+      instance.deleting += 1;
+      try {
+        return await instance.publishPreviews(ws.general, sent.messageId, [card], [{ key: failed, size: 2 }]);
+      } finally {
+        instance.deleting -= 1;
+      }
+    });
+    expect(answer).toEqual({ published: false, gone: true });
+    expect(await workspaceSql(ws.id, "SELECT previews FROM event WHERE kind = 'message.posted'")).toEqual([{ previews: null }]);
+    expect(await workspaceSql(ws.id, 'SELECT key FROM attempt')).toEqual([]);
+    expect(await workspaceSql(ws.id, 'SELECT key FROM trash ORDER BY key')).toEqual([image, failed].sort().map((key) => ({ key })));
+  });
 });
 
 describe('without a bucket', () => {

@@ -308,6 +308,9 @@ describe('with an S3 store', () => {
     expect(busy.status).toBe(503);
     expect(busy.headers.get('retry-after')).toBe('30');
     await stub.publishPreviews(ws.general, carded.messageId, [], [{ key: image, size: 3 }]);
+    // An image whose write failed holds it back as well, while that write may still land. This one never started.
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(503);
+    await workspaceSql(ws.id, 'UPDATE workspace SET landingUntil = 0');
 
     // A deletion whose listing fails: a PUT that comes meanwhile is refused, and works once the deletion gave up.
     let during = null;
@@ -345,6 +348,54 @@ describe('with an S3 store', () => {
     expect(during.image).toBeNull();
     expect(keysOf(ws.id)).toEqual([]);
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
+  });
+
+  it('waits five minutes after an upload failed before deleting the workspace, as the service may still store it', async () => {
+    const ws = await newWorkspace();
+    const bytes = text('stored after all');
+    const reserved = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    // The connection breaks once the service has the whole body, which it stores a moment later.
+    let land = null;
+    s3.intercept = async (request, op, key) => {
+      if (op !== 'PUT') return undefined;
+      const body = await request.text();
+      land = () => s3.plant(key, body);
+      throw new TypeError('Network connection lost.');
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await fileRequest(reserved.put.url, { method: 'PUT', body: bytes })).status).toBe(500);
+    } finally {
+      logged.mockRestore();
+    }
+    const [{ landingUntil }] = await workspaceSql(ws.id, 'SELECT landingUntil FROM workspace');
+    expect(landingUntil - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+    expect(landingUntil - Date.now()).toBeLessThanOrEqual(5 * 60 * 1000);
+    // The alarm deletes the attempt's key before the object is there.
+    await alarm(ws.id);
+    expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
+    // It lands just after a deletion listed the bucket: that deletion must not start.
+    const lists = s3.ops('LIST').length;
+    let listing = false;
+    s3.intercept = async (request, op) => {
+      if (op !== 'LIST' || listing) return undefined;
+      listing = true;
+      const listed = await s3.handle(request);
+      land();
+      return listed;
+    };
+    const busy = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(busy.status).toBe(503);
+    expect(busy.body.error).toBe('unavailable');
+    expect(busy.headers.get('retry-after')).toBe('30');
+    expect(s3.ops('LIST')).toHaveLength(lists);
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
+    // Five minutes on, the object has landed, and the deletion lists it with the rest and deletes it.
+    s3.intercept = null;
+    land();
+    await workspaceSql(ws.id, 'UPDATE workspace SET landingUntil = ?', Date.now() - 1);
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+    expect(keysOf(ws.id)).toEqual([]);
   });
 
   it('deletes everything under the prefix, page by page, when the workspace is deleted', async () => {

@@ -4,6 +4,8 @@
 
 import { runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { blob, toBase64url } from '../src/bytes.js';
+import { random } from './helpers.js';
 import { api, changes, events, newMember, newWorkspace, post, react, workspaceSql, workspaceStub } from './workspace-helpers.js';
 
 const redact = (person, ws, message) => api('POST', `/v1/workspaces/${ws.id}/conversations/${ws.general}/messages/${message}/redact`, { token: person.token });
@@ -103,12 +105,93 @@ describe('a workspace with messages removed before removals cleared their reacti
         state.storage.sql.exec('UPDATE event SET kind = ?, actor = ?, data = ? WHERE conversation = ? AND seq = ?', row.kind, row.actor, row.data, row.conversation, row.seq);
       }
     });
-  const start = (id) =>
-    runInDurableObject(workspaceStub(id), (instance, state) => {
-      new instance.constructor(state, instance.env);
+  // Starts the object again, as after a restart, and waits for its upgrade. The runtime holds requests back while
+  // blockConcurrencyWhile runs and resets the object when it fails; here the start only waits for it, so a failure
+  // stays in the test. sync stands in for storage.sync. Answers whether the backfill ran, its error, and the rows
+  // every query of the start read.
+  const start = (id, { sync } = {}) =>
+    runInDurableObject(workspaceStub(id), async (instance, state) => {
+      const { sql } = state.storage;
+      const exec = sql.exec;
+      const cursors = [];
+      let upgrading = null;
+      // The runtime only takes its own state object, so its methods are swapped for the start and put back after.
+      sql.exec = (...args) => {
+        const cursor = exec.apply(sql, args);
+        cursors.push(cursor);
+        return cursor;
+      };
+      state.blockConcurrencyWhile = (fn) => (upgrading = fn());
+      if (sync) state.storage.sync = sync;
+      try {
+        new instance.constructor(state, instance.env);
+        const error = upgrading && (await upgrading.then(() => null, (err) => err));
+        return { ran: upgrading !== null, error: error?.message ?? null, rowsRead: cursors.reduce((sum, cursor) => sum + cursor.rowsRead, 0) };
+      } finally {
+        delete sql.exec;
+        delete state.blockConcurrencyWhile;
+        delete state.storage.sync;
+      }
     });
   const steps = (id) => workspaceSql(id, 'SELECT step FROM upgrade');
   const memberKey = async (id, member) => (await workspaceSql(id, 'SELECT n FROM member WHERE id = ?', member))[0].n;
+  const roomKey = async (id, conversation) => (await workspaceSql(id, 'SELECT n FROM conversation WHERE id = ?', conversation))[0].n;
+  const leftover = (id) => workspaceSql(id, "SELECT name FROM sqlite_master WHERE name IN ('upgrade_at', 'upgrade_removed')");
+
+  // Writes count removed messages into a room as a version from before RUK-226 left them: each message.posted row
+  // removed, a reaction.added event that still names who reacted with what, and the message.redacted event of whoever
+  // removed it, all at one time as #redact writes them. 'together' keeps each message's three events in a row;
+  // 'apart' writes every message, then every reaction, then every removal, which made the old backfill read the rest of
+  // the room once per removal. kept adds messages that stay, each with a reaction, before the removed ones. Returns
+  // the reaction rows as written, with the remover of each removed message's reaction.
+  const oldRemovals = (id, room, { count, layout, authors, removers, kept = 0 }) =>
+    runInDurableObject(workspaceStub(id), (instance, state) => {
+      const sql = state.storage.sql;
+      let seq = sql.exec('SELECT head FROM conversation WHERE n = ?', room).one().head;
+      const at = Date.now();
+      const reactions = [];
+      const write = (kind, actor, data, redactedAt = null) => {
+        seq += 1;
+        const row = { conversation: room, seq, kind, actor, data: data && JSON.stringify(data) };
+        sql.exec(
+          'INSERT INTO event (conversation, seq, id, kind, actor, at, data, redactedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          room,
+          seq,
+          blob(random(16)),
+          kind,
+          actor,
+          at,
+          row.data,
+          redactedAt
+        );
+        return row;
+      };
+      const reaction = (message, i, remover) => {
+        const data = { target: message.target, targetSeq: message.seq, emoji: ['🎉', '👍', '❤️'][i % 3] };
+        reactions.push({ row: write('reaction.added', authors[(i + 1) % authors.length], data), message, remover });
+      };
+      const post = (i, removed) => ({ target: `e_${toBase64url(random(16))}`, seq: write('message.posted', authors[i % authors.length], null, removed ? at : null).seq });
+      for (let i = 0; i < kept; i++) reaction(post(i, false), i, null);
+      const messages = [];
+      for (let i = 0; i < count; i++) {
+        const message = post(i, true);
+        messages.push(message);
+        if (layout === 'together') {
+          reaction(message, i, removers[i % removers.length]);
+          write('message.redacted', removers[i % removers.length], { target: message.target, targetSeq: message.seq });
+        }
+      }
+      if (layout === 'apart') {
+        messages.forEach((message, i) => reaction(message, i, removers[i % removers.length]));
+        messages.forEach((message, i) => write('message.redacted', removers[i % removers.length], { target: message.target, targetSeq: message.seq }));
+      }
+      sql.exec('UPDATE conversation SET head = ? WHERE n = ?', seq, room);
+      return reactions;
+    });
+  // What #redact leaves of a reaction event: reaction.cleared by the remover, with only the target.
+  const clearedRow = ({ row, message, remover }) => ({ ...row, kind: 'reaction.cleared', actor: remover, data: JSON.stringify({ target: message.target, targetSeq: message.seq }) });
+  const reactionRows = (id, room) =>
+    workspaceSql(id, "SELECT conversation, seq, kind, actor, data FROM event WHERE conversation = ? AND kind IN ('reaction.added', 'reaction.removed', 'reaction.cleared') ORDER BY seq", room);
 
   it('turns their reaction events into reaction.cleared by the remover, once, and leaves other reactions alone', async () => {
     const ws = await newWorkspace('Acme', 'Olga');
@@ -193,5 +276,71 @@ describe('a workspace with messages removed before removals cleared their reacti
     await start(ws.id);
     expect(await workspaceSql(ws.id, REACTION_ROWS)).toEqual(original);
     expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+  });
+
+  it('is recorded as done in a workspace this version makes, which never runs it', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+    const room = await roomKey(ws.id, ws.general);
+    const olga = await memberKey(ws.id, ws.me.id);
+    const written = await oldRemovals(ws.id, room, { count: 3, layout: 'together', authors: [olga], removers: [olga] });
+    expect((await start(ws.id)).ran).toBe(false);
+    expect(await reactionRows(ws.id, room)).toEqual(written.map((r) => r.row));
+  });
+
+  it('clears thousands of removed messages in one pass that reads each event about once', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const room = await roomKey(ws.id, ws.general);
+    const olga = await memberKey(ws.id, ws.me.id);
+    const author = await memberKey(ws.id, mila.me.id);
+    const written = await oldRemovals(ws.id, room, { count: 3000, layout: 'apart', authors: [author, olga], removers: [olga, author], kept: 20 });
+    await workspaceSql(ws.id, 'DROP TABLE upgrade');
+    const [{ n: events }] = await workspaceSql(ws.id, 'SELECT COUNT(*) AS n FROM event');
+
+    const result = await start(ws.id);
+    expect(result).toMatchObject({ ran: true, error: null });
+    expect(await reactionRows(ws.id, room)).toEqual(written.map((r) => (r.remover === null ? r.row : clearedRow(r))));
+    // A read per event, and a lookup and an update per reaction. Reading the rest of the room once per removed
+    // message, as the backfill first did, reads over 20 million rows here.
+    expect(result.rowsRead).toBeLessThan(3 * events);
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+    expect(await leftover(ws.id)).toEqual([]);
+  });
+
+  it('goes on where a start that stopped partway left off, without going over what it did again', async () => {
+    const ws = await newWorkspace('Acme', 'Olga');
+    const mila = await newMember(ws, 'Mila', { channels: [ws.general] });
+    const room = await roomKey(ws.id, ws.general);
+    const olga = await memberKey(ws.id, ws.me.id);
+    const author = await memberKey(ws.id, mila.me.id);
+    // 1,800 events: two batches.
+    const written = await oldRemovals(ws.id, room, { count: 600, layout: 'together', authors: [author, olga], removers: [olga, author] });
+    await workspaceSql(ws.id, 'DROP TABLE upgrade');
+
+    // The first start stops after its first batch, as when the runtime's limits end it.
+    const stopped = await start(ws.id, { sync: () => Promise.reject(new Error('stopped by the runtime')) });
+    expect(stopped).toMatchObject({ ran: true, error: 'stopped by the runtime' });
+    expect(await steps(ws.id)).toEqual([]);
+    const [at] = await workspaceSql(ws.id, 'SELECT conversation, seq FROM upgrade_at');
+    expect(at.conversation).toBe(room);
+    // Newest first: the batch cleared every reaction from the last event it read up, and none below.
+    expect(await reactionRows(ws.id, room)).toEqual(written.map((r) => (r.row.seq >= at.seq ? clearedRow(r) : r.row)));
+    // It read one removal whose reaction is below, which the next start has to clear by what the first one noted.
+    expect(written.some((r) => r.row.seq < at.seq && r.row.seq + 1 >= at.seq)).toBe(true);
+
+    // A reaction put back as it was, among what the first start did, stays so: the next start doesn't go over it.
+    const redone = written.at(-1);
+    await workspaceSql(ws.id, 'UPDATE event SET kind = ?, actor = ?, data = ? WHERE conversation = ? AND seq = ?', redone.row.kind, redone.row.actor, redone.row.data, room, redone.row.seq);
+    expect(await start(ws.id)).toMatchObject({ ran: true, error: null });
+    expect(await reactionRows(ws.id, room)).toEqual(written.map((r) => (r === redone ? r.row : clearedRow(r))));
+    expect(await steps(ws.id)).toEqual([{ step: 'reactions.cleared' }]);
+    expect(await leftover(ws.id)).toEqual([]);
+
+    // Run again from the top, it clears that one as well and changes nothing else.
+    await workspaceSql(ws.id, 'DELETE FROM upgrade');
+    expect(await start(ws.id)).toMatchObject({ ran: true, error: null });
+    expect(await reactionRows(ws.id, room)).toEqual(written.map(clearedRow));
+    expect(await leftover(ws.id)).toEqual([]);
   });
 });

@@ -55,16 +55,21 @@ const DM_DAILY = 20;
 const REACTIONS = 20;
 // Files: uploads one member holds open (reserved, under way or ready, and not sent yet), how long a reservation lasts,
 // how many attempts at one upload may be under way at once, and after how long an attempt that never reported back
-// counts as dead.
+// counts as dead. An S3 upload stops well before that (S3_TIME.upload in filestore.js).
 const OPEN_UPLOADS = 20;
 const UPLOAD_TIME = 60 * 60 * 1000;
 const ATTEMPTS = 2;
-const ATTEMPT_TIME = 2 * 60 * 60 * 1000;
+export const ATTEMPT_TIME = 2 * 60 * 60 * 1000;
+// How long a write that failed may still land in the bucket: S3 can store a PUT whose whole body it had after the
+// Worker stopped waiting for its answer. Deleting the workspace waits that long after the last one (landingUntil).
+const LANDING_TIME = 5 * 60 * 1000;
 // Keys deleted from the bucket in one go, at most: the most R2 takes at once. An S3 store takes fewer (its batch,
 // filestore.js). How soon the alarm comes for new trash, and how long it waits after a delete failed.
 const TRASH_BATCH = 1000;
 const TRASH_SOON = 10 * 1000;
 const TRASH_RETRY = 5 * 60 * 1000;
+// Events one transaction of the reaction backfill reads (#clearRemovedReactions).
+const CLEARING_BATCH = 1000;
 // Events that are no activity of their own: they never count as unread and don't move a room's lastAt. A removal
 // turns the reaction events of its message into reaction.cleared in place, which stays as quiet.
 const QUIET = new Set(['reaction.added', 'reaction.removed', 'reaction.cleared', 'message.previewed']);
@@ -137,7 +142,7 @@ const RICH_TABLES = `
 // An upload is a file from reservation to the end of its message: reserved, uploading, ready, then bound to a message
 // (seq, pos), or a link card's image (preview). attempt holds the bucket keys of writes under way, trash the keys
 // waiting to be deleted from the bucket. workspace.fileBytes counts the bytes all of those stand for, apart from the
-// message text bytes counts.
+// message text bytes counts, and workspace.landingUntil is when a write that failed can no longer land (LANDING_TIME).
 const SCHEMA = `
   CREATE TABLE workspace (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -150,7 +155,8 @@ const SCHEMA = `
     membersRev INTEGER NOT NULL,
     channelsRev INTEGER NOT NULL,
     bytes INTEGER NOT NULL,
-    fileBytes INTEGER NOT NULL DEFAULT 0
+    fileBytes INTEGER NOT NULL DEFAULT 0,
+    landingUntil INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE member (
     n INTEGER PRIMARY KEY,
@@ -276,6 +282,7 @@ ${RICH_TABLES}
     session TEXT NOT NULL,
     expiresAt INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS upgrade (step TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;
 `;
 
 // Which bucket an operation draws from. fetch and send are a person's ordinary reading and writing. control holds
@@ -454,7 +461,8 @@ export class Workspace extends DurableObject {
   // one made before rich messages none for reactions, files and link cards. They are added before the object answers
   // anything. Each step can run again, so an object stopped halfway finishes the next time it starts, and one already
   // up to date only reads its table definitions and the upgrade table. That table holds a row for each one-time change
-  // to the data a workspace already has, written in the same transaction as the change, so the change runs once.
+  // to the data a workspace already has, written with the change's last write, so the change runs once. A workspace
+  // made since a change was written records it when it is made (create) and never runs it.
   #upgrade() {
     const has = (table, column) => this.sql.exec(`PRAGMA table_info(${table})`).toArray().some((c) => c.name === column);
     if (!has('member', 'blocksRev')) this.sql.exec('ALTER TABLE member ADD COLUMN blocksRev INTEGER NOT NULL DEFAULT 0');
@@ -472,6 +480,7 @@ export class Workspace extends DurableObject {
     if (!has('event', 'previews')) this.sql.exec('ALTER TABLE event ADD COLUMN previews TEXT');
     if (!has('event', 'noPreviews')) this.sql.exec('ALTER TABLE event ADD COLUMN noPreviews INTEGER NOT NULL DEFAULT 0');
     if (!has('workspace', 'fileBytes')) this.sql.exec('ALTER TABLE workspace ADD COLUMN fileBytes INTEGER NOT NULL DEFAULT 0');
+    if (!has('workspace', 'landingUntil')) this.sql.exec('ALTER TABLE workspace ADD COLUMN landingUntil INTEGER NOT NULL DEFAULT 0');
     this.sql.exec(RICH_TABLES);
     this.sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
@@ -487,32 +496,73 @@ export class Workspace extends DurableObject {
       CREATE TABLE IF NOT EXISTS upgrade (step TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;
     `);
     // A message removed before a removal cleared its reactions (#redact) left reaction.added and reaction.removed
-    // events that still say who reacted to it with which emoji. A new workspace runs this too, once, and finds nothing.
+    // events that still say who reacted to it with which emoji. Requests wait until they are cleared.
     if (this.sql.exec("SELECT 1 FROM upgrade WHERE step = 'reactions.cleared'").toArray().length === 0) {
-      this.ctx.storage.transactionSync(() => {
-        this.#clearRemovedReactions();
-        this.sql.exec("INSERT OR IGNORE INTO upgrade (step, at) VALUES ('reactions.cleared', ?)", Date.now());
-      });
+      this.ctx.blockConcurrencyWhile(() => this.#clearRemovedReactions());
     }
   }
 
-  // The reaction events of every removed message become reaction.cleared, as #redact makes them now. Each removal's
-  // message.redacted event names the message, its sequence number and who removed it. It outlasts the message's
-  // reaction events: they come before it, and retention deletes a conversation's events oldest first. Each scan reads
-  // the events once, and only a removed message that still has reaction events gets an update. Running it again
-  // changes nothing: what it rewrote no longer matches.
-  #clearRemovedReactions() {
-    const reacted = new Set();
-    for (const row of this.sql.exec(
-      "SELECT DISTINCT conversation, json_extract(data, '$.targetSeq') AS targetSeq FROM event WHERE kind IN ('reaction.added', 'reaction.removed')"
-    )) {
-      reacted.add(`${row.conversation}:${row.targetSeq}`);
+  // The reaction events of every removed message become reaction.cleared, as #redact makes them now. One pass reads
+  // every event once, newest first, CLEARING_BATCH at a time in a transaction of their own. A message's reactions come
+  // before its removal, so the pass meets each message.redacted event first and notes the message and who removed it
+  // in upgrade_removed, where each reaction event looks it up by key. Retention deletes a conversation's events oldest
+  // first, so a removal is still there while any reaction to its message is, also when the message itself is gone.
+  // Each batch commits with the key of the last event it read in upgrade_at, and the next one goes on from there: an
+  // object stopped halfway, by a restart or the runtime's limits, resumes where it was. The last batch records the step
+  // and drops both tables. Running it again changes nothing: what it rewrote no longer matches.
+  async #clearRemovedReactions() {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS upgrade_at (step TEXT PRIMARY KEY, conversation INTEGER NOT NULL, seq INTEGER NOT NULL) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS upgrade_removed (
+        conversation INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        target TEXT NOT NULL,
+        actor INTEGER NOT NULL,
+        PRIMARY KEY (conversation, seq)
+      ) WITHOUT ROWID;
+    `);
+    // Writes without an await between them commit together, so each batch is made durable before the next one starts.
+    while (!this.ctx.storage.transactionSync(() => this.#clearReactionsBatch())) await this.ctx.storage.sync();
+  }
+
+  // One batch of #clearRemovedReactions: true when it was the last.
+  #clearReactionsBatch() {
+    const at = this.sql.exec("SELECT conversation, seq FROM upgrade_at WHERE step = 'reactions.cleared'").toArray()[0];
+    const rows = this.sql
+      .exec(
+        `SELECT conversation, seq, kind, actor,
+           CASE WHEN kind IN ('reaction.added', 'reaction.removed', 'message.redacted') THEN data END AS data
+         FROM event ${at ? 'WHERE (conversation, seq) < (?, ?)' : ''} ORDER BY conversation DESC, seq DESC LIMIT ?`,
+        ...(at ? [at.conversation, at.seq] : []),
+        CLEARING_BATCH
+      )
+      .toArray();
+    for (const row of rows) {
+      if (row.data === null) continue;
+      const { target, targetSeq } = JSON.parse(row.data);
+      if (row.kind === 'message.redacted') {
+        this.sql.exec('INSERT OR REPLACE INTO upgrade_removed (conversation, seq, target, actor) VALUES (?, ?, ?, ?)', row.conversation, targetSeq, target, row.actor);
+        continue;
+      }
+      const removal = this.sql.exec('SELECT target, actor FROM upgrade_removed WHERE conversation = ? AND seq = ?', row.conversation, targetSeq).toArray()[0];
+      if (!removal) continue;
+      this.sql.exec(
+        "UPDATE event SET kind = 'reaction.cleared', actor = ?, data = ? WHERE conversation = ? AND seq = ?",
+        removal.actor,
+        JSON.stringify({ target: removal.target, targetSeq }),
+        row.conversation,
+        row.seq
+      );
     }
-    if (reacted.size === 0) return;
-    for (const removal of this.sql.exec("SELECT conversation, actor, data FROM event WHERE kind = 'message.redacted'").toArray()) {
-      const { target, targetSeq } = JSON.parse(removal.data);
-      if (reacted.has(`${removal.conversation}:${targetSeq}`)) this.#clearReactions(removal.conversation, target, targetSeq, removal.actor);
+    if (rows.length === CLEARING_BATCH) {
+      const last = rows.at(-1);
+      this.sql.exec("INSERT OR REPLACE INTO upgrade_at (step, conversation, seq) VALUES ('reactions.cleared', ?, ?)", last.conversation, last.seq);
+      return false;
     }
+    this.sql.exec('DROP TABLE upgrade_at');
+    this.sql.exec('DROP TABLE upgrade_removed');
+    this.sql.exec("INSERT OR IGNORE INTO upgrade (step, at) VALUES ('reactions.cleared', ?)", Date.now());
+    return true;
   }
 
   // ---- Called by the Worker ----
@@ -536,6 +586,8 @@ export class Workspace extends DurableObject {
         now,
         toBase64url(randomBytes(16))
       );
+      // Its removals clear their reactions themselves, so the backfill for older workspaces has nothing to do here.
+      this.sql.exec("INSERT OR IGNORE INTO upgrade (step, at) VALUES ('reactions.cleared', ?)", now);
       me = this.#addMember(who, 'owner', input.displayName, now);
       this.#newChannel(me, { name: 'general', visibility: 'workspace' }, now);
     });
@@ -590,10 +642,18 @@ export class Workspace extends DurableObject {
 
   // The end of a PUT: ok when the bucket took the bytes and their digest. The first attempt that ends well makes the
   // upload ready with its key; every other key goes to the trash. size is the attempt's, for a key this object had
-  // already given up on. gone: true when the workspace was deleted meanwhile, and the Worker deletes the key itself.
+  // already given up on. gone: true when the workspace was deleted meanwhile, or is deleting its files and the key went
+  // to the trash, which goes with the database: the key may have been written after the listing went past it. The
+  // Worker then deletes the key itself.
   async finishAttempt(id, key, size, ok) {
     if (!this.present) return { status: 404, body: NO_WORKSPACE().reply.body, gone: true };
-    return this.#run(() => this.#write(() => this.#finishAttempt(id, key, size, ok, Date.now())));
+    return this.#run(() =>
+      this.#write(() => {
+        const answer = this.#finishAttempt(id, key, size, ok, Date.now());
+        const trashed = this.deleting && this.sql.exec('SELECT 1 FROM trash WHERE key = ?', key).toArray().length > 0;
+        return trashed ? { ...answer, gone: true } : answer;
+      })
+    );
   }
 
   // A bucket key for the image of a link card on a message, recorded before the image is written, or null when the
@@ -606,7 +666,8 @@ export class Workspace extends DurableObject {
 
   // The link cards the Worker made for a message, published once: stored on the message and announced with a
   // message.previewed event. A message removed meanwhile, or whose author took cards away, gets none, and the images
-  // go to the trash, as do the keys in discard, images whose write failed. gone: true when the workspace was deleted.
+  // go to the trash, as do the keys in discard, images whose write failed. So do all of them while the workspace deletes
+  // its files. gone: true then, and when the workspace was deleted, and the Worker deletes the images itself.
   async publishPreviews(conversation, message, previews, discard = []) {
     if (!this.present) return { published: false, gone: true };
     return this.#run(() => this.#write(() => this.#publishPreviews(conversation, message, previews, discard, Date.now())));
@@ -1527,8 +1588,9 @@ export class Workspace extends DurableObject {
       const others = this.sql.exec("SELECT COUNT(*) AS n FROM member WHERE state = 'active' AND n != ?", self.n).one().n;
       if (others > 0) throw new Refusal(409, 'members_remain', 'Remove everyone else first.');
       // A write under way could land after the bucket was listed: an upload's attempt, also one that lost to another
-      // or whose upload went, and a link card's image.
-      const writing = this.sql.exec('SELECT 1 FROM attempt WHERE at > ? LIMIT 1', Date.now() - ATTEMPT_TIME).toArray().length;
+      // or whose upload went, and a link card's image. So could one that failed in the last LANDING_TIME.
+      const now = Date.now();
+      const writing = this.sql.exec('SELECT 1 FROM attempt WHERE at > ? LIMIT 1', now - ATTEMPT_TIME).toArray().length > 0 || this.#ws().landingUntil > now;
       if (writing) throw new Refusal(503, 'unavailable', 'A file is being uploaded. Try again shortly.', {}, { 'retry-after': '30' });
       return self;
     };
@@ -2316,6 +2378,11 @@ export class Workspace extends DurableObject {
     if (delta) this.sql.exec('UPDATE workspace SET fileBytes = MAX(0, fileBytes + ?) WHERE id = 1', delta);
   }
 
+  // A write that failed, which may still land in the bucket: deleting the workspace waits LANDING_TIME for it.
+  #mayLand(now) {
+    this.sql.exec('UPDATE workspace SET landingUntil = MAX(landingUntil, ?) WHERE id = 1', now + LANDING_TIME);
+  }
+
   // A key whose object goes from the bucket. Counted until the alarm has deleted it.
   #toTrash(key, size, now) {
     const added = this.sql.exec('INSERT OR IGNORE INTO trash (key, size, at) VALUES (?, ?, ?) RETURNING key', key, size, now).toArray().length > 0;
@@ -2439,6 +2506,7 @@ export class Workspace extends DurableObject {
   #finishAttempt(id, key, size, ok, now) {
     const READY = () => reply(200, { upload: { id, ready: true } });
     const GONE = () => INVALID_STATE().reply;
+    if (!ok) this.#mayLand(now);
     const upload = this.sql.exec('SELECT * FROM upload WHERE id = ?', id).toArray()[0];
     const attempt = this.sql.exec('SELECT * FROM attempt WHERE key = ?', key).toArray()[0];
     if (!attempt) {
@@ -2568,11 +2636,14 @@ export class Workspace extends DurableObject {
       take(image.key);
       this.#toTrash(image.key, image.size, now);
     };
+    if (discard.length) this.#mayLand(now);
     for (const image of discard) drop(image);
-    const found = this.#unfurlable(conversation, message);
+    // While a deletion waits on the bucket, an image may have been written after the listing went past its key, and
+    // the trash goes with the database: no card is published, and the Worker deletes every image (gone).
+    const found = !this.deleting && this.#unfurlable(conversation, message);
     if (!found || previews.length === 0) {
       for (const p of previews) if (p.image) drop(p.image);
-      return { published: false };
+      return this.deleting ? { published: false, gone: true } : { published: false };
     }
     const { c, target } = found;
     const out = previews.map((p, pos) => {

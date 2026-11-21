@@ -244,7 +244,7 @@ The settings in `vars`:
 npx wrangler r2 bucket create rukoo-workspace-files --jurisdiction eu
 ```
 
-Leave the bucket private, without a public bucket address. Devices upload through this Worker, which streams each file into the bucket with the exact size and SHA-256 the device declared, and download with a link the Worker signs, valid for 60 seconds. Files of a removed message and of messages retention removes are deleted from the bucket by the workspace's alarm, usually within a minute. Deleting a workspace deletes its files first, while the workspace stays as it is; when the bucket fails, a file is still being uploaded, or the server has lost its file store while the workspace still has files in the bucket, the workspace stays and its owner can try again. R2 bills storage and operations separately from Workers ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
+Leave the bucket private, without a public bucket address. Devices upload through this Worker, which streams each file into the bucket with the exact size and SHA-256 the device declared, and download with a link the Worker signs, valid for 60 seconds. Files of a removed message and of messages retention removes are deleted from the bucket by the workspace's alarm, usually within a minute. Deleting a workspace deletes its files first, while the workspace stays as it is; when the bucket fails, a file is still being uploaded or failed to upload in the last five minutes, or the server has lost its file store while the workspace still has files in the bucket, the workspace stays and its owner can try again. R2 bills storage and operations separately from Workers ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
 
 **Files in an S3-compatible bucket.** Instead of R2, the files can live in a bucket of any service that speaks the S3 API, such as UpCloud Managed Object Storage, MinIO or AWS S3. The Worker signs each request with AWS Signature Version 4 and uses path-style addresses (`<endpoint>/<bucket>/<key>`). Devices still upload and download only through this Worker, with the same signed links, so the bucket stays private and needs no CORS rules or public address. It takes five settings:
 
@@ -265,6 +265,8 @@ Two more vars say who keeps the files and where. The statement at `/privacy` nam
 
 With both set, the statement says the files are kept "in private storage at UpCloud in Frankfurt am Main" and that UpCloud keeps them under its data processing terms. With either one empty, it names neither, says "the S3-compatible service this server uses" instead and leaves out the data processing terms. With R2, the statement names Cloudflare R2 and ignores both.
 
+Use a bucket that has never had versioning turned on. On a versioned bucket a delete without a version ID, which is the only kind the Worker sends, adds a delete marker and keeps the object as an older version. The files of removed messages and deleted workspaces would then stay in the bucket, and the statement at `/privacy` would be wrong where it says they are deleted from storage. To check, ask the bucket for its versioning state, with `aws s3api get-bucket-versioning --bucket <bucket> --endpoint-url <endpoint>` (the S3 call GetBucketVersioning) or in the provider's console: a bucket that never had versioning answers without a `Status`. `Enabled` or `Suspended` means it has or had versioning, and then the old versions of every object it held stay until you delete them; use a new bucket instead.
+
 Give the key access to this one bucket and nothing else: `s3:ListBucket` on the bucket, and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects. Services that take IAM-style policies, UpCloud's among them, express that as:
 
 ```json
@@ -279,7 +281,7 @@ Give the key access to this one bucket and nothing else: `s3:ListBucket` on the 
 
 With UpCloud, for example:
 
-1. In the UpCloud control panel, create a Managed Object Storage instance in the region you want, such as `europe-2` (Frankfurt), and a bucket in it, here `rukoo-workspace-files`. Leave public access off.
+1. In the UpCloud control panel, create a Managed Object Storage instance in the region you want, such as `europe-2` (Frankfurt), and a bucket in it, here `rukoo-workspace-files`. Leave public access and versioning off.
 2. Create a user for the server, attach a policy like the one above, and create an access key for that user.
 3. Put the instance's public S3 address, the region and the bucket name in the three vars in `wrangler.jsonc` (in `vars`, or in your environment's `vars`), and leave `r2_buckets` commented out. For `/privacy`, set `WORKSPACE_FILES_S3_PROVIDER` to `UpCloud` and `WORKSPACE_FILES_S3_PLACE` to the city of the region's data centre, such as `Frankfurt am Main` for `europe-2`.
 4. Set the key as two secrets, so it never appears in `wrangler.jsonc`:
