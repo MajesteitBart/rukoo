@@ -97,6 +97,25 @@ describe('GET /billing', () => {
     expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'canceled', price: configured });
   });
 
+  it('shows a new subscription at the price its page was made with, also before the workspace read it', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const page = stripeFake.lastSession();
+    // The operator changes the price after the page was made, and Stripe can't be asked about the subscription yet.
+    const price = stripeFake.prices.get(FAKE_STRIPE.priceId);
+    try {
+      const done = stripeFake.completeCheckout(page.id);
+      price.unit_amount = 2100;
+      forgetPrice();
+      stripeFake.fail(10, 503, (method, path) => method === 'GET' && path.startsWith('/v1/subscriptions/'));
+      await deliver(stripeFake.event('checkout.session.completed', done.session));
+      expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'incomplete', price: { amount: 1950, currency: 'eur' } });
+    } finally {
+      price.unit_amount = 1950;
+      stripeFake.failures = [];
+    }
+  });
+
   it('asks Stripe for the price of a subscription the workspace hasn’t read yet', async () => {
     const ws = await newWorkspace();
     const { subscription } = await subscribe(ws);
@@ -212,6 +231,29 @@ describe('POST /billing/checkout', () => {
     }
   });
 
+  it('finds a paid page of the workspace’s however many other pages its customer has', async () => {
+    const ws = await newWorkspace();
+    stripeFake.fail(1, 'after', (method, path) => method === 'POST' && path === '/v1/checkout/sessions');
+    expect((await checkout(ws.person, ws.id)).status).toBe(502);
+    const stray = stripeFake.lastSession();
+    const done = stripeFake.completeCheckout(stray.id);
+    // Another integration made a hundred pages for the same customer since, so Stripe lists the paid one on page two.
+    for (let i = 0; i < 100; i++) {
+      await stripeFake
+        .createSession({
+          mode: 'subscription',
+          customer: stray.customer,
+          line_items: [{ price: FAKE_STRIPE.priceId, quantity: '1' }],
+          success_url: 'https://elsewhere.example/done',
+          cancel_url: 'https://elsewhere.example/cancel'
+        })
+        .json();
+    }
+    const again = await checkout(ws.person, ws.id);
+    expect(again.status).toBe(409);
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: done.subscription.id, checkoutPending: 0 });
+  });
+
   it('leaves alone the pages another integration made for the workspace’s customer', async () => {
     const ws = await newWorkspace();
     await checkout(ws.person, ws.id);
@@ -225,12 +267,15 @@ describe('POST /billing/checkout', () => {
       cancel_url: 'https://elsewhere.example/cancel'
     };
     const open = await stripeFake.createSession(params).json();
-    const paid = await stripeFake.createSession(params).json();
+    // One that even copies the workspace's ID, with an attempt of its own.
+    const copied = await stripeFake.createSession({ ...params, metadata: { workspace: ws.id, attempt: 'someoneElses' } }).json();
+    const paid = await stripeFake.createSession({ ...params, metadata: { workspace: ws.id, attempt: 'someoneElses' } }).json();
     stripeFake.completeCheckout(paid.id);
     // A new number of seats, so Checkout makes another page and expires the workspace's own.
     await newMember(ws, 'Mila');
     expect((await checkout(ws.person, ws.id)).status).toBe(200);
     expect(stripeFake.sessions.get(open.id).status).toBe('open');
+    expect(stripeFake.sessions.get(copied.id).status).toBe('open');
     expect(await billingRow(ws.id)).toMatchObject({ subscription: null, status: 'none' });
   });
 
@@ -409,6 +454,20 @@ describe('with billing off', () => {
 });
 
 describe('a workspace whose billing table came before a column', () => {
+  it('has a page it knew of before the columns asked about once it must have expired', async () => {
+    const ws = await newWorkspace();
+    await runInDurableObject(workspaceStub(ws.id), (instance, state) => {
+      const sql = state.storage.sql;
+      for (const column of ['price', 'checkoutAttempt', 'checkoutUntil']) sql.exec(`ALTER TABLE billing DROP COLUMN ${column}`);
+      sql.exec("INSERT INTO billing (id, live, customer, checkoutId, checkoutPending) VALUES (1, 0, 'cus_before1', 'cs_test_before1', 1)");
+      const before = Date.now();
+      new instance.constructor(state, instance.env);
+      const row = sql.exec('SELECT checkoutUntil FROM billing').one();
+      expect(row.checkoutUntil).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+      expect(row.checkoutUntil).toBeLessThan(before + 25 * 60 * 60 * 1000);
+    });
+  });
+
   it('gets the column when its object starts, and bills as before', async () => {
     const ws = await newWorkspace();
     await runInDurableObject(workspaceStub(ws.id), (instance, state) => {

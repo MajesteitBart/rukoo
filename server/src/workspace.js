@@ -98,6 +98,8 @@ const CHECKOUT_LEFT = 10 * 60 * 1000;
 // what became of a page the workspace still knows (#reconcileCheckout).
 const CHECKOUT_LIFE = DAY;
 const CHECKOUT_GRACE = 10 * 60 * 1000;
+// The most pages of a hundred Checkout sessions read when looking for the workspace's own among its customer's.
+const CHECKOUT_LIST_PAGES = 20;
 // The subscription statuses whose seats follow the members. In every status but the ended ones Stripe can still charge,
 // a status Stripe adds later included (billingLive). An ended subscription never comes back.
 const BILLING_SYNC = new Set(['trialing', 'active', 'past_due']);
@@ -587,7 +589,16 @@ export class Workspace extends DurableObject {
     // Columns billing gained after its table was first made.
     if (!has('billing', 'price')) this.sql.exec('ALTER TABLE billing ADD COLUMN price TEXT');
     if (!has('billing', 'checkoutAttempt')) this.sql.exec('ALTER TABLE billing ADD COLUMN checkoutAttempt TEXT');
-    if (!has('billing', 'checkoutUntil')) this.sql.exec('ALTER TABLE billing ADD COLUMN checkoutUntil INTEGER');
+    if (!has('billing', 'checkoutUntil')) {
+      // A page or attempt the workspace already knew is asked about once any page made by then has expired.
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec('ALTER TABLE billing ADD COLUMN checkoutUntil INTEGER');
+        this.sql.exec(
+          'UPDATE billing SET checkoutUntil = ? WHERE checkoutId IS NOT NULL OR checkoutPending = 1',
+          Date.now() + CHECKOUT_LIFE + CHECKOUT_GRACE
+        );
+      });
+    }
     this.sql.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS conversation_dm_open ON conversation (dmSet) WHERE dmSet IS NOT NULL AND archivedAt IS NULL;
       CREATE TABLE IF NOT EXISTS block (
@@ -2089,12 +2100,13 @@ export class Workspace extends DurableObject {
       console.error('A workspace with a subscription completed a second Checkout; it keeps the first.');
       return false;
     }
-    // Another subscription after one that ended starts from nothing of the old one's. One whose end came before its
-    // page's event is kept ended, so its owner still reaches its invoices in the portal; the alarm reads its status.
+    // Another subscription after one that ended starts from nothing of the old one's, but the price its page was made
+    // with (#openCheckout), until the alarm reads the subscription. One whose end came before its page's event is kept
+    // ended, so its owner still reaches its invoices in the portal; the alarm reads its status.
     const ended = this.#ended(session.subscription);
     this.sql.exec(
       `UPDATE billing SET subscription = ?, item = NULL, status = ?, seats = NULL, periodEnd = NULL,
-         cancelAtPeriodEnd = 0, stateAt = 0, trimBy = NULL, trimMissed = NULL, orphaned = 0, tries = 0, price = NULL WHERE id = 1`,
+         cancelAtPeriodEnd = 0, stateAt = 0, trimBy = NULL, trimMissed = NULL, orphaned = 0, tries = 0 WHERE id = 1`,
       session.subscription,
       ended ? 'canceled' : 'incomplete'
     );
@@ -2218,7 +2230,7 @@ export class Workspace extends DurableObject {
   async #openCheckout({ origin, locale }) {
     const api = stripe(this.env);
     try {
-      await this.#checkPrice(api);
+      const price = await this.#checkPrice(api);
       this.#mayCheckout();
       const seats = Math.max(1, this.#paidMembers());
       const open = await this.#openSession(api);
@@ -2236,10 +2248,13 @@ export class Workspace extends DurableObject {
       const attempt = toBase64url(randomBytes(12));
       this.#write(() => {
         this.#mayCheckout();
+        // The page's price too: the subscription it brings starts at it, and is shown at it until the workspace reads
+        // the subscription. Only while no subscription Stripe can charge is shown at its own (#mayCheckout).
         this.sql.exec(
-          'UPDATE billing SET checkoutPending = 1, checkoutAttempt = ?, checkoutUntil = ? WHERE id = 1',
+          'UPDATE billing SET checkoutPending = 1, checkoutAttempt = ?, checkoutUntil = ?, price = ? WHERE id = 1',
           attempt,
-          Date.now() + CHECKOUT_LIFE + CHECKOUT_GRACE
+          Date.now() + CHECKOUT_LIFE + CHECKOUT_GRACE,
+          price ? JSON.stringify(price) : null
         );
       });
       const session = await api.post('/v1/checkout/sessions', {
@@ -2328,10 +2343,9 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // Closes the workspace's Checkout pages: each of its own that is still open is expired, the one kept and any other of
-  // its customer with the workspace's ID in its metadata, such as one an answer that got lost left behind. A page that
-  // was paid, the one kept or one of the latest attempt (#ownPage), brings its subscription and answers billing_active.
-  // A page another integration made for the same customer is left alone. Answers billing_unavailable when Stripe can't
+  // Closes the workspace's Checkout pages (#ownPage): each that is still open is expired, the one kept and any of its
+  // latest attempt, such as one an answer that got lost left behind, and one that was paid brings its subscription and
+  // answers billing_active. Answers billing_unavailable when Stripe can't
   // say. It needs only Stripe's secrets, so a page left open when BILLING went off is closed too, and the workspace can
   // be deleted. Without them nothing can be asked, and a page the workspace knows keeps it from being deleted
   // (#deleteWorkspace).
@@ -2343,14 +2357,22 @@ export class Workspace extends DurableObject {
     const kept = b.checkoutId;
     const attempt = b.checkoutAttempt;
     try {
+      // Every page of the customer, newest first, a hundred at a time. A listing that doesn't end within
+      // CHECKOUT_LIST_PAGES pages answers that Stripe can't say, and the attempt stays open.
       const listed = new Map();
-      if (b.customer) {
-        const list = await api.get('/v1/checkout/sessions', { customer: b.customer, limit: 100 });
-        for (const page of Array.isArray(list?.data) ? list.data : []) {
-          if (typeof page?.id === 'string' && STRIPE_ID.cs.test(page.id) && page.metadata?.workspace === this.wid) listed.set(page.id, page);
+      for (let after = null, n = 0; b.customer; n++) {
+        if (n === CHECKOUT_LIST_PAGES) throw new Error('The customer of a workspace has more Checkout pages than the server reads.');
+        const list = await api.get('/v1/checkout/sessions', { customer: b.customer, limit: 100, starting_after: after ?? undefined });
+        const data = Array.isArray(list?.data) ? list.data : [];
+        for (const page of data) {
+          if (typeof page?.id === 'string' && STRIPE_ID.cs.test(page.id) && this.#ownPage(page, b)) listed.set(page.id, page);
         }
+        if (list?.has_more !== true || !data.length || typeof data.at(-1)?.id !== 'string') break;
+        after = data.at(-1).id;
       }
-      const pages = [...listed.values()].filter((page) => page.status === 'open' || (page.status === 'complete' && this.#ownPage(page, b)));
+      // Only the workspace's own pages (#ownPage): one another integration made for the same customer is left alone,
+      // also one that copies the workspace's ID.
+      const pages = [...listed.values()].filter((page) => page.status === 'open' || page.status === 'complete');
       // The page kept, when the listing doesn't say what became of it.
       if (kept && !listed.has(kept)) pages.push({ id: kept, status: null });
       // Every open page is expired before anything else, so none stays payable next to a page that was paid.
@@ -2394,7 +2416,8 @@ export class Workspace extends DurableObject {
   }
 
   // The seat price must be one Checkout can sell a seat a month with: an active, recurring monthly price per unit.
-  // Anything else is the operator's to fix, and Checkout waits for it. The amount itself is Stripe's.
+  // Anything else is the operator's to fix, and Checkout waits for it. The amount itself is Stripe's. Returns it as the
+  // apps show it (priceOut).
   async #checkPrice(api) {
     const price = await api.get(`/v1/prices/${encodeURIComponent(String(this.env.STRIPE_PRICE_ID).trim())}`);
     const recurring = price?.recurring ?? {};
@@ -2410,6 +2433,7 @@ export class Workspace extends DurableObject {
       console.error('STRIPE_PRICE_ID is not an active monthly price per seat (with its tax behavior set for Stripe Tax); Checkout waits.');
       throw new Refusal(503, 'billing_unavailable', 'Billing is not set up correctly on this server. Try again later.');
     }
+    return priceOut(price);
   }
 
   // POST /billing/portal, for an owner: Stripe's customer portal, to change the payment method, read invoices or cancel.

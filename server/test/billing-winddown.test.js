@@ -20,8 +20,9 @@ beforeEach(() => {
 const now = () => Math.floor(Date.now() / 1000);
 const quantity = (sub) => stripeFake.subscriptions.get(sub.id).items.data[0].quantity;
 
-// What a workspace had made while billing was on: its own customer and a Checkout page, with seats.
-async function openedWhileOn(ws, seats = 1) {
+// What a workspace had made while billing was on: its own customer and a Checkout page, with seats, made by the
+// attempt with this ID.
+async function openedWhileOn(ws, seats = 1, attempt = 'attemptWhileOn1') {
   const customer = (await stripeFake.route('POST', '/v1/customers', { metadata: { workspace: ws.id } }).json()).id;
   const page = await stripeFake
     .createSession({
@@ -30,7 +31,7 @@ async function openedWhileOn(ws, seats = 1) {
       customer_update: { name: 'auto', address: 'auto' },
       client_reference_id: ws.id,
       line_items: [{ price: FAKE_STRIPE.priceId, quantity: String(seats) }],
-      metadata: { workspace: ws.id },
+      metadata: { workspace: ws.id, attempt },
       subscription_data: { metadata: { workspace: ws.id } },
       success_url: 'https://accounts.example/billing?checkout=done',
       cancel_url: 'https://accounts.example/billing?checkout=cancel'
@@ -114,7 +115,7 @@ describe('with BILLING off and Stripe’s secrets still set', () => {
     const ws = await newWorkspace();
     // The attempt's answer never came, so the workspace knows no page, only that one may be open.
     const { customer, page } = await openedWhileOn(ws);
-    await workspaceSql(ws.id, 'INSERT INTO billing (id, live, customer, checkoutPending) VALUES (1, 0, ?, 1)', customer);
+    await workspaceSql(ws.id, "INSERT INTO billing (id, live, customer, checkoutPending, checkoutAttempt) VALUES (1, 0, ?, 1, 'attemptWhileOn1')", customer);
     expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
     expect(stripeFake.sessions.get(page.id).status).toBe('expired');
   });

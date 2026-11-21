@@ -159,10 +159,14 @@ export class FakeStripe {
     }
     if (method === 'POST' && path === '/v1/checkout/sessions') return this.createSession(params);
     if (method === 'GET' && path === '/v1/checkout/sessions') {
-      const found = [...this.sessions.values()].filter(
-        (session) => (!params.customer || session.customer === params.customer) && (!params.status || session.status === params.status)
-      );
-      return json(200, { object: 'list', data: found.slice(0, Number(params.limit) || 10).map((session) => this.sessionOut(session)), has_more: false });
+      // Newest first, a page of limit at a time after starting_after, as Stripe lists them.
+      const found = [...this.sessions.values()]
+        .reverse()
+        .filter((session) => (!params.customer || session.customer === params.customer) && (!params.status || session.status === params.status));
+      const from = params.starting_after ? found.findIndex((session) => session.id === params.starting_after) + 1 : 0;
+      const limit = Number(params.limit) || 10;
+      const page = found.slice(from, from + limit);
+      return json(200, { object: 'list', data: page.map((session) => this.sessionOut(session)), has_more: from + limit < found.length });
     }
     if (method === 'GET' && (m = path.match(/^\/v1\/checkout\/sessions\/([^/]+)$/))) {
       const session = this.sessions.get(decodeURIComponent(m[1]));
