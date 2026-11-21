@@ -43,8 +43,8 @@
     "INVITE_USES": 1,
     // Codes by email (README.md, "Codes by email"), for "verified" sign-ups and for signing in while an account is
     // locked: the sender, such as "Rukoo <account@example.com>", on a domain verified in Resend. The Resend API key is
-    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most emails
-    // with codes of one purpose (sign-up or unlock) the whole server sends in an hour.
+    // the RESEND_API_KEY secret. With either missing, the server sends no mail. EMAIL_CODES_PER_HOUR: the most sign-up
+    // emails the whole server sends in an hour.
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
     // Per account: live records, and their total size in bytes.

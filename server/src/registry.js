@@ -14,16 +14,16 @@ import { workspaceObject } from './config.js';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-// How long a claimed code is held for the sign-up, sign-in or recovery that claimed it. A Worker that stops between
-// claiming and settling leaves a claim that lapses.
-const CLAIM_TIME = 30 * 1000;
+// How long a claimed code is held for the sign-up, sign-in or recovery that claimed it, far longer than one takes. A
+// Worker that stops between claiming and settling leaves a claim that lapses.
+const CLAIM_TIME = 60 * 1000;
 // codes: one row per code asked for, by the hash of its challenge. token is the hash of the long code in the same
 // email; address the hash of the address; code the hash of the six digits, which also binds the purpose, the challenge
 // and the address. The six digits work until codeUntil and for `attempts` misses; the long code until `until`, when
 // the row goes. failures counts wrong passwords or recovery keys sent with either, and ends both at `attempts`.
-// claimedUntil holds the code for one request at a time. code_sends: when codes of a purpose were asked for an
-// address in the last day, newest last. code_mail: how many emails of each purpose went out in the hour that started
-// at hour * HOUR.
+// claim and claimedUntil hold the code for one request at a time. code_sends: when codes of a purpose were asked for
+// an address in the last day, newest last. code_mail: how many sign-up emails went out in the hour that started at
+// hour * HOUR.
 const CODE_TABLES = `
   CREATE TABLE IF NOT EXISTS codes (
     challenge TEXT PRIMARY KEY,
@@ -35,8 +35,10 @@ const CODE_TABLES = `
     until INTEGER NOT NULL,
     misses INTEGER NOT NULL DEFAULT 0,
     failures INTEGER NOT NULL DEFAULT 0,
+    claim TEXT,
     claimedUntil INTEGER NOT NULL DEFAULT 0
   );
+  CREATE INDEX IF NOT EXISTS codes_until ON codes (until);
   CREATE TABLE IF NOT EXISTS code_sends (
     address TEXT NOT NULL,
     purpose TEXT NOT NULL,
@@ -44,6 +46,7 @@ const CODE_TABLES = `
     until INTEGER NOT NULL,
     PRIMARY KEY (address, purpose)
   );
+  CREATE INDEX IF NOT EXISTS code_sends_until ON code_sends (until);
   CREATE TABLE IF NOT EXISTS code_mail (purpose TEXT PRIMARY KEY, hour INTEGER NOT NULL, count INTEGER NOT NULL);
 `;
 
@@ -117,12 +120,13 @@ export class Registry extends DurableObject {
     return { result: 'ok' };
   }
 
-  // Counts one email of a purpose against perHour emails an hour for the whole server, and says whether it may go.
-  // Only emails that go out count, so asking for codes that send nothing uses none of them up.
+  // Counts one email of a purpose against perHour emails an hour for the whole server: the hour it counts in, or null
+  // when this hour's are used up. Only emails about to go out count, so asking for codes that send nothing uses none
+  // of them up.
   async chargeMail(purpose, perHour) {
     const slot = Math.floor(Date.now() / HOUR);
     const row = this.sql.exec('SELECT hour, count FROM code_mail WHERE purpose = ?', purpose).toArray()[0];
-    if (perHour > 0 && row?.hour === slot && row.count >= perHour) return false;
+    if (perHour > 0 && row?.hour === slot && row.count >= perHour) return null;
     this.sql.exec(
       `INSERT INTO code_mail (purpose, hour, count) VALUES (?, ?, 1)
        ON CONFLICT (purpose) DO UPDATE SET
@@ -130,11 +134,24 @@ export class Registry extends DurableObject {
       purpose,
       slot
     );
-    return true;
+    return slot;
+  }
+
+  // Gives back an email chargeMail counted, when Resend refused it, so a refusal doesn't use up the hour.
+  async refundMail(purpose, slot) {
+    this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, slot);
+  }
+
+  // No email with the code's long code went out, so nobody can use it: the row goes when the six digits expire, and
+  // not a day later.
+  async shortenCode(challenge) {
+    this.sql.exec('UPDATE codes SET until = MIN(until, codeUntil) WHERE challenge = ?', challenge);
+    const row = this.sql.exec('SELECT until FROM codes WHERE challenge = ?', challenge).toArray()[0];
+    if (row) await this.#armCodes(row.until);
   }
 
   // Claims a code for one request: the six digits with their challenge ({ challenge, code }), or the long code
-  // ({ token }), for an address and purpose. { result } is 'ok' with the code's id, 'wrong' with attemptsLeft for
+  // ({ token }), for an address and purpose. { result } is 'ok' with the code's id and the claim, 'wrong' with attemptsLeft for
   // six digits that don't match, 'busy' while another request holds the code, or 'expired' for a code that is
   // unknown, expired, used or out of tries. A wrong six digits costs only their own tries, so whoever holds the
   // challenge can't spend the long code in the email. A long code for another address or purpose counts as unknown.
@@ -159,21 +176,22 @@ export class Registry extends DurableObject {
       }
     }
     if (row.claimedUntil > now) return { result: 'busy' };
-    this.sql.exec('UPDATE codes SET claimedUntil = ? WHERE challenge = ?', now + CLAIM_TIME, row.challenge);
-    return { result: 'ok', id: row.challenge };
+    const claim = toBase64url(randomBytes(16));
+    this.sql.exec('UPDATE codes SET claim = ?, claimedUntil = ? WHERE challenge = ?', claim, now + CLAIM_TIME, row.challenge);
+    return { result: 'ok', id: row.challenge, claim };
   }
 
   // Ends a claim: 'used' deletes the code, 'failed' (a wrong password or recovery key) costs it a try and gives it
-  // back, and 'keep' gives it back as it was.
-  async settleCode(id, outcome, attempts) {
+  // back, and 'keep' gives it back as it was. A claim that lapsed meanwhile gives back nothing, so it never ends a
+  // newer request's claim. What it did still counts: a use deletes the code and a wrong password costs a try.
+  async settleCode(id, claim, outcome, attempts) {
     if (outcome === 'used') {
       this.sql.exec('DELETE FROM codes WHERE challenge = ?', id);
-    } else if (outcome === 'failed') {
-      this.sql.exec('UPDATE codes SET failures = failures + 1, claimedUntil = 0 WHERE challenge = ?', id);
-      this.sql.exec('DELETE FROM codes WHERE challenge = ? AND failures >= ?', id, attempts);
-    } else {
-      this.sql.exec('UPDATE codes SET claimedUntil = 0 WHERE challenge = ?', id);
+      return;
     }
+    if (outcome === 'failed') this.sql.exec('UPDATE codes SET failures = failures + 1 WHERE challenge = ?', id);
+    this.sql.exec('UPDATE codes SET claim = NULL, claimedUntil = 0 WHERE challenge = ? AND claim = ?', id, claim);
+    this.sql.exec('DELETE FROM codes WHERE challenge = ? AND failures >= ?', id, attempts);
   }
 
   // Deletes what has expired and waits for the next to expire.

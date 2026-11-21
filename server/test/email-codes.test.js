@@ -217,24 +217,26 @@ describe('POST /v1/email-code', () => {
     }
   });
 
-  it('sends at most EMAIL_CODES_PER_HOUR emails of each purpose, counting only emails that go out', async () => {
+  it('sends at most EMAIL_CODES_PER_HOUR sign-up emails, counting only emails that go out, and no limit on unlock emails', async () => {
     const slot = Math.floor(Date.now() / HOUR);
-    await registrySql((sql) => {
-      for (const [purpose, count] of [['signup', 4], ['unlock', 0]]) {
+    const setCount = (count) =>
+      registrySql((sql) =>
         sql.exec(
           'INSERT INTO code_mail (purpose, hour, count) VALUES (?, ?, ?) ON CONFLICT (purpose) DO UPDATE SET hour = excluded.hour, count = excluded.count',
-          purpose,
+          'signup',
           slot,
           count
-        );
-      }
-    });
+        )
+      );
+    const count = () => registrySql((sql) => sql.exec("SELECT count FROM code_mail WHERE purpose = 'signup'").one().count);
+    await setCount(4);
     const vars = { ...VERIFIED, EMAIL_CODES_PER_HOUR: '5' };
-    // Unlock requests for addresses without an account send nothing, so they use none of the hour's emails.
-    for (let i = 0; i < 6; i++) expect((await askCode(newEmail(), 'unlock', vars)).status).toBe(202);
+    // Requests that send nothing, and unlock emails, use none of the hour's sign-up emails.
+    for (let i = 0; i < 3; i++) expect((await askCode(newEmail(), 'unlock', vars)).status).toBe(202);
     const first = newEmail();
     expect((await askCode(first, 'signup', vars)).status).toBe(202);
     expect(resend.to(first)).toHaveLength(1);
+    expect(await count()).toBe(5);
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       // The answer stays the same when this hour's emails are used up; the email doesn't go.
@@ -243,12 +245,31 @@ describe('POST /v1/email-code', () => {
       expect(res.status).toBe(202);
       expect(resend.to(second)).toHaveLength(0);
       expect(JSON.stringify(errors.mock.calls)).toContain('EMAIL_CODES_PER_HOUR');
+      // An email Resend refuses is given back.
+      await setCount(0);
+      resend.failNext({ status: 422, name: 'validation_error' });
+      expect((await askCode(newEmail(), 'signup', vars)).status).toBe(202);
+      expect(await count()).toBe(0);
     } finally {
       errors.mockRestore();
     }
+    await setCount(5);
     const who = await signup();
-    expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+    expect((await askCode(who.email, 'unlock', { ...vars, EMAIL_CODES_PER_HOUR: '1' })).status).toBe(202);
     expect(resend.to(who.email)).toHaveLength(1);
+  });
+
+  it('keeps a code for 10 minutes only when no email with its long code went out', async () => {
+    const until = (challenge) =>
+      sha256(utf8(challenge)).then((hash) =>
+        registrySql((sql) => sql.exec('SELECT until - codeUntil AS extra FROM codes WHERE challenge = ?', toBase64url(hash)).one().extra)
+      );
+    const nobody = await askCode(newEmail(), 'unlock');
+    expect(await until(nobody.body.challenge)).toBe(0);
+    const note = await askCode((await signup()).email, 'signup');
+    expect(await until(note.body.challenge)).toBe(0);
+    const sent = await askCode(newEmail(), 'signup');
+    expect(await until(sent.body.challenge)).toBe(DAY - 10 * MINUTE);
   });
 
   it('keeps only hashes, and an alarm deletes them a day after the request', async () => {
@@ -508,15 +529,25 @@ describe('signing in while the account is locked', () => {
       purpose: 'unlock'
     };
     const registry = registryObject(env);
+    const failures = () =>
+      registrySql((sql) => sql.exec('SELECT failures FROM codes WHERE challenge = ?', first.id).toArray()[0]?.failures ?? null);
     const first = await registry.claimCode(entry, 5);
     expect(first.result).toBe('ok');
     expect((await registry.claimCode(entry, 5)).result).toBe('busy');
-    await registry.settleCode(first.id, 'keep', 5);
+    await registry.settleCode(first.id, first.claim, 'keep', 5);
     const second = await registry.claimCode(entry, 5);
     expect(second.result).toBe('ok');
-    // A Worker that never settles holds the code for 30 seconds at most.
-    later(31 * 1000);
-    expect((await registry.claimCode(entry, 5)).result).toBe('ok');
+    // A request that never settles holds the code for a minute at most.
+    later(61 * 1000);
+    const third = await registry.claimCode(entry, 5);
+    expect(third.result).toBe('ok');
+    // The lapsed claim settling late can't give back the newer claim, but its wrong password still counts.
+    await registry.settleCode(second.id, second.claim, 'failed', 5);
+    expect(await failures()).toBe(1);
+    expect((await registry.claimCode(entry, 5)).result).toBe('busy');
+    await registry.settleCode(third.id, third.claim, 'used', 5);
+    expect(await failures()).toBe(null);
+    expect((await registry.claimCode(entry, 5)).result).toBe('expired');
   });
 
   it('refuses a wrong code without touching the account', async () => {

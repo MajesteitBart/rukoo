@@ -35,7 +35,9 @@ export const TOKEN_TTL = 24 * 60 * 60 * 1000;
 export const ATTEMPTS = 5;
 // To one address, for each purpose: at least a minute apart, at most five in an hour and ten in a day.
 export const CODE_RULES = { ttl: CODE_TTL, tokenTtl: TOKEN_TTL, gap: 60 * 1000, hourly: 5, daily: 10 };
-// The most emails of one purpose the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise.
+// The most sign-up emails the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise. They are the
+// ones that reach addresses without an account. Unlock emails go only to accounts on this server, at most ten a day
+// each, so MAX_ACCOUNTS bounds them, and a limit for the whole server would only let a stranger use them up.
 const PER_HOUR = 100;
 
 // What this server sends codes for: nothing without mail and the registry, unlock wherever it sends mail, and signup
@@ -65,10 +67,8 @@ export async function requestCode(request, env, ctx, max) {
   const challenge = toBase64url(randomBytes(32));
   const token = toBase64url(randomBytes(32));
   const code = newCode();
-  const issued = await registryObject(env).issueCode(
-    { ...(await codeHashes(env, email, purpose, challenge, code)), token: await tokenHash(token) },
-    { ...CODE_RULES, max: purpose === 'signup' ? max : 0 }
-  );
+  const entry = { ...(await codeHashes(env, email, purpose, challenge, code)), token: await tokenHash(token) };
+  const issued = await registryObject(env).issueCode(entry, { ...CODE_RULES, max: purpose === 'signup' ? max : 0 });
   if (issued.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
   if (issued.result !== 'ok') {
     throw new HttpError(429, 'rate_limited', 'This address got too many codes. Try again later.', {
@@ -77,26 +77,35 @@ export async function requestCode(request, env, ctx, max) {
   }
   const host = new URL(request.url).host;
   ctx.waitUntil(
-    deliver(env, { email, purpose, code, token, lang, host }).catch((err) =>
+    deliver(env, { email, purpose, code, token, lang, host, id: entry.challenge }).catch((err) =>
       console.error('Sending a code failed:', err?.stack || err)
     )
   );
   return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
 }
 
-// Whether the address has an account decides what goes out, so this runs after the answer. Only an email that goes
-// out counts toward the hourly limit.
-async function deliver(env, { email, purpose, code, token, lang, host }) {
+// Whether the address has an account decides what goes out, so this runs after the answer. Sign-up emails count
+// toward the hourly limit, and one Resend refused is given back. A code whose long code didn't go out, because no
+// email or only the note went, is kept for its 10 minutes and not a day.
+async function deliver(env, { email, purpose, code, token, lang, host, id }) {
+  const registry = registryObject(env);
   const exists = await accountObject(env, await accountName(env, email)).exists();
   const kind = purpose === 'signup' ? (exists ? 'exists' : 'signup') : exists ? 'unlock' : null;
+  if (kind !== 'signup' && kind !== 'unlock') await registry.shortenCode(id);
   if (!kind) return;
-  if (!(await registryObject(env).chargeMail(purpose, positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR)))) {
-    console.error(`An email with a code was not sent: this hour's ${purpose} emails are used up (EMAIL_CODES_PER_HOUR).`);
-    return;
+  let slot = null;
+  if (purpose === 'signup') {
+    slot = await registry.chargeMail('signup', positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR));
+    if (slot === null) {
+      await registry.shortenCode(id);
+      console.error("A sign-up email was not sent: this hour's are used up (EMAIL_CODES_PER_HOUR).");
+      return;
+    }
   }
   const operator = typeof env.OPERATOR_NAME === 'string' && env.OPERATOR_NAME.trim() ? env.OPERATOR_NAME.trim() : null;
   const codes = kind === 'exists' ? {} : { code, token };
-  await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
+  const sent = await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
+  if (sent === 'refused' && slot !== null) await registry.refundMail('signup', slot);
 }
 
 // emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code } for the six digits or
@@ -117,7 +126,7 @@ export function emailCodeField(value) {
   return { challenge, code };
 }
 
-// Claims a code for an address and purpose for this one request, and returns its id for settleCode. Six digits that
+// Claims a code for an address and purpose for this one request, and returns { id, claim } for settleCode. Six digits that
 // don't match are 403 code_wrong, with the tries their challenge has left. A code that is unknown, expired, used or
 // out of tries is 403 code_expired, and one another request is using right now 409 code_in_use.
 export async function claimCode(env, email, purpose, emailCode) {
@@ -127,7 +136,7 @@ export async function claimCode(env, email, purpose, emailCode) {
     ? { token: await tokenHash(emailCode.token), address: await addressHash(env, email), purpose }
     : await codeHashes(env, email, purpose, emailCode.challenge, emailCode.code);
   const claimed = await registry.claimCode(entry, ATTEMPTS);
-  if (claimed.result === 'ok') return claimed.id;
+  if (claimed.result === 'ok') return { id: claimed.id, claim: claimed.claim };
   if (claimed.result === 'wrong') {
     throw new HttpError(403, 'code_wrong', 'The code is wrong.', {}, { attemptsLeft: claimed.attemptsLeft });
   }
@@ -137,12 +146,12 @@ export async function claimCode(env, email, purpose, emailCode) {
   throw expired();
 }
 
-// outcome: 'used', 'failed' (a wrong password or recovery key with the code) or 'keep'.
-export async function settleCode(env, id, outcome) {
-  await registryObject(env)?.settleCode(id, outcome, ATTEMPTS);
+// held: what claimCode returned. outcome: 'used', 'failed' (a wrong password or recovery key with the code) or 'keep'.
+export async function settleCode(env, held, outcome) {
+  await registryObject(env)?.settleCode(held.id, held.claim, outcome, ATTEMPTS);
 }
 
-// For POST /v1/signup on a verified server, without an invite code or invitation that works: the claimed code's id.
+// For POST /v1/signup on a verified server, without an invite code or invitation that works: the claimed code.
 export async function signupCode(env, email, value) {
   const emailCode = emailCodeField(value);
   if (!emailCode) {
@@ -155,13 +164,13 @@ export async function signupCode(env, email, value) {
 // gets the option the account object takes for that. A wrong password or recovery key (401) costs the code a try.
 // Success uses the code up, unless keep: recover/start leaves it for recover/finish.
 export async function unlocked(env, email, emailCode, run, keep = false) {
-  const id = await claimCode(env, email, 'unlock', emailCode);
+  const held = await claimCode(env, email, 'unlock', emailCode);
   let result = null;
   try {
     result = await run({ unlocked: true });
   } finally {
     const outcome = result?.status === 401 ? 'failed' : result?.status === 200 && !keep ? 'used' : 'keep';
-    await settleCode(env, id, outcome);
+    await settleCode(env, held, outcome);
   }
   return result;
 }
