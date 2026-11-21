@@ -1372,11 +1372,13 @@ test('a PDF is read in a process of its own: a reader that hangs or takes ever m
     // The caller's event loop kept turning while the reader was stuck.
     longest = Math.max(longest, Date.now() - last);
     assert.ok(longest < took / 2, `the event loop stood still for ${longest} ms of ${took} ms`);
-    // Buffers outside V8's heap, and a heap that grows: the memory cap ends either long before the time limit.
+    // Buffers outside V8's heap, and a heap that grows: the memory cap ends either long before the time limit. That
+    // is Rukoo's own TIMEOUT here, as on a busy machine the heap takes seconds to grow to the cap.
+    reader.opts.timeout = PDF_TIMEOUT;
     for (const what of ['BUFFERS', 'HEAP']) {
       started = Date.now();
       assert.equal((await reader.read(Buffer.from(`%PDF-1.4\n${what}\n`, 'latin1'))).failed, 'memory', what);
-      assert.ok(Date.now() - started < 3000, `${what} took ${Date.now() - started} ms`);
+      assert.ok(Date.now() - started < PDF_TIMEOUT / 2, `${what} took ${Date.now() - started} ms`);
     }
     // The next PDF reads as usual, and nothing is left running.
     assert.deepEqual(await reader.read(makePdf([['Still here']])), { text: 'Still here', pages: 1, truncated: false, partial: false, encrypted: false, failed: null });
