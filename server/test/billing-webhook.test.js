@@ -182,6 +182,24 @@ describe('events', () => {
     expect(await billingRow(ws.id)).toMatchObject({ subscription: b.id, status: 'canceled' });
   });
 
+  it('never puts back a subscription that ended, also from its own late cancellation', async () => {
+    const ws = await newWorkspace();
+    const first = await subscribe(ws);
+    const a = stripeFake.subscriptions.get(first.subscription.id);
+    a.status = 'canceled';
+    // The alarm learns that the first one ended; its own event comes much later.
+    const lateA = stripeFake.event('customer.subscription.deleted', a, { created: now() + 1 });
+    await workspaceSql(ws.id, "UPDATE billing SET syncAt = ?", Date.now());
+    expect(await settle(ws.id, async () => (await billingRow(ws.id)).status === 'canceled')).toBe(true);
+    const second = await subscribe(ws);
+    const b = stripeFake.subscriptions.get(second.subscription.id);
+    await deliver(stripeFake.event('invoice.payment_failed', stripeFake.invoice(b), { created: now() + 2 }));
+    b.status = 'canceled';
+    await deliver(stripeFake.event('customer.subscription.deleted', b, { created: now() + 3 }));
+    await deliver(lateA);
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: b.id, status: 'canceled' });
+  });
+
   it('keeps each subscription’s invoices apart', async () => {
     const ws = await newWorkspace();
     const first = await subscribe(ws);

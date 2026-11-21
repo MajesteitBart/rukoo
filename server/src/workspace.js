@@ -118,7 +118,8 @@ function invoiceSubscription(invoice) {
 // stateAt is the Stripe time, in seconds, of the subscription state it holds, so an older event arriving late can't
 // overwrite a newer one; every event also has the alarm read the subscription back from Stripe (syncAt). checkoutId
 // is the Checkout page last made, with its address and seats; every page belongs to the workspace's own customer, so
-// a page an ambiguous answer left behind is found by listing the customer's open pages. trimBy is the renewal before
+// a page an ambiguous answer left behind is found by listing the customer's open pages. checkoutPending is set while
+// a page is being made, and stays set until Stripe confirmed which pages are open. trimBy is the renewal before
 // which vacant seats leave the bill, trimMissed one that billed them anyway. syncRev counts the times something asked
 // the alarm to come (syncAt): a run that waited on Stripe meanwhile leaves the newer request, and its answer, to the
 // next run. orphaned: no owner is left, and the alarm sets the subscription to end with its period. billing_ended holds
@@ -139,6 +140,7 @@ const BILLING_TABLES = `
     checkoutId TEXT,
     checkoutUrl TEXT,
     checkoutSeats INTEGER,
+    checkoutPending INTEGER NOT NULL DEFAULT 0,
     syncAt INTEGER,
     syncRev INTEGER NOT NULL DEFAULT 0,
     tries INTEGER NOT NULL DEFAULT 0,
@@ -1696,7 +1698,7 @@ export class Workspace extends DurableObject {
       if (billing && billingLive(billing.status)) {
         throw new Refusal(409, 'billing_active', 'This workspace still has billing. Cancel it in Manage billing, and delete it once billing has ended.');
       }
-      if (pages && (this.checkout || billing?.checkoutId)) {
+      if (pages && (this.checkout || billing?.checkoutId || billing?.checkoutPending)) {
         throw new Refusal(409, 'billing_active', 'Billing is being set up for this workspace. Try again shortly.');
       }
       // A write under way could land after the bucket was listed: an upload's attempt, also one that lost to another
@@ -1707,16 +1709,16 @@ export class Workspace extends DurableObject {
       return self;
     };
     this.#write(() => check(false));
-    // A Checkout page that is still open could start a subscription for a workspace that is gone: it is expired first,
-    // and one that completed meanwhile stops the deletion. All before a single file goes; from the check after it
-    // until the end nothing makes a page (#checkout refuses while deleting).
-    await this.#closeCheckout();
-    this.#write(() => check(true));
-    // This object takes other requests while it waits on the bucket. None starts a write there (#startAttempt,
-    // #previewKey): it could land after the listing went past its key and outlive the database.
+    if (this.checkout) throw new Refusal(409, 'billing_active', 'Billing is being set up for this workspace. Try again shortly.');
+    // From here nothing makes a Checkout page (#checkout refuses while deleting), and nothing starts a write to the
+    // bucket (#startAttempt, #previewKey): it could land after the listing went past its key and outlive the database.
     this.deleting += 1;
     let owner;
     try {
+      // A Checkout page that is still open could start a subscription for a workspace that is gone: every one is
+      // expired first, and one that completed meanwhile stops the deletion. All before a single file goes.
+      await this.#closeCheckout();
+      this.#write(() => check(true));
       try {
         await this.#forgetFiles(this.wid);
       } catch (err) {
@@ -1795,10 +1797,15 @@ export class Workspace extends DurableObject {
     return this.sql.exec('SELECT 1 FROM billing_ended WHERE id = ?', id).toArray().length > 0;
   }
 
-  // The billing row, made for this server's key when there is none.
+  // The billing row, made for this server's key when there is none. A live-mode row Stripe can still charge, or with a
+  // page or attempt open, is never replaced by a test-mode one, as after the server was given a test key.
   #ensureBilling() {
     const row = this.#billing();
     if (row) return row;
+    const stored = this.sql.exec('SELECT * FROM billing WHERE id = 1').toArray()[0];
+    if (stored?.live === 1 && (billingLive(stored.status) || stored.checkoutId || stored.checkoutPending)) {
+      throw new Refusal(409, 'billing_active', 'This workspace has billing under the live Stripe key.');
+    }
     this.sql.exec('DELETE FROM billing');
     this.sql.exec('INSERT INTO billing (id, live) VALUES (1, ?)', stripeLive(this.env) ? 1 : 0);
     return this.#billing();
@@ -1848,7 +1855,7 @@ export class Workspace extends DurableObject {
   // subscription arrives in a workspace without owners, as from a Checkout page paid after that.
   #orphanBilling(now) {
     const b = this.#billing();
-    if (!b || !b.subscription || !billingLive(b.status) || b.cancelAtPeriodEnd) return;
+    if (!b || !b.subscription || !billingLive(b.status) || b.cancelAtPeriodEnd || b.orphaned) return;
     this.sql.exec('UPDATE billing SET orphaned = 1 WHERE id = 1');
     this.#refreshBilling(now);
   }
@@ -1954,9 +1961,11 @@ export class Workspace extends DurableObject {
       return false;
     }
     const status = typeof sub.status === 'string' && /^[a-z_]{1,32}$/.test(sub.status) ? sub.status : 'incomplete';
-    // A subscription seen ended never comes back, whatever an older event says, also after another one followed it.
+    // A subscription seen ended never comes back, whatever an older event says, also after another one followed it. One
+    // that ended and isn't the workspace's current subscription is only noted; it never takes the current one's place.
     if (this.#ended(sub.id) && !BILLING_ENDED.has(status)) return false;
     if (BILLING_ENDED.has(status)) this.sql.exec('INSERT OR IGNORE INTO billing_ended (id, at) VALUES (?, ?)', sub.id, now);
+    if (b.subscription && b.subscription !== sub.id && BILLING_ENDED.has(status)) return false;
     if (b.subscription === sub.id) {
       if (at < b.stateAt) {
         if (!read) this.#refreshBilling(now);
@@ -1993,7 +2002,11 @@ export class Workspace extends DurableObject {
   // reads from Stripe now. A second subscription while one is live is left at Stripe and logged.
   #sessionCompleted(session, now) {
     if (session?.mode !== 'subscription' || typeof session.subscription !== 'string' || !STRIPE_ID.sub.test(session.subscription)) return false;
-    if (this.#ended(session.subscription)) return false;
+    // The page's subscription ended already: the page is done, and nothing else changes.
+    if (this.#ended(session.subscription)) {
+      this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
+      return false;
+    }
     const b = this.#ensureBilling();
     if (b.subscription && b.subscription !== session.subscription && billingLive(b.status)) {
       console.error('A workspace with a subscription completed a second Checkout; it keeps the first.');
@@ -2114,6 +2127,8 @@ export class Workspace extends DurableObject {
       await this.#closeCheckout();
       const tax = billingTax(this.env);
       const quantity = Math.max(1, this.#paidMembers());
+      // Until Stripe answers, a page may exist that this workspace doesn't know: the next close looks for it.
+      this.#write(() => this.sql.exec('UPDATE billing SET checkoutPending = 1 WHERE id = 1'));
       const session = await api.post('/v1/checkout/sessions', {
         mode: 'subscription',
         customer,
@@ -2133,7 +2148,12 @@ export class Workspace extends DurableObject {
         throw new Error('Stripe answered without a Checkout page.');
       }
       this.#write(() =>
-        this.sql.exec('UPDATE billing SET checkoutId = ?, checkoutUrl = ?, checkoutSeats = ? WHERE id = 1', session.id, session.url, quantity)
+        this.sql.exec(
+          'UPDATE billing SET checkoutId = ?, checkoutUrl = ?, checkoutSeats = ?, checkoutPending = 0 WHERE id = 1',
+          session.id,
+          session.url,
+          quantity
+        )
       );
       return session.url;
     } catch (err) {
@@ -2174,11 +2194,17 @@ export class Workspace extends DurableObject {
     return { id: row.checkoutId, url: row.checkoutUrl, seats: row.checkoutSeats, until };
   }
 
-  // A page that was paid before its event came: the workspace takes its subscription, and the caller hears so.
+  // A page that was paid before its event came: the workspace takes its subscription, and the caller hears so. A page
+  // whose subscription ended already is only let go of.
   async #paidMeanwhile(session) {
-    this.#write(() => this.#sessionCompleted(session, Date.now()));
+    this.#write(() => {
+      this.#sessionCompleted(session, Date.now());
+      this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
+    });
     await this.#settle();
-    throw new Refusal(409, 'billing_active', 'This workspace has billing already. Use Manage billing.');
+    if (billingLive(this.#billing()?.status ?? 'none')) {
+      throw new Refusal(409, 'billing_active', 'This workspace has billing already. Use Manage billing.');
+    }
   }
 
   // Expires every Checkout page of the workspace that is still open: the one kept and any other open page of its
@@ -2189,6 +2215,7 @@ export class Workspace extends DurableObject {
     const b = this.#billing();
     if (!b?.checkoutId && !b?.customer) return;
     const api = stripe(this.env);
+    const kept = b.checkoutId;
     try {
       const pages = new Set();
       if (b.checkoutId) pages.add(b.checkoutId);
@@ -2210,7 +2237,13 @@ export class Workspace extends DurableObject {
         if (page.status === 'complete') await this.#paidMeanwhile(page);
         if (page.status === 'open') throw new Error('A Checkout page stayed open after Stripe was asked to expire it.');
       }
-      this.#write(() => this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1'));
+      // Stripe has no open page of the workspace any more: the page kept goes, and so does an attempt that left none.
+      this.#write(() =>
+        this.sql.exec(
+          'UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL, checkoutPending = 0 WHERE id = 1 AND checkoutId IS ?',
+          kept
+        )
+      );
     } catch (err) {
       if (err instanceof Refusal) throw err;
       console.error('Could not close the open Checkout pages of a workspace:', err?.message || err);

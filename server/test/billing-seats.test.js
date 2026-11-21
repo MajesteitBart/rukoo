@@ -177,6 +177,21 @@ describe('a workspace without owners', () => {
   });
 });
 
+describe('a workspace without owners, when Stripe fails', () => {
+  it('waits longer after each failed try at ending the subscription', async () => {
+    const ws = await newWorkspace();
+    await newMember(ws, 'Mila');
+    const { subscription } = await subscribe(ws);
+    stripeFake.fail(2, 500, (method, path) => method === 'POST' && path === `/v1/subscriptions/${subscription.id}`);
+    expect((await call('DELETE', '/v1/account', { token: ws.person.token, body: { authKey: ws.person.authKey } })).status).toBe(204);
+    for (let i = 0; i < 50 && (await billingRow(ws.id)).tries < 1; i++) await runDurableObjectAlarm(workspaceStub(ws.id));
+    const once = await billingRow(ws.id);
+    expect(once).toMatchObject({ tries: 1, orphaned: 1 });
+    expect(once.syncAt).toBeGreaterThan(Date.now() + 30 * 1000);
+    expect(await settle(ws.id, () => stripeFake.subscriptions.get(subscription.id).cancel_at_period_end === true)).toBe(true);
+  });
+});
+
 describe('a subscription that starts after the last owner went', () => {
   it('ends with its period too', async () => {
     const ws = await newWorkspace();
@@ -225,6 +240,88 @@ describe('deleting a workspace with billing', () => {
     expect(refused.status).toBe(409);
     expect(refused.body.error).toBe('billing_active');
     expect((await billingRow(ws.id)).subscription).toBe(done.subscription.id);
+  });
+
+  it('refuses while a Checkout page is being made, and makes none while it deletes', async () => {
+    const ws = await newWorkspace();
+    // Stripe holds the request that makes the page.
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    const real = stripeFake.handle.bind(stripeFake);
+    let making = false;
+    stripeFake.handle = async (request) => {
+      if (request.method === 'POST' && new URL(request.url).pathname === '/v1/checkout/sessions') {
+        making = true;
+        await held;
+      }
+      return real(request);
+    };
+    try {
+      const opening = checkout(ws.person, ws.id);
+      for (let i = 0; i < 300 && !making; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      const refused = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+      expect(refused.status).toBe(409);
+      release();
+      expect((await opening).status).toBe(200);
+    } finally {
+      stripeFake.handle = real;
+    }
+    // While a deletion asks Stripe about the open page, nobody makes another one.
+    let listing;
+    const listed = new Promise((resolve) => (listing = resolve));
+    stripeFake.handle = async (request) => {
+      const url = new URL(request.url);
+      if (request.method === 'GET' && url.pathname === '/v1/checkout/sessions') await listed;
+      return real(request);
+    };
+    try {
+      const deleting = api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const sessions = stripeFake.sessions.size;
+      expect((await checkout(ws.person, ws.id)).status).toBe(409);
+      listing();
+      expect((await deleting).status).toBe(204);
+      expect(stripeFake.sessions.size).toBe(sessions);
+    } finally {
+      stripeFake.handle = real;
+    }
+    expect([...stripeFake.sessions.values()].filter((page) => page.client_reference_id === ws.id && page.status === 'open')).toHaveLength(0);
+  });
+
+  it('keeps a live-mode subscription when the server has a test key, and makes no test billing over it', async () => {
+    const ws = await newWorkspace();
+    await subscribe(ws);
+    // As if the subscription had been made with a live key, and the server now has a test one.
+    await workspaceSql(ws.id, 'UPDATE billing SET live = 1');
+    const refused = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('billing_active');
+    const opened = await checkout(ws.person, ws.id);
+    expect(opened.status).toBe(409);
+    expect(await billingRow(ws.id)).toMatchObject({ live: 1, status: 'active' });
+  });
+
+  it('expires a page that a 500 left behind before it deletes', async () => {
+    const ws = await newWorkspace();
+    stripeFake.fail(1, 'after', (method, path) => method === 'POST' && path === '/v1/checkout/sessions');
+    expect((await checkout(ws.person, ws.id)).status).toBe(502);
+    const stray = stripeFake.lastSession();
+    expect((await billingRow(ws.id)).checkoutPending).toBe(1);
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
+    expect(stray.status).toBe('expired');
+  });
+
+  it('lets go of a paid page whose subscription ended before the page’s event came', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const done = stripeFake.completeCheckout(stripeFake.lastSession().id);
+    const sub = stripeFake.subscriptions.get(done.subscription.id);
+    sub.status = 'canceled';
+    await deliver(stripeFake.event('customer.subscription.deleted', sub, { created: now() + 1 }));
+    await deliver(stripeFake.event('checkout.session.completed', done.session));
+    expect((await billingRow(ws.id)).checkoutId).toBeNull();
+    expect((await checkout(ws.person, ws.id)).status).toBe(200);
+    expect((await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(204);
   });
 
   it('stays, files and all, when Stripe can’t say whether the open page was paid', async () => {
