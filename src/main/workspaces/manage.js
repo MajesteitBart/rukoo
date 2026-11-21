@@ -110,10 +110,11 @@ class Manage {
     return path.join(this.svc.dataDir, 'chat-join.json');
   }
 
-  // The pending join on disk, read at the first use.
+  // The pending join on disk, read at the first use. Without keepJoin (the browser) it lives in memory only.
   load() {
     if (this.loaded) return;
     this.loaded = true;
+    if (this.svc.keepJoin === false) return;
     let saved = null;
     try {
       saved = JSON.parse(fs.readFileSync(this.file(), 'utf8'));
@@ -126,6 +127,7 @@ class Manage {
   }
 
   save() {
+    if (this.svc.keepJoin === false) return;
     try {
       if (!this.pending) {
         fs.rmSync(this.file(), { force: true });
@@ -147,7 +149,7 @@ class Manage {
     const had = Boolean(this.pending);
     this.pending = null;
     this.offered = false;
-    if (had || fs.existsSync(this.file())) this.save();
+    if (had || (this.svc.keepJoin !== false && fs.existsSync(this.file()))) this.save();
     if (had) this.svc.stateChanged();
   }
 
@@ -166,23 +168,10 @@ class Manage {
 
   // ---- hooks ----
 
-  // The invite field of the sign-up form, for main.js accountSignUp (contract 3.3): an invitation link for the
-  // configured server becomes workspaceInvite { workspace, invite } and the link to remember; anything else, a link
-  // to another server included, stays the operator's invite code.
+  // The invite field of the sign-up form, for main.js accountSignUp (wire.splitInvite). A link to another server
+  // throws ChatError('other_server'), as Android's sign-up form refuses it (RukooAccountModel.inviteInput).
   splitInvite(text) {
-    const raw = typeof text === 'string' ? text : '';
-    let found = null;
-    try {
-      found = wire.parseInviteLink(raw, this.servers());
-    } catch (_) {
-      found = null;
-    }
-    if (!found) return { invite: raw, workspaceInvite: null, link: null };
-    return {
-      invite: '',
-      workspaceInvite: { workspace: found.workspace, invite: found.secret },
-      link: wire.inviteLink(found.server, found.workspace, found.secret)
-    };
+    return wire.splitInvite(text, this.servers());
   }
 
   // After a sign-up or sign-in with a link: the Chat view opens the Join dialog with it the next time it shows, also
@@ -257,12 +246,10 @@ class Manage {
     return (status && status.server) || this.svc.server || null;
   }
 
-  // The addresses that count as the configured server for invitation links (wire.sameServers): the server, the home
-  // its /v1/info names and their former addresses. Signed out too, for the setup page's link field.
+  // The addresses that count as the configured server for invitation links (wire.sameServers): the server and the
+  // others the app knows are the same one, never what the server says of itself. Signed out too, for the setup page.
   servers() {
-    const status = this.svc.account && typeof this.svc.account.status === 'function' ? this.svc.account.status() : null;
-    const info = (status && status.info) || this.svc.info;
-    return wire.sameServers(this.server(), info);
+    return wire.sameServers(this.server());
   }
 
   // An invitation link for this server (contract 3.2), or bad_link or other_server.

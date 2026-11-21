@@ -414,13 +414,17 @@ test('every chat*, account and host method answers; anything else says it is not
   const page = openPage();
   t.after(() => page.close());
   await page.ready();
-  assert.equal(CHAT_METHODS.length, 52);
+  assert.equal(CHAT_METHODS.length, 55);
   for (const name of CHAT_METHODS) {
     const res = await page.invoke(name);
     if (name === 'chatState') {
       assert.equal(res.ok, true, name);
       assert.equal(res.result.signedIn, false);
       assert.equal(res.result.available, false, 'no /v1/info: team chat is unavailable');
+    } else if (name === 'chatRetryInfo') {
+      // Answers without a cache, as for desktop's setup page; the engine leaves /v1/info to the page (autoInfo off).
+      assert.equal(res.ok, true, name);
+      assert.equal(res.result, true);
     } else {
       // From chatApi itself: its argument check, or signed_out without a cache.
       assert.equal(res.ok, false, name);
@@ -441,6 +445,14 @@ test('every chat*, account and host method answers; anything else says it is not
   assert.equal((await page.invoke('accountRemoveDevice', 'd')).error, tr('en', 'account.errors.signed_out'));
   assert.equal((await page.invoke('accountDelete', 'x')).error, tr('en', 'account.errors.signed_out'));
   assert.equal((await page.invoke('accountSignUp', { email: 'a@example.test', password: 'short' })).error, tr('en', 'account.errors.weak_password'));
+  // Another server's invitation link in the invite field is refused before any request, so its secret never reaches
+  // this server as an invite code.
+  const foreign = `https://elsewhere.example/join#w=${W('A')}&i=${'s'.repeat(43)}`;
+  const sentBefore = page.record.requests.length;
+  const refused = await page.invoke('accountSignUp', { email: 'a@example.test', password: PASSWORD, invite: foreign });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'other_server');
+  assert.equal(page.record.requests.slice(sentBefore).some((r) => r.url.includes('/signup')), false);
   assert.equal((await page.invoke('accountRecover', { email: 'a@example.test', recoveryKey: 'x', password: PASSWORD })).error, tr('en', 'account.errors.recovery_key'));
 
   // The window's own.
@@ -805,6 +817,11 @@ test('team chat that cannot start in the page says so once the server says it ha
   assert.equal(state.available, false);
   // The account still works without chat.
   assert.equal((await page.invoke('accountDetails')).code, 'signed_out');
+  // Its sign-up still refuses another server's invitation link before any request.
+  const sentBefore = page.record.requests.length;
+  const foreign = await page.invoke('accountSignUp', { email: 'a@example.test', password: PASSWORD, invite: `https://elsewhere.example/join#w=${W('A')}&i=${'s'.repeat(43)}` });
+  assert.equal(foreign.code, 'other_server');
+  assert.equal(page.record.requests.slice(sentBefore).some((r) => r.url.includes('/signup')), false);
 
   // The server's info comes after the engine failed: a state event says so then.
   let answer;
@@ -1046,9 +1063,8 @@ test('the real server: sign-in and recovery set the pending join too, a signed-i
   t.after(() => reloaded.close());
   await reloaded.ready();
   assert.equal((await reloaded.call('accountStatus')).signedIn, true);
-  assert.equal((await reloaded.chatState()).pendingJoin, true, 'pending as soon as the engine runs');
-  // The cache opens once /v1/info says team chat is on; until then taking the link fails as signed_out, and the
-  // renderer tries again at the next state (chat.js maybeTakeJoin).
+  // The cache opens once /v1/info says team chat is on. pendingJoin says true from then (manage.js pendingJoin), so
+  // the renderer's take (chat.js maybeTakeJoin) comes when the link can be previewed.
   await until(async () => {
     const s = await reloaded.chatState();
     return s.available && s.storage && s.pendingJoin;

@@ -196,6 +196,15 @@ class AppViewModel(
     // Chat opened by itself for a Rukoo account without a mail account, in this process.
     private var chatOnlyOpened = false
 
+    // Team chat's alerts need Android 13's notification permission, which onboarding asks for only once a mail
+    // account came in (RUK-234 review). True while RukooRoot should ask (NotificationPermission.ask): once per install,
+    // kept in AppSettings.chatNotificationsAsked, so a refusal isn't followed by another prompt at the next start.
+    private val _askChatNotifications = MutableStateFlow(false)
+    private var chatNotificationsAsked = false
+
+    /** Whether RukooRoot should ask for the notification permission for team chat now; [chatNotificationsAsked] after. */
+    val askChatNotifications: StateFlow<Boolean> = _askChatNotifications.asStateFlow()
+
     private val _carriedJoin = MutableStateFlow<InviteLink?>(null)
 
     /**
@@ -228,6 +237,16 @@ class AppViewModel(
                         if (_state.value.mode != AppMode.CHAT) setMode(AppMode.CHAT)
                     }
                 }
+        }
+        // That account in a workspace, still without a mail account, is where chat-only onboarding ends: after a sign-in
+        // to an account with a workspace, or the first join or workspace made here. Its alerts can come now, so Android
+        // asks for the permission then, as it does after the first mail account.
+        viewModelScope.launch {
+            combine(chatState, services.mail.accounts, services.mail.loaded) { s, accounts, loaded ->
+                loaded && accounts.isEmpty() && s.available && s.signedIn && s.workspaces.isNotEmpty()
+            }
+                .distinctUntilChanged()
+                .collect { if (it) askChatNotifications() }
         }
         // The composer can open without the UI: an agent's write_draft calls ComposerController.open.
         viewModelScope.launch {
@@ -1355,6 +1374,23 @@ class AppViewModel(
     /** The first workspace joined or made here: Chat's card about Rukoo on the computer shows from now on. */
     fun firstWorkspace() {
         viewModelScope.launch { runCatching { services.settings.update { if (it.chatAppsTip.isEmpty()) it.copy(chatAppsTip = "show") else it } } }
+    }
+
+    // Once per install: the stored flag turns true once RukooRoot asked (chatNotificationsAsked), so a process that
+    // ends before the prompt showed asks at the next start.
+    private fun askChatNotifications() {
+        if (chatNotificationsAsked) return
+        chatNotificationsAsked = true
+        viewModelScope.launch {
+            val asked = runCatching { services.settings.current().chatNotificationsAsked }.getOrDefault(true)
+            if (!asked) _askChatNotifications.value = true
+        }
+    }
+
+    /** RukooRoot asked (or Android had nothing to ask): no later start asks again. */
+    fun chatNotificationsAsked() {
+        _askChatNotifications.value = false
+        viewModelScope.launch { runCatching { services.settings.update { it.copy(chatNotificationsAsked = true) } } }
     }
 
     fun hideAppsTip() {

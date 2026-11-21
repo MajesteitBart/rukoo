@@ -28,7 +28,7 @@
 // arrive after the call that caused them has returned.
 const { chatApi } = require('../main/workspaces/ipc');
 const { chatTiming, blankState, isAvailable } = require('../main/workspaces');
-const { inviteLink, parseInviteLink } = require('../main/workspaces/wire');
+const { inviteLink, parseInviteLink, sameServers, splitInvite } = require('../main/workspaces/wire');
 const { AccountError } = require('./account/client');
 const { createAccountService, ERRORS, SESSION_KEY } = require('./account/service');
 const { createArgon2 } = require('./account/argon2');
@@ -767,7 +767,8 @@ function createHost(page) {
   methods.accountSignUp = async (input) => {
     const i = plainObject(input);
     const field = accountText(i.invite, 2000);
-    const split = engine ? engine.svc.manage.splitInvite(field) : { invite: field, workspaceInvite: null, link: null };
+    // Without the chat engine (it couldn't start) the field is still checked: another server's link goes nowhere.
+    const split = engine ? engine.svc.manage.splitInvite(field) : splitInvite(field, sameServers(account.status().server));
     let workspaceInvite = split.workspaceInvite;
     if (!split.link && !split.invite.trim()) {
       const stored = join.peek();

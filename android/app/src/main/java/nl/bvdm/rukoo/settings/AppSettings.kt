@@ -63,6 +63,11 @@ data class AppSettings(
      * workspace, "show" after the first one joined or made here, "done" once dismissed.
      */
     val chatAppsTip: String = "",
+    /**
+     * Team chat asked for Android 13's notification permission without a mail account (RUK-234), so it doesn't ask
+     * again after a refusal; Settings > Notifications still can.
+     */
+    val chatNotificationsAsked: Boolean = false,
 ) {
     companion object {
         /** Desktop Rukoo's port; Clark's bridge looks for every Rukoo on it (rukoo_bridge.py). */

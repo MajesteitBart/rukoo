@@ -58,6 +58,8 @@ class WorkspaceServiceTest {
         @Volatile var session: BorrowedSession? = null
         val refused = CopyOnWriteArrayList<BorrowedSession>()
         @Volatile var infoRefreshes = 0
+        /** Every GET /v1/info fails, as without network. */
+        @Volatile var infoFails = false
 
         override val status: StateFlow<AccountStatus> get() = statusFlow
         override val sessionEnded: SharedFlow<Unit> get() = ended
@@ -70,6 +72,7 @@ class WorkspaceServiceTest {
 
         override suspend fun refreshInfo() {
             infoRefreshes += 1
+            if (infoFails) throw java.io.IOException("offline")
         }
 
         fun signIn(tag: String) {
@@ -117,6 +120,8 @@ class WorkspaceServiceTest {
         val screen = ScreenState(clock)
         val sockets = FakeSockets()
         lateinit var service: WorkspaceService
+        /** The app's GET /v1/info while signed out too (WorkspaceService autoInfo). */
+        var autoInfo = false
 
         /** What GET /v1/workspaces lists: IDs, with the names and roles below. */
         @Volatile var listing: List<String> = emptyList()
@@ -148,6 +153,7 @@ class WorkspaceServiceTest {
                 timing = ChatTiming(),
                 io = Dispatchers.Unconfined,
                 random = { 0.5 },
+                autoInfo = autoInfo,
             ).start()
             if (foreground) service.resumed()
             return service
@@ -238,6 +244,91 @@ class WorkspaceServiceTest {
             assertEquals("server", e.code)
         }
         assertTrue("the server's info is asked again every hour", h.account.infoRefreshes >= 2)
+    }
+
+    // A fresh install started before the network was up (RUK-234 review): Chat and onboarding's way to it show soon
+    // after the network comes, not at the next hourly tick. Desktop's chat-join.test.js checks the same.
+    @Test
+    fun `a signed-out ask that failed comes again after 15 s, a minute and five minutes, then hourly`() = runTest {
+        val h = Harness(this, db, info = null)
+        h.autoInfo = true
+        h.account.infoFails = true
+        h.start()
+        runCurrent()
+        assertEquals(1, h.account.infoRefreshes)
+        for ((wait, asked) in listOf(15_000L to 2, 60_000L to 3, 300_000L to 4)) {
+            advanceTimeBy(wait - 1)
+            runCurrent()
+            assertEquals("not before $wait ms", asked - 1, h.account.infoRefreshes)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals("after $wait ms", asked, h.account.infoRefreshes)
+        }
+        // No more retries of their own: the hourly tick asks next.
+        advanceTimeBy(50 * ChatTiming.MINUTE)
+        runCurrent()
+        assertEquals(4, h.account.infoRefreshes)
+        h.account.infoFails = false
+        advanceTimeBy(10 * ChatTiming.MINUTE)
+        runCurrent()
+        assertEquals(5, h.account.infoRefreshes)
+    }
+
+    @Test
+    fun `the foreground or a network that came up asks again after a failure, within the gate`() = runTest {
+        val h = Harness(this, db, info = null)
+        h.autoInfo = true
+        h.account.infoFails = true
+        val s = h.start(foreground = false)
+        runCurrent()
+        assertEquals(1, h.account.infoRefreshes)
+        // Within 15 s of the last ask, coming to the foreground asks nothing.
+        advanceTimeBy(5_000)
+        s.resumed()
+        runCurrent()
+        assertEquals(1, h.account.infoRefreshes)
+        // The first retry fails too, and the next would wait a minute.
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals(2, h.account.infoRefreshes)
+        // A network comes up 20 s later (ChatBackground's callback nudges): it asks at once, and the retry timer goes.
+        advanceTimeBy(20_000)
+        h.account.infoFails = false
+        s.nudge()
+        runCurrent()
+        assertEquals(3, h.account.infoRefreshes)
+        advanceTimeBy(5 * ChatTiming.MINUTE)
+        s.paused()
+        s.resumed()
+        runCurrent()
+        assertEquals("after an answer nothing asks again before the hour", 3, h.account.infoRefreshes)
+    }
+
+    @Test
+    fun `switching servers and back keeps the first server's retry`() = runTest {
+        val h = Harness(this, db, info = null)
+        h.autoInfo = true
+        h.account.infoFails = true
+        h.start()
+        runCurrent()
+        assertEquals(1, h.account.infoRefreshes)
+        // Another server for a moment: it is asked and fails, with a retry of its own.
+        advanceTimeBy(5_000)
+        h.account.statusFlow.value = h.account.statusFlow.value.copy(server = "https://chat.example.com")
+        runCurrent()
+        assertEquals(2, h.account.infoRefreshes)
+        // Back within the short gap: nothing asks at once, and the first server's retry still comes at 15 s.
+        advanceTimeBy(5_000)
+        h.account.statusFlow.value = h.account.statusFlow.value.copy(server = SERVER)
+        runCurrent()
+        assertEquals(2, h.account.infoRefreshes)
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(3, h.account.infoRefreshes)
+        // The other server's retry comes while it isn't configured: it asks nothing.
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(3, h.account.infoRefreshes)
     }
 
     @Test
@@ -656,7 +747,7 @@ class WorkspaceServiceTest {
     }
 
     @Test
-    fun `links from the home and its former address are this server's, and new links name the home`() = runTest {
+    fun `a server that claims rukoo's address as its home gets no rukoo links, and new links name it`() = runTest {
         val info = CHAT_INFO.copy(workspace = CHAT_INFO.workspace!!.copy(home = WorkspaceHome("https://rukoo.io")))
         val h = Harness(this, db, info)
         h.seed { syncedWs() }
@@ -670,10 +761,17 @@ class WorkspaceServiceTest {
         h.account.signIn("mine")
         val s = h.start()
         val state = s.state.until { it.workspaces.isNotEmpty() && it.connection == Connection.ONLINE }
-        assertEquals(listOf(SERVER, "https://rukoo.io", "https://rukoo-account.bvdm.ai"), state.linkServers)
-        // A link made at the former address previews here, as one made at the home does.
-        assertTrue(s.previewInvite(InviteLink("https://rukoo-account.bvdm.ai", ws, secret)).already)
-        assertTrue(s.previewInvite(InviteLink("https://rukoo.io", ws, secret)).already)
+        // Only the app's own list makes addresses one server: what the server says of its home adds nothing.
+        assertEquals(listOf(SERVER), state.linkServers)
+        for (claimed in listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai")) {
+            try {
+                s.previewInvite(InviteLink(claimed, ws, secret))
+                fail("a link for another server: $claimed")
+            } catch (e: WorkspaceError) {
+                assertEquals("other_server", e.code)
+            }
+        }
+        assertTrue(h.http.calls("POST", h.route(ws, "/invites/preview")).isEmpty())
         // A pending link the service refuses as another server's goes, so a restart doesn't offer it again.
         s.rememberJoin(InviteLink("https://elsewhere.example", ws, secret))
         assertTrue(s.state.until { it.pendingJoin }.pendingJoin)
@@ -685,7 +783,9 @@ class WorkspaceServiceTest {
         }
         assertFalse(s.state.until { !it.pendingJoin }.pendingJoin)
         assertFalse(File(db.file.parentFile, "chat-join.json").exists())
-        assertEquals("https://rukoo.io/join#w=$ws&i=$secret", s.createInvite(ws, "member", emptyList(), 86_400).link)
+        // Its own links preview, and new links name the configured server.
+        assertTrue(s.previewInvite(InviteLink(SERVER, ws, secret)).already)
+        assertEquals("$SERVER/join#w=$ws&i=$secret", s.createInvite(ws, "member", emptyList(), 86_400).link)
     }
 
     @Test

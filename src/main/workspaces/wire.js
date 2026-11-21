@@ -329,11 +329,12 @@ function hostOf(server) {
   }
 }
 
-// Addresses a home answered at before (contract 3.2), keyed by the home's origin. rukoo.io was
-// rukoo-account.bvdm.ai, which still serves the same accounts and workspaces (account/index.js FORMER_SERVERS), so a
-// link made on a device that still uses the old address opens on one that uses the new, and the other way round.
-// Android's InviteLink.FORMER_ADDRESSES is the same list.
-const FORMER_ADDRESSES = Object.freeze({ 'https://rukoo.io': Object.freeze(['https://rukoo-account.bvdm.ai']) });
+// Addresses that are one server (contract 3.2). rukoo.io was rukoo-account.bvdm.ai, which still serves the same
+// accounts and workspaces (account/index.js FORMER_SERVERS), so a link made on a device that still uses the old address
+// opens on one that uses the new, and the other way round. The app knows these itself: a server's own /v1/info can't
+// add to them, or a server that claimed rukoo.io as its home would get the secrets of rukoo.io links its users paste.
+// Android's InviteLink.SAME_SERVERS is the same list.
+const SAME_SERVERS = Object.freeze([Object.freeze(['https://rukoo.io', 'https://rukoo-account.bvdm.ai'])]);
 
 // The workspace home of a server's GET /v1/info (workspace.home.origin, server/WORKSPACES.md): an https origin, or
 // http on this computer. null without one.
@@ -352,33 +353,41 @@ function homeOf(info) {
   return url.origin;
 }
 
-// The addresses an invitation link may name for the configured server: that server first, the home its saved
-// /v1/info names, and the former addresses of either. Every request still goes to the configured server; these only
-// decide which links are its own.
-function sameServers(server, info = null) {
-  const out = [];
-  const add = (s) => {
-    if (typeof s === 'string' && s && !out.includes(s)) out.push(s);
-  };
-  const home = homeOf(info);
-  add(server);
-  add(home);
-  for (const s of [server, home]) for (const former of FORMER_ADDRESSES[s] || []) add(former);
-  return out;
+// The addresses an invitation link may name for the configured server: that server first, then the others of its
+// group in SAME_SERVERS. Every request still goes to the configured server; these only decide which links are its own.
+function sameServers(server) {
+  if (typeof server !== 'string' || !server) return [];
+  const group = SAME_SERVERS.find((g) => g.includes(server));
+  return group ? [server, ...group.filter((s) => s !== server)] : [server];
 }
 
-// Where a new invitation link points: the home the server's /v1/info names, so every device of the server reads the
-// link as its own, whichever address it signed in at. A server with a path of its own (https://host/rukoo) keeps it:
-// its home is only an origin, and the join page lives under that path.
+// Where a new invitation link points: the home the server's /v1/info names when it is one of the server's own
+// addresses (sameServers), so every device of the server reads the link as its own, whichever address it signed in
+// at. Any other home is only the server's claim, and the link names the configured server.
 function inviteServer(server, info = null) {
   const home = homeOf(info);
-  if (!home || typeof server !== 'string') return server;
+  return home && sameServers(server).includes(home) ? home : server;
+}
+
+// The invite field of a sign-up form (contract 3.3), against servers (sameServers()): an invitation link for the
+// configured server becomes workspaceInvite { workspace, invite } and the link to remember; anything else stays the
+// operator's invite code. A link to another server throws ChatError('other_server'): sent as an invite code, its secret
+// would reach this server. manage.js splitInvite uses it, and the browser's sign-up when its chat engine couldn't start.
+function splitInvite(text, servers) {
+  const raw = typeof text === 'string' ? text : '';
+  let found = null;
   try {
-    const url = new URL(server);
-    return url.pathname.replace(/\/+$/, '') === '' ? home : server;
-  } catch (_) {
-    return server;
+    found = parseInviteLink(raw, servers);
+  } catch (err) {
+    if (err && err.code === 'other_server') throw err;
+    found = null;
   }
+  if (!found) return { invite: raw, workspaceInvite: null, link: null };
+  return {
+    invite: '',
+    workspaceInvite: { workspace: found.workspace, invite: found.secret },
+    link: inviteLink(found.server, found.workspace, found.secret)
+  };
 }
 
 // The link chatCreateInvite hands out: <credential URL>/join#w=<w_id>&i=<secret>.
@@ -1265,6 +1274,7 @@ const c = (v) => input.conversation(v);
 // gets: trimmed names, copied objects, null for an omitted optional one. ipc.js runs them before anything else.
 const ARGS = {
   chatState: () => [],
+  chatRetryInfo: () => [],
   chatSelect: (w) => [orNull(ws)(w)],
   chatView: (w) => [ws(w)],
   chatSync: (w) => [orNull(ws)(w)],
@@ -1340,7 +1350,8 @@ module.exports = {
   homeOf,
   sameServers,
   inviteServer,
-  FORMER_ADDRESSES,
+  splitInvite,
+  SAME_SERVERS,
   uuidv7,
   localId,
   checkChanges,

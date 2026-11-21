@@ -324,8 +324,7 @@ class AccountService(
         checkNew(address, password)
         val at = server
         // rukoo.io and its former address are one server (InviteLink.sameServers); the request still goes to at.
-        val home = InviteLink.homeOf(status().info?.workspace?.home?.origin)
-        if (workspaceInvite != null && workspaceInvite.server !in InviteLink.sameServers(at, home)) throw fail("invalid")
+        if (workspaceInvite != null && workspaceInvite.server !in InviteLink.sameServers(at)) throw fail("invalid")
         serverInfo(at)
         val salt = AccountKeys.randomBytes(16)
         val kdf = AccountKeys.DEFAULT_KDF

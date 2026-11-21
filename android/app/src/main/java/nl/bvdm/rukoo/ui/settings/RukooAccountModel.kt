@@ -148,8 +148,7 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     fun joinShown() = _ui.update { it.copy(joinWithLink = false) }
 
     /** The addresses that count as the configured server for invitation links (InviteLink.sameServers). */
-    private fun linkServers(acc: AccountService): List<String> =
-        InviteLink.sameServers(acc.server, InviteLink.homeOf(acc.status.value.info?.workspace?.home?.origin))
+    private fun linkServers(acc: AccountService): List<String> = InviteLink.sameServers(acc.server)
 
     enum class Form { SIGN_UP, SIGN_IN, RECOVER }
 

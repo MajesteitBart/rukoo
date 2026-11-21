@@ -88,6 +88,7 @@ import nl.bvdm.rukoo.ui.mail.ResourceStrings
 import nl.bvdm.rukoo.ui.onboarding.OnboardingScreen
 import nl.bvdm.rukoo.ui.reader.ReaderPane
 import nl.bvdm.rukoo.ui.reader.openInBrowser
+import nl.bvdm.rukoo.ui.settings.NotificationPermission
 import nl.bvdm.rukoo.ui.settings.SettingsScreen
 import nl.bvdm.rukoo.ui.theme.Rk
 import nl.bvdm.rukoo.ui.theme.RukooEasing
@@ -165,6 +166,14 @@ fun RukooRoot(app: AppViewModel, modifier: Modifier = Modifier) {
     // The presets' names follow the language until someone renames them.
     val locales = LocalConfiguration.current.locales
     LaunchedEffect(locales) { app.services.categories?.refresh() }
+    // Team chat's alerts without a mail account, or a workspace joined here (RUK-234 review): Android 13 asks for the
+    // notification permission while the app is on screen, as onboarding does after the first mail account.
+    val askChatNotifications by app.askChatNotifications.collectAsStateWithLifecycle()
+    LaunchedEffect(askChatNotifications) {
+        if (!askChatNotifications) return@LaunchedEffect
+        // Not now (the activity is going away): the next composition asks, or the next start.
+        if (NotificationPermission.ask(context, wanted = app.services.settingsSnapshot.value.notifyChat)) app.chatNotificationsAsked()
+    }
     LaunchedEffect(app) {
         app.effects.collect { effect ->
             when (effect) {

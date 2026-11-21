@@ -60,6 +60,8 @@ export function openSetup(ctx, { first = false, chat = null, added = null } = {}
   };
   document.addEventListener('keydown', onKey, true);
   current = { page, first, close, chatChanged: () => renderChatOffer() };
+  // A start without network left team chat hidden here: the page asks again, and the box shows once the server says so.
+  if (!ctx.chatOffer()) api('chatRetryInfo').catch(() => {});
 
   // Team chat without a mail account (RUK-234): on a server that has it, for someone not signed in to Rukoo yet.
   function renderChatOffer() {

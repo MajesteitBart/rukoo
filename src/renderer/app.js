@@ -3894,6 +3894,9 @@ onSystemThemeChange(() => {
   S.composer?.retheme(S.data);
 });
 
+// Back online: a signed-out GET /v1/info that failed at start goes again, so Chat and the setup page's team chat show.
+window.addEventListener('online', () => api('chatRetryInfo').catch(() => {}));
+
 // Closing the window with unsaved text in the editor: keep it open and ask first. Main hears the outcome, because
 // a quit waits for it. A busy editor answers without asking, or with the question that is already open.
 window.addEventListener('beforeunload', (e) => {

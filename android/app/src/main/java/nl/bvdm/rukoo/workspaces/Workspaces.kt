@@ -136,8 +136,8 @@ data class ChatState(
     val notifications: Boolean = true,
     val pendingJoin: Boolean = false,
     /**
-     * The addresses that count as [server] for invitation links: it, the home its info names, and their former
-     * addresses (InviteLink.sameServers).
+     * The addresses that count as [server] for invitation links: it and the others the app knows are the same server
+     * (InviteLink.sameServers), never what the server says of itself.
      */
     val linkServers: List<String> = emptyList(),
     val unsent: Int = 0,

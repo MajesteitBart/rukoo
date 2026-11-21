@@ -30,11 +30,11 @@ class RukooAccountInviteTest {
     }
 
     @Test
-    fun `a link made at the server's former address or its home is this server's (RUK-234)`() {
-        val servers = InviteLink.sameServers("https://rukoo.io", "https://rukoo.io")
+    fun `a link made at another address of the same server is this server's (RUK-234)`() {
+        val servers = InviteLink.sameServers("https://rukoo.io")
         val old = "https://rukoo-account.bvdm.ai/join#w=$w&i=$secret"
         assertEquals(InviteInput.Link(InviteLink("https://rukoo-account.bvdm.ai", w, secret)), RukooAccountModel.inviteInput(old, servers, devHosts = false))
-        val fromOld = InviteLink.sameServers("https://rukoo-account.bvdm.ai", "https://rukoo.io")
+        val fromOld = InviteLink.sameServers("https://rukoo-account.bvdm.ai")
         val home = "https://rukoo.io/join#w=$w&i=$secret"
         assertEquals(InviteInput.Link(InviteLink("https://rukoo.io", w, secret)), RukooAccountModel.inviteInput(home, fromOld, devHosts = false))
     }

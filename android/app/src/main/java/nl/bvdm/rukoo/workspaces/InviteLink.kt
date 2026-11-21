@@ -93,12 +93,13 @@ data class InviteLink(val server: String, val workspace: String, val secret: Str
         }
 
         /**
-         * Addresses a home answered at before (RUK-234), keyed by the home's origin. rukoo.io was
-         * rukoo-account.bvdm.ai, which still serves the same accounts and workspaces (AccountService.FORMER_SERVERS),
-         * so a link made on a device at the old address opens on one at the new, and the other way round. Desktop's
-         * wire.js FORMER_ADDRESSES is the same list.
+         * Addresses that are one server (RUK-234). rukoo.io was rukoo-account.bvdm.ai, which still serves the same
+         * accounts and workspaces (AccountService.FORMER_SERVERS), so a link made on a device at the old address opens
+         * on one at the new, and the other way round. The app knows these itself: a server's own `/v1/info` can't add
+         * to them, or a server that claimed rukoo.io as its home would get the secrets of rukoo.io links its users
+         * paste. Desktop's wire.js SAME_SERVERS is the same list.
          */
-        val FORMER_ADDRESSES: Map<String, List<String>> = mapOf("https://rukoo.io" to listOf("https://rukoo-account.bvdm.ai"))
+        val SAME_SERVERS: List<List<String>> = listOf(listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai"))
 
         /**
          * The workspace home of a server's `GET /v1/info` (`workspace.home.origin`) as an origin: https, or http on
@@ -116,27 +117,23 @@ data class InviteLink(val server: String, val workspace: String, val secret: Str
         }
 
         /**
-         * The addresses an invitation link may name for [configured]: that server first, the [home] its info names,
-         * and the former addresses of either. Every request still goes to the configured server; these only decide
-         * which links are its own.
+         * The addresses an invitation link may name for [configured]: that server first, then the others of its group
+         * in [SAME_SERVERS]. Every request still goes to the configured server; these only decide which links are its
+         * own.
          */
-        fun sameServers(configured: String, home: String?): List<String> {
-            val out = LinkedHashSet<String>()
-            if (configured.isNotEmpty()) out += configured
-            if (!home.isNullOrEmpty()) out += home
-            for (s in listOfNotNull(configured, home)) FORMER_ADDRESSES[s]?.let { out += it }
-            return out.toList()
+        fun sameServers(configured: String): List<String> {
+            if (configured.isEmpty()) return emptyList()
+            val group = SAME_SERVERS.firstOrNull { configured in it } ?: return listOf(configured)
+            return listOf(configured) + group.filter { it != configured }
         }
 
         /**
-         * Where a new invitation link points: the [home], so every device of the server reads it as its own, whichever
-         * address it signed in at. A server under a path of its own keeps it: the home is only an origin.
+         * Where a new invitation link points: the [home] the server's info names when it is one of the server's own
+         * addresses ([sameServers]), so every device of the server reads it as its own, whichever address it signed in
+         * at. Any other home is only the server's claim, and the link names [server].
          */
-        fun inviteServer(server: String, home: String?): String {
-            if (home.isNullOrEmpty()) return server
-            val url = server.toHttpUrlOrNull() ?: return server
-            return if (url.encodedPath.trimEnd('/').isEmpty()) home else server
-        }
+        fun inviteServer(server: String, home: String?): String =
+            if (!home.isNullOrEmpty() && home in sameServers(server)) home else server
 
         fun format(server: String, workspace: String, secret: String): String = "$server/join#w=$workspace&i=$secret"
     }

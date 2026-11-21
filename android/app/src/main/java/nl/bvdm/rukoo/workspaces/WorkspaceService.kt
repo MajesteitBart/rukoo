@@ -11,6 +11,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -126,6 +127,12 @@ data class ChatTiming(
     val listResumeGap: Long = MINUTE,
     /** `INFO_EVERY`: `GET /v1/info` while signed in. */
     val infoEvery: Long = HOUR,
+    /**
+     * A `GET /v1/info` that failed while signed out (no network yet, a captive portal, a 5xx) is asked again after
+     * these, then at the hourly tick. Coming to the foreground or a network that came up asks again sooner, at most
+     * once per the first delay ([WorkspaceService.retryInfo]).
+     */
+    val infoRetry: List<Long> = listOf(15 * SECOND, MINUTE, 5 * MINUTE),
     /** On resume the selected workspace runs at once, at most this often; the others spread over [resumeSpread]. */
     val resumeRunGap: Long = 5 * SECOND,
     val resumeSpread: Long = 10 * SECOND,
@@ -216,11 +223,15 @@ class WorkspaceService internal constructor(
     @Volatile private var offered = false
     @Volatile private var joinLoaded = false
 
-    // When the last GET /v1/info this service asked for by itself began (maybeRefreshInfo).
     // Per server: when this service last asked GET /v1/info by itself, and the ask on its way, so switching servers
-    // and back doesn't ask the first one twice.
-    private class InfoTry(val at: Long, val job: Job)
+    // and back doesn't ask the first one twice. failures counts the asks in a row that failed, for the retries of a
+    // signed-out one (ChatTiming.infoRetry).
+    private class InfoTry(val at: Long, val job: Job, @Volatile var failures: Int)
     private val infoTries = ConcurrentHashMap<String, InfoTry>()
+    // The short retry of each server whose signed-out ask failed: one server's never cancels another's. infoLock guards
+    // these and the check-and-launch of an ask, which the retry, a resume and a network that came up can reach at once.
+    private val infoRetries = HashMap<String, Job>()
+    private val infoLock = Any()
     @Volatile private var foreground = false
 
     // ChatSyncWorker's catch-ups under way: while one is, runs nobody waits for may start in the background too.
@@ -348,6 +359,8 @@ class WorkspaceService internal constructor(
                 discard()
             } else {
                 openCache(session)
+                // Signed in, the sign-in fetched the info itself and the hourly tick asks again.
+                stopInfoRetry()
                 // At start signed in, and after a sign-in, which fetched it a moment ago itself.
                 maybeRefreshInfo(maxAge = ChatTiming.MINUTE)
                 startNetwork()
@@ -440,28 +453,101 @@ class WorkspaceService internal constructor(
         if (!signedIn && !autoInfo) return
         val server = account.status.value.server
         if (server.isEmpty()) return
-        // One ask at a time per server: a second one shares the first.
-        if (infoTries[server]?.job?.isActive == true) return
-        infoTries[server] = InfoTry(clock.now(), scope.launch {
-            // The account asks its configured server: only while that is still the one this ask was for.
-            if (account.status.value.server == server) quietly { account.refreshInfo() }
-        })
+        synchronized(infoLock) {
+            // One ask at a time per server: a second one shares the first.
+            val tried = infoTries[server]
+            if (tried?.job?.isActive == true) return
+            stopInfoRetry(server)
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                // The account asks its configured server: only while that is still the one this ask was for.
+                if (account.status.value.server != server) return@launch
+                val ok = quietly { account.refreshInfo() } != null
+                infoAnswered(server, currentCoroutineContext()[Job], ok)
+            }
+            infoTries[server] = InfoTry(clock.now(), job, tried?.failures ?: 0)
+            job.start()
+        }
+    }
+
+    // An ask of refreshInfo ended. One that failed while signed out comes again after the next delay of
+    // ChatTiming.infoRetry, only while its server is the configured one; after the last, the hourly tick asks. After a
+    // switch away and back, maybeRefreshInfo asks once the short gap has passed.
+    private fun infoAnswered(server: String, job: Job?, ok: Boolean) {
+        synchronized(infoLock) {
+            val entry = infoTries[server]?.takeIf { it.job === job } ?: return
+            if (ok) {
+                entry.failures = 0
+                return
+            }
+            entry.failures += 1
+            val delays = timing.infoRetry
+            if (signedIn || !autoInfo || entry.failures > delays.size) return
+            val wait = delays[entry.failures - 1]
+            stopInfoRetry(server)
+            infoRetries[server] = scope.launch {
+                delay(wait)
+                val me = currentCoroutineContext()[Job]
+                // A retry another one replaced, or stopped just as its wait ended, asks nothing.
+                synchronized(infoLock) {
+                    if (infoRetries[server] !== me) return@launch
+                    infoRetries.remove(server)
+                    if (!signedIn && account.status.value.server == server && !answeredSince(entry)) refreshInfo()
+                }
+            }
+        }
+    }
+
+    /** The retry of [server], or without one of them all. */
+    private fun stopInfoRetry(server: String? = null) {
+        synchronized(infoLock) {
+            val stopping = if (server == null) infoRetries.keys.toList() else listOf(server)
+            for (s in stopping) infoRetries.remove(s)?.cancel()
+        }
+    }
+
+    /**
+     * Whether the configured server's info was saved after this failed ask began: another ask reached it since (the
+     * account page in Settings, a sign-in), so the failure is over. [entry] is the configured server's.
+     */
+    private fun answeredSince(entry: InfoTry): Boolean {
+        val at = account.infoAt() ?: return false
+        if (at < entry.at) return false
+        entry.failures = 0
+        return true
+    }
+
+    private fun retryGap(): Long = timing.infoRetry.firstOrNull() ?: ChatTiming.MINUTE
+
+    /**
+     * The network may be back: the app came to the foreground or a network came up. A signed-out `GET /v1/info`
+     * whose last ask failed goes again now, unless one is on its way or the last began less than the first delay of
+     * [ChatTiming.infoRetry] ago.
+     */
+    fun retryInfo() {
+        if (signedIn || !autoInfo) return
+        val tried = infoTries[account.status.value.server] ?: return
+        if (tried.failures == 0 || tried.job.isActive || answeredSince(tried)) return
+        if (clock.now() - tried.at < retryGap()) return
+        refreshInfo()
     }
 
     // Signed out: GET /v1/info when the saved answer is missing or older than infoEvery, at most once a minute, so a
     // start or a new server learns whether there is team chat without asking a server that doesn't answer all the time.
+    // After a failed ask at most once per retryGap(), so switching back to a server whose retry came while another
+    // was configured asks again.
     private fun maybeRefreshInfo(maxAge: Long = timing.infoEvery) {
         if (!signedIn && !autoInfo) return
         val now = clock.now()
         val tried = infoTries[account.status.value.server]
-        if (tried != null && (tried.job.isActive || now - tried.at < ChatTiming.MINUTE)) return
+        val failed = !signedIn && tried != null && tried.failures > 0 && !answeredSince(tried)
+        if (tried != null && (tried.job.isActive || now - tried.at < (if (failed) retryGap() else ChatTiming.MINUTE))) return
         val at = account.infoAt()
         if (info != null && at != null && now - at < maxAge) return
         refreshInfo()
     }
 
     /** The addresses that count as the configured server for invitation links (InviteLink.sameServers). */
-    private fun linkServers(): List<String> = InviteLink.sameServers(configured, InviteLink.homeOf(info?.workspace?.home?.origin))
+    private fun linkServers(): List<String> = InviteLink.sameServers(configured)
 
     // ---- the pending join (RUK-234), in chat-join.json ----
 
@@ -885,6 +971,8 @@ class WorkspaceService internal constructor(
      * now (at most once per 5 s) and the others spread over 10 s, reconnect a socket that is down, kick the outbox.
      */
     fun nudge() {
+        // Signed out, a start without network left Chat and onboarding's way to it hidden.
+        retryInfo()
         val l = live ?: return
         if (!isLive()) return
         l.scope.launch {

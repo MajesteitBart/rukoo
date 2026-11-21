@@ -578,14 +578,15 @@ export function sidebarHtml() {
 }
 
 // Rukoo's other apps (RUK-234), once after the first workspace this person joined or made here, until they hide it:
-// the phone app and Rukoo Voice. settings.chatAppsTip is '' before, 'show' after and 'done' once hidden.
+// the phone app and Rukoo Voice. settings.chatAppsTip is '' before, 'show' after and 'done' once hidden. Desktop only:
+// the browser names the apps in its own notice (web-apps.js).
 const APPS = {
   android: 'https://rukoo.io/download/android',
   voice: 'https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.2.0'
 };
 
 function appsCardHtml() {
-  if (ctx.S.data?.settings?.chatAppsTip !== 'show' || !(CH.state?.workspaces || []).length) return '';
+  if (WEB || ctx.S.data?.settings?.chatAppsTip !== 'show' || !(CH.state?.workspaces || []).length) return '';
   const row = (id, icon, title, body) =>
     `<button class="ch-apps-row" data-ch-side="apps-${id}" title="${esc(APPS[id])}"><span class="ch-apps-ic" aria-hidden="true">${icons[icon]}</span><span class="ch-apps-text"><span class="ch-apps-name">${esc(title)}</span><span class="ch-apps-desc">${esc(body)}</span></span><span class="ch-apps-out" aria-hidden="true">${icons.popOut}</span></button>`;
   return `<section class="ch-apps" aria-labelledby="ch-apps-title">
@@ -597,7 +598,7 @@ function appsCardHtml() {
 
 // The first workspace this person joined or made here: the card above shows from now on, until hidden.
 function firstWorkspace() {
-  if (ctx.S.data?.settings && !ctx.S.data.settings.chatAppsTip) {
+  if (!WEB && ctx.S.data?.settings && !ctx.S.data.settings.chatAppsTip) {
     ctx.S.data.settings.chatAppsTip = 'show';
     api('updateSettings', { chatAppsTip: 'show' }).catch(() => {});
     redrawSide();

@@ -70,6 +70,12 @@ async function createWebEngine({
     timing,
     host,
     WebSocket,
+    // The page's account asks GET /v1/info itself at load (account/service.js restore), and the shell's Try again asks
+    // again; signed out, the engine leaves it to them.
+    autoInfo: false,
+    // The page keeps the invitation it was opened with through reloads itself (src/web/join.js), and its files are in
+    // memory: no chat-join.json.
+    keepJoin: false,
     ...(now ? { now } : {}),
     ...(random ? { random } : {}),
     ...(timers ? { timers } : {})

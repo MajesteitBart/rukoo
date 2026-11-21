@@ -1468,19 +1468,19 @@ class AccountServiceTest {
     }
 
     @Test
-    fun `a workspace invitation from the server's home or its former address signs up here (RUK-234)`() = runBlocking {
-        // This server says its home is rukoo.io, whose former address is rukoo-account.bvdm.ai: links from both are its.
+    fun `a server that claims rukoo's address as its home gets no rukoo invitation at sign-up (RUK-234)`() = runBlocking {
+        // This server's /v1/info names rukoo.io as its home. Only the app's own list makes two addresses one server,
+        // so a pasted rukoo.io link, or one from its former address, is another server's, and its secret stays here.
         val srv = server(home = "https://rukoo.io")
         val desk = device(srv)
         desk.serverInfo()
         val w = "w_" + "A".repeat(22)
-        desk.signUp("alias@example.com", PASSWORD, workspaceInvite = InviteLink("https://rukoo-account.bvdm.ai", w, "c".repeat(43)))
-        val sent = RukooJson.parseToJsonElement(srv.calls.single { it.route == "POST /v1/signup" }.body).jsonObject
-        assertEquals(JsonPrimitive("c".repeat(43)), sent.getValue("workspaceInvite").jsonObject["invite"])
-        // Still refused for a server that is neither.
-        val other = device(srv)
-        other.serverInfo()
-        rejects("invalid") { other.signUp("other2@example.com", PASSWORD, workspaceInvite = InviteLink("https://elsewhere.example", w, "d".repeat(43))) }
+        for ((i, at) in listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai", "https://elsewhere.example").withIndex()) {
+            val secret = "cde"[i].toString().repeat(43)
+            rejects("invalid") { desk.signUp("alias$i@example.com", PASSWORD, workspaceInvite = InviteLink(at, w, secret)) }
+            assertFalse(srv.calls.any { it.body.contains(secret) })
+        }
+        assertEquals(0, srv.calls.count { it.route == "POST /v1/signup" })
     }
 
     /**
