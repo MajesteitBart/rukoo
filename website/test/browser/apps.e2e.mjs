@@ -47,13 +47,23 @@ async function member() {
 
 const notice = (page) => page.locator('.web-apps-slot:not([hidden]) .web-apps');
 
-async function signOut(page) {
+// Signs out through Settings, once the conversation the sign-in opened has loaded.
+async function signOut(view) {
+  const page = view.page;
   const settings = page.locator('#overlays .page.settings');
+  await expect(page.locator('.ch-head .ch-title')).toHaveText('general');
   await page.locator(page.viewportSize().width <= 700 ? '.web-bar-settings' : '.web-foot-settings').click();
   await settings.locator('[data-a="rukoo"]').click();
   await settings.locator('[data-a="rukoo-signout"]').click();
+  const before = view.problems.length;
   await page.locator('.scrim').getByRole('button', { name: tr('en', 'settings.rukoo.signOut') }).click();
   await expect(settings.locator('[data-a="rukoo-go:rukoo-signin"]')).toBeVisible();
+  // A request the page had on its way when the sign-out ended the session gets a 401, which it takes as the end it
+  // already knows of; Chromium logs every 4xx answer as a console error (chat.e2e.mjs d allows the same). Only those,
+  // in this window, are allowed.
+  const raced = view.problems.slice(before).filter((p) => /status of 401 .*\/v1\/(account\b|workspaces\/w_[\w-]+\/)/.test(p));
+  view.problems.splice(before, view.problems.length - before, ...view.problems.slice(before).filter((p) => !raced.includes(p)));
+  view.allowed.push(...raced);
   await settings.locator('[data-a="back"]').click();
   await settings.locator('[data-a="back"]').click();
   await expect(settings).toHaveCount(0);
@@ -134,7 +144,7 @@ test('c: a sign-out hides it until the next sign-in; closing it lasts in every t
   // account no more than six socket tickets at once.
   await signIn(p, await member());
   await expect(notice(p)).toBeVisible();
-  await signOut(p);
+  await signOut(view);
   await expect(notice(p)).toHaveCount(0);
   await signIn(p, await member());
   await expect(notice(p)).toBeVisible();
@@ -155,7 +165,7 @@ test('c: a sign-out hides it until the next sign-in; closing it lasts in every t
   await p.reload();
   await expect(p.locator('.ch-ws-switch')).toContainText(WORKSPACE);
   await expect(notice(p)).toHaveCount(0);
-  await signOut(p);
+  await signOut(view);
   await signIn(p, await member());
   await expect(notice(p)).toHaveCount(0);
   await shot(p, 'apps-closed-1280-light-en');
@@ -185,7 +195,7 @@ test('d: storage that refuses the page still shows the notice, and closing it ho
   await notice(p).locator('[data-web-apps="dismiss"]').click();
   await expect(notice(p)).toHaveCount(0);
   // A new sign-in in the same page doesn't bring it back.
-  await signOut(p);
+  await signOut(view);
   await signIn(p, await member());
   await expect(notice(p)).toHaveCount(0);
   clean(view);
