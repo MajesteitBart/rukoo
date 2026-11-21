@@ -168,6 +168,11 @@ describe('uploading', () => {
     expect(trash).toEqual([{ key: expect.stringMatching(/^ws\//), size: bytes.length }]);
     expect(await fileBytes(ws.id)).toBe(2 * bytes.length);
     expect(await env.WORKSPACE_FILES.head(trash[0].key)).toBeNull();
+    // A failed write's key waits until its object can no longer land, and is counted meanwhile.
+    await alarm(ws.id);
+    expect(await workspaceSql(ws.id, 'SELECT size FROM trash')).toEqual([{ size: bytes.length }]);
+    expect(await fileBytes(ws.id)).toBe(2 * bytes.length);
+    await workspaceSql(ws.id, 'UPDATE trash SET at = ?', Date.now() - 1);
     await alarm(ws.id);
     expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
     expect(await fileBytes(ws.id)).toBe(bytes.length);

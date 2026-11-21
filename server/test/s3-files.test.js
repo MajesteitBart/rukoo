@@ -110,6 +110,8 @@ describe('with an S3 store', () => {
     const trash = await workspaceSql(ws.id, 'SELECT key, size FROM trash');
     expect(trash).toEqual([{ key: expect.stringMatching(/^ws\//), size: bytes.length }]);
     expect(keysOf(ws.id)).toEqual([]);
+    // A failed write's key is deleted once it can no longer land.
+    await workspaceSql(ws.id, 'UPDATE trash SET at = ?', Date.now() - 1);
     await alarm(ws.id);
     expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
     expect(await fileBytes(ws.id)).toBe(bytes.length);
@@ -123,6 +125,7 @@ describe('with an S3 store', () => {
     expect(s3.ops('PUT').some((entry) => entry.key === lied)).toBe(true);
     expect(s3.ops('DELETE').some((entry) => entry.key === lied)).toBe(true);
     expect(keysOf(ws.id)).toEqual([]);
+    await workspaceSql(ws.id, 'UPDATE trash SET at = ?', Date.now() - 1);
     await alarm(ws.id);
 
     // The upload can still be put right.
@@ -350,6 +353,67 @@ describe('with an S3 store', () => {
     expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(404);
   });
 
+  it('waits five minutes before deleting a failed upload, so an object that lands late still goes', async () => {
+    const ws = await newWorkspace();
+    const bytes = text('stored after all');
+    const reserved = (await reserve(ws.person, ws.id, ws.general, { bytes })).body;
+    let land = null;
+    s3.intercept = async (request, op, key) => {
+      if (op !== 'PUT') return undefined;
+      const body = await request.text();
+      land = () => s3.plant(key, body);
+      throw new TypeError('Network connection lost.');
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await fileRequest(reserved.put.url, { method: 'PUT', body: bytes })).status).toBe(500);
+    } finally {
+      logged.mockRestore();
+    }
+    s3.intercept = null;
+    const [{ at }] = await workspaceSql(ws.id, 'SELECT at FROM trash');
+    expect(at - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+    expect(at - Date.now()).toBeLessThanOrEqual(5 * 60 * 1000);
+    // An alarm within the five minutes leaves the key alone, and it stays counted.
+    const deletes = s3.ops('DELETE').length;
+    await alarm(ws.id);
+    expect(s3.ops('DELETE')).toHaveLength(deletes);
+    expect(await workspaceSql(ws.id, 'SELECT size FROM trash')).toEqual([{ size: bytes.length }]);
+    expect(await fileBytes(ws.id)).toBe(2 * bytes.length);
+    // The object lands. Once the five minutes are over, the alarm deletes it while the workspace stays.
+    land();
+    expect(keysOf(ws.id)).toHaveLength(1);
+    await workspaceSql(ws.id, 'UPDATE trash SET at = ?', Date.now() - 1);
+    await alarm(ws.id);
+    expect(keysOf(ws.id)).toEqual([]);
+    expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
+    expect(await fileBytes(ws.id)).toBe(bytes.length);
+    expect((await api('GET', `/v1/workspaces/${ws.id}`, { token: ws.person.token })).status).toBe(200);
+  });
+
+  it('keeps a key in the trash that a failed write put back while the alarm was deleting it', async () => {
+    const ws = await newWorkspace();
+    const key = `ws/${ws.id}/raced`;
+    await workspaceSql(ws.id, 'INSERT INTO trash (key, size, at) VALUES (?, 4, ?)', key, Date.now() - 1);
+    await workspaceSql(ws.id, 'UPDATE workspace SET fileBytes = fileBytes + 4');
+    const reserved = (await reserve(ws.person, ws.id, ws.general, { bytes: text('four') })).body;
+    // While the bucket deletes the key, a late report says a write to it failed and may still land.
+    let reported = null;
+    s3.intercept = async (request, op, k) => {
+      if (op !== 'DELETE' || k !== key) return undefined;
+      reported = await workspaceStub(ws.id).finishAttempt(reserved.upload.id, key, 4, false);
+      return undefined;
+    };
+    await alarm(ws.id);
+    s3.intercept = null;
+    expect(reported).toMatchObject({ status: 200 });
+    const [{ at }] = await workspaceSql(ws.id, 'SELECT at FROM trash WHERE key = ?', key);
+    expect(at - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+    await workspaceSql(ws.id, 'UPDATE trash SET at = ?', Date.now() - 1);
+    await alarm(ws.id);
+    expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
+  });
+
   it('waits five minutes after an upload failed before deleting the workspace, as the service may still store it', async () => {
     const ws = await newWorkspace();
     const bytes = text('stored after all');
@@ -371,9 +435,8 @@ describe('with an S3 store', () => {
     const [{ landingUntil }] = await workspaceSql(ws.id, 'SELECT landingUntil FROM workspace');
     expect(landingUntil - Date.now()).toBeGreaterThan(4 * 60 * 1000);
     expect(landingUntil - Date.now()).toBeLessThanOrEqual(5 * 60 * 1000);
-    // The alarm deletes the attempt's key before the object is there.
-    await alarm(ws.id);
-    expect(await workspaceSql(ws.id, 'SELECT * FROM trash')).toEqual([]);
+    // Say the trash had already deleted the attempt's key, before the object was there.
+    await workspaceSql(ws.id, 'DELETE FROM trash');
     // It lands just after a deletion listed the bucket: that deletion must not start.
     const lists = s3.ops('LIST').length;
     let listing = false;

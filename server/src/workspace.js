@@ -61,7 +61,8 @@ const UPLOAD_TIME = 60 * 60 * 1000;
 const ATTEMPTS = 2;
 export const ATTEMPT_TIME = 2 * 60 * 60 * 1000;
 // How long a write that failed may still land in the bucket: S3 can store a PUT whose whole body it had after the
-// Worker stopped waiting for its answer. Deleting the workspace waits that long after the last one (landingUntil).
+// Worker stopped waiting for its answer. Deleting the workspace waits that long after the last one (landingUntil), and
+// the alarm waits that long before it deletes the key of one (#toTrash).
 const LANDING_TIME = 5 * 60 * 1000;
 // Keys deleted from the bucket in one go, at most: the most R2 takes at once. An S3 store takes fewer (its batch,
 // filestore.js). How soon the alarm comes for new trash, and how long it waits after a delete failed.
@@ -141,8 +142,9 @@ const RICH_TABLES = `
 // holds a message's link cards once they are made; noPreviews says its author took one away, so none come again.
 // An upload is a file from reservation to the end of its message: reserved, uploading, ready, then bound to a message
 // (seq, pos), or a link card's image (preview). attempt holds the bucket keys of writes under way, trash the keys
-// waiting to be deleted from the bucket. workspace.fileBytes counts the bytes all of those stand for, apart from the
-// message text bytes counts, and workspace.landingUntil is when a write that failed can no longer land (LANDING_TIME).
+// waiting to be deleted from the bucket, with when the alarm may delete each (at). workspace.fileBytes counts the bytes
+// all of those stand for, apart from the message text bytes counts, and workspace.landingUntil is when a write that
+// failed can no longer land (LANDING_TIME).
 const SCHEMA = `
   CREATE TABLE workspace (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2383,11 +2385,15 @@ export class Workspace extends DurableObject {
     this.sql.exec('UPDATE workspace SET landingUntil = MAX(landingUntil, ?) WHERE id = 1', now + LANDING_TIME);
   }
 
-  // A key whose object goes from the bucket. Counted until the alarm has deleted it.
-  #toTrash(key, size, now) {
-    const added = this.sql.exec('INSERT OR IGNORE INTO trash (key, size, at) VALUES (?, ?, ?) RETURNING key', key, size, now).toArray().length > 0;
+  // A key whose object goes from the bucket. Counted until the alarm has deleted it. The key of a write that failed
+  // waits LANDING_TIME first: its object may still land, and a delete before that would leave it in the bucket with
+  // nothing left that knows its key.
+  #toTrash(key, size, now, failed = false) {
+    const due = failed ? now + LANDING_TIME : now;
+    const added = this.sql.exec('INSERT OR IGNORE INTO trash (key, size, at) VALUES (?, ?, ?) RETURNING key', key, size, due).toArray().length > 0;
     if (added) this.#fileBytes(size);
-    this.#alarmBy(now + TRASH_SOON);
+    else if (failed) this.sql.exec('UPDATE trash SET at = MAX(at, ?) WHERE key = ?', due, key);
+    this.#alarmBy(Math.max(now + TRASH_SOON, due + 1000));
   }
 
   // The attempts at an upload that its own count covered get counts of their own, for when it stops covering them:
@@ -2514,7 +2520,7 @@ export class Workspace extends DurableObject {
       if (this.sql.exec('SELECT 1 FROM upload WHERE key = ?', key).toArray().length > 0) return READY();
       // Given up on as dead, its key in the trash and maybe deleted already, before this write landed. The key goes to
       // the trash again, so nothing it wrote stays behind.
-      this.#toTrash(key, size, now);
+      this.#toTrash(key, size, now, !ok);
       if (ok && upload?.key) return READY();
       if (ok) return GONE();
       return reply(200, null);
@@ -2528,7 +2534,7 @@ export class Workspace extends DurableObject {
       this.#uncover(upload.n);
       return READY();
     }
-    this.#toTrash(key, attempt.size, now);
+    this.#toTrash(key, attempt.size, now, !ok);
     if (!ok) return reply(200, null);
     // Another attempt won meanwhile: this one's key goes, and the answer is the same.
     if (mine && upload.key) return READY();
@@ -2549,15 +2555,17 @@ export class Workspace extends DurableObject {
     return uploads.length >= SWEEP_BATCH || dead.length >= SWEEP_BATCH;
   }
 
-  // Deletes the trash from the bucket, a batch at a time, and only then stops counting its bytes. A delete that fails
-  // throws and leaves the keys for the next alarm. When the store names the keys that failed (err.failed), the others
-  // leave the trash all the same and the failed ones go to its back, so a key that keeps failing holds up no other.
-  // Returns whether more is waiting.
+  // Deletes the trash that is due from the bucket, a batch at a time, and only then stops counting its bytes. A delete
+  // that fails throws and leaves the keys for the next alarm. When the store names the keys that failed (err.failed),
+  // the others leave the trash all the same and the failed ones go to its back, so a key that keeps failing holds up no
+  // other. A key that a failed write put back while the delete was under way stays until it is due again. Returns
+  // whether more is waiting.
   async #emptyTrash() {
     const store = fileStore(this.env);
     if (!store) return false;
     const size = Math.min(TRASH_BATCH, store.batch);
-    const rows = this.sql.exec('SELECT key FROM trash ORDER BY at LIMIT ?', size + 1).toArray();
+    const due = Date.now();
+    const rows = this.sql.exec('SELECT key FROM trash WHERE at <= ? ORDER BY at LIMIT ?', due, size + 1).toArray();
     if (!rows.length) return false;
     const batch = rows.slice(0, size).map((row) => row.key);
     let failure = null;
@@ -2573,10 +2581,10 @@ export class Workspace extends DurableObject {
     this.#write(() => {
       for (const key of batch) {
         if (failed.has(key)) {
-          this.sql.exec('UPDATE trash SET at = ? WHERE key = ?', now, key);
+          this.sql.exec('UPDATE trash SET at = MAX(at, ?) WHERE key = ?', now, key);
           continue;
         }
-        const gone = this.sql.exec('DELETE FROM trash WHERE key = ? RETURNING size', key).toArray()[0];
+        const gone = this.sql.exec('DELETE FROM trash WHERE key = ? AND at <= ? RETURNING size', key, due).toArray()[0];
         if (gone) this.#fileBytes(-gone.size);
       }
     });
@@ -2584,13 +2592,14 @@ export class Workspace extends DurableObject {
     return rows.length > size;
   }
 
-  // When the alarm comes next: in a minute while a sweep left work or the trash isn't empty, five minutes after a delete
-  // failed, at the next expiry of an upload or an attempt, and in a day at the latest.
+  // When the alarm comes next: in a minute while a sweep left work or trash is due, when the next trash is due, five
+  // minutes after a delete failed, at the next expiry of an upload or an attempt, and in a day at the latest.
   #nextAlarm(now, more, failed) {
     if (failed) return now + TRASH_RETRY;
     if (more) return now + 60 * 1000;
     let next = now + DAY;
-    if (filesOn(this.env) && this.sql.exec('SELECT 1 FROM trash LIMIT 1').toArray().length > 0) next = now + 60 * 1000;
+    const trash = filesOn(this.env) ? this.sql.exec('SELECT MIN(at) AS t FROM trash').one().t : null;
+    if (trash !== null) next = Math.min(next, Math.max(trash + 1000, now + 60 * 1000));
     const upload = this.sql.exec('SELECT MIN(expiresAt) AS t FROM upload WHERE seq IS NULL').one().t;
     if (upload !== null) next = Math.min(next, upload + 1000);
     const attempt = this.sql.exec('SELECT MIN(at) AS t FROM attempt').one().t;
@@ -2632,12 +2641,12 @@ export class Workspace extends DurableObject {
       if (row) this.#fileBytes(-row.charge);
       return Boolean(row);
     };
-    const drop = (image) => {
+    const drop = (image, failed = false) => {
       take(image.key);
-      this.#toTrash(image.key, image.size, now);
+      this.#toTrash(image.key, image.size, now, failed);
     };
     if (discard.length) this.#mayLand(now);
-    for (const image of discard) drop(image);
+    for (const image of discard) drop(image, true);
     // While a deletion waits on the bucket, an image may have been written after the listing went past its key, and
     // the trash goes with the database: no card is published, and the Worker deletes every image (gone).
     const found = !this.deleting && this.#unfurlable(conversation, message);
