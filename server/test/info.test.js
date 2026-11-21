@@ -260,8 +260,8 @@ describe('GET /privacy', () => {
       en: {
         heading: '<h2 id="in-a-browser">In a browser</h2>',
         storage: 'this site’s storage on your computer',
-        // What the chat page keeps for itself (src/renderer/emoji/recent.js, chat-input.js).
-        prefs: ['the emoji you used last and the skin tone you picked', 'whether the formatting bar shows'],
+        // What the chat page keeps for itself (src/renderer/emoji/recent.js, chat-input.js, web-apps.js).
+        prefs: ['the emoji you used last and the skin tone you picked', 'whether the formatting bar shows', 'whether you closed the notice about the Rukoo apps'],
         cookies: 'sets no cookies',
         code: 'The page’s code comes from this site each time you open it',
         security: 'In a browser that holds only as long as',
@@ -272,7 +272,7 @@ describe('GET /privacy', () => {
       nl: {
         heading: '<h2 id="in-a-browser">In een browser</h2>',
         storage: 'de opslag van deze site op je computer',
-        prefs: ['de emoji die je het laatst gebruikte en de huidskleur', 'of de opmaakbalk zichtbaar is'],
+        prefs: ['de emoji die je het laatst gebruikte en de huidskleur', 'of de opmaakbalk zichtbaar is', 'of je de melding over de Rukoo-apps hebt gesloten'],
         cookies: 'zet geen cookies',
         code: 'De code van de pagina komt elke keer dat je hem opent van deze site',
         security: 'In een browser geldt dat alleen zolang',

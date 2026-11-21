@@ -399,3 +399,186 @@ body.web-old .web-foot-settings,
 body.web-old .web-bar-settings {
   display: none;
 }
+
+/* ---------- the Rukoo apps: which to get, in order (web-shell.js renderApps, web-apps.js) ---------- */
+
+/* The notice sits above the shell, on the title bar's canvas, and the shell takes the height that is left. */
+html[data-platform='web'] #app {
+  display: flex;
+  flex-direction: column;
+}
+html[data-platform='web'] #app > .web-shell {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.web-apps-slot {
+  flex: none;
+  padding: 0 8px 8px;
+}
+.web-apps-slot[hidden] {
+  display: none;
+}
+.web-apps {
+  display: grid;
+  gap: 10px;
+  padding: 12px 8px 12px 16px;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  animation: web-apps-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes web-apps-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .web-apps {
+    animation: none;
+  }
+}
+.web-apps-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.web-apps-text {
+  flex: 1;
+  min-width: 0;
+}
+.web-apps-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  text-wrap: balance;
+}
+.web-apps-intro {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.web-apps-close {
+  width: 28px;
+  height: 28px;
+  margin-top: -4px;
+}
+.web-apps-close svg {
+  width: 16px;
+  height: 16px;
+}
+.web-apps-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+  padding: 0 8px 0 0;
+  list-style: none;
+}
+.web-apps-step {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+.web-apps-n {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 9999px;
+  background: var(--chip);
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.web-apps-step-text {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 2px;
+}
+.web-apps-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--text);
+}
+.web-apps-ic {
+  display: inline-grid;
+  flex: none;
+  color: var(--text-3);
+}
+.web-apps-ic svg {
+  width: 15px;
+  height: 15px;
+}
+.web-apps-desc {
+  font-size: 12px;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.web-apps-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  margin: 2px 0 0 -4px;
+}
+/* .link-btn is drawn for buttons; as a link it drops the browser's underline until it is pointed at. */
+.web-apps-link {
+  min-height: 24px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.web-apps-link:hover {
+  text-decoration: underline;
+}
+.web-apps-link svg {
+  width: 14px;
+  height: 14px;
+}
+.web-apps-link.quiet {
+  color: var(--text-2);
+}
+.web-apps-link:focus-visible,
+.web-apps-close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+/* Narrower than three columns hold: one step under the other. */
+@media (max-width: 900px) {
+  .web-apps-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* A phone: 44px targets, without the notice growing by as much (the links' extra height overlaps the line above). */
+body.web-phone .web-apps {
+  padding: 12px 4px 12px 14px;
+}
+body.web-phone .web-apps-close {
+  width: 44px;
+  height: 44px;
+  margin: -12px -2px -8px 0;
+}
+body.web-phone .web-apps-link {
+  min-height: 44px;
+  margin-block: -10px;
+}
+body.web-phone .web-apps-links {
+  margin-top: 0;
+}
+body.web-phone .web-apps-intro,
+body.web-phone .web-apps-desc {
+  font-size: 13px;
+}
+/* While a phone's on-screen keyboard is up for the composer, the conversation needs the room. */
+body.web-phone:has(.workspace .ch-input:focus) .web-apps-slot {
+  display: none;
+}

@@ -150,6 +150,10 @@ test('a: the owner makes an invitation, and the link signs a new person up and i
   await expect(m.locator('.ch-ws-switch')).toContainText(WORKSPACE);
   await expect(row(m, 'general')).toBeVisible();
   assert.equal(m.url(), `${env.origin}/app/`);
+  // In the workspace, the page lists the Rukoo apps in the order to get them, once (apps.e2e.mjs covers the notice).
+  await expect(m.locator('.web-apps-slot:not([hidden]) .web-apps')).toHaveCount(1);
+  await expect(m.locator('.web-apps-title')).toHaveText(tr('en', 'chat.web.apps.title'));
+  await shot(m, 'a5-joined-apps-notice');
   clean(owner, member);
 });
 

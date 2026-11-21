@@ -3139,7 +3139,26 @@
   "chat.web.statusFailed": "Kan niet starten",
   "chat.web.oldTitle": "Rukoo werkt niet in deze browser",
   "chat.web.oldBody": "Rukoo heeft Chrome of Edge 112, Firefox 119, Safari 17 of nieuwer nodig. Werk deze browser bij, of open deze pagina in een andere browser.",
-  "chat.web.backTitle": "Terug naar gesprekken"
+  "chat.web.backTitle": "Terug naar gesprekken",
+  "chat.web.apps.title": "Download de Rukoo-apps",
+  "chat.web.apps.intro": "Teamchat werkt hier in de browser. Installeer voor de rest van Rukoo de apps in deze volgorde.",
+  "chat.web.apps.dismiss": "Niet meer tonen",
+  "chat.web.apps.desktopName": "Rukoo op je computer",
+  "chat.web.apps.desktopDesc": "E-mail, agenda en meetings, met teamchat ernaast.",
+  "chat.web.apps.desktopDescPhone": "E-mail, agenda en meetings, met teamchat ernaast. Installeer het op je computer.",
+  "chat.web.apps.phoneName": "Rukoo op je telefoon",
+  "chat.web.apps.phoneDesc": "Je e-mail en teamchat op een Android-telefoon.",
+  "chat.web.apps.voiceName": "Rukoo Voice",
+  "chat.web.apps.voiceDesc": "Dicteren en meetings opnemen voor Rukoo op je computer, op Windows en op Macs met Apple silicon.",
+  "chat.web.apps.downloadWindows": "Downloaden voor Windows",
+  "chat.web.apps.downloadMacArm": "Downloaden voor Apple silicon",
+  "chat.web.apps.downloadMacIntel": "Downloaden voor Intel-Macs",
+  "chat.web.apps.downloadDeb": ".deb downloaden",
+  "chat.web.apps.downloadAppImage": "AppImage downloaden",
+  "chat.web.apps.otherSystems": "Andere systemen",
+  "chat.web.apps.allDownloads": "Naar de downloads",
+  "chat.web.apps.downloadAndroid": "Downloaden voor Android",
+  "chat.web.apps.downloadVoice": "Rukoo Voice downloaden"
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;
   else (root.RukooLocales ||= {})['nl'] = messages;

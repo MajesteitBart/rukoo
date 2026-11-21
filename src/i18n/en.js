@@ -12226,6 +12226,82 @@
   "chat.web.backTitle": {
     "message": "Back to conversations",
     "description": "Rukoo in the browser on a phone: tooltip and accessible name of the Back button in the title bar that goes from a conversation to the list of channels and direct messages. src/renderer/web-shell.js"
+  },
+  "chat.web.apps.title": {
+    "message": "Get the Rukoo apps",
+    "description": "Rukoo in the browser: title of the notice above the page, shown while signed in until the person closes it, that lists the Rukoo apps in the order to install them. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.intro": {
+    "message": "Team chat works here in the browser. For the rest of Rukoo, install the apps in this order.",
+    "description": "Rukoo in the browser: text under chat.web.apps.title; the three numbered steps follow (desktop app, phone app, Rukoo Voice). src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.dismiss": {
+    "message": "Don't show again",
+    "description": "Rukoo in the browser: tooltip and accessible name of the close button (an X) of the Rukoo apps notice. The browser remembers it, so the notice stays gone in every tab and after a reload. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.desktopName": {
+    "message": "Rukoo on your computer",
+    "description": "Rukoo in the browser, Rukoo apps notice: name of step 1, the desktop app (Windows, Mac and Linux). src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.desktopDesc": {
+    "message": "Mail, calendar and meetings, with team chat beside them.",
+    "description": "Rukoo in the browser, Rukoo apps notice: what the desktop app (step 1) is for, under chat.web.apps.desktopName. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.desktopDescPhone": {
+    "message": "Mail, calendar and meetings, with team chat beside them. Install it on your computer.",
+    "description": "Rukoo in the browser, Rukoo apps notice: chat.web.apps.desktopDesc when the page is open on a phone, where the desktop app can not be installed. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.phoneName": {
+    "message": "Rukoo on your phone",
+    "description": "Rukoo in the browser, Rukoo apps notice: name of step 2, Rukoo for Android. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.phoneDesc": {
+    "message": "Your mail and team chat on an Android phone.",
+    "description": "Rukoo in the browser, Rukoo apps notice: what Rukoo for Android (step 2) is for. Mentions Android because there is no iPhone app. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.voiceName": {
+    "message": "Rukoo Voice",
+    "description": "Rukoo in the browser, Rukoo apps notice: name of step 3, the dictation and meeting recording app. A product name: keep it as it is. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.voiceDesc": {
+    "message": "Dictation and meeting recording for Rukoo on your computer, on Windows and on Macs with Apple silicon.",
+    "description": "Rukoo in the browser, Rukoo apps notice: what Rukoo Voice (step 3) is for, and the systems it runs on: Windows, and Macs with an Apple chip (no Intel Mac build). src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadWindows": {
+    "message": "Download for Windows",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 1 to the Windows installer, shown on Windows. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadMacArm": {
+    "message": "Download for Apple silicon",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 1 to the Mac app for Macs with an Apple chip (M1 and later), shown on a Mac next to chat.web.apps.downloadMacIntel. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadMacIntel": {
+    "message": "Download for Intel Macs",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 1 to the Mac app for Macs with an Intel processor, shown on a Mac. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadDeb": {
+    "message": "Download .deb",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 1 to the Debian and Ubuntu package, shown on Linux. Keep .deb. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadAppImage": {
+    "message": "Download AppImage",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 1 to the AppImage for other Linux systems, shown on Linux. Keep AppImage. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.otherSystems": {
+    "message": "Other systems",
+    "description": "Rukoo in the browser, Rukoo apps notice: quieter link after the download links of step 1, to every download on rukoo.io, for when the page guessed the system wrong. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.allDownloads": {
+    "message": "See the downloads",
+    "description": "Rukoo in the browser, Rukoo apps notice: the only link of step 1 on a phone or an unknown system; it opens the downloads on rukoo.io. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadAndroid": {
+    "message": "Download for Android",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 2 to the Android app. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
+  },
+  "chat.web.apps.downloadVoice": {
+    "message": "Get Rukoo Voice",
+    "description": "Rukoo in the browser, Rukoo apps notice: link in step 3 to the Rukoo Voice release page, which has the Windows and Mac downloads. src/renderer/web-shell.js (renderApps), src/renderer/web-apps.js"
   }
 };
   if (typeof module === 'object' && module.exports) module.exports = messages;

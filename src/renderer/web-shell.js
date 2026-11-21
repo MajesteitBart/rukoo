@@ -13,6 +13,7 @@ import { setLanguage, localize, languages, t } from './i18n.js';
 import { watchErrors } from './diag.js';
 import { api, esc, $, toast, dropTaggedToast, applyTheme, onSystemThemeChange, dialog, choiceDialog, confirmDialog, menuOpen, closeMenu } from './ui.js';
 import { icons } from './icons.js';
+import { DISMISSED_KEY, noticeHtml, platformOf, dismissed as appsWereDismissed, dismiss as dismissApps } from './web-apps.js';
 
 watchErrors();
 
@@ -75,7 +76,8 @@ function savePrefs() {
 // ---------- the page ----------
 
 const app = $('#app');
-app.innerHTML = `<div class="shell web-shell">
+app.innerHTML = `<div class="web-apps-slot" hidden></div>
+  <div class="shell web-shell">
     <aside class="sidebar" data-i18n-aria-label="chat.sidebar.label" aria-label="${esc(t('chat.sidebar.label'))}"><div class="sidebar-main"></div></aside>
     <div class="workspace">
       <section class="chat" data-i18n-aria-label="chat.view.label" aria-label="${esc(t('chat.view.label'))}" data-thread="closed"></section>
@@ -442,6 +444,53 @@ PHONE.addEventListener('change', () => {
   if (chat.available()) chat.show();
 });
 
+// ---------- the Rukoo apps ----------
+
+// Above the page, while the person is signed in and chat is there: which Rukoo apps exist and in what order to get them
+// (web-apps.js). Closing it hides it in every tab of this browser, for good. A sign-out hides it until the next sign-in.
+const appsSlot = $('.web-apps-slot', app);
+const appsStorage = (() => {
+  try {
+    return window.localStorage;
+  } catch (_) {
+    return null;
+  }
+})();
+let appsClosed = appsWereDismissed(appsStorage);
+// { language } it was drawn in, or null while it isn't drawn.
+let appsDrawn = null;
+
+function renderApps() {
+  const show = !appsClosed && !gateKind() && signedIn();
+  if (show && (!appsDrawn || appsDrawn.language !== drawnLanguage)) {
+    appsSlot.innerHTML = noticeHtml({ t, esc, icons, platform: platformOf(navigator) });
+    appsDrawn = { language: drawnLanguage };
+  }
+  if (appsSlot.hidden === !show) return;
+  appsSlot.hidden = !show;
+  placeToast();
+}
+
+function closeApps() {
+  appsClosed = true;
+  const had = appsSlot.contains(document.activeElement);
+  renderApps();
+  // The focus was on its close button: it goes on to the conversation's text, or the list's first control on a phone
+  // that shows the list.
+  const shown = (el) => el.offsetParent !== null;
+  if (had) ([...shell.querySelectorAll('.chat .ch-input')].find(shown) || [...shell.querySelectorAll('.sidebar button')].find(shown))?.focus({ preventScroll: true });
+}
+
+appsSlot.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-web-apps="dismiss"]')) return;
+  dismissApps(appsStorage);
+  closeApps();
+});
+// Closed in another tab of this browser.
+window.addEventListener('storage', (e) => {
+  if (e.key === DISMISSED_KEY && appsWereDismissed(appsStorage)) closeApps();
+});
+
 // ---------- the sidebar ----------
 
 function sidebarFoot(kind) {
@@ -463,6 +512,7 @@ function renderSidebar() {
   // Every chat state redraws the sidebar (chat.js redrawSide), also one that only says the engine failed after all:
   // the gate follows it here, or its spinner would stay.
   showGate(kind);
+  renderApps();
   main.innerHTML = (kind ? '<div class="ch-side-fill" aria-hidden="true"></div>' : chat.sidebarHtml()) + sidebarFoot(kind);
   followRoom();
   layout();
