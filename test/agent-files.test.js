@@ -1353,16 +1353,25 @@ async function waitFor(check, ms = 15000) {
 
 test('a PDF is read in a process of its own: a reader that hangs or takes ever more memory is ended, and the caller keeps working', { skip: process.platform !== 'win32' && 'counts processes the Windows way' }, async () => {
   const reader = new PdfReader({ timeout: 3000, rssMax: 400 * 1024 * 1024, reader: HOSTILE_READER });
-  let ticks = 0;
-  const tick = setInterval(() => ticks++, 20);
+  // The longest the caller's event loop went without a turn. Windows runs a 20 ms interval every 31 ms, and a busy
+  // runner later still, so a count of ticks says little; a reader stuck in this process would stop the loop for all
+  // of its time.
+  let last = Date.now();
+  let longest = 0;
+  const tick = setInterval(() => {
+    longest = Math.max(longest, Date.now() - last);
+    last = Date.now();
+  }, 20);
   try {
     let started = Date.now();
+    last = started;
     const hang = await reader.read(HANG);
     const took = Date.now() - started;
     assert.deepEqual(hang, { text: '', pages: 0, truncated: false, encrypted: false, failed: 'timeout' });
     assert.ok(took >= 2900 && took < 5000, `ended after ${took} ms`);
     // The caller's event loop kept turning while the reader was stuck.
-    assert.ok(ticks > took / 20 / 2, `${ticks} ticks in ${took} ms`);
+    longest = Math.max(longest, Date.now() - last);
+    assert.ok(longest < took / 2, `the event loop stood still for ${longest} ms of ${took} ms`);
     // Buffers outside V8's heap, and a heap that grows: the memory cap ends either long before the time limit.
     for (const what of ['BUFFERS', 'HEAP']) {
       started = Date.now();
@@ -1667,11 +1676,13 @@ test('a PDF an agent asks for while stalled loads hold both readers gets the bus
     assert.equal(r.content.length, 1, 'no file goes along with a refused read');
     assert.equal(r.structuredContent.note, `Rukoo is reading other PDFs for you and has no room for this one yet. Ask for it again once those reads are done, or open the file at local_path. ${context.FILE_DATA}`);
     assert.deepEqual([stalled.length, t.hub.pdf.running.size, t.hub.pdf.queue.length], [2, 2, 0], 'the stalled loads still hold the readers');
-    // The disk answers: the readers come free, and asking again gives the text.
+    // The disk answers: the readers come free, and asking again gives the text. This read starts a reader process,
+    // which a loaded runner can take longer than the two seconds above to start, so it gets Rukoo's own TIMEOUT.
     for (const go of stalled.splice(0)) go();
     await waitFor(() => t.hub.pdf.running.size === 0);
+    t.hub.pdf.opts.timeout = PDF_TIMEOUT;
     const again = await call(t.hub, a.id, 'read_chat_file', { file_id: a.files[0].id });
-    assert.equal(again.structuredContent.text, '<unsafe_content source="file" filename="a.pdf">\nReport a.pdf\n</unsafe_content>');
+    assert.equal(again.structuredContent.text, '<unsafe_content source="file" filename="a.pdf">\nReport a.pdf\n</unsafe_content>', again.structuredContent.note);
   } finally {
     for (const go of stalled.splice(0)) go();
     await t.done();

@@ -275,9 +275,11 @@ test('focus lists the workspaces again at most once a minute', async (t) => {
   // The selected workspace runs on focus, at most once per 5 seconds.
   await until(() => calls.some((c) => c.route.includes('/changes')), 3000, 'a run on focus');
   offset += 61000;
+  // The listing counts once its answer is in: the request is seen before it, and a nudge meanwhile joins it.
+  const listedAt = svc.listedAt;
   svc.setFocused(false);
   svc.setFocused(true);
-  await until(() => listings() === 1, 3000, 'a listing on focus a minute later');
+  await until(() => listings() === 1 && svc.listedAt > listedAt, 3000, 'a listing on focus a minute later');
   svc.setFocused(false);
   svc.setFocused(true);
   svc.nudge('resume');

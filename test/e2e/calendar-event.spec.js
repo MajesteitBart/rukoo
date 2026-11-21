@@ -1120,6 +1120,9 @@ test('the quick popover opens at its full height and stays, with its title, thro
   await expect(win.locator('.cal-quick:not(.measuring)')).toBeVisible();
   expect(await win.evaluate(() => window.__shown)).toEqual({ conflict: true });
   const saveButton = quick().locator('[data-quick="save"]');
+  // Measured during its pop-in (styles.css: 140 ms of scale), the popover's boxes are a fraction of a pixel short,
+  // which settledBox lets through on a slow runner.
+  await quick().evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished.catch(() => null))));
   const shown = await settledBox(saveButton);
   await win.waitForTimeout(600);
   expect(await saveButton.boundingBox()).toEqual(shown);
