@@ -8,20 +8,23 @@ import { escape, link } from './page.js';
 
 const RUKOO = 'https://rukoo.io';
 
+// The steps read as copy, install, then one of two cases. Copying comes first, and the install link opens in a new tab,
+// so following it never takes the invitation away (RUK-228).
 const TEXT = {
   en: {
     title: 'Invitation to team chat in Rukoo',
-    intro: (host) =>
-      `This link invites you into a team chat workspace on the Rukoo server at ${host}. The invitation is in the address in your browser's address bar, so keep this page open, or copy that address now.`,
+    intro: (host) => `This link invites you into a team chat workspace on the Rukoo server at ${host}.`,
     runBy: (op) => `This server is run by ${op}.`,
     unnamed: 'Whoever runs this server hasn’t filled in their name.',
     steps: 'How to join',
-    install: (rukoo) => `Install Rukoo from ${rukoo} and open it.`,
-    member:
-      'If you have a Rukoo account on this server: open Chat, choose Join with an invitation link, and paste the address of this page from the address bar.',
+    copy: ['Copy this page’s address', ' from your browser’s address bar. The invitation is in that address, so keep it until you have joined.'],
+    install: (rukoo) => `Install Rukoo from ${rukoo} and open it. The link opens in a new tab, so this page stays open.`,
+    then: 'Then, in Rukoo:',
+    member: 'If you have a Rukoo account on this server: open Chat, choose Join with an invitation link, and paste the address you copied.',
     newWithInvite:
-      'If you don’t: open Settings, Rukoo account, Create account, and paste the address of this page where it asks for an invite code. Chat then opens the invitation.',
-    newOpen: 'If you don’t: open Settings, Rukoo account, Create account, and make an account on this server. Then do step 2.',
+      'If you don’t: open Settings, Rukoo account, Create account, and paste the address you copied where it asks for an invite code. Chat then opens the invitation.',
+    newOpen:
+      'If you don’t: open Settings, Rukoo account, Create account, and make an account on this server. Then open Chat, choose Join with an invitation link, and paste the address you copied.',
     newClosed:
       'If you don’t: this server makes new accounts only with an invite code from whoever runs it. Ask the person who invited you.',
     newNone: 'If you don’t: this server doesn’t take new accounts. Ask the person who invited you.',
@@ -31,17 +34,18 @@ const TEXT = {
   },
   nl: {
     title: 'Uitnodiging voor teamchat in Rukoo',
-    intro: (host) =>
-      `Met deze link word je uitgenodigd voor een werkruimte met teamchat op de Rukoo-server op ${host}. De uitnodiging zit in het adres in de adresbalk van je browser. Laat deze pagina dus openstaan, of kopieer dat adres nu.`,
+    intro: (host) => `Met deze link word je uitgenodigd voor een werkruimte met teamchat op de Rukoo-server op ${host}.`,
     runBy: (op) => `Deze server wordt beheerd door ${op}.`,
     unnamed: 'De beheerder van deze server heeft geen naam ingevuld.',
     steps: 'Zo doe je mee',
-    install: (rukoo) => `Installeer Rukoo via ${rukoo} en open het.`,
-    member:
-      'Heb je een Rukoo-account op deze server? Open Chat, kies Deelnemen met een uitnodigingslink en plak het adres van deze pagina uit de adresbalk.',
+    copy: ['Kopieer het adres van deze pagina', ' uit de adresbalk van je browser. De uitnodiging zit in dat adres, dus bewaar het tot je in de werkruimte zit.'],
+    install: (rukoo) => `Installeer Rukoo via ${rukoo} en open het. De link opent in een nieuw tabblad, dus deze pagina blijft open.`,
+    then: 'Daarna, in Rukoo:',
+    member: 'Heb je een Rukoo-account op deze server? Open Chat, kies Deelnemen met een uitnodigingslink en plak het adres dat je kopieerde.',
     newWithInvite:
-      'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en plak het adres van deze pagina waar om een uitnodigingscode wordt gevraagd. Chat opent daarna de uitnodiging.',
-    newOpen: 'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en maak een account op deze server. Doe daarna stap 2.',
+      'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en plak het adres dat je kopieerde waar om een uitnodigingscode wordt gevraagd. Chat opent daarna de uitnodiging.',
+    newOpen:
+      'Heb je dat niet? Open Instellingen, Rukoo-account, Account maken, en maak een account op deze server. Open daarna Chat, kies Deelnemen met een uitnodigingslink en plak het adres dat je kopieerde.',
     newClosed:
       'Heb je dat niet? Deze server maakt alleen nieuwe accounts met een uitnodigingscode van de beheerder. Vraag het aan degene die je uitnodigde.',
     newNone: 'Heb je dat niet? Deze server neemt geen nieuwe accounts aan. Vraag het aan degene die je uitnodigde.',
@@ -63,6 +67,7 @@ export function joinPage({ operator, signups, host, inviteSignups }, lang = 'en'
         ? T.newNone
         : T.newClosed;
   const footer = operator.privacy ? `<p>${link(operator.privacy, T.privacy)}</p>` : '';
+  const install = `<a href="${escape(RUKOO)}" target="_blank" rel="noopener">rukoo.io</a>`;
   return `<!doctype html>
 <html lang="${lang}">
 <head>
@@ -83,10 +88,14 @@ h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 2rem; } a { color:
 
 <h2>${escape(T.steps)}</h2>
 <ol>
-<li>${T.install(link(RUKOO, 'rukoo.io'))}</li>
+<li><strong>${escape(T.copy[0])}</strong>${escape(T.copy[1])}</li>
+<li>${T.install(install)}</li>
+</ol>
+<p>${escape(T.then)}</p>
+<ul>
 <li>${escape(T.member)}</li>
 <li>${escape(newcomer)}</li>
-</ol>
+</ul>
 <p>${escape(T.expiry)}</p>
 ${footer}
 </body>

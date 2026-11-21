@@ -9,5 +9,14 @@
 /download/deb         https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-amd64.deb   302
 /download/appimage    https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Mail-2.1.0-x86_64.AppImage   302
 /download/android     https://github.com/MajesteitBart/rukoo/releases/download/v2.1.0/Rukoo-Android-0.4.0.apk   302
+# Rukoo Voice has releases of its own (voice-v<version>), so its downloads point at that tag.
+/download/voice-installer   https://github.com/MajesteitBart/rukoo/releases/download/voice-v0.2.0/Rukoo-Voice-Setup-0.2.0.exe   302
+/download/voice-portable    https://github.com/MajesteitBart/rukoo/releases/download/voice-v0.2.0/Rukoo-Voice-Portable-0.2.0.zip   302
+/download/voice-mac-dmg     https://github.com/MajesteitBart/rukoo/releases/download/voice-v0.2.0/Rukoo-Voice-0.2.0-arm64.dmg   302
+/download/voice-mac-zip     https://github.com/MajesteitBart/rukoo/releases/download/voice-v0.2.0/Rukoo-Voice-0.2.0-arm64.zip   302
+/download/voice-release     https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.2.0   302
 /releases             https://github.com/MajesteitBart/rukoo/releases/latest   302
 /github               https://github.com/MajesteitBart/rukoo   302
+# Sign-in and sign-up both happen in the browser app at /app.
+/login                /app   302
+/signup               /app   302

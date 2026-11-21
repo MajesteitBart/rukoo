@@ -262,9 +262,9 @@ export function bookingAliases(env) {
 }
 
 // BOOKING_FORMER_ROOTS: addresses whose root held the booking pages before BOOKING_ORIGIN did, comma-separated origins
-// (https://rukoo.io, before https://meet.rukoo.io). Reads there redirect to the same path under BOOKING_ORIGIN; the
-// rest is still answered there (index.js), and their links still name the same pages. Without a BOOKING_ORIGIN there
-// is nowhere to move to, so there are none.
+// (https://rukoo.io, before https://meet.rukoo.io). Reads of the pages' addresses there redirect to the same path under
+// BOOKING_ORIGIN, and other reads get a 404 page of their own (lost.js); the rest is still answered there (index.js),
+// and their links still name the same pages. Without a BOOKING_ORIGIN there is nowhere to move to, so there are none.
 export function bookingFormerRoots(env) {
   const root = bookingRoot(env);
   if (!root) return new Set();

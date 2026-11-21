@@ -80,8 +80,9 @@
     // Addresses booking pages used to live at, comma-separated origins: MCP takes their /meet/<handle> links as the
     // same pages.
     "BOOKING_ALIASES": "",
-    // Addresses whose root held the booking pages before BOOKING_ORIGIN, comma-separated origins: their paths redirect
-    // to BOOKING_ORIGIN (apart from /, /privacy and the account API), and links to them name the same pages.
+    // Addresses whose root held the booking pages before BOOKING_ORIGIN, comma-separated origins: the pages' paths there
+    // redirect to BOOKING_ORIGIN, other paths answer a 404 page (apart from /, /privacy and the account API), and links
+    // to them name the same pages.
     "BOOKING_FORMER_ROOTS": "",
     // Handles taken down by the operator, comma-separated: they answer 404 and can't be claimed.
     "BLOCKED_HANDLES": "",
@@ -217,7 +218,7 @@
         // Booking pages, /mcp and /llms.txt live at the root of meet.rukoo.io.
         "BOOKING_ORIGIN": "https://meet.rukoo.io",
         // Where the pages lived before: /meet on the old address, and the root of rukoo.io. Both redirect, and MCP takes
-        // their links as the same pages.
+        // their links as the same pages. A path on rukoo.io that names no booking page gets rukoo.io's 404 instead.
         "BOOKING_ALIASES": "https://rukoo-account.bvdm.ai",
         "BOOKING_FORMER_ROOTS": "https://rukoo.io",
         "BLOCKED_HANDLES": "",

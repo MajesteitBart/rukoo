@@ -397,7 +397,8 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
   const now = (method, path, options = {}) => call(method, path, { vars: MOVED, origin: BOOKING, ...options });
 
   it('redirects reads to the same path under BOOKING_ORIGIN', async () => {
-    const handle = 'bart-example';
+    // A page people open redirects while its handle has a page; the other routes redirect for any handle.
+    const { handle } = await host(signup);
     const cases = [
       ['GET', `/${handle}?lang=nl&tz=Europe/Amsterdam`, `${BOOKING}/${handle}?lang=nl&tz=Europe/Amsterdam`],
       ['HEAD', `/${handle}/30min?slot=2026-11-03T09:00Z`, `${BOOKING}/${handle}/30min?slot=2026-11-03T09:00Z`],
@@ -430,6 +431,49 @@ describe('a former root of the pages, in BOOKING_FORMER_ROOTS', () => {
     expect((await was('POST', '/v1/login', { body: {} })).status).not.toBe(301);
     // Without the setting the old address is just another address of the server.
     expect((await call('GET', `/${handle}`, { vars: VARS, origin: WAS })).status).toBe(404);
+  });
+
+  it('answers its own 404 page for an address that names no booking page, as rukoo.io does', async () => {
+    const { handle } = await host(signup);
+    // A handle nobody has, one that can't be a handle (reserved, or not in the handle's form) and a blocked one.
+    const blocked = { ...MOVED, BLOCKED_HANDLES: handle };
+    const cases = [
+      ['/nobody-has-this', MOVED],
+      ['/nobody-has-this/30min', MOVED],
+      ['/pricing', MOVED],
+      ['/login', MOVED],
+      ['/download/voice', MOVED],
+      ['/wp-login.php', MOVED],
+      [`/${handle}`, blocked]
+    ];
+    for (const [path, vars] of cases) {
+      const res = await call('GET', path, { vars, origin: WAS });
+      expect(res.status, path).toBe(404);
+      expect(res.headers.get('location'), path).toBe(null);
+      expect(res.headers.get('content-type'), path).toBe('text/html; charset=utf-8');
+      expect(res.headers.get('x-robots-tag'), path).toBe('noindex');
+      expect(res.headers.get('cache-control'), path).toBe('no-store');
+      expect(res.headers.get('content-security-policy'), path).toBe(
+        "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      );
+      expect(res.text, path).toContain('<title>Wrong address | Rukoo</title>');
+      expect(res.text, path).toContain('This pigeon has the wrong address.');
+      expect(res.text, path).toContain('Those are at booking.example/<i>name</i>.');
+      expect(res.text, path).toContain('<a class="btn" href="/">Back to the home page</a>');
+      expect(res.text, path).toContain("src:url('/assets/fonts/inter-latin-opsz-normal.woff2')");
+      expect(res.text, path).not.toMatch(/<script|<form|<img|<iframe/i);
+    }
+    const head = await was('HEAD', '/nobody-has-this');
+    expect([head.status, head.text]).toEqual([404, '']);
+    // The page itself still redirects, and so do the JSON routes of a handle without a page: they answer for
+    // themselves at BOOKING_ORIGIN, in JSON.
+    expect((await was('GET', `/${handle}`)).headers.get('location')).toBe(`${BOOKING}/${handle}`);
+    const api = await was('GET', '/nobody-has-this/api/slots');
+    expect([api.status, api.headers.get('location')]).toEqual([301, `${BOOKING}/nobody-has-this/api/slots`]);
+    // The booking address answers its own paths, as before.
+    const there = await now('GET', '/nobody-has-this');
+    expect(there.status).toBe(404);
+    expect(there.text).not.toContain('This pigeon has the wrong address.');
   });
 
   it('still answers posts, MCP and keyed reads there, with the new addresses in the answers', async () => {

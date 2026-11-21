@@ -368,6 +368,15 @@
       720
     ]
   },
+  "v2.4.0-1-a-channel-with-a-thread-open": {
+    "w": 2480,
+    "h": 1560,
+    "widths": [
+      2480,
+      1440,
+      720
+    ]
+  },
   "voice-v0.1.0-1-voice-pill-while-recording": {
     "w": 1532,
     "h": 400,

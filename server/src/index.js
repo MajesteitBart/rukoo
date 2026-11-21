@@ -15,12 +15,16 @@ import {
   ACCOUNT_NAME,
   accountName,
   accountObject,
+  blockedHandles,
   bookingFormerRoots,
+  bookingObject,
   bookingRoot,
+  bookingTimes,
   checkConfig,
   config,
   expiryDays,
   filesStorage,
+  fontDir,
   limitRate,
   positive,
   previewsOn,
@@ -35,11 +39,13 @@ import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { joinPage } from './join.js';
 import { guarded } from './lock.js';
+import { lostPage } from './lost.js';
 import { meet } from './meet.js';
 import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
 import { DOMAIN_LIMIT, checkAlert, registrableDomain, untilTomorrow, verifiedSignup } from './signups.js';
+import { isPage } from './web.js';
 import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
@@ -131,9 +137,13 @@ async function handle(request, env, ctx) {
   // A form's post and the manage page it leads to stay on the form's own origin (form-action 'self' covers the whole
   // navigation), and clients drop the Authorization header on a redirect to another origin. That page loads the
   // script, icons and fonts from here too, under its own CSP.
+  // Only the pages' own addresses redirect: a read that names no booking page gets this address's own 404 (lost.js),
+  // as on rukoo.io, where the website is the root and a made-up path shouldn't end at the booking pages' 404.
   if (root && !account && bookingFormerRoots(env).has(url.origin)) {
     const here = !reading || request.headers.has('authorization') || MANAGE_PATH.test(path) || PAGE_ASSET.test(path);
-    return here ? meet(request, env, url) : toRoot(request, root, url, path);
+    if (here) return meet(request, env, url);
+    if (await movedBookingPath(env, method, path)) return toRoot(request, root, url, path);
+    return lostPage({ bookingHost: new URL(root).host, fonts: fontDir(env, url) }, method);
   }
   if (!account) throw notFound();
 
@@ -480,6 +490,20 @@ const MANAGE_PATH = /^\/[^/]+\/booking\/[^/]+$/;
 const ROOT_FILE = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.png)$/;
 // The pages' own script, icons and fonts at the root.
 const PAGE_ASSET = /^\/(?:booker\.js|favicon\.ico|favicon\.svg|apple-touch-icon\.png|assets\/fonts\/[^/]+)$/;
+
+// Whether a read on a former root is an address of the booking pages, which moved to BOOKING_ORIGIN: /mcp, /llms.txt,
+// a page's JSON routes, llms.txt and calendar files (they answer their own 404 there, in JSON), and a page people open,
+// /<handle> or /<handle>/<type>, while that handle has a page or moved to another. A handle that can't be one, or that
+// has no page, isn't.
+async function movedBookingPath(env, method, path) {
+  if (path === '/mcp' || path === '/llms.txt') return true;
+  const match = path.match(/^\/([^/]+)(\/.*)?$/);
+  if (!match || input.handleCheck(match[1], blockedHandles(env), true)) return false;
+  const rest = match[2] ?? '';
+  if (!isPage(method, rest)) return true;
+  const view = await bookingObject(env, match[1]).view(bookingTimes(env));
+  return view.state !== 'none';
+}
 
 function toRoot(request, root, url, rest = url.pathname.slice('/meet'.length)) {
   const file = url.pathname.slice('/meet/assets'.length);

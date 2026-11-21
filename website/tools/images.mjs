@@ -24,6 +24,9 @@ const jobs = [
   ['book-settings', 'story/settings-booking-top.png', [840, 40, 1500, 1400], [1500, 750]],
   ['book-event', 'story/arrival-agent-card.png', [2072, 828, 736, 964], [736, 368]],
   ['phone-agent', 'story/android-agent.png', null, [1300, 650]],
+  // Team chat in the desktop app, 2480x1560: the real account server with sample people and messages, captured with
+  // the chat end-to-end helpers (test/e2e/chat-helpers.js) at twice the window size.
+  ['chat', 'story/team-chat-thread.png', null, [2400, 1200]],
 ];
 
 const sizes = {};

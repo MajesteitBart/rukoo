@@ -8,16 +8,21 @@ The latest release is [2.4.0](https://github.com/MajesteitBart/rukoo/releases/ta
 
 ## Install
 
-Download Rukoo from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases/latest).
+Start in the browser, then add the apps you need, in this order. [rukoo.io](https://rukoo.io/#start) has the same steps with download buttons.
 
-| Platform | Status | Download |
-| --- | --- | --- |
-| Windows 10 and 11, x64 | Supported | `Rukoo-Mail-Setup-<version>.exe`, or the portable `.exe` |
-| Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions |
-| macOS 13 or newer | Experimental | DMG or ZIP, `arm64` for Apple Silicon or `x64` for Intel |
-| Android 12 or newer | Experimental | `Rukoo-Android-<version>.apk`, built for the Galaxy Z Fold7 |
+1. **The browser.** Sign in at [rukoo.io/app](https://rukoo.io/app) to use team chat without installing anything.
+2. **The desktop app**, for mail, calendar and meetings, with team chat beside them. Download it from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases/latest):
 
-Rukoo Voice, the companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` for Windows from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. A newer `voice-v` release can also carry `Rukoo-Voice-<version>-arm64.dmg` for Apple Silicon Macs; 0.1.0 has Windows packages only. Meetings need it next to Rukoo: Voice 0.2.0 needs Rukoo 2.4.0 or newer, and Voice 0.1.0 works with Rukoo 2.2.0 or newer.
+   | Platform | Status | Download |
+   | --- | --- | --- |
+   | Windows 10 and 11, x64 | Supported | `Rukoo-Mail-Setup-<version>.exe`, or the portable `.exe` |
+   | Linux, x64 | Supported | `.deb` for Ubuntu and Debian, AppImage for other distributions |
+   | macOS 13 or newer | Experimental | DMG or ZIP, `arm64` for Apple Silicon or `x64` for Intel |
+
+3. **The phone.** `Rukoo-Android-<version>.apk` from the same release, for Android 12 or newer. It's experimental and built for the Galaxy Z Fold7.
+4. **Rukoo Voice**, the companion app for dictation and meeting recording. It has releases of its own: [Rukoo Voice 0.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.2.0) has `Rukoo-Voice-Setup-0.2.0.exe` and a portable ZIP for Windows, and a DMG and a ZIP for Apple Silicon Macs with macOS 15 or newer. Meetings need it next to Rukoo: Voice 0.2.0 needs Rukoo 2.4.0 or newer, and Voice 0.1.0 works with Rukoo 2.2.0 or newer.
+
+Team chat needs a Rukoo account on a server that runs it. The apps are free and MIT licensed. Workspaces hosted on rukoo.io are part of Rukoo Cloud, which is in early access: [rukoo.io/pricing](https://rukoo.io/pricing) has the price. You can also run the server on your own Cloudflare account, as [server/README.md](server/README.md) describes.
 
 The builds aren't signed yet, so Windows SmartScreen warns before the first start: choose "More info", then "Run anyway". `SHA256SUMS.txt` in each release has the checksums of the desktop packages, and the release notes give the APK's.
 

@@ -204,9 +204,17 @@ describe('the join page', () => {
     expect(res.text).toContain('<html lang="en">');
     expect(res.text).toContain('team chat workspace on the Rukoo server at accounts.example');
     expect(res.text).toContain('<a href="https://sync.example">Example &lt;Sync&gt;</a>');
-    expect(res.text).toContain('<a href="https://rukoo.io">rukoo.io</a>');
-    expect(res.text).toContain('choose Join with an invitation link, and paste the address of this page');
-    expect(res.text).toContain('paste the address of this page where it asks for an invite code. Chat then opens the invitation.');
+    // Copying the address comes first, and the install link opens in a new tab, so following it keeps the invitation in
+    // view (RUK-228). Then the two cases, as cases rather than numbered steps.
+    expect(res.text).toContain('<a href="https://rukoo.io" target="_blank" rel="noopener">rukoo.io</a>');
+    const steps = res.text.match(/<ol>([\s\S]*?)<\/ol>/)[1];
+    expect(steps.match(/<li>/g)).toHaveLength(2);
+    expect(steps.indexOf('Copy this page’s address')).toBeGreaterThan(-1);
+    expect(steps.indexOf('Copy this page’s address')).toBeLessThan(steps.indexOf('Install Rukoo from'));
+    expect(steps).toContain('The link opens in a new tab, so this page stays open.');
+    const cases = res.text.match(/<ul>([\s\S]*?)<\/ul>/)[1];
+    expect(cases).toContain('If you have a Rukoo account on this server: open Chat, choose Join with an invitation link, and paste the address you copied.');
+    expect(cases).toContain('paste the address you copied where it asks for an invite code. Chat then opens the invitation.');
     expect(res.text).toContain('after one day unless the person who invited you chose another time.');
     expect(res.text).not.toMatch(/<script|<form|<img|<iframe|src=/i);
     // No language switch: a link would leave the invitation in the fragment behind.
@@ -220,7 +228,10 @@ describe('the join page', () => {
     expect(res.text).toContain('<html lang="nl">');
     expect(res.text).toContain('Uitnodiging voor teamchat in Rukoo');
     expect(res.text).toContain('kies Deelnemen met een uitnodigingslink');
-    expect(res.text).toContain('Laat deze pagina dus openstaan, of kopieer dat adres nu.');
+    expect(res.text).toContain('<strong>Kopieer het adres van deze pagina</strong> uit de adresbalk van je browser.');
+    expect(res.text).toContain('De link opent in een nieuw tabblad, dus deze pagina blijft open.');
+    expect(res.text).toContain('<a href="https://rukoo.io" target="_blank" rel="noopener">rukoo.io</a>');
+    expect(res.text).toContain('plak het adres dat je kopieerde');
     expect(res.text).toContain('na één dag als degene die je uitnodigde niets anders koos.');
     expect((await call('GET', '/join?lang=nl', { vars: ON })).text).toContain('<html lang="nl">');
   });
@@ -234,7 +245,10 @@ describe('the join page', () => {
     expect(closed).toContain('this server doesn’t take new accounts. Ask the person who invited you.');
     expect(closed).not.toContain('invite code from whoever runs it');
     expect(await text({ SIGNUPS: 'closed' }, 'nl')).toContain('Deze server neemt geen nieuwe accounts aan.');
-    expect(await text({ SIGNUPS: 'open' })).toContain('make an account on this server. Then do step 2.');
+    expect(await text({ SIGNUPS: 'open' })).toContain(
+      'make an account on this server. Then open Chat, choose Join with an invitation link, and paste the address you copied.'
+    );
+    expect(await text({ SIGNUPS: 'open' }, 'nl')).toContain('Open daarna Chat, kies Deelnemen met een uitnodigingslink');
   });
 
   it('answers HEAD without a body, and nothing while team chat is off', async () => {
@@ -262,12 +276,12 @@ describe('the join page', () => {
   });
 
   it('leaves /join to the booking pages while team chat is off', async () => {
-    // A former booking root still sends it on to BOOKING_ORIGIN, where a page made under the handle join before the
-    // handle was reserved would answer.
+    // A former booking root sends it on to BOOKING_ORIGIN only while a page made under the handle join before the
+    // handle was reserved has it (the next test). Without one, it names no page, and the address answers its own 404.
     const vars = { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://meet.example', BOOKING_FORMER_ROOTS: 'https://accounts.example' };
-    const moved = await call('GET', '/join', { vars });
-    expect(moved.status).toBe(301);
-    expect(moved.headers.get('location')).toBe('https://meet.example/join');
+    const lost = await call('GET', '/join', { vars });
+    expect(lost.status).toBe(404);
+    expect(lost.text).toContain('This pigeon has the wrong address.');
     // At BOOKING_ORIGIN's root it is a booking page's path; there is no page join here, so the booking pages say so.
     const atRoot = await call('GET', '/join', { vars: { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://accounts.example' } });
     expect(atRoot.status).toBe(404);
@@ -295,6 +309,11 @@ describe('the join page', () => {
     expect(again.status, again.text).toBe(200);
     expect((await call('GET', '/v1/booking/handles/join', { token: holder.token })).body).toMatchObject({ available: false, reason: 'yours' });
     expect((await call('GET', '/meet/join')).status).toBe(200);
+    // A former root of the pages sends /join on to them while team chat is off, as the page has it.
+    const was = { WORKSPACE_MODE: 'off', BOOKING_ORIGIN: 'https://meet.example', BOOKING_FORMER_ROOTS: 'https://accounts.example' };
+    const moved = await call('GET', '/join', { vars: was });
+    expect(moved.status).toBe(301);
+    expect(moved.headers.get('location')).toBe('https://meet.example/join');
     // Anyone else hears that it is reserved, from the check and from a publish.
     const other = await signup();
     expect((await call('GET', '/v1/booking/handles/join', { token: other.token })).body).toMatchObject({ available: false, reason: 'reserved' });
