@@ -2,6 +2,7 @@
 // Every Durable Object namespace goes through the configured jurisdiction: an object is found per jurisdiction, so
 // one looked up without it would seem not to exist.
 
+import { fileStore } from './filestore.js';
 import { HttpError } from './input.js';
 
 export const JURISDICTIONS = ['eu', 'us', 'fedramp'];
@@ -97,9 +98,21 @@ export function workspaceOrigin(env) {
   return originOf(text(env.WORKSPACE_ORIGIN));
 }
 
-// Files in team chat need their bucket. A server deployed without the WORKSPACE_FILES binding has no files, and says so.
+// Files in team chat need a store: the WORKSPACE_FILES bucket, or an S3-compatible one (filestore.js). A server
+// deployed with neither has no files, and says so.
 export function filesOn(env) {
-  return Boolean(env.WORKSPACE_FILES);
+  return fileStore(env) !== null;
+}
+
+// Which store holds the files, for the privacy statement (privacy.js): null without one, { store: 'r2' } for the
+// WORKSPACE_FILES bucket, else { store: 's3', provider, place }. provider is WORKSPACE_FILES_S3_PROVIDER, the company or
+// service that keeps the files, such as "UpCloud", and place is WORKSPACE_FILES_S3_PLACE, where it keeps them, such as
+// "Frankfurt am Main". Either may be null. Neither decides whether files are on.
+export function filesStorage(env) {
+  const store = fileStore(env);
+  if (!store) return null;
+  if (store.kind === 'r2') return { store: 'r2' };
+  return { store: 's3', provider: text(env.WORKSPACE_FILES_S3_PROVIDER), place: text(env.WORKSPACE_FILES_S3_PLACE) };
 }
 
 // The origin upload and download links point at: WORKSPACE_FILES_ORIGIN, routed to this Worker by the operator, else the

@@ -11,6 +11,7 @@
 // server past these rules.
 
 import { filesOn, ownHosts, previewHosts, previewsOn, workspaceObject } from './config.js';
+import { fileStore } from './filestore.js';
 
 const MOST = 3;
 // The longest address a card names, in UTF-16 code units, as the apps measure it: a card's url is the address as
@@ -225,9 +226,10 @@ export async function unfurl(env, ids, addresses, rules) {
   if (!previews.length && !discard.length) return;
   const result = await stub.publishPreviews(ids.conversation, ids.message, previews, discard);
   // The workspace went while the cards were made: nobody else will delete their images.
-  if (result?.gone && env.WORKSPACE_FILES) {
+  const store = fileStore(env);
+  if (result?.gone && store) {
     const keys = [...discard, ...previews.map((p) => p.image).filter(Boolean)].map((image) => image.key);
-    if (keys.length) await env.WORKSPACE_FILES.delete(keys).catch(() => {});
+    if (keys.length) await store.delete(keys).catch(() => {});
   }
 }
 
@@ -324,8 +326,8 @@ async function readMeta(response) {
   return meta;
 }
 
-// A card's image: fetched by the same rules, 2 MiB at most, PNG, JPEG, GIF or WebP, and written to the bucket under a
-// key the workspace recorded first. null when there is no room for it or it isn't one of those.
+// A card's image: fetched by the same rules, 2 MiB at most, PNG, JPEG, GIF or WebP, and written to the file store under
+// a key the workspace recorded first. null when there is no room for it or it isn't one of those.
 async function storeImage(env, stub, ids, at, rules, deadline, discard) {
   const got = await fetchChecked(at, rules, AbortSignal.any([deadline, AbortSignal.timeout(PAGE_TIME)]), Object.keys(IMAGES).join(','));
   if (!got) return null;
@@ -343,7 +345,7 @@ async function storeImage(env, stub, ids, at, rules, deadline, discard) {
   const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
   const image = { key, type: info.type, ext: IMAGES[info.type], size: bytes.length, sha256, width: info.width, height: info.height };
   try {
-    await env.WORKSPACE_FILES.put(key, bytes, { sha256, httpMetadata: { contentType: info.type }, customMetadata: { name: `preview.${image.ext}` } });
+    await fileStore(env).put(key, bytes, { size: bytes.length, sha256, contentType: info.type, name: `preview.${image.ext}` });
   } catch {
     discard.push({ key, size: bytes.length });
     return null;

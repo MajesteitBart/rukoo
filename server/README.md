@@ -208,12 +208,12 @@ Then try it: paste a page into an assistant and ask for the open times, and fetc
 
 Team chat lets the people with an account on your server make workspaces, invite others into them and talk in channels. It is being built in steps: the server side of text channels and direct messages is here. The desktop app and Rukoo for Android have Chat, which shows when the server has team chat on. [WORKSPACES.md](WORKSPACES.md#gate-1-routes) lists what the server answers, and [the architecture](../docs/workspace-architecture.md) what is planned.
 
-**You can read it.** A workspace's messages and files are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them. The records accounts sync stay encrypted as before. The statement at `/privacy` covers team chat while it is on, with the retention you set; if you use your own with `PRIVACY_URL`, say so there before you turn it on.
+**You can read it.** A workspace's messages and files are stored as they were written. Whoever runs the server, and Cloudflare under it, can read and change them, and so can the S3-compatible service when files are stored there. The records accounts sync stay encrypted as before. The statement at `/privacy` covers team chat while it is on, with the retention you set; if you use your own with `PRIVACY_URL`, say so there before you turn it on.
 
 What `wrangler.jsonc` already sets up:
 
 - **`WORKSPACES`**, a Durable Object binding with one object per workspace, holding its members, channels and messages in its own SQLite database. The `v4` migration (`new_sqlite_classes: ["Workspace"]`) creates the class.
-- **`WORKSPACE_FILES`**, commented out: the R2 bucket for files in messages. See "Files need a bucket" below.
+- **`WORKSPACE_FILES`**, commented out: the R2 bucket for files in messages. An S3-compatible bucket can take its place. See "Files need a bucket" below.
 
 The settings in `vars`:
 
@@ -235,14 +235,67 @@ The settings in `vars`:
 | `WORKSPACE_PREVIEWS` | `on` or `off`. With `on`, the server fetches up to three web addresses in a message and adds a link card with the page's title, description and image. Your server fetches the page, so the site sees your server's address and never a member's. It refuses local and private addresses and your server's own. On by default. |
 | `WORKSPACE_FILES_ORIGIN` | A separate address for upload and download links, such as `https://files.example.org`, routed to this Worker as a custom domain or route. Empty means links use the workspace's own address. |
 | `WORKSPACE_PREVIEW_HOSTS` | For tests only: `host:port` pairs that link cards may fetch although they are local. Leave it empty. |
+| `WORKSPACE_FILES_S3_ENDPOINT`, `WORKSPACE_FILES_S3_REGION`, `WORKSPACE_FILES_S3_BUCKET` | An S3-compatible bucket for files instead of R2, with two secrets. Empty by default. See "Files in an S3-compatible bucket" below. |
+| `WORKSPACE_FILES_S3_PROVIDER`, `WORKSPACE_FILES_S3_PLACE` | Who keeps the files of an S3 store and where, as the statement at `/privacy` names them. Empty by default. See "Files in an S3-compatible bucket" below. |
 
-**Files need a bucket.** People send files and images in chat only when the Worker has a private R2 bucket bound as `WORKSPACE_FILES`. `wrangler.jsonc` has that binding commented out, so a deploy without a bucket keeps working: the server then lists no `files` capability, every file route answers `403 files_off`, and the apps hide Attach, drag and drop and pasting files. Reactions, marking unread and link cards work without a bucket, but link cards then come without their image. To turn files on, make the bucket in the jurisdiction of your accounts and remove the comment marks around `r2_buckets`, with the same `jurisdiction`:
+**Files need a bucket.** People send files and images in chat only when the Worker has a private bucket for them: an R2 bucket bound as `WORKSPACE_FILES`, or a bucket in an S3-compatible service named by the five `WORKSPACE_FILES_S3_*` settings (see "Files in an S3-compatible bucket" below). `wrangler.jsonc` has the R2 binding commented out and the S3 settings empty, so a deploy without a bucket keeps working: the server then lists no `files` capability, every file route answers `403 files_off`, and the apps hide Attach, drag and drop and pasting files. Reactions, marking unread and link cards work without a bucket, but link cards then come without their image. To turn files on with R2, make the bucket in the jurisdiction of your accounts and remove the comment marks around `r2_buckets`, with the same `jurisdiction`:
 
 ```bash
 npx wrangler r2 bucket create rukoo-workspace-files --jurisdiction eu
 ```
 
-Leave the bucket private, without a public bucket address. Devices upload through this Worker, which streams each file into the bucket with the exact size and SHA-256 the device declared, and download with a link the Worker signs, valid for 60 seconds. Files of a removed message and of messages retention removes are deleted from the bucket by the workspace's alarm, usually within a minute. Deleting a workspace deletes its files first, while the workspace stays as it is; when the bucket fails or a file is still being uploaded, the workspace stays and its owner can try again. R2 bills storage and operations separately from Workers ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
+Leave the bucket private, without a public bucket address. Devices upload through this Worker, which streams each file into the bucket with the exact size and SHA-256 the device declared, and download with a link the Worker signs, valid for 60 seconds. Files of a removed message and of messages retention removes are deleted from the bucket by the workspace's alarm, usually within a minute. Deleting a workspace deletes its files first, while the workspace stays as it is; when the bucket fails, a file is still being uploaded or failed to upload in the last five minutes, or the server has lost its file store while the workspace still has files in the bucket, the workspace stays and its owner can try again. R2 bills storage and operations separately from Workers ([R2 pricing](https://developers.cloudflare.com/r2/pricing/)).
+
+**Files in an S3-compatible bucket.** Instead of R2, the files can live in a bucket of any service that speaks the S3 API, such as UpCloud Managed Object Storage, MinIO or AWS S3. The Worker signs each request with AWS Signature Version 4 and uses path-style addresses (`<endpoint>/<bucket>/<key>`). Devices still upload and download only through this Worker, with the same signed links, so the bucket stays private and needs no CORS rules or public address. It takes five settings:
+
+| Setting | Kind | What it is |
+|---|---|---|
+| `WORKSPACE_FILES_S3_ENDPOINT` | var | The service's `https://` address, without the bucket, such as `https://<name>.upcloudobjects.com`. |
+| `WORKSPACE_FILES_S3_REGION` | var | The region the service signs with, such as `europe-2`. |
+| `WORKSPACE_FILES_S3_BUCKET` | var | The bucket's name. |
+| `WORKSPACE_FILES_S3_ACCESS_KEY_ID` | secret | The access key's ID. |
+| `WORKSPACE_FILES_S3_SECRET_ACCESS_KEY` | secret | The access key's secret. |
+
+Two more vars say who keeps the files and where. The statement at `/privacy` names them in its section on where data is kept and in its paragraph on files, which says that this company keeps the files on your behalf under its data processing terms and can read them, and that they pass through Cloudflare on their way. Neither turns files on or off. If you run the S3 service yourself, leave both empty: the statement then names no company and no data processing terms.
+
+| Setting | Kind | What it is |
+|---|---|---|
+| `WORKSPACE_FILES_S3_PROVIDER` | var | The company or service that keeps the files, such as `UpCloud`. |
+| `WORKSPACE_FILES_S3_PLACE` | var | Where it keeps them, such as `Frankfurt am Main`. |
+
+With both set, the statement says the files are kept "in private storage at UpCloud in Frankfurt am Main" and that UpCloud keeps them under its data processing terms. With either one empty, it names neither, says "the S3-compatible service this server uses" instead and leaves out the data processing terms. With R2, the statement names Cloudflare R2 and ignores both.
+
+Use a bucket that has never had versioning turned on. On a versioned bucket a delete without a version ID, which is the only kind the Worker sends, adds a delete marker and keeps the object as an older version. The files of removed messages and deleted workspaces would then stay in the bucket, and the statement at `/privacy` would be wrong where it says they are deleted from storage. To check, ask the bucket for its versioning state, with `aws s3api get-bucket-versioning --bucket <bucket> --endpoint-url <endpoint>` (the S3 call GetBucketVersioning) or in the provider's console: a bucket that never had versioning answers without a `Status`. `Enabled` or `Suspended` means it has or had versioning, and then the old versions of every object it held stay until you delete them; use a new bucket instead.
+
+Give the key access to this one bucket and nothing else: `s3:ListBucket` on the bucket, and `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on its objects. Services that take IAM-style policies, UpCloud's among them, express that as:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": ["arn:aws:s3:::rukoo-workspace-files"] },
+    { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": ["arn:aws:s3:::rukoo-workspace-files/*"] }
+  ]
+}
+```
+
+With UpCloud, for example:
+
+1. In the UpCloud control panel, create a Managed Object Storage instance in the region you want, such as `europe-2` (Frankfurt), and a bucket in it, here `rukoo-workspace-files`. Leave public access and versioning off.
+2. Create a user for the server, attach a policy like the one above, and create an access key for that user.
+3. Put the instance's public S3 address, the region and the bucket name in the three vars in `wrangler.jsonc` (in `vars`, or in your environment's `vars`), and leave `r2_buckets` commented out. For `/privacy`, set `WORKSPACE_FILES_S3_PROVIDER` to `UpCloud` and `WORKSPACE_FILES_S3_PLACE` to the city of the region's data centre, such as `Frankfurt am Main` for `europe-2`.
+4. Set the key as two secrets, so it never appears in `wrangler.jsonc`:
+
+   ```bash
+   npx wrangler secret put WORKSPACE_FILES_S3_ACCESS_KEY_ID
+   npx wrangler secret put WORKSPACE_FILES_S3_SECRET_ACCESS_KEY
+   ```
+
+5. Deploy. Once `WORKSPACE_MODE` is on, check that `GET /v1/info` lists the `files` capability; while it is off, `/v1/info` says nothing about workspaces, so check the bucket and key with the script below.
+
+To check a bucket and key before you deploy, run `node scripts/s3-live-check.mjs` with the five settings in your environment. It starts a local Worker on `127.0.0.1` with wrangler, writes a few small objects under `live-check/<random>/`, checks an upload with the right SHA-256 and one with a wrong one, a download, a listing over several pages and the deletes, removes what it wrote and prints pass or fail per step.
+
+When `WORKSPACE_FILES` is bound as well, R2 wins and the S3 settings are ignored. With only some of the five settings, files stay off and, once team chat is on, the Worker logs one error per instance that names the missing settings, never their values. An S3 store checks an upload's SHA-256 twice: the service checks the `x-amz-content-sha256` it was sent, and the Worker hashes the bytes as they pass and deletes an object that doesn't match. S3 deletes one object per request, so the trash goes 40 keys at a time, eight requests at once, which keeps each alarm within the 50 subrequests a Worker on the Free plan may make, and deleting a workspace lists and deletes its files 40 at a time. Deleting a workspace makes one request per file plus one per page of 40, all in the owner's one request, so a workspace with more files than the Workers limit on subrequests allows runs into it: it then answers 503, the files deleted so far stay deleted, and the next try goes on from there. On the Free plan that limit is 50, so each try deletes a little under 50 files, and a workspace with 500 files takes about a dozen tries.
 
 Anyone with an account on your server can make a workspace, within those limits, so invite codes for sign-up are also what decides who can. A workspace's owners and admins invite the others, who need an account on your server too. A new member also gets the workspace's first open channel, normally `general`. An owner who is the only one left in a workspace can delete it.
 
@@ -308,7 +361,7 @@ Run the tests with:
 npm test
 ```
 
-They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. They bind a local files bucket themselves, and serve the pages link cards are made of from `test/fixtures/preview-pages.cjs` on `127.0.0.1`. `npm run dev` has no files bucket unless you uncomment `r2_buckets` in `wrangler.jsonc`, which then uses a local one in `.wrangler/`. To check that the server bundles without deploying it:
+They run against the real Worker and Durable Object in the local Workers runtime and don't need a Cloudflare account. They bind a local files bucket themselves, and serve the pages link cards are made of from `test/fixtures/preview-pages.cjs` on `127.0.0.1`. A second project runs `test/s3-*.test.js` without the bucket and with an S3-compatible store instead, answered inside the runtime by the stand-in in `test/fixtures/fake-s3.js`, which checks every request's signature and every upload's digest. `npm run dev` has no files bucket unless you uncomment `r2_buckets` in `wrangler.jsonc`, which then uses a local one in `.wrangler/`. To check that the server bundles without deploying it:
 
 ```sh
 npx wrangler deploy --dry-run --outdir /tmp/rukoo-account-dry
