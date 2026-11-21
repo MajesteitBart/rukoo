@@ -419,10 +419,14 @@ html[data-platform='web'] #app > .web-shell {
 .web-apps-slot[hidden] {
   display: none;
 }
+/* At most a little under half the window's height: on a short screen, such as a phone turned sideways, the steps
+   scroll under the title and its close button, and chat keeps the rest. */
 .web-apps {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  padding: 12px 8px 12px 16px;
+  max-height: 45dvh;
+  padding: 12px 8px 8px 16px;
   border-radius: 10px;
   background: var(--panel);
   box-shadow: var(--shadow-sm);
@@ -440,6 +444,7 @@ html[data-platform='web'] #app > .web-shell {
   }
 }
 .web-apps-head {
+  flex: none;
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -471,11 +476,15 @@ html[data-platform='web'] #app > .web-shell {
   height: 16px;
 }
 .web-apps-steps {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px 20px;
   margin: 0;
-  padding: 0 8px 0 0;
+  /* Room for the focus ring of the last links, which the scrolling would cut off. */
+  padding: 0 8px 4px 0;
   list-style: none;
 }
 .web-apps-step {
@@ -558,9 +567,14 @@ html[data-platform='web'] #app > .web-shell {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* A phone: 44px targets, without the notice growing by as much (the links' extra height overlaps the line above). */
+/* A phone: 44px targets, without the notice growing by as much: a link's extra height reaches 10px into the line
+   above and below it. Links that wrap get 20px between their lines, so no two targets overlap, and the steps keep 10px
+   at their end, so the last link's target isn't cut off where they scroll. */
 body.web-phone .web-apps {
-  padding: 12px 4px 12px 14px;
+  padding: 12px 4px 2px 14px;
+}
+body.web-phone .web-apps-steps {
+  padding-bottom: 10px;
 }
 body.web-phone .web-apps-close {
   width: 44px;
@@ -572,6 +586,7 @@ body.web-phone .web-apps-link {
   margin-block: -10px;
 }
 body.web-phone .web-apps-links {
+  row-gap: 20px;
   margin-top: 0;
 }
 body.web-phone .web-apps-desc {
@@ -582,7 +597,14 @@ body.web-phone .web-apps-desc {
 body.web-phone .web-apps-intro {
   display: none;
 }
+/* A screen under 480px tall, such as a phone turned sideways, has no room for the notice and chat together: it waits
+   until the window is taller again. */
+@media (max-height: 479.98px) {
+  .web-apps-slot {
+    display: none;
+  }
+}
 /* While a phone's on-screen keyboard is up for the composer, the conversation needs the room. */
-body.web-phone:has(.workspace .ch-input:focus) .web-apps-slot {
+body.web-phone.web-typing .web-apps-slot {
   display: none;
 }

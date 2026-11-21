@@ -471,25 +471,31 @@ function renderApps() {
   placeToast();
 }
 
-function closeApps() {
+// byKeyboard: closed with Enter or Space on its button. The keyboard then goes on to the conversation's text, or the
+// list's first control on a phone that shows the list. A tap leaves the focus alone, so a phone's keyboard doesn't
+// come up for a composer the person didn't touch.
+function closeApps(byKeyboard = false) {
   appsClosed = true;
   const had = appsSlot.contains(document.activeElement);
   renderApps();
-  // The focus was on its close button: it goes on to the conversation's text, or the list's first control on a phone
-  // that shows the list.
   const shown = (el) => el.offsetParent !== null;
-  if (had) ([...shell.querySelectorAll('.chat .ch-input')].find(shown) || [...shell.querySelectorAll('.sidebar button')].find(shown))?.focus({ preventScroll: true });
+  if (had && byKeyboard) ([...shell.querySelectorAll('.chat .ch-input')].find(shown) || [...shell.querySelectorAll('.sidebar button')].find(shown))?.focus({ preventScroll: true });
 }
 
 appsSlot.addEventListener('click', (e) => {
   if (!e.target.closest('[data-web-apps="dismiss"]')) return;
   dismissApps(appsStorage);
-  closeApps();
+  // A click from Enter or Space has no pointer behind it: detail 0.
+  closeApps(e.detail === 0);
 });
 // Closed in another tab of this browser.
 window.addEventListener('storage', (e) => {
   if (e.key === DISMISSED_KEY && appsWereDismissed(appsStorage)) closeApps();
 });
+// While the composer has the focus, a phone's on-screen keyboard is up and the notice makes way (web.css). A class
+// rather than :has(), which Firefox only has from 121 on.
+document.addEventListener('focusin', (e) => document.body.classList.toggle('web-typing', Boolean(e.target.closest?.('.workspace .ch-input'))));
+document.addEventListener('focusout', (e) => document.body.classList.toggle('web-typing', Boolean(e.relatedTarget?.closest?.('.workspace .ch-input'))));
 
 // ---------- the sidebar ----------
 

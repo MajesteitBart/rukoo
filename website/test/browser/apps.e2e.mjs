@@ -47,6 +47,23 @@ async function member() {
 
 const notice = (page) => page.locator('.web-apps-slot:not([hidden]) .web-apps');
 
+// No two of the notice's links and buttons share a pixel, counting each one's whole box: a phone's 44px targets reach
+// into the lines around them, so a tap on one must never land on its neighbour.
+async function apart(page, label) {
+  const boxes = await page.evaluate(() =>
+    [...document.querySelectorAll('.web-apps a, .web-apps button')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { name: el.textContent.trim() || el.getAttribute('aria-label'), top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    })
+  );
+  for (const [i, a] of boxes.entries()) {
+    for (const b of boxes.slice(i + 1)) {
+      const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5 && Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5;
+      assert.ok(!overlap, `${label}: "${a.name}" and "${b.name}" overlap`);
+    }
+  }
+}
+
 // Signs out through Settings, once the conversation the sign-in opened has loaded.
 async function signOut(view) {
   const page = view.page;
@@ -116,6 +133,8 @@ test('b: English and Dutch, light and dark, at a desktop and a phone width', asy
         await expect(box.locator('.web-apps-title')).toHaveText(tr(lang, 'chat.web.apps.title'));
         await expect(box.locator('.web-apps-intro')).toHaveText(tr(lang, 'chat.web.apps.intro'));
         await expect(box.locator('[data-web-apps="dismiss"]')).toHaveAttribute('aria-label', tr(lang, 'chat.web.apps.dismiss'));
+        await apart(p, label);
+        await shot(p, label);
         if (phone) {
           // Every link and the close button take a finger, and the list below still shows.
           await targets(p, label);
@@ -127,13 +146,59 @@ test('b: English and Dutch, light and dark, at a desktop and a phone width', asy
           await expect(p.locator('.web-apps-slot')).toBeHidden();
           await p.locator('.ch-compose .ch-input').blur();
           await expect(box).toBeVisible();
-          await p.locator('[data-web="back"]').tap();
+          // A tap on its close button leaves the composer alone, so no keyboard comes up.
+          await box.locator('[data-web-apps="dismiss"]').tap();
+          await expect(notice(p)).toHaveCount(0);
+          assert.equal(await p.evaluate(() => Boolean(document.activeElement?.closest('.ch-compose'))), false, `${label}: the tap kept the focus off the composer`);
         }
-        await shot(p, label);
         clean(view);
         await view.context.close();
       }
     }
+  }
+});
+
+test('b2: on a narrow phone the links stay apart; a short screen keeps chat whole and shows the notice once taller', async () => {
+  // A narrow phone: under half the window, the steps scroll under the title and the close button, and chat fits.
+  {
+    const label = 'apps-320x640-nl';
+    const view = await open({ width: 320, height: 640, phone: true, locale: 'nl-NL' });
+    const p = view.page;
+    await signIn(p, await member());
+    const box = notice(p);
+    await expect(box.locator('.web-apps-title')).toHaveText(tr('nl', 'chat.web.apps.title'));
+    await apart(p, label);
+    await targets(p, label);
+    const n = await box.boundingBox();
+    assert.ok(n.height <= 640 * 0.45 + 1, `${label}: the notice is ${Math.round(n.height)}px of 640px`);
+    await expect(box.locator('[data-web-apps="dismiss"]')).toBeInViewport();
+    await box.locator('.web-apps-steps').evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await expect(box.locator('[data-step="voice"] a')).toBeInViewport();
+    await shot(p, label);
+    await p.locator('.sidebar .ch-row', { hasText: 'general' }).first().tap();
+    await expect(p.locator('.ch-compose .ch-input')).toBeInViewport();
+    clean(view);
+    await view.context.close();
+  }
+  // A phone turned sideways: no notice, the conversation has the window; upright again, the notice is back.
+  for (const [width, height] of [
+    [844, 390],
+    [667, 375]
+  ]) {
+    const label = `apps-${width}x${height}`;
+    const view = await open({ width, height, phone: true });
+    const p = view.page;
+    await signIn(p, await member());
+    await expect(p.locator('.ch-ws-switch')).toBeVisible();
+    await expect(p.locator('.web-apps-slot')).toBeHidden();
+    if (width <= 700) await p.locator('.sidebar .ch-row', { hasText: 'general' }).first().tap();
+    await expect(p.locator('.ch-compose .ch-input')).toBeInViewport();
+    await shot(p, label);
+    await p.setViewportSize({ width: height, height: width });
+    await expect(notice(p)).toBeVisible();
+    await apart(p, `${label} upright`);
+    clean(view);
+    await view.context.close();
   }
 });
 
