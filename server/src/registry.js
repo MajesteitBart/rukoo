@@ -22,7 +22,8 @@ const CLAIM_TIME = 60 * 1000;
 // and the address. The six digits work until codeUntil and for `attempts` misses; the long code until `until`, when
 // the row goes. failures counts wrong passwords or recovery keys sent with either, and ends both at `attempts`.
 // claim and claimedUntil hold the code for one request at a time. code_sends: when codes of a purpose were asked for
-// an address in the last day, newest last. code_mail: how many sign-up emails went out in the hour that started at
+// an address in the last day, newest last, under the hash codes.js counts it by (sendsHash: the mailbox for sign-up
+// codes, the address itself for unlock codes). code_mail: how many sign-up emails went out in the hour that started at
 // hour * HOUR.
 const CODE_TABLES = `
   CREATE TABLE IF NOT EXISTS codes (
@@ -79,14 +80,14 @@ export class Registry extends DurableObject {
 
   // Keeps a new code, unless the server is full (for a sign-up code, max > 0) or the address had too many of this
   // purpose: { result } is 'ok', 'full' or 'wait', with retryAfter in seconds for 'wait'. entry holds the hashes
-  // codes.js made. rules: ttl, how long the six digits work; tokenTtl, how long the long code works; gap, hourly and
-  // daily, the limits per address and purpose.
+  // codes.js made; the limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the
+  // long code works; gap, hourly and daily, the limits per address and purpose.
   async issueCode(entry, { ttl, tokenTtl, gap, hourly, daily, max = 0 }) {
     const now = Date.now();
     this.#purgeCodes(now);
     if (max > 0 && this.count() >= max) return { result: 'full' };
     const row = this.sql
-      .exec('SELECT times FROM code_sends WHERE address = ? AND purpose = ?', entry.address, entry.purpose)
+      .exec('SELECT times FROM code_sends WHERE address = ? AND purpose = ?', entry.sends, entry.purpose)
       .toArray()[0];
     const times = sendTimes(row?.times).filter((t) => now - t < DAY);
     const hour = times.filter((t) => now - t < HOUR);
@@ -110,7 +111,7 @@ export class Registry extends DurableObject {
       this.sql.exec(
         `INSERT INTO code_sends (address, purpose, times, until) VALUES (?, ?, ?, ?)
          ON CONFLICT (address, purpose) DO UPDATE SET times = excluded.times, until = excluded.until`,
-        entry.address,
+        entry.sends,
         entry.purpose,
         JSON.stringify(times.slice(-daily)),
         now + DAY

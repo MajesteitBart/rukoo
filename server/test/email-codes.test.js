@@ -6,10 +6,12 @@ import { env } from 'cloudflare:workers';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import pkg from '../package.json' with { type: 'json' };
 import { hmac, sha256, toBase64url, utf8 } from '../src/bytes.js';
+import { mailbox } from '../src/codes.js';
 import { registryObject } from '../src/config.js';
 import worker from '../src/index.js';
 import { FakeResend, MAIL_VARS, installFakeResend } from './fixtures/fake-resend.js';
 import { KDF, call, device, key, newEmail, randomIp, salt, sealed, signup, withVars } from './helpers.js';
+import { ON, invite, newWorkspace } from './workspace-helpers.js';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -217,6 +219,56 @@ describe('POST /v1/email-code', () => {
     }
   });
 
+  it('knows which spellings of an address reach one mailbox', () => {
+    expect(mailbox('first.last+news@gmail.com')).toBe('firstlast@gmail.com');
+    expect(mailbox('first.last@googlemail.com')).toBe('firstlast@gmail.com');
+    expect(mailbox('first.last+a+b@example.com')).toBe('first.last@example.com');
+    expect(mailbox('first.last@example.com')).toBe('first.last@example.com');
+    expect(mailbox('name@mail.gmail.com')).toBe('name@mail.gmail.com');
+    // A name that is all tag or all dots stays as it is.
+    expect(mailbox('+news@example.com')).toBe('+news@example.com');
+    expect(mailbox('...@gmail.com')).toBe('...@gmail.com');
+  });
+
+  it('counts sign-up codes per mailbox, so tags and Gmail’s dots share one limit, and keeps each code to its address', async () => {
+    const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+    const dotted = (domain) => `${name.slice(0, 3)}.${name.slice(3)}@${domain}`;
+    const tagged = `${name}+rukoo@gmail.com`;
+    const codes = await codeFor(tagged);
+    // The code made for the tagged address works for it alone, though the mail reaches the same inbox.
+    const plain = person(`${name}@gmail.com`);
+    expect((await signUp({ ...plain, emailCode: sixDigits(codes) })).body.error).toBe('code_wrong');
+    expect((await signUp({ ...plain, emailCode: longCode(codes) })).body.error).toBe('code_expired');
+    expect((await signUp({ ...person(tagged), emailCode: longCode(codes) })).status).toBe(201);
+    // Every spelling of the inbox waits out the same minute and shares its five an hour.
+    const soon = await askCode(dotted('gmail.com'));
+    expect(soon.status).toBe(429);
+    expect(Number(soon.headers.get('retry-after'))).toBe(60);
+    for (const email of [dotted('gmail.com'), `${name}@googlemail.com`, plain.email, `${name}+other@gmail.com`]) {
+      later(MINUTE + 1000);
+      expect((await askCode(email)).status, email).toBe(202);
+    }
+    later(MINUTE + 1000);
+    const hour = await askCode(plain.email);
+    expect(hour.status).toBe(429);
+    expect(Number(hour.headers.get('retry-after'))).toBeGreaterThan(50 * 60);
+    // Elsewhere a tag is the same mailbox, and a dot isn't.
+    expect((await askCode(`${name}+a@example.com`)).status).toBe(202);
+    expect((await askCode(`${name}@example.com`)).status).toBe(429);
+    expect((await askCode(dotted('example.com'))).status).toBe(202);
+  });
+
+  it('counts unlock codes per address, so other spellings of it can’t use up a locked owner’s codes', async () => {
+    const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+    const owner = await signup({ email: `${name}@gmail.com` });
+    // A stranger asks for unlock codes for spellings without an account: no email goes out, and the owner's stay.
+    for (let i = 0; i < 10; i++) expect((await askCode(`${name}+${i}@gmail.com`, 'unlock')).status).toBe(202);
+    expect((await askCode(`${name.slice(0, 3)}.${name.slice(3)}@gmail.com`, 'unlock')).status).toBe(202);
+    expect(resend.sent).toHaveLength(0);
+    expect((await askCode(owner.email, 'unlock')).status).toBe(202);
+    expect(resend.to(owner.email)).toHaveLength(1);
+  });
+
   it('sends at most EMAIL_CODES_PER_HOUR sign-up emails, counting only emails that go out, and no limit on unlock emails', async () => {
     const slot = Math.floor(Date.now() / HOUR);
     const setCount = (count) =>
@@ -289,9 +341,11 @@ describe('POST /v1/email-code', () => {
     const email = newEmail();
     const { challenge, code, token } = await codeFor(email);
     const address = toBase64url(await hmac(env.PEPPER, `email-code address\n${email}`));
+    // The limits count under a hash of their own, of the mailbox (here the address itself, which has no tag).
+    const counted = toBase64url(await hmac(env.PEPPER, `email-code sends\nsignup\n${email}`));
     const rows = await registrySql((sql) => ({
       codes: sql.exec('SELECT * FROM codes WHERE address = ?', address).toArray(),
-      sends: sql.exec('SELECT * FROM code_sends WHERE address = ?', address).toArray()
+      sends: sql.exec('SELECT * FROM code_sends WHERE address = ?', counted).toArray()
     }));
     expect(rows.codes).toHaveLength(1);
     expect(rows.sends).toHaveLength(1);
@@ -309,7 +363,7 @@ describe('POST /v1/email-code', () => {
     await runDurableObjectAlarm(registryObject(env));
     const left = await registrySql((sql) => ({
       codes: sql.exec('SELECT COUNT(*) AS n FROM codes WHERE address = ?', address).one().n,
-      sends: sql.exec('SELECT COUNT(*) AS n FROM code_sends WHERE address = ?', address).one().n
+      sends: sql.exec('SELECT COUNT(*) AS n FROM code_sends WHERE address = ?', counted).one().n
     }));
     expect(left).toEqual({ codes: 0, sends: 0 });
   });
@@ -454,6 +508,40 @@ describe('signing up on a verified server', () => {
     expect((await signUp({ ...person(), invite: 'first-code' })).status).toBe(201);
     const wrong = await signUp({ ...person(), invite: 'third-code' });
     expect(wrong.body.error).toBe('code_required');
+  });
+
+  it('needs a code from the address with a workspace invitation too, and then lets the account join', async () => {
+    const vars = { ...VERIFIED, ...ON };
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const workspaceInvite = { workspace: ws.id, invite: secret };
+    const body = { ...person(), workspaceInvite };
+    const bare = await signUp(body, vars);
+    expect(bare.status).toBe(403);
+    expect(bare.body.error).toBe('code_required');
+    // A code for an address the person reads doesn't make an account for another one.
+    const elsewhere = await codeFor(newEmail(), 'signup', vars);
+    expect((await signUp({ ...body, emailCode: longCode(elsewhere) }, vars)).body.error).toBe('code_expired');
+    expect((await signUp({ ...body, emailCode: sixDigits(elsewhere) }, vars)).body).toMatchObject({ error: 'code_wrong' });
+    const codes = await codeFor(body.email, 'signup', vars);
+    const made = await signUp({ ...body, emailCode: sixDigits(codes) }, vars);
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    expect(made.body.account.email).toBe(body.email);
+    // The registry counted the invitation's one account, and the code is used up.
+    const second = person();
+    const secondCodes = await codeFor(second.email, 'signup', vars);
+    const twice = await signUp({ ...second, workspaceInvite, emailCode: sixDigits(secondCodes) }, vars);
+    expect(twice.body.error).toBe('invite_required');
+    expect((await signUp({ ...person(body.email), emailCode: longCode(codes) }, vars)).body.error).toBe('code_expired');
+    const joined = await call('POST', `/v1/workspaces/${ws.id}/join`, { token: made.body.token, body: { invite: secret, name: 'Nina' }, vars });
+    expect(joined.status, joined.text).toBe(201);
+  });
+
+  it('leaves workspace invitations on an invite server as they were, with no code', async () => {
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const res = await signUp({ ...person(), workspaceInvite: { workspace: ws.id, invite: secret } }, { ...MAIL_VARS, ...ON });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 
   it('works as an invite server while it can’t send mail', async () => {
@@ -626,7 +714,9 @@ describe('what the server says about codes', () => {
     expect((await info({ ...MAIL_VARS, SIGNUPS: 'open' })).signups).toBe('open');
     const chat = await info({ ...VERIFIED, WORKSPACE_MODE: 'on' });
     expect(chat.features).toEqual(['booking', 'workspaces-v1', 'email-codes']);
-    expect(chat.workspace.inviteSignups).toBe(true);
+    // An invitation makes an account there only with a code from the address; on an invite server it needs none.
+    expect(chat.workspace).toMatchObject({ inviteSignups: true, inviteSignupsNeedCode: true });
+    expect((await info({ ...MAIL_VARS, WORKSPACE_MODE: 'on' })).workspace).toMatchObject({ inviteSignups: true, inviteSignupsNeedCode: false });
     expect((await info({ ...VERIFIED, REGISTRY: undefined })).emailCodes).toBeUndefined();
   });
 
@@ -642,7 +732,7 @@ describe('what the server says about codes', () => {
         heading: '<h2 id="email-codes">Email codes</h2>',
         resend: 'Resend, a service of Resend, Inc. in the United States',
         days: 'keeps them for 30 days',
-        signup: 'Unless you sign up with an invite code or an invitation, we check it',
+        signup: 'Unless you sign up with an invite code from us, we check it',
         unlock: 'lets you sign in or recover your account during the lock',
         kept: 'It keeps both also when no email goes out because the address has no account.',
         none: 'We don’t send mail to it and don’t check it.'
@@ -651,7 +741,7 @@ describe('what the server says about codes', () => {
         heading: '<h2 id="email-codes">E-mailcodes</h2>',
         resend: 'Resend, een dienst van Resend, Inc. in de Verenigde Staten',
         days: 'bewaart ze 30 dagen',
-        signup: 'Tenzij je een account maakt met een uitnodigingscode of een uitnodiging, controleren we het',
+        signup: 'Tenzij je een account maakt met een uitnodigingscode van ons, controleren we het',
         unlock: 'kun je tijdens de blokkade toch inloggen of je account herstellen',
         kept: 'Beide bewaart hij ook als er geen e-mail uitgaat omdat het adres geen account heeft.',
         none: 'We sturen er geen mail naar en controleren het niet.'

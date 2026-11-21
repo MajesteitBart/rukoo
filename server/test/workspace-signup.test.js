@@ -123,15 +123,36 @@ describe('signing up with a workspace invitation', () => {
     expect(closed.body.error).toBe('signups_closed');
   });
 
-  it('works on a verified server too, in place of a code from the address', async () => {
+  it('needs a code from the address on a verified server, and none from the operator’s invite code', async () => {
     const ws = await newWorkspace();
     const { secret } = await invite(ws.person, ws.id);
     const verified = { ...MAIL_VARS, SIGNUPS: 'verified' };
-    expect((await signUp({ workspace: ws.id, invite: secret }, verified)).status).toBe(201);
-    // A used invitation is refused as on an invite server, even where a code would do.
-    refused(await signUp({ workspace: ws.id, invite: secret }, verified));
+    // Anyone with an account can make invitations, so one alone would let them take any address.
+    const bare = await signUp({ workspace: ws.id, invite: secret }, verified);
+    expect(bare.status).toBe(403);
+    expect(bare.body.error).toBe('code_required');
     expect((await signUp(undefined, verified)).body.error).toBe('code_required');
-    expect((await api('GET', '/v1/info', { vars: verified })).body.workspace.inviteSignups).toBe(true);
+    // The invitation wasn't counted, and the operator's code still needs no emailed code.
+    expect((await workspaceSql(ws.id, 'SELECT redeemedAt FROM invite'))[0].redeemedAt).toBe(null);
+    expect((await signUp({ workspace: ws.id, invite: secret }, verified, { invite: 'second-code' })).status).toBe(201);
+    expect((await signUp({ workspace: ws.id, invite: secret })).status).toBe(201);
+    const info = async (vars) => (await api('GET', '/v1/info', { vars })).body.workspace;
+    expect(await info(verified)).toMatchObject({ inviteSignups: true, inviteSignupsNeedCode: true });
+    expect(await info(MAIL_VARS)).toMatchObject({ inviteSignups: true, inviteSignupsNeedCode: false });
+  });
+
+  it('is refused on a server set to verified that can’t send codes, which takes only the operator’s invite codes', async () => {
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const unmailed = { SIGNUPS: 'verified' };
+    refused(await signUp({ workspace: ws.id, invite: secret }, unmailed));
+    expect((await signUp({ workspace: ws.id, invite: secret }, unmailed, { invite: 'second-code' })).status).toBe(201);
+    expect((await api('GET', '/v1/info', { vars: unmailed })).body.workspace).toMatchObject({
+      inviteSignups: false,
+      inviteSignupsNeedCode: false
+    });
+    // The same invitation still works on an invite server.
+    expect((await signUp({ workspace: ws.id, invite: secret })).status).toBe(201);
   });
 
   it('gives the place back when the sign-up fails, so the invitation still works', async () => {

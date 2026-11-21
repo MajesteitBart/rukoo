@@ -67,7 +67,11 @@ export async function requestCode(request, env, ctx, max) {
   const challenge = toBase64url(randomBytes(32));
   const token = toBase64url(randomBytes(32));
   const code = newCode();
-  const entry = { ...(await codeHashes(env, email, purpose, challenge, code)), token: await tokenHash(token) };
+  const entry = {
+    ...(await codeHashes(env, email, purpose, challenge, code)),
+    token: await tokenHash(token),
+    sends: await sendsHash(env, email, purpose)
+  };
   const issued = await registryObject(env).issueCode(entry, { ...CODE_RULES, max: purpose === 'signup' ? max : 0 });
   if (issued.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
   if (issued.result !== 'ok') {
@@ -195,6 +199,29 @@ function newCode() {
 
 async function addressHash(env, email) {
   return toBase64url(await hmac(env.PEPPER, `email-code address\n${email}`));
+}
+
+// The mailbox an address reaches, as far as the address itself shows: the name without a +tag, on every domain, and
+// at Gmail without dots, with googlemail.com as gmail.com. Only the limits per address use it. A code stays bound to
+// the address as typed, as does the account (config.js, accountName).
+export function mailbox(email) {
+  const at = email.lastIndexOf('@');
+  let name = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  const plus = name.indexOf('+');
+  if (plus > 0) name = name.slice(0, plus);
+  if (domain === 'googlemail.com') domain = 'gmail.com';
+  if (domain === 'gmail.com') name = name.replaceAll('.', '') || name;
+  return `${name}@${domain}`;
+}
+
+// What the limits per address count under. Sign-up codes count per mailbox, so the tags and dots of one inbox share
+// its ten emails a day and one person can't make an account a minute with them. Unlock codes count per address: they
+// go out only to an account, and counted per mailbox, a stranger could use up a locked owner's codes by asking for
+// codes for other spellings of the address, which have no account and get no email.
+async function sendsHash(env, email, purpose) {
+  const counted = purpose === 'signup' ? mailbox(email) : email;
+  return toBase64url(await hmac(env.PEPPER, `email-code sends\n${purpose}\n${counted}`));
 }
 
 async function tokenHash(token) {

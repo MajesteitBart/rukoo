@@ -76,12 +76,12 @@ The `vars` block holds the server's settings:
 | `PRIVACY_URL` | Your own privacy statement. Leave it empty to use the one the server shows at `/privacy` (step 8). |
 | `JURISDICTION` | See step 3. |
 | `INVITE_USES` | How many accounts one invite code may make: `1` by default, `0` for any number. A used-up code is refused like a wrong one. Needs the `REGISTRY` binding, which keeps the count. |
-| `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)); `GET /v1/info` reports it as `"invite"`, so older apps keep their invite code field. `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`. |
+| `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)). A workspace invitation needs the emailed code too. `GET /v1/info` reports it as `"invite"`, so older apps keep their invite code field. `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`, but takes no workspace invitations. |
 | `MAIL_FROM` | The sender of the codes the server mails, such as `"Rukoo <account@example.com>"`, on a domain your Resend account has verified. Empty sends no mail ([Codes by email](#codes-by-email)). |
 | `EMAIL_CODES_PER_HOUR` | The most sign-up emails the whole server sends in an hour, the ones that reach addresses without an account: `100` by default. Unlock emails go only to accounts here, ten a day each at most. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
-| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address that reads its mail, so for a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
+| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address whose mail someone reads, which makes filling the cap slower but doesn't stop one person from doing it ([Codes by email](#codes-by-email)). For a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
 
 The defaults (250,000 records and 100 MiB per account) are far more than one person uses.
 
@@ -131,7 +131,7 @@ npx wrangler secret put INVITE_CODES
 
 For example `family-2026,team-lisbon`. Any code in the list works, as often as it is used. To retire a code, put the list again without it.
 
-Invite codes work with `"verified"` sign-ups too, for people you let in without a code by email.
+Invite codes work with `"verified"` sign-ups too, for people you let in without a code by email. They are the only way in there without one: a workspace invitation needs the emailed code as well.
 
 ### 8. Check it
 
@@ -161,7 +161,7 @@ To make your server the default in your own build of Rukoo, set `rukoo.accountSe
 
 The server can mail codes to an address, through [Resend](https://resend.com): six digits for the device that asked, and a long code that works on any device for a day. It does so for two things:
 
-- With `SIGNUPS` on `"verified"`, a new account needs a code sent to its address, unless it comes with an invite code or a workspace invitation. This is what lets a server on the internet take sign-ups from anyone: invented addresses can't fill `MAX_ACCOUNTS`.
+- With `SIGNUPS` on `"verified"`, a new account needs a code sent to its address, unless it comes with one of your invite codes. A workspace invitation needs the code too, since anyone with an account can make invitations. This is what lets a server on the internet take sign-ups from anyone: each account proves that someone receives mail at its address, so nobody can take an address whose mail they don't read.
 - On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock an account's sign-ins for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it, and they can't keep the owner from it either: every email holds a long code the owner can use, also an email the stranger asked for. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
 
 To turn it on, verify a sending domain in Resend, set `MAIL_FROM` to an address on it, and store the API key:
@@ -170,11 +170,15 @@ To turn it on, verify a sending domain in Resend, set `MAIL_FROM` to an address 
 npx wrangler secret put RESEND_API_KEY
 ```
 
-The key needs sending access to that domain only. Until both are set, the server sends no mail, `GET /v1/info` lists no `email-codes`, and `"verified"` works as `"invite"`.
+The key needs sending access to that domain only. Until both are set, the server sends no mail, `GET /v1/info` lists no `email-codes`, and `"verified"` works as `"invite"`: it takes your invite codes, but no workspace invitations.
 
-What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code of each purpose a minute, five an hour and ten a day, and the server sends at most `EMAIL_CODES_PER_HOUR` sign-up emails in an hour, counting only emails that go out. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them a day after each request, or after 10 minutes when no email with the codes went out. Resend sees each address and the mail it sends, and keeps it for 30 days on its standard plans; `/privacy` says so while mail is on, in English and Dutch.
+What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code of each purpose a minute, five an hour and ten a day (for sign-up codes, one mailbox, as below), and the server sends at most `EMAIL_CODES_PER_HOUR` sign-up emails in an hour, counting only emails that go out. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them a day after each request, or after 10 minutes when no email with the codes went out. Resend sees each address and the mail it sends, and keeps it for 30 days on its standard plans; `/privacy` says so while mail is on, in English and Dutch.
 
 What a stranger can still do: ask for an address's ten codes of the day, which sends the owner ten emails, each with a long code the owner can use; or use up an hour's sign-up emails, which delays sign-ups until the next hour. Unlock emails can't be used up that way. With a Resend plan that has a daily quota, a flood of requests for real accounts can still reach that quota.
+
+Sign-up codes count per mailbox: the name before a `+tag` on any domain, and at Gmail also without dots, so `name+1@gmail.com`, `n.ame@gmail.com` and `name@gmail.com` share one address's ten emails a day. A code still works only for the address it went to, and the account is that address. Unlock codes count per address as typed, so requests for other spellings, which have no account, can't use up a locked owner's. One side effect: a stranger can use up a mailbox's ten sign-up emails of the day with other spellings of it, and the owner then waits a day to sign up as `name@gmail.com`, or signs up with one of the spellings whose codes reached them.
+
+What verified sign-ups don't do is limit accounts per person. Addresses on a catch-all domain, which delivers any name to one inbox, each count as their own mailbox and each make their own account. One person with a catch-all domain gets as many sign-up emails as `EMAIL_CODES_PER_HOUR` allows, and at the default 100 an hour fills a `MAX_ACCOUNTS` of 1,000 in about ten hours, which also delays everyone else's sign-ups. Keep an eye on the number of accounts, and lower `EMAIL_CODES_PER_HOUR` or `MAX_ACCOUNTS` to fit your server. A limit per domain, or accounts that expire unused, would close this; neither is built yet.
 
 The tests answer Resend themselves (`test/fixtures/fake-resend.js`) and never send mail. A `RESEND_API_KEY` in `.dev.vars` does send real mail from `npm run dev`.
 
@@ -246,7 +250,7 @@ The settings in `vars`:
 |---|---|
 | `WORKSPACE_MODE` | `on` or `off`. Off by default: the routes answer 404 and `GET /v1/info` doesn't mention workspaces. |
 | `WORKSPACE_ORIGIN` | The one address workspaces on this server are known by, such as `https://accounts.example.org`. Empty means the address each request came in on. Set it when your server answers on more than one address. |
-| `WORKSPACE_SIGNUPS` | `on` or `off`. With `SIGNUPS` on `invite`, `on` lets an open workspace invitation stand in for an invite code when someone signs up, once per invitation. That lets every workspace owner and admin bring new accounts onto your server, within `MAX_ACCOUNTS`. `off` keeps sign-ups to your own codes. On by default. |
+| `WORKSPACE_SIGNUPS` | `on` or `off`. With `SIGNUPS` on `invite`, `on` lets an open workspace invitation stand in for an invite code when someone signs up, once per invitation. That lets every workspace owner and admin bring new accounts onto your server, within `MAX_ACCOUNTS`. With `SIGNUPS` on `verified`, the person still confirms their address with an emailed code, and a server that can't send mail takes no invitations at sign-up. `off` keeps sign-ups to your own codes. On by default. |
 | `MAX_WORKSPACES` | The most workspaces the server holds. Default 100. |
 | `MAX_WORKSPACES_PER_ACCOUNT` | How many workspaces one account may make. Default 3. |
 | `MAX_WORKSPACE_MEMBERSHIPS` | How many workspaces one account may be in at once. Default 50. |

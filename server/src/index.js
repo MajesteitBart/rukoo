@@ -208,7 +208,7 @@ async function signup(request, env) {
   const body = await input.readJson(request);
   const mode = config(env, new URL(request.url)).signups;
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
-  // Invite codes work on invite and verified servers alike.
+  // Invite codes work on invite and verified servers alike, and need no emailed code: the operator hands them out.
   const invited = mode === 'invite' || mode === 'verified';
   let invite = invited ? await validInvite(env, body.invite) : null;
   let uses = inviteUses(env);
@@ -237,9 +237,10 @@ async function signup(request, env) {
     recoveryWrappedKey: input.sealed(body.recoveryWrappedKey, 'recoveryWrappedKey'),
     device: input.device(body.device)
   };
-  // With neither an invite code nor an invitation, a verified server needs a code sent to the address (codes.js),
-  // held for this sign-up alone. It is used up once the account exists, and given back when the sign-up fails.
-  const code = mode === 'verified' && !invite ? await signupCode(env, fields.email, body.emailCode) : null;
+  // Without the operator's invite code, a verified server needs a code sent to the address (codes.js), also with a
+  // workspace invitation: anyone with an account can make those, so one shows nothing about the address. The code is
+  // held for this sign-up alone, used up once the account exists, and given back when the sign-up fails.
+  const code = mode === 'verified' && (!invite || workspaceInvite) ? await signupCode(env, fields.email, body.emailCode) : null;
   let result;
   try {
     result = await makeAccount(env, fields, invite, uses, workspaceInvite);

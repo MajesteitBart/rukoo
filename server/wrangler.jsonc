@@ -37,7 +37,8 @@
     "JURISDICTION": "eu",
     // "verified" (anyone who proves their address with a code sent there, or brings an invite code), "invite" (codes
     // from the INVITE_CODES secret), "open" (anyone, unchecked) or "closed". "verified" needs mail: without
-    // RESEND_API_KEY and MAIL_FROM it works as "invite". GET /v1/info reports it as "invite" for older apps.
+    // RESEND_API_KEY and MAIL_FROM it works as "invite", without workspace invitations. GET /v1/info reports it as
+    // "invite" for older apps.
     "SIGNUPS": "invite",
     // How many accounts each invite code may make; 0 for any number.
     "INVITE_USES": 1,
@@ -78,7 +79,8 @@
     "WORKSPACE_ORIGIN": "",
     // "on" or "off". With SIGNUPS on "invite" and team chat on, "on" lets an invitation into a workspace stand in for
     // an invite code at sign-up, once per invitation. That lets every workspace owner and admin bring new accounts
-    // onto this server, within MAX_ACCOUNTS. "off" keeps sign-ups to the codes in INVITE_CODES.
+    // onto this server, within MAX_ACCOUNTS. With SIGNUPS on "verified" the sign-up also needs a code emailed to the
+    // address. "off" keeps sign-ups to the codes in INVITE_CODES.
     "WORKSPACE_SIGNUPS": "on",
     // The most workspaces this server holds, how many one account may make, and how many it may be in at once.
     "MAX_WORKSPACES": 100,
