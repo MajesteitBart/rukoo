@@ -12,10 +12,11 @@ import { stripeVars } from './test/fixtures/fake-stripe.js';
 // tests bind a local one. test/fixtures/preview-server.js serves the pages link cards are made of, on 127.0.0.1, and
 // the link card tests let the Worker reach it with WORKSPACE_PREVIEW_HOSTS.
 //
-// Three projects: r2 runs every test with that local bucket, and s3 runs test/s3-*.test.js with no bucket and an
+// Four projects: r2 runs every test with that local bucket, and s3 runs test/s3-*.test.js with no bucket and an
 // S3-compatible store instead, whose endpoint test/fixtures/fake-s3.js answers inside the runtime. billing runs
-// test/billing-*.test.js with team chat and billing on, against the stand-in for Stripe in test/fixtures/fake-stripe.js.
-// Billing is off in the other two, as in wrangler.jsonc. The S3 and Stripe settings are stand-ins, not credentials.
+// test/billing-*.test.js with team chat and billing on, against the stand-in for Stripe in test/fixtures/fake-stripe.js,
+// and winddown runs test/billing-winddown.test.js with BILLING off but Stripe's settings still there. Billing is off in
+// r2 and s3, as in wrangler.jsonc. The S3 and Stripe settings are stand-ins, not credentials.
 const BINDINGS = {
   PEPPER: 'test-pepper-not-secret-0123456789',
   INVITE_CODES: 'first-code, second-code',
@@ -96,7 +97,24 @@ export default defineConfig({
         test: {
           name: 'billing',
           include: ['test/billing-*.test.js'],
+          exclude: ['test/billing-winddown.test.js'],
           // Each test signs several people up and runs the workspace's alarm until Stripe has the seats.
+          testTimeout: 30000,
+          globalSetup: ['test/fixtures/preview-server.js']
+        }
+      },
+      {
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: './wrangler.jsonc' },
+            // BILLING off with Stripe's settings still there, in the workspace's object too: what an operator who
+            // winds billing down runs (README.md, Billing).
+            miniflare: { r2Buckets: ['WORKSPACE_FILES'], bindings: { ...BINDINGS, WORKSPACE_MODE: 'on', ...stripeVars(), BILLING: 'off' } }
+          })
+        ],
+        test: {
+          name: 'winddown',
+          include: ['test/billing-winddown.test.js'],
           testTimeout: 30000,
           globalSetup: ['test/fixtures/preview-server.js']
         }

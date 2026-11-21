@@ -16,7 +16,6 @@ import {
   ACCOUNT_NAME,
   accountName,
   accountObject,
-  billingOn,
   bookingFormerRoots,
   bookingRoot,
   checkConfig,
@@ -27,6 +26,7 @@ import {
   positive,
   previewsOn,
   registryObject,
+  stripeOn,
   webAppOn,
   workspaceLimits,
   workspaceOrigin,
@@ -84,14 +84,15 @@ async function handle(request, env, ctx) {
     // while it makes them and files while it has a bucket for them, with their limits and the store that holds them.
     const limits = workspaceLimits(env);
     const storage = filesStorage(env);
-    // Billing through Stripe only while it is on (config.js, billingOn).
+    // Billing through Stripe while Stripe's secrets are set (config.js, stripeOn): with BILLING on, and after it went off
+    // while the subscriptions workspaces have still run.
     const chat = workspacesOn(env)
       ? {
           retentionDays: limits.retentionDays,
           inviteSignups: inviteSignups(env),
           previews: previewsOn(env),
           files: storage ? { ...storage, maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes } : null,
-          billing: billingOn(env)
+          billing: stripeOn(env)
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
@@ -124,9 +125,9 @@ async function handle(request, env, ctx) {
     for (const [name, value] of Object.entries(NOINDEX)) response.headers.set(name, value);
     return response;
   }
-  // Where Stripe sends an owner back to after Checkout or the portal (billing.js). Off with billing, so the path stays
-  // a booking page's then, as /join does with team chat off.
-  if (path === '/billing' && reading && billingOn(env) && !bookingHere) {
+  // Where Stripe sends an owner back to after Checkout or the portal (billing.js), while Stripe's secrets are set. Without
+  // them the path stays a booking page's, as /join does with team chat off.
+  if (path === '/billing' && reading && stripeOn(env) && !bookingHere) {
     return billingPageResponse(config(env, url), url, privacyLanguage(url, request.headers.get('accept-language')), method);
   }
   if (path === '/v1/info' && method === 'GET') return json(200, await info(env, url));

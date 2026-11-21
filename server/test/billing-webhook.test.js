@@ -38,12 +38,13 @@ describe('signatures', () => {
 
   it('refuses a wrong secret, a changed body, a missing header and a stale or future time, and changes nothing', async () => {
     const ws = await newWorkspace();
-    const sub = { id: 'sub_forged', object: 'subscription', status: 'active', customer: 'cus_x', metadata: { workspace: ws.id }, items: { data: [] } };
-    const event = stripeFake.event('customer.subscription.updated', sub);
+    const { subscription } = await subscribe(ws);
+    const sub = { ...structuredClone(stripeFake.subscriptions.get(subscription.id)), status: 'past_due' };
+    const event = stripeFake.event('customer.subscription.updated', sub, { created: now() + 1 });
     const payload = JSON.stringify(event);
     const cases = [
       { secret: 'whsec_someone_else' },
-      { raw: payload.replace('active', 'past_due'), header: await (await import('../src/stripe.js')).signatureHeader(payload, FAKE_STRIPE.webhookSecret) },
+      { raw: payload.replace('past_due', 'canceled'), header: await (await import('../src/stripe.js')).signatureHeader(payload, FAKE_STRIPE.webhookSecret) },
       { header: '' },
       { header: 'garbage' },
       { time: now() - 6 * 60 },
@@ -54,10 +55,10 @@ describe('signatures', () => {
       expect(res.status, JSON.stringify(options)).toBe(400);
       expect(res.body.error).toBe('invalid_signature');
     }
-    expect(await billingRow(ws.id)).toBeUndefined();
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: subscription.id, status: 'active' });
     // Within five minutes it counts.
     expect((await deliver(event, { time: now() - 4 * 60 })).status).toBe(200);
-    expect(await billingRow(ws.id)).toMatchObject({ subscription: 'sub_forged', status: 'active' });
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: subscription.id, status: 'past_due' });
   });
 
   it('checks the signature over the body’s exact bytes', async () => {
@@ -267,5 +268,72 @@ describe('events', () => {
   it('refuses something signed that isn’t an event', async () => {
     expect((await deliver({ hello: 'world' })).status).toBe(400);
     expect((await deliver(null, { raw: 'not json' })).status).toBe(400);
+  });
+});
+
+// Anyone can pay one of the operator's Payment Links with ?client_reference_id=<workspace id>, and workspace IDs are no
+// secret. Only the Checkout page the workspace made counts, on the workspace's own customer, and only the subscription
+// the workspace has.
+describe('whose events count', () => {
+  const stranger = (id, ws, extra = {}) => ({
+    id,
+    object: 'subscription',
+    status: 'active',
+    customer: 'cus_stranger1',
+    cancel_at_period_end: false,
+    cancel_at: null,
+    metadata: { workspace: ws.id },
+    items: {
+      object: 'list',
+      data: [{ id: `si_${id.slice(4)}`, object: 'subscription_item', quantity: 1, price: stripeFake.prices.get(FAKE_STRIPE.priceId), current_period_end: now() + 3600 }]
+    },
+    ...extra
+  });
+
+  it('ignores a Checkout session the workspace didn’t make, also one that names it in client_reference_id', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const own = stripeFake.lastSession();
+    const before = await billingRow(ws.id);
+    const paid = { object: 'checkout.session', mode: 'subscription', status: 'complete', payment_status: 'paid', client_reference_id: ws.id };
+    for (const session of [
+      // A Payment Link of the operator's, paid with the workspace's ID added to its address.
+      { ...paid, id: 'cs_test_link1', customer: 'cus_stranger1', subscription: 'sub_stranger1', metadata: {} },
+      // The same with the workspace's ID in its metadata too.
+      { ...paid, id: 'cs_test_link2', customer: 'cus_stranger1', subscription: 'sub_stranger2', metadata: { workspace: ws.id } },
+      // A session of the workspace's own customer that isn't the page the workspace keeps.
+      { ...paid, id: 'cs_test_other3', customer: before.customer, subscription: 'sub_stranger3', metadata: { workspace: ws.id } },
+      // The page the workspace keeps, but paid by another customer.
+      { ...paid, id: own.id, customer: 'cus_stranger1', subscription: 'sub_stranger4', metadata: { workspace: ws.id } }
+    ]) {
+      const res = await deliver(stripeFake.event('checkout.session.completed', session));
+      expect(res.status, res.text).toBe(200);
+    }
+    expect(await billingRow(ws.id)).toMatchObject({ customer: before.customer, subscription: null, status: 'none', checkoutId: own.id });
+    expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'none', canCheckout: true, canManage: false });
+    // The page the workspace made still counts.
+    const done = stripeFake.completeCheckout(own.id);
+    await deliver(stripeFake.event('checkout.session.completed', done.session));
+    expect(await billingRow(ws.id)).toMatchObject({ customer: before.customer, subscription: done.subscription.id, checkoutId: null });
+  });
+
+  it('ignores subscription and invoice events about a subscription the workspace doesn’t have', async () => {
+    const ws = await newWorkspace();
+    const sub = stranger('sub_stranger5', ws);
+    for (const type of ['customer.subscription.created', 'customer.subscription.updated']) {
+      expect((await deliver(stripeFake.event(type, sub))).status).toBe(200);
+    }
+    expect((await deliver(stripeFake.event('invoice.paid', stripeFake.invoice(sub)))).status).toBe(200);
+    expect(await billingRow(ws.id)).toBeUndefined();
+    expect(await workspaceSql(ws.id, 'SELECT * FROM billing_payment')).toEqual([]);
+    // Nor once the workspace's own subscription has ended.
+    const { subscription } = await subscribe(ws);
+    const own = stripeFake.subscriptions.get(subscription.id);
+    own.status = 'canceled';
+    await deliver(stripeFake.event('customer.subscription.deleted', own, { created: now() + 1 }));
+    await deliver(stripeFake.event('customer.subscription.updated', stranger('sub_stranger6', ws), { created: now() + 2 }));
+    await deliver(stripeFake.event('invoice.payment_failed', stripeFake.invoice(stranger('sub_stranger6', ws)), { created: now() + 2 }));
+    expect(await billingRow(ws.id)).toMatchObject({ subscription: subscription.id, status: 'canceled' });
+    expect((await workspaceSql(ws.id, 'SELECT subscription FROM billing_payment')).map((r) => r.subscription)).not.toContain('sub_stranger6');
   });
 });

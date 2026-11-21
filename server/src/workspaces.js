@@ -8,13 +8,13 @@ import { fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 
 import {
   ACCOUNT_NAME,
   accountObject,
-  billingOn,
   filesOn,
   filesOrigin,
   limitRate,
   previewsOn,
   registryObject,
   signups,
+  stripeOn,
   workspaceLimits,
   workspaceObject,
   workspaceOrigin,
@@ -99,7 +99,7 @@ export async function workspaceInfo(env, url) {
 
 // billing: owners pay per member through Stripe, and owners and admins see the Billing section (billing.js).
 export function capabilities(env) {
-  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : []), ...(billingOn(env) ? ['billing'] : [])];
+  return ['reactions', 'unread', ...(filesOn(env) ? ['files'] : []), ...(previewsOn(env) ? ['previews'] : []), ...(stripeOn(env) ? ['billing'] : [])];
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite

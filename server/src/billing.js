@@ -1,9 +1,10 @@
 // Billing team workspaces per member through Stripe (README.md, Billing; WORKSPACES.md, Billing). Off unless the
-// operator turns it on (config.js, billingOn). The workspace's object keeps the billing state and talks to Stripe for
-// Checkout, the customer portal and seat changes; this file checks requests, adds the price of a seat, takes Stripe's
-// webhook and serves the page Stripe sends people back to.
+// operator turns it on (config.js, billingOn). With BILLING off and Stripe's secrets still set, the subscriptions
+// workspaces already have keep working and only Checkout is closed (config.js, stripeOn). The workspace's object keeps
+// the billing state and talks to Stripe for Checkout, the customer portal and seat changes; this file checks requests,
+// adds the price of a seat, takes Stripe's webhook and serves the page Stripe sends people back to.
 
-import { billingOn, stripeLive, webhookSecrets, workspaceObject, workspaceOrigin } from './config.js';
+import { billingOn, stripeLive, stripeOn, webhookSecrets, workspaceObject, workspaceOrigin } from './config.js';
 import { html, json, send } from './http.js';
 import * as input from './input.js';
 import { HttpError } from './input.js';
@@ -41,39 +42,44 @@ async function locale(request) {
 }
 
 // GET /v1/workspaces/{id}/billing and POST …/billing/checkout and …/billing/portal. rest: the path after the
-// workspace's id. ask(op, args) asks the workspace's object as the caller.
+// workspace's id. ask(op, args) asks the workspace's object as the caller. Checkout only while billing is on; the rest
+// while Stripe's secrets are set, for the workspaces that still have billing.
 export async function billingRoute(request, env, url, rest, ask) {
-  if (!billingOn(env)) throw notFound();
+  if (!stripeOn(env)) throw notFound();
   const route = `${request.method} ${rest.join('/')}`;
   if (route === 'GET billing') {
     const result = await ask('billing.get');
     if (result.status !== 200) return send(result);
-    return json(200, { billing: { ...result.body.billing, price: await seatPrice(env) } });
+    // A subscription is shown at the price on its own item, which Stripe goes on charging when STRIPE_PRICE_ID names
+    // another; a workspace without one at the price Checkout would sell it.
+    const price = result.body.billing.price ?? (await seatPrice(env));
+    return json(200, { billing: { ...result.body.billing, price } });
   }
-  if (route === 'POST billing/checkout') return send(await ask('billing.checkout', { origin: origin(env, url), locale: await locale(request) }));
+  if (route === 'POST billing/checkout') {
+    if (!billingOn(env)) throw notFound();
+    return send(await ask('billing.checkout', { origin: origin(env, url), locale: await locale(request) }));
+  }
   if (route === 'POST billing/portal') return send(await ask('billing.portal', { origin: origin(env, url), locale: await locale(request) }));
   throw notFound();
 }
 
 // The workspace a Stripe event is about, from the metadata the server put on the Checkout session and the
 // subscription; an invoice carries its subscription's metadata. null for anything else, such as a payment for
-// something that isn't a workspace in the same Stripe account.
+// something that isn't a workspace in the same Stripe account. A session's client_reference_id doesn't count: anyone
+// can add one to the address of a Payment Link. The workspace then checks that the event is about the page, customer
+// or subscription it has (workspace.js, Billing).
 export function eventWorkspace(event) {
   const object = event?.data?.object ?? {};
-  const candidates = [
-    object.metadata?.workspace,
-    object.object === 'checkout.session' ? object.client_reference_id : null,
-    object.parent?.subscription_details?.metadata?.workspace,
-    object.subscription_details?.metadata?.workspace
-  ];
+  const candidates = [object.metadata?.workspace, object.parent?.subscription_details?.metadata?.workspace, object.subscription_details?.metadata?.workspace];
   return candidates.find((id) => typeof id === 'string' && WORKSPACE_ID.test(id)) ?? null;
 }
 
 // POST /v1/billing/webhook: Stripe's events. The signature is checked over the body exactly as it came, before
 // anything in it is read. Every event Stripe signed gets 200 once the workspace has taken it, or when it isn't for a
-// workspace here, so Stripe stops sending it; only a failure on this side answers 500, and Stripe tries again.
+// workspace here, so Stripe stops sending it; only a failure on this side answers 500, and Stripe tries again. It
+// stays while Stripe's secrets are set, also with BILLING off, so the subscriptions workspaces have keep counting.
 export async function stripeWebhook(request, env) {
-  if (!billingOn(env)) throw notFound();
+  if (!stripeOn(env)) throw notFound();
   const raw = await readCapped(request);
   if (!(await verifySignature(raw, request.headers.get('stripe-signature'), webhookSecrets(env)))) {
     throw new HttpError(400, 'invalid_signature', 'This request is not signed by Stripe for this server.');
@@ -90,7 +96,13 @@ export async function stripeWebhook(request, env) {
   // A test event on a server with a live key, or the other way round, is about objects this server doesn't know.
   if (event.livemode !== stripeLive(env) || !EVENTS.has(event.type)) return json(200, { received: true });
   const workspace = eventWorkspace(event);
-  if (!workspace) return json(200, { received: true });
+  if (!workspace) {
+    const object = event.data?.object;
+    if (object?.object === 'checkout.session' && typeof object.client_reference_id === 'string' && WORKSPACE_ID.test(object.client_reference_id)) {
+      console.error('A Checkout session named a workspace only in client_reference_id, as a Payment Link can; ignored.');
+    }
+    return json(200, { received: true });
+  }
   await workspaceObject(env, workspace).billingEvent({ id: event.id, type: event.type, created: event.created, object: event.data?.object ?? null });
   return json(200, { received: true });
 }

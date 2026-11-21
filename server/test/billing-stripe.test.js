@@ -99,7 +99,6 @@ describe('settings', () => {
 describe('eventWorkspace', () => {
   it('finds the workspace in a session, a subscription and both shapes of invoice', () => {
     expect(eventWorkspace({ data: { object: { object: 'checkout.session', metadata: { workspace: W } } } })).toBe(W);
-    expect(eventWorkspace({ data: { object: { object: 'checkout.session', metadata: {}, client_reference_id: W } } })).toBe(W);
     expect(eventWorkspace({ data: { object: { object: 'subscription', metadata: { workspace: W } } } })).toBe(W);
     expect(eventWorkspace({ data: { object: { object: 'invoice', parent: { subscription_details: { metadata: { workspace: W } } } } } })).toBe(W);
     expect(eventWorkspace({ data: { object: { object: 'invoice', subscription_details: { metadata: { workspace: W } } } } })).toBe(W);
@@ -108,6 +107,8 @@ describe('eventWorkspace', () => {
   it('finds none in anything else', () => {
     expect(eventWorkspace({ data: { object: { object: 'invoice', metadata: { workspace: 'w_short' } } } })).toBeNull();
     expect(eventWorkspace({ data: { object: { object: 'subscription', client_reference_id: W } } })).toBeNull();
+    // Anyone can add client_reference_id to a Payment Link's address: it never names the workspace.
+    expect(eventWorkspace({ data: { object: { object: 'checkout.session', metadata: {}, client_reference_id: W } } })).toBeNull();
     expect(eventWorkspace({})).toBeNull();
   });
 });

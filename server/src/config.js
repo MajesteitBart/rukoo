@@ -149,9 +149,17 @@ export function webAppOn(env) {
 // Billing team workspaces per member through Stripe (README.md, Billing) is off until the operator sets BILLING to
 // "on", and needs team chat and four settings: the STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET secrets and the
 // STRIPE_PRICE_ID and STRIPE_TAX vars. With BILLING on and one of them missing, billing stays off and the Worker logs
-// once which.
+// once which. billingOn says whether owners can set billing up: open a Checkout page.
 const BILLING_SETTINGS = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID'];
 let billingWarned = false;
+
+// Whether the subscriptions workspaces have keep working: Stripe's webhook, the customer portal, the seats following
+// the members, the Billing section and closing a Checkout page left open. That needs team chat and the two secrets,
+// whatever BILLING says, so an operator who turns BILLING off only stops new Checkout pages, and keeps the secrets
+// until the last subscription has ended (README.md, Billing). True whenever billingOn is.
+export function stripeOn(env) {
+  return workspacesOn(env) && text(env.STRIPE_SECRET_KEY) !== null && webhookSecrets(env).length > 0;
+}
 
 export function billingOn(env) {
   if (!workspacesOn(env) || String(env.BILLING ?? '').trim().toLowerCase() !== 'on') return false;

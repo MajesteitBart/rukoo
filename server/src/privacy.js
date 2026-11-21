@@ -135,7 +135,7 @@ const TEXT = {
       'The page’s code comes from this site each time you open it. Whoever runs the site, or someone who broke into it, could change that code to read your password as you type it, and with it open your encrypted records. The Rukoo apps run the code you installed. If that matters to you, use team chat in one of them.'
     ],
     webSecurity: 'In a browser that holds only as long as the page’s code is what this site published (see In a browser).',
-    // Only while billing is on (config.js, billingOn).
+    // Only while Stripe processes billing on this server (config.js, stripeOn).
     whereBilling: 'Paying for a team workspace goes through Stripe (see Billing).',
     billing: 'Billing',
     billingText: [

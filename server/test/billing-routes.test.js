@@ -4,9 +4,12 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { forgetPrice } from '../src/stripe.js';
-import { FAKE_STRIPE, billing, billingRow, checkout, installFakeStripe, portal, stripeFake, subscribe } from './billing-helpers.js';
+import { FAKE_STRIPE, billing, billingRow, checkout, deliver, installFakeStripe, portal, settle, stripeFake, subscribe } from './billing-helpers.js';
 import { call } from './helpers.js';
 import { ON, api, guest, invite, newMember, newWorkspace } from './workspace-helpers.js';
+
+const now = () => Math.floor(Date.now() / 1000);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let restore;
 beforeAll(() => {
@@ -69,6 +72,28 @@ describe('GET /billing', () => {
     expect((await billing(ws.person, ws.id)).body.billing.price).toEqual({ amount: 1950, currency: 'eur', interval: 'month', taxBehavior: 'inclusive' });
     expect((await billing(ws.person, ws.id)).body.billing.price.amount).toBe(2100);
     stripeFake.prices.get(FAKE_STRIPE.priceId).unit_amount = 1950;
+  });
+
+  it('shows a subscription at the price it was made with, and a workspace without one at the configured price', async () => {
+    const ws = await newWorkspace();
+    const { subscription } = await subscribe(ws);
+    // The subscription has an older price than STRIPE_PRICE_ID names now, which Stripe keeps charging it.
+    const older = { ...structuredClone(stripeFake.prices.get(FAKE_STRIPE.priceId)), id: 'price_olderSeat', unit_amount: 1500, tax_behavior: 'exclusive' };
+    const kept = stripeFake.subscriptions.get(subscription.id);
+    kept.items.data[0].price = older;
+    await deliver(stripeFake.event('customer.subscription.updated', kept, { created: now() + 1 }));
+    const charged = { amount: 1500, currency: 'eur', interval: 'month', taxBehavior: 'exclusive' };
+    expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'active', seats: 1, price: charged });
+    // So does the alarm's read of it.
+    expect(await settle(ws.id, async () => (await billingRow(ws.id)).syncAt === null)).toBe(true);
+    expect((await billing(ws.person, ws.id)).body.billing.price).toEqual(charged);
+    // A workspace without billing, and this one once its subscription ended, see what Checkout would charge.
+    const configured = { amount: 1950, currency: 'eur', interval: 'month', taxBehavior: 'inclusive' };
+    const other = await newWorkspace('Other');
+    expect((await billing(other.person, other.id)).body.billing.price).toEqual(configured);
+    kept.status = 'canceled';
+    await deliver(stripeFake.event('customer.subscription.deleted', kept, { created: now() + 2 }));
+    expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'canceled', price: configured });
   });
 
   it('answers 404 for someone outside the workspace', async () => {
@@ -150,6 +175,42 @@ describe('POST /billing/checkout', () => {
     expect(res.body.error).toBe('billing_active');
     expect(stripeFake.sessions.size).toBe(sessions);
     expect(await billingRow(ws.id)).toMatchObject({ subscription: done.subscription.id, checkoutId: null });
+  });
+
+  it('opens no other page when the open one is paid while Checkout waits on Stripe', async () => {
+    const ws = await newWorkspace();
+    await checkout(ws.person, ws.id);
+    const first = stripeFake.lastSession();
+    // Stripe holds the next click's read of the seat price; meanwhile the owner pays the first page and its event comes.
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    let asked = false;
+    const real = stripeFake.handle.bind(stripeFake);
+    stripeFake.handle = async (request) => {
+      if (!asked && request.method === 'GET' && new URL(request.url).pathname.startsWith('/v1/prices/')) {
+        asked = true;
+        await held;
+      }
+      return real(request);
+    };
+    let again;
+    let sessions;
+    try {
+      const opening = checkout(ws.person, ws.id);
+      for (let i = 0; i < 300 && !asked; i++) await sleep(10);
+      expect(asked).toBe(true);
+      const done = stripeFake.completeCheckout(first.id);
+      expect((await deliver(stripeFake.event('checkout.session.completed', done.session))).status).toBe(200);
+      sessions = stripeFake.sessions.size;
+      release();
+      again = await opening;
+    } finally {
+      stripeFake.handle = real;
+    }
+    expect(again.status, again.text).toBe(409);
+    expect(again.body.error).toBe('billing_active');
+    expect(stripeFake.sessions.size).toBe(sessions);
+    expect([...stripeFake.sessions.values()].filter((page) => page.client_reference_id === ws.id && page.status === 'open')).toHaveLength(0);
   });
 
   it('lets only an owner open Checkout', async () => {
@@ -257,12 +318,27 @@ describe('while billing is on', () => {
 
 describe('with billing off', () => {
   const OFF = { BILLING: 'off' };
-  const MISSING = { STRIPE_WEBHOOK_SECRET: undefined };
   const NO_TAX = { STRIPE_TAX: '' };
+  const NO_PRICE = { STRIPE_PRICE_ID: '' };
+  const NO_SECRET = { STRIPE_WEBHOOK_SECRET: undefined };
+  const NO_KEY = { STRIPE_SECRET_KEY: '' };
 
-  it('answers 404 on every billing route, says nothing in /v1/info and /privacy, and leaves /billing to booking pages', async () => {
+  it('opens no Checkout page while Stripe’s secrets keep the existing subscriptions running', async () => {
     const ws = await newWorkspace();
-    for (const vars of [OFF, MISSING, NO_TAX]) {
+    // The rest of a workspace's billing keeps working; test/billing-winddown.test.js runs it with BILLING off throughout.
+    for (const vars of [OFF, NO_TAX, NO_PRICE]) {
+      expect((await checkout(ws.person, ws.id, {}, vars)).status).toBe(404);
+      expect((await portal(ws.person, ws.id, {}, vars)).body.error).toBe('billing_none');
+      expect((await call('POST', '/v1/billing/webhook', { body: '{}', vars: { ...ON, ...vars } })).status).toBe(400);
+      expect((await call('GET', '/v1/info', { vars: { ...ON, ...vars } })).body.workspace.capabilities).toContain('billing');
+      expect((await call('GET', '/privacy', { vars: { ...ON, ...vars } })).text).toContain('Stripe');
+      expect((await call('GET', '/billing?checkout=done', { vars: { ...ON, ...vars } })).text).toContain('Stripe is setting up');
+    }
+  });
+
+  it('answers 404 on every billing route without Stripe’s secrets, says nothing in /v1/info and /privacy, and leaves /billing to booking pages', async () => {
+    const ws = await newWorkspace();
+    for (const vars of [NO_SECRET, NO_KEY, { ...OFF, ...NO_KEY }]) {
       expect((await billing(ws.person, ws.id, vars)).status).toBe(404);
       expect((await checkout(ws.person, ws.id, {}, vars)).status).toBe(404);
       expect((await portal(ws.person, ws.id, {}, vars)).status).toBe(404);

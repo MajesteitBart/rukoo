@@ -89,9 +89,8 @@ describe('a member joins', () => {
     try {
       const running = settle(ws.id, () => seatChanges(subscription).length > 0, 20);
       await new Promise((resolve) => setTimeout(resolve, 300));
-      const next = { ...structuredClone(subscription), id: 'sub_replacement', items: { data: [{ ...subscription.items.data[0], id: 'si_replacement', quantity: 1 }] } };
-      await workspaceSql(ws.id, "UPDATE billing SET status = 'canceled'");
-      await deliver(stripeFake.event('customer.subscription.created', next, { created: now() + 10 }));
+      // As a paid Checkout page of the workspace's would put it there.
+      await workspaceSql(ws.id, "UPDATE billing SET subscription = 'sub_replacement', item = 'si_replacement', status = 'active', seats = 1");
       release();
       await running;
     } finally {

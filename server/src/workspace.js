@@ -19,9 +19,9 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, fromBase64url, hmac, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { accountObject, billingOn, billingTax, filesOn, stripeLive, workspaceLimits } from './config.js';
+import { accountObject, billingOn, billingTax, filesOn, stripeLive, stripeOn, workspaceLimits } from './config.js';
 import { fileStore } from './filestore.js';
-import { StripeError, stripe } from './stripe.js';
+import { StripeError, priceOut, stripe } from './stripe.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 // An operation id older than this is refused even when its retry receipt is gone; one further ahead than the second
@@ -107,6 +107,12 @@ const STRIPE_ID = {
   cs: /^cs_[A-Za-z0-9_]{1,200}$/
 };
 
+// The ID of a Stripe object field that is an ID or, expanded, the object itself; null when it is neither.
+function stripeIdOf(field) {
+  const id = typeof field === 'string' ? field : typeof field?.id === 'string' ? field.id : null;
+  return id && id.length <= 255 ? id : null;
+}
+
 // The subscription an invoice is for: under parent from API version 2025-03-31, at the top before it.
 function invoiceSubscription(invoice) {
   const sub = invoice?.parent?.subscription_details?.subscription ?? invoice?.subscription ?? null;
@@ -122,9 +128,10 @@ function invoiceSubscription(invoice) {
 // a page is being made, and stays set until Stripe confirmed which pages are open. trimBy is the renewal before
 // which vacant seats leave the bill, trimMissed one that billed them anyway. syncRev counts the times something asked
 // the alarm to come (syncAt): a run that waited on Stripe meanwhile leaves the newer request, and its answer, to the
-// next run. orphaned: no owner is left, and the alarm sets the subscription to end with its period. billing_ended holds
-// every subscription seen ended, which never comes back; billing_payment the last invoice outcome of each
-// subscription; billing_event the IDs of the Stripe events handled.
+// next run. orphaned: no owner is left, and the alarm sets the subscription to end with its period. price is the price
+// on the subscription's item, as JSON { amount, currency, interval, taxBehavior }, which Stripe keeps charging when
+// STRIPE_PRICE_ID names another. billing_ended holds every subscription seen ended, which never comes back;
+// billing_payment the last invoice outcome of each subscription; billing_event the IDs of the Stripe events handled.
 const BILLING_TABLES = `
   CREATE TABLE IF NOT EXISTS billing (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -146,7 +153,8 @@ const BILLING_TABLES = `
     tries INTEGER NOT NULL DEFAULT 0,
     trimBy INTEGER,
     trimMissed INTEGER,
-    orphaned INTEGER NOT NULL DEFAULT 0
+    orphaned INTEGER NOT NULL DEFAULT 0,
+    price TEXT
   );
   CREATE TABLE IF NOT EXISTS billing_ended (id TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS billing_payment (subscription TEXT PRIMARY KEY, outcome TEXT NOT NULL, at INTEGER NOT NULL) WITHOUT ROWID;
@@ -1861,9 +1869,10 @@ export class Workspace extends DurableObject {
   }
 
   // When the alarm should come for billing: a read or change that is due or waits for its retry, or the time vacant
-  // seats leave the bill. null while there is nothing to do, and while billing is off.
+  // seats leave the bill. null while there is nothing to do, and without Stripe's secrets. With BILLING off and the
+  // secrets set, a subscription's seats still follow the members (config.js, stripeOn).
   #billingAlarm(now) {
-    if (!billingOn(this.env)) return null;
+    if (!stripeOn(this.env)) return null;
     const b = this.#billing();
     if (!b || !b.subscription) return null;
     if (b.syncAt !== null) return b.syncAt;
@@ -1877,7 +1886,7 @@ export class Workspace extends DurableObject {
   // sent again after Stripe answered it with an error, which Stripe would answer the same way for a day. What Stripe
   // answers is kept only while the workspace still has the subscription and item it was asked about.
   async #syncBilling() {
-    if (!this.present || !billingOn(this.env)) return;
+    if (!this.present || !stripeOn(this.env)) return;
     let b = this.#billing();
     const due = b ? this.#billingAlarm(Date.now()) : null;
     if (due === null || due > Date.now()) return;
@@ -1948,49 +1957,49 @@ export class Workspace extends DurableObject {
   }
 
   // A subscription as Stripe has it, from an event or a read (at: its time in seconds; read: true for what the alarm
-  // just read from Stripe). It is kept when it is this workspace's subscription, or when the workspace has none Stripe
-  // can still charge, and when it is no older than the state kept. An ended subscription never comes back from an event
-  // that describes it earlier, even one with the same time. After an event the alarm reads the subscription back from
-  // Stripe, so events in any order end at Stripe's state. Returns whether it was kept.
+  // just read from Stripe). Only the workspace's own subscription counts, the one a Checkout page it made brought
+  // (#sessionCompleted): an event about any other is ignored, so a subscription made elsewhere in the same Stripe
+  // account can't become the workspace's. One of the workspace's own customer that ended is noted, so it never comes
+  // back. The state is kept when it is no older than the one kept, and an ended subscription never comes back from an
+  // event that describes it earlier, even one with the same time. After an event the alarm reads the subscription back
+  // from Stripe, so events in any order end at Stripe's state. Returns whether it was kept.
   #applySubscription(sub, at, read = false) {
     if (!sub || typeof sub.id !== 'string' || !STRIPE_ID.sub.test(sub.id) || !Number.isSafeInteger(at)) return false;
-    const b = this.#ensureBilling();
+    const b = this.#billing();
     const now = Date.now();
-    if (b.subscription && b.subscription !== sub.id && billingLive(b.status)) {
-      console.error('A workspace with a subscription was sent another one; it keeps the first.');
+    const status = typeof sub.status === 'string' && /^[a-z_]{1,32}$/.test(sub.status) ? sub.status : 'incomplete';
+    if (!b || b.subscription !== sub.id) {
+      if (b?.customer && stripeIdOf(sub.customer) === b.customer && BILLING_ENDED.has(status)) {
+        this.sql.exec('INSERT OR IGNORE INTO billing_ended (id, at) VALUES (?, ?)', sub.id, now);
+      } else if (!b?.customer || stripeIdOf(sub.customer) !== b.customer) {
+        console.error('A Stripe event named a workspace for a subscription that is not its own; ignored.');
+      }
       return false;
     }
-    const status = typeof sub.status === 'string' && /^[a-z_]{1,32}$/.test(sub.status) ? sub.status : 'incomplete';
-    // A subscription seen ended never comes back, whatever an older event says, also after another one followed it. One
-    // that ended and isn't the workspace's current subscription is only noted; it never takes the current one's place.
+    // A subscription seen ended never comes back, whatever an older event says.
     if (this.#ended(sub.id) && !BILLING_ENDED.has(status)) return false;
     if (BILLING_ENDED.has(status)) this.sql.exec('INSERT OR IGNORE INTO billing_ended (id, at) VALUES (?, ?)', sub.id, now);
-    if (b.subscription && b.subscription !== sub.id && BILLING_ENDED.has(status)) return false;
-    if (b.subscription === sub.id) {
-      if (at < b.stateAt) {
-        if (!read) this.#refreshBilling(now);
-        return false;
-      }
+    if (at < b.stateAt) {
+      if (!read) this.#refreshBilling(now);
+      return false;
     }
+    // The item kept, else the one at the configured price, else the first: a subscription made at an older price keeps
+    // its item when STRIPE_PRICE_ID changes.
     const items = Array.isArray(sub.items?.data) ? sub.items.data : [];
-    const item = items.find((i) => i?.price?.id === String(this.env.STRIPE_PRICE_ID || '').trim()) ?? items[0] ?? null;
+    const item =
+      items.find((i) => b.item && i?.id === b.item) ?? items.find((i) => i?.price?.id === String(this.env.STRIPE_PRICE_ID || '').trim()) ?? items[0] ?? null;
     const end = Number.isSafeInteger(sub.current_period_end) ? sub.current_period_end : Number.isSafeInteger(item?.current_period_end) ? item.current_period_end : null;
-    const customer = typeof sub.customer === 'string' ? sub.customer : typeof sub.customer?.id === 'string' ? sub.customer.id : null;
-    if (b.subscription !== sub.id) {
-      // Another subscription after one that ended starts from nothing of the old one's.
-      this.sql.exec('UPDATE billing SET trimBy = NULL, trimMissed = NULL, orphaned = 0, tries = 0 WHERE id = 1');
-    }
+    const price = priceOut(item?.price);
     this.sql.exec(
-      `UPDATE billing SET customer = COALESCE(?, customer), subscription = ?, item = ?, status = ?, seats = ?, periodEnd = ?,
-         cancelAtPeriodEnd = ?, stateAt = ? WHERE id = 1`,
-      customer && STRIPE_ID.cus.test(customer) ? customer : null,
-      sub.id,
+      `UPDATE billing SET item = ?, status = ?, seats = ?, periodEnd = ?, cancelAtPeriodEnd = ?, stateAt = ?,
+         price = COALESCE(?, price) WHERE id = 1`,
       typeof item?.id === 'string' && STRIPE_ID.si.test(item.id) ? item.id : null,
       status,
       Number.isSafeInteger(item?.quantity) ? item.quantity : null,
       end === null ? null : end * 1000,
       sub.cancel_at_period_end === true || Number.isSafeInteger(sub.cancel_at) ? 1 : 0,
-      at
+      at,
+      price ? JSON.stringify(price) : null
     );
     if (!read) this.#refreshBilling(now);
     this.#seatsChanged(now, !read);
@@ -1998,29 +2007,40 @@ export class Workspace extends DurableObject {
     return true;
   }
 
-  // A Checkout page that completed, from its event or a read: the workspace has its subscription, which the alarm
-  // reads from Stripe now. A second subscription while one is live is left at Stripe and logged.
-  #sessionCompleted(session, now) {
+  // A Checkout page that completed: the workspace has its subscription, which the alarm reads from Stripe now. Only a
+  // page of the workspace's own customer counts, which only this server makes; from an event (event: true) only the
+  // page the workspace keeps, with the workspace in its metadata. Anyone can pay one of the operator's Payment Links
+  // with the workspace's ID as client_reference_id, and that page is ignored. A page read from Stripe here
+  // (#paidMeanwhile) is one the workspace keeps or one its customer has open. A second subscription while one is live
+  // is left at Stripe and logged.
+  #sessionCompleted(session, now, event = false) {
     if (session?.mode !== 'subscription' || typeof session.subscription !== 'string' || !STRIPE_ID.sub.test(session.subscription)) return false;
+    const b = this.#billing();
+    const own = Boolean(b?.customer) && stripeIdOf(session.customer) === b.customer;
+    if (own && b.subscription === session.subscription) {
+      // Taken already, from a read of the page before its event came.
+      this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
+      return false;
+    }
+    if (!own || (event && (session.id !== b.checkoutId || session.metadata?.workspace !== this.wid))) {
+      console.error('A completed Checkout session named a workspace, but is not a page the workspace made; ignored.');
+      return false;
+    }
     // The page's subscription ended already: the page is done, and nothing else changes.
     if (this.#ended(session.subscription)) {
       this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1 AND checkoutId = ?', session.id);
       return false;
     }
-    const b = this.#ensureBilling();
-    if (b.subscription && b.subscription !== session.subscription && billingLive(b.status)) {
+    if (b.subscription && billingLive(b.status)) {
       console.error('A workspace with a subscription completed a second Checkout; it keeps the first.');
       return false;
     }
-    if (b.subscription !== session.subscription) {
-      this.sql.exec(
-        `UPDATE billing SET subscription = ?, item = NULL, status = 'incomplete', seats = NULL, periodEnd = NULL,
-           cancelAtPeriodEnd = 0, stateAt = 0, trimBy = NULL, trimMissed = NULL, orphaned = 0 WHERE id = 1`,
-        session.subscription
-      );
-    }
-    const customer = typeof session.customer === 'string' && STRIPE_ID.cus.test(session.customer) ? session.customer : null;
-    this.sql.exec('UPDATE billing SET customer = COALESCE(?, customer) WHERE id = 1', customer);
+    // Another subscription after one that ended starts from nothing of the old one's.
+    this.sql.exec(
+      `UPDATE billing SET subscription = ?, item = NULL, status = 'incomplete', seats = NULL, periodEnd = NULL,
+         cancelAtPeriodEnd = 0, stateAt = 0, trimBy = NULL, trimMissed = NULL, orphaned = 0, tries = 0, price = NULL WHERE id = 1`,
+      session.subscription
+    );
     if (b.checkoutId === session.id) {
       this.sql.exec('UPDATE billing SET checkoutId = NULL, checkoutUrl = NULL, checkoutSeats = NULL WHERE id = 1');
     }
@@ -2045,17 +2065,22 @@ export class Workspace extends DurableObject {
   #billingEvent({ type, created, object }, now) {
     switch (type) {
       case 'checkout.session.completed':
-        return this.#sessionCompleted(object, now);
+        return this.#sessionCompleted(object, now, true);
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted':
         return this.#applySubscription(object, created);
       case 'invoice.paid':
       case 'invoice.payment_failed': {
-        // Kept for the subscription it is for, also when it comes before that subscription's own events, and never in
-        // place of another subscription's.
+        // Kept for the subscription it is for, and never in place of another subscription's: the workspace's own, or
+        // one of its own customer, as when the invoice comes before the page's event. Others are ignored.
         const sub = invoiceSubscription(object);
         if (!sub || !Number.isSafeInteger(created)) return false;
+        const b = this.#billing();
+        if (!b || (sub !== b.subscription && (!b.customer || stripeIdOf(object?.customer) !== b.customer))) {
+          console.error('A Stripe invoice named a workspace for a subscription that is not its own; ignored.');
+          return false;
+        }
         const at = created * 1000;
         const kept = this.sql.exec('SELECT at FROM billing_payment WHERE subscription = ?', sub).toArray()[0];
         if (kept && at < kept.at) return false;
@@ -2072,7 +2097,9 @@ export class Workspace extends DurableObject {
     }
   }
 
-  // GET /billing, for owners and admins: what Stripe bills and what the workspace has, for the Billing section.
+  // GET /billing, for owners and admins: what Stripe bills and what the workspace has, for the Billing section. price:
+  // the price on a live subscription's item, else null, and the Worker adds the configured one (billing.js). With
+  // BILLING off an owner can still manage billing that exists, but not set it up.
   #billingGet(me) {
     if (!ADMIN.has(me.role)) throw FORBIDDEN('Only owners and admins see billing.');
     const b = this.#billing();
@@ -2083,6 +2110,12 @@ export class Workspace extends DurableObject {
       .exec('SELECT COUNT(*) AS n FROM invite WHERE redeemedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?', now)
       .one().n;
     const paid = b?.subscription ? this.sql.exec('SELECT outcome, at FROM billing_payment WHERE subscription = ?', b.subscription).toArray()[0] : undefined;
+    let price = null;
+    try {
+      price = live && b.price ? JSON.parse(b.price) : null;
+    } catch {
+      price = null;
+    }
     return reply(200, {
       billing: {
         status: b?.status ?? 'none',
@@ -2094,8 +2127,9 @@ export class Workspace extends DurableObject {
         payment: paid?.outcome ?? null,
         paymentAt: paid?.at ?? null,
         syncing: target !== null && target !== b.seats,
-        canCheckout: me.role === 'owner' && !live,
-        canManage: me.role === 'owner' && Boolean(b?.customer && b?.subscription)
+        canCheckout: me.role === 'owner' && !live && billingOn(this.env),
+        canManage: me.role === 'owner' && Boolean(b?.customer && b?.subscription),
+        price
       }
     });
   }
@@ -2106,29 +2140,44 @@ export class Workspace extends DurableObject {
   async #checkout(me, a) {
     if (me.role !== 'owner') throw FORBIDDEN('Only owners set up billing.');
     if (!billingOn(this.env)) throw new Refusal(404, 'not_found', 'There is nothing here.');
-    const b = this.#billing();
-    if (b && billingLive(b.status)) throw new Refusal(409, 'billing_active', 'This workspace has billing already. Use Manage billing.');
-    if (this.deleting) throw new Refusal(409, 'billing_active', 'This workspace is being deleted.');
+    this.#mayCheckout();
     this.checkout ??= this.#openCheckout(a).finally(() => {
       this.checkout = null;
     });
     return reply(200, { url: await this.checkout });
   }
 
+  // Checkout goes on only while the workspace is there, isn't being deleted and has no subscription Stripe can still
+  // charge. Asked again after every answer from Stripe, since Stripe's events come in while Checkout waits: a page paid
+  // meanwhile brings a subscription, and the workspace must then never hand out or make another page.
+  #mayCheckout() {
+    if (!this.present) throw NO_WORKSPACE();
+    if (this.deleting) throw new Refusal(409, 'billing_active', 'This workspace is being deleted.');
+    const b = this.#billing();
+    if (b && billingLive(b.status)) throw new Refusal(409, 'billing_active', 'This workspace has billing already. Use Manage billing.');
+  }
+
   async #openCheckout({ origin, locale }) {
     const api = stripe(this.env);
     try {
       await this.#checkPrice(api);
+      this.#mayCheckout();
       const seats = Math.max(1, this.#paidMembers());
       const open = await this.#openSession(api);
+      this.#mayCheckout();
       if (open && open.seats === seats && open.until > Date.now() + CHECKOUT_LEFT) return open.url;
       const customer = await this.#customer(api);
+      this.#mayCheckout();
       // No other page of the workspace stays payable: the one kept, and any an answer that got lost left behind.
       await this.#closeCheckout();
       const tax = billingTax(this.env);
       const quantity = Math.max(1, this.#paidMembers());
-      // Until Stripe answers, a page may exist that this workspace doesn't know: the next close looks for it.
-      this.#write(() => this.sql.exec('UPDATE billing SET checkoutPending = 1 WHERE id = 1'));
+      // Until Stripe answers, a page may exist that this workspace doesn't know: the next close looks for it. Checked
+      // in the same step, so nothing can come between the last check and the page.
+      this.#write(() => {
+        this.#mayCheckout();
+        this.sql.exec('UPDATE billing SET checkoutPending = 1 WHERE id = 1');
+      });
       const session = await api.post('/v1/checkout/sessions', {
         mode: 'subscription',
         customer,
@@ -2155,6 +2204,12 @@ export class Workspace extends DurableObject {
           quantity
         )
       );
+      // A subscription that came while Stripe made the page: the page is expired before anyone sees it.
+      const b = this.#billing();
+      if (b && billingLive(b.status)) {
+        await this.#closeCheckout();
+        this.#mayCheckout();
+      }
       return session.url;
     } catch (err) {
       if (err instanceof Refusal) throw err;
@@ -2209,9 +2264,11 @@ export class Workspace extends DurableObject {
 
   // Expires every Checkout page of the workspace that is still open: the one kept and any other open page of its
   // customer, such as one an answer that got lost left behind. Answers billing_active when one was paid first, and
-  // billing_unavailable when Stripe can't say.
+  // billing_unavailable when Stripe can't say. It needs only Stripe's secrets, so a page left open when BILLING went off
+  // is closed too, and the workspace can be deleted. Without them nothing can be asked, and a page the workspace knows
+  // keeps it from being deleted (#deleteWorkspace).
   async #closeCheckout() {
-    if (!billingOn(this.env)) return;
+    if (!stripeOn(this.env)) return;
     const b = this.#billing();
     if (!b?.checkoutId && !b?.customer) return;
     const api = stripe(this.env);
@@ -2271,9 +2328,10 @@ export class Workspace extends DurableObject {
   }
 
   // POST /billing/portal, for an owner: Stripe's customer portal, to change the payment method, read invoices or cancel.
+  // Also with BILLING off while Stripe's secrets are set, so an owner can still cancel.
   async #portal(me, { origin, locale }) {
     if (me.role !== 'owner') throw FORBIDDEN('Only owners manage billing.');
-    if (!billingOn(this.env)) throw new Refusal(404, 'not_found', 'There is nothing here.');
+    if (!stripeOn(this.env)) throw new Refusal(404, 'not_found', 'There is nothing here.');
     const b = this.#billing();
     if (!b?.customer || !b.subscription) throw new Refusal(409, 'billing_none', 'This workspace has no billing yet. Set it up first.');
     try {

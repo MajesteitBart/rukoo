@@ -25,6 +25,22 @@ describe('billing as shipped', () => {
     expect(await workspaceSql(ws.id, 'SELECT * FROM billing')).toEqual([]);
   });
 
+  it('keeps a workspace that still has billing or a Checkout page when Stripe’s secrets are gone', async () => {
+    // Nothing can ask Stripe whether the page was paid or the subscription ended, so the workspace stays until the
+    // secrets are back (README.md, Billing, turning billing off).
+    for (const row of [
+      "INSERT INTO billing (id, live, customer, checkoutId, checkoutUrl, checkoutSeats) VALUES (1, 0, 'cus_left1', 'cs_test_left1', 'https://checkout.stripe.com/c/pay/cs_test_left1', 1)",
+      "INSERT INTO billing (id, live, customer, checkoutPending) VALUES (1, 0, 'cus_left2', 1)",
+      "INSERT INTO billing (id, live, customer, subscription, status) VALUES (1, 1, 'cus_left3', 'sub_left3', 'active')"
+    ]) {
+      const ws = await newWorkspace();
+      await workspaceSql(ws.id, row);
+      const refused = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
+      expect(refused.status, row).toBe(409);
+      expect(refused.body.error).toBe('billing_active');
+    }
+  });
+
   it('stays off with BILLING on but no Stripe settings', async () => {
     const ws = await newWorkspace();
     const vars = { BILLING: 'on' };
