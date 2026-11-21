@@ -37,6 +37,7 @@ export function page({ operator, jurisdiction, signups }) {
     : 'Each account is stored in one Cloudflare location, usually near the first device that used it.';
   const newAccounts = {
     open: 'Anyone can make an account here.',
+    verified: 'Anyone can make an account here, after confirming their email address with a code sent to it.',
     invite: 'New accounts need an invite code.',
     closed: 'This server takes no new accounts.'
   }[signups];

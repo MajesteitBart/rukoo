@@ -6,7 +6,7 @@ This folder holds the server for Rukoo accounts. A Rukoo account keeps a few of 
 
 The server is a sync relay for small encrypted records. Each device encrypts a record before sending it, with a key the server never gets. The server stores the encrypted bytes and hands them to the person's other devices.
 
-It is not a mail server. No mail, no mail passwords and no Google tokens pass through it. It never sees what a record holds. What it can see is listed in [PROTOCOL.md](PROTOCOL.md#what-the-server-can-see): the email address of each account, device names, record counts and sizes, and IP addresses.
+It is not a mail server. No one's mail, mail passwords or Google tokens pass through it. The one mail it can send is its own: a code to an address that asks for one, once you give it a Resend key ([Codes by email](#codes-by-email)). It never sees what a record holds. What it can see is listed in [PROTOCOL.md](PROTOCOL.md#what-the-server-can-see): the email address of each account, device names, record counts and sizes, and IP addresses.
 
 It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`, or at `/<handle>` on a booking address you set up (`BOOKING_ORIGIN`). A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
 
@@ -76,16 +76,18 @@ The `vars` block holds the server's settings:
 | `PRIVACY_URL` | Your own privacy statement. Leave it empty to use the one the server shows at `/privacy` (step 8). |
 | `JURISDICTION` | See step 3. |
 | `INVITE_USES` | How many accounts one invite code may make: `1` by default, `0` for any number. A used-up code is refused like a wrong one. Needs the `REGISTRY` binding, which keeps the count. |
-| `SIGNUPS` | `"open"` lets anyone make an account. `"invite"` needs a code from `INVITE_CODES` (step 7). `"closed"` takes no new accounts. Existing accounts keep working in every mode. |
+| `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)). `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`. |
+| `MAIL_FROM` | The sender of the codes the server mails, such as `"Rukoo <account@example.com>"`, on a domain your Resend account has verified. Empty sends no mail ([Codes by email](#codes-by-email)). |
+| `EMAIL_CODES_PER_HOUR` | The most codes of one purpose (sign-up or unlock) the whole server mails in an hour: `100` by default. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
-| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. The server doesn't check addresses yet, so invite codes are the safer choice for a server on the internet. |
+| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address that reads its mail, so for a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
 
 The defaults (250,000 records and 100 MiB per account) are far more than one person uses.
 
 The booking page settings are in the same block; see [Booking pages](#booking-pages).
 
-The `ratelimits` block limits sign-up, sign-in and recovery calls to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The locks after ten wrong passwords, on an account's sign-ins and on a signed-in device's password checks, apply either way.
+The `ratelimits` block limits sign-up, sign-in, recovery and code requests to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The locks after ten wrong passwords, on an account's sign-ins and on a signed-in device's password checks, apply either way.
 
 ### 5. Deploy
 
@@ -129,6 +131,8 @@ npx wrangler secret put INVITE_CODES
 
 For example `family-2026,team-lisbon`. Any code in the list works, as often as it is used. To retire a code, put the list again without it.
 
+Invite codes work with `"verified"` sign-ups too, for people you let in without a code by email.
+
 ### 8. Check it
 
 Open the server's address in a browser. You should see a short page that says who runs the server and what it can see. `https://<your address>/v1/info` shows the same settings as JSON.
@@ -152,6 +156,25 @@ Once people use your domain, you can turn off the `workers.dev` address by addin
 This is a setting in the app. In Rukoo, open Settings → Rukoo account, choose the server row and enter your server's address, such as `https://accounts.example.org`. The app shows who runs the server before anyone signs up.
 
 To make your server the default in your own build of Rukoo, set `rukoo.accountServer` in the repository's `package.json`.
+
+## Codes by email
+
+The server can mail a six-digit code to an address, through [Resend](https://resend.com). It does so for two things:
+
+- With `SIGNUPS` on `"verified"`, a new account needs a code sent to its address, unless it comes with an invite code or a workspace invitation. This is what lets a server on the internet take sign-ups from anyone: invented addresses can't fill `MAX_ACCOUNTS`.
+- On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock an account's sign-ins for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
+
+To turn it on, verify a sending domain in Resend, set `MAIL_FROM` to an address on it, and store the API key:
+
+```sh
+npx wrangler secret put RESEND_API_KEY
+```
+
+The key needs sending access to that domain only. Until both are set, the server sends no mail, `GET /v1/info` lists no `email-codes`, and `"verified"` works as `"invite"`.
+
+What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code a minute, five an hour and ten a day, and the server at most `EMAIL_CODES_PER_HOUR` of each purpose in an hour. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them when the code expires and a day after an address's last code. Resend sees each address and the mail it sends; `/privacy` names it while mail is on, in English and Dutch. Someone who keeps asking for codes for one address can use up its ten a day, and the owner gets those mails. The account lock itself still ends after 15 minutes.
+
+The tests answer Resend themselves (`test/fixtures/fake-resend.js`) and never send mail. A `RESEND_API_KEY` in `.dev.vars` does send real mail from `npm run dev`.
 
 ## Booking pages
 
@@ -309,7 +332,7 @@ Cloudflare keeps that 30-day history whether you use it or not, so a message som
 
 ## The server Rukoo uses
 
-The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code until the apps ask for the emailed code at sign-up; then `SIGNUPS` there becomes `"verified"`. Its codes go out from `account@bvdm.ai` once the `RESEND_API_KEY` secret is set. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
 
 ### How rukoo.io is set up
 

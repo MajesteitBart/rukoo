@@ -98,10 +98,11 @@ export function capabilities(env) {
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
-// code, with team chat on and WORKSPACE_SIGNUPS not off. Without the registry nothing would hold an invitation to one
-// account, so none counts.
+// code, or by invite code or emailed code (verified), with team chat on and WORKSPACE_SIGNUPS not off. Without the
+// registry nothing would hold an invitation to one account, so none counts.
 export function inviteSignups(env) {
-  return workspacesOn(env) && signups(env) === 'invite' && workspaceSignups(env) && Boolean(env.REGISTRY);
+  const mode = signups(env);
+  return workspacesOn(env) && (mode === 'invite' || mode === 'verified') && workspaceSignups(env) && Boolean(env.REGISTRY);
 }
 
 // For POST /v1/signup without a good invite code: the code under which the registry counts a sign-up with this

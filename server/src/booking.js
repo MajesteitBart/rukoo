@@ -692,7 +692,7 @@ export class Booking extends DurableObject {
 
   // DELETE /v1/booking and account deletion: everything on the page goes; the claim stays, reserved for this account.
   // deviceId: the session that turned the page off, for DELETE /v1/booking. reclaim, after an account deletion: the
-  // owner becomes deleted:<reclaim>, so a new account with the same email (sign-ups don't prove the address) gets the
+  // owner becomes deleted:<reclaim>, so a new account with the same email (not every sign-up proves the address) gets the
   // handle only with the deleting device's handleKey.
   wipe(owner, deviceId = null, { reclaim = null } = {}) {
     const page = this.#page();

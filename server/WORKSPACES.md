@@ -292,7 +292,7 @@ The page carries `X-Rukoo-Workspace-Invite: 1`, which no other answer at `/join`
 
 #### Signing up with an invitation
 
-On a server whose sign-ups need an invite code, an open invitation stands in for one: `POST /v1/signup` takes `workspaceInvite: { workspace, invite }` when `invite` is missing or wrong ([PROTOCOL.md](PROTOCOL.md#post-v1signup)). Each invitation makes one full account, counted by the registry like an invite code with one use, within `MAX_ACCOUNTS`. Signing up doesn't use the invitation; the new account joins with it as anyone does. An invitation that is used, withdrawn or expired, or whose issuer can no longer invite, gets `403 invite_required`, as a wrong code does. The operator turns this off with `WORKSPACE_SIGNUPS=off`, which keeps sign-ups to their own codes, and `inviteSignups` in `GET /v1/info` says which applies.
+On a server whose sign-ups need an invite code, or an invite code or emailed code (`verified`), an open invitation stands in for one: `POST /v1/signup` takes `workspaceInvite: { workspace, invite }` when `invite` is missing or wrong ([PROTOCOL.md](PROTOCOL.md#post-v1signup)). Each invitation makes one full account, counted by the registry like an invite code with one use, within `MAX_ACCOUNTS`. Signing up doesn't use the invitation; the new account joins with it as anyone does. An invitation that is used, withdrawn or expired, or whose issuer can no longer invite, gets `403 invite_required`, as a wrong code does. The operator turns this off with `WORKSPACE_SIGNUPS=off`, which keeps sign-ups to their own codes, and `inviteSignups` in `GET /v1/info` says which applies.
 
 ### Channels
 

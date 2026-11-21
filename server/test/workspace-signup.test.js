@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { registryObject } from '../src/config.js';
 import { LATER_RESERVED_HANDLES } from '../src/input.js';
 import { hostKey, page, publish } from './booking-helpers.js';
+import { MAIL_VARS } from './fixtures/fake-resend.js';
 import { KDF, call, device, key, newEmail, salt, sealed, signup } from './helpers.js';
 import { ON, api, invite, newMember, newWorkspace, workspaceSql } from './workspace-helpers.js';
 
@@ -120,6 +121,17 @@ describe('signing up with a workspace invitation', () => {
     const closed = await signUp({ workspace: ws.id, invite: (await invite(ws.person, ws.id)).secret }, { SIGNUPS: 'closed' });
     expect(closed.status).toBe(403);
     expect(closed.body.error).toBe('signups_closed');
+  });
+
+  it('works on a verified server too, in place of a code from the address', async () => {
+    const ws = await newWorkspace();
+    const { secret } = await invite(ws.person, ws.id);
+    const verified = { ...MAIL_VARS, SIGNUPS: 'verified' };
+    expect((await signUp({ workspace: ws.id, invite: secret }, verified)).status).toBe(201);
+    // A used invitation is refused as on an invite server, even where a code would do.
+    refused(await signUp({ workspace: ws.id, invite: secret }, verified));
+    expect((await signUp(undefined, verified)).body.error).toBe('code_required');
+    expect((await api('GET', '/v1/info', { vars: verified })).body.workspace.inviteSignups).toBe(true);
   });
 
   it('gives the place back when the sign-up fails, so the invitation still works', async () => {

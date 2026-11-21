@@ -34,6 +34,24 @@ const TEXT = {
       'If you turn on a booking page: what it publishes and the bookings made on it, as Booking pages below describes.'
     ],
     dataChat: 'If you use team chat: the workspaces you are in and what you write and do there, as Team chat below describes.',
+    // While the server sends codes by email: the first item and an addition to the lock item. signup: whether a
+    // sign-up needs a code.
+    emailItem: (signup) =>
+      signup
+        ? 'Your email address, which is your sign-in name. Unless you sign up with an invite code or an invitation, we check it with a code we send there before we make your account. We send it no other mail than the codes you ask for (see Email codes).'
+        : 'Your email address, which is your sign-in name. We don’t check it, and send it no other mail than the codes you ask for (see Email codes).',
+    lockCodes: ' A code sent to your email address lets you sign in or recover your account during the lock.',
+    codes: 'Email codes',
+    codesText: (signup) => [
+      `${signup ? 'You can ask this server for a six-digit code by email: to make an account, and to sign in or recover your account while failed attempts have locked it.' : 'You can ask this server for a six-digit code by email, to sign in or recover your account while failed attempts have locked it.'} A code works for 10 minutes, once, and only on the device that asked for it.`,
+      'Resend, a service of Resend, Inc. in the United States, sends these emails on our behalf under its data processing terms. It gets your email address and the email, with the code in it, and keeps a record of each email for as long as its terms say.',
+      `Asking gets the same answer whether or not the address has an account, so nobody learns that from it.${signup ? ' If you ask for a sign-up code for an address that already has an account, the email says so instead of carrying a code.' : ''} An address without an account gets no sign-in code.`,
+      'For each code, this server keeps a hash of the address it went to, a hash of the code and when the code expires, without the address itself. They are deleted when the code is used, after five wrong tries, or when it expires. To limit how many codes one address gets (one a minute, five an hour, ten a day), it also keeps when codes went to an address, under a hash of the address, until a day after the last one. It doesn’t keep your IP address for this.',
+      signup
+        ? 'We send codes to make the account you ask for and to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Checking addresses and limiting codes protect people from accounts made with their address, and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
+        : 'We send codes to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Limiting them protects people and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
+    ],
+    whereCodes: 'Resend, a service of Resend, Inc. in the United States, sends the emails with codes (see Email codes).',
     ip: 'Your IP address reaches Cloudflare with every request. The server uses it to limit how often one address may try to sign in or write to a booking page, and doesn’t store it. For bookings it also counts how many came from one network that day (an IPv4 /24 or an IPv6 /64). It keeps those counts only as hashes made with a key that changes every day, and deletes them once the host’s day is over. Cloudflare may keep addresses in its own logs for a short time.',
     why: 'Why',
     whyText:
@@ -143,6 +161,22 @@ const TEXT = {
       'Als je een afsprakenpagina aanzet: wat die publiceert en de afspraken die erop worden gemaakt, zoals hieronder bij Afsprakenpagina’s staat.'
     ],
     dataChat: 'Als je teamchat gebruikt: de werkruimtes waarin je zit en wat je daar schrijft en doet, zoals hieronder bij Teamchat staat.',
+    emailItem: (signup) =>
+      signup
+        ? 'Je e-mailadres, waarmee je inlogt. Tenzij je een account maakt met een uitnodigingscode of een uitnodiging, controleren we het met een code die we ernaartoe sturen voordat we je account maken. We sturen er geen andere mail naar dan de codes die je aanvraagt (zie E-mailcodes).'
+        : 'Je e-mailadres, waarmee je inlogt. We controleren het niet en sturen er geen andere mail naar dan de codes die je aanvraagt (zie E-mailcodes).',
+    lockCodes: ' Met een code die naar je e-mailadres wordt gestuurd, kun je tijdens de blokkade toch inloggen of je account herstellen.',
+    codes: 'E-mailcodes',
+    codesText: (signup) => [
+      `${signup ? 'Je kunt deze server om een code van zes cijfers per e-mail vragen: om een account te maken, en om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.' : 'Je kunt deze server om een code van zes cijfers per e-mail vragen, om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.'} Een code werkt 10 minuten, één keer, en alleen op het apparaat dat erom vroeg.`,
+      'Resend, een dienst van Resend, Inc. in de Verenigde Staten, verstuurt deze e-mails namens ons onder zijn verwerkersvoorwaarden. Resend krijgt je e-mailadres en de e-mail, met de code erin, en bewaart van elke e-mail een registratie zo lang als zijn voorwaarden zeggen.',
+      `Wie een code aanvraagt, krijgt hetzelfde antwoord of het adres nu een account heeft of niet, dus dat valt er niet uit af te leiden.${signup ? ' Vraag je een code om een account te maken voor een adres dat al een account heeft, dan staat dat in de e-mail, in plaats van een code.' : ''} Een adres zonder account krijgt geen inlogcode.`,
+      'Voor elke code bewaart deze server een hash van het adres waar hij naartoe ging, een hash van de code en wanneer de code verloopt, zonder het adres zelf. Die worden verwijderd als de code is gebruikt, na vijf verkeerde pogingen of als hij verloopt. Om te beperken hoeveel codes één adres krijgt (één per minuut, vijf per uur, tien per dag), bewaart hij ook wanneer er codes naar een adres gingen, onder een hash van het adres, tot een dag na de laatste. Je IP-adres bewaart hij hiervoor niet.',
+      signup
+        ? 'We sturen codes om het account te maken waar je om vraagt en om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). Het controleren van adressen en de limieten op codes beschermen mensen tegen accounts die met hun adres worden gemaakt, en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
+        : 'We sturen codes om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). De limieten op codes beschermen mensen en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
+    ],
+    whereCodes: 'Resend, een dienst van Resend, Inc. in de Verenigde Staten, verstuurt de e-mails met codes (zie E-mailcodes).',
     ip: 'Bij elk verzoek komt je IP-adres bij Cloudflare binnen. De server gebruikt het om te beperken hoe vaak één adres mag proberen in te loggen of iets naar een afsprakenpagina mag sturen, en slaat het niet op. Voor afspraken telt de server ook hoeveel er die dag van één netwerk kwamen (een IPv4-/24 of een IPv6-/64). Die tellingen bewaart hij alleen als hashes, gemaakt met een sleutel die elke dag wisselt, en hij verwijdert ze zodra de dag van de host voorbij is. Cloudflare kan adressen kort in zijn eigen logs bewaren.',
     why: 'Waarom',
     whyText:
@@ -220,7 +254,11 @@ const TEXT = {
 
 // The language asked for with ?lang=, or else the browser's first choice of English and Dutch.
 export function privacyLanguage(url, acceptLanguage) {
-  const asked = url.searchParams.get('lang');
+  return language(url.searchParams.get('lang'), acceptLanguage);
+}
+
+// asked when it is English or Dutch, else the first of those two in an Accept-Language header, else English.
+export function language(asked, acceptLanguage) {
   if (asked === 'nl' || asked === 'en') return asked;
   for (const part of String(acceptLanguage || '').split(',')) {
     const tag = part.trim().slice(0, 2).toLowerCase();
@@ -250,13 +288,20 @@ function bytesText(bytes, lang) {
 // without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
 // (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
 // files only where the server makes or keeps them. web: Rukoo in the browser runs on this server's website (WEB_APP,
-// with team chat on), which the statement then covers too.
-export function privacy({ operator, jurisdiction, chat = null, web = false }, lang = 'en') {
+// with team chat on), which the statement then covers too. codes: what the server sends codes by email for (codes.js,
+// codePurposes). With none, the statement says the server sends no mail.
+export function privacy({ operator, jurisdiction, chat = null, web = false, codes = [] }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
   const contact = operator.contact ? T.contact(contactLink(operator.contact)) : '';
   const place = T.places[jurisdiction] || T.places.any;
-  const dataItems = chat ? [...T.dataItems, T.dataChat] : T.dataItems;
+  const mailed = codes.length > 0;
+  const signupCodes = codes.includes('signup');
+  // The address is the first item and the sign-in lock the seventh.
+  const accountItems = mailed
+    ? T.dataItems.map((item, i) => (i === 0 ? T.emailItem(signupCodes) : i === 6 ? `${item}${T.lockCodes}` : item))
+    : T.dataItems;
+  const dataItems = chat ? [...accountItems, T.dataChat] : accountItems;
   const files = chat?.files
     ? {
         max: bytesText(chat.files.maxBytes, lang),
@@ -264,6 +309,12 @@ export function privacy({ operator, jurisdiction, chat = null, web = false }, la
         s3: chat.files.store === 's3' ? T.s3Keeper(chat.files.provider, chat.files.place) : null
       }
     : null;
+  const where = [T.whereText(place), ...(mailed ? [T.whereCodes] : []), ...(chat ? [T.whereChat(files)] : [])].join(' ');
+  const emailCodes = mailed
+    ? `<h2 id="email-codes">${escape(T.codes)}</h2>\n${T.codesText(signupCodes)
+        .map((p) => `<p>${escape(p)}</p>`)
+        .join('\n')}\n\n`
+    : '';
   const teamChat = chat
     ? `<h2 id="team-chat">${escape(T.chat)}</h2>\n${T.chatText(chat.retentionDays, chat.inviteSignups, chat.previews, files)
         .map((p) => `<p>${escape(p)}</p>`)
@@ -307,7 +358,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <p>${escape(T.whyText)}</p>
 
 <h2>${escape(T.where)}</h2>
-<p>${escape(chat ? `${T.whereText(place)} ${T.whereChat(files)}` : T.whereText(place))}</p>
+<p>${escape(where)}</p>
 
 <h2>${escape(T.keep)}</h2>
 <p>${escape(T.keepText)}</p>
@@ -315,7 +366,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <h2>${escape(T.rights)}</h2>
 <p>${escape(chat ? `${T.rightsText} ${T.rightsChat}` : T.rightsText)}</p>
 
-<h2 id="booking-pages">${escape(T.booking)}</h2>
+${emailCodes}<h2 id="booking-pages">${escape(T.booking)}</h2>
 ${T.bookingText.map((p) => `<p>${escape(p)}</p>`).join('\n')}
 
 ${teamChat}${browser}<h2>${escape(T.security)}</h2>

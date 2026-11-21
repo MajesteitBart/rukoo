@@ -89,12 +89,13 @@ The server speaks JSON over HTTPS. Requests that need a session send `Authorizat
 |---|---|
 | 400 | `invalid` (the request's shape or values are wrong) |
 | 401 | `unauthorized` (no session or an ended session; on `login` and `recover/*`, a wrong password or recovery key) |
-| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required` (also for a code that has been used up, and for a workspace invitation that can't stand in for one), `wrong_password` (a signed-in request whose `authKey` doesn't match), `browser_session` (a session made in a browser, on a route it can't use: [Sessions made in a browser](#sessions-made-in-a-browser)) |
+| 403 | `signups_closed` (also when the server holds as many accounts as it takes), `invite_required` (also for a code that has been used up, and for a workspace invitation that can't stand in for one), `code_required` (a sign-up on a `verified` server without an emailed code or an invite), `code_wrong` (an emailed code that doesn't match, with `attemptsLeft`), `code_expired` (an emailed code that expired, was used or has no tries left), `wrong_password` (a signed-in request whose `authKey` doesn't match), `browser_session` (a session made in a browser, on a route it can't use: [Sessions made in a browser](#sessions-made-in-a-browser)) |
 | 404 | `not_found` |
 | 409 | `exists` (sign-up for an address that has an account) |
 | 413 | `too_large`, `quota` |
 | 429 | `locked` (too many failed sign-ins, or too many wrong passwords from one session), `rate_limited` |
 | 500 | `not_configured` (the server has no `PEPPER` secret), `server` |
+| 503 | `mail_unavailable` (the server sends no codes by email) |
 
 ### `GET /v1/info`
 
@@ -108,11 +109,12 @@ Who runs this server and where it keeps data. No session needed. The app shows t
   "hosting": { "provider": "Cloudflare", "company": "Cloudflare, Inc.", "country": "US", "jurisdiction": "eu" },
   "signups": "open",
   "limits": { "records": 250000, "bytes": 104857600, "recordBytes": 16384, "batch": 500 },
-  "features": ["booking"]
+  "features": ["booking", "email-codes"],
+  "emailCodes": { "purposes": ["signup", "unlock"], "digits": 6, "expiresIn": 600 }
 }
 ```
 
-`jurisdiction` is `eu`, `us`, `fedramp` or null: where the account's storage lives and runs. `signups` is `open`, `invite` or `closed`. `features` lists the optional parts of this protocol the server offers; `booking` means [Booking pages](#booking-pages). A server without it answers 404 on those routes, and a device hides the feature. The protocol version stays 1.
+`jurisdiction` is `eu`, `us`, `fedramp` or null: where the account's storage lives and runs. `signups` is `open` (anyone, unchecked), `verified` (anyone who proves the address with an emailed code, or brings an invite), `invite` or `closed`. A server set to `verified` that can't send mail reports and works as `invite`. `email-codes` in `features` means the server sends codes by email ([`POST /v1/email-code`](#post-v1email-code)), and `emailCodes` says for what: `unlock` wherever it sends codes, and `signup` as well when `signups` is `verified`. Without mail, both are absent. A device shows the code step only when they are there. `features` lists the optional parts of this protocol the server offers; `booking` means [Booking pages](#booking-pages). A server without it answers 404 on those routes, and a device hides the feature. The protocol version stays 1.
 
 `workspaces-v1` in `features` means the server has team chat turned on. The answer then also has a `workspace` object, and the routes under `/v1/workspaces` work: [WORKSPACES.md](WORKSPACES.md#gate-1-routes) describes both. Unlike records, a workspace's messages aren't encrypted to the people who write them: whoever runs the server can read them.
 
@@ -123,6 +125,14 @@ The page a workspace invitation link opens in a browser (`GET` and `HEAD`), only
 ### `POST /v1/prelogin`
 
 `{ "email" }` → `{ "kdf", "salt" }`. For an address without an account the server returns the default `kdf` and a salt made from its secret and the address, the same each time, so this call doesn't tell anyone whether an account exists.
+
+### `POST /v1/email-code`
+
+`{ "email", "purpose", "lang" }` → `202 { "challenge", "expiresIn" }`. Mails a six-digit code to the address. `purpose` is `signup`, for a sign-up on a `verified` server, or `unlock`, to sign in or recover while the account is locked. `lang` (optional) is `en` or `nl`; without it the mail follows `Accept-Language`. `challenge` is 32 random bytes in base64url that only the asking device gets: a code counts only together with its challenge, and wrong tries count against that challenge alone, so nobody can use up the tries of a code someone else asked for. A code works for `expiresIn` seconds (600) and once. Each challenge gets five tries, counting wrong codes and, for `unlock`, wrong passwords or recovery keys sent with the right code.
+
+The answer is the same, and as fast, whether or not the address has an account: the mail goes out after the answer. A `signup` code for an address with an account becomes a note saying it has one, and an `unlock` code for an address without one isn't sent. Asking for a purpose the server doesn't send codes for (see `emailCodes` in `GET /v1/info`) is `400 invalid` with `field: "purpose"`, and a server without mail answers `503 mail_unavailable`. A `signup` code on a full server is `403 signups_closed`.
+
+One address gets at most one code a minute, five an hour and ten a day, whatever the purpose, and the server at most `EMAIL_CODES_PER_HOUR` (100) of each purpose an hour. Past them, `429 rate_limited` with `Retry-After`. The per-address limits apply to addresses with and without an account alike. The server keeps hashes of the challenge, the address and the code, made with its secret, until the code is used, runs out of tries or expires, and when codes went to an address, under the address's hash, until a day after the last one.
 
 ### `POST /v1/signup`
 
@@ -137,13 +147,17 @@ The page a workspace invitation link opens in a browser (`GET` and `HEAD`), only
 
 → `201 { "token", "account" }`, where `account` is what `GET /v1/account` returns. `invite` is needed only when `signups` is `invite`. `device.platform` is up to 32 characters, such as `win32`, `darwin`, `linux` or `android`; `web` makes the session a browser's ([Sessions made in a browser](#sessions-made-in-a-browser)). The same holds for `device` in `POST /v1/login` and `POST /v1/recover/finish`.
 
-On a server with team chat on, an invitation into a workspace there can stand in for the invite code. The request then carries `"workspaceInvite": { "workspace": "w_…", "invite": "<the invitation's secret, 43 base64url characters>" }`, which the apps take from an invitation link (`<server>/join#w=<workspace>&i=<secret>`). The server looks at it only when `signups` is `invite`, the operator hasn't set `WORKSPACE_SIGNUPS` to `off`, and `invite` is missing or wrong; `workspace.inviteSignups` in `GET /v1/info` says whether that is so. The invitation must still be open: not used, withdrawn or expired, and issued by someone who may still invite. Each invitation makes one account, a full one. Signing up doesn't use the invitation up: the new account joins with it afterwards ([WORKSPACES.md](WORKSPACES.md#workspaces-members-and-invitations)). An invitation that can't be used, a second sign-up with the same invitation, and any other shape all get `403 invite_required`, as a wrong invite code does. With `open` sign-ups the field is ignored, and `closed` refuses as always.
+When `signups` is `verified`, a sign-up without a working `invite` or `workspaceInvite` carries `"emailCode": { "challenge", "code" }` from a `signup` code for the same address ([`POST /v1/email-code`](#post-v1email-code)). Spaces and dashes in `code` are ignored. Without it the answer is `403 code_required`; a wrong code is `403 code_wrong` with `attemptsLeft`, and one that expired, was used or ran out of tries `403 code_expired`. The code is used up when the account is made, and stays for another try when the sign-up fails for another reason. Invite codes and workspace invitations work there as on an `invite` server and need no emailed code.
+
+On a server with team chat on, an invitation into a workspace there can stand in for the invite code. The request then carries `"workspaceInvite": { "workspace": "w_…", "invite": "<the invitation's secret, 43 base64url characters>" }`, which the apps take from an invitation link (`<server>/join#w=<workspace>&i=<secret>`). The server looks at it only when `signups` is `invite` or `verified`, the operator hasn't set `WORKSPACE_SIGNUPS` to `off`, and `invite` is missing or wrong; `workspace.inviteSignups` in `GET /v1/info` says whether that is so. The invitation must still be open: not used, withdrawn or expired, and issued by someone who may still invite. Each invitation makes one account, a full one. Signing up doesn't use the invitation up: the new account joins with it afterwards ([WORKSPACES.md](WORKSPACES.md#workspaces-members-and-invitations)). An invitation that can't be used, a second sign-up with the same invitation, and any other shape all get `403 invite_required`, as a wrong invite code does. With `open` sign-ups the field is ignored, and `closed` refuses as always.
 
 ### `POST /v1/login`
 
-`{ "email", "authKey", "device" }` → `{ "token", "wrappedKey", "account" }`.
+`{ "email", "authKey", "device", "emailCode" }` → `{ "token", "wrappedKey", "account" }`. `emailCode` is optional.
 
-Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
+Ten failed attempts on one account within 15 minutes of the first lock it for 15 minutes. Sign-ins and `recover/*` share this lock; signed-in calls that check the password again have a lock per session instead (`POST /v1/password`). The tenth attempt already gets `429 locked`, and so does every attempt during the lock, also with the right password. A successful attempt resets the count. Every 429 carries `Retry-After` in seconds. Apart from this lock, a server may limit how often one network address calls `prelogin`, `email-code`, `signup`, `login`, `recover/*` and `POST /v1/records` (`429 rate_limited`).
+
+Anyone who knows the address can set off this lock. Where the server sends codes, the owner gets past it with an `unlock` code ([`POST /v1/email-code`](#post-v1email-code)), sent as `"emailCode": { "challenge", "code" }` with the sign-in or with `recover/start` and `recover/finish`. The code is checked first: `403 code_wrong` or `code_expired` as for a sign-up, without touching the account. With a right code the attempt ignores the lock and doesn't count toward it, which stays in place for everyone else. A wrong password or recovery key then answers `401` and costs the code one of its five tries. A sign-in or `recover/finish` that succeeds uses the code up; `recover/start` leaves it for `recover/finish`.
 
 An account keeps at most 100 sessions; a new one past that ends the session seen longest ago.
 
@@ -193,11 +207,11 @@ This call, `POST /v1/recovery`, `POST /v1/password/check` and `DELETE /v1/accoun
 
 ### `POST /v1/recover/start` and `POST /v1/recover/finish`
 
-For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and returns `{ "recoveryWrappedKey", "kdf" }`. `finish` takes `{ "email", "recoveryAuth", "kdf", "salt", "authKey", "wrappedKey", "device" }`, sets the new password, signs out every device and returns `{ "token", "account" }`. Failed attempts count toward the same lock as sign-ins.
+For a forgotten password. `start` takes `{ "email", "recoveryAuth" }` and returns `{ "recoveryWrappedKey", "kdf" }`. `finish` takes `{ "email", "recoveryAuth", "kdf", "salt", "authKey", "wrappedKey", "device" }`, sets the new password, signs out every device and returns `{ "token", "account" }`. Failed attempts count toward the same lock as sign-ins. Both take an optional `emailCode` to get past that lock, as `POST /v1/login` describes.
 
 ### `DELETE /v1/account`
 
-`{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't prove the address, so a new account with the same email gets the handle only with the key. A device that deletes the booking page first checks the password with `POST /v1/password/check` before it does.
+`{ "authKey", "handleKey" }` → `204`. Deletes the account and every record at once. `handleKey` is optional: 32 random bytes in base64url that the deleting device makes and keeps. The account's booking page is wiped, and its handle stays reserved for 12 months for whoever sends that key as `reclaim` with `PUT /v1/booking`; without it, for nobody. Sign-ups don't always prove the address (invite codes and `open` servers don't), so a new account with the same email gets the handle only with the key. A device that deletes the booking page first checks the password with `POST /v1/password/check` before it does.
 
 An account that is or was a member of workspaces leaves them with this call, and its name goes from the ones it had left before. The account and its records are gone at once. The server keeps a list of those workspaces and the account's incarnation, without the address or anything else of the account, until each workspace has ended the membership, which normally happens within the same request. A workspace that can't be reached is tried again for as long as it takes. What the account wrote in a workspace stays there, under a deleted member, until the workspace's retention removes it.
 
@@ -233,6 +247,7 @@ Every stored write gets the next `seq`, also a delete. A tombstone stays so devi
 - Device names and platforms, and when each device last connected.
 - How many records there are, their sizes and when they change.
 - IP addresses, in Cloudflare's request logs and in the rate limiter.
+- Where it sends codes by email: hashes of the addresses codes went to, for up to a day, and the mail itself while it passes to the mail service.
 - For an account that turns on a booking page: what that page publishes and the bookings made on it, as [Booking pages](#booking-pages) describes.
 
 It can't see what a record holds: no category names, no senders, no Message-IDs and nothing about the mail.
