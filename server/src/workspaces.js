@@ -76,8 +76,10 @@ export async function workspaceInfo(env, url) {
     capabilities: capabilities(env),
     ...(filesOn(env) ? { files: { maxBytes: limits.fileBytes, workspaceBytes: limits.filesBytes, origin: filesOrigin(env, url) } } : {}),
     recovery: 'basic',
-    // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite).
+    // Whether someone without an account can sign up with a workspace invitation (POST /v1/signup, workspaceInvite),
+    // and whether that sign-up also needs a code sent to the address (emailCode).
     inviteSignups: inviteSignups(env),
+    inviteSignupsNeedCode: inviteSignupsNeedCode(env),
     limits: {
       workspacesPerAccount: limits.perAccount,
       membershipsPerAccount: limits.memberships,
@@ -98,10 +100,20 @@ export function capabilities(env) {
 }
 
 // A workspace invitation stands in for the operator's invite code only on a server that takes accounts by invite
-// code, with team chat on and WORKSPACE_SIGNUPS not off. Without the registry nothing would hold an invitation to one
-// account, so none counts.
+// code, or by invite code or emailed code (verified), with team chat on and WORKSPACE_SIGNUPS not off. Without the
+// registry nothing would hold an invitation to one account, so none counts. On a verified server the sign-up still
+// needs a code sent to the address (inviteSignupsNeedCode): anyone with an account can make invitations, and an
+// invitation shows nothing about who reads the address's mail. A server set to verified that can't send codes takes
+// the operator's invite codes alone, so a lost mail key doesn't let invitations make accounts for unchecked addresses.
 export function inviteSignups(env) {
-  return workspacesOn(env) && signups(env) === 'invite' && workspaceSignups(env) && Boolean(env.REGISTRY);
+  const mode = signups(env);
+  const unchecked = mode === 'invite' && String(env.SIGNUPS ?? '').trim().toLowerCase() === 'verified';
+  return workspacesOn(env) && (mode === 'invite' || mode === 'verified') && !unchecked && workspaceSignups(env) && Boolean(env.REGISTRY);
+}
+
+// Whether a sign-up with a workspace invitation also needs an emailed code for its address: on a verified server.
+export function inviteSignupsNeedCode(env) {
+  return inviteSignups(env) && signups(env) === 'verified';
 }
 
 // For POST /v1/signup without a good invite code: the code under which the registry counts a sign-up with this

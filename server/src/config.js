@@ -2,11 +2,13 @@
 // Every Durable Object namespace goes through the configured jurisdiction: an object is found per jurisdiction, so
 // one looked up without it would seem not to exist.
 
+import { hmac, toBase64url } from './bytes.js';
 import { fileStore } from './filestore.js';
 import { HttpError } from './input.js';
+import { mailer } from './mail.js';
 
 export const JURISDICTIONS = ['eu', 'us', 'fedramp'];
-const SIGNUP_MODES = ['open', 'invite', 'closed'];
+const SIGNUP_MODES = ['open', 'verified', 'invite', 'closed'];
 // A shorter pepper is easier to guess, and with it the account name of any address.
 const PEPPER_MIN = 16;
 export const ACCOUNT_NAME = /^[A-Za-z0-9_-]{43}$/;
@@ -39,6 +41,11 @@ export function jurisdiction(env) {
 function namespace(env, binding) {
   const where = jurisdiction(env);
   return where ? binding.jurisdiction(where) : binding;
+}
+
+// The routing name of an address's account object. It never changes for an address: that is how the account is found.
+export async function accountName(env, email) {
+  return toBase64url(await hmac(env.PEPPER, `account\n${email}`));
 }
 
 // The account object with a routing name. Callers check the name's shape first.
@@ -155,15 +162,23 @@ export function ownHosts(env, url) {
 }
 
 // Missing means invite, the default in wrangler.jsonc. Anything unrecognized means closed, so a typo never opens a
-// server that was meant to be private.
+// server that was meant to be private. verified takes anyone who proves their address with a code sent there
+// (codes.js); a server that can't send codes takes invite codes instead, so losing the mail key never opens it.
 export function signups(env) {
   if (env.SIGNUPS === undefined) return 'invite';
   const mode = String(env.SIGNUPS).trim().toLowerCase();
+  if (mode === 'verified' && !emailCodesOn(env)) return 'invite';
   return SIGNUP_MODES.includes(mode) ? mode : 'closed';
 }
 
+// Codes by email need a way to send mail and the registry, which keeps them.
+export function emailCodesOn(env) {
+  return Boolean(env.REGISTRY) && mailer(env) !== null;
+}
+
 // Whether a workspace invitation may stand in for an invite code when someone signs up (WORKSPACE_SIGNUPS). Only
-// "off" turns it off: it counts only with SIGNUPS on invite and team chat on, and each invitation makes one account.
+// "off" turns it off: it counts only with SIGNUPS on invite or verified and team chat on, and each invitation makes
+// one account.
 export function workspaceSignups(env) {
   return String(env.WORKSPACE_SIGNUPS ?? '').trim().toLowerCase() !== 'off';
 }

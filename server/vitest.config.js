@@ -24,6 +24,9 @@ const BINDINGS = {
   OPERATOR_URL: '',
   OPERATOR_CONTACT: '',
   PRIVACY_URL: '',
+  // No mail: the code tests set a key and a sender per request and answer Resend themselves (test/fixtures/fake-resend.js).
+  RESEND_API_KEY: '',
+  MAIL_FROM: '',
   BOOKING_ORIGIN: '',
   BOOKING_ALIASES: '',
   BOOKING_FORMER_ROOTS: '',

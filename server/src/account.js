@@ -363,13 +363,15 @@ export class Account extends DurableObject {
     return reply(201, { token, account: this.#info(sessionId, limits) });
   }
 
-  async login(name, input, limits) {
+  // unlocked: the Worker checked a code sent to the address (codes.js), which lets this attempt past the account's
+  // lock. Such an attempt leaves the lock and the count of failures as they are: the code's own tries limit it.
+  async login(name, input, limits, { unlocked = false } = {}) {
     const hash = await sha256(input.authKey);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
     if (!this.present) return failure(401, 'unauthorized', 'The email address or password is wrong.');
     const now = Date.now();
-    const check = this.#check('authVerifier', hash, now);
+    const check = this.#check('authVerifier', hash, now, unlocked);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or password is wrong.');
     const sessionId = this.ctx.storage.transactionSync(() => this.#addSession(tokenHash, input.device, now));
@@ -442,25 +444,25 @@ export class Account extends DurableObject {
     return this.#signedIn(token, (session, now) => this.#withPassword(session, hash, now, () => reply(204)));
   }
 
-  async recoverStart(input) {
+  async recoverStart(input, { unlocked = false } = {}) {
     const hash = await sha256(input.recoveryAuth);
     if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
-    const check = this.#check('recoveryVerifier', hash, now);
+    const check = this.#check('recoveryVerifier', hash, now, unlocked);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const { recoveryWrappedKey, kdf } = this.#account();
     return reply(200, { recoveryWrappedKey: toBase64url(new Uint8Array(recoveryWrappedKey)), kdf: JSON.parse(kdf) });
   }
 
-  async recoverFinish(name, input, limits) {
+  async recoverFinish(name, input, limits, { unlocked = false } = {}) {
     const hash = await sha256(input.recoveryAuth);
     const authVerifier = await sha256(input.authKey);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
     if (!this.present) return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const now = Date.now();
-    const check = this.#check('recoveryVerifier', hash, now);
+    const check = this.#check('recoveryVerifier', hash, now, unlocked);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
     const sessionId = this.ctx.storage.transactionSync(() => {
@@ -715,10 +717,12 @@ export class Account extends DurableObject {
   }
 
   // Compares a hash with the account's stored verifier and keeps the account's failure count, for sign-ins and
-  // recovery.
-  #check(column, hash, now) {
+  // recovery. unlocked: a code proved the address, so the lock doesn't apply and nothing is counted.
+  #check(column, hash, now, unlocked = false) {
     const account = this.#account();
-    return this.#attempt('account', account, sameBytes(new Uint8Array(account[column]), hash), now);
+    const right = sameBytes(new Uint8Array(account[column]), hash);
+    if (unlocked) return { result: right ? 'ok' : 'wrong' };
+    return this.#attempt('account', account, right, now);
   }
 
   // Counts one attempt in row's failure count, where row is the account or a session from table and right says

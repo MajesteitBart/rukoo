@@ -230,12 +230,13 @@ Every route takes the account's session token as `Authorization: Bearer <token>`
   "files": { "maxBytes": 26214400, "workspaceBytes": 5368709120, "origin": "https://rukoo.example" },
   "recovery": "basic",
   "inviteSignups": true,
+  "inviteSignupsNeedCode": false,
   "limits": { "workspacesPerAccount": 3, "membershipsPerAccount": 50, "members": 100, "sockets": 200, "conversations": 8192, "textBytes": 16384 },
   "retention": { "contentDays": 90, "feedDays": 14, "platformHistoryDays": 30 }
 }
 ```
 
-`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)). `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), and `previews` unless the operator turned link cards off. `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use.
+`inviteSignups` is true when someone without an account can sign up here with an invitation ([Signing up with an invitation](#signing-up-with-an-invitation)), and `inviteSignupsNeedCode` when that sign-up also needs a code emailed to the address, as on a `verified` server. `capabilities` lists `reactions` and `unread` on every server of this version, `files` only when the operator gave it a file store (an R2 binding or an S3-compatible bucket), and `previews` unless the operator turned link cards off. `files` is there only with the `files` capability: the largest file, the file bytes one workspace may keep, and the origin upload and download links use.
 
 ### Errors
 
@@ -292,7 +293,9 @@ The page carries `X-Rukoo-Workspace-Invite: 1`, which no other answer at `/join`
 
 #### Signing up with an invitation
 
-On a server whose sign-ups need an invite code, an open invitation stands in for one: `POST /v1/signup` takes `workspaceInvite: { workspace, invite }` when `invite` is missing or wrong ([PROTOCOL.md](PROTOCOL.md#post-v1signup)). Each invitation makes one full account, counted by the registry like an invite code with one use, within `MAX_ACCOUNTS`. Signing up doesn't use the invitation; the new account joins with it as anyone does. An invitation that is used, withdrawn or expired, or whose issuer can no longer invite, gets `403 invite_required`, as a wrong code does. The operator turns this off with `WORKSPACE_SIGNUPS=off`, which keeps sign-ups to their own codes, and `inviteSignups` in `GET /v1/info` says which applies.
+On a server whose sign-ups need an invite code, or an invite code or emailed code (`verified`), an open invitation stands in for one: `POST /v1/signup` takes `workspaceInvite: { workspace, invite }` when `invite` is missing or wrong ([PROTOCOL.md](PROTOCOL.md#post-v1signup)). Each invitation makes one full account, counted by the registry like an invite code with one use, within `MAX_ACCOUNTS`. Signing up doesn't use the invitation; the new account joins with it as anyone does. An invitation that is used, withdrawn or expired, or whose issuer can no longer invite, gets `403 invite_required`, as a wrong code does. The operator turns this off with `WORKSPACE_SIGNUPS=off`, which keeps sign-ups to their own codes, and `inviteSignups` in `GET /v1/info` says which applies.
+
+On a `verified` server the sign-up also carries `emailCode`, a `signup` code for the same address, as a sign-up without an invitation does, and `inviteSignupsNeedCode` is true. Anyone with an account can make invitations, up to the open ones a workspace may hold, so an invitation alone would let them make accounts for addresses whose mail they don't read, and the owners of those addresses couldn't sign up any more. Without the code the answer is `403 code_required`. Only the operator's invite codes make an account there without one. A server set to `verified` that can't send codes takes no invitations at sign-up.
 
 ### Channels
 

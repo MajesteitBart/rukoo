@@ -10,8 +10,10 @@
 
 import pkg from '../package.json' with { type: 'json' };
 import { hmac, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
+import { codePurposes, codesInfo, emailCodeField, requestCode, settleCode, signupCode, unlocked } from './codes.js';
 import {
   ACCOUNT_NAME,
+  accountName,
   accountObject,
   bookingFormerRoots,
   bookingRoot,
@@ -86,8 +88,13 @@ async function handle(request, env, ctx) {
         }
       : null;
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
-    // says so with WEB_APP, which the statement then covers.
-    return html(privacy({ ...config(env, url), chat, web: webAppOn(env) }, privacyLanguage(url, request.headers.get('accept-language'))), method);
+    // says so with WEB_APP, which the statement then covers. Codes by email are covered while the server sends them,
+    // for the purposes it sends them for (codes.js).
+    const codes = codePurposes(env);
+    return html(
+      privacy({ ...config(env, url), chat, web: webAppOn(env), codes }, privacyLanguage(url, request.headers.get('accept-language'))),
+      method
+    );
   }
   // Where a workspace invitation link points (join.js). Answered here, before the booking pages, so a former booking
   // root never redirects it; the link's fragment stays in the browser either way. With team chat off the path is the
@@ -131,6 +138,8 @@ async function handle(request, env, ctx) {
   switch (route) {
     case 'POST /v1/prelogin':
       return prelogin(request, env);
+    case 'POST /v1/email-code':
+      return requestCode(request, env, ctx, maxAccounts(env));
     case 'POST /v1/signup':
       return signup(request, env);
     case 'POST /v1/login':
@@ -199,12 +208,14 @@ async function signup(request, env) {
   const body = await input.readJson(request);
   const mode = config(env, new URL(request.url)).signups;
   if (mode === 'closed') throw new HttpError(403, 'signups_closed', 'This server does not take new accounts.');
-  let invite = mode === 'invite' ? await validInvite(env, body.invite) : null;
+  // Invite codes work on invite and verified servers alike, and need no emailed code: the operator hands them out.
+  const invited = mode === 'invite' || mode === 'verified';
+  let invite = invited ? await validInvite(env, body.invite) : null;
   let uses = inviteUses(env);
   let workspaceInvite = false;
   // Without a good invite code, an open invitation into a workspace on this server does as well, for one account
   // (WORKSPACES.md, Signing up with an invitation).
-  if (mode === 'invite' && !invite) {
+  if (invited && !invite) {
     invite = await signupInvite(env, body.workspaceInvite);
     uses = 1;
     workspaceInvite = Boolean(invite);
@@ -226,6 +237,20 @@ async function signup(request, env) {
     recoveryWrappedKey: input.sealed(body.recoveryWrappedKey, 'recoveryWrappedKey'),
     device: input.device(body.device)
   };
+  // Without the operator's invite code, a verified server needs a code sent to the address (codes.js), also with a
+  // workspace invitation: anyone with an account can make those, so one shows nothing about the address. The code is
+  // held for this sign-up alone, used up once the account exists, and given back when the sign-up fails.
+  const code = mode === 'verified' && (!invite || workspaceInvite) ? await signupCode(env, fields.email, body.emailCode) : null;
+  let result;
+  try {
+    result = await makeAccount(env, fields, invite, uses, workspaceInvite);
+  } finally {
+    if (code) await settleCode(env, code, result?.status === 201 ? 'used' : 'keep');
+  }
+  return send(result);
+}
+
+async function makeAccount(env, fields, invite, uses, workspaceInvite) {
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryObject(env);
@@ -240,7 +265,7 @@ async function signup(request, env) {
   } finally {
     if (registry && (!result || result.status !== 201)) await registry.release(invite);
   }
-  return send(result);
+  return result;
 }
 
 async function login(request, env) {
@@ -249,7 +274,11 @@ async function login(request, env) {
   const email = input.email(body.email);
   const fields = { authKey: input.key(body.authKey, 'authKey', 32), device: input.device(body.device) };
   const name = await accountName(env, email);
-  return send(await stub(env, name).login(name, fields, limits(env)));
+  // emailCode (optional): a code sent to the address for unlock, which lets this sign-in past the account's lock.
+  const code = emailCodeField(body.emailCode);
+  const account = stub(env, name);
+  if (!code) return send(await account.login(name, fields, limits(env)));
+  return send(await unlocked(env, email, code, (options) => account.login(name, fields, limits(env), options)));
 }
 
 async function recoverStart(request, env) {
@@ -257,7 +286,11 @@ async function recoverStart(request, env) {
   const body = await input.readJson(request);
   const email = input.email(body.email);
   const fields = { recoveryAuth: input.key(body.recoveryAuth, 'recoveryAuth', 32) };
-  return send(await stub(env, await accountName(env, email)).recoverStart(fields));
+  const code = emailCodeField(body.emailCode);
+  const account = stub(env, await accountName(env, email));
+  if (!code) return send(await account.recoverStart(fields));
+  // The code stays for recover/finish, which uses it up.
+  return send(await unlocked(env, email, code, (options) => account.recoverStart(fields, options), true));
 }
 
 async function recoverFinish(request, env) {
@@ -273,7 +306,10 @@ async function recoverFinish(request, env) {
     device: input.device(body.device)
   };
   const name = await accountName(env, email);
-  return send(await stub(env, name).recoverFinish(name, fields, limits(env)));
+  const code = emailCodeField(body.emailCode);
+  const account = stub(env, name);
+  if (!code) return send(await account.recoverFinish(name, fields, limits(env)));
+  return send(await unlocked(env, email, code, (options) => account.recoverFinish(name, fields, limits(env), options)));
 }
 
 async function changePassword(request, env) {
@@ -308,8 +344,8 @@ async function replaceRecovery(request, env) {
 }
 
 // The account's booking page goes with it: the object hands back the handle it had, and the page is wiped after.
-// handleKey (optional): the deleting device's key to take the handle back with an account made again later; sign-ups
-// don't prove the address, so the email alone doesn't (PROTOCOL.md, Handles).
+// handleKey (optional): the deleting device's key to take the handle back with an account made again later. Not every
+// sign-up proves the address (invite codes don't), so the email alone doesn't (PROTOCOL.md, Handles).
 async function deleteAccount(request, env) {
   const { stub, token } = session(request, env);
   const body = await input.readJson(request);
@@ -342,10 +378,6 @@ function session(request, env) {
   const match = (request.headers.get('authorization') || '').match(TOKEN);
   if (!match) throw new HttpError(401, 'unauthorized', 'Sign in first.');
   return { stub: stub(env, match[1]), token: match[0].slice('Bearer '.length) };
-}
-
-async function accountName(env, email) {
-  return toBase64url(await hmac(env.PEPPER, `account\n${email}`));
 }
 
 function maxAccounts(env) {
@@ -391,18 +423,23 @@ function limits(env) {
   };
 }
 
-// workspace and the workspaces-v1 feature are there only while the operator has team chat turned on.
+// workspace and the workspaces-v1 feature are there only while the operator has team chat turned on, and emailCodes
+// and the email-codes feature only while the server sends codes by email. A verified server says invite in signups:
+// apps from before emailed codes then still show the invite code field, which works there too, and newer ones find
+// signup in emailCodes.purposes.
 async function info(env, url) {
   const { operator, jurisdiction: where, signups: mode } = config(env, url);
   const workspace = await workspaceInfo(env, url);
+  const emailCodes = codesInfo(env);
   return {
     protocol: 1,
     version: pkg.version,
     operator,
     hosting: { provider: 'Cloudflare', company: 'Cloudflare, Inc.', country: 'US', jurisdiction: where },
-    signups: mode,
+    signups: mode === 'verified' ? 'invite' : mode,
     limits: limits(env),
-    features: workspace ? [...FEATURES, 'workspaces-v1'] : FEATURES,
+    features: [...FEATURES, ...(workspace ? ['workspaces-v1'] : []), ...(emailCodes ? ['email-codes'] : [])],
+    ...(emailCodes ? { emailCodes } : {}),
     ...(workspace ? { workspace } : {})
   };
 }

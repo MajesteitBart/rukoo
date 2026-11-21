@@ -1,13 +1,55 @@
 // How many accounts this server holds, so an operator can cap them (MAX_ACCOUNTS), and how often each invite code
 // was used (INVITE_USES). With open sign-ups, the cap is what bounds the storage strangers can take: each account is
 // limited on its own, but nothing else limits how many accounts there are. With invite codes, the uses keep one code
-// from filling the cap. One object for the whole server, holding counts and hashes of invite codes, nothing about
-// anyone. It also keeps a place per workspace, for MAX_WORKSPACES, and holds the installation id that tells this
-// server apart from another one answering at the same address later (WORKSPACES.md, Conventions).
+// from filling the cap. One object for the whole server, holding counts and hashes of invite codes. It also keeps a
+// place per workspace, for MAX_WORKSPACES, and holds the installation id that tells this server apart from another
+// one answering at the same address later (WORKSPACES.md, Conventions).
+//
+// It also keeps the codes sent by email (codes.js), the one thing here about people: hashes of their addresses, made
+// with PEPPER, for a day after a code was asked for. An alarm deletes them when that time is up.
 
 import { DurableObject } from 'cloudflare:workers';
-import { randomBytes, toBase64url } from './bytes.js';
+import { fromBase64url, randomBytes, sameBytes, toBase64url } from './bytes.js';
 import { workspaceObject } from './config.js';
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+// How long a claimed code is held for the sign-up, sign-in or recovery that claimed it, far longer than one takes. A
+// Worker that stops between claiming and settling leaves a claim that lapses.
+const CLAIM_TIME = 60 * 1000;
+// codes: one row per code asked for, by the hash of its challenge. token is the hash of the long code in the same
+// email; address the hash of the address; code the hash of the six digits, which also binds the purpose, the challenge
+// and the address. The six digits work until codeUntil and for `attempts` misses; the long code until `until`, when
+// the row goes. failures counts wrong passwords or recovery keys sent with either, and ends both at `attempts`.
+// claim and claimedUntil hold the code for one request at a time. code_sends: when codes of a purpose were asked for
+// an address in the last day, newest last, under the hash codes.js counts it by (sendsHash: the mailbox for sign-up
+// codes, the address itself for unlock codes). code_mail: how many sign-up emails went out in the hour that started at
+// hour * HOUR.
+const CODE_TABLES = `
+  CREATE TABLE IF NOT EXISTS codes (
+    challenge TEXT PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE,
+    address TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    code TEXT NOT NULL,
+    codeUntil INTEGER NOT NULL,
+    until INTEGER NOT NULL,
+    misses INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    claim TEXT,
+    claimedUntil INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS codes_until ON codes (until);
+  CREATE TABLE IF NOT EXISTS code_sends (
+    address TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    times TEXT NOT NULL,
+    until INTEGER NOT NULL,
+    PRIMARY KEY (address, purpose)
+  );
+  CREATE INDEX IF NOT EXISTS code_sends_until ON code_sends (until);
+  CREATE TABLE IF NOT EXISTS code_mail (purpose TEXT PRIMARY KEY, hour INTEGER NOT NULL, count INTEGER NOT NULL);
+`;
 
 // A place taken for a workspace that was never confirmed made or called off is settled after this long, by asking
 // the workspace.
@@ -33,6 +75,145 @@ export class Registry extends DurableObject {
     if (!this.sql.exec('PRAGMA table_info(workspace)').toArray().some((c) => c.name === 'checked')) {
       this.sql.exec('ALTER TABLE workspace ADD COLUMN checked INTEGER NOT NULL DEFAULT 0');
     }
+    this.sql.exec(CODE_TABLES);
+  }
+
+  // Keeps a new code, unless the server is full (for a sign-up code, max > 0) or the address had too many of this
+  // purpose: { result } is 'ok', 'full' or 'wait', with retryAfter in seconds for 'wait'. entry holds the hashes
+  // codes.js made; the limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the
+  // long code works; gap, hourly and daily, the limits per address and purpose.
+  async issueCode(entry, { ttl, tokenTtl, gap, hourly, daily, max = 0 }) {
+    const now = Date.now();
+    this.#purgeCodes(now);
+    if (max > 0 && this.count() >= max) return { result: 'full' };
+    const row = this.sql
+      .exec('SELECT times FROM code_sends WHERE address = ? AND purpose = ?', entry.sends, entry.purpose)
+      .toArray()[0];
+    const times = sendTimes(row?.times).filter((t) => now - t < DAY);
+    const hour = times.filter((t) => now - t < HOUR);
+    let wait = 0;
+    if (times.length > 0) wait = Math.max(wait, times[times.length - 1] + gap - now);
+    if (hour.length >= hourly) wait = Math.max(wait, hour[hour.length - hourly] + HOUR - now);
+    if (times.length >= daily) wait = Math.max(wait, times[times.length - daily] + DAY - now);
+    if (wait > 0) return { result: 'wait', retryAfter: Math.ceil(wait / 1000) };
+    times.push(now);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec(
+        'INSERT INTO codes (challenge, token, address, purpose, code, codeUntil, until) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        entry.challenge,
+        entry.token,
+        entry.address,
+        entry.purpose,
+        entry.code,
+        now + ttl,
+        now + tokenTtl
+      );
+      this.sql.exec(
+        `INSERT INTO code_sends (address, purpose, times, until) VALUES (?, ?, ?, ?)
+         ON CONFLICT (address, purpose) DO UPDATE SET times = excluded.times, until = excluded.until`,
+        entry.sends,
+        entry.purpose,
+        JSON.stringify(times.slice(-daily)),
+        now + DAY
+      );
+    });
+    await this.#armCodes(now + tokenTtl);
+    return { result: 'ok' };
+  }
+
+  // Counts one email of a purpose against perHour emails an hour for the whole server: the hour it counts in, or null
+  // when this hour's are used up. Only emails about to go out count, so asking for codes that send nothing uses none
+  // of them up.
+  async chargeMail(purpose, perHour) {
+    const slot = Math.floor(Date.now() / HOUR);
+    const row = this.sql.exec('SELECT hour, count FROM code_mail WHERE purpose = ?', purpose).toArray()[0];
+    if (perHour > 0 && row?.hour === slot && row.count >= perHour) return null;
+    this.sql.exec(
+      `INSERT INTO code_mail (purpose, hour, count) VALUES (?, ?, 1)
+       ON CONFLICT (purpose) DO UPDATE SET
+         count = CASE WHEN code_mail.hour = excluded.hour THEN code_mail.count + 1 ELSE 1 END, hour = excluded.hour`,
+      purpose,
+      slot
+    );
+    return slot;
+  }
+
+  // Gives back an email chargeMail counted, when Resend refused it, so a refusal doesn't use up the hour.
+  async refundMail(purpose, slot) {
+    this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, slot);
+  }
+
+  // No email with the code's long code went out, so nobody can use it: the row goes when the six digits expire, and
+  // not a day later.
+  async shortenCode(challenge) {
+    this.sql.exec('UPDATE codes SET until = MIN(until, codeUntil) WHERE challenge = ?', challenge);
+    const row = this.sql.exec('SELECT until FROM codes WHERE challenge = ?', challenge).toArray()[0];
+    if (row) await this.#armCodes(row.until);
+  }
+
+  // Claims a code for one request: the six digits with their challenge ({ challenge, code }), or the long code
+  // ({ token }), for an address and purpose. { result } is 'ok' with the code's id and the claim, 'wrong' with attemptsLeft for
+  // six digits that don't match, 'busy' while another request holds the code, or 'expired' for a code that is
+  // unknown, expired, used or out of tries. A wrong six digits costs only their own tries, so whoever holds the
+  // challenge can't spend the long code in the email. A long code for another address or purpose counts as unknown.
+  // The claim holds the code until settleCode, so two requests never use one code at once.
+  async claimCode(entry, attempts) {
+    const now = Date.now();
+    const byToken = typeof entry.token === 'string';
+    const row = this.sql
+      .exec(`SELECT * FROM codes WHERE ${byToken ? 'token' : 'challenge'} = ?`, byToken ? entry.token : entry.challenge)
+      .toArray()[0];
+    if (!row || row.until <= now || row.failures >= attempts) return { result: 'expired' };
+    if (byToken) {
+      if (row.address !== entry.address || row.purpose !== entry.purpose) return { result: 'expired' };
+    } else {
+      if (row.codeUntil <= now || row.misses >= attempts) return { result: 'expired' };
+      const stored = fromBase64url(row.code);
+      const given = fromBase64url(entry.code);
+      const right = row.address === entry.address && row.purpose === entry.purpose && stored && given && sameBytes(stored, given);
+      if (!right) {
+        this.sql.exec('UPDATE codes SET misses = misses + 1 WHERE challenge = ?', row.challenge);
+        return { result: 'wrong', attemptsLeft: Math.max(0, attempts - row.misses - 1) };
+      }
+    }
+    if (row.claimedUntil > now) return { result: 'busy' };
+    const claim = toBase64url(randomBytes(16));
+    this.sql.exec('UPDATE codes SET claim = ?, claimedUntil = ? WHERE challenge = ?', claim, now + CLAIM_TIME, row.challenge);
+    return { result: 'ok', id: row.challenge, claim };
+  }
+
+  // Ends a claim: 'used' deletes the code, 'failed' (a wrong password or recovery key) costs it a try and gives it
+  // back, and 'keep' gives it back as it was. A claim that lapsed meanwhile gives back nothing, so it never ends a
+  // newer request's claim. What it did still counts: a use deletes the code and a wrong password costs a try.
+  async settleCode(id, claim, outcome, attempts) {
+    if (outcome === 'used') {
+      this.sql.exec('DELETE FROM codes WHERE challenge = ?', id);
+      return;
+    }
+    if (outcome === 'failed') this.sql.exec('UPDATE codes SET failures = failures + 1 WHERE challenge = ?', id);
+    this.sql.exec('UPDATE codes SET claim = NULL, claimedUntil = 0 WHERE challenge = ? AND claim = ?', id, claim);
+    this.sql.exec('DELETE FROM codes WHERE challenge = ? AND failures >= ?', id, attempts);
+  }
+
+  // Deletes what has expired and waits for the next to expire.
+  async alarm() {
+    const now = Date.now();
+    this.#purgeCodes(now);
+    const next = this.sql
+      .exec('SELECT MIN(t) AS t FROM (SELECT MIN(until) AS t FROM codes UNION ALL SELECT MIN(until) AS t FROM code_sends)')
+      .one().t;
+    if (next !== null) await this.ctx.storage.setAlarm(Math.max(next, now + 1000));
+  }
+
+  #purgeCodes(now) {
+    this.sql.exec('DELETE FROM codes WHERE until <= ?', now);
+    this.sql.exec('DELETE FROM code_sends WHERE until <= ?', now);
+  }
+
+  // An alarm at the latest when this code goes. The alarm sets the next one itself.
+  async #armCodes(at) {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
   }
 
   // Made the first time workspaces are used, and never changed.
@@ -143,5 +324,14 @@ export class Registry extends DurableObject {
 
   async accounts() {
     return this.count();
+  }
+}
+
+function sendTimes(json) {
+  try {
+    const list = JSON.parse(json ?? '[]');
+    return Array.isArray(list) ? list.filter(Number.isFinite) : [];
+  } catch {
+    return [];
   }
 }

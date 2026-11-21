@@ -89,7 +89,7 @@ function isObject(value) {
 }
 
 // Trimmed and lowercased as PROTOCOL.md says, then checked loosely: an address has one @ with a dot somewhere after
-// it. Nothing else about it can be known without sending it mail, which this server never does.
+// it. Only a code sent there (codes.js) shows more, and only where the server asks for one.
 export function email(value) {
   if (typeof value !== 'string') throw invalid('email must be a string.');
   const normalized = value.trim().toLowerCase();

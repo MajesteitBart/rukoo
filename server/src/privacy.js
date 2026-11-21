@@ -34,6 +34,24 @@ const TEXT = {
       'If you turn on a booking page: what it publishes and the bookings made on it, as Booking pages below describes.'
     ],
     dataChat: 'If you use team chat: the workspaces you are in and what you write and do there, as Team chat below describes.',
+    // While the server sends codes by email: the first item and an addition to the lock item. signup: whether a
+    // sign-up needs a code.
+    emailItem: (signup) =>
+      signup
+        ? 'Your email address, which is your sign-in name. Unless you sign up with an invite code from us, we check it with a code we send there before we make your account. We send it no other mail than the codes you ask for (see Email codes).'
+        : 'Your email address, which is your sign-in name. We don’t check it, and send it no other mail than the codes you ask for (see Email codes).',
+    lockCodes: ' A code sent to your email address lets you sign in or recover your account during the lock.',
+    codes: 'Email codes',
+    codesText: (signup) => [
+      `${signup ? 'You can ask this server for a six-digit code by email: to make an account, and to sign in or recover your account while failed attempts have locked it.' : 'You can ask this server for a six-digit code by email, to sign in or recover your account while failed attempts have locked it.'} The six-digit code works once, for 10 minutes, on the device that asked for it. Each email also has a longer code that works once, on any device, for a day, so you can use any email you get, also one someone else asked for.`,
+      'Resend, a service of Resend, Inc. in the United States, sends these emails on our behalf under its data processing terms. It gets your email address and the email, with the codes in it, stores them in the United States and keeps them for 30 days on its standard plans.',
+      `Asking gets the same answer whether or not the address has an account, so nobody learns that from it.${signup ? ' If you ask for a sign-up code for an address that already has an account, the email says so instead of carrying a code.' : ''} An address without an account gets no sign-in code.`,
+      'For each code someone asks for, this server keeps hashes of the address, of both codes and of a random value the asking device got back, how many wrong tries were made, and when the codes expire. It doesn’t keep the address itself. They are deleted when a code is used, after five wrong passwords or recovery keys with it, or a day after it was asked for, or after 10 minutes when no email with the codes went out. To limit how many codes one address gets (one a minute, five an hour and ten a day, for making an account and for signing in each), it also keeps when codes were asked for an address, under a hash of the address, until a day after the last time. It keeps both also when no email goes out because the address has no account. It doesn’t keep your IP address for this.',
+      signup
+        ? 'We send codes to make the account you ask for and to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Checking addresses and limiting codes protect people from accounts made with their address, and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
+        : 'We send codes to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Limiting them protects people and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
+    ],
+    whereCodes: 'Resend, a service of Resend, Inc. in the United States, sends the emails with codes and keeps them there (see Email codes).',
     ip: 'Your IP address reaches Cloudflare with every request. The server uses it to limit how often one address may try to sign in or write to a booking page, and doesn’t store it. For bookings it also counts how many came from one network that day (an IPv4 /24 or an IPv6 /64). It keeps those counts only as hashes made with a key that changes every day, and deletes them once the host’s day is over. Cloudflare may keep addresses in its own logs for a short time.',
     why: 'Why',
     whyText:
@@ -70,9 +88,10 @@ const TEXT = {
     ],
     chat: 'Team chat',
     // days: how long the server keeps messages (WORKSPACE_RETENTION_DAYS). signups: whether an invitation works as an
-    // invite code here. previews: whether the server makes link previews (WORKSPACE_PREVIEWS). files: null without a
-    // files bucket, else { max, total, s3 }: the largest file and a workspace's file space, written out (bytesText),
-    // and s3 null for the WORKSPACE_FILES bucket, else what s3Keeper says for an S3-compatible store.
+    // invite code here, 'checked' when such a sign-up also needs an emailed code. previews: whether the server makes
+    // link previews (WORKSPACE_PREVIEWS). files: null without a files bucket, else { max, total, s3 }: the largest
+    // file and a workspace's file space, written out (bytesText), and s3 null for the WORKSPACE_FILES bucket, else
+    // what s3Keeper says for an S3-compatible store.
     chatText: (days, signups, previews, files) => [
       'Team chat lets people with an account on this server make workspaces and talk there in channels and in direct messages. For each workspace you are in, this server keeps the name you use there, your role, when you joined and left, the channels and direct messages you are in, how far you have read in each, how often you marked a message unread there, and the messages you write, with the people you mention and, for a reply in a thread, the message it answers. When you react to a message, it keeps which emoji you used and when. It also keeps the people you block, the invitations you make, an ID your device gives each message so a retry isn’t posted twice, and when you started direct messages, to limit how many you start; those times become due for deletion after a day.',
       'Team chat isn’t encrypted end to end, unlike your records. Messages are stored as they were written, so we can read and change them, in channels and direct messages alike, and so can Cloudflare. We also see who is in which conversation. We handle team chat to give you the workspaces you make or join (the agreement with you, article 6(1)(b) GDPR).',
@@ -89,7 +108,7 @@ const TEXT = {
           ]
         : []),
       'Inside a workspace, owners, admins and members see the name and role of everyone in it and of people who left. Guests see the people in the channels they are in. Members can find and join any channel open to the whole workspace, and whoever joins a channel can read its earlier messages too. Guests see only the channels they were added to. Only the people in a private channel see its name and messages, and only the people in a direct message see that conversation. Owners and admins see the invitations that are still open. Someone you block isn’t told, but may notice that a direct message with you closed or that they can’t start one.',
-      `An invitation is a link with a secret in it. Whoever has the link can use it once, for as long as it works: a day, unless its maker picks up to seven. Send it only to the person it is for. In the workspace, this server keeps a hash of the secret, who made the invitation, the role and channels it gives, when it expires and who used it. That record becomes due for deletion 30 days after the invitation expires. An invitation stops working when it is withdrawn, or when its maker leaves or can no longer invite.${signups ? ' On this server an invitation also works as an invite code: someone without an account can make one with it, one account per invitation. For that, the server keeps a separate record of each invitation someone signed up with, or tried to: a hash of its secret and how many accounts it made. That record has no end date and stays even if the sign-up failed or the account is deleted later, so an invitation can’t make a second account.' : ''}`,
+      `An invitation is a link with a secret in it. Whoever has the link can use it once, for as long as it works: a day, unless its maker picks up to seven. Send it only to the person it is for. In the workspace, this server keeps a hash of the secret, who made the invitation, the role and channels it gives, when it expires and who used it. That record becomes due for deletion 30 days after the invitation expires. An invitation stops working when it is withdrawn, or when its maker leaves or can no longer invite.${signups ? ` On this server an invitation also works as an invite code: someone without an account can make one with it, one account per invitation.${signups === 'checked' ? ' They still confirm their email address first, with a code we send there.' : ''} For that, the server keeps a separate record of each invitation someone signed up with, or tried to: a hash of its secret and how many accounts it made. That record has no end date and stays even if the sign-up failed or the account is deleted later, so an invitation can’t make a second account.` : ''}`,
       `Messages become due for deletion ${days === 1 ? 'a day' : `${days} days`} after they were written, together with the other events in each conversation, such as who joined or reacted. A cleanup runs at least once a day and deletes what has become due; a cleanup that fails is tried again later. A message someone removes loses its text and its reactions at once, and removing it also clears who reacted to it with which emoji. An archived channel or a closed direct message goes once nothing is left in it. The server remembers which messages were removed and who lost access to which conversation, so devices that were away can catch up; that record becomes due for deletion after 14 days. An owner who is the only member of a workspace can delete it, which deletes everything in it at once. The 30 days of backups under How long apply here too: for that time, removed messages can be brought back.`,
       'When you leave a workspace or are removed from it, you lose access to its channels and direct messages, your direct messages there close and your open invitations stop working. What you wrote stays, under your name, until it is deleted with the rest. Your account keeps a list of the workspaces you are in or were in, so each of them hears when you delete your account. Deleting it makes you leave every workspace you are still in, takes your name off what you wrote, so it shows as written by a deleted member, and deletes every block you made or received. The messages themselves stay until their workspace deletes them. A workspace where you are the only member stays on the server with nobody in it. Its messages go when they are deleted with the rest, but its name stays, so delete it in Rukoo first if you want it gone at once. Until each workspace has heard of the deletion, the server keeps only that workspace’s ID and a random ID of your account, without your email address, credentials or records. Each workspace then keeps that random ID until it becomes due for deletion after 30 days, so nothing still on its way in under it gets through.',
       'In Rukoo you change your name in a workspace, remove your own messages and leave a workspace yourself. Export my data doesn’t include team chat. Each of your devices keeps its own copy of team chat and deletes it when its session ends, for example when you sign out.'
@@ -143,6 +162,22 @@ const TEXT = {
       'Als je een afsprakenpagina aanzet: wat die publiceert en de afspraken die erop worden gemaakt, zoals hieronder bij Afsprakenpagina’s staat.'
     ],
     dataChat: 'Als je teamchat gebruikt: de werkruimtes waarin je zit en wat je daar schrijft en doet, zoals hieronder bij Teamchat staat.',
+    emailItem: (signup) =>
+      signup
+        ? 'Je e-mailadres, waarmee je inlogt. Tenzij je een account maakt met een uitnodigingscode van ons, controleren we het met een code die we ernaartoe sturen voordat we je account maken. We sturen er geen andere mail naar dan de codes die je aanvraagt (zie E-mailcodes).'
+        : 'Je e-mailadres, waarmee je inlogt. We controleren het niet en sturen er geen andere mail naar dan de codes die je aanvraagt (zie E-mailcodes).',
+    lockCodes: ' Met een code die naar je e-mailadres wordt gestuurd, kun je tijdens de blokkade toch inloggen of je account herstellen.',
+    codes: 'E-mailcodes',
+    codesText: (signup) => [
+      `${signup ? 'Je kunt deze server om een code van zes cijfers per e-mail vragen: om een account te maken, en om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.' : 'Je kunt deze server om een code van zes cijfers per e-mail vragen, om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.'} De code van zes cijfers werkt één keer, 10 minuten lang, op het apparaat dat erom vroeg. In elke e-mail staat ook een langere code die één keer werkt, op elk apparaat, een dag lang. Zo kun je elke e-mail gebruiken die je krijgt, ook een die iemand anders aanvroeg.`,
+      'Resend, een dienst van Resend, Inc. in de Verenigde Staten, verstuurt deze e-mails namens ons onder zijn verwerkersvoorwaarden. Resend krijgt je e-mailadres en de e-mail, met de codes erin, slaat ze op in de Verenigde Staten en bewaart ze 30 dagen bij zijn gewone abonnementen.',
+      `Wie een code aanvraagt, krijgt hetzelfde antwoord of het adres nu een account heeft of niet, dus dat valt er niet uit af te leiden.${signup ? ' Vraag je een code om een account te maken voor een adres dat al een account heeft, dan staat dat in de e-mail, in plaats van een code.' : ''} Een adres zonder account krijgt geen inlogcode.`,
+      'Voor elke code die iemand aanvraagt, bewaart deze server hashes van het adres, van beide codes en van een willekeurige waarde die het aanvragende apparaat terugkreeg, hoeveel verkeerde pogingen er waren en wanneer de codes verlopen. Het adres zelf bewaart hij niet. Dat alles wordt verwijderd als een code is gebruikt, na vijf verkeerde wachtwoorden of herstelsleutels ermee, een dag nadat hij werd aangevraagd, of na 10 minuten als er geen e-mail met de codes uitging. Om te beperken hoeveel codes één adres krijgt (één per minuut, vijf per uur en tien per dag, apart voor een account maken en voor inloggen), bewaart hij ook wanneer er codes voor een adres werden aangevraagd, onder een hash van het adres, tot een dag na de laatste keer. Beide bewaart hij ook als er geen e-mail uitgaat omdat het adres geen account heeft. Je IP-adres bewaart hij hiervoor niet.',
+      signup
+        ? 'We sturen codes om het account te maken waar je om vraagt en om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). Het controleren van adressen en de limieten op codes beschermen mensen tegen accounts die met hun adres worden gemaakt, en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
+        : 'We sturen codes om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). De limieten op codes beschermen mensen en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
+    ],
+    whereCodes: 'Resend, een dienst van Resend, Inc. in de Verenigde Staten, verstuurt de e-mails met codes en bewaart ze daar (zie E-mailcodes).',
     ip: 'Bij elk verzoek komt je IP-adres bij Cloudflare binnen. De server gebruikt het om te beperken hoe vaak één adres mag proberen in te loggen of iets naar een afsprakenpagina mag sturen, en slaat het niet op. Voor afspraken telt de server ook hoeveel er die dag van één netwerk kwamen (een IPv4-/24 of een IPv6-/64). Die tellingen bewaart hij alleen als hashes, gemaakt met een sleutel die elke dag wisselt, en hij verwijdert ze zodra de dag van de host voorbij is. Cloudflare kan adressen kort in zijn eigen logs bewaren.',
     why: 'Waarom',
     whyText:
@@ -192,7 +227,7 @@ const TEXT = {
           ]
         : []),
       'Binnen een werkruimte zien eigenaren, beheerders en leden de naam en rol van iedereen erin en van mensen die zijn vertrokken. Gasten zien de mensen in de kanalen waarin ze zitten. Leden kunnen elk kanaal vinden dat voor de hele werkruimte zichtbaar is en eraan deelnemen, en wie aan een kanaal deelneemt, kan ook de eerdere berichten lezen. Gasten zien alleen de kanalen waaraan ze zijn toegevoegd. Alleen de mensen in een privékanaal zien de naam en de berichten ervan, en alleen de mensen in een direct bericht zien dat gesprek. Eigenaren en beheerders zien de uitnodigingen die nog openstaan. Wie je blokkeert, krijgt dat niet te horen, maar kan wel merken dat een direct bericht met jou is gesloten of dat een nieuw niet lukt.',
-      `Een uitnodiging is een link met een geheim erin. Wie de link heeft, kan hem één keer gebruiken, zolang hij werkt: een dag, tenzij de maker tot zeven dagen kiest. Stuur hem dus alleen naar degene voor wie hij bedoeld is. In de werkruimte bewaart deze server een hash van het geheim, wie de uitnodiging maakte, de rol en kanalen die ze geeft, wanneer ze verloopt en wie haar gebruikte. Die gegevens zijn 30 dagen na het verlopen van de uitnodiging aan de beurt voor verwijdering. Een uitnodiging werkt niet meer als ze is ingetrokken, of als de maker vertrekt of niet meer mag uitnodigen.${signups ? ' Op deze server werkt een uitnodiging ook als uitnodigingscode: iemand zonder account kan er een account mee maken, één per uitnodiging. Daarvoor houdt de server apart bij met welke uitnodigingen iemand een account maakte of probeerde te maken: een hash van het geheim en hoeveel accounts ermee zijn gemaakt. Dat bewaart hij zonder einddatum, ook als het aanmaken mislukte of het account later wordt verwijderd, zodat een uitnodiging geen tweede account maakt.' : ''}`,
+      `Een uitnodiging is een link met een geheim erin. Wie de link heeft, kan hem één keer gebruiken, zolang hij werkt: een dag, tenzij de maker tot zeven dagen kiest. Stuur hem dus alleen naar degene voor wie hij bedoeld is. In de werkruimte bewaart deze server een hash van het geheim, wie de uitnodiging maakte, de rol en kanalen die ze geeft, wanneer ze verloopt en wie haar gebruikte. Die gegevens zijn 30 dagen na het verlopen van de uitnodiging aan de beurt voor verwijdering. Een uitnodiging werkt niet meer als ze is ingetrokken, of als de maker vertrekt of niet meer mag uitnodigen.${signups ? ` Op deze server werkt een uitnodiging ook als uitnodigingscode: iemand zonder account kan er een account mee maken, één per uitnodiging.${signups === 'checked' ? ' Wel bevestigt die eerst het e-mailadres, met een code die we ernaartoe sturen.' : ''} Daarvoor houdt de server apart bij met welke uitnodigingen iemand een account maakte of probeerde te maken: een hash van het geheim en hoeveel accounts ermee zijn gemaakt. Dat bewaart hij zonder einddatum, ook als het aanmaken mislukte of het account later wordt verwijderd, zodat een uitnodiging geen tweede account maakt.` : ''}`,
       `Berichten zijn aan de beurt voor verwijdering ${days === 1 ? 'een dag' : `${days} dagen`} nadat ze zijn geschreven, samen met de andere gebeurtenissen in elk gesprek, zoals wie erbij kwam of reageerde. Een opruimronde draait minstens één keer per dag en verwijdert wat aan de beurt is; een ronde die mislukt, wordt later opnieuw geprobeerd. Een bericht dat iemand verwijdert, verliest meteen zijn tekst en reacties, en daarbij worden ook de gegevens gewist over wie er met welke emoji op reageerde. Een gearchiveerd kanaal of een gesloten direct bericht verdwijnt zodra er niets meer in staat. De server onthoudt welke berichten zijn verwijderd en wie de toegang tot welk gesprek verloor, zodat apparaten die weg waren kunnen bijwerken; dat is na veertien dagen aan de beurt voor verwijdering. Een eigenaar die als enige in een werkruimte zit, kan die verwijderen; dan verdwijnt alles erin in één keer. De back-ups van 30 dagen onder Hoe lang gelden hier ook: zo lang kunnen verwijderde berichten worden teruggehaald.`,
       'Verlaat je een werkruimte of word je eruit verwijderd, dan verlies je de toegang tot de kanalen en directe berichten erin, sluiten je directe berichten daar en werken je openstaande uitnodigingen niet meer. Wat je schreef, blijft staan onder je naam, tot het met de rest wordt verwijderd. Je account houdt een lijst bij van de werkruimtes waarin je zit of zat, zodat elk ervan hoort wanneer je je account verwijdert. Verwijder je het, dan verlaat je elke werkruimte waarin je nog zit, verdwijnt je naam van wat je schreef, dat daarna op naam van een verwijderd lid staat, en worden alle blokkades verwijderd die je maakte of kreeg. De berichten zelf blijven staan tot hun werkruimte ze verwijdert. Een werkruimte waarin je als enige zit, blijft zonder iemand erin op de server staan. De berichten verdwijnen als ze met de rest worden verwijderd, maar de naam blijft. Verwijder hem dus eerst in Rukoo als je hem meteen weg wilt hebben. Tot elke werkruimte van het verwijderen heeft gehoord, bewaart de server alleen de ID van die werkruimte en een willekeurige ID van je account, zonder je e-mailadres, inloggegevens of records. Elke werkruimte bewaart die willekeurige ID daarna tot hij na 30 dagen aan de beurt is voor verwijdering, zodat niets wat nog onderweg was er alsnog mee binnenkomt.',
       'In Rukoo verander je zelf je naam in een werkruimte, verwijder je je eigen berichten en verlaat je een werkruimte. Mijn gegevens exporteren neemt teamchat niet mee. Elk van je apparaten houdt een eigen kopie van teamchat bij en verwijdert die als de sessie eindigt, bijvoorbeeld als je uitlogt.'
@@ -220,7 +255,11 @@ const TEXT = {
 
 // The language asked for with ?lang=, or else the browser's first choice of English and Dutch.
 export function privacyLanguage(url, acceptLanguage) {
-  const asked = url.searchParams.get('lang');
+  return language(url.searchParams.get('lang'), acceptLanguage);
+}
+
+// asked when it is English or Dutch, else the first of those two in an Accept-Language header, else English.
+export function language(asked, acceptLanguage) {
   if (asked === 'nl' || asked === 'en') return asked;
   for (const part of String(acceptLanguage || '').split(',')) {
     const tag = part.trim().slice(0, 2).toLowerCase();
@@ -250,13 +289,20 @@ function bytesText(bytes, lang) {
 // without a files bucket and else { store, maxBytes, workspaceBytes }, with provider and place when store is 's3'
 // (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
 // files only where the server makes or keeps them. web: Rukoo in the browser runs on this server's website (WEB_APP,
-// with team chat on), which the statement then covers too.
-export function privacy({ operator, jurisdiction, chat = null, web = false }, lang = 'en') {
+// with team chat on), which the statement then covers too. codes: what the server sends codes by email for (codes.js,
+// codePurposes). With none, the statement says the server sends no mail.
+export function privacy({ operator, jurisdiction, chat = null, web = false, codes = [] }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
   const contact = operator.contact ? T.contact(contactLink(operator.contact)) : '';
   const place = T.places[jurisdiction] || T.places.any;
-  const dataItems = chat ? [...T.dataItems, T.dataChat] : T.dataItems;
+  const mailed = codes.length > 0;
+  const signupCodes = codes.includes('signup');
+  // The address is the first item and the sign-in lock the seventh.
+  const accountItems = mailed
+    ? T.dataItems.map((item, i) => (i === 0 ? T.emailItem(signupCodes) : i === 6 ? `${item}${T.lockCodes}` : item))
+    : T.dataItems;
+  const dataItems = chat ? [...accountItems, T.dataChat] : accountItems;
   const files = chat?.files
     ? {
         max: bytesText(chat.files.maxBytes, lang),
@@ -264,8 +310,14 @@ export function privacy({ operator, jurisdiction, chat = null, web = false }, la
         s3: chat.files.store === 's3' ? T.s3Keeper(chat.files.provider, chat.files.place) : null
       }
     : null;
+  const where = [T.whereText(place), ...(mailed ? [T.whereCodes] : []), ...(chat ? [T.whereChat(files)] : [])].join(' ');
+  const emailCodes = mailed
+    ? `<h2 id="email-codes">${escape(T.codes)}</h2>\n${T.codesText(signupCodes)
+        .map((p) => `<p>${escape(p)}</p>`)
+        .join('\n')}\n\n`
+    : '';
   const teamChat = chat
-    ? `<h2 id="team-chat">${escape(T.chat)}</h2>\n${T.chatText(chat.retentionDays, chat.inviteSignups, chat.previews, files)
+    ? `<h2 id="team-chat">${escape(T.chat)}</h2>\n${T.chatText(chat.retentionDays, chat.inviteSignups && signupCodes ? 'checked' : chat.inviteSignups, chat.previews, files)
         .map((p) => `<p>${escape(p)}</p>`)
         .join('\n')}\n\n`
     : '';
@@ -307,7 +359,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <p>${escape(T.whyText)}</p>
 
 <h2>${escape(T.where)}</h2>
-<p>${escape(chat ? `${T.whereText(place)} ${T.whereChat(files)}` : T.whereText(place))}</p>
+<p>${escape(where)}</p>
 
 <h2>${escape(T.keep)}</h2>
 <p>${escape(T.keepText)}</p>
@@ -315,7 +367,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <h2>${escape(T.rights)}</h2>
 <p>${escape(chat ? `${T.rightsText} ${T.rightsChat}` : T.rightsText)}</p>
 
-<h2 id="booking-pages">${escape(T.booking)}</h2>
+${emailCodes}<h2 id="booking-pages">${escape(T.booking)}</h2>
 ${T.bookingText.map((p) => `<p>${escape(p)}</p>`).join('\n')}
 
 ${teamChat}${browser}<h2>${escape(T.security)}</h2>
