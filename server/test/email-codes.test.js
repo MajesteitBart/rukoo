@@ -270,6 +270,19 @@ describe('POST /v1/email-code', () => {
     expect(await until(note.body.challenge)).toBe(0);
     const sent = await askCode(newEmail(), 'signup');
     expect(await until(sent.body.challenge)).toBe(DAY - 10 * MINUTE);
+    // An email Resend refused for good carried its long code nowhere, for either purpose.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      resend.failNext({ status: 422, name: 'validation_error' });
+      const refusedSignup = await askCode(newEmail(), 'signup');
+      expect(await until(refusedSignup.body.challenge)).toBe(0);
+      const owner = (await signup()).email;
+      resend.failNext({ status: 422, name: 'validation_error' });
+      const refusedUnlock = await askCode(owner, 'unlock');
+      expect(await until(refusedUnlock.body.challenge)).toBe(0);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it('keeps only hashes, and an alarm deletes them a day after the request', async () => {

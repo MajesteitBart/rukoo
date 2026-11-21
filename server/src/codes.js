@@ -86,7 +86,7 @@ export async function requestCode(request, env, ctx, max) {
 
 // Whether the address has an account decides what goes out, so this runs after the answer. Sign-up emails count
 // toward the hourly limit, and one Resend refused is given back. A code whose long code didn't go out, because no
-// email or only the note went, is kept for its 10 minutes and not a day.
+// email or only the note went or Resend refused the email, is kept for its 10 minutes and not a day.
 async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   const registry = registryObject(env);
   const exists = await accountObject(env, await accountName(env, email)).exists();
@@ -105,7 +105,11 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   const operator = typeof env.OPERATOR_NAME === 'string' && env.OPERATOR_NAME.trim() ? env.OPERATOR_NAME.trim() : null;
   const codes = kind === 'exists' ? {} : { code, token };
   const sent = await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
-  if (sent === 'refused' && slot !== null) await registry.refundMail('signup', slot);
+  // Resend refused it for good, so the long code went nowhere: the row goes with the six digits, as above.
+  if (sent === 'refused') {
+    await registry.shortenCode(id);
+    if (slot !== null) await registry.refundMail('signup', slot);
+  }
 }
 
 // emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code } for the six digits or
