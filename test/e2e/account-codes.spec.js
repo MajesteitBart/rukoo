@@ -78,7 +78,7 @@ test.describe('Settings', () => {
   let server;
 
   test.beforeEach(async () => {
-    server = await startAccountServer({ signups: 'verified', codes: true, invites: ['welcome'] });
+    server = await startAccountServer({ signups: 'verified', codes: true, invites: ['welcome'], usedInvites: ['spent'] });
     await launch(server.url);
     // Dark, whatever the system says, so the captures named dark are.
     await win.evaluate(() => window.mail.call('updateSettings', { theme: 'dark' }));
@@ -196,6 +196,47 @@ test.describe('Settings', () => {
     await win.locator('.scrim .dialog .buttons button', { hasText: 'I saved it' }).click();
     expect(server.accounts.has('invited@example.com')).toBe(true);
     expect(server.calls.filter((c) => c.route === 'POST /v1/signup').at(-1).body.invite).toBe('welcome');
+  });
+
+  test('an invite code that has been used up gets a code instead, which then signs up with the invite code still typed', async ({}, testInfo) => {
+    const form = await openForm('rukoo-signup');
+    await fillSignUp(form, 'spent@example.com');
+    await form.locator('[name="invite"]').fill('spent');
+    await form.locator('button[type=submit]').click();
+    await expect(form.locator('[data-code-sent]')).toHaveText('We sent a code to spent@example.com.', { timeout: 15000 });
+    await expect(form.locator('[data-error]')).toHaveText("That invite code didn't work, so we sent a code to spent@example.com instead.");
+    await shot(testInfo, 'signup-invite-spent-dark-en');
+    await form.locator('[name="emailCode"]').fill(server.codeFor('spent@example.com'));
+    await form.locator('button[type=submit]').click();
+    await expect(win.locator('.scrim .dialog h2')).toHaveText('Save your recovery key', { timeout: 20000 });
+    await win.locator('.scrim .dialog .buttons button', { hasText: 'I saved it' }).click();
+    expect(server.accounts.has('spent@example.com')).toBe(true);
+    const last = server.calls.filter((c) => c.route === 'POST /v1/signup').at(-1).body;
+    expect(last.invite).toBeUndefined();
+    expect(last.emailCode.code).toBe(server.codeFor('spent@example.com'));
+  });
+
+  test('once the lock is over, a sign-in with the code step showing goes without a code', async () => {
+    await seedAccount(server, 'later@example.com');
+    server.lock('later@example.com');
+    const form = await openForm('rukoo-signin');
+    await form.locator('[name="email"]').fill('later@example.com');
+    await form.locator('[name="password"]').fill(PASSWORD);
+    await form.locator('button[type=submit]').click();
+    await form.locator('[data-code-offer]').click({ timeout: 15000 });
+    await expect(form.locator('[data-code-sent]')).toBeVisible({ timeout: 15000 });
+    // Still locked: the empty field goes to the server, which says so, and the step asks for the code.
+    const logins = server.calls.filter((c) => c.route === 'POST /v1/login').length;
+    await form.locator('button[type=submit]').click();
+    await expect(form.locator('[data-error]')).toHaveText('Enter the code from the email.', { timeout: 15000 });
+    await expect.poll(() => server.calls.filter((c) => c.route === 'POST /v1/login').length).toBe(logins + 1);
+    await expect(form.locator('[data-code-step]')).toBeVisible();
+    // The 15 minutes are over: the same empty field signs in.
+    server.unlock('later@example.com');
+    await form.locator('button[type=submit]').click();
+    await expect(page().locator('h1')).toHaveText('Rukoo account', { timeout: 20000 });
+    await expect(page()).toContainText('later@example.com', { timeout: 15000 });
+    expect(server.calls.filter((c) => c.route === 'POST /v1/login').at(-1).body.emailCode).toBeUndefined();
   });
 
   test('a locked account offers a code by email and signs in or recovers with it', async ({}, testInfo) => {
@@ -367,7 +408,7 @@ test.describe("What's new", () => {
   let server;
 
   test.beforeEach(async () => {
-    server = await startAccountServer({ signups: 'verified', codes: true });
+    server = await startAccountServer({ signups: 'verified', codes: true, invites: ['welcome'] });
     await launch(server.url);
   });
 
@@ -413,4 +454,53 @@ test.describe("What's new", () => {
     await expect(guide.locator('h2')).toHaveText('Save your recovery key', { timeout: 20000 });
     expect(server.accounts.has('guide@example.com')).toBe(true);
   });
+
+  test('Email me a code and Send a new code are kept when the guide goes back and forth', async ({}, testInfo) => {
+    await seedAccount(server, 'guide-locked@example.com');
+    server.lock('guide-locked@example.com');
+    // Another device asked a moment ago, so the server holds the guide's first code back.
+    await win.evaluate(() => window.mail.invoke('accountEmailCode', { email: 'guide-locked@example.com', purpose: 'unlock' }));
+    const guide = win.locator('.wn');
+    const next = () => guide.locator('[data-wn="next"]').click();
+    const backAndForth = async () => {
+      await guide.locator('[data-wn="back"]').click();
+      await expect(guide.locator('h2')).toHaveText('Choose your categories');
+      await next();
+      await expect(guide.locator('h2')).toHaveText('Keep them the same on every device');
+    };
+    await win.click('[data-action="settings"]');
+    await win.locator('.page.settings [data-a="whats-new"]').click();
+    await next();
+    await next();
+    await guide.locator('[data-choice="signin"]').click();
+    await guide.locator('[name="email"]').fill('guide-locked@example.com');
+    await guide.locator('[name="password"]').fill(PASSWORD);
+    await next();
+    await guide.locator('[data-code-offer]').click({ timeout: 15000 });
+    const held = 'No new code went to guide-locked@example.com yet. The long code from an earlier email works too.';
+    await expect(guide.locator('[data-code-sent]')).toHaveText(held, { timeout: 15000 });
+    await backAndForth();
+    await expect(guide.locator('[data-code-sent]')).toHaveText(held);
+    await expect(guide.locator('[data-code-resend]')).toBeDisabled();
+
+    // The minute is over and a new code goes out: back and forth, the step says it went and counts down again.
+    server.allowCode('guide-locked@example.com', 'unlock');
+    await guide.locator('[data-code-resend]').evaluate((b) => {
+      b.disabled = false;
+    });
+    await guide.locator('[data-code-resend]').click();
+    await expect(guide.locator('[data-code-sent]')).toHaveText('We sent a new code to guide-locked@example.com. Use the one in the newest email.', { timeout: 15000 });
+    await backAndForth();
+    await expect(guide.locator('[data-code-sent]')).toHaveText('We sent a code to guide-locked@example.com.');
+    await expect(guide.locator('[data-code-resend]')).toBeDisabled();
+    await expect(guide.locator('[data-code-resend]')).toHaveText(/^New code in \d+ seconds?$/);
+    await shot(testInfo, 'whats-new-unlock-resent-light-en');
+
+    await guide.locator('[name="password"]').fill(PASSWORD);
+    await guide.locator('[name="emailCode"]').fill(server.codeFor('guide-locked@example.com'));
+    await next();
+    await expect(guide.locator('h2')).not.toHaveText('Keep them the same on every device', { timeout: 20000 });
+    expect(server.calls.filter((c) => c.route === 'POST /v1/login').at(-1).body.emailCode.code).toBe(server.codeFor('guide-locked@example.com'));
+  });
+
 });

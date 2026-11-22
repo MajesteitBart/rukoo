@@ -257,7 +257,9 @@ async function run() {
     }
 
     // The code step of the account form on screen: a sign-up's on a server that checks addresses, a sign-in's for a
-    // locked account. Made when the form is drawn, and shown again for a code already sent (st.code).
+    // locked account. Made when the form is drawn, and shown again for a code already sent (st.code). The step says
+    // each change, also from Email me a code and Send a new code, and also when its answer comes after the guide went
+    // to another page, so Back and Next bring it back as it was.
     let code = null;
     function attachCode() {
       const form = $('[data-wn-form]');
@@ -265,7 +267,13 @@ async function run() {
       code = null;
       if (!fields || st.signedIn || st.choice === 'local') return;
       const purpose = st.choice === 'create' ? 'signup' : 'unlock';
-      code = { purpose, step: codeStep({ host: fields, purpose, emailField: fields.querySelector('[name="email"]'), errorEl: $('[data-wn-error]'), compact: true }) };
+      const onChange = (snap) => {
+        st.code = snap ? { purpose, ...snap } : null;
+      };
+      code = {
+        purpose,
+        step: codeStep({ host: fields, purpose, emailField: fields.querySelector('[name="email"]'), errorEl: $('[data-wn-error]'), compact: true, onChange })
+      };
       const saved = st.code && st.code.purpose === purpose && st.code.email.toLowerCase() === st.email.trim().toLowerCase() ? st.code : null;
       if (saved) code.step.restore(saved);
     }
@@ -286,11 +294,9 @@ async function run() {
       btn.disabled = true;
       btn.innerHTML = `<span class="spinner"></span>${esc(t('settings.rukoo.working'))}`;
       if (!code) attachCode();
-      const { step, purpose } = code;
-      // The form stays: the step showed, or the error line says what to do.
+      const { step } = code;
+      // The form stays: the step showed, or the error line says what to do. The step saved itself (attachCode).
       const stay = () => {
-        const snap = step.snapshot();
-        st.code = snap ? { purpose, ...snap } : null;
         btn.disabled = false;
         btn.textContent = view.next.label;
       };

@@ -812,6 +812,8 @@ function startAccountServer({
           tokenFor: (email) => mail.filter((m) => m.to === email && m.token).at(-1)?.token ?? null,
           // Locks an address's sign-ins and recoveries, as ten wrong passwords in 15 minutes would.
           lock: (email) => failures.set(email, { count: 10, first: control.now(), lockedUntil: control.now() + QUARTER }),
+          // Ends that lock, as the 15 minutes passing would.
+          unlock: (email) => failures.delete(email),
           // Lets the next code request to an address through at once, as a minute passing would.
           allowCode: (email, purpose) => lastSent.delete(`${purpose}
 ${email}`),

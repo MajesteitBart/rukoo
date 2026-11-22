@@ -51,8 +51,11 @@ export function codeErrorText(ex) {
 // The step inside a form. host: the element it goes into; before: the element it goes in front of (null: at the end).
 // purpose: 'signup' or 'unlock'. emailField: the form's address field; changing the address drops the step, so the
 // next submit sends a code to the new one. errorEl: the form's error line, which also holds "Email me a code" for a
-// locked account. compact: the What's new guide's fields, with placeholders and no labels.
-export function codeStep({ host, before = null, purpose, emailField, errorEl, compact = false }) {
+// locked account. compact: the What's new guide's fields, with placeholders and no labels. onChange(state): called
+// with what snapshot() would give each time a code went out or was held back, and with null once the step is gone, so
+// a form that draws itself again (the What's new guide) keeps it. It also runs when the step is no longer on screen:
+// an answer that comes after the page moved on still counts for the address it went to.
+export function codeStep({ host, before = null, purpose, emailField, errorEl, compact = false, onChange = null }) {
   let el = null;
   let sentTo = null;
   let until = 0;
@@ -61,6 +64,12 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   let requests = 0;
   // Whether the step shows for a code that went out, or for one the server's limit held back.
   let delivered = true;
+
+  // The step as it stands, also while it isn't on screen; null when there is none.
+  const state = () => (el ? { email: sentTo, sent: delivered, until } : null);
+  const changed = () => {
+    if (onChange) onChange(state());
+  };
 
   const input = () => el && el.querySelector('[name="emailCode"]');
   const resendButton = () => el && el.querySelector('[data-code-resend]');
@@ -146,9 +155,13 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
       const again = active() && sameAddress(sentTo, address);
       sentTo = address;
       if (!again) draw(address);
-      else el.querySelector('[data-code-sent]').textContent = t('settings.rukoo.code.resent', { email: address });
+      else {
+        delivered = true;
+        el.querySelector('[data-code-sent]').textContent = t('settings.rukoo.code.resent', { email: address });
+      }
       showError(note);
       wait(GAP);
+      changed();
       focus();
       return true;
     } catch (ex) {
@@ -160,6 +173,7 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
           draw(sentTo, { sent: false });
         }
         wait(seconds);
+        changed();
         showError(waitText(seconds));
         focus();
       } else {
@@ -172,8 +186,8 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
 
   const resend = () => (sentTo ? send(sentTo) : Promise.resolve(false));
 
-  // The step as it stands, for restore(): the address, whether a code went out, and when a new one may be asked for.
-  const snapshot = () => (active() ? { email: sentTo, sent: delivered, until } : null);
+  // The step on screen, for restore(): the address, whether a code went out, and when a new one may be asked for.
+  const snapshot = () => (active() ? state() : null);
 
   // The step again from a snapshot(), as the What's new guide draws its page again; no new request.
   function restore({ email, sent = true, until: resendAt = 0 }) {
@@ -186,18 +200,22 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
     requests += 1;
     clearInterval(timer);
     timer = null;
+    const had = Boolean(el);
     if (el) el.remove();
     el = null;
     sentTo = null;
+    if (had) changed();
   }
 
   // One submit of the form. run(emailCode) makes the request with what the code field holds ('' while the step isn't
   // shown) and returns its answer. { done: true, result } once it went through; { done: false } when the form stays,
   // with the step shown or the error line saying what to do. Errors the step has no words for are thrown, for the
   // form to show as before. invited: the form sends the operator's invite code, which needs no emailed code, so an
-  // empty code field doesn't stop it, and code_required means that invite code didn't work.
+  // empty code field doesn't stop it, and code_required means that invite code didn't work. An unlock code is needed
+  // only while the lock lasts, so an empty field goes too: once the lock is over the sign-in works without one, and
+  // while it lasts the server says locked again and the step asks for the code.
   async function submit(email, run, { invited = false } = {}) {
-    if (active() && !value() && !invited) {
+    if (purpose === 'signup' && active() && !value() && !invited) {
       showError(t('settings.rukoo.code.missing'));
       focus();
       return { done: false };
@@ -216,6 +234,12 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
           return { done: false };
         }
         await send(email, { note: invited ? t('settings.rukoo.code.inviteFailed', { email }) : '' });
+        return { done: false };
+      }
+      // Still locked, and the code went out already: the step asks for it.
+      if (purpose === 'unlock' && code === 'locked' && shown) {
+        showError(t('settings.rukoo.code.missing'));
+        focus();
         return { done: false };
       }
       // Too many wrong passwords locked the account; where the server sends codes, one gets past the lock now.
