@@ -154,7 +154,7 @@ async function run() {
             ? `<div class="wn-fields">
                 <input class="wn-input wide" name="email" type="email" placeholder="${esc(t('whatsNew.account.email'))}" autocomplete="email" value="${esc(st.email)}">
                 <input class="wn-input" name="password" type="password" placeholder="${esc(t('whatsNew.account.password'))}" autocomplete="new-password">
-                <input class="wn-input" name="invite" type="text" placeholder="${esc(t('settings.rukoo.invite'))}" autocomplete="off" spellcheck="false">
+                <input class="wn-input" name="invite" type="text" placeholder="${esc(t(st.info && st.info.workspace && st.info.workspace.inviteSignups ? 'whatsNew.account.inviteOrLink' : 'settings.rukoo.invite'))}" autocomplete="off" spellcheck="false">
                 <label class="wn-tick wide"><input type="checkbox" name="understand"><span>${esc(t('settings.rukoo.understand'))}</span></label>
               </div>`
             : `<div class="wn-fields">

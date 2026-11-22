@@ -11,6 +11,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -46,12 +47,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.Serializable
 import nl.bvdm.rukoo.account.AccountService
 import nl.bvdm.rukoo.account.AccountStatus
 import nl.bvdm.rukoo.account.BorrowedSession
 import nl.bvdm.rukoo.account.ServerInfo
 import nl.bvdm.rukoo.core.AppLog
 import nl.bvdm.rukoo.core.Clock
+import nl.bvdm.rukoo.core.JsonFiles
 import nl.bvdm.rukoo.settings.AppSettings
 import nl.bvdm.rukoo.ui.ScreenState
 import okhttp3.OkHttpClient
@@ -70,6 +73,9 @@ internal interface ChatAccount {
 
     /** `GET /v1/info` again; the account keeps the answer, and [status] carries it. */
     suspend fun refreshInfo()
+
+    /** When the saved `GET /v1/info` of the configured server was fetched, or null without one. */
+    fun infoAt(): Long? = null
 }
 
 /** [ChatAccount] over the app's AccountService, which is made on first use, off the main thread. */
@@ -83,6 +89,7 @@ internal class AccountChat(private val account: () -> AccountService) : ChatAcco
     override suspend fun refreshInfo() {
         account().serverInfo()
     }
+    override fun infoAt(): Long? = account().infoAt()
 }
 
 /** A wake socket as the service drives it; [OkHttpChatSockets] makes [WorkspaceSocket]s, tests make fakes. */
@@ -120,6 +127,12 @@ data class ChatTiming(
     val listResumeGap: Long = MINUTE,
     /** `INFO_EVERY`: `GET /v1/info` while signed in. */
     val infoEvery: Long = HOUR,
+    /**
+     * A `GET /v1/info` that failed while signed out (no network yet, a captive portal, a 5xx) is asked again after
+     * these, then at the hourly tick. Coming to the foreground or a network that came up asks again sooner, at most
+     * once per the first delay ([WorkspaceService.retryInfo]).
+     */
+    val infoRetry: List<Long> = listOf(15 * SECOND, MINUTE, 5 * MINUTE),
     /** On resume the selected workspace runs at once, at most this often; the others spread over [resumeSpread]. */
     val resumeRunGap: Long = 5 * SECOND,
     val resumeSpread: Long = 10 * SECOND,
@@ -184,6 +197,11 @@ class WorkspaceService internal constructor(
     val timing: ChatTiming = ChatTiming(),
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
+    /**
+     * `GET /v1/info` by itself while signed out too (RUK-234), so Chat and onboarding's way to it show on a server
+     * that has team chat before anyone signs in. The app turns it on; tests that count requests leave it off.
+     */
+    private val autoInfo: Boolean = false,
 ) : Workspaces {
     private val scope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val lifecycle = Mutex()
@@ -200,6 +218,20 @@ class WorkspaceService internal constructor(
     private val lostUnsent = AtomicInteger()
     @Volatile private var followed: String? = null
     @Volatile private var pending: PendingJoin? = null
+
+    // The Join sheet showed the pending link in this process: ChatState.pendingJoin says false until the next start.
+    @Volatile private var offered = false
+    @Volatile private var joinLoaded = false
+
+    // Per server: when this service last asked GET /v1/info by itself, and the ask on its way, so switching servers
+    // and back doesn't ask the first one twice. failures counts the asks in a row that failed, for the retries of a
+    // signed-out one (ChatTiming.infoRetry).
+    private class InfoTry(val at: Long, val job: Job, @Volatile var failures: Int)
+    private val infoTries = ConcurrentHashMap<String, InfoTry>()
+    // The short retry of each server whose signed-out ask failed: one server's never cancels another's. infoLock guards
+    // these and the check-and-launch of an ask, which the retry, a resume and a network that came up can reach at once.
+    private val infoRetries = HashMap<String, Job>()
+    private val infoLock = Any()
     @Volatile private var foreground = false
 
     // ChatSyncWorker's catch-ups under way: while one is, runs nobody waits for may start in the background too.
@@ -225,7 +257,11 @@ class WorkspaceService internal constructor(
 
     private val alerts = ChatAlertEngine(sink, words, { settings.value.notifyChat }, ::isOnScreen, timing.notifyRooms)
 
-    private data class PendingJoin(val link: InviteLink, val tag: String)
+    private data class PendingJoin(val link: InviteLink, val tag: String, val at: Long)
+
+    /** chat-join.json beside the cache: the pending join of a sign-up or sign-in with a link, kept across restarts. */
+    @Serializable
+    private data class SavedJoin(val link: String, val tag: String, val at: Long)
 
     private data class OnScreen(val ws: String? = null, val room: String? = null, val thread: String? = null)
 
@@ -262,7 +298,8 @@ class WorkspaceService internal constructor(
         scope.launch {
             while (true) {
                 delay(timing.infoEvery)
-                if (signedIn) refreshInfo()
+                // Every hour, unless something else asked within the last 54 minutes.
+                maybeRefreshInfo(maxAge = timing.infoEvery * 9 / 10)
             }
         }
         return this
@@ -322,13 +359,18 @@ class WorkspaceService internal constructor(
                 discard()
             } else {
                 openCache(session)
-                refreshInfo()
+                // Signed in, the sign-in fetched the info itself and the hourly tick asks again.
+                stopInfoRetry()
+                // At start signed in, and after a sign-in, which fetched it a moment ago itself.
+                maybeRefreshInfo(maxAge = ChatTiming.MINUTE)
                 startNetwork()
             }
         } else if (availableChanged && session != null) {
             if (nowAvailable && live == null) openCache(session)
             if (isLive()) startNetwork() else stopNetwork()
         }
+        // Signed out too: whether the server has team chat decides whether Chat shows, and onboarding's way to it.
+        if (session == null) maybeRefreshInfo()
         if (!ready.isCompleted) ready.complete(Unit)
         stateChanged()
     }
@@ -356,8 +398,10 @@ class WorkspaceService internal constructor(
     private suspend fun discard() {
         lostUnsent.set(0)
         storage = true
-        pending = null
-        withContext(io) { ChatDb.deleteFiles(file) }
+        withContext(io) {
+            forgetJoin()
+            ChatDb.deleteFiles(file)
+        }
     }
 
     // Signed in: this session's cache, made when there is none. A file of another session or server goes first.
@@ -390,7 +434,10 @@ class WorkspaceService internal constructor(
         }
         storage = true
         lostUnsent.addAndGet(store.lostUnsent)
-        if (pending?.tag != session.tag) pending = null
+        withContext(io) {
+            loadJoin()
+            if (pending != null && pending?.tag != session.tag) forgetJoin()
+        }
         // Alerts an earlier process posted whose take-back it didn't live to run (a reset, read or removal committed
         // just before it ended) go before anything runs: a room's alert stands for its notice rows (§3.10).
         quietly { alerts.reconcile(store) }
@@ -403,8 +450,144 @@ class WorkspaceService internal constructor(
     }
 
     private fun refreshInfo() {
-        if (!signedIn) return
-        scope.launch { quietly { account.refreshInfo() } }
+        if (!signedIn && !autoInfo) return
+        val server = account.status.value.server
+        if (server.isEmpty()) return
+        synchronized(infoLock) {
+            // One ask at a time per server: a second one shares the first.
+            val tried = infoTries[server]
+            if (tried?.job?.isActive == true) return
+            stopInfoRetry(server)
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                // The account asks its configured server: only while that is still the one this ask was for.
+                if (account.status.value.server != server) return@launch
+                val ok = quietly { account.refreshInfo() } != null
+                infoAnswered(server, currentCoroutineContext()[Job], ok)
+            }
+            infoTries[server] = InfoTry(clock.now(), job, tried?.failures ?: 0)
+            job.start()
+        }
+    }
+
+    // An ask of refreshInfo ended. One that failed while signed out comes again after the next delay of
+    // ChatTiming.infoRetry, only while its server is the configured one; after the last, the hourly tick asks. After a
+    // switch away and back, maybeRefreshInfo asks once the short gap has passed.
+    private fun infoAnswered(server: String, job: Job?, ok: Boolean) {
+        synchronized(infoLock) {
+            val entry = infoTries[server]?.takeIf { it.job === job } ?: return
+            if (ok) {
+                entry.failures = 0
+                return
+            }
+            entry.failures += 1
+            val delays = timing.infoRetry
+            if (signedIn || !autoInfo || entry.failures > delays.size) return
+            val wait = delays[entry.failures - 1]
+            stopInfoRetry(server)
+            infoRetries[server] = scope.launch {
+                delay(wait)
+                val me = currentCoroutineContext()[Job]
+                // A retry another one replaced, or stopped just as its wait ended, asks nothing.
+                synchronized(infoLock) {
+                    if (infoRetries[server] !== me) return@launch
+                    infoRetries.remove(server)
+                    if (!signedIn && account.status.value.server == server && !answeredSince(entry)) refreshInfo()
+                }
+            }
+        }
+    }
+
+    /** The retry of [server], or without one of them all. */
+    private fun stopInfoRetry(server: String? = null) {
+        synchronized(infoLock) {
+            val stopping = if (server == null) infoRetries.keys.toList() else listOf(server)
+            for (s in stopping) infoRetries.remove(s)?.cancel()
+        }
+    }
+
+    /**
+     * Whether the configured server's info was saved after this failed ask began: another ask reached it since (the
+     * account page in Settings, a sign-in), so the failure is over. [entry] is the configured server's.
+     */
+    private fun answeredSince(entry: InfoTry): Boolean {
+        val at = account.infoAt() ?: return false
+        if (at < entry.at) return false
+        entry.failures = 0
+        return true
+    }
+
+    private fun retryGap(): Long = timing.infoRetry.firstOrNull() ?: ChatTiming.MINUTE
+
+    /**
+     * The network may be back: the app came to the foreground or a network came up. A signed-out `GET /v1/info`
+     * whose last ask failed goes again now, unless one is on its way or the last began less than the first delay of
+     * [ChatTiming.infoRetry] ago.
+     */
+    fun retryInfo() {
+        if (signedIn || !autoInfo) return
+        val tried = infoTries[account.status.value.server] ?: return
+        if (tried.failures == 0 || tried.job.isActive || answeredSince(tried)) return
+        if (clock.now() - tried.at < retryGap()) return
+        refreshInfo()
+    }
+
+    // Signed out: GET /v1/info when the saved answer is missing or older than infoEvery, at most once a minute, so a
+    // start or a new server learns whether there is team chat without asking a server that doesn't answer all the time.
+    // After a failed ask at most once per retryGap(), so switching back to a server whose retry came while another
+    // was configured asks again.
+    private fun maybeRefreshInfo(maxAge: Long = timing.infoEvery) {
+        if (!signedIn && !autoInfo) return
+        val now = clock.now()
+        val tried = infoTries[account.status.value.server]
+        val failed = !signedIn && tried != null && tried.failures > 0 && !answeredSince(tried)
+        if (tried != null && (tried.job.isActive || now - tried.at < (if (failed) retryGap() else ChatTiming.MINUTE))) return
+        val at = account.infoAt()
+        if (info != null && at != null && now - at < maxAge) return
+        refreshInfo()
+    }
+
+    /** The addresses that count as the configured server for invitation links (InviteLink.sameServers). */
+    private fun linkServers(): List<String> = InviteLink.sameServers(configured)
+
+    // ---- the pending join (RUK-234), in chat-join.json ----
+
+    private val joinFile: File get() = File(file.parentFile, JOIN_FILE)
+
+    // Read at the first use, off the main thread where it can be.
+    private fun loadJoin() {
+        if (joinLoaded) return
+        joinLoaded = true
+        val saved = try {
+            if (joinFile.exists()) JsonFiles.read(joinFile, SavedJoin.serializer(), SavedJoin("", "", 0)) else null
+        } catch (e: Exception) {
+            null
+        }
+        val link = saved?.let { InviteLink.parse(it.link, devHosts = true) }
+        if (saved != null && link != null && saved.tag.isNotEmpty()) pending = PendingJoin(link, saved.tag, saved.at)
+    }
+
+    private fun saveJoin() {
+        try {
+            val p = pending
+            if (p == null) {
+                if (joinFile.exists()) joinFile.delete()
+            } else {
+                joinFile.parentFile?.mkdirs()
+                JsonFiles.write(joinFile, SavedJoin.serializer(), SavedJoin(p.link.text, p.tag, p.at))
+            }
+        } catch (e: Exception) {
+            // Kept in memory for this process; only a restart loses it.
+            AppLog.w(TAG, "The pending join couldn't be saved", e)
+        }
+    }
+
+    private fun forgetJoin() {
+        joinLoaded = true
+        val had = pending != null
+        pending = null
+        offered = false
+        if (had || joinFile.exists()) saveJoin()
+        if (had) stateChanged()
     }
 
     private suspend fun startNetwork() {
@@ -788,6 +971,8 @@ class WorkspaceService internal constructor(
      * now (at most once per 5 s) and the others spread over 10 s, reconnect a socket that is down, kick the outbox.
      */
     fun nudge() {
+        // Signed out, a start without network left Chat and onboarding's way to it hidden.
+        retryInfo()
         val l = live ?: return
         if (!isLive()) return
         l.scope.launch {
@@ -916,7 +1101,8 @@ class WorkspaceService internal constructor(
             retention = w?.retention?.let { ChatRetention(it.contentDays, it.feedDays) },
             limits = w?.limits?.let { ChatLimits(it.workspacesPerAccount, it.members) },
             notifications = settings.value.notifyChat,
-            pendingJoin = pendingJoin() != null,
+            pendingJoin = pendingJoin() != null && !offered,
+            linkServers = linkServers(),
             unsent = unsent,
             lostUnsent = lostUnsent.get(),
             selected = l?.selected,
@@ -1328,19 +1514,30 @@ class WorkspaceService internal constructor(
     }
 
     private fun checkLink(link: InviteLink) {
-        if (link.server != configured) throw WorkspaceError("other_server")
+        if (link.server !in linkServers()) throw WorkspaceError("other_server")
         if (!WorkspaceIds.isWorkspace(link.workspace) || !WorkspaceIds.SECRET.matches(link.secret)) throw WorkspaceError("bad_link")
     }
 
     override suspend fun previewInvite(link: InviteLink): InvitePreview {
         val l = requireLive()
-        checkLink(link)
+        try {
+            checkLink(link)
+        } catch (e: WorkspaceError) {
+            // The pending link no longer reads as this server's (its home changed): it won't after a restart either.
+            settled(link.secret)
+            throw e
+        }
         val already = l.store.read { getWs(link.workspace) != null }
         try {
             val preview = writeTop(l) { previewInvite(link.workspace, link.secret) }
             if (preview.workspace.id != link.workspace) throw WorkspaceError("server", message = "the preview names another workspace")
-            return preview.copy(already = already || l.store.read { getWs(link.workspace) != null })
+            val isIn = already || l.store.read { getWs(link.workspace) != null }
+            // A pending join of a workspace the person is in already has nothing left to do.
+            if (isIn) settled(link.secret)
+            return preview.copy(already = isIn)
         } catch (e: WorkspaceError) {
+            // A pending link the server refuses for good won't work after a restart either.
+            if (e.code in FAILS_FOR_GOOD && e.scope != "conversation") settled(link.secret)
             if (!already) throw e
             // A member's own workspace: the card says so and offers Open, whatever became of the invitation.
             val row = l.store.read { getWs(link.workspace) } ?: throw e
@@ -1365,34 +1562,55 @@ class WorkspaceService internal constructor(
         if (answer.workspace?.id != link.workspace) throw WorkspaceError("server", message = "the answer names another workspace")
         if (l.closed) throw WorkspaceError("signed_out")
         val ws = adopt(l, answer, t0, t1)
-        // The link of a sign-up is used now.
-        if (pending?.link?.secret == link.secret) {
-            pending = null
-            stateChanged()
-        }
+        // The link of a sign-up or sign-in is used now.
+        settled(link.secret)
         arrive(l, ws)
         return ws
     }
 
+    // The pending join is over when it holds this secret: joined, or refused for good.
+    private fun settled(secret: String) {
+        if (pending?.link?.secret == secret) forgetJoin()
+    }
+
     override fun rememberJoin(link: InviteLink) {
         val tag = account.borrowSession()?.tag ?: return
-        pending = PendingJoin(link, tag)
+        joinLoaded = true
+        pending = PendingJoin(link, tag, clock.now())
+        offered = false
+        saveJoin()
         stateChanged()
     }
 
+    // The pending join of the session signed in now, unless it is older than an invitation lasts (seven days).
     private fun pendingJoin(): InviteLink? {
+        loadJoin()
         val p = pending ?: return null
-        return p.link.takeIf { signedIn && account.borrowSession()?.tag == p.tag }
+        if (!signedIn || account.borrowSession()?.tag != p.tag) return null
+        // Offered only once the session's cache is open: the Join sheet previews it at once (requireLive).
+        val l = live
+        if (l == null || l.closed || l.session.tag != p.tag) return null
+        val age = clock.now() - p.at
+        if (age > PENDING_MAX || age < -PENDING_MAX) {
+            forgetJoin()
+            return null
+        }
+        return p.link
     }
 
+    /**
+     * The link once per process, then null. It stays on disk until the person joined with it, let it go
+     * ([dropPendingJoin]) or the server refused it for good, so a restart with the sheet still open offers it again.
+     */
     override fun takePendingJoin(): InviteLink? {
-        val link = pendingJoin()
-        if (pending != null) {
-            pending = null
-            stateChanged()
-        }
+        val link = pendingJoin() ?: return null
+        if (offered) return null
+        offered = true
+        stateChanged()
         return link
     }
+
+    override fun dropPendingJoin() = forgetJoin()
 
     // As desktop's chatState call takes it: reported once, then 0. A file broken later in the session adds to it.
     override fun takeLostUnsent(): Int {
@@ -1475,7 +1693,8 @@ class WorkspaceService internal constructor(
     override suspend fun createInvite(ws: String, role: String, channels: List<String>, expiresIn: Long): MadeInvite = onWs(ws) { l, s ->
         val made = write(s) { createInvite(ws, role, channels, expiresIn) }
         confirm(s)
-        MadeInvite(made.invite, InviteLink.format(l.server, ws, made.secret))
+        // From the server's home, so devices at its former address read the link as theirs too.
+        MadeInvite(made.invite, InviteLink.format(InviteLink.inviteServer(l.server, InviteLink.homeOf(info?.workspace?.home?.origin)), ws, made.secret))
     }
 
     override suspend fun withdrawInvite(ws: String, invite: String) {
@@ -1660,6 +1879,14 @@ class WorkspaceService internal constructor(
 
         /** Runs per workspace in one background catch-up, while its feed has more pages. */
         private const val WORKER_RUNS = 4
+
+        private const val JOIN_FILE = "chat-join.json"
+
+        /** The longest an invitation lasts (the server takes expiresIn up to seven days). */
+        private const val PENDING_MAX = 7 * 24 * 60 * 60 * 1000L
+
+        // A preview of the pending link that fails with one of these means it never will work.
+        private val FAILS_FOR_GOOD = setOf("invite_gone", "not_found", "bad_link", "other_server")
 
         private val ROLES = setOf("owner", "admin", "member", "guest")
         private val JURISDICTIONS = setOf("eu", "us", "fedramp")

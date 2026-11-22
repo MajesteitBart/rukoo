@@ -6968,6 +6968,62 @@
     "message": "Try a demo account first",
     "description": "setup > demo. src/renderer/setup.js (showGrid)"
   },
+  "setup.chat.title": {
+    "message": "Team chat",
+    "description": "Heading of the team chat box under the provider grid on the first-run setup page, shown when the Rukoo account server has team chat and nobody is signed in. src/renderer/setup.js"
+  },
+  "setup.chat.body": {
+    "message": "Got an invitation link from a colleague? Team chat works without a mail account.",
+    "description": "Text of the team chat box on the first-run setup page. src/renderer/setup.js"
+  },
+  "setup.chat.account": {
+    "message": "Sign in or create an account",
+    "description": "Link button in the team chat box on the setup page: the Rukoo account form without an invitation link. src/renderer/setup.js"
+  },
+  "setup.chat.linkTitle": {
+    "message": "Join your team's chat",
+    "description": "Title of the setup step that asks for the invitation link. src/renderer/setup.js"
+  },
+  "setup.chat.linkHelp": {
+    "message": "Paste the invitation link a colleague sent you. Next you create a Rukoo account or sign in to yours: team chat runs on it.",
+    "description": "Text above the invitation link field on the setup page. src/renderer/setup.js"
+  },
+  "setup.chat.noLink": {
+    "message": "I don't have a link",
+    "description": "Link button beside Continue on the invitation link step: goes to the account form without a link. src/renderer/setup.js"
+  },
+  "setup.chat.continue": {
+    "message": "Continue",
+    "description": "Button of the invitation link step on the setup page. src/renderer/setup.js"
+  },
+  "setup.chat.otherServer": {
+    "message": "This invitation is for {host}, and Rukoo uses {own} for team chat. You can change the server in Settings > Rukoo account.",
+    "description": "Error under the invitation link field on the setup page for a link to another account server. {host}: the link's server; {own}: the server Rukoo uses. src/renderer/setup.js"
+  },
+  "setup.chat.signUpTitle": {
+    "message": "Create a Rukoo account",
+    "description": "Title of the setup step that makes a Rukoo account for team chat. src/renderer/setup.js"
+  },
+  "setup.chat.signInTitle": {
+    "message": "Sign in to Rukoo",
+    "description": "Title of the setup step that signs in to a Rukoo account for team chat. src/renderer/setup.js"
+  },
+  "setup.chat.accountLead": {
+    "message": "Team chat runs on your Rukoo account at {host}.",
+    "description": "Text at the top of the account step on the setup page, without an invitation link. {host}: the account server. src/renderer/setup.js"
+  },
+  "setup.chat.accountLeadLink": {
+    "message": "Team chat runs on your Rukoo account at {host}. Once you are in, Rukoo opens the workspace your link invites you to.",
+    "description": "Text at the top of the account step on the setup page, after an invitation link. {host}: the account server. src/renderer/setup.js"
+  },
+  "setup.chat.toSignIn": {
+    "message": "I already have an account",
+    "description": "Link button on the sign-up form of the setup page: switches to signing in. src/renderer/setup.js"
+  },
+  "setup.chat.toSignUp": {
+    "message": "I don't have an account yet",
+    "description": "Link button on the sign-in form of the setup page: switches to making an account. src/renderer/setup.js"
+  },
   "setup.demo.name": {
     "message": "Demo User",
     "description": "setup > demo. src/main/engine.js"
@@ -8700,6 +8756,10 @@
     "message": "Only on this computer",
     "description": "\"What's new in Rukoo 2.1\" guide: third choice on the account step. src/renderer/whats-new.js."
   },
+  "whatsNew.account.inviteOrLink": {
+    "message": "Invite code or invitation link",
+    "description": "Placeholder of the invite field in the What's new account step, when the server takes a team chat invitation link as an invite code. src/renderer/whats-new.js"
+  },
   "whatsNew.account.localHint": {
     "message": "No account. You can make one later in Settings > Rukoo account.",
     "description": "\"What's new in Rukoo 2.1\" guide: hint under the third choice on the account step. src/renderer/whats-new.js."
@@ -10331,6 +10391,30 @@
     "message": "Join with an invitation link",
     "description": "Workspace menu item, sidebar row and button on the No workspace empty state that opens Join a workspace. src/renderer/chat.js"
   },
+  "chat.apps.title": {
+    "message": "Rukoo on your other devices",
+    "description": "Heading of the card at the bottom of the Chat sidebar, shown once after the first workspace was joined or made. src/renderer/chat.js"
+  },
+  "chat.apps.android": {
+    "message": "Rukoo for Android",
+    "description": "Row in that card: opens the Android download page. src/renderer/chat.js"
+  },
+  "chat.apps.androidBody": {
+    "message": "Team chat and mail on your phone",
+    "description": "Second line of the Android row. src/renderer/chat.js"
+  },
+  "chat.apps.voice": {
+    "message": "Rukoo Voice",
+    "description": "Row in that card: opens the Rukoo Voice download. Product name, keep as is. src/renderer/chat.js"
+  },
+  "chat.apps.voiceBody": {
+    "message": "Dictation and meeting recording",
+    "description": "Second line of the Rukoo Voice row. src/renderer/chat.js"
+  },
+  "chat.apps.dismiss": {
+    "message": "Hide",
+    "description": "Tooltip and accessible name of the close button on that card; it doesn't come back. src/renderer/chat.js"
+  },
   "chat.workspace.invite": {
     "message": "Invite people",
     "description": "Workspace menu item and button in a channel's intro that opens Invite people. src/renderer/chat.js, src/renderer/chat-view.js"
@@ -10453,7 +10537,7 @@
   },
   "chat.empty.inviteHint": {
     "message": "Got an invitation link? Paste it where Rukoo asks for an invite code.",
-    "description": "Chat view, signed out: hint under the buttons when the server accepts sign-ups with an invitation. src/renderer/chat.js"
+    "description": "Chat view in the browser, signed out: hint under the buttons when the server accepts sign-ups with an invitation. Desktop shows a Join with an invitation link button instead. src/renderer/chat-view.js (showState)."
   },
   "chat.empty.webInvitedHint": {
     "message": "You opened an invitation link. Create an account or sign in, and you can join the workspace right after.",

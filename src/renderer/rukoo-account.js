@@ -38,7 +38,7 @@ const inviteSignups = (info) => chatIn(info) && Boolean(info.workspace.inviteSig
 // What team chat says now (contract 4.6), or null where main has none.
 const chatState = () => api('chatState').catch(() => null);
 
-function showRecoveryKey(key) {
+export function showRecoveryKey(key) {
   return dialog({
     title: t('settings.rukoo.keyTitle'),
     wide: true,

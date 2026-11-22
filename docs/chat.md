@@ -2,13 +2,17 @@
 
 Team chat lets you talk with your colleagues in Rukoo, next to your mail and calendar. A team gets a **workspace** on the server of your Rukoo account. In it you talk in **channels**, which are named conversations for a topic or a project, and in **direct messages** with one person or a small group. Messages arrive live, on your computer and on your phone.
 
-Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on, as the server at rukoo.io has. On a server you or your team runs yourselves, its operator turns it on ([Running your own server](account.md#running-your-own-server)).
+Open it with the Chat tab in the title bar, or with `Ctrl+4`. Chat shows only when the server of your [Rukoo account](account.md) has team chat turned on, as the server at rukoo.io has, signed in or not: Rukoo asks the server at start and then every hour. When that first ask fails, for example because the network isn't up yet, Rukoo asks again after 15 seconds, a minute and five minutes, and also when the window gets focus, the computer wakes, the network comes back or the setup page opens. On a server you or your team runs yourselves, its operator turns it on ([Running your own server](account.md#running-your-own-server)).
+
+Team chat doesn't need a mail account. With only a Rukoo account, Rukoo opens in Chat; Mail, Calendar and Meet ask you to add a mail account first.
 
 **The host can read your messages.** Team chat isn't end-to-end encrypted, unlike the records your Rukoo account syncs. Whoever runs the server can read and change what is written in its workspaces, direct messages included. Rukoo says who hosts a workspace before you join, in the conversation header of every direct message and in Workspace settings. [What the host can read](#what-the-host-can-read) has the details.
 
 ## Getting started
 
-Team chat needs a Rukoo account. Signed out, Chat offers **Create an account** and **Sign in**, which open Settings → Rukoo account.
+Team chat needs a Rukoo account. On the first start, below the mail providers, **Team chat** offers **Join with an invitation link** and **Sign in or create an account**. Signed out, Chat offers the same next to **Create an account** and **Sign in**, which open Settings → Rukoo account.
+
+With an invitation link, Rukoo first checks that the link is for its server, then asks you to create a Rukoo account or sign in to yours. After that Chat opens with the Join dialog for the link. Rukoo keeps the link until you joined, chose **Cancel**, or the server says it no longer works, at most seven days, so a restart in between brings the Join dialog back.
 
 Then either:
 
@@ -33,9 +37,11 @@ Rukoo for desktop and Android doesn't open these links itself yet, so a link ope
 - Where the account server runs behind Rukoo's website (`website/`), as rukoo.io does, the website sends the link on to Chat in the browser at `/app/`. The person creates a Rukoo account or signs in there, and the Join dialog opens with the link filled in, without installing anything. [In a browser](account.md#in-a-browser) says what the browser keeps. The website does this only when the account server marks its invitation page with `X-Rukoo-Workspace-Invite`, so an account server deployed before that header keeps showing its own page.
 - A server you run from `server/` alone, without the website in front of it, shows a page that explains what to do: install Rukoo, then paste the page's address into Chat's Join dialog.
 
-**A colleague without a Rukoo account** can use the link to sign up. On a server where new accounts need an invite code, an invitation link works as the code: paste it into the invite code field when you create the account. Each link makes one account. After the sign-up, Settings closes and Chat opens the Join dialog with the link filled in. If you restart Rukoo in between, paste the link again. The server's operator can turn this off, and then only their own invite codes work.
+**A colleague without a Rukoo account** can use the link to sign up, with **Join with an invitation link** on the first start or in Chat. On a server where new accounts need an invite code, an invitation link works as the code, also when pasted into the invite code field of Settings → Rukoo account. Each link makes one account. After the sign-up Chat opens the Join dialog with the link filled in, also after a restart. The server's operator can turn this off, and then only their own invite codes work.
 
-Rukoo joins workspaces only on the server of your own Rukoo account. A link for another server gets "This invitation is for …" and nothing happens.
+Rukoo joins workspaces only on the server of your own Rukoo account. A link for another server gets "This invitation is for …" and nothing happens. rukoo.io used to be called rukoo-account.bvdm.ai, and both names reach the same server: a link made with either works on a Rukoo that uses the other, and new links use rukoo.io. Rukoo keeps that list of names itself, so another server can't claim rukoo.io's links by naming rukoo.io as its home.
+
+After your first workspace, the bottom of Chat's sidebar names Rukoo's other apps once: Rukoo for Android and Rukoo Voice. Close it with ×; it doesn't come back.
 
 ## Channels
 

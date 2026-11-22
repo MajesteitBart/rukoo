@@ -56,6 +56,7 @@
     <string name="settings_rukoo_mismatch">The passwords don\'t match.</string>
     <string name="settings_rukoo_invite">Invite code</string>
     <string name="settings_rukoo_invite_chat_help">An invitation link to a team chat workspace works as an invite code too.</string><!-- settings.rukoo.inviteChatHelp -->
+    <string name="settings_rukoo_link_note">Team chat runs on your Rukoo account at %1$s. Once you are in, Rukoo opens the workspace your link invites you to.</string><!-- Note above the sign-up and sign-in forms after onboarding\'s team chat step. %1$s: the account server. -->
     <string name="settings_rukoo_understand">I understand that if I forget my password, only my recovery key gets me back in.</string>
     <string name="settings_rukoo_need_understand">Tick the box to confirm.</string>
     <string name="settings_rukoo_create">Create account</string>

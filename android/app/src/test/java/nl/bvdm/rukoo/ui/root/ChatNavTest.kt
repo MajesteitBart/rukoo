@@ -762,6 +762,61 @@ class ChatNavTest {
         assertEquals(listOf(ChatPane.HOME), vm.state.value.chat.stack)
     }
 
+    // RUK-234 review: onboarding asks for Android 13's notification permission only after a mail account came in.
+    @Test
+    fun `team chat without a mail account asks for the notification permission once per install`() = runTest(main) {
+        val w = FakeWorkspaces()
+        val (s, vm) = vm(w)
+        s.mail.removeAccount(s.mail.accounts.value.single().id)
+        // Signed in without a workspace yet: no alerts to ask for.
+        w.state.value = ready(emptyList())
+        assertFalse(vm.askChatNotifications.value)
+        // The first workspace (a join, or a sign-in to an account in one): ask.
+        w.state.value = ready(listOf(summary("w1")))
+        val asked = until { vm.askChatNotifications.value }
+        assertTrue(asked)
+        // Kept only once the prompt went out: a process that ends before that asks at the next start.
+        assertFalse(s.settings.current().chatNotificationsAsked)
+        vm.chatNotificationsAsked()
+        assertFalse(vm.askChatNotifications.value)
+        until { false }
+        assertTrue(s.settings.current().chatNotificationsAsked)
+        // More workspaces or a join ask nothing more.
+        w.state.value = ready(listOf(summary("w1"), summary("w2")))
+        vm.firstWorkspace()
+        assertFalse(vm.askChatNotifications.value)
+        // Nor does the next start, after a refusal as after Allow.
+        val again = AppViewModel(s, androidx.lifecycle.SavedStateHandle())
+        again.mailUi.strings = Fake
+        again.chatUi.strings = Fake
+        until { false }
+        assertFalse(again.askChatNotifications.value)
+    }
+
+    @Test
+    fun `with a mail account a workspace asks for no notification permission of its own`() = runTest(main) {
+        val w = FakeWorkspaces()
+        w.state.value = ready(emptyList())
+        val (s, vm) = vm(w)
+        // Onboarding asked when the mail account came in.
+        w.state.value = ready(listOf(summary("w1")))
+        vm.firstWorkspace()
+        until { false }
+        assertFalse(vm.askChatNotifications.value)
+        assertFalse(s.settings.current().chatNotificationsAsked)
+    }
+
+    // The settings' DataStore runs on the test's scheduler and writes its file for real: runs the scheduler and lets
+    // up to a second of real time pass until [check] holds.
+    private suspend fun TestScope.until(check: () -> Boolean): Boolean {
+        repeat(100) {
+            if (check()) return true
+            testScheduler.advanceUntilIdle()
+            kotlinx.coroutines.withContext(Dispatchers.Default) { kotlinx.coroutines.delay(10) }
+        }
+        return check()
+    }
+
     // ---- fakes ----
 
     private fun timeline(room: String, readAtOpen: Long = 0, events: List<Event> = emptyList()) = RoomTimeline(

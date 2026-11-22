@@ -16,15 +16,25 @@
 // workspace that doesn't exist, and that mustn't remove a workspace the person is in.
 //
 // Decisions where the contract is silent:
-// - The pending join is kept for the session it was made in (its tag). Signing out or into another account drops it.
+// - The pending join is kept for the session it was made in (its tag), in chat-join.json beside the cache, so a restart
+//   between the sign-up and the join offers it again. Joining with it, Cancel in the Join dialog, a link the server
+//   no longer takes, seven days (the longest an invitation lasts), signing out or into another account drop it.
 // - A preview of a link to a workspace the person is in falls back to the cached workspace when the server refuses
 //   the invitation (used, withdrawn or expired): already is true, issuer.name is '' and expiresAt null.
 // - Leaving a workspace, channel or DM the server says the person is no longer in counts as done.
 // - Removing yourself through chatRemoveMember or chatRemoveFromChannel is leaving.
+const fs = require('fs');
+const path = require('path');
 const wire = require('./wire');
 const sync = require('./sync');
 
 const { ChatError } = wire;
+
+// The longest an invitation lasts (the server takes expiresIn up to seven days): a pending join older than this can't
+// work any more.
+const PENDING_MAX = 7 * 24 * 60 * 60 * 1000;
+// A preview of the pending link that fails with one of these means it never will work.
+const FAILS_FOR_GOOD = new Set(['invite_gone', 'not_found', 'bad_link', 'other_server']);
 
 const isGone = (err, scope) => Boolean(err && err.code === 'not_found' && err.scope === scope);
 
@@ -60,6 +70,8 @@ class Manage {
     chatPreviewInvite: (svc, link) => svc.manage.previewInvite(link),
     chatJoin: (svc, input) => svc.manage.join(input),
     chatTakePendingJoin: (svc) => svc.manage.takePendingJoin(),
+    chatDropPendingJoin: (svc) => svc.manage.dropPendingJoin(),
+    chatCheckLink: (svc, link) => svc.manage.checkLink(link),
     chatLeaveWorkspace: (svc, ws) => svc.manage.leaveWorkspace(ws),
     chatDeleteWorkspace: (svc, ws) => svc.manage.deleteWorkspace(ws),
     chatSetMyName: (svc, ws, name) => svc.manage.setMyName(ws, name),
@@ -84,78 +96,178 @@ class Manage {
 
   constructor(svc) {
     this.svc = svc;
-    // The invitation link of a sign-up, until the Chat view takes it: { link, tag } with the session tag it belongs to.
-    // Only in memory, so a restart loses it (contract 3.3).
+    // The invitation link of a sign-up or sign-in, until the person joined with it or let it go: { link, tag, at } with
+    // the session tag it belongs to and when it was made. Kept in chat-join.json (file()), so a restart keeps it.
     this.pending = null;
+    // The Join dialog showed the pending link in this run: ChatState.pendingJoin says false until the next start.
+    this.offered = false;
+    this.loaded = false;
+  }
+
+  // ---- the pending join ----
+
+  file() {
+    return path.join(this.svc.dataDir, 'chat-join.json');
+  }
+
+  // The pending join on disk, read at the first use. Without keepJoin (the browser) it lives in memory only.
+  load() {
+    if (this.loaded) return;
+    this.loaded = true;
+    if (this.svc.keepJoin === false) return;
+    let saved = null;
+    try {
+      saved = JSON.parse(fs.readFileSync(this.file(), 'utf8'));
+    } catch (_) {
+      saved = null;
+    }
+    if (saved && typeof saved.link === 'string' && typeof saved.tag === 'string' && Number.isSafeInteger(saved.at)) {
+      this.pending = { link: saved.link, tag: saved.tag, at: saved.at };
+    }
+  }
+
+  save() {
+    if (this.svc.keepJoin === false) return;
+    try {
+      if (!this.pending) {
+        fs.rmSync(this.file(), { force: true });
+        return;
+      }
+      fs.mkdirSync(path.dirname(this.file()), { recursive: true });
+      const tmp = `${this.file()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.pending));
+      fs.renameSync(tmp, this.file());
+    } catch (err) {
+      // Kept in memory for this run; only a restart loses it.
+      this.svc.hookFailed(err);
+    }
+  }
+
+  // The pending join goes, from disk too.
+  forget() {
+    this.load();
+    const had = Boolean(this.pending);
+    this.pending = null;
+    this.offered = false;
+    if (had || (this.svc.keepJoin !== false && fs.existsSync(this.file()))) this.save();
+    if (had) this.svc.stateChanged();
+  }
+
+  // The pending join of the session signed in now, unless it is too old to work: { link, tag, at }, or null.
+  current() {
+    this.load();
+    const p = this.pending;
+    if (!p || !this.svc.signedIn || p.tag !== this.svc.account.sessionTag) return null;
+    const age = this.svc.now() - p.at;
+    if (age > PENDING_MAX || age < -PENDING_MAX) {
+      this.forget();
+      return null;
+    }
+    return p;
   }
 
   // ---- hooks ----
 
-  // The invite field of the sign-up form, for main.js accountSignUp (contract 3.3): an invitation link for the
-  // configured server becomes workspaceInvite { workspace, invite } and the link to remember; anything else, a link
-  // to another server included, stays the operator's invite code.
+  // The invite field of the sign-up form, for main.js accountSignUp (wire.splitInvite). A link to another server
+  // throws ChatError('other_server'), as Android's sign-up form refuses it (RukooAccountModel.inviteInput).
   splitInvite(text) {
-    const raw = typeof text === 'string' ? text : '';
-    let found = null;
-    try {
-      found = wire.parseInviteLink(raw, this.server());
-    } catch (_) {
-      found = null;
-    }
-    if (!found) return { invite: raw, workspaceInvite: null, link: null };
-    return {
-      invite: '',
-      workspaceInvite: { workspace: found.workspace, invite: found.secret },
-      link: wire.inviteLink(found.server, found.workspace, found.secret)
-    };
+    return wire.splitInvite(text, this.servers());
   }
 
-  // After a sign-up with a link: the Chat view opens the Join dialog with it the next time it shows.
+  // After a sign-up or sign-in with a link: the Chat view opens the Join dialog with it the next time it shows, also
+  // after a restart.
   rememberJoin(link) {
     let found = null;
     try {
-      found = wire.parseInviteLink(link, this.server());
+      found = wire.parseInviteLink(link, this.servers());
     } catch (_) {
       found = null;
     }
     const tag = this.svc.account.sessionTag;
     if (!found || !tag) return;
-    this.pending = { link: wire.inviteLink(found.server, found.workspace, found.secret), tag };
+    this.loaded = true;
+    this.pending = { link: wire.inviteLink(found.server, found.workspace, found.secret), tag, at: this.svc.now() };
+    this.offered = false;
+    this.save();
     this.svc.stateChanged();
   }
 
-  // Whether a join waits for the Chat view, for ChatState.pendingJoin.
+  // Whether a join waits for the Chat view, for ChatState.pendingJoin: one the Join dialog didn't show yet in this run.
   pendingJoin() {
-    return Boolean(this.pending && this.svc.signedIn && this.pending.tag === this.svc.account.sessionTag);
+    return Boolean(this.current() && !this.offered && this.svc.store);
   }
 
   // After a session's cache was set up: a pending join of another session goes.
   onSignedIn() {
-    if (this.pending && this.pending.tag !== this.svc.account.sessionTag) this.pending = null;
+    this.load();
+    if (this.pending && this.pending.tag !== this.svc.account.sessionTag) this.forget();
   }
 
-  // chatTakePendingJoin: { link } once, then null.
+  // Signed out: the pending join goes with the session.
+  onSignedOut() {
+    this.forget();
+  }
+
+  // chatTakePendingJoin: { link } once per run, then null. It stays on disk until the person joined with it, let it go
+  // (chatDropPendingJoin) or the server refused it for good, so a restart with the dialog still open offers it again.
   takePendingJoin() {
-    const waiting = this.pendingJoin();
-    const link = waiting ? this.pending.link : null;
-    if (this.pending) {
-      this.pending = null;
-      this.svc.stateChanged();
+    const p = this.current();
+    // Only once the session's cache is open: the Join dialog previews it at once.
+    if (!p || this.offered || !this.svc.store) return null;
+    this.offered = true;
+    this.svc.stateChanged();
+    return { link: p.link };
+  }
+
+  // chatDropPendingJoin: Cancel in the Join dialog that showed the pending link.
+  dropPendingJoin() {
+    this.forget();
+    return true;
+  }
+
+  // The pending join is over when it holds this secret: joined, or refused for good.
+  settled(secret) {
+    const p = this.current();
+    if (!p) return;
+    let same = true;
+    try {
+      same = wire.parseInviteLink(p.link).secret === secret;
+    } catch (_) {
+      // A link on disk that doesn't read as one can't be joined either.
     }
-    return link ? { link } : null;
+    if (same) this.forget();
   }
 
   // ---- helpers ----
 
-  // The configured account server, as serverUrl() writes it: what invitation links are checked against.
+  // The configured account server, as serverUrl() writes it: where every request goes.
   server() {
     const status = this.svc.account && typeof this.svc.account.status === 'function' ? this.svc.account.status() : null;
     return (status && status.server) || this.svc.server || null;
   }
 
+  // The addresses that count as the configured server for invitation links (wire.sameServers): the server and the
+  // others the app knows are the same one, never what the server says of itself. Signed out too, for the setup page.
+  servers() {
+    return wire.sameServers(this.server());
+  }
+
   // An invitation link for this server (contract 3.2), or bad_link or other_server.
   parse(text) {
-    return wire.parseInviteLink(text, this.server());
+    return wire.parseInviteLink(text, this.servers());
+  }
+
+  // chatCheckLink: whether text holds an invitation link for this server, also before there is an account (the setup
+  // page's team chat step): { link, host } with the link as main reads it, or bad_link or other_server.
+  checkLink(text) {
+    const link = this.parse(text);
+    let host = '';
+    try {
+      host = new URL(link.server).host;
+    } catch (_) {
+      host = '';
+    }
+    return { link: wire.inviteLink(link.server, link.workspace, link.secret), host };
   }
 
   // The cached workspace row, or the 404 of a workspace that isn't there.
@@ -277,7 +389,15 @@ class Manage {
   async previewInvite(text) {
     const svc = this.svc;
     const epoch = svc.epoch;
-    const link = this.parse(text);
+    let link;
+    try {
+      link = this.parse(text);
+    } catch (err) {
+      // The pending link itself no longer reads as this server's (its home changed): it won't after a restart either.
+      const p = this.current();
+      if (p && typeof text === 'string' && text.trim() === p.link) this.forget();
+      throw err;
+    }
     const cleaned = wire.inviteLink(link.server, link.workspace, link.secret);
     const already = Boolean(svc.store.getWs(link.workspace));
     try {
@@ -286,8 +406,13 @@ class Manage {
       );
       svc.guard(epoch);
       if (preview.workspace.id !== link.workspace) throw new ChatError('server', { where: 'preview.workspace.id' });
-      return { ...preview, already: already || Boolean(svc.store.getWs(link.workspace)), link: cleaned };
+      const isIn = already || Boolean(svc.store.getWs(link.workspace));
+      // A pending join of a workspace the person is in already has nothing left to do.
+      if (isIn) this.settled(link.secret);
+      return { ...preview, already: isIn, link: cleaned };
     } catch (err) {
+      // A pending link the server refuses for good won't work after a restart either.
+      if (!svc.isStale(err) && err && FAILS_FOR_GOOD.has(err.code) && err.scope !== 'conversation') this.settled(link.secret);
       if (svc.isStale(err) || !already) throw err;
       svc.guard(epoch);
       // A member's own workspace: the card says so and offers Open, whatever became of the invitation.
@@ -320,17 +445,8 @@ class Manage {
     const t1 = svc.now();
     if (answer.workspace.id !== link.workspace) throw new ChatError('server', { where: 'workspace.workspace.id' });
     const ws = this.adopt(epoch, answer, t0, t1);
-    // The link of a sign-up is used now.
-    if (this.pending) {
-      try {
-        if (this.parse(this.pending.link).secret === link.secret) {
-          this.pending = null;
-          svc.stateChanged();
-        }
-      } catch (_) {
-        this.pending = null;
-      }
-    }
+    // The link of a sign-up or sign-in is used now.
+    this.settled(link.secret);
     await this.arrive(epoch, ws);
     return { ws, already };
   }
@@ -418,7 +534,8 @@ class Manage {
     const made = wire.checkInvite(await this.write(ws, 'POST', '/invites', { role, channels, expiresIn }));
     svc.guard(epoch);
     this.confirm(epoch, ws);
-    return { invite: made.invite, link: wire.inviteLink(svc.server, ws, made.secret) };
+    // From the server's home, so devices at its former address read the link as theirs too (wire.inviteServer).
+    return { invite: made.invite, link: wire.inviteLink(wire.inviteServer(svc.server, svc.info), ws, made.secret) };
   }
 
   // chatWithdrawInvite: DELETE /invites/{i}. Withdrawing twice answers 204 twice.

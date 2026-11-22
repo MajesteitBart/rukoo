@@ -51,6 +51,7 @@
     <string name="settings_rukoo_mismatch">De wachtwoorden zijn niet gelijk.</string>
     <string name="settings_rukoo_invite">Uitnodigingscode</string>
     <string name="settings_rukoo_invite_chat_help">Een uitnodigingslink voor een werkruimte in teamchat werkt ook als uitnodigingscode.</string>
+    <string name="settings_rukoo_link_note">Teamchat draait op je Rukoo-account bij %1$s. Zodra je binnen bent, opent Rukoo de werkruimte waarvoor je bent uitgenodigd.</string>
     <string name="settings_rukoo_understand">Ik begrijp dat alleen mijn herstelsleutel me terug in mijn account brengt als ik mijn wachtwoord vergeet.</string>
     <string name="settings_rukoo_need_understand">Vink het vakje aan om te bevestigen.</string>
     <string name="settings_rukoo_create">Account maken</string>

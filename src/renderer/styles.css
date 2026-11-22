@@ -849,6 +849,7 @@ body:has(.page) .titlebar-modes {
   display: inline-block;
 }
 body.no-accounts .titlebar-search,
+body.chat-only .titlebar-search,
 body:has(.page) .titlebar-search {
   display: none;
 }
@@ -3761,6 +3762,80 @@ body:has(.composer .composer-bar) .toast {
 }
 .setup-foot .link-btn {
   margin: 4px 0 0 -4px;
+}
+
+/* Team chat without a mail account (RUK-234): under the providers on the first-run page while the account server has
+ * team chat and nobody is signed in, and its two steps (the link, then the Rukoo account). */
+.setup-chat {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 28px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.setup-chat[hidden] {
+  display: none;
+}
+.setup-chat-ic {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--chip);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+}
+.setup-chat-ic svg {
+  width: 18px;
+  height: 18px;
+}
+.setup-chat-text {
+  flex: 1;
+  min-width: 0;
+}
+.setup-chat h2 {
+  margin: 1px 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  text-wrap: balance;
+}
+.setup-chat p,
+.setup-chat-lead {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.setup-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.setup-chat-actions .link-btn {
+  margin-left: -4px;
+  white-space: normal;
+  text-align: left;
+}
+.login-head .logo.setup-chat-logo {
+  background: var(--chip);
+  border-color: transparent;
+  color: var(--text);
+}
+.login-head .logo.setup-chat-logo svg {
+  width: 22px;
+  height: 22px;
+}
+.login .actions .link-btn {
+  white-space: normal;
+  text-align: left;
 }
 
 /* ---------- composer (inline in the reader, or in a compose window) ---------- */
@@ -10716,6 +10791,101 @@ body.chat-mode .titlebar-search {
   padding: 6px 10px;
   font-size: 12px;
   color: var(--text-3);
+}
+
+/* Rukoo's other apps (RUK-234): a card at the bottom of the Chat sidebar, once after the first workspace joined or made
+ * here, until it is hidden. */
+.ch-apps {
+  flex: none;
+  margin-top: 8px;
+  padding: 6px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.ch-apps-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 0 2px 8px;
+}
+.ch-apps-head h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-apps-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 6px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--text);
+  transition: background-color 120ms ease;
+}
+.ch-apps-row:hover {
+  background: var(--hover);
+}
+.ch-apps-ic {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--chip);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+}
+.ch-apps-ic svg {
+  width: 15px;
+  height: 15px;
+}
+.ch-apps-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ch-apps-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Up to two lines: the sidebar is narrow, and Dutch is longer. */
+.ch-apps-desc {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-wrap: pretty;
+}
+.ch-apps-out {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+  display: grid;
+}
+.ch-apps-out svg {
+  width: 13px;
+  height: 13px;
+}
+.shell.collapsed .ch-apps {
+  display: none;
 }
 .avatar.ch-av-14 {
   width: 14px;

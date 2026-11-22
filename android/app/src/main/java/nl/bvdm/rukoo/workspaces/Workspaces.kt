@@ -65,9 +65,15 @@ interface Workspaces {
     /** Joins with an invitation and returns the workspace's ID, selected. */
     suspend fun join(link: InviteLink, displayName: String): String
 
-    /** Keeps the link of a sign-up with an invitation in memory, for the Join sheet to take (§3.3). */
+    /**
+     * Keeps the link of a sign-up or sign-in with an invitation, for the Join sheet to take (§3.3). It is kept on disk
+     * until joined, let go or refused for good, so a restart offers it again (RUK-234).
+     */
     fun rememberJoin(link: InviteLink)
     fun takePendingJoin(): InviteLink?
+
+    /** Cancel in the Join sheet that showed the pending link: it goes. */
+    fun dropPendingJoin() {}
 
     /**
      * [ChatState.lostUnsent] once (§3.4): the count a broken cache took with it, which the state carries until the UI
@@ -129,6 +135,11 @@ data class ChatState(
     /** Settings > Notifications > Team chat. */
     val notifications: Boolean = true,
     val pendingJoin: Boolean = false,
+    /**
+     * The addresses that count as [server] for invitation links: it and the others the app knows are the same server
+     * (InviteLink.sameServers), never what the server says of itself.
+     */
+    val linkServers: List<String> = emptyList(),
     val unsent: Int = 0,
     /** Unsent messages a broken cache took with it, reported once. */
     val lostUnsent: Int = 0,

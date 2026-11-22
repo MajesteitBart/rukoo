@@ -87,8 +87,8 @@ test('signed out, Chat offers to create an account or sign in', async () => {
   await expect(pane().locator('.ch-empty-body')).toContainText('127.0.0.1');
   await expect(pane().locator('[data-ch-empty="sign-up"]')).toHaveText('Create an account');
   await expect(pane().locator('[data-ch-empty="sign-in"]')).toHaveText('Sign in');
-  const state = await win.evaluate(() => window.mail.call('chatState'));
-  if (state.inviteSignups) await expect(pane().locator('.ch-empty-hint')).toContainText('invitation link');
+  // An invitation link has its own way in: the setup page's team chat steps (chat-invitee.spec.js).
+  await expect(pane().locator('[data-ch-empty="join"]')).toHaveText('Join with an invitation link');
   await expect(win.locator('.sidebar .sync-status .t')).toHaveText('Signed out');
   await pane().locator('[data-ch-empty="sign-in"]').click();
   await expect(win.locator('.page.settings h1')).toHaveText('Sign in');

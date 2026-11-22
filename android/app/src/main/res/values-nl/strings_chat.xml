@@ -43,6 +43,10 @@
     <string name="chat_workspace_menu_heading">Werkruimtes</string>
     <string name="chat_workspace_make">Werkruimte maken</string>
     <string name="chat_workspace_join">Deelnemen met een uitnodigingslink</string>
+    <string name="chat_apps_title">Rukoo op je computer</string>
+    <string name="chat_apps_body">Mail, agenda en vergaderingen, naast deze teamchat.</string>
+    <string name="chat_apps_open">Download via rukoo.io</string>
+    <string name="chat_apps_hide">Verbergen</string>
     <string name="chat_workspace_invite">Mensen uitnodigen</string>
     <string name="chat_workspace_members">Leden</string>
     <string name="chat_workspace_your_name">Je naam wijzigen</string>
@@ -83,7 +87,6 @@
     <string name="chat_empty_signed_out_title">Log in om teamchat te gebruiken</string>
     <string name="chat_empty_signed_out_body">Teamchat draait op je Rukoo-account bij %1$s. Log in, of maak een account om een werkruimte te maken of eraan deel te nemen.</string>
     <string name="chat_empty_sign_up_action">Account maken</string>
-    <string name="chat_empty_invite_hint">Heb je een uitnodigingslink? Plak die waar Rukoo om een uitnodigingscode vraagt.</string>
     <string name="chat_empty_storage_title">Teamchat kan niet starten</string>
     <string name="chat_empty_storage_body">Rukoo kon de opslag voor chat op deze telefoon niet openen. Start Rukoo opnieuw om het nog eens te proberen.</string><!-- phone wording -->
 

@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const i18n = require('../src/i18n');
 const { AccountError } = require('../src/main/account/client');
 const wire = require('../src/main/workspaces/wire');
+const { Manage } = require('../src/main/workspaces/manage');
 const vectors = require('./fixtures/chat-vectors.json');
 
 const { ChatError } = wire;
@@ -110,6 +111,77 @@ test('parseInviteLink refuses what is no text and names the other server', () =>
   });
   // ws:// and other schemes are no invitation link.
   assert.throws(() => wire.parseInviteLink(`ws://127.0.0.1/join#w=${W}&i=${SECRET}`), { code: 'bad_link' });
+});
+
+// rukoo.io and rukoo-account.bvdm.ai are one server (RUK-234): /v1/info on both names the home https://rukoo.io.
+const HOME = { workspace: { versions: [1], home: { origin: 'https://rukoo.io', installation: 'x' } } };
+const linkAt = (server) => `${server}/join#w=${W}&i=${SECRET}`;
+
+test('a link from another address of the same server is its own, both ways', () => {
+  assert.deepEqual(wire.homeOf(HOME), 'https://rukoo.io');
+  for (const bad of [null, {}, { workspace: {} }, { workspace: { home: { origin: 'ftp://rukoo.io' } } }, { workspace: { home: { origin: 'http://rukoo.io' } } }, { workspace: { home: { origin: 42 } } }]) {
+    assert.equal(wire.homeOf(bad), null, JSON.stringify(bad));
+  }
+  assert.equal(wire.homeOf({ workspace: { home: { origin: 'http://127.0.0.1:38811' } } }), 'http://127.0.0.1:38811');
+
+  // A device at the new address takes links made at the old one, and one at the old address takes links from the new.
+  const atNew = wire.sameServers('https://rukoo.io');
+  assert.deepEqual(atNew, ['https://rukoo.io', 'https://rukoo-account.bvdm.ai']);
+  assert.deepEqual(wire.parseInviteLink(linkAt('https://rukoo-account.bvdm.ai'), atNew), { server: 'https://rukoo-account.bvdm.ai', workspace: W, secret: SECRET });
+  const atOld = wire.sameServers('https://rukoo-account.bvdm.ai');
+  assert.deepEqual(atOld, ['https://rukoo-account.bvdm.ai', 'https://rukoo.io']);
+  assert.deepEqual(wire.parseInviteLink(linkAt('https://rukoo.io'), atOld).server, 'https://rukoo.io');
+  // Another server stays another server, and the message names the configured one.
+  assert.throws(() => wire.parseInviteLink(linkAt('https://chat.example.net'), atOld), (err) => {
+    assert.equal(err.code, 'other_server');
+    assert.match(err.message, /chat\.example\.net/);
+    assert.match(err.message, /rukoo-account\.bvdm\.ai/);
+    return true;
+  });
+  // A self-hosted server counts only itself.
+  assert.deepEqual(wire.sameServers('https://chat.example.com'), ['https://chat.example.com']);
+  assert.deepEqual(wire.sameServers(''), []);
+});
+
+test("a server that claims rukoo.io as its home doesn't get rukoo.io's links", () => {
+  // Its /v1/info says workspace.home.origin is https://rukoo.io: a pasted rukoo.io link stays another server's, so its
+  // secret never goes to this one (preview, join, sign-up), and new links name this server.
+  const mgr = new Manage({ account: { status: () => ({ server: 'https://chat.example.com', info: HOME }) }, info: HOME });
+  for (const server of ['https://rukoo.io', 'https://rukoo-account.bvdm.ai']) {
+    assert.throws(() => mgr.parse(linkAt(server)), { code: 'other_server' });
+    assert.throws(() => mgr.checkLink(linkAt(server)), { code: 'other_server' });
+    // Nor as an invite code at sign-up: main.js accountSignUp and the browser's stop before any request.
+    assert.throws(() => mgr.splitInvite(linkAt(server)), { code: 'other_server' });
+  }
+  assert.equal(mgr.parse(linkAt('https://chat.example.com')).server, 'https://chat.example.com');
+  assert.equal(wire.inviteServer('https://chat.example.com', HOME), 'https://chat.example.com');
+  // The real rukoo.io, under either address, still takes the other's links.
+  for (const [own, other] of [['https://rukoo.io', 'https://rukoo-account.bvdm.ai'], ['https://rukoo-account.bvdm.ai', 'https://rukoo.io']]) {
+    const real = new Manage({ account: { status: () => ({ server: own, info: HOME }) }, info: HOME });
+    assert.equal(real.parse(linkAt(other)).server, other);
+    assert.equal(real.checkLink(linkAt(other)).link, linkAt(other));
+  }
+});
+
+test('splitInvite keeps a code, takes this server\'s link and refuses another server\'s', () => {
+  const servers = wire.sameServers('https://rukoo.io');
+  assert.deepEqual(wire.splitInvite('TEAM-2026', servers), { invite: 'TEAM-2026', workspaceInvite: null, link: null });
+  assert.deepEqual(wire.splitInvite(undefined, servers), { invite: '', workspaceInvite: null, link: null });
+  assert.deepEqual(wire.splitInvite(` ${linkAt('https://rukoo-account.bvdm.ai')} `, servers), {
+    invite: '',
+    workspaceInvite: { workspace: W, invite: SECRET },
+    link: linkAt('https://rukoo-account.bvdm.ai')
+  });
+  assert.throws(() => wire.splitInvite(linkAt('https://chat.example.net'), servers), { code: 'other_server' });
+});
+
+test("new links name the home when it is one of the server's own addresses", () => {
+  assert.equal(wire.inviteServer('https://rukoo-account.bvdm.ai', HOME), 'https://rukoo.io');
+  assert.equal(wire.inviteServer('https://rukoo.io', HOME), 'https://rukoo.io');
+  assert.equal(wire.inviteServer('https://rukoo-account.bvdm.ai', null), 'https://rukoo-account.bvdm.ai');
+  assert.equal(wire.inviteServer('https://example.com/rukoo', { workspace: { home: { origin: 'https://example.com' } } }), 'https://example.com/rukoo');
+  assert.equal(wire.inviteServer('https://chat.example.com', { workspace: { home: { origin: 'https://home.example.com' } } }), 'https://chat.example.com');
+  assert.equal(wire.inviteLink(wire.inviteServer('https://rukoo-account.bvdm.ai', HOME), W, SECRET), linkAt('https://rukoo.io'));
 });
 
 // ---- UUIDv7 and local IDs ----
@@ -344,9 +416,9 @@ test('the directory, workspace and other answers are checked whole', () => {
 
 // Every method of contract 4.4, and chatDraft (desktop-ui), which Undo of Discard reads a room's kept draft with.
 const METHODS = [
-  'chatState', 'chatSelect', 'chatView', 'chatSync', 'chatReload', 'chatOpen', 'chatClose', 'chatOlder', 'chatThread',
+  'chatState', 'chatSelect', 'chatView', 'chatSync', 'chatReload', 'chatRetryInfo', 'chatOpen', 'chatClose', 'chatOlder', 'chatThread',
   'chatRoomMembers', 'chatRead', 'chatMarkRead', 'chatMute', 'chatSaveDraft', 'chatDraft', 'chatSend', 'chatResend', 'chatDiscard',
-  'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatLeaveWorkspace',
+  'chatRedact', 'chatCreateWorkspace', 'chatPreviewInvite', 'chatJoin', 'chatTakePendingJoin', 'chatDropPendingJoin', 'chatCheckLink', 'chatLeaveWorkspace',
   'chatDeleteWorkspace', 'chatSetMyName', 'chatSetRole', 'chatRemoveMember', 'chatInvites', 'chatCreateInvite',
   'chatWithdrawInvite', 'chatCreateChannel', 'chatRenameChannel', 'chatArchiveChannel', 'chatJoinChannel',
   'chatAddToChannel', 'chatSetChannelRole', 'chatRemoveFromChannel', 'chatLeaveChannel', 'chatStartDm', 'chatLeaveDm',
@@ -362,6 +434,7 @@ const link = `https://rukoo.io/join#w=${W}&i=${SECRET}`;
 // For each method: a call that passes with what it comes out as, and calls that fail with the field they name.
 const CALLS = {
   chatState: { ok: [[[], []]], bad: [] },
+  chatRetryInfo: { ok: [[[], []]], bad: [] },
   chatSelect: { ok: [[[W], [W]], [[null], [null]]], bad: [[[C], 'ws'], [['w_x'], 'ws']] },
   chatView: { ok: [[[W], [W]]], bad: [[[undefined], 'ws']] },
   chatSync: { ok: [[[], [null]], [[W], [W]]], bad: [[[42], 'ws']] },
@@ -427,6 +500,8 @@ const CALLS = {
   chatPreviewInvite: { ok: [[[link], [link]]], bad: [[[''], 'link'], [['x'.repeat(2001)], 'link'], [[{}], 'link']] },
   chatJoin: { ok: [[[{ link, name: ' Joël ' }], [{ link, name: 'Joël' }]]], bad: [[[{ link: '', name: 'Joël' }], 'link'], [[{ link, name: '' }], 'name']] },
   chatTakePendingJoin: { ok: [[[], []]], bad: [] },
+  chatDropPendingJoin: { ok: [[[], []]], bad: [] },
+  chatCheckLink: { ok: [[[link], [link]]], bad: [[[''], 'link'], [[{}], 'link']] },
   chatLeaveWorkspace: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
   chatDeleteWorkspace: { ok: [[[W], [W]]], bad: [[[C], 'ws']] },
   chatSetMyName: { ok: [[[W, ' Mila '], [W, 'Mila']]], bad: [[[W, '   '], 'name']] },

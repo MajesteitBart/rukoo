@@ -257,6 +257,12 @@ class AccountService extends EventEmitter {
     return data;
   }
 
+  // When the current server's saved GET /v1/info was fetched, or null without one.
+  infoAt() {
+    const saved = this.state.info;
+    return saved && saved.server === this.server && Number.isFinite(saved.at) ? saved.at : null;
+  }
+
   setServer(url) {
     if (this.signedIn) throw fail('signed_in');
     const server = url ? serverUrl(url) : '';

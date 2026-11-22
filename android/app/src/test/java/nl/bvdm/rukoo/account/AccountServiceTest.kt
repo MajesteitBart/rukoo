@@ -90,7 +90,8 @@ class AccountServiceTest {
         invites: List<String> = emptyList(),
         limit: Int = 1000,
         kdf: JsonObject = AccountKeys.DEFAULT_KDF.toJson(),
-    ) = FakeAccountServer(signups, invites, limit, kdf = kdf).also { servers += it }
+        home: String? = null,
+    ) = FakeAccountServer(signups, invites, limit, kdf = kdf, home = home).also { servers += it }
 
     private fun device(
         srv: FakeAccountServer?,
@@ -1464,6 +1465,22 @@ class AccountServiceTest {
         }
         assertEquals(1, srv.calls.count { it.route == "POST /v1/signup" })
         assertFalse(srv.calls.any { it.body.contains(link.secret) && it.route != "POST /v1/signup" })
+    }
+
+    @Test
+    fun `a server that claims rukoo's address as its home gets no rukoo invitation at sign-up (RUK-234)`() = runBlocking {
+        // This server's /v1/info names rukoo.io as its home. Only the app's own list makes two addresses one server,
+        // so a pasted rukoo.io link, or one from its former address, is another server's, and its secret stays here.
+        val srv = server(home = "https://rukoo.io")
+        val desk = device(srv)
+        desk.serverInfo()
+        val w = "w_" + "A".repeat(22)
+        for ((i, at) in listOf("https://rukoo.io", "https://rukoo-account.bvdm.ai", "https://elsewhere.example").withIndex()) {
+            val secret = "cde"[i].toString().repeat(43)
+            rejects("invalid") { desk.signUp("alias$i@example.com", PASSWORD, workspaceInvite = InviteLink(at, w, secret)) }
+            assertFalse(srv.calls.any { it.body.contains(secret) })
+        }
+        assertEquals(0, srv.calls.count { it.route == "POST /v1/signup" })
     }
 
     /**

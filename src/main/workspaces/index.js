@@ -53,6 +53,10 @@ const TIMING = {
   listEvery: 30 * MINUTE,
   listFocusGap: MINUTE,
   infoEvery: HOUR,
+  // A GET /v1/info that failed while signed out (no network yet, a captive portal, a 5xx) is asked again after these,
+  // then at the hourly tick. A focus, a wake, the network coming back or the setup page asks again sooner, at most once
+  // per the first delay (retryInfo).
+  infoRetry: [15 * SECOND, MINUTE, 5 * MINUTE],
   notifyRooms: 3,
   sendsInFlight: 2,
   tombstoneDays: 14,
@@ -203,7 +207,10 @@ function filesOf(info) {
 class WorkspaceService extends EventEmitter {
   // settings: () => engine.settings. timing: overrides of TIMING (chatTiming). WebSocket, now, random and timers can
   // be replaced in tests. host: what only Electron does for files.js (dialogs, opening a file, nativeImage), which
-  // main.js gives and tests replace.
+  // main.js gives and tests replace. autoInfo: GET /v1/info by itself while signed out too (refreshInfo), which main.js
+  // turns off for tests that didn't name a server of their own, and the browser, whose account asks itself.
+  // keepJoin: the pending join in chat-join.json, so a restart keeps it (manage.js); the browser keeps its invitation
+  // itself (src/web/join.js).
   constructor({
     account,
     dataDir,
@@ -213,11 +220,22 @@ class WorkspaceService extends EventEmitter {
     now = Date.now,
     random = Math.random,
     timers = realTimers,
-    host = {}
+    host = {},
+    autoInfo = true,
+    keepJoin = true
   }) {
     super();
     this.account = account;
     this.dataDir = dataDir;
+    this.autoInfo = autoInfo;
+    this.keepJoin = keepJoin;
+    // The last GET /v1/info this service asked for by itself: when it began and for which server, and the one on its
+    // way, which a second ask shares (maybeRefreshInfo, refreshInfo).
+    // Per server: { at, asking, failures }, so switching servers and back doesn't ask the first one twice. failures
+    // counts the asks in a row that failed, for the retries of a signed-out one (infoRetry).
+    this.infoTries = new Map();
+    // The short retry of each server whose signed-out ask failed (armInfoRetry): one server's never cancels another's.
+    this.infoRetryTimers = new Map();
     this.file = path.join(dataDir, 'chat.db');
     this.settings = typeof settings === 'function' ? settings : () => settings || {};
     this.timing = { ...TIMING, ...timing };
@@ -283,9 +301,8 @@ class WorkspaceService extends EventEmitter {
       this.timers.setInterval(() => {
         if (this.live()) this.list().catch(() => {});
       }, this.timing.listEvery),
-      this.timers.setInterval(() => {
-        if (this.signedIn) this.refreshInfo();
-      }, this.timing.infoEvery)
+      // Every hour, unless something else asked within the last 54 minutes.
+      this.timers.setInterval(() => this.maybeRefreshInfo({ maxAge: Math.round(this.timing.infoEvery * 0.9) }), this.timing.infoEvery)
     );
     return this;
   }
@@ -303,6 +320,7 @@ class WorkspaceService extends EventEmitter {
     if (this.retryTimer) this.timers.clearTimeout(this.retryTimer);
     if (this.removeTimer) this.timers.clearTimeout(this.removeTimer);
     this.flushTimer = this.retryTimer = this.removeTimer = null;
+    this.stopInfoRetry();
     this.stopNetwork();
     for (const module of [this.history, this.outbox, this.manage, this.notifier, this.files]) {
       if (module && typeof module.close === 'function') {
@@ -379,7 +397,8 @@ class WorkspaceService extends EventEmitter {
         this.discard();
       } else {
         this.openCache(server, tag);
-        this.refreshInfo();
+        // At start signed in, and after a sign-in, which fetched it a moment ago itself.
+        this.maybeRefreshInfo({ maxAge: MINUTE });
         this.startNetwork();
       }
     } else if (availableChanged) {
@@ -387,6 +406,10 @@ class WorkspaceService extends EventEmitter {
       if (this.live()) this.startNetwork();
       else this.stopNetwork({ keepRuns: true });
     }
+    // Signed out too: whether the server has team chat decides whether Chat shows, and the setup page's way to it.
+    if (!signedIn) this.maybeRefreshInfo();
+    // Signed in, the sign-in fetched the info itself and the hourly tick asks again.
+    else this.stopInfoRetry();
     this.stateChanged();
   }
 
@@ -421,6 +444,11 @@ class WorkspaceService extends EventEmitter {
     this.lostUnsent = 0;
     let gone = true;
     this.stopRemoveTimer();
+    try {
+      this.manage.onSignedOut();
+    } catch (err) {
+      this.hookFailed(err);
+    }
     if (this.store) {
       gone = this.store.wipe();
       this.store = null;
@@ -517,14 +545,104 @@ class WorkspaceService extends EventEmitter {
     }
   }
 
-  // GET /v1/info again: at start signed in, after a sign-in and every hour (contract 3.1). The account says 'info',
-  // which follow() reads.
+  // GET /v1/info again: at start signed in, after a sign-in and every hour (contract 3.1). With autoInfo also while
+  // signed out, so Chat shows on a server that has it before anyone signs in. The account says 'info', which follow()
+  // reads.
   refreshInfo() {
-    if (!this.signedIn || this.closed) return Promise.resolve();
-    return this.account.serverInfo().then(
-      () => {},
-      () => {}
+    if ((!this.signedIn && !this.autoInfo) || this.closed) return Promise.resolve();
+    const status = this.account.status();
+    if (!status || !status.server) return Promise.resolve();
+    const server = status.server;
+    const tried = this.infoTries.get(server);
+    if (tried && tried.asking) return tried.asking;
+    this.stopInfoRetry(server);
+    const entry = { at: this.now(), asking: null, failures: tried ? tried.failures : 0 };
+    this.infoTries.set(server, entry);
+    entry.asking = this.account.serverInfo(server).then(
+      () => this.infoAnswered(server, entry, true),
+      () => this.infoAnswered(server, entry, false)
     );
+    return entry.asking;
+  }
+
+  // An ask of refreshInfo ended. One that failed while signed out comes again after the next delay of infoRetry;
+  // after the last, the hourly tick asks.
+  infoAnswered(server, entry, ok) {
+    entry.asking = null;
+    if (ok) {
+      entry.failures = 0;
+      return;
+    }
+    entry.failures += 1;
+    this.armInfoRetry(server, entry);
+  }
+
+  // The next short retry of a server's failed signed-out ask. It asks only while that server is the configured one:
+  // after a switch away and back, maybeRefreshInfo asks once the short gap has passed.
+  armInfoRetry(server, entry) {
+    const delays = this.timing.infoRetry || [];
+    if (this.closed || this.signedIn || !this.autoInfo || entry.failures > delays.length) return;
+    if (this.infoTries.get(server) !== entry) return;
+    this.stopInfoRetry(server);
+    const timer = this.timers.setTimeout(() => {
+      if (this.infoRetryTimers.get(server) === timer) this.infoRetryTimers.delete(server);
+      const status = this.account.status();
+      if (this.closed || this.signedIn || !status || status.server !== server || this.answeredSince(entry)) return;
+      this.refreshInfo();
+    }, delays[entry.failures - 1]);
+    this.infoRetryTimers.set(server, timer);
+  }
+
+  // The retry timer of server, or without one of them all.
+  stopInfoRetry(server = null) {
+    for (const [s, timer] of this.infoRetryTimers) {
+      if (server !== null && s !== server) continue;
+      this.timers.clearTimeout(timer);
+      this.infoRetryTimers.delete(s);
+    }
+  }
+
+  // Whether the configured server's info was saved after this failed ask began: another ask reached it since (the
+  // account page in Settings, a sign-in), so the failure is over. entry is the configured server's.
+  answeredSince(entry) {
+    const at = typeof this.account.infoAt === 'function' ? this.account.infoAt() : null;
+    if (!Number.isFinite(at) || at < entry.at) return false;
+    entry.failures = 0;
+    return true;
+  }
+
+  // The network may be back: the window gained focus, the computer woke, the window went online or the setup page
+  // opened. A signed-out GET /v1/info whose last ask failed goes again now, unless one is on its way or the last began
+  // less than infoRetry[0] ago.
+  retryInfo() {
+    if (this.closed || this.signedIn || !this.autoInfo) return;
+    const status = this.account.status();
+    const server = status && status.server;
+    const tried = server ? this.infoTries.get(server) : null;
+    if (!tried || !tried.failures || tried.asking || this.answeredSince(tried)) return;
+    if (this.now() - tried.at < this.retryGap()) return;
+    this.refreshInfo();
+  }
+
+  retryGap() {
+    return (this.timing.infoRetry || [])[0] ?? MINUTE;
+  }
+
+  // GET /v1/info when the saved answer is missing or older than maxAge, at most once a minute per server, so a start,
+  // a sign-in or a new server learns whether there is team chat without asking a server that doesn't answer over and
+  // over. Signed out only with autoInfo, and after a failed ask at most once per retryGap(), so switching back to a
+  // server whose retry came while another was configured asks again.
+  maybeRefreshInfo({ maxAge = this.timing.infoEvery } = {}) {
+    if ((!this.signedIn && !this.autoInfo) || this.closed) return;
+    const status = this.account.status();
+    const server = status && status.server;
+    if (!server) return;
+    const tried = this.infoTries.get(server);
+    const failed = !this.signedIn && tried && tried.failures && !this.answeredSince(tried);
+    if (tried && (tried.asking || this.now() - tried.at < (failed ? this.retryGap() : MINUTE))) return;
+    const at = typeof this.account.infoAt === 'function' ? this.account.infoAt() : null;
+    if (this.info && Number.isFinite(at) && this.now() - at < maxAge) return;
+    this.refreshInfo();
   }
 
   // ---- the network ----
@@ -1057,6 +1175,7 @@ class WorkspaceService extends EventEmitter {
   // the outbox.
   // eslint-disable-next-line no-unused-vars
   nudge(why = 'focus') {
+    this.retryInfo();
     if (this.closed || !this.live()) return;
     const now = this.now();
     if (now - this.listedAt >= this.timing.listFocusGap) this.list().catch(() => {});

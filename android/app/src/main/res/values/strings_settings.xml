@@ -306,6 +306,13 @@
     <string name="onboarding_add_help">Google, Outlook, Yahoo or any other mail account</string>
     <string name="onboarding_demo">Try the demo account</string>
     <string name="onboarding_pair_title">Connect to your computer</string>
+    <string name="onboarding_chat">Join your team\'s chat</string><!-- First-run option and step title, while the account server has team chat and nobody is signed in. -->
+    <string name="onboarding_chat_help">Got an invitation link from a colleague? Team chat works without a mail account.</string><!-- Its description. -->
+    <string name="onboarding_chat_open">Open team chat</string><!-- The same option once signed in to a Rukoo account. -->
+    <string name="onboarding_chat_open_help">Team chat on your Rukoo account at %1$s</string><!-- Its description. %1$s: the account server. -->
+    <string name="onboarding_chat_link_help">Paste the invitation link a colleague sent you, if you have one. Then create a Rukoo account or sign in to yours: team chat runs on it.</string><!-- Above the link field of the team chat step. -->
+    <string name="onboarding_chat_have_account">I already have an account</string><!-- Button beside Create an account: the sign-in form, with the link. -->
+    <string name="onboarding_chat_other_server">This invitation is for %1$s, and Rukoo uses %2$s for team chat. You can change the server in Settings > Rukoo account.</string><!-- Error under the link field. %1$s: the link\'s server; %2$s: the configured one. -->
     <string name="settings_swipe_right">Swipe right</string>
     <string name="settings_swipe_left">Swipe left</string>
     <string name="settings_actions_none">Nothing</string>

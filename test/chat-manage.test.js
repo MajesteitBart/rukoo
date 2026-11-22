@@ -640,10 +640,11 @@ test('a sign-up with an invitation link sends workspaceInvite and leaves a pendi
   });
   const hiddenState = () => svc.state().pendingJoin;
 
-  // What main.js accountSignUp does with the invite field: a code stays a code, a link for another server too.
+  // What main.js accountSignUp does with the invite field: a code stays a code; a link for another server is refused,
+  // so its secret never goes to this server as a code.
   assert.deepEqual(svc.manage.splitInvite('test-invite'), { invite: 'test-invite', workspaceInvite: null, link: null });
   const elsewhere = `https://elsewhere.example/join#w=${ws.id}&i=${secret}`;
-  assert.deepEqual(svc.manage.splitInvite(elsewhere), { invite: elsewhere, workspaceInvite: null, link: null });
+  assert.throws(() => svc.manage.splitInvite(elsewhere), { code: 'other_server' });
   assert.deepEqual(svc.manage.splitInvite(undefined), { invite: '', workspaceInvite: null, link: null });
   const split = svc.manage.splitInvite(`  ${link}\n`);
   assert.deepEqual(split, { invite: '', workspaceInvite: { workspace: ws.id, invite: secret }, link });

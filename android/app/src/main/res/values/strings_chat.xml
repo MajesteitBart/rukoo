@@ -53,6 +53,10 @@
     <string name="chat_workspace_menu_heading">Workspaces</string><!-- Heading of the workspace menu. -->
     <string name="chat_workspace_make">Make a workspace</string><!-- Menu item and empty-state button. -->
     <string name="chat_workspace_join">Join with an invitation link</string><!-- Menu item and empty-state button. -->
+    <string name="chat_apps_title">Rukoo on your computer</string><!-- Card at the end of the room list, once after the first workspace joined or made on this phone. -->
+    <string name="chat_apps_body">Mail, calendar and meetings, next to this team chat.</string><!-- Its text. -->
+    <string name="chat_apps_open">Get it at rukoo.io</string><!-- Its link: opens rukoo.io. -->
+    <string name="chat_apps_hide">Hide</string><!-- Its close button; the card doesn\'t come back. -->
     <string name="chat_workspace_invite">Invite people</string><!-- Menu item, intro button. -->
     <string name="chat_workspace_members">Members</string><!-- Menu item that lists the workspace's members. -->
     <string name="chat_workspace_your_name">Change your name</string><!-- Menu item. -->
@@ -93,7 +97,6 @@
     <string name="chat_empty_signed_out_title">Sign in to use team chat</string><!-- Empty Chat view while signed out of the Rukoo account. -->
     <string name="chat_empty_signed_out_body">Team chat runs on your Rukoo account at %1$s. Sign in, or create an account to make or join a workspace.</string><!-- Its text. {host}: the account server. -->
     <string name="chat_empty_sign_up_action">Create an account</string><!-- Its second button. -->
-    <string name="chat_empty_invite_hint">Got an invitation link? Paste it where Rukoo asks for an invite code.</string><!-- Line under those buttons. -->
     <string name="chat_empty_storage_title">Team chat can\'t start</string><!-- Empty view when the chat cache cannot open. -->
     <string name="chat_empty_storage_body">Rukoo couldn\'t open its chat storage on this phone. Restart Rukoo to try again.</string><!-- Its text. --><!-- phone wording -->
 

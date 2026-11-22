@@ -96,6 +96,11 @@ fun SettingsScreen(app: AppViewModel, modifier: Modifier = Modifier) {
     // Opened on a page (the chat's Edit shortcuts): that page, with the way back to its section.
     remember { app.takeSettingsStart()?.let(model::setSettingsStack) }
     val stack by model.settingsStack.collectAsStateWithLifecycle()
+    // A link onboarding carried belongs to the account form it was carried to: leaving that form lets it go (RUK-234).
+    // The stack survives folding, so a fold keeps it.
+    LaunchedEffect(stack) {
+        if (stack.lastOrNull() != SettingsRoutes.RUKOO_SIGNUP && stack.lastOrNull() != SettingsRoutes.RUKOO_SIGNIN) app.dropCarriedJoin()
+    }
     // Each page keeps its fields when the layout moves it between the one- and two-pane branches.
     val pages = rememberSaveableStateHolder()
     val toast = rememberRkToastState()

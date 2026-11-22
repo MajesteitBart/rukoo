@@ -479,7 +479,7 @@ test('the modules other packages fill in start as hooks that do nothing', () => 
   for (const hook of ['afterRun', 'onRead', 'onRemoved', 'onEvicted', 'onWorkspaceGone', 'clear']) assert.equal(typeof notifier[hook], 'function');
   // The core methods, and those the modules add.
   const modules = [History, Outbox, Manage, Files].flatMap((Module) => Object.keys(Module.METHODS));
-  assert.deepEqual(Object.keys(chatApi(() => null)).sort(), ['chatReload', 'chatSelect', 'chatState', 'chatSync', 'chatView', ...modules].sort());
+  assert.deepEqual(Object.keys(chatApi(() => null)).sort(), ['chatReload', 'chatRetryInfo', 'chatSelect', 'chatState', 'chatSync', 'chatView', ...modules].sort());
 });
 
 test('close() is synchronous and leaves the cache for the next start', async (t) => {
