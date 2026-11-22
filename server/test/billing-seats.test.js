@@ -15,13 +15,17 @@ beforeAll(() => {
   restore = installFakeStripe(stripeFake);
 });
 afterAll(() => restore());
+// The failures a test injects match only its own subscription, item or Checkout page: a workspace of an earlier test
+// can still be in the middle of a try when the next test starts, and would take a failure that matched any
+// workspace's request.
 beforeEach(() => {
   stripeFake.failures = [];
 });
 
 const HOUR = 60 * 60;
 const now = () => Math.floor(Date.now() / 1000);
-const seatChanges = (sub) => stripeFake.calls('POST', `/v1/subscription_items/${sub.items.data[0].id}`);
+const itemPath = (sub) => `/v1/subscription_items/${sub.items.data[0].id}`;
+const seatChanges = (sub) => stripeFake.calls('POST', itemPath(sub));
 const quantity = (sub) => stripeFake.subscriptions.get(sub.id).items.data[0].quantity;
 const leave = (member, ws) => api('DELETE', `/v1/workspaces/${ws.id}/members/me`, { token: member.person.token });
 
@@ -32,7 +36,7 @@ describe('a member joins', () => {
     const { subscription } = await subscribe(ws);
     expect(quantity(subscription)).toBe(2);
     // Stripe is down while the third person joins: the join goes through all the same.
-    stripeFake.fail(3, 503, (method, path) => path.startsWith('/v1/subscriptions/'));
+    stripeFake.fail(3, 503, (method, path) => path === `/v1/subscriptions/${subscription.id}`);
     await newMember(ws, 'Nora');
     expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ members: 3, seats: 2, syncing: true });
     expect(await settle(ws.id, () => quantity(subscription) === 3)).toBe(true);
@@ -45,14 +49,15 @@ describe('a member joins', () => {
     const ws = await newWorkspace();
     const { subscription } = await subscribe(ws);
     // Stripe fails the first change and keeps that 500 under its key, as it does for a day.
-    stripeFake.fail(1, 500, (method, path) => method === 'POST' && path.startsWith('/v1/subscription_items/'));
+    stripeFake.fail(1, 500, (method, path) => method === 'POST' && path === itemPath(subscription));
     const reads = stripeFake.calls('GET', `/v1/subscriptions/${subscription.id}`).length;
+    const replayed = stripeFake.replayed;
     await newMember(ws, 'Mila');
     expect(await settle(ws.id, async () => (await billingRow(ws.id)).tries >= 1 || quantity(subscription) === 2)).toBe(true);
     expect(await settle(ws.id, () => quantity(subscription) === 2)).toBe(true);
     // Each try read the subscription first, and no key was sent twice.
     expect(stripeFake.calls('GET', `/v1/subscriptions/${subscription.id}`).length).toBeGreaterThanOrEqual(reads + 2);
-    expect(stripeFake.replayed).toBe(0);
+    expect(stripeFake.replayed).toBe(replayed);
     const keys = seatChanges(subscription).map((c) => c.key);
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -60,9 +65,9 @@ describe('a member joins', () => {
   it('waits longer after each failed try, also when the try read the subscription first', async () => {
     const ws = await newWorkspace();
     const { subscription } = await subscribe(ws);
-    stripeFake.fail(2, 500, (method, path) => method === 'POST' && path.startsWith('/v1/subscription_items/'));
+    stripeFake.fail(2, 500, (method, path) => method === 'POST' && path === itemPath(subscription));
     await newMember(ws, 'Mila');
-    for (let i = 0; i < 50 && (await billingRow(ws.id)).tries < 1; i++) await runDurableObjectAlarm(workspaceStub(ws.id));
+    await settle(ws.id, async () => (await billingRow(ws.id)).tries >= 1, 50, { due: false });
     const once = await billingRow(ws.id);
     expect(once.tries).toBe(1);
     expect(once.syncAt).toBeGreaterThan(Date.now() + 30 * 1000);
@@ -83,7 +88,7 @@ describe('a member joins', () => {
     const held = new Promise((resolve) => (release = resolve));
     const real = stripeFake.handle.bind(stripeFake);
     stripeFake.handle = async (request) => {
-      if (request.method === 'POST' && new URL(request.url).pathname.startsWith('/v1/subscription_items/')) await held;
+      if (request.method === 'POST' && new URL(request.url).pathname === itemPath(subscription)) await held;
       return real(request);
     };
     try {
@@ -155,7 +160,7 @@ describe('a member leaves', () => {
     await settle(ws.id, async () => true, 3);
     const missed = Date.now() - 60 * 1000;
     await workspaceSql(ws.id, 'UPDATE billing SET trimBy = ?', missed);
-    stripeFake.fail(1, 'after', (method, path) => method === 'POST' && path.startsWith('/v1/subscription_items/'));
+    stripeFake.fail(1, 'after', (method, path) => method === 'POST' && path === itemPath(subscription));
     await deliver(stripeFake.event('customer.subscription.updated', stripeFake.subscriptions.get(subscription.id), { created: now() + 1 }));
     expect(await settle(ws.id, async () => quantity(subscription) === 1 && (await billingRow(ws.id)).syncAt === null)).toBe(true);
     expect(await billingRow(ws.id)).toMatchObject({ seats: 1, trimBy: null, trimMissed: missed });
@@ -183,7 +188,7 @@ describe('a workspace without owners, when Stripe fails', () => {
     const { subscription } = await subscribe(ws);
     stripeFake.fail(2, 500, (method, path) => method === 'POST' && path === `/v1/subscriptions/${subscription.id}`);
     expect((await call('DELETE', '/v1/account', { token: ws.person.token, body: { authKey: ws.person.authKey } })).status).toBe(204);
-    for (let i = 0; i < 50 && (await billingRow(ws.id)).tries < 1; i++) await runDurableObjectAlarm(workspaceStub(ws.id));
+    await settle(ws.id, async () => (await billingRow(ws.id)).tries >= 1, 50, { due: false });
     const once = await billingRow(ws.id);
     expect(once).toMatchObject({ tries: 1, orphaned: 1 });
     expect(once.syncAt).toBeGreaterThan(Date.now() + 30 * 1000);
@@ -330,7 +335,8 @@ describe('deleting a workspace with billing', () => {
     const files = await bucketKeys(ws.id);
     expect(files.length).toBeGreaterThan(0);
     await checkout(ws.person, ws.id);
-    stripeFake.fail(3, 503, (method, path) => path.startsWith('/v1/checkout/sessions/'));
+    const page = stripeFake.lastSession();
+    stripeFake.fail(3, 503, (method, path) => path.startsWith(`/v1/checkout/sessions/${page.id}`));
     const refused = await api('DELETE', `/v1/workspaces/${ws.id}`, { token: ws.person.token });
     expect(refused.status).toBe(502);
     expect(refused.body.error).toBe('billing_unavailable');

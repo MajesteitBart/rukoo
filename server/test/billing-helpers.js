@@ -35,14 +35,20 @@ export async function billingRow(id) {
   return (await workspaceSql(id, 'SELECT * FROM billing'))[0];
 }
 
-// Runs the workspace's alarm until check() holds, as the runtime would over time. A retry that waits for later is
-// made due first, which stands in for that time passing: the alarm does nothing for billing before its time. The
-// runtime may run a due alarm by itself as well; either way check() decides.
-export async function settle(id, check, tries = 60) {
-  for (let i = 0; i < tries; i++) {
-    const now = Date.now();
-    await workspaceSql(id, 'UPDATE billing SET syncAt = ? WHERE syncAt > ?', now, now).catch(() => {});
-    await runDurableObjectAlarm(workspaceStub(id));
+// Runs the workspace's alarm until check() holds, as the runtime would over time: at most runs times, for at most ms
+// milliseconds. A retry that waits for later is made due first, which stands in for that time passing (the alarm does
+// nothing for billing before its time), unless due is false. The runtime runs a due alarm by itself as well, and while
+// it does, the alarm isn't set and runDurableObjectAlarm() runs nothing: that run can take over a second, as the
+// Stripe client waits between its tries of a read that met a 5xx, so this waits for it by the clock rather than by a
+// number of turns. Either way check() decides.
+export async function settle(id, check, runs = 60, { ms = 10 * 1000, due = true } = {}) {
+  const until = Date.now() + ms;
+  for (let ran = 0; ran < runs && Date.now() < until; ) {
+    if (due) {
+      const now = Date.now();
+      await workspaceSql(id, 'UPDATE billing SET syncAt = ? WHERE syncAt > ?', now, now).catch(() => {});
+    }
+    if (await runDurableObjectAlarm(workspaceStub(id))) ran += 1;
     if (await check()) return true;
     await new Promise((resolve) => setTimeout(resolve, 15));
   }

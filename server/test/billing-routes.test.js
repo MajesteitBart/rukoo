@@ -107,7 +107,7 @@ describe('GET /billing', () => {
       const done = stripeFake.completeCheckout(page.id);
       price.unit_amount = 2100;
       forgetPrice();
-      stripeFake.fail(10, 503, (method, path) => method === 'GET' && path.startsWith('/v1/subscriptions/'));
+      stripeFake.fail(10, 503, (method, path) => method === 'GET' && path === `/v1/subscriptions/${done.subscription.id}`);
       await deliver(stripeFake.event('checkout.session.completed', done.session));
       expect((await billing(ws.person, ws.id)).body.billing).toMatchObject({ status: 'incomplete', price: { amount: 1950, currency: 'eur' } });
     } finally {
