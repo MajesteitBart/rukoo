@@ -176,7 +176,7 @@ async function run() {
         const body = st.signedIn
           ? `<div class="card"><div class="row static"><span class="wn-ok">${icons.check}</span><span class="text"><span class="title">${esc(t('settings.rukoo.rowSignedIn', { email: st.email }))}</span><span class="desc">${esc(t('whatsNew.account.signedInHelp'))}</span></span></div></div>`
           : `<form class="choices stacked wn-choices" role="radiogroup" data-wn-form>
-              ${radio('choice', 'create', st.choice === 'create', t('whatsNew.account.create'), t('whatsNew.account.createHint'), fields)}
+              ${radio('choice', 'create', st.choice === 'create', t('whatsNew.account.create'), t(codesFor(st.info, 'signup') ? 'whatsNew.account.createHintCode' : 'whatsNew.account.createHint'), fields)}
               ${radio('choice', 'signin', st.choice === 'signin', t('whatsNew.account.signIn'), t('whatsNew.account.signInHint'), fields)}
               ${radio('choice', 'local', st.choice === 'local', t('whatsNew.account.local'), t('whatsNew.account.localHint'))}
             </form>

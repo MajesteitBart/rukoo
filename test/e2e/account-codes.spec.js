@@ -385,6 +385,7 @@ test.describe("What's new", () => {
     await next();
     await expect(guide.locator('h2')).toHaveText('Keep them the same on every device');
     await expect(guide.locator('[name="invite"]')).toHaveAttribute('placeholder', 'Invite code (optional)');
+    await expect(guide.locator('.wn-choice.on')).toContainText('Free. Rukoo emails you a code to check your address.');
     // Another device asked a moment ago, so the server holds this guide's code back.
     await win.evaluate(() => window.mail.invoke('accountEmailCode', { email: 'guide@example.com', purpose: 'signup' }));
     const fill = async () => {
@@ -396,7 +397,7 @@ test.describe("What's new", () => {
     await next();
     await expect(guide.locator('[data-code-sent]')).toHaveText('No new code went to guide@example.com yet. The long code from an earlier email works too.', { timeout: 15000 });
     await expect(guide.locator('[data-code-resend]')).toBeDisabled();
-    await shot(testInfo, 'whats-new-code-held-dark-en');
+    await shot(testInfo, 'whats-new-code-held-light-en');
 
     // Back a page and forward again: the same step, still held back and still waiting.
     await guide.locator('[data-wn="back"]').click();

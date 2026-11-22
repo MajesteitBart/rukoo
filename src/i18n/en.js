@@ -8844,6 +8844,10 @@
     "message": "Free. While sign-ups are limited, you need an invite code.",
     "description": "\"What's new in Rukoo 2.1\" guide: hint under the first choice on the account step. src/renderer/whats-new.js."
   },
+  "whatsNew.account.createHintCode": {
+    "message": "Free. Rukoo emails you a code to check your address.",
+    "description": "\"What's new in Rukoo 2.1\" guide: hint under the first choice on the account step, on a server that checks addresses with a code sent by email instead of asking for an invite code (whatsNew.account.createHint). src/renderer/whats-new.js."
+  },
   "whatsNew.account.signIn": {
     "message": "I already have an account",
     "description": "\"What's new in Rukoo 2.1\" guide: second choice on the account step. src/renderer/whats-new.js."

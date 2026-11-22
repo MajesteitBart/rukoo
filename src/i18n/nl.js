@@ -2280,6 +2280,7 @@
   "whatsNew.account.signedInHelp": "Je categorieën worden gesynchroniseerd met je andere apparaten.",
   "whatsNew.account.create": "Rukoo-account maken",
   "whatsNew.account.createHint": "Gratis. Zolang aanmelden beperkt is, heb je een uitnodigingscode nodig.",
+  "whatsNew.account.createHintCode": "Gratis. Rukoo mailt je een code om je adres te controleren.",
   "whatsNew.account.signIn": "Ik heb al een account",
   "whatsNew.account.signInHint": "Log in met het account dat je op een ander apparaat hebt gemaakt.",
   "whatsNew.account.local": "Alleen op deze computer",
