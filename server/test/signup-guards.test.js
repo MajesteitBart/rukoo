@@ -246,6 +246,12 @@ describe('accounts that are never used', () => {
     const inWorkspace = await signup({ vars: EXPIRE });
     const made = await call('POST', '/v1/workspaces', { token: inWorkspace.token, body: { name: 'Acme', displayName: 'Olga' }, vars: ON });
     expect(made.status, made.text).toBe(201);
+    // A workspace made and deleted again on the first day leaves no reference, and still counts.
+    const formerOwner = await signup({ vars: EXPIRE });
+    const gone = await call('POST', '/v1/workspaces', { token: formerOwner.token, body: { name: 'Gone', displayName: 'Olga' }, vars: ON });
+    expect(gone.status, gone.text).toBe(201);
+    const deletedWs = await call('DELETE', `/v1/workspaces/${gone.body.workspace.id}`, { token: formerOwner.token, vars: ON });
+    expect(deletedWs.status, deletedWs.text).toBe(204);
     const signedIn = await signup({ vars: EXPIRE });
     const connected = await signup({ vars: EXPIRE });
 
@@ -259,7 +265,7 @@ describe('accounts that are never used', () => {
     expect((await call('GET', '/v1/account', { token: connected.token })).status).toBe(200);
 
     later(7 * DAY);
-    for (const who of [withRecords, deleted, withPage, inWorkspace, signedIn, connected]) {
+    for (const who of [withRecords, deleted, withPage, inWorkspace, formerOwner, signedIn, connected]) {
       const result = await (await accountStub(who.email)).expireUnused(7);
       expect(['kept', 'none'], who.email).toContain(result);
       expect(await tables(who.email)).toContain('account');
@@ -282,6 +288,43 @@ describe('accounts that are never used', () => {
     const stub = await accountStub(who.email);
     expect(await stub.expireUnused(30)).toBe('waiting');
     expect(await expiry(who.email)).toEqual({ at: who.account.createdAt + 30 * DAY, alarm: who.account.createdAt + 30 * DAY });
+  });
+
+  it('checks no sooner than two days after sign-up, so no request of the first day is still running', async () => {
+    const who = await signup({ vars: { EXPIRE_UNUSED_DAYS: '1' } });
+    expect((await expiry(who.email)).at).toBe(who.account.createdAt + 2 * DAY);
+    later(DAY + HOUR);
+    expect(await (await accountStub(who.email)).expireUnused(1)).toBe('waiting');
+    expect((await call('GET', '/privacy', { vars: { EXPIRE_UNUSED_DAYS: '1' } })).text).toContain('deleted 2 days after it was made');
+  });
+
+  it('gives an expired account’s place back once, however often its alarm tries', async () => {
+    const registry = registryObject(env);
+    const before = await registry.accounts();
+    const key = toBase64url(random(32));
+    await registry.releaseOnce(key);
+    await registry.releaseOnce(key);
+    expect(await registry.accounts()).toBe(before - 1);
+    await registry.reserve(0);
+  });
+});
+
+describe('giving back a failed sign-up', () => {
+  it('takes the counts back from the day and hour they were counted in, also after midnight', async () => {
+    freshDay();
+    vi.setSystemTime(Math.floor(Date.now() / DAY) * DAY + DAY - 1000);
+    const domain = toBase64url(random(16));
+    const verified = { domain, cap: 5 };
+    const registry = registryObject(env);
+    const count = () => registrySql((sql) => sql.exec('SELECT day, count FROM signup_domains WHERE domain = ?', domain).one());
+    const first = await registry.reserve(0, null, 0, false, verified);
+    expect(first.result).toBe('ok');
+    later(2000);
+    expect((await registry.reserve(0, null, 0, false, verified)).result).toBe('ok');
+    // The first sign-up fails after midnight: its count was yesterday's, and today's stays.
+    await registry.release(null, verified, first.counted);
+    expect(await count()).toEqual({ day: first.counted.day + 1, count: 1 });
+    await registry.release();
   });
 });
 
@@ -350,29 +393,49 @@ describe('unlock emails', () => {
       )
     );
 
-  it("sends each mailbox its first unlock email of the day when the day's budget is spent, and its long code gets the owner in", async () => {
+  it("sends an address with no long code left its email when the day's budget is spent, and again once the owner used it", async () => {
     freshDay();
     const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '5' };
     await setTally('unlock', Math.floor(Date.now() / DAY), 5);
     const who = await lockedAccount();
+    const signIn = (token) => post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token } }, MAIL_VARS);
     expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
     expect(resend.to(who.email)).toHaveLength(1);
     const token = resend.token(who.email);
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
+      // The owner still has that code, so the next email counts toward the budget, which is spent.
       later(MINUTE + 1000);
-      const second = await askCode(who.email, 'unlock', vars);
-      expect(second.status).toBe(202);
+      expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
       expect(resend.to(who.email)).toHaveLength(1);
       expect(JSON.stringify(errors.mock.calls)).toContain('UNLOCK_EMAILS_PER_DAY');
+      // Once the owner used it, the next one goes again, and works.
+      expect((await signIn(token)).status).toBe(200);
+      later(MINUTE + 1000);
+      expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+      expect(resend.to(who.email)).toHaveLength(2);
+      expect((await signIn(resend.token(who.email))).status).toBe(200);
     } finally {
       errors.mockRestore();
     }
-    const res = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token } }, MAIL_VARS);
-    expect(res.status).toBe(200);
   });
 
-  it('counts unlock emails past each mailbox’s first toward UNLOCK_EMAILS_PER_DAY, and gives back one Resend refused', async () => {
+  it('sends each account at the tags of one mailbox its own email when the budget is spent', async () => {
+    freshDay();
+    const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '1' };
+    await setTally('unlock', Math.floor(Date.now() / DAY), 1);
+    const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+    const plain = await lockedAccount({ email: `${name}@example.com` });
+    const tagged = await lockedAccount({ email: `${name}+work@example.com` });
+    for (const who of [plain, tagged]) {
+      expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+      expect(resend.to(who.email)).toHaveLength(1);
+      const res = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token: resend.token(who.email) } }, MAIL_VARS);
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it('counts unlock emails to addresses that still have a code toward UNLOCK_EMAILS_PER_DAY, and gives back one Resend refused', async () => {
     freshDay();
     const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '2' };
     const a = await signup();
@@ -453,10 +516,34 @@ describe('tries of a code', () => {
     const login = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token } }, MAIL_VARS);
     expect(login.body.error).toBe('code_expired');
   });
+
+  it('leaves a code alone that a newer request holds, when a request that lapsed settles late', async () => {
+    const who = await signup();
+    expect((await askCode(who.email, 'unlock', MAIL_VARS)).status).toBe(202);
+    const entry = {
+      token: toBase64url(await sha256(utf8(resend.token(who.email)))),
+      address: toBase64url(await hmac(env.PEPPER, `email-code address\n${who.email}`)),
+      purpose: 'unlock'
+    };
+    const registry = registryObject(env);
+    for (let i = 0; i < 3; i++) {
+      const held = await registry.claimCode(entry, 5);
+      await registry.settleCode(held.id, held.claim, 'failed', 5);
+    }
+    const slow = await registry.claimCode(entry, 5);
+    later(61 * 1000);
+    // The newer request's try makes five; the late one must not end the code under it.
+    const newer = await registry.claimCode(entry, 5);
+    expect(newer.result).toBe('ok');
+    await registry.settleCode(slow.id, slow.claim, 'failed', 5);
+    await registry.settleCode(newer.id, newer.claim, 'keep', 5);
+    expect((await registry.claimCode(entry, 5)).result).toBe('ok');
+  });
 });
 
 describe('the lock on sign-ins', () => {
   const lockHash = (email) => hmac(env.PEPPER, `sign-in lock\n${email}`).then(toBase64url);
+  const RULES = { max: 10, window: 15 * MINUTE, lockTime: 15 * MINUTE };
 
   it('locks an address without an account exactly as one with an account, and stores nothing in its object', async () => {
     const who = await signup();
@@ -497,13 +584,34 @@ describe('the lock on sign-ins', () => {
     expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(429);
   });
 
-  it('counts an attempt that never came back', async () => {
+  it('holds attempts that never came back against the ten, and counts them as wrong after a minute', async () => {
     const who = await signup();
     const address = await lockHash(who.email);
-    for (let i = 0; i < 10; i++) {
-      expect((await registryObject(env).lockAttempt(address, { max: 10, window: 15 * MINUTE, lockTime: 15 * MINUTE })).result).toBe('ok');
-    }
-    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(429);
+    for (let i = 0; i < 10; i++) expect((await registryObject(env).lockAttempt(address, RULES)).result).toBe('ok');
+    const signIn = () => call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } });
+    const running = await signIn();
+    expect(running.status).toBe(429);
+    expect(Number(running.headers.get('retry-after'))).toBeLessThanOrEqual(60);
+    later(61 * 1000);
+    const lost = await signIn();
+    expect(lost.status).toBe(429);
+    expect(lost.headers.get('retry-after')).toBe('900');
+  });
+
+  it('never lets an owner’s right attempt that is still running help a stranger lock the address', async () => {
+    const who = await signup();
+    const address = await lockHash(who.email);
+    for (let i = 0; i < 9; i++) expect((await wrongLogin(who.email)).status).toBe(401);
+    // The owner's right attempt is let in and still running when the stranger tries a tenth time.
+    const owner = await registryObject(env).lockAttempt(address, RULES);
+    expect(owner.result).toBe('ok');
+    const tenth = await wrongLogin(who.email);
+    expect(tenth.status).toBe(429);
+    expect(Number(tenth.headers.get('retry-after'))).toBeLessThanOrEqual(60);
+    expect((await registryObject(env).lockSettle(address, owner.ticket, true, RULES)).result).toBe('ok');
+    // Nothing locked the address, and the right attempt reset the count.
+    for (let i = 0; i < 9; i++) expect((await wrongLogin(who.email)).status).toBe(401);
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(200);
   });
 
   it('locks only the address tried, so other spellings of a mailbox keep signing in', async () => {

@@ -49,16 +49,16 @@
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
     // Limits on verified sign-ups and unlock emails (README.md, "Limits on verified sign-ups"): accounts one domain may
-    // make with an emailed code in a day, large mail providers not counted, and unlock emails a day past each
-    // mailbox's first. 0 for no limit.
+    // make with an emailed code in a day, large mail providers not counted, and unlock emails a day to addresses that
+    // still have a long code to use. 0 for no limit.
     "DOMAIN_SIGNUPS_PER_DAY": 20,
     "UNLOCK_EMAILS_PER_DAY": 1000,
     // An address that hears, once a day at most, when sign-ups with an emailed code in an hour reach
     // ALERT_SIGNUPS_PER_HOUR or the accounts reach 80% of MAX_ACCOUNTS. It goes the way the codes go. "" sends nothing.
     "OPERATOR_EMAIL": "",
     "ALERT_SIGNUPS_PER_HOUR": 20,
-    // Unset here, so no account is ever deleted on its own: EXPIRE_UNUSED_DAYS, such as 30, deletes an account that
-    // many days after it was made when nothing ever used it (README.md, "Accounts that are never used").
+    // Unset here, so no account is ever deleted on its own: EXPIRE_UNUSED_DAYS, such as 30 (2 at least), deletes an
+    // account that many days after it was made when nothing ever used it (README.md, "Accounts that are never used").
     // Per account: live records, and their total size in bytes.
     "MAX_RECORDS": 250000,
     "MAX_BYTES": 104857600,

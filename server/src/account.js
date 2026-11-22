@@ -8,7 +8,7 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { limit, registryObject, workspaceObject } from './config.js';
+import { EXPIRE_MIN_DAYS, expiryDays, registryObject, workspaceObject } from './config.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
 // The registry keeps that lock, per address and for addresses without an account too (lock.js); this object keeps it
@@ -239,6 +239,8 @@ export class Account extends DurableObject {
   // and the fourth within 30 days is refused.
   async bookingSetHandle(token, handle) {
     return this.#fromApp(token, (session, now) => {
+      // A booking page is use, for good, whatever becomes of the page (expireUnused).
+      if (handle && this.expiring) this.#endExpiry();
       const row = this.#booking();
       const changes = recentChanges(row.changes, now);
       if (handle === row.handle) return reply(200, { handle, changes: changes.length });
@@ -274,6 +276,9 @@ export class Account extends DurableObject {
   // workspaces an account may be in at once.
   async addWorkspace(token, id, { created = false, max = 0, most = 0 } = {}) {
     return this.#signedIn(token, (session, now) => {
+      // Making or joining a workspace is use, for good, also once the workspace is deleted and its reference goes
+      // (expireUnused).
+      if (this.expiring) this.#endExpiry();
       const identity = this.#identity();
       if (created && max > 0 && this.sql.exec('SELECT COUNT(*) AS n FROM workspaces WHERE created = 1').one().n >= max) {
         return failure(403, 'workspace_limit', `One account can make ${max} workspaces on this server.`);
@@ -340,14 +345,16 @@ export class Account extends DurableObject {
   // whether an account made while EXPIRE_UNUSED_DAYS was set was ever used, with the setting as it is now.
   async alarm() {
     await this.#cleanup();
-    await this.expireUnused(limit(this.env.EXPIRE_UNUSED_DAYS, 0));
+    await this.expireUnused(expiryDays(this.env));
   }
 
-  // Deletes this account when it is at least `days` days old and was never used: no records stored, ever; no
-  // workspace it is, was or was asked into; no booking page, ever; and no device that signed in or connected after
-  // the day it was made. The alarm calls it with EXPIRE_UNUSED_DAYS, and 0 means the setting was turned off: the
-  // account stays and isn't checked again. The decision and the account's end happen in one stretch with nothing
-  // awaited, so a request that would have used the account either comes first and keeps it, or finds no account.
+  // Deletes this account when it is at least `days` days old (EXPIRE_MIN_DAYS at least) and was never used: no records
+  // stored, ever; no workspace it made, joined or tried to join, ever; no booking page, ever; and no device that signed
+  // in or connected after the day it was made. The alarm calls it with EXPIRE_UNUSED_DAYS, and 0 means the setting was
+  // turned off: the account stays and isn't checked again. The decision is made in one stretch with nothing awaited,
+  // and from then on the account answers as gone, so a request that would have used it either comes first and keeps
+  // it, or finds no account. Its place under MAX_ACCOUNTS goes back before its data goes, once however often this
+  // runs, so a failure in either leaves the account for the alarm's next try and never a place counted for nobody.
   // Returns what it did: 'deleted', 'kept' (used, or the setting off), 'waiting' or 'none'.
   async expireUnused(days) {
     if (!this.present || !this.#has('expiry')) return 'none';
@@ -357,6 +364,7 @@ export class Account extends DurableObject {
       this.#endExpiry();
       return 'kept';
     }
+    days = Math.max(days, EXPIRE_MIN_DAYS);
     // An earlier account at this address still has workspaces to tell; #cleanup sets the check's alarm again after.
     if (this.#has('cleanup')) return 'waiting';
     const due = createdAt + days * DAY;
@@ -373,19 +381,18 @@ export class Account extends DurableObject {
     this.identity = null;
     this.expiring = false;
     try {
+      // The place, as DELETE /v1/account gives it back, under a hash of this object and the moment the account was
+      // made, which names this one account and no address. It never had a booking page or a workspace, so nothing
+      // else has anything of it.
+      const key = toBase64url(await sha256(utf8(`expired account\n${this.ctx.id.toString()}\n${createdAt}`)));
+      await registryObject(this.env)?.releaseOnce(key);
       await this.ctx.storage.deleteAll();
     } catch (err) {
+      // Still here: it answers again until the alarm's next try, which checks it again first.
       this.present =
         this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
       this.expiring = this.present && this.#has('expiry');
       throw err;
-    }
-    // The account's place under MAX_ACCOUNTS, as DELETE /v1/account gives it back. It never had a booking page or a
-    // workspace, so nothing else has anything of it.
-    try {
-      await registryObject(this.env)?.release();
-    } catch (err) {
-      console.error('Giving back the place of an expired account failed:', err?.message || err);
     }
     return 'deleted';
   }

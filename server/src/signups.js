@@ -109,19 +109,20 @@ export function untilTomorrow(now = Date.now()) {
   return Math.max(1, Math.ceil(((Math.floor(now / day) + 1) * day - now) / 1000));
 }
 
-// After an account was made: mails the operator when the registry says it is due (Registry.alertDue). Needs
-// OPERATOR_EMAIL and mail; without them it doesn't even ask.
-export async function checkAlert(env, ctx, host) {
+// After an account was made: mails the operator when the registry says it is due (Registry.alertDue). It runs after
+// the answer, so a failure here never reaches the device that just made its account. Needs OPERATOR_EMAIL and mail;
+// without them it doesn't even ask.
+export function checkAlert(env, ctx, host) {
   const to = operatorEmail(env);
   if (!to || !mailer(env)) return;
   const registry = registryObject(env);
   if (!registry) return;
   const perHour = limit(env.ALERT_SIGNUPS_PER_HOUR, ALERT_SIGNUPS);
   const max = limit(env.MAX_ACCOUNTS, 0);
-  const due = await registry.alertDue({ perHour, max });
-  if (!due) return;
   ctx.waitUntil(
     (async () => {
+      const due = await registry.alertDue({ perHour, max });
+      if (!due) return;
       const sent = await sendMail(env, { to, ...alertMail(due, { host, perHour, max }) });
       if (sent === 'refused') await registry.alertFailed(due.day);
     })().catch((err) => console.error('Mailing the operator failed:', err?.stack || err))

@@ -58,8 +58,9 @@ const CODE_TABLES = `
 // slot times the period: 'verified', sign-ups with an emailed code this hour; 'unlock', unlock emails today past each
 // mailbox's first; 'alert', 1 for the day the operator was last mailed (signups.js). unlock_mail: when unlock emails
 // went out to a mailbox in the last day, newest last, by the hash of the mailbox (codes.js). locks: the lock on
-// sign-ins and recovery for an address (lock.js), by the hash of the address: the attempts since failedAt, wrong or
-// still running, and lockedUntil; until is when the row can go.
+// sign-ins and recovery for an address (lock.js), by the hash of the address: the wrong attempts since failedAt, the
+// attempts still running as [ticket, start] pairs, and lockedUntil; until is when the row can go. released: the
+// expired accounts whose places were given back, by a hash of each one's lifetime, so a retry gives none back twice.
 const GUARD_TABLES = `
   CREATE TABLE IF NOT EXISTS signup_domains (domain TEXT PRIMARY KEY, day INTEGER NOT NULL, count INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS tallies (name TEXT PRIMARY KEY, slot INTEGER NOT NULL, count INTEGER NOT NULL);
@@ -69,11 +70,17 @@ const GUARD_TABLES = `
     address TEXT PRIMARY KEY,
     failures INTEGER NOT NULL,
     failedAt INTEGER NOT NULL,
+    pending TEXT NOT NULL DEFAULT '[]',
     lockedUntil INTEGER NOT NULL,
     until INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS locks_until ON locks (until);
+  CREATE TABLE IF NOT EXISTS released (key TEXT PRIMARY KEY, until INTEGER NOT NULL);
 `;
+// An attempt under the lock that hasn't come back after this long never will (a Worker's request ends sooner): from
+// then on it counts as a wrong one.
+const IN_FLIGHT = 60 * 1000;
+const RELEASED_FOR = 7 * DAY;
 
 // A place taken for a workspace that was never confirmed made or called off is settled after this long, by asking
 // the workspace.
@@ -171,17 +178,32 @@ export class Registry extends DurableObject {
   }
 
   // Counts an unlock email about to go out to a mailbox (codes.js). { ok: true, at, slot } lets it go: at is when it
-  // was counted, and slot the day of the server's budget it counted in, or null for the mailbox's first unlock email in
-  // a day, which the budget doesn't count. So however a stranger spends the budget, every locked owner still gets an
-  // email a day, with a long code that works for a day. { ok: false, reason } stops it: 'mailbox' when the mailbox had
-  // `daily` unlock emails in the last day, 'budget' when today's `budget` (0 for none) is used up.
-  async chargeUnlock(mailbox, { daily, budget }) {
+  // was counted, and slot the day of the server's budget it counted in, or null for an email the limits don't hold
+  // back. That is one for an account address (address, the hash codes.js keys codes by) that has no long code left to
+  // use: none that went out by email, is unused, unexpired and has tries left, other than this one (id). Only the owner
+  // can use up a long code, so a stranger gets the address one such email at most until the owner used its code or a
+  // day went by, and however the stranger spends the limits, the owner always holds a code that gets them in. The
+  // others count toward the mailbox's `daily` unlock emails in the last day and today's `budget` (0 for none).
+  // { ok: false, reason } stops the email: 'mailbox' or 'budget'.
+  async chargeUnlock(mailbox, { address, id, daily, budget, attempts }) {
     const now = Date.now();
     const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', mailbox).toArray()[0];
     const times = sendTimes(row?.times).filter((t) => now - t < DAY);
-    if (times.length >= daily) return { ok: false, reason: 'mailbox' };
+    // A row whose email didn't go out was cut to its six digits' 10 minutes (shortenCode), so until > codeUntil marks
+    // one whose long code did, or is going out right now.
+    const usable = this.sql
+      .exec(
+        `SELECT COUNT(*) AS n FROM codes WHERE address = ? AND purpose = 'unlock' AND challenge != ? AND until > ?
+           AND until > codeUntil AND failures < ?`,
+        address,
+        id,
+        now,
+        attempts
+      )
+      .one().n;
     let slot = null;
-    if (times.length > 0) {
+    if (usable > 0) {
+      if (times.length >= daily) return { ok: false, reason: 'mailbox' };
       slot = this.#charge('unlock', DAY, budget, now);
       if (slot === null) return { ok: false, reason: 'budget' };
     }
@@ -242,9 +264,8 @@ export class Registry extends DurableObject {
     return row?.day === Math.floor(now / DAY) && row.count >= domain.cap;
   }
 
-  // Counts an account made at a domain today, or gives one back (step -1).
-  #countDomain(domain, now, step) {
-    const day = Math.floor(now / DAY);
+  // Counts an account made at a domain on a day, or gives one back (step -1) to that day.
+  #countDomain(domain, day, step) {
     if (step > 0) {
       this.sql.exec(
         `INSERT INTO signup_domains (domain, day, count) VALUES (?, ?, 1)
@@ -279,51 +300,91 @@ export class Registry extends DurableObject {
     this.#refund('alert', day);
   }
 
-  // One attempt to sign in or recover with an address (lock.js), counted before the password or recovery key is
-  // compared, so a request that never finishes still counts. { result } is 'ok', or 'locked' with retryAfter in
-  // seconds: while the address is locked, and when `max` attempts since the first in `window` are already wrong or
-  // still running, which locks it for lockTime from then.
-  async lockAttempt(address, { max, window, lockTime }) {
+  // One attempt to sign in or recover with an address (lock.js), let in before the password or recovery key is
+  // compared. { result: 'ok', ticket } lets it in; lockSettle takes the ticket when it is over. { result: 'locked',
+  // retryAfter } in seconds turns it away: while the address is locked, and while wrong attempts and attempts still
+  // running reach `max` between them, so attempts sent at once get no more than `max` tries. Only wrong attempts start
+  // the lock itself, so an owner's right attempt that is still running never helps a stranger lock the address. One
+  // that doesn't come back within IN_FLIGHT counts as wrong.
+  async lockAttempt(address, rules) {
     const now = Date.now();
-    const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
-    if (row && row.lockedUntil > now) return { result: 'locked', retryAfter: seconds(row.lockedUntil - now) };
-    const fresh = !row || now - row.failedAt >= window;
-    const failures = fresh ? 0 : row.failures;
-    const failedAt = fresh ? now : row.failedAt;
-    if (failures >= max) {
-      await this.#setLock(address, 0, failedAt, now + lockTime);
-      return { result: 'locked', retryAfter: seconds(lockTime) };
+    const state = this.#lockState(address, now, rules);
+    if (state.lockedUntil > now) return { result: 'locked', retryAfter: seconds(state.lockedUntil - now) };
+    if (state.failures >= rules.max) {
+      await this.#saveLock(address, { ...state, failures: 0, pending: [], lockedUntil: now + rules.lockTime }, rules);
+      return { result: 'locked', retryAfter: seconds(rules.lockTime) };
     }
-    await this.#setLock(address, failures + 1, failedAt, 0, failedAt + window);
-    return { result: 'ok' };
+    if (state.failures + state.pending.length >= rules.max) {
+      await this.#saveLock(address, state, rules);
+      return { result: 'locked', retryAfter: seconds(state.pending[0][1] + IN_FLIGHT - now) };
+    }
+    const ticket = toBase64url(randomBytes(12));
+    state.pending.push([ticket, now]);
+    await this.#saveLock(address, state, rules);
+    return { result: 'ok', ticket };
   }
 
-  // How the attempt lockAttempt counted ended: right resets the count, as a success always did; a wrong one stays
-  // counted, and the one that makes `max` locks the address and answers 'locked', as the tenth wrong attempt always
-  // has. { result } is 'ok', 'wrong' or 'locked' with retryAfter.
-  async lockSettle(address, right, { max, lockTime }) {
+  // How the attempt with this ticket ended. A right one resets the count of wrong ones, as a success always did; a
+  // wrong one adds to it, and the one that makes `max` locks the address and answers 'locked', as the tenth wrong
+  // attempt always has. An attempt that came back after IN_FLIGHT was counted as wrong already, and isn't again.
+  // { result } is 'ok', 'wrong' or 'locked' with retryAfter.
+  async lockSettle(address, ticket, right, rules) {
     const now = Date.now();
-    const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
+    const state = this.#lockState(address, now, rules, ticket);
+    const mine = state.pending.findIndex(([t]) => t === ticket);
+    if (mine >= 0) state.pending.splice(mine, 1);
+    let answer = { result: right ? 'ok' : 'wrong' };
     if (right) {
-      if (row && row.lockedUntil <= now) this.sql.exec('DELETE FROM locks WHERE address = ?', address);
-      return { result: 'ok' };
+      state.failures = 0;
+    } else if (state.lockedUntil > now) {
+      answer = { result: 'locked', retryAfter: seconds(state.lockedUntil - now) };
+    } else {
+      if (mine >= 0) state.failures += 1;
+      if (state.failures >= rules.max) {
+        Object.assign(state, { failures: 0, pending: [], lockedUntil: now + rules.lockTime });
+        answer = { result: 'locked', retryAfter: seconds(rules.lockTime) };
+      }
     }
-    if (row && row.lockedUntil > now) return { result: 'locked', retryAfter: seconds(row.lockedUntil - now) };
-    if (row && row.failures >= max) {
-      await this.#setLock(address, 0, row.failedAt, now + lockTime);
-      return { result: 'locked', retryAfter: seconds(lockTime) };
+    if (state.failures === 0 && state.pending.length === 0 && state.lockedUntil <= now) {
+      this.sql.exec('DELETE FROM locks WHERE address = ?', address);
+    } else {
+      await this.#saveLock(address, state, rules);
     }
-    return { result: 'wrong' };
+    return answer;
   }
 
-  async #setLock(address, failures, failedAt, lockedUntil, until = lockedUntil) {
+  // An address's lock as of now: a window older than `window` starts again, and attempts running longer than IN_FLIGHT,
+  // apart from `keep`, count as wrong.
+  #lockState(address, now, { window }, keep = null) {
+    const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
+    if (!row || (row.lockedUntil <= now && now - row.failedAt >= window)) {
+      return { failures: 0, failedAt: now, pending: [], lockedUntil: 0 };
+    }
+    let pending = [];
+    try {
+      pending = JSON.parse(row.pending).filter((p) => Array.isArray(p) && typeof p[0] === 'string' && Number.isFinite(p[1]));
+    } catch {
+      pending = [];
+    }
+    const lost = pending.filter(([t, at]) => t !== keep && now - at >= IN_FLIGHT);
+    return {
+      failures: row.failures + lost.length,
+      failedAt: row.failedAt,
+      pending: pending.filter((p) => !lost.includes(p)),
+      lockedUntil: row.lockedUntil
+    };
+  }
+
+  async #saveLock(address, { failures, failedAt, pending, lockedUntil }, { window }) {
+    const until = Math.max(failedAt + window, lockedUntil, ...pending.map(([, at]) => at + IN_FLIGHT));
     this.sql.exec(
-      `INSERT INTO locks (address, failures, failedAt, lockedUntil, until) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO locks (address, failures, failedAt, pending, lockedUntil, until) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (address) DO UPDATE SET failures = excluded.failures, failedAt = excluded.failedAt,
-         lockedUntil = excluded.lockedUntil, until = excluded.until`,
+         pending = excluded.pending, lockedUntil = excluded.lockedUntil, until = excluded.until`,
       address,
       failures,
       failedAt,
+      JSON.stringify(pending),
       lockedUntil,
       until
     );
@@ -390,23 +451,27 @@ export class Registry extends DurableObject {
       this.sql.exec('UPDATE codes SET failures = MAX(0, failures - 1) WHERE challenge = ? AND claim = ?', id, claim);
     }
     this.sql.exec('UPDATE codes SET claim = NULL, claimedUntil = 0 WHERE challenge = ? AND claim = ?', id, claim);
-    this.sql.exec('DELETE FROM codes WHERE challenge = ? AND failures >= ?', id, attempts);
+    // Out of tries, unless a newer request holds the code: its own try is among them, and it settles the code itself.
+    this.sql.exec(
+      'DELETE FROM codes WHERE challenge = ? AND failures >= ? AND (claim IS NULL OR claimedUntil <= ?)',
+      id,
+      attempts,
+      Date.now()
+    );
   }
 
   // Deletes what has expired and waits for the next to expire.
   async alarm() {
     const now = Date.now();
     this.#purgeCodes(now);
-    const next = this.sql
-      .exec(
-        `SELECT MIN(t) AS t FROM (
-           SELECT MIN(until) AS t FROM codes UNION ALL SELECT MIN(until) AS t FROM code_sends
-           UNION ALL SELECT MIN(until) AS t FROM unlock_mail UNION ALL SELECT MIN(until) AS t FROM locks
-           UNION ALL SELECT (MIN(day) + 1) * ? AS t FROM signup_domains)`,
-        DAY
-      )
-      .one().t;
-    if (next !== null) await this.ctx.storage.setAlarm(Math.max(next, now + 1000));
+    // One query per table: the platform's SQLite takes only a few terms in one compound SELECT.
+    const times = ['codes', 'code_sends', 'unlock_mail', 'locks', 'released'].map(
+      (table) => this.sql.exec(`SELECT MIN(until) AS t FROM ${table}`).one().t
+    );
+    const day = this.sql.exec('SELECT MIN(day) AS d FROM signup_domains').one().d;
+    if (day !== null) times.push((day + 1) * DAY);
+    const due = times.filter((t) => t !== null);
+    if (due.length > 0) await this.ctx.storage.setAlarm(Math.max(Math.min(...due), now + 1000));
   }
 
   #purgeCodes(now) {
@@ -414,6 +479,7 @@ export class Registry extends DurableObject {
     this.sql.exec('DELETE FROM code_sends WHERE until <= ?', now);
     this.sql.exec('DELETE FROM unlock_mail WHERE until <= ?', now);
     this.sql.exec('DELETE FROM locks WHERE until <= ?', now);
+    this.sql.exec('DELETE FROM released WHERE until <= ?', now);
     this.sql.exec('DELETE FROM signup_domains WHERE day < ?', Math.floor(now / DAY));
   }
 
@@ -516,34 +582,49 @@ export class Registry extends DurableObject {
   // this hour's sign-ups and, with a domain, toward its domain's accounts of the day ('domain' once cap is reached).
   async reserve(max, code = null, uses = 0, usedFirst = false, verified = null) {
     const used = () => code && uses > 0 && this.used(code) >= uses;
-    if (usedFirst && used()) return 'used';
-    if (max > 0 && this.count() >= max) return 'full';
-    if (used()) return 'used';
+    if (usedFirst && used()) return { result: 'used' };
+    if (max > 0 && this.count() >= max) return { result: 'full' };
+    if (used()) return { result: 'used' };
     const now = Date.now();
-    if (this.#domainFull(verified, now)) return 'domain';
+    if (this.#domainFull(verified, now)) return { result: 'domain' };
     this.sql.exec('UPDATE counts SET accounts = accounts + 1 WHERE id = 1');
     if (code) this.sql.exec('INSERT INTO invites (code, used) VALUES (?, 1) ON CONFLICT (code) DO UPDATE SET used = used + 1', code);
+    // The hour and day the sign-up counted in, which release takes it from again, also when the clock has moved on.
+    const counted = verified ? { hour: Math.floor(now / HOUR), day: Math.floor(now / DAY) } : null;
     if (verified) {
       this.#charge('verified', HOUR, 0, now);
       if (verified.domain && verified.cap > 0) {
-        this.#countDomain(verified.domain, now, 1);
-        await this.#armCodes((Math.floor(now / DAY) + 1) * DAY);
+        this.#countDomain(verified.domain, counted.day, 1);
+        await this.#armCodes((counted.day + 1) * DAY);
       }
     }
-    return 'ok';
+    return { result: 'ok', counted };
   }
 
   // Gives a place back. With the code, the sign-up didn't happen after all, so its use comes back too, and so do the
-  // counts of a sign-up with an emailed code (verified, as reserve got it). A deleted account gives back only its
-  // place, or a code could be used again and again, and the day's accounts at a domain again and again.
-  async release(code = null, verified = null) {
+  // counts of a sign-up with an emailed code (verified and counted, as reserve got and gave them). A deleted account
+  // gives back only its place, or a code could be used again and again, and the day's accounts at a domain again and
+  // again.
+  async release(code = null, verified = null, counted = null) {
     this.sql.exec('UPDATE counts SET accounts = MAX(0, accounts - 1) WHERE id = 1');
     if (code) this.sql.exec('UPDATE invites SET used = MAX(0, used - 1) WHERE code = ?', code);
-    if (verified) {
-      const now = Date.now();
-      this.#refund('verified', Math.floor(now / HOUR));
-      if (verified.domain && verified.cap > 0) this.#countDomain(verified.domain, now, -1);
+    if (verified && counted) {
+      this.#refund('verified', counted.hour);
+      if (verified.domain && verified.cap > 0) this.#countDomain(verified.domain, counted.day, -1);
     }
+  }
+
+  // Gives back the place of an account that expired (account.js, expireUnused), once per key however often the
+  // account's alarm asks: when the account couldn't be wiped after this, its next try asks again. key is a hash that
+  // names that one account's lifetime; it is kept for a week.
+  async releaseOnce(key) {
+    const now = Date.now();
+    if (this.sql.exec('SELECT 1 FROM released WHERE key = ?', key).toArray().length > 0) return;
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('INSERT INTO released (key, until) VALUES (?, ?)', key, now + RELEASED_FOR);
+      this.sql.exec('UPDATE counts SET accounts = MAX(0, accounts - 1) WHERE id = 1');
+    });
+    await this.#armCodes(now + RELEASED_FOR);
   }
 
   async accounts() {

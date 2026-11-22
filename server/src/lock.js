@@ -4,8 +4,9 @@
 // ever answer 429 for an address with an account, which told anyone who tried ten wrong passwords that it had one.
 //
 // It counts what it locks the same as before: one address, as typed, which is also the one account it can hold. Each
-// attempt counts before the account compares the password, so attempts sent at once get no more than ten tries between
-// them, and one whose client goes away still counts. A right one resets the count, as it always did.
+// attempt is let in before the account compares the password, and attempts still running count toward the ten, so
+// attempts sent at once get no more than ten tries between them. Only wrong ones start the lock, and one whose client
+// goes away counts as wrong after a minute. A right one resets the count, as it always did.
 //
 // A server without the registry binding leaves the lock to the account, as before (account.js, #check).
 
@@ -25,9 +26,10 @@ export async function guarded(env, email, run) {
   const attempt = await registry.lockAttempt(address, LOCK_RULES);
   if (attempt.result === 'locked') return locked(attempt.retryAfter);
   const result = await run({ unlocked: true });
-  // Anything but a right or a wrong secret, such as an error, stays counted, like an attempt that never came back.
+  // Anything but a right or a wrong secret, such as an error, stays running, and counts as wrong once a minute is up,
+  // like an attempt that never came back.
   if (result?.status !== 200 && result?.status !== 401) return result;
-  const settled = await registry.lockSettle(address, result.status === 200, LOCK_RULES);
+  const settled = await registry.lockSettle(address, attempt.ticket, result.status === 200, LOCK_RULES);
   return settled.result === 'locked' ? locked(settled.retryAfter) : result;
 }
 

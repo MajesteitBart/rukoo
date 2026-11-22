@@ -19,8 +19,8 @@ import {
   bookingRoot,
   checkConfig,
   config,
+  expiryDays,
   filesStorage,
-  limit,
   limitRate,
   positive,
   previewsOn,
@@ -257,27 +257,31 @@ async function signup(request, env, ctx) {
   } finally {
     if (code) await settleCode(env, code, result?.status === 201 ? 'used' : 'keep');
   }
-  if (result.status === 201) await checkAlert(env, ctx, new URL(request.url).host);
+  // After the answer: the account is made, and nothing the alert does may stand between it and its device.
+  if (result.status === 201) checkAlert(env, ctx, new URL(request.url).host);
   return send(result);
 }
 
 async function makeAccount(env, fields, invite, uses, workspaceInvite, verified) {
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
+  // counted: the hour and day the place counted in, so giving it back takes it from the same ones.
   const registry = registryObject(env);
+  let counted = null;
   if (registry) {
     const place = await registry.reserve(maxAccounts(env), invite, uses, workspaceInvite, verified);
-    if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
-    if (place === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
-    if (place === 'domain') {
+    if (place.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
+    if (place.result === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
+    if (place.result === 'domain') {
       throw new HttpError(429, 'rate_limited', DOMAIN_LIMIT, { 'retry-after': String(untilTomorrow()) }, { limit: 'domain' });
     }
+    counted = place.counted;
   }
   let result;
   try {
     result = await stub(env, name).signup(name, fields, limits(env), { expireDays: expiryDays(env) });
   } finally {
-    if (registry && (!result || result.status !== 201)) await registry.release(invite, verified);
+    if (registry && (!result || result.status !== 201)) await registry.release(invite, verified, counted);
   }
   return result;
 }
@@ -398,12 +402,6 @@ function session(request, env) {
 function maxAccounts(env) {
   const n = Number(env.MAX_ACCOUNTS);
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
-}
-
-// EXPIRE_UNUSED_DAYS: days after which an account that was never used is deleted (account.js, expireUnused). 0, also
-// when unset, keeps every account.
-function expiryDays(env) {
-  return limit(env.EXPIRE_UNUSED_DAYS, 0);
 }
 
 function stub(env, name) {

@@ -39,11 +39,11 @@ export const CODE_RULES = { ttl: CODE_TTL, tokenTtl: TOKEN_TTL, gap: 60 * 1000, 
 // The most sign-up emails the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise. They are the
 // ones that reach addresses without an account.
 const PER_HOUR = 100;
-// Unlock emails go only to accounts on this server, at most ten a day to one mailbox, counted when they go out, so
-// deleting an account and making one again, or making accounts at tags of one mailbox, doesn't give it ten more. Each
-// mailbox's first unlock email in a day always goes; the ones after it count toward a budget for the whole server,
-// UNLOCK_EMAILS_PER_DAY unless that says otherwise (0 for none). A stranger who spends the budget stops nobody's
-// first email, and with it the long code that gets its owner in for a day (Registry.chargeUnlock).
+// Unlock emails go only to accounts on this server. One always goes to an address that has no long code left to use;
+// the others count toward ten a day to one mailbox, counted when they go out, so deleting an account and making one
+// again, or making accounts at tags of one mailbox, doesn't give it ten more, and toward a budget for the whole server,
+// UNLOCK_EMAILS_PER_DAY unless that says otherwise (0 for none). A stranger who spends the limits still leaves the
+// owner a long code that gets them in (Registry.chargeUnlock).
 const UNLOCK_PER_DAY = 1000;
 
 // What this server sends codes for: nothing without mail and the registry, unlock wherever it sends mail, and signup
@@ -123,7 +123,13 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   let unlock = null;
   if (kind === 'unlock') {
     unlock = { box: await unlockHash(env, email) };
-    const charged = await registry.chargeUnlock(unlock.box, { daily: CODE_RULES.daily, budget: unlockBudget(env) });
+    const charged = await registry.chargeUnlock(unlock.box, {
+      address: await addressHash(env, email),
+      id,
+      daily: CODE_RULES.daily,
+      budget: unlockBudget(env),
+      attempts: ATTEMPTS
+    });
     if (!charged.ok) {
       await registry.shortenCode(id);
       console.error(
@@ -204,16 +210,17 @@ export async function signupCode(env, email, value) {
   return claimCode(env, email, 'signup', emailCode);
 }
 
-// Runs a sign-in or recovery past the account's lock with a code for unlock, which it holds for the whole call. run
-// gets the option the account object takes for that. A wrong password or recovery key (401) costs the code a try.
-// Success uses the code up, unless keep: recover/start leaves it for recover/finish.
+// Runs a sign-in or recovery past the address's lock with a code for unlock, which it holds for the whole call. run
+// gets the option the account object takes for that. A wrong password or recovery key (401) costs the code a try, and
+// so does a call that failed without an answer, which may have compared the secret all the same. Success uses the code
+// up, unless keep: recover/start leaves it for recover/finish, and gives its try back.
 export async function unlocked(env, email, emailCode, run, keep = false) {
   const held = await claimCode(env, email, 'unlock', emailCode);
   let result = null;
   try {
     result = await run({ unlocked: true });
   } finally {
-    const outcome = result?.status === 401 ? 'failed' : result?.status === 200 && !keep ? 'used' : 'keep';
+    const outcome = result?.status === 200 ? (keep ? 'keep' : 'used') : 'failed';
     await settleCode(env, held, outcome);
   }
   return result;

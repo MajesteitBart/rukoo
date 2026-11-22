@@ -214,6 +214,17 @@ export function limit(value, fallback) {
   return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
 }
 
+// The fewest days EXPIRE_UNUSED_DAYS counts as. An account is checked no sooner than a day after its sign-up day, so a
+// request that came in on that day, such as a booking page being published, is long finished by then.
+export const EXPIRE_MIN_DAYS = 2;
+
+// EXPIRE_UNUSED_DAYS: days after which an account that was never used is deleted (account.js, expireUnused), at
+// least EXPIRE_MIN_DAYS. 0, also when unset, keeps every account.
+export function expiryDays(env) {
+  const days = limit(env.EXPIRE_UNUSED_DAYS, 0);
+  return days > 0 ? Math.max(days, EXPIRE_MIN_DAYS) : 0;
+}
+
 // An http(s) address as an origin, or null when it is empty or isn't one.
 function originOf(value) {
   if (!value) return null;
