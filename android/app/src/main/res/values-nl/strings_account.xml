@@ -170,6 +170,8 @@
     <string name="settings_rukoo_code_sent">We hebben een code gestuurd naar %1$s.</string>
     <string name="settings_rukoo_code_resent">We hebben een nieuwe code gestuurd naar %1$s. Gebruik die uit de nieuwste e-mail.</string>
     <string name="settings_rukoo_code_help">Of plak de lange code uit de e-mail. Die werkt een dag lang op elk apparaat.</string>
+    <string name="settings_rukoo_code_not_sent">Er ging nog geen nieuwe code naar %1$s. De lange code uit een eerdere e-mail werkt ook.</string>
+    <string name="settings_rukoo_code_invite_wrong">Die uitnodigingscode werkte niet. Vul in plaats daarvan de code uit de e-mail in.</string>
     <string name="settings_rukoo_code_resend">Stuur een nieuwe code</string>
     <string name="settings_rukoo_code_wrong_last">Te vaak een foute code. Stuur een nieuwe code, of plak de lange code uit de e-mail.</string>
     <string name="settings_rukoo_code_missing">Vul de code uit de e-mail in.</string>

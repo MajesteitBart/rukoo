@@ -567,6 +567,7 @@ private fun CodeStepFields(
         Text(
             stringResource(
                 when {
+                    step.notSent -> R.string.settings_rukoo_code_not_sent
                     step.inviteFailed -> R.string.settings_rukoo_code_invite_failed
                     step.resent -> R.string.settings_rukoo_code_resent
                     else -> R.string.settings_rukoo_code_sent

@@ -45,7 +45,7 @@ async function main() {
     throw new Error(`The server answered GET /v1/info with ${info.status}`);
   }
 
-  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid, previews: server.previewOrigin, mail: server.mail ? server.mail.origin : null };
+  const ready = { url: server.url, invite: server.inviteCode, pid: process.pid, previews: server.previewOrigin, ...(server.mail ? { mail: server.mail.origin } : {}) };
   if (readyFile) {
     // Written whole and then renamed, so a waiter never reads half of it.
     fs.mkdirSync(path.dirname(readyFile), { recursive: true });

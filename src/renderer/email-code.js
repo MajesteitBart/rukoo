@@ -57,6 +57,8 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   let sentTo = null;
   let until = 0;
   let timer = null;
+  // Goes up with each request for a code and each reset, so only the answer to the newest request counts.
+  let requests = 0;
 
   const input = () => el && el.querySelector('[name="emailCode"]');
   const resendButton = () => el && el.querySelector('[data-code-resend]');
@@ -103,7 +105,8 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
     tick();
   }
 
-  function draw(email) {
+  // sent: false when the server sent no new code (its limit): the line then says an earlier email's long code works.
+  function draw(email, { sent = true } = {}) {
     const help = esc(t('settings.rukoo.code.help'));
     const field = compact
       ? `<input class="wn-input wide" name="emailCode" type="text" placeholder="${esc(t('settings.rukoo.code.label'))}" aria-label="${esc(t('settings.rukoo.code.label'))}" autocomplete="one-time-code" spellcheck="false" maxlength="200">
@@ -111,7 +114,7 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
       : `<label>${esc(t('settings.rukoo.code.label'))}<input type="text" name="emailCode" autocomplete="one-time-code" spellcheck="false" maxlength="200"/>
            <span class="field-help">${help}</span></label>`;
     const html = `<div class="code-step${compact ? ' wide compact' : ''}" data-code-step data-purpose="${esc(purpose)}">
-        <p class="code-sent" data-code-sent>${esc(t('settings.rukoo.code.sent', { email }))}</p>
+        <p class="code-sent" data-code-sent>${esc(t(sent ? 'settings.rukoo.code.sent' : 'settings.rukoo.code.notSent', { email }))}</p>
         ${field}
         <div class="code-actions"><button type="button" class="link-btn" data-code-resend>${esc(t('settings.rukoo.code.resend'))}</button></div>
       </div>`;
@@ -124,28 +127,42 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   }
 
   // Asks for a code for email and shows the step. note: a line said in the error place once it went, such as "That
-  // invite code didn't work". false when the server refused: the error line says why, and the step stays as it was.
+  // invite code didn't work". false when the server refused: the error line says why. When the server's limit refused
+  // it, the step shows anyway, or stays: the long code of an email sent before works on any device, also of one a
+  // stranger asked for to use up the address's codes (server/PROTOCOL.md, POST /v1/email-code). An answer that comes
+  // after the address changed, or after a newer request, changes nothing.
   async function send(email, { note = '' } = {}) {
+    const asked = ++requests;
+    const current = () => asked === requests && (!emailField || sameAddress(emailField.value, email));
     const btn = resendButton();
     if (btn) btn.disabled = true;
     try {
       const res = await api('accountEmailCode', { email, purpose });
+      if (!current()) return false;
       const address = (res && res.email) || String(email || '').trim().toLowerCase();
-      const again = Boolean(el) && sameAddress(sentTo, address);
+      const again = active() && sameAddress(sentTo, address);
       sentTo = address;
-      if (!again || !el || !el.isConnected) draw(address);
+      if (!again) draw(address);
       else el.querySelector('[data-code-sent]').textContent = t('settings.rukoo.code.resent', { email: address });
       showError(note);
       wait(GAP);
       focus();
       return true;
     } catch (ex) {
+      if (!current()) return false;
       if (ex && ex.code === 'rate_limited') {
         const seconds = Number(ex.waitSeconds) || Number(ex.retryAfter) || GAP;
-        if (el) wait(seconds);
+        if (!active() || !sameAddress(sentTo, email)) {
+          sentTo = String(email || '').trim().toLowerCase();
+          draw(sentTo, { sent: false });
+        }
+        wait(seconds);
         showError(waitText(seconds));
-      } else showError(codeErrorText(ex) || (ex && ex.message) || '');
-      if (btn && !timer) btn.disabled = false;
+        focus();
+      } else {
+        showError(codeErrorText(ex) || (ex && ex.message) || '');
+        if (btn && !timer) btn.disabled = false;
+      }
       return false;
     }
   }
@@ -160,6 +177,7 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   }
 
   function reset() {
+    requests += 1;
     clearInterval(timer);
     timer = null;
     if (el) el.remove();
@@ -170,9 +188,10 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
   // One submit of the form. run(emailCode) makes the request with what the code field holds ('' while the step isn't
   // shown) and returns its answer. { done: true, result } once it went through; { done: false } when the form stays,
   // with the step shown or the error line saying what to do. Errors the step has no words for are thrown, for the
-  // form to show as before. invited: the form sent an invite code, so code_required means that code didn't work.
+  // form to show as before. invited: the form sends the operator's invite code, which needs no emailed code, so an
+  // empty code field doesn't stop it, and code_required means that invite code didn't work.
   async function submit(email, run, { invited = false } = {}) {
-    if (active() && !value()) {
+    if (active() && !value() && !invited) {
       showError(t('settings.rukoo.code.missing'));
       focus();
       return { done: false };
@@ -182,8 +201,14 @@ export function codeStep({ host, before = null, purpose, emailField, errorEl, co
       return { done: true, result: await run(shown ? value() : '') };
     } catch (ex) {
       const code = ex && ex.code;
-      // The server checks addresses: a code first, then the same submit again.
+      // The server checks addresses: a code first, then the same submit again. With a code already sent there, the
+      // invite code typed since didn't work, and the emailed code still does.
       if (purpose === 'signup' && code === 'code_required') {
+        if (shown && sameAddress(sentTo, email)) {
+          showError(t('settings.rukoo.code.inviteWrong'));
+          focus();
+          return { done: false };
+        }
         await send(email, { note: invited ? t('settings.rukoo.code.inviteFailed', { email }) : '' });
         return { done: false };
       }

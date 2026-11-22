@@ -7980,6 +7980,14 @@
     "message": "We sent a code to {email}.",
     "description": "Rukoo account forms: line above the code field once the server took the request for a code. {email}: the address, as the server reads it (trimmed, lowercase). src/renderer/email-code.js (codeStep)"
   },
+  "settings.rukoo.code.notSent": {
+    "message": "No new code went to {email} yet. The long code from an earlier email works too.",
+    "description": "Rukoo account forms: line above the code field when the server sent no new code for now (429 rate_limited; the error line says how long to wait). The long code from any email sent before still works, also from one someone else asked for. {email}: the address. src/renderer/email-code.js (codeStep send)"
+  },
+  "settings.rukoo.code.inviteWrong": {
+    "message": "That invite code didn't work. Enter the code from the email instead.",
+    "description": "Rukoo account forms: error on the sign-up form when an invite code typed while the code step showed was turned down (403 code_required); the emailed code still works. src/renderer/email-code.js (codeStep submit)"
+  },
   "settings.rukoo.code.resent": {
     "message": "We sent a new code to {email}. Use the one in the newest email.",
     "description": "Rukoo account forms: the line above the code field after Send a new code. Only the newest email's six digits work on this device; any email's long code works. {email}: the address. src/renderer/email-code.js (codeStep)"

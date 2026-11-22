@@ -2064,6 +2064,8 @@
   "settings.rukoo.inviteChatHelp": "Een uitnodigingslink voor een werkruimte in teamchat werkt ook als uitnodigingscode.",
   "settings.rukoo.code.label": "Code uit de e-mail",
   "settings.rukoo.code.sent": "We hebben een code gestuurd naar {email}.",
+  "settings.rukoo.code.notSent": "Er ging nog geen nieuwe code naar {email}. De lange code uit een eerdere e-mail werkt ook.",
+  "settings.rukoo.code.inviteWrong": "Die uitnodigingscode werkte niet. Vul in plaats daarvan de code uit de e-mail in.",
   "settings.rukoo.code.resent": "We hebben een nieuwe code gestuurd naar {email}. Gebruik die uit de nieuwste e-mail.",
   "settings.rukoo.code.help": "Of plak de lange code uit de e-mail. Die werkt een dag lang op elk apparaat.",
   "settings.rukoo.code.resend": "Stuur een nieuwe code",

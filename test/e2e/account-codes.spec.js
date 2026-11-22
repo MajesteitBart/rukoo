@@ -162,6 +162,42 @@ test.describe('Settings', () => {
     expect(server.accounts.has('first@example.com')).toBe(false);
   });
 
+  test('a code the server holds back leaves room for the long code; an invite code typed at the code step goes through', async ({}, testInfo) => {
+    // Another device asked for a code a moment ago, so the server holds the next one back for a minute.
+    await win.evaluate(() => window.mail.invoke('accountEmailCode', { email: 'held@example.com', purpose: 'signup' }));
+    const form = await openForm('rukoo-signup');
+    await fillSignUp(form, 'held@example.com');
+    await form.locator('button[type=submit]').click();
+    await expect(form.locator('[data-code-sent]')).toHaveText('No new code went to held@example.com yet. The long code from an earlier email works too.', { timeout: 15000 });
+    await expect(form.locator('[data-error]')).toHaveText(/^You can ask for a new code in (\d+ seconds?|1 minute)\.$/);
+    await expect(form.locator('[name="emailCode"]')).toBeFocused();
+    await shot(testInfo, 'signup-code-held-dark-en');
+    await form.locator('[name="emailCode"]').fill(server.tokenFor('held@example.com'));
+    await form.locator('button[type=submit]').click();
+    await expect(win.locator('.scrim .dialog h2')).toHaveText('Save your recovery key', { timeout: 20000 });
+    await win.locator('.scrim .dialog .buttons button', { hasText: 'I saved it' }).click();
+    expect(server.accounts.has('held@example.com')).toBe(true);
+    await page().locator('[data-a="rukoo-signout"]').click();
+    await win.locator('.scrim .buttons button', { hasText: 'Sign out' }).click();
+    await expect(page().locator('[data-a="rukoo-go:rukoo-signup"]')).toBeVisible();
+
+    // At the code step, an invite code needs no emailed code; a wrong one says the emailed code still works.
+    await page().locator('[data-a="rukoo-go:rukoo-signup"]').click();
+    const again = page().locator('form[data-form="rukoo-signup"]');
+    await fillSignUp(again, 'invited@example.com');
+    await again.locator('button[type=submit]').click();
+    await expect(again.locator('[data-code-step]')).toBeVisible({ timeout: 15000 });
+    await again.locator('[name="invite"]').fill('not-the-code');
+    await again.locator('button[type=submit]').click();
+    await expect(again.locator('[data-error]')).toHaveText("That invite code didn't work. Enter the code from the email instead.", { timeout: 20000 });
+    await again.locator('[name="invite"]').fill('welcome');
+    await again.locator('button[type=submit]').click();
+    await expect(win.locator('.scrim .dialog h2')).toHaveText('Save your recovery key', { timeout: 20000 });
+    await win.locator('.scrim .dialog .buttons button', { hasText: 'I saved it' }).click();
+    expect(server.accounts.has('invited@example.com')).toBe(true);
+    expect(server.calls.filter((c) => c.route === 'POST /v1/signup').at(-1).body.invite).toBe('welcome');
+  });
+
   test('a locked account offers a code by email and signs in or recovers with it', async ({}, testInfo) => {
     const recoveryKey = await seedAccount(server, 'locked@example.com');
     server.lock('locked@example.com');

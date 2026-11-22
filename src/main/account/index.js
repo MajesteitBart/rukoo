@@ -459,11 +459,17 @@ class AccountService extends EventEmitter {
       // meanwhile and the server is still the one it began at. A session made meanwhile keeps its own address.
       if (!former || !err || err.code !== 'unauthorized') throw err;
       if (this.signedIn || this.server !== at || this.state.formerServer !== former) throw err;
+      // An unlock code goes along: a former address reaches the same server (FORMER_SERVERS), whose codes don't
+      // depend on the address they were asked at, and the account's lock holds there too.
       try {
-        return await this.login(address, password, former, at);
+        const res = await this.login(address, password, former, at, emailCode);
+        this.settleCode('unlock', emailCode);
+        return res;
       } catch (later) {
-        // The former address took the password, but another sign-in got here first: that one says why.
-        throw later && later.code === 'signed_in' ? later : err;
+        this.settleCode('unlock', emailCode, later);
+        // The former address took the password, but another sign-in got here first, or the code didn't do there:
+        // that one says why.
+        throw later && (later.code === 'signed_in' || (emailCode && /^code_|^locked$/.test(later.code))) ? later : err;
       }
     }
   }

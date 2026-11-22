@@ -24,6 +24,7 @@ import nl.bvdm.rukoo.BuildConfig
 import nl.bvdm.rukoo.R
 import nl.bvdm.rukoo.account.AccountDetails
 import nl.bvdm.rukoo.account.AccountError
+import nl.bvdm.rukoo.account.AccountKeys
 import nl.bvdm.rukoo.account.AccountService
 import nl.bvdm.rukoo.account.ServerInfo
 import nl.bvdm.rukoo.core.AppLog
@@ -64,9 +65,10 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     /**
      * A code emailed for [form] to [email]: `signup` for a sign-up on a server that checks addresses, `unlock` for a
      * sign-in or recovery of a locked account. [resent]: Send a new code went through. [inviteFailed]: the server
-     * turned down the typed invite code, so the code goes in its place.
+     * turned down the typed invite code, so the code goes in its place. [notSent]: the server's limit held a new code
+     * back, and the step is there for the long code of an earlier email.
      */
-    data class CodeStep(val form: Form, val email: String, val resent: Boolean = false, val inviteFailed: Boolean = false)
+    data class CodeStep(val form: Form, val email: String, val resent: Boolean = false, val inviteFailed: Boolean = false, val notSent: Boolean = false)
 
     sealed interface FormError {
         /** An [AccountError] code; [attemptsLeft] for six digits that didn't match (`code_wrong`). */
@@ -163,6 +165,7 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     /** A form page opened: a code step of another form goes, with what was typed in it. */
     fun opened(form: Form) {
         if (_ui.value.code?.form != form) {
+            codeRequests += 1
             fields.remove("emailCode")
             _ui.update { it.copy(code = null) }
         }
@@ -171,7 +174,8 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     /** The address field changed: a code sent to another address goes, so the next submit sends one to this one. */
     fun emailChanged(value: String) {
         val step = _ui.value.code ?: return
-        if (nl.bvdm.rukoo.account.AccountKeys.normalizeEmail(value) != step.email) {
+        if (AccountKeys.normalizeEmail(value) != step.email) {
+            codeRequests += 1
             fields.remove("emailCode")
             _ui.update { it.copy(code = null) }
         }
@@ -185,11 +189,16 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
     fun sendCode(form: Form, lang: String, inviteFailed: Boolean = false) {
         val acc = account ?: return
         val email = fields["email"].orEmpty()
+        val address = AccountKeys.normalizeEmail(email)
         val purpose = if (form == Form.SIGN_UP) "signup" else "unlock"
+        val asked = ++codeRequests
+        // An answer that comes after the address changed, or after a newer request, changes nothing.
+        fun current() = asked == codeRequests && AccountKeys.normalizeEmail(fields["email"].orEmpty()) == address
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
             try {
                 val sent = acc.requestCode(email, purpose, lang)
+                if (!current()) return@launch
                 val was = _ui.value.code
                 val again = was != null && was.form == form && was.email == sent.email
                 _ui.update {
@@ -202,10 +211,16 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                 throw e
             } catch (e: Exception) {
                 AppLog.w(TAG, "a code by email was not sent", e)
+                if (!current()) return@launch
                 val err = e as? AccountError
                 if (err?.code == "rate_limited") {
+                    // The step shows anyway, or stays: the long code of an email sent before works on any device, also
+                    // of one a stranger asked for to use up the address's codes (server/PROTOCOL.md, POST /v1/email-code).
                     val wait = err.retryAfter ?: CODE_GAP
-                    _ui.update { it.copy(formError = FormError.Wait(wait), resendAt = System.currentTimeMillis() + wait * 1000) }
+                    _ui.update {
+                        val step = it.code?.takeIf { s -> s.form == form && s.email == address } ?: CodeStep(form, address, notSent = true)
+                        it.copy(code = step, formError = FormError.Wait(wait), resendAt = System.currentTimeMillis() + wait * 1000)
+                    }
                 } else {
                     _ui.update { it.copy(formError = FormError.Code(err?.code ?: "server")) }
                 }
@@ -214,6 +229,9 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
             }
         }
     }
+
+    // Goes up with each request for a code, so only the answer to the newest counts (sendCode).
+    private var codeRequests = 0
 
     fun recoveryKeyShown() = _ui.update { it.copy(recoveryKey = null) }
 
@@ -252,7 +270,9 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
         val carried = carriedLink?.takeIf { it.server in servers && form != Form.RECOVER }
         val shown = _ui.value.code?.takeIf { it.form == form }
         val emailCode = if (shown != null) f["emailCode"].orEmpty().trim() else ""
-        if (shown != null && emailCode.isEmpty()) return stop(FormError.Text(R.string.settings_rukoo_code_missing))
+        // The operator's invite code needs no emailed code, so an empty code field doesn't stop it.
+        val invited = invite is InviteInput.Code && invite.code.isNotBlank()
+        if (shown != null && emailCode.isEmpty() && !invited) return stop(FormError.Text(R.string.settings_rukoo_code_missing))
         _ui.update { it.copy(working = true, formError = null) }
         viewModelScope.launch {
             var codeNext: Boolean? = null
@@ -292,9 +312,11 @@ class RukooAccountModel(services: AppServices, private val devHosts: Boolean = B
                 val err = e as? AccountError
                 val code = err?.code ?: "server"
                 when {
+                    // A code was sent already: the invite code typed since didn't work, and the emailed code still does.
+                    form == Form.SIGN_UP && code == "code_required" && shown != null && shown.email == AccountKeys.normalizeEmail(email) ->
+                        stop(FormError.Text(R.string.settings_rukoo_code_invite_wrong))
                     // The server checks addresses: a code first, then the same submit again.
-                    form == Form.SIGN_UP && code == "code_required" ->
-                        codeNext = invite is InviteInput.Code && invite.code.isNotBlank()
+                    form == Form.SIGN_UP && code == "code_required" -> codeNext = invited
                     // A locked account, on a server that sends codes to get past the lock.
                     form != Form.SIGN_UP && code == "locked" && shown == null && acc.status.value.info?.codesFor("unlock") == true ->
                         stop(FormError.Locked)

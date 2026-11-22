@@ -245,3 +245,40 @@ test('a locked account recovers with an unlock code sent with both steps', async
   assert.deepEqual(routes(srv, 'POST /v1/recover/start').at(-1).body.emailCode, { token });
   assert.deepEqual(routes(srv, 'POST /v1/recover/finish').at(-1).body.emailCode, { token });
 });
+
+// Rukoo's former default address and today's, both reaching the test server, as account.test.js release() has them.
+const OLD_DEFAULT = 'https://rukoo-account.bvdm.ai';
+const NEW_DEFAULT = 'https://rukoo.io';
+function release(t, srv, defaultServer, dir) {
+  const { request } = require('../src/main/account/client');
+  const acc = new AccountService({
+    dataDir: dir,
+    secrets,
+    defaultServer,
+    deviceName: 'desk',
+    platform: 'linux',
+    request: (server, ...rest) => request([OLD_DEFAULT, NEW_DEFAULT].includes(server) ? srv.url : server, ...rest)
+  }).init();
+  t.after(() => acc.close());
+  return acc;
+}
+
+test('an account made at the former default signs in past the lock there, with the unlock code', async (t) => {
+  const srv = await server(t, { signups: 'open', codes: true });
+  const dir = tmpDir(t);
+  const before = release(t, srv, OLD_DEFAULT, dir);
+  await before.signUp({ email: 'former@example.com', password: PASSWORD });
+  before.close();
+  // The update moves the device to the new default, and signing out leaves the former address to try once.
+  const after = release(t, srv, NEW_DEFAULT, dir);
+  await after.signOut();
+  assert.equal(after.status().server, NEW_DEFAULT);
+  srv.lock('former@example.com');
+  await assert.rejects(after.signIn({ email: 'former@example.com', password: PASSWORD }), fails('locked'));
+  await after.requestCode({ email: 'former@example.com', purpose: 'unlock' });
+  await after.signIn({ email: 'former@example.com', password: PASSWORD, emailCode: srv.codeFor('former@example.com') });
+  assert.equal(after.status().signedIn, true);
+  assert.equal(after.status().server, OLD_DEFAULT, 'the account stays at the address it was made at');
+  const logins = routes(srv, 'POST /v1/login').slice(-2).map((c) => c.body.emailCode && c.body.emailCode.code);
+  assert.deepEqual(logins, [srv.codeFor('former@example.com'), srv.codeFor('former@example.com')], 'the code went with both tries');
+});
