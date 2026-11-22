@@ -207,6 +207,13 @@ export function positive(value, fallback) {
   return Number.isSafeInteger(n) && n > 0 ? n : fallback;
 }
 
+// A count setting that takes 0 too, for none or off: a whole number, or the fallback when it is unset or isn't one.
+export function limit(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+}
+
 // An http(s) address as an origin, or null when it is empty or isn't one.
 function originOf(value) {
   if (!value) return null;

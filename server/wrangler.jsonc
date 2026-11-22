@@ -48,6 +48,17 @@
     // emails the whole server sends in an hour.
     "MAIL_FROM": "",
     "EMAIL_CODES_PER_HOUR": 100,
+    // Limits on verified sign-ups and unlock emails (README.md, "Limits on verified sign-ups"): accounts one domain may
+    // make with an emailed code in a day, large mail providers not counted, and unlock emails a day past each
+    // mailbox's first. 0 for no limit.
+    "DOMAIN_SIGNUPS_PER_DAY": 20,
+    "UNLOCK_EMAILS_PER_DAY": 1000,
+    // An address that hears, once a day at most, when sign-ups with an emailed code in an hour reach
+    // ALERT_SIGNUPS_PER_HOUR or the accounts reach 80% of MAX_ACCOUNTS. It goes the way the codes go. "" sends nothing.
+    "OPERATOR_EMAIL": "",
+    "ALERT_SIGNUPS_PER_HOUR": 20,
+    // Unset here, so no account is ever deleted on its own: EXPIRE_UNUSED_DAYS, such as 30, deletes an account that
+    // many days after it was made when nothing ever used it (README.md, "Accounts that are never used").
     // Per account: live records, and their total size in bytes.
     "MAX_RECORDS": 250000,
     "MAX_BYTES": 104857600,
@@ -185,6 +196,12 @@
         // a secret: npx wrangler secret put RESEND_API_KEY --env bvdm. Until it is set, no codes are sent.
         "MAIL_FROM": "Rukoo <account@bvdm.ai>",
         "EMAIL_CODES_PER_HOUR": 100,
+        "DOMAIN_SIGNUPS_PER_DAY": 20,
+        "UNLOCK_EMAILS_PER_DAY": 1000,
+        // OPERATOR_EMAIL and EXPIRE_UNUSED_DAYS go in with the switch to "verified" (README.md, "The server Rukoo
+        // uses"). Until then nobody is mailed, and no account is deleted on its own.
+        "OPERATOR_EMAIL": "",
+        "ALERT_SIGNUPS_PER_HOUR": 20,
         "MAX_RECORDS": 250000,
         // 1,000 accounts of at most 32 MiB keep the worst case at 32 GB.
         "MAX_BYTES": 33554432,

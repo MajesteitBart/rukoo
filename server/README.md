@@ -6,7 +6,7 @@ This folder holds the server for Rukoo accounts. A Rukoo account keeps a few of 
 
 The server is a sync relay for small encrypted records. Each device encrypts a record before sending it, with a key the server never gets. The server stores the encrypted bytes and hands them to the person's other devices.
 
-It is not a mail server. No one's mail, mail passwords or Google tokens pass through it. The one mail it can send is its own: a code to an address that asks for one, once you give it a Resend key ([Codes by email](#codes-by-email)). It never sees what a record holds. What it can see is listed in [PROTOCOL.md](PROTOCOL.md#what-the-server-can-see): the email address of each account, device names, record counts and sizes, and IP addresses.
+It is not a mail server. No one's mail, mail passwords or Google tokens pass through it. The mail it can send is its own, once you give it a Resend key: a code to an address that asks for one ([Codes by email](#codes-by-email)), and an alert to you when sign-ups need a look, if you ask for it. It never sees what a record holds. What it can see is listed in [PROTOCOL.md](PROTOCOL.md#what-the-server-can-see): the email address of each account, device names, record counts and sizes, and IP addresses.
 
 It also serves booking pages: an account holder can turn one on in Rukoo, and other people and their AI assistants then book time with them at `/meet/<handle>`, or at `/<handle>` on a booking address you set up (`BOOKING_ORIGIN`). A page that is on is readable by the server, and so are a guest's details at the moment they book. [Booking pages](#booking-pages) below covers what that means for running the server.
 
@@ -78,16 +78,21 @@ The `vars` block holds the server's settings:
 | `INVITE_USES` | How many accounts one invite code may make: `1` by default, `0` for any number. A used-up code is refused like a wrong one. Needs the `REGISTRY` binding, which keeps the count. |
 | `SIGNUPS` | `"verified"` lets anyone make an account who proves their address with a code the server mails there, or who brings an invite code ([Codes by email](#codes-by-email)). A workspace invitation needs the emailed code too. `GET /v1/info` reports it as `"invite"`, so older apps keep their invite code field. `"invite"` needs a code from `INVITE_CODES` (step 7). `"open"` lets anyone make an account, unchecked. `"closed"` takes no new accounts. Existing accounts keep working in every mode. `"verified"` without mail works as `"invite"`, but takes no workspace invitations. |
 | `MAIL_FROM` | The sender of the codes the server mails, such as `"Rukoo <account@example.com>"`, on a domain your Resend account has verified. Empty sends no mail ([Codes by email](#codes-by-email)). |
-| `EMAIL_CODES_PER_HOUR` | The most sign-up emails the whole server sends in an hour, the ones that reach addresses without an account: `100` by default. Unlock emails go only to accounts here, ten a day each at most. |
+| `EMAIL_CODES_PER_HOUR` | The most sign-up emails the whole server sends in an hour, the ones that reach addresses without an account: `100` by default. |
+| `UNLOCK_EMAILS_PER_DAY` | The most unlock emails the whole server sends in a day past each mailbox's first: `1000` by default, `0` for no limit. Each mailbox's first unlock email of the day goes regardless ([Codes by email](#codes-by-email)). |
+| `DOMAIN_SIGNUPS_PER_DAY` | The most accounts the addresses at one domain make with an emailed code in a day: `20` by default, `0` for no limit. Large mail providers such as gmail.com aren't counted ([Limits on verified sign-ups](#limits-on-verified-sign-ups)). |
+| `EXPIRE_UNUSED_DAYS` | Unset by default. Set to a number of days, it deletes an account that many days after it was made when nothing ever used it ([Accounts that are never used](#accounts-that-are-never-used)). |
+| `OPERATOR_EMAIL` | An address that gets one email a day at most when sign-ups need a look: when the sign-ups with an emailed code in an hour reach `ALERT_SIGNUPS_PER_HOUR`, or the accounts reach 80% of `MAX_ACCOUNTS`. Empty by default, which sends nothing. It needs mail, as the codes do. |
+| `ALERT_SIGNUPS_PER_HOUR` | See `OPERATOR_EMAIL`: `20` by default, `0` to mail only about the number of accounts. |
 | `MAX_RECORDS` | The most records one account may keep. |
 | `MAX_BYTES` | The most bytes of records one account may keep. |
-| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address whose mail someone reads, which makes filling the cap slower but doesn't stop one person from doing it ([Codes by email](#codes-by-email)). For a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
+| `MAX_ACCOUNTS` | The most accounts the server holds (`0` for no cap). Past it, sign-ups get "This server has no room for new accounts". With open sign-ups this is what bounds the storage strangers can take: at most `MAX_ACCOUNTS` × `MAX_BYTES`. The flip side: someone who signs up with invented addresses can use up the cap, and then nobody else gets in. With `"verified"` each account needs an address whose mail someone reads, and the limits in [Limits on verified sign-ups](#limits-on-verified-sign-ups) slow one person down further. For a server on the internet choose `"verified"` or `"invite"`, not `"open"`. |
 
 The defaults (250,000 records and 100 MiB per account) are far more than one person uses.
 
 The booking page settings are in the same block; see [Booking pages](#booking-pages).
 
-The `ratelimits` block limits sign-up, sign-in, recovery and code requests to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The locks after ten wrong passwords, on an account's sign-ins and on a signed-in device's password checks, apply either way.
+The `ratelimits` block limits sign-up, sign-in, recovery and code requests to 30 a minute per IP address (`RATE_LIMITER`), writing records to 120 pushes a minute (`PUSH_LIMITER`), and every public write on booking pages (bookings, cancellations, moves, form posts) to 20 a minute (`BOOKING_LIMITER`). Their `namespace_id`s can be any numbers that no other rate limiter in your Cloudflare account uses. To turn a limit off, delete its entry. The locks after ten wrong passwords, on the sign-ins with an address and on a signed-in device's password checks, apply either way.
 
 ### 5. Deploy
 
@@ -162,7 +167,7 @@ To make your server the default in your own build of Rukoo, set `rukoo.accountSe
 The server can mail codes to an address, through [Resend](https://resend.com): six digits for the device that asked, and a long code that works on any device for a day. It does so for two things:
 
 - With `SIGNUPS` on `"verified"`, a new account needs a code sent to its address, unless it comes with one of your invite codes. A workspace invitation needs the code too, since anyone with an account can make invitations. This is what lets a server on the internet take sign-ups from anyone: each account proves that someone receives mail at its address, so nobody can take an address whose mail they don't read.
-- On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock an account's sign-ins for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it, and they can't keep the owner from it either: every email holds a long code the owner can use, also an email the stranger asked for. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
+- On every server that sends mail, the owner of a locked account gets past the lock with a code. Ten wrong passwords lock the sign-ins with an address for 15 minutes, and anyone who knows the address can do that. Without the mailbox they can't get past it, and they can't keep the owner from it either: every email holds a long code the owner can use, also an email the stranger asked for. Devices that are signed in skip the lock anyway: their password changes, new recovery keys and deletions count per session.
 
 To turn it on, verify a sending domain in Resend, set `MAIL_FROM` to an address on it, and store the API key:
 
@@ -174,11 +179,37 @@ The key needs sending access to that domain only. Until both are set, the server
 
 What a code request does, and what it never reveals, is in [PROTOCOL.md](PROTOCOL.md#post-v1email-code). In short: one address gets at most one code of each purpose a minute, five an hour and ten a day (for sign-up codes, one mailbox, as below), and the server sends at most `EMAIL_CODES_PER_HOUR` sign-up emails in an hour, counting only emails that go out. The answer is the same whether or not the address has an account. The registry keeps only hashes, made with the pepper, and an alarm deletes them a day after each request, or after 10 minutes when no email with the codes went out. Resend sees each address and the mail it sends, and keeps it for 30 days on its standard plans; `/privacy` says so while mail is on, in English and Dutch.
 
-What a stranger can still do: ask for an address's ten codes of the day, which sends the owner ten emails, each with a long code the owner can use; or use up an hour's sign-up emails, which delays sign-ups until the next hour. Unlock emails can't be used up that way. With a Resend plan that has a daily quota, a flood of requests for real accounts can still reach that quota.
+Sign-up codes count per mailbox: the name before a `+tag` on any domain, and at Gmail also without dots, so `name+1@gmail.com`, `n.ame@gmail.com` and `name@gmail.com` share one address's ten emails a day. A code still works only for the address it went to, and the account is that address. Requests for unlock codes count per address as typed, so requests for other spellings, which have no account, can't use up a locked owner's. One side effect: a stranger can use up a mailbox's ten sign-up emails of the day with other spellings of it, and the owner then waits a day to sign up as `name@gmail.com`, or signs up with one of the spellings whose codes reached them.
 
-Sign-up codes count per mailbox: the name before a `+tag` on any domain, and at Gmail also without dots, so `name+1@gmail.com`, `n.ame@gmail.com` and `name@gmail.com` share one address's ten emails a day. A code still works only for the address it went to, and the account is that address. Unlock codes count per address as typed, so requests for other spellings, which have no account, can't use up a locked owner's. One side effect: a stranger can use up a mailbox's ten sign-up emails of the day with other spellings of it, and the owner then waits a day to sign up as `name@gmail.com`, or signs up with one of the spellings whose codes reached them.
+Unlock emails go only to addresses with an account, and count where they go out:
 
-What verified sign-ups don't do is limit accounts per person. Addresses on a catch-all domain, which delivers any name to one inbox, each count as their own mailbox and each make their own account. One person with a catch-all domain gets as many sign-up emails as `EMAIL_CODES_PER_HOUR` allows, and at the default 100 an hour fills a `MAX_ACCOUNTS` of 1,000 in about ten hours, which also delays everyone else's sign-ups. Keep an eye on the number of accounts, and lower `EMAIL_CODES_PER_HOUR` or `MAX_ACCOUNTS` to fit your server. A limit per domain, or accounts that expire unused, would close this; neither is built yet.
+- A mailbox gets at most ten a day, counted per mailbox when they are sent. Accounts at the tags of one mailbox share them, and deleting an account and making it again doesn't give it ten more. Requests for spellings without an account send nothing, so they count toward nothing.
+- Each mailbox's first unlock email of the day always goes. The ones after it count toward `UNLOCK_EMAILS_PER_DAY` (1,000 by default) for the whole server. Past that, a request is still answered `202`, and no email goes.
+
+That is what keeps a stranger from turning the lock into a lockout. They can lock an address and spend the day's budget, but the first email to every locked owner still goes, also when the stranger asked for it, and its long code gets the owner in on any device for a day. A signed-in device needs no code at all. What the budget bounds is the rest: the unlock emails of a day are at most the number of mailboxes with an account that day plus `UNLOCK_EMAILS_PER_DAY`.
+
+What a stranger can still do: ask for an address's ten codes of the day, which sends the owner ten emails, each with a long code the owner can use; use up an hour's sign-up emails, which delays sign-ups until the next hour; or spend the day's unlock budget, which leaves each locked owner one email that day. The mail can still use up a Resend plan's own daily or monthly quota. Give the server a Resend key of its own, on a sending domain of its own, so its codes and another site's mail can't use up each other's quota.
+
+### Limits on verified sign-ups
+
+A code proves only that someone reads an address's mail. A catch-all domain delivers any name to one inbox, so one person with such a domain can ask codes for as many names as they like and make an account with each. At the default 100 sign-up emails an hour, that fills a `MAX_ACCOUNTS` of 1,000 in about ten hours, after which every sign-up gets "This server has no room for new accounts". Accounts are named by a hash, so you can't list them to find the ones to remove. Three settings deal with this:
+
+- **`DOMAIN_SIGNUPS_PER_DAY`** (20 by default, `0` for no limit): the most accounts the addresses at one domain make with an emailed code in a day (UTC). The domain is the registrable one, after the same reading of the address as the limits per mailbox, in its ASCII form, so `a@mail.example.com` and `b@example.com` count together, and so does every subdomain a wildcard mail record would give. Without the public suffix list that is an estimate: the last two labels, or three under a country domain's second level such as `co.uk` or `com.au`. Only accounts that were made count, under a hash of the domain, so asking for codes uses up nobody's domain: only someone who reads the mail there can. Past the limit, a code request or sign-up with an address at the domain gets `429 rate_limited` with `limit: "domain"` and `Retry-After` until midnight UTC. Large mail providers, where each address is a mailbox its owner signed up for, aren't counted: gmail.com, outlook.com, hotmail.com, live.com, icloud.com, proton.me, yahoo.com and a few others, listed as `PUBLIC_PROVIDERS` in `src/signups.js`. Services that hand out many aliases to one person, such as duck.com or fastmail.com, aren't on the list. Sign-ups with your invite codes don't count.
+- **`EXPIRE_UNUSED_DAYS`** (unset by default): deletes accounts nobody ever used, as the next section describes.
+- **`OPERATOR_EMAIL`** and **`ALERT_SIGNUPS_PER_HOUR`** (empty and 20): the server mails `OPERATOR_EMAIL` when the sign-ups with an emailed code in one clock hour reach `ALERT_SIGNUPS_PER_HOUR`, or when the accounts reach 80% of `MAX_ACCOUNTS`. It sends at most one such email a day, through Resend like the codes, with counts and nothing about anyone. Without `OPERATOR_EMAIL`, or without mail, it sends nothing.
+
+With 20 a day per domain, one person with a catch-all domain needs 50 days, or 50 domains, to fill a cap of 1,000, and the operator hears of it within the hour it starts. Accounts they never use go again once `EXPIRE_UNUSED_DAYS` is set.
+
+### Accounts that are never used
+
+With `EXPIRE_UNUSED_DAYS` set, every account made from then on is checked that many days after it was made, and deleted when nothing ever used it:
+
+- it never stored a record, also one it deleted again;
+- it was never in a workspace, as member or owner;
+- it never had a booking page;
+- no device signed in to it, or connected with its session, after the day it was made.
+
+Rukoo syncs every few minutes while it runs, so an account whose app ran on any day after its first is used. Each account sets its own alarm at sign-up, so there is still no list of accounts anywhere. A deleted account gives its place under `MAX_ACCOUNTS` back, and its address is free for a new account. The check reads the setting as it is when it runs: remove the setting and accounts that are waiting are kept; raise it and they wait for the new number of days. Accounts made while it was unset are never checked. `wrangler.jsonc` leaves it unset in every environment, so deploying this version deletes nothing. While it is set, `/privacy` says so in English and Dutch.
 
 The tests answer Resend themselves (`test/fixtures/fake-resend.js`) and never send mail. A `RESEND_API_KEY` in `.dev.vars` does send real mail from `npm run dev`.
 
@@ -339,6 +370,12 @@ Cloudflare keeps that 30-day history whether you use it or not, so a message som
 ## The server Rukoo uses
 
 The `bvdm` environment in `wrangler.jsonc` is the server the Rukoo app uses by default, at `https://rukoo.io`, run by Rukoo's maintainer. It takes new accounts by invite code until the apps ask for the emailed code at sign-up; then `SIGNUPS` there becomes `"verified"`. Its codes go out from `account@bvdm.ai` once the `RESEND_API_KEY` secret is set. It is deployed with `npm run deploy -- --env bvdm`. A fork ignores it: `npm run deploy` without `--env` deploys the settings at the top of the file.
+
+The switch to `"verified"` changes more than `SIGNUPS`. In the same deploy:
+
+1. Give rukoo.io a Resend key and sending domain of its own, such as `account@rukoo.io`, and update `MAIL_FROM` and the `RESEND_API_KEY` secret. The bvdm.ai domain's Resend account also sends the site's early access mail, and a flood of codes would spend its quota.
+2. Set `EXPIRE_UNUSED_DAYS`, for example to `30`, so accounts nobody uses go again ([Accounts that are never used](#accounts-that-are-never-used)). `/privacy` then says so.
+3. Set `OPERATOR_EMAIL` to an address the maintainer reads, for the alert in [Limits on verified sign-ups](#limits-on-verified-sign-ups).
 
 ### How rukoo.io is set up
 

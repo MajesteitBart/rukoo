@@ -8,10 +8,12 @@
 
 import { DurableObject } from 'cloudflare:workers';
 import { blob, randomBytes, sameBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { workspaceObject } from './config.js';
+import { limit, registryObject, workspaceObject } from './config.js';
 
 // Ten failed sign-ins or recovery attempts within 15 minutes lock the account for 15 minutes (PROTOCOL.md, login).
-// A session that sends a wrong password ten times is locked the same way, on its own (PROTOCOL.md, POST /v1/password).
+// The registry keeps that lock, per address and for addresses without an account too (lock.js); this object keeps it
+// only on a server without the registry. A session that sends a wrong password ten times is locked the same way, on
+// its own (PROTOCOL.md, POST /v1/password).
 const MAX_FAILURES = 10;
 const FAILURE_WINDOW = 15 * 60 * 1000;
 const LOCK_TIME = 15 * 60 * 1000;
@@ -72,8 +74,14 @@ const CLEANUP_TABLE = `
     PRIMARY KEY (workspace, incarnation)
   );
 `;
+// An account made while EXPIRE_UNUSED_DAYS is set is checked that many days later, and deleted when it was never used
+// (expireUnused; README.md, "Accounts that are never used"). at: when its check is due. The row goes when a device
+// signs in or connects after the sign-up day, or at the check. Records, workspaces and a booking page are looked up at
+// the check itself, because each of them stays once it was there.
+const EXPIRY_TABLE = 'CREATE TABLE IF NOT EXISTS expiry (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)';
+const DAY = 24 * 60 * 60 * 1000;
 // Every table a living account can have. Deleting an account that was in workspaces drops these and keeps cleanup.
-const LIVE_TABLES = ['account', 'sessions', 'records', 'meta', 'booking', 'identity', 'workspaces'];
+const LIVE_TABLES = ['account', 'sessions', 'records', 'meta', 'booking', 'identity', 'workspaces', 'expiry'];
 const CLEANUP_RETRY = 60 * 1000;
 const CLEANUP_RETRY_MAX = 60 * 60 * 1000;
 const CLEANUP_LATE = 24 * 60 * 60 * 1000;
@@ -158,17 +166,22 @@ export class Account extends DurableObject {
     this.identity = null;
     this.cleaning = false;
     if (this.present) this.migrate();
+    this.expiring = this.present && this.#has('expiry');
     // A list of workspaces to tell with no alarm to work through it would wait forever. That can happen when an alarm
     // failed so often that the platform gave up on it. An object that starts with such a list has an alarm again
-    // before it answers anything.
-    if (this.#has('cleanup')) ctx.blockConcurrencyWhile(() => this.#rearm());
+    // before it answers anything. The same goes for an account's check for use.
+    if (this.#has('cleanup') || this.expiring) ctx.blockConcurrencyWhile(() => this.#rearm());
   }
 
   async #rearm() {
-    const waiting = this.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n;
-    if (waiting > 0 && (await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
-    }
+    if ((await this.ctx.storage.getAlarm()) !== null) return;
+    const waiting = this.#has('cleanup') && this.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n > 0;
+    if (waiting) await this.ctx.storage.setAlarm(Date.now() + CLEANUP_RETRY);
+    else if (this.expiring) await this.ctx.storage.setAlarm(this.#expiryAt());
+  }
+
+  #expiryAt() {
+    return this.sql.exec('SELECT at FROM expiry WHERE id = 1').toArray()[0]?.at ?? null;
   }
 
   // Brings an account made by an older version of the server up to the current tables. Each step checks for itself
@@ -323,9 +336,79 @@ export class Account extends DurableObject {
     return this.sql.exec('SELECT 1 FROM sessions WHERE id = ?', id).toArray().length > 0;
   }
 
-  // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer.
+  // Tells the workspaces a deleted account was in, and tries again later for the ones that didn't answer. Checks
+  // whether an account made while EXPIRE_UNUSED_DAYS was set was ever used, with the setting as it is now.
   async alarm() {
     await this.#cleanup();
+    await this.expireUnused(limit(this.env.EXPIRE_UNUSED_DAYS, 0));
+  }
+
+  // Deletes this account when it is at least `days` days old and was never used: no records stored, ever; no
+  // workspace it is, was or was asked into; no booking page, ever; and no device that signed in or connected after
+  // the day it was made. The alarm calls it with EXPIRE_UNUSED_DAYS, and 0 means the setting was turned off: the
+  // account stays and isn't checked again. The decision and the account's end happen in one stretch with nothing
+  // awaited, so a request that would have used the account either comes first and keeps it, or finds no account.
+  // Returns what it did: 'deleted', 'kept' (used, or the setting off), 'waiting' or 'none'.
+  async expireUnused(days) {
+    if (!this.present || !this.#has('expiry')) return 'none';
+    const now = Date.now();
+    const { createdAt } = this.#account();
+    if (!(days > 0)) {
+      this.#endExpiry();
+      return 'kept';
+    }
+    // An earlier account at this address still has workspaces to tell; #cleanup sets the check's alarm again after.
+    if (this.#has('cleanup')) return 'waiting';
+    const due = createdAt + days * DAY;
+    if (now < due) {
+      this.sql.exec('UPDATE expiry SET at = ? WHERE id = 1', due);
+      await this.ctx.storage.setAlarm(due);
+      return 'waiting';
+    }
+    if (this.#everUsed(createdAt)) {
+      this.#endExpiry();
+      return 'kept';
+    }
+    this.present = false;
+    this.identity = null;
+    this.expiring = false;
+    try {
+      await this.ctx.storage.deleteAll();
+    } catch (err) {
+      this.present =
+        this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'account'").toArray().length > 0;
+      this.expiring = this.present && this.#has('expiry');
+      throw err;
+    }
+    // The account's place under MAX_ACCOUNTS, as DELETE /v1/account gives it back. It never had a booking page or a
+    // workspace, so nothing else has anything of it.
+    try {
+      await registryObject(this.env)?.release();
+    } catch (err) {
+      console.error('Giving back the place of an expired account failed:', err?.message || err);
+    }
+    return 'deleted';
+  }
+
+  // Whether this account shows any use, for expireUnused. Each of these stays once it happened: seq never goes down,
+  // a workspace reference stays after leaving (former), and the booking row stays once a handle was taken.
+  #everUsed(createdAt) {
+    if (this.#meta().seq > 0) return true;
+    if (this.#has('workspaces') && this.sql.exec('SELECT COUNT(*) AS n FROM workspaces').one().n > 0) return true;
+    if (this.sql.exec('SELECT COUNT(*) AS n FROM booking').one().n > 0) return true;
+    const seen = this.sql.exec('SELECT MAX(MAX(createdAt, lastSeenAt)) AS t FROM sessions').one().t;
+    return seen !== null && seen > createdAt + DAY;
+  }
+
+  // A sign-in, or a device that connects, after the sign-up day: the account is used, and its check goes.
+  #markUsed(now) {
+    if (!this.expiring) return;
+    if (now - this.#account().createdAt > DAY) this.#endExpiry();
+  }
+
+  #endExpiry() {
+    this.sql.exec('DROP TABLE IF EXISTS expiry');
+    this.expiring = false;
   }
 
   async prelogin() {
@@ -334,13 +417,22 @@ export class Account extends DurableObject {
     return reply(200, { kdf: JSON.parse(kdf), salt: toBase64url(new Uint8Array(salt)) });
   }
 
-  async signup(name, input, limits) {
+  // expireDays: EXPIRE_UNUSED_DAYS, which arms the check for use that many days from now (expireUnused); 0 arms none.
+  async signup(name, input, limits, { expireDays = 0 } = {}) {
     const authVerifier = await sha256(input.authKey);
     const recoveryVerifier = await sha256(input.recoveryAuth);
     const token = newToken(name);
     const tokenHash = await sha256(utf8(token));
     if (this.present) return failure(409, 'exists', 'This address already has an account.');
     const now = Date.now();
+    const expireAt = expireDays > 0 ? now + expireDays * DAY : null;
+    // Set in the same stretch as the account's rows, as deleteAccount does with its alarm. An earlier account at this
+    // address that still has workspaces to tell keeps its alarm, and #cleanup sets this one when it is done.
+    let armed = null;
+    if (expireAt !== null && !this.#has('cleanup')) {
+      armed = this.ctx.storage.setAlarm(expireAt);
+      armed.catch(() => {});
+    }
     let sessionId;
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(SCHEMA);
@@ -358,13 +450,21 @@ export class Account extends DurableObject {
       );
       this.sql.exec('INSERT INTO meta (id, seq, records, bytes, tombstones) VALUES (1, 0, 0, 0, 0)');
       sessionId = this.#addSession(tokenHash, input.device, now);
+      if (expireAt !== null) {
+        this.sql.exec(EXPIRY_TABLE);
+        this.sql.exec('INSERT INTO expiry (id, at) VALUES (1, ?)', expireAt);
+      }
     });
     this.present = true;
+    this.expiring = expireAt !== null;
+    // An alarm that couldn't be set leaves the row, and the constructor sets it the next time the object starts.
+    if (armed) await armed.catch((err) => console.error('Setting the check for an unused account failed:', err?.message || err));
     return reply(201, { token, account: this.#info(sessionId, limits) });
   }
 
-  // unlocked: the Worker checked a code sent to the address (codes.js), which lets this attempt past the account's
-  // lock. Such an attempt leaves the lock and the count of failures as they are: the code's own tries limit it.
+  // unlocked: the Worker keeps the lock on this address itself (lock.js), or checked a code sent to the address
+  // (codes.js), which lets this attempt past the lock. Either way this object leaves its own lock and count of
+  // failures as they are. They are only used on a server without the registry, which has nowhere else to keep them.
   async login(name, input, limits, { unlocked = false } = {}) {
     const hash = await sha256(input.authKey);
     const token = newToken(name);
@@ -374,6 +474,7 @@ export class Account extends DurableObject {
     const check = this.#check('authVerifier', hash, now, unlocked);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or password is wrong.');
+    this.#markUsed(now);
     const sessionId = this.ctx.storage.transactionSync(() => this.#addSession(tokenHash, input.device, now));
     const { wrappedKey } = this.#account();
     return reply(200, {
@@ -465,6 +566,7 @@ export class Account extends DurableObject {
     const check = this.#check('recoveryVerifier', hash, now, unlocked);
     if (check.result === 'locked') return locked(check.lockedUntil, now);
     if (check.result === 'wrong') return failure(401, 'unauthorized', 'The email address or recovery key is wrong.');
+    this.#markUsed(now);
     const sessionId = this.ctx.storage.transactionSync(() => {
       this.sql.exec(
         'UPDATE account SET kdf = ?, salt = ?, authVerifier = ?, wrappedKey = ? WHERE id = 1',
@@ -517,6 +619,7 @@ export class Account extends DurableObject {
         }
         this.present = false;
         this.identity = null;
+        this.expiring = false;
         return { ...reply(204), handle, cleanup };
       })
     );
@@ -573,7 +676,9 @@ export class Account extends DurableObject {
         await this.ctx.storage.setAlarm(Date.now() + wait);
         return;
       }
-      await this.ctx.storage.deleteAlarm();
+      // An account made again at this address may wait for its check for use, which waited for this list.
+      if (this.present && this.expiring) await this.ctx.storage.setAlarm(Math.max(this.#expiryAt(), Date.now() + 1000));
+      else await this.ctx.storage.deleteAlarm();
       if (this.present) this.sql.exec('DROP TABLE cleanup');
       else await this.ctx.storage.deleteAll();
     } finally {
@@ -694,6 +799,7 @@ export class Account extends DurableObject {
     if (now - session.lastSeenAt >= SEEN_INTERVAL) {
       this.sql.exec('UPDATE sessions SET lastSeenAt = ? WHERE id = ?', now, session.id);
     }
+    this.#markUsed(now);
     return fn(session, now);
   }
 

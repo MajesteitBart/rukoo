@@ -1,0 +1,543 @@
+// What keeps verified sign-ups and unlock emails within bounds, and the sign-in lock from telling who has an account
+// (README.md, "Limits on verified sign-ups"): the limit per domain, accounts that are never used, the operator's
+// alert, the budget for unlock emails and their count per mailbox, tries of a code that count before anything is
+// compared, and the lock per address. Mail goes to the stand-in in fixtures/fake-resend.js.
+
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from 'cloudflare:test';
+import { env } from 'cloudflare:workers';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hmac, sha256, toBase64url, utf8 } from '../src/bytes.js';
+import { registryObject } from '../src/config.js';
+import worker from '../src/index.js';
+import { registrableDomain } from '../src/signups.js';
+import { FakeResend, MAIL_VARS, installFakeResend } from './fixtures/fake-resend.js';
+import { host } from './booking-helpers.js';
+import { KDF, accountStub, call, device, key, newEmail, push, random, randomIp, recordId, salt, sealed, signup, withVars } from './helpers.js';
+import { ON } from './workspace-helpers.js';
+
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const VERIFIED = { ...MAIL_VARS, SIGNUPS: 'verified' };
+const OPS = 'ops@operator.test';
+
+const resend = new FakeResend();
+let restore;
+beforeAll(() => {
+  restore = installFakeResend(resend);
+});
+afterAll(() => restore());
+beforeEach(() => resend.reset());
+afterEach(() => vi.useRealTimers());
+
+function later(ms) {
+  vi.setSystemTime(Date.now() + ms);
+}
+
+// A day of its own for each test that counts per day: ten in the morning (UTC), some days ahead of the last.
+let days = 0;
+function freshDay() {
+  days += 3;
+  vi.setSystemTime((Math.floor(Date.now() / DAY) + days) * DAY + 10 * HOUR);
+}
+
+let domains = 0;
+function newDomain() {
+  domains += 1;
+  return `d${domains}-${toBase64url(random(4)).toLowerCase().replace(/[^a-z0-9]/g, '')}.test`;
+}
+
+// A request through the Worker with these vars, which waits for what it does after answering, such as sending mail.
+async function post(path, body, vars = VERIFIED) {
+  const ctx = createExecutionContext();
+  const request = new Request(`https://accounts.example${path}`, {
+    method: 'POST',
+    headers: { 'cf-connecting-ip': randomIp(), 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const response = await worker.fetch(request, withVars(vars), ctx);
+  await waitOnExecutionContext(ctx);
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null, headers: response.headers };
+}
+
+function askCode(email, purpose = 'signup', vars = VERIFIED) {
+  return post('/v1/email-code', { email, purpose }, vars);
+}
+
+async function codeFor(email, purpose = 'signup', vars = VERIFIED) {
+  const res = await askCode(email, purpose, vars);
+  expect(res.status, JSON.stringify(res.body)).toBe(202);
+  return { challenge: res.body.challenge, code: resend.code(email), token: resend.token(email) };
+}
+
+function person(email = newEmail()) {
+  return { email, kdf: KDF, salt: salt(), authKey: key(), wrappedKey: sealed(), recoveryAuth: key(), recoveryWrappedKey: sealed(), device: device() };
+}
+
+// An account made with an emailed code: the sign-up's answer, with the person.
+async function verifiedAccount(email, vars = VERIFIED) {
+  const codes = await codeFor(email, 'signup', vars);
+  const who = person(email);
+  const res = await post('/v1/signup', { ...who, emailCode: { challenge: codes.challenge, code: codes.code } }, vars);
+  return { ...res, who };
+}
+
+function wrongLogin(email) {
+  return call('POST', '/v1/login', { body: { email, authKey: key(), device: device() } });
+}
+
+function registrySql(fn) {
+  return runInDurableObject(registryObject(env), (instance, state) => fn(state.storage.sql));
+}
+
+async function tables(email) {
+  return runInDurableObject(await accountStub(email), (instance, state) =>
+    state.storage.sql
+      .exec("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .toArray()
+      .map((r) => r.name)
+  );
+}
+
+describe('the limit on verified sign-ups per domain', () => {
+  it('counts an address under its registrable domain, as mail systems read it', () => {
+    expect(registrableDomain('a@example.com')).toBe('example.com');
+    expect(registrableDomain('a@mail.eu.example.com')).toBe('example.com');
+    expect(registrableDomain('a@example.co.uk')).toBe('example.co.uk');
+    expect(registrableDomain('a@mx.example.co.uk')).toBe('example.co.uk');
+    expect(registrableDomain('a@shop.example.ne.jp')).toBe('example.ne.jp');
+    expect(registrableDomain('a@example.com.')).toBe('example.com');
+    expect(registrableDomain('a@googlemail.com')).toBe('gmail.com');
+    expect(registrableDomain('a@ｅｘａｍｐｌｅ．ｃｏｍ')).toBe('example.com');
+    expect(registrableDomain('a@sub.bücher.de')).toBe('xn--bcher-kva.de');
+    // A country domain's own two labels stay two.
+    expect(registrableDomain('a@co.uk')).toBe('co.uk');
+  });
+
+  it('lets a domain make DOMAIN_SIGNUPS_PER_DAY accounts with emailed codes a day, its subdomains included', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '2' };
+    const domain = newDomain();
+    // A code asked for before the domain made its accounts.
+    const early = await codeFor(`c@${domain}`, 'signup', vars);
+    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
+    expect((await verifiedAccount(`b@mail.${domain}`, vars)).status).toBe(201);
+
+    // A third address gets no code, with the same answer whether or not it has an account.
+    const asked = await askCode(`d@other.${domain}`, 'signup', vars);
+    expect(asked.status).toBe(429);
+    expect(asked.body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
+    expect(Number(asked.headers.get('retry-after'))).toBe(14 * 60 * 60);
+    expect(resend.to(`d@other.${domain}`)).toHaveLength(0);
+    expect((await askCode(`a@${domain}`, 'signup', vars)).body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
+
+    // The code from before makes no account today, and stays for tomorrow.
+    const refused = await post('/v1/signup', { ...person(`c@${domain}`), emailCode: { challenge: early.challenge, code: early.code } }, vars);
+    expect(refused.status).toBe(429);
+    expect(refused.body).toMatchObject({ error: 'rate_limited', limit: 'domain' });
+
+    // Other domains, and the large providers, aren't held back.
+    expect((await verifiedAccount(`a@${newDomain()}`, vars)).status).toBe(201);
+    for (let i = 0; i < 3; i++) {
+      const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+      expect((await verifiedAccount(`${name}@gmail.com`, vars)).status).toBe(201);
+    }
+
+    // The next day the domain starts again, and the long code from yesterday's email still works.
+    later(14 * HOUR + MINUTE);
+    expect((await post('/v1/signup', { ...person(`c@${domain}`), emailCode: { token: early.token } }, vars)).status).toBe(201);
+  });
+
+  it('counts only accounts that were made, so asking for codes uses up no domain', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '2' };
+    const domain = newDomain();
+    // A stranger asks for codes for many addresses at someone else's domain, and can't read them.
+    for (let i = 0; i < 6; i++) expect((await askCode(`x${i}@${domain}`, 'signup', vars)).status).toBe(202);
+    // A sign-up that fails after its place was taken, here because the address got an account meanwhile, gives its
+    // count back.
+    const codes = await codeFor(`taken@${domain}`, 'signup', vars);
+    expect((await post('/v1/signup', { ...person(`taken@${domain}`), invite: 'first-code' }, vars)).status).toBe(201);
+    const late = await post('/v1/signup', { ...person(`taken@${domain}`), emailCode: { token: codes.token } }, vars);
+    expect(late.status).toBe(409);
+    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
+    expect((await verifiedAccount(`b@${domain}`, vars)).status).toBe(201);
+    expect((await askCode(`c@${domain}`, 'signup', vars)).status).toBe(429);
+  });
+
+  it('leaves invite codes out of the count', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '1' };
+    const domain = newDomain();
+    for (let i = 0; i < 3; i++) {
+      expect((await post('/v1/signup', { ...person(`i${i}@${domain}`), invite: 'first-code' }, vars)).status).toBe(201);
+    }
+    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
+    expect((await askCode(`b@${domain}`, 'signup', vars)).status).toBe(429);
+    // 0 turns the limit off.
+    expect((await verifiedAccount(`c@${domain}`, { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '0' })).status).toBe(201);
+  });
+
+  it('keeps only a hash of the domain, for the day', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
+    const domain = newDomain();
+    expect((await verifiedAccount(`a@${domain}`, vars)).status).toBe(201);
+    const hash = toBase64url(await hmac(env.PEPPER, `signup domain\n${domain}`));
+    const rows = await registrySql((sql) => sql.exec('SELECT * FROM signup_domains WHERE domain = ?', hash).toArray());
+    expect(rows).toEqual([{ domain: hash, day: Math.floor(Date.now() / DAY), count: 1 }]);
+    expect(JSON.stringify(await registrySql((sql) => sql.exec('SELECT * FROM signup_domains').toArray()))).not.toContain(domain);
+    later(DAY);
+    await runDurableObjectAlarm(registryObject(env));
+    expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM signup_domains WHERE domain = ?', hash).one().n)).toBe(0);
+  });
+});
+
+describe('accounts that are never used', () => {
+  const EXPIRE = { EXPIRE_UNUSED_DAYS: '7' };
+
+  // When the account's check is due, and its alarm.
+  async function expiry(email) {
+    return runInDurableObject(await accountStub(email), async (instance, state) => {
+      const sql = state.storage.sql;
+      const armed = sql.exec("SELECT name FROM sqlite_master WHERE name = 'expiry'").toArray().length > 0;
+      return { at: armed ? sql.exec('SELECT at FROM expiry').one().at : null, alarm: await state.storage.getAlarm() };
+    });
+  }
+
+  it('arms nothing while EXPIRE_UNUSED_DAYS is unset, as in wrangler.jsonc', async () => {
+    const who = await signup();
+    expect(await expiry(who.email)).toEqual({ at: null, alarm: null });
+  });
+
+  it('deletes an account N days after sign-up when nothing ever used it, and gives its place back', async () => {
+    const who = await signup({ vars: EXPIRE });
+    const at = await expiry(who.email);
+    expect(at.at).toBe(who.account.createdAt + 7 * DAY);
+    expect(at.alarm).toBe(at.at);
+    // A sign-in on the day it was made doesn't count as use.
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(200);
+
+    const stub = await accountStub(who.email);
+    later(6 * DAY);
+    expect(await stub.expireUnused(7)).toBe('waiting');
+    expect(await tables(who.email)).toContain('account');
+
+    later(DAY + MINUTE);
+    const before = await registryObject(env).accounts();
+    expect(await stub.expireUnused(7)).toBe('deleted');
+    expect(await tables(who.email)).toEqual([]);
+    expect(await registryObject(env).accounts()).toBe(before - 1);
+    expect((await call('GET', '/v1/account', { token: who.token })).status).toBe(401);
+    // The address is free for a new account.
+    expect((await call('POST', '/v1/signup', { body: { ...person(who.email), invite: 'first-code' } })).status).toBe(201);
+  });
+
+  it('keeps an account with records, a booking page, a workspace, or a device that came back after the sign-up day', async () => {
+    const withRecords = await signup({ vars: EXPIRE });
+    expect((await push(withRecords.token, [{ id: recordId(), data: sealed() }])).status).toBe(200);
+    // Records deleted again still count.
+    const deleted = await signup({ vars: EXPIRE });
+    const id = recordId();
+    await push(deleted.token, [{ id, data: sealed() }]);
+    await push(deleted.token, [{ id, data: null }]);
+    const withPage = (await host(() => signup({ vars: EXPIRE }))).person;
+    const inWorkspace = await signup({ vars: EXPIRE });
+    const made = await call('POST', '/v1/workspaces', { token: inWorkspace.token, body: { name: 'Acme', displayName: 'Olga' }, vars: ON });
+    expect(made.status, made.text).toBe(201);
+    const signedIn = await signup({ vars: EXPIRE });
+    const connected = await signup({ vars: EXPIRE });
+
+    later(DAY + HOUR);
+    // A sign-in after the sign-up day, and a session ended again: the account was used.
+    const again = await call('POST', '/v1/login', { body: { email: signedIn.email, authKey: signedIn.authKey, device: device() } });
+    expect(again.status).toBe(200);
+    expect((await call('POST', '/v1/logout', { token: again.body.token })).status).toBe(204);
+    expect(await tables(signedIn.email)).not.toContain('expiry');
+    // A device that stayed signed in and connects.
+    expect((await call('GET', '/v1/account', { token: connected.token })).status).toBe(200);
+
+    later(7 * DAY);
+    for (const who of [withRecords, deleted, withPage, inWorkspace, signedIn, connected]) {
+      const result = await (await accountStub(who.email)).expireUnused(7);
+      expect(['kept', 'none'], who.email).toContain(result);
+      expect(await tables(who.email)).toContain('account');
+      expect(await tables(who.email)).not.toContain('expiry');
+    }
+  });
+
+  it('keeps every account when the setting was turned off before the check', async () => {
+    const who = await signup({ vars: EXPIRE });
+    later(8 * DAY);
+    // The objects in the tests run without EXPIRE_UNUSED_DAYS, as a server does once the operator removes it.
+    expect(await runDurableObjectAlarm(await accountStub(who.email))).toBe(true);
+    expect(await tables(who.email)).toContain('account');
+    expect(await tables(who.email)).not.toContain('expiry');
+  });
+
+  it('checks again later when the operator raised the number of days', async () => {
+    const who = await signup({ vars: EXPIRE });
+    later(8 * DAY);
+    const stub = await accountStub(who.email);
+    expect(await stub.expireUnused(30)).toBe('waiting');
+    expect(await expiry(who.email)).toEqual({ at: who.account.createdAt + 30 * DAY, alarm: who.account.createdAt + 30 * DAY });
+  });
+});
+
+describe('the operator alert', () => {
+  const VARS = { ...VERIFIED, OPERATOR_EMAIL: OPS, ALERT_SIGNUPS_PER_HOUR: '2', DOMAIN_SIGNUPS_PER_DAY: '0' };
+
+  it('mails OPERATOR_EMAIL once a day when sign-ups with emailed codes reach ALERT_SIGNUPS_PER_HOUR', async () => {
+    freshDay();
+    const first = await verifiedAccount(newEmail(), VARS);
+    expect(first.status).toBe(201);
+    expect(resend.to(OPS)).toHaveLength(0);
+    // Resend refuses the first alert: the next sign-up tries again.
+    const email = newEmail();
+    const codes = await codeFor(email, 'signup', VARS);
+    resend.failNext({ status: 422, name: 'validation_error' });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await post('/v1/signup', { ...person(email), emailCode: { challenge: codes.challenge, code: codes.code } }, VARS)).status).toBe(201);
+    } finally {
+      errors.mockRestore();
+    }
+    expect(resend.to(OPS)).toHaveLength(0);
+    const third = await verifiedAccount(newEmail(), VARS);
+    expect(third.status).toBe(201);
+    const [mail] = resend.to(OPS);
+    expect(mail.subject).toBe('Rukoo account server on accounts.example: sign-ups need a look');
+    expect(mail.text).toContain('3 accounts were made with an emailed code on accounts.example this hour (UTC)');
+    for (const address of [first.who.email, email, third.who.email]) expect(JSON.stringify(mail)).not.toContain(address);
+
+    // One a day.
+    expect((await verifiedAccount(newEmail(), VARS)).status).toBe(201);
+    expect(resend.to(OPS)).toHaveLength(1);
+    later(DAY);
+    expect((await verifiedAccount(newEmail(), VARS)).status).toBe(201);
+    expect((await verifiedAccount(newEmail(), VARS)).status).toBe(201);
+    expect(resend.to(OPS)).toHaveLength(2);
+  });
+
+  it('mails OPERATOR_EMAIL when the accounts reach 80% of MAX_ACCOUNTS, and nobody without it', async () => {
+    freshDay();
+    const invite = (vars) => post('/v1/signup', { ...person(), invite: 'first-code' }, { ...MAIL_VARS, ...vars });
+    const count = await registryObject(env).accounts();
+    expect((await invite({ OPERATOR_EMAIL: OPS, MAX_ACCOUNTS: String((count + 1) * 10) })).status).toBe(201);
+    expect((await invite({ MAX_ACCOUNTS: String(count + 2) })).status).toBe(201);
+    expect(resend.sent).toHaveLength(0);
+    expect((await invite({ OPERATOR_EMAIL: OPS, MAX_ACCOUNTS: String(count + 3) })).status).toBe(201);
+    const [mail] = resend.to(OPS);
+    expect(mail.text).toContain(`holds ${count + 3} accounts. That is 100% of MAX_ACCOUNTS, ${count + 3}.`);
+  });
+});
+
+describe('unlock emails', () => {
+  async function lockedAccount(options = {}) {
+    const who = await signup(options);
+    for (let i = 0; i < 10; i++) await wrongLogin(who.email);
+    return who;
+  }
+  const tally = (name) => registrySql((sql) => sql.exec('SELECT slot, count FROM tallies WHERE name = ?', name).toArray()[0] ?? null);
+  const setTally = (name, slot, count) =>
+    registrySql((sql) =>
+      sql.exec(
+        'INSERT INTO tallies (name, slot, count) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET slot = excluded.slot, count = excluded.count',
+        name,
+        slot,
+        count
+      )
+    );
+
+  it("sends each mailbox its first unlock email of the day when the day's budget is spent, and its long code gets the owner in", async () => {
+    freshDay();
+    const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '5' };
+    await setTally('unlock', Math.floor(Date.now() / DAY), 5);
+    const who = await lockedAccount();
+    expect((await askCode(who.email, 'unlock', vars)).status).toBe(202);
+    expect(resend.to(who.email)).toHaveLength(1);
+    const token = resend.token(who.email);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      later(MINUTE + 1000);
+      const second = await askCode(who.email, 'unlock', vars);
+      expect(second.status).toBe(202);
+      expect(resend.to(who.email)).toHaveLength(1);
+      expect(JSON.stringify(errors.mock.calls)).toContain('UNLOCK_EMAILS_PER_DAY');
+    } finally {
+      errors.mockRestore();
+    }
+    const res = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token } }, MAIL_VARS);
+    expect(res.status).toBe(200);
+  });
+
+  it('counts unlock emails past each mailbox’s first toward UNLOCK_EMAILS_PER_DAY, and gives back one Resend refused', async () => {
+    freshDay();
+    const vars = { ...MAIL_VARS, UNLOCK_EMAILS_PER_DAY: '2' };
+    const a = await signup();
+    const b = await signup();
+    for (let i = 0; i < 3; i++) {
+      expect((await askCode(a.email, 'unlock', vars)).status).toBe(202);
+      later(MINUTE + 1000);
+    }
+    expect(resend.to(a.email)).toHaveLength(3);
+    expect((await tally('unlock')).count).toBe(2);
+    expect((await askCode(b.email, 'unlock', vars)).status).toBe(202);
+    expect(resend.to(b.email)).toHaveLength(1);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      later(MINUTE + 1000);
+      await askCode(b.email, 'unlock', vars);
+      expect(resend.to(b.email)).toHaveLength(1);
+      // A day later the budget starts again; an email Resend refuses doesn't count.
+      later(DAY);
+      await askCode(b.email, 'unlock', vars);
+      later(MINUTE + 1000);
+      resend.failNext({ status: 422, name: 'validation_error' });
+      await askCode(b.email, 'unlock', vars);
+      expect((await tally('unlock')).count).toBe(0);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('counts unlock emails per mailbox, so the accounts at its tags share ten a day', async () => {
+    freshDay();
+    const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+    const plain = await signup({ email: `${name}@example.com` });
+    const tagged = await signup({ email: `${name}+work@example.com` });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const who of [plain, tagged]) {
+        for (let i = 0; i < 5; i++) {
+          expect((await askCode(who.email, 'unlock', MAIL_VARS)).status).toBe(202);
+          later(MINUTE + 1000);
+        }
+      }
+      expect(resend.to(plain.email)).toHaveLength(5);
+      expect(resend.to(tagged.email)).toHaveLength(5);
+      // Each address may ask again within its own ten a day, but the mailbox had its ten.
+      later(HOUR);
+      expect((await askCode(plain.email, 'unlock', MAIL_VARS)).status).toBe(202);
+      expect(resend.to(plain.email)).toHaveLength(5);
+      expect(JSON.stringify(errors.mock.calls)).toContain('its mailbox had ten today');
+      // A day after the first, they go again.
+      later(DAY);
+      expect((await askCode(plain.email, 'unlock', MAIL_VARS)).status).toBe(202);
+      expect(resend.to(plain.email)).toHaveLength(6);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});
+
+describe('tries of a code', () => {
+  it('counts a try when a code is claimed, so requests that never finish still use up its five', async () => {
+    const who = await signup();
+    const res = await askCode(who.email, 'unlock', MAIL_VARS);
+    expect(res.status).toBe(202);
+    const token = resend.token(who.email);
+    const entry = {
+      token: toBase64url(await sha256(utf8(token))),
+      address: toBase64url(await hmac(env.PEPPER, `email-code address\n${who.email}`)),
+      purpose: 'unlock'
+    };
+    const registry = registryObject(env);
+    // Five requests whose clients go away after the claim: none of them settles.
+    for (let i = 0; i < 5; i++) {
+      expect((await registry.claimCode(entry, 5)).result).toBe('ok');
+      later(61 * 1000);
+    }
+    expect((await registry.claimCode(entry, 5)).result).toBe('expired');
+    const login = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { token } }, MAIL_VARS);
+    expect(login.body.error).toBe('code_expired');
+  });
+});
+
+describe('the lock on sign-ins', () => {
+  const lockHash = (email) => hmac(env.PEPPER, `sign-in lock\n${email}`).then(toBase64url);
+
+  it('locks an address without an account exactly as one with an account, and stores nothing in its object', async () => {
+    const who = await signup();
+    const nobody = newEmail();
+    const tenth = {};
+    for (const email of [who.email, nobody]) {
+      for (let i = 0; i < 9; i++) expect((await wrongLogin(email)).status).toBe(401);
+      const res = await wrongLogin(email);
+      tenth[email] = { status: res.status, body: res.body, retryAfter: res.headers.get('retry-after') };
+    }
+    expect(tenth[nobody]).toEqual({
+      status: 429,
+      body: { error: 'locked', message: 'Too many failed attempts. Try again later.' },
+      retryAfter: '900'
+    });
+    expect(tenth[nobody]).toEqual(tenth[who.email]);
+    // Recovery shares the lock, for both.
+    for (const email of [who.email, nobody]) {
+      expect((await call('POST', '/v1/recover/start', { body: { email, recoveryAuth: key() } })).status).toBe(429);
+    }
+    expect(await tables(nobody)).toEqual([]);
+    // The registry keeps a hash, never the address, and lets it go when the lock ends.
+    const hash = await lockHash(nobody);
+    const rows = await registrySql((sql) => sql.exec('SELECT * FROM locks WHERE address = ?', hash).toArray());
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(await registrySql((sql) => sql.exec('SELECT * FROM locks').toArray()))).not.toContain(nobody);
+    later(16 * MINUTE);
+    await runDurableObjectAlarm(registryObject(env));
+    expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', rows[0].address).one().n)).toBe(0);
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(200);
+  });
+
+  it('gives attempts sent at once no more than ten tries between them', async () => {
+    const who = await signup();
+    const burst = await Promise.all(Array.from({ length: 16 }, () => wrongLogin(who.email)));
+    expect(burst.filter((res) => res.status === 401).length).toBeLessThanOrEqual(9);
+    for (const res of burst.filter((r) => r.status !== 401)) expect(res.body.error).toBe('locked');
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(429);
+  });
+
+  it('counts an attempt that never came back', async () => {
+    const who = await signup();
+    const address = await lockHash(who.email);
+    for (let i = 0; i < 10; i++) {
+      expect((await registryObject(env).lockAttempt(address, { max: 10, window: 15 * MINUTE, lockTime: 15 * MINUTE })).result).toBe('ok');
+    }
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(429);
+  });
+
+  it('locks only the address tried, so other spellings of a mailbox keep signing in', async () => {
+    const name = newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
+    const owner = await signup({ email: `${name}@gmail.com` });
+    for (let i = 0; i < 10; i++) await wrongLogin(`${name}+x@gmail.com`);
+    for (let i = 0; i < 10; i++) await wrongLogin(`${name.slice(0, 2)}.${name.slice(2)}@gmail.com`);
+    expect((await call('POST', '/v1/login', { body: { email: owner.email, authKey: owner.authKey, device: device() } })).status).toBe(200);
+  });
+
+  it('lets the owner past the lock with an unlock code, and keeps it for everyone else', async () => {
+    const who = await signup();
+    for (let i = 0; i < 10; i++) await wrongLogin(who.email);
+    const codes = await codeFor(who.email, 'unlock', MAIL_VARS);
+    const res = await post('/v1/login', { email: who.email, authKey: who.authKey, device: device(), emailCode: { challenge: codes.challenge, code: codes.code } }, MAIL_VARS);
+    expect(res.status).toBe(200);
+    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(429);
+  });
+});
+
+describe('what the privacy statement says', () => {
+  it('says accounts that are never used are deleted, in both languages, only while EXPIRE_UNUSED_DAYS is set', async () => {
+    const page = async (lang, vars) => (await call('GET', `/privacy?lang=${lang}`, { vars })).text;
+    const text = {
+      en: { on: 'An account that is never used is deleted 30 days after it was made', off: 'Inactive accounts aren’t deleted on their own;' },
+      nl: { on: 'Een account dat nooit wordt gebruikt, verwijderen we 30 dagen nadat het is gemaakt', off: 'Inactieve accounts worden niet vanzelf verwijderd;' }
+    };
+    for (const [lang, t] of Object.entries(text)) {
+      const on = await page(lang, { EXPIRE_UNUSED_DAYS: '30' });
+      expect(on).toContain(t.on);
+      expect(on).not.toContain(t.off);
+      const off = await page(lang, {});
+      expect(off).toContain(t.off);
+      expect(off).not.toContain(t.on);
+    }
+  });
+});

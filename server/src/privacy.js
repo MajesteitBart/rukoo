@@ -5,7 +5,7 @@
 import { escape, link } from './page.js';
 
 // When the text below last changed in a way that matters to the people it describes.
-export const UPDATED = '2026-11-21';
+export const UPDATED = '2026-11-22';
 const PROTOCOL_URL = 'https://github.com/MajesteitBart/rukoo/blob/main/server/PROTOCOL.md';
 
 const TEXT = {
@@ -30,7 +30,7 @@ const TEXT = {
       'Your encrypted data key, wrapped by your password and by your recovery key. We can’t open it.',
       'The names and platforms of your devices, when each one signed in and when it last connected.',
       'How many records you have, how large they are and when they change.',
-      'Failed sign-in attempts, to lock an account for 15 minutes after ten of them. Wrong passwords entered on a signed-in device count for that device alone.',
+      'Failed sign-in attempts, to lock sign-ins with an address for 15 minutes after ten of them. They are counted under a hash of the address, also for an address without an account, and deleted when the lock ends or 15 minutes after the first attempt. Wrong passwords entered on a signed-in device count for that device alone.',
       'If you turn on a booking page: what it publishes and the bookings made on it, as Booking pages below describes.'
     ],
     dataChat: 'If you use team chat: the workspaces you are in and what you write and do there, as Team chat below describes.',
@@ -46,7 +46,7 @@ const TEXT = {
       `${signup ? 'You can ask this server for a six-digit code by email: to make an account, and to sign in or recover your account while failed attempts have locked it.' : 'You can ask this server for a six-digit code by email, to sign in or recover your account while failed attempts have locked it.'} The six-digit code works once, for 10 minutes, on the device that asked for it. Each email also has a longer code that works once, on any device, for a day, so you can use any email you get, also one someone else asked for.`,
       'Resend, a service of Resend, Inc. in the United States, sends these emails on our behalf under its data processing terms. It gets your email address and the email, with the codes in it, stores them in the United States and keeps them for 30 days on its standard plans.',
       `Asking gets the same answer whether or not the address has an account, so nobody learns that from it.${signup ? ' If you ask for a sign-up code for an address that already has an account, the email says so instead of carrying a code.' : ''} An address without an account gets no sign-in code.`,
-      'For each code someone asks for, this server keeps hashes of the address, of both codes and of a random value the asking device got back, how many wrong tries were made, and when the codes expire. It doesn’t keep the address itself. They are deleted when a code is used, after five wrong passwords or recovery keys with it, or a day after it was asked for, or after 10 minutes when no email with the codes went out. To limit how many codes one address gets (one a minute, five an hour and ten a day, for making an account and for signing in each), it also keeps when codes were asked for an address, under a hash of the address, until a day after the last time. It keeps both also when no email goes out because the address has no account. It doesn’t keep your IP address for this.',
+      `For each code someone asks for, this server keeps hashes of the address, of both codes and of a random value the asking device got back, how many wrong tries were made, and when the codes expire. It doesn’t keep the address itself. They are deleted when a code is used, after five wrong passwords or recovery keys with it, or a day after it was asked for, or after 10 minutes when no email with the codes went out. To limit how many codes one address gets (one a minute, five an hour and ten a day, for making an account and for signing in each), it also keeps when codes were asked for an address, under a hash of the address, until a day after the last time. It keeps both also when no email goes out because the address has no account. To send one mailbox at most ten sign-in emails a day, it keeps when they went out, under a hash of the mailbox, for a day.${signup ? ' To limit how many accounts the addresses at one domain make in a day, it counts the accounts made there with a code, under a hash of the domain, until the day is over.' : ''} It doesn’t keep your IP address for this.`,
       signup
         ? 'We send codes to make the account you ask for and to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Checking addresses and limiting codes protect people from accounts made with their address, and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
         : 'We send codes to let you in while a lock keeps others out (the agreement with you, article 6(1)(b) GDPR). Limiting them protects people and the service from abuse (a legitimate interest, article 6(1)(f) GDPR).'
@@ -70,8 +70,13 @@ const TEXT = {
       any: 'Each account is stored in one Cloudflare location, usually near the device that made it.'
     },
     keep: 'How long',
-    keepText:
-      'We keep your account until you delete it. Delete account in Rukoo (Settings, Rukoo account) removes the account, every record and your booking page with its bookings at once. Cloudflare keeps backups of the storage that can bring back its state from up to 30 days before, so deleted data is fully gone after that. Inactive accounts aren’t deleted on their own; ask us if you want yours removed and can no longer sign in.',
+    // days: EXPIRE_UNUSED_DAYS, after which an account that is never used is deleted, or 0 when none are.
+    keepText: (days) =>
+      `We keep your account until you delete it. Delete account in Rukoo (Settings, Rukoo account) removes the account, every record and your booking page with its bookings at once. Cloudflare keeps backups of the storage that can bring back its state from up to 30 days before, so deleted data is fully gone after that. ${
+        days
+          ? `An account that is never used is deleted ${days} days after it was made, so it doesn’t take a place someone else needs: one that never stored a record, was never in a workspace, never had a booking page, and that no device signed in to or connected with after the day it was made. Other inactive accounts aren’t deleted on their own; ask us if you want yours removed and can no longer sign in.`
+          : 'Inactive accounts aren’t deleted on their own; ask us if you want yours removed and can no longer sign in.'
+      }`,
     rights: 'Your rights',
     rightsText:
       'You can see what is stored about you on the What’s stored and shared page in Rukoo, export everything with Export my data, change your password and delete your account yourself. For anything else, such as a copy of the data we hold or an objection, contact us. You can also complain to a data protection authority, such as the one in the country where you live. If you booked time with someone through a booking page, Booking pages below says what you can do.',
@@ -158,7 +163,7 @@ const TEXT = {
       'Je versleutelde gegevenssleutel, ingepakt met je wachtwoord en met je herstelsleutel. Wij kunnen hem niet openen.',
       'De namen en platforms van je apparaten, wanneer elk ervan inlogde en wanneer het voor het laatst verbinding had.',
       'Hoeveel records je hebt, hoe groot ze zijn en wanneer ze veranderen.',
-      'Mislukte inlogpogingen, om een account na tien daarvan 15 minuten te blokkeren. Verkeerde wachtwoorden op een ingelogd apparaat tellen alleen voor dat apparaat.',
+      'Mislukte inlogpogingen, om inloggen met een adres na tien daarvan 15 minuten te blokkeren. We tellen ze onder een hash van het adres, ook voor een adres zonder account, en verwijderen ze als de blokkade voorbij is of 15 minuten na de eerste poging. Verkeerde wachtwoorden op een ingelogd apparaat tellen alleen voor dat apparaat.',
       'Als je een afsprakenpagina aanzet: wat die publiceert en de afspraken die erop worden gemaakt, zoals hieronder bij Afsprakenpagina’s staat.'
     ],
     dataChat: 'Als je teamchat gebruikt: de werkruimtes waarin je zit en wat je daar schrijft en doet, zoals hieronder bij Teamchat staat.',
@@ -172,7 +177,7 @@ const TEXT = {
       `${signup ? 'Je kunt deze server om een code van zes cijfers per e-mail vragen: om een account te maken, en om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.' : 'Je kunt deze server om een code van zes cijfers per e-mail vragen, om in te loggen of je account te herstellen terwijl het door mislukte pogingen geblokkeerd is.'} De code van zes cijfers werkt één keer, 10 minuten lang, op het apparaat dat erom vroeg. In elke e-mail staat ook een langere code die één keer werkt, op elk apparaat, een dag lang. Zo kun je elke e-mail gebruiken die je krijgt, ook een die iemand anders aanvroeg.`,
       'Resend, een dienst van Resend, Inc. in de Verenigde Staten, verstuurt deze e-mails namens ons onder zijn verwerkersvoorwaarden. Resend krijgt je e-mailadres en de e-mail, met de codes erin, slaat ze op in de Verenigde Staten en bewaart ze 30 dagen bij zijn gewone abonnementen.',
       `Wie een code aanvraagt, krijgt hetzelfde antwoord of het adres nu een account heeft of niet, dus dat valt er niet uit af te leiden.${signup ? ' Vraag je een code om een account te maken voor een adres dat al een account heeft, dan staat dat in de e-mail, in plaats van een code.' : ''} Een adres zonder account krijgt geen inlogcode.`,
-      'Voor elke code die iemand aanvraagt, bewaart deze server hashes van het adres, van beide codes en van een willekeurige waarde die het aanvragende apparaat terugkreeg, hoeveel verkeerde pogingen er waren en wanneer de codes verlopen. Het adres zelf bewaart hij niet. Dat alles wordt verwijderd als een code is gebruikt, na vijf verkeerde wachtwoorden of herstelsleutels ermee, een dag nadat hij werd aangevraagd, of na 10 minuten als er geen e-mail met de codes uitging. Om te beperken hoeveel codes één adres krijgt (één per minuut, vijf per uur en tien per dag, apart voor een account maken en voor inloggen), bewaart hij ook wanneer er codes voor een adres werden aangevraagd, onder een hash van het adres, tot een dag na de laatste keer. Beide bewaart hij ook als er geen e-mail uitgaat omdat het adres geen account heeft. Je IP-adres bewaart hij hiervoor niet.',
+      `Voor elke code die iemand aanvraagt, bewaart deze server hashes van het adres, van beide codes en van een willekeurige waarde die het aanvragende apparaat terugkreeg, hoeveel verkeerde pogingen er waren en wanneer de codes verlopen. Het adres zelf bewaart hij niet. Dat alles wordt verwijderd als een code is gebruikt, na vijf verkeerde wachtwoorden of herstelsleutels ermee, een dag nadat hij werd aangevraagd, of na 10 minuten als er geen e-mail met de codes uitging. Om te beperken hoeveel codes één adres krijgt (één per minuut, vijf per uur en tien per dag, apart voor een account maken en voor inloggen), bewaart hij ook wanneer er codes voor een adres werden aangevraagd, onder een hash van het adres, tot een dag na de laatste keer. Beide bewaart hij ook als er geen e-mail uitgaat omdat het adres geen account heeft. Om één mailbox hoogstens tien inlogmails per dag te sturen, bewaart hij een dag lang wanneer die uitgingen, onder een hash van de mailbox.${signup ? ' Om te beperken hoeveel accounts de adressen van één domein per dag maken, telt hij de accounts die daar met een code zijn gemaakt, onder een hash van het domein, tot de dag voorbij is.' : ''} Je IP-adres bewaart hij hiervoor niet.`,
       signup
         ? 'We sturen codes om het account te maken waar je om vraagt en om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). Het controleren van adressen en de limieten op codes beschermen mensen tegen accounts die met hun adres worden gemaakt, en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
         : 'We sturen codes om je binnen te laten terwijl een blokkade anderen buitenhoudt (de overeenkomst met jou, artikel 6 lid 1 onder b AVG). De limieten op codes beschermen mensen en de dienst tegen misbruik (een gerechtvaardigd belang, artikel 6 lid 1 onder f AVG).'
@@ -194,8 +199,12 @@ const TEXT = {
       any: 'Elk account staat op één Cloudflare-locatie, meestal dicht bij het apparaat dat het maakte.'
     },
     keep: 'Hoe lang',
-    keepText:
-      'We bewaren je account tot je het verwijdert. Account verwijderen in Rukoo (Instellingen, Rukoo-account) verwijdert het account, alle records en je afsprakenpagina met de afspraken erop in één keer. Cloudflare bewaart back-ups van de opslag waarmee de toestand van tot 30 dagen eerder terug te halen is, dus na die tijd zijn verwijderde gegevens helemaal weg. Inactieve accounts worden niet vanzelf verwijderd; vraag het ons als je het jouwe weg wilt hebben en niet meer kunt inloggen.',
+    keepText: (days) =>
+      `We bewaren je account tot je het verwijdert. Account verwijderen in Rukoo (Instellingen, Rukoo-account) verwijdert het account, alle records en je afsprakenpagina met de afspraken erop in één keer. Cloudflare bewaart back-ups van de opslag waarmee de toestand van tot 30 dagen eerder terug te halen is, dus na die tijd zijn verwijderde gegevens helemaal weg. ${
+        days
+          ? `Een account dat nooit wordt gebruikt, verwijderen we ${days} dagen nadat het is gemaakt, zodat het geen plek inneemt die iemand anders nodig heeft: een account dat nooit een record heeft opgeslagen, nooit in een werkruimte zat, nooit een afsprakenpagina had, en waarop na de dag waarop het is gemaakt geen apparaat meer heeft ingelogd of verbinding heeft gemaakt. Andere inactieve accounts worden niet vanzelf verwijderd; vraag het ons als je het jouwe weg wilt hebben en niet meer kunt inloggen.`
+          : 'Inactieve accounts worden niet vanzelf verwijderd; vraag het ons als je het jouwe weg wilt hebben en niet meer kunt inloggen.'
+      }`,
     rights: 'Je rechten',
     rightsText:
       'Je ziet wat er over je is opgeslagen op de pagina Wat er wordt opgeslagen en gedeeld in Rukoo, je exporteert alles met Mijn gegevens exporteren, en je wijzigt je wachtwoord en verwijdert je account zelf. Voor al het andere, zoals een kopie van de gegevens die we hebben of een bezwaar, neem je contact met ons op. Je kunt ook een klacht indienen bij een toezichthouder, zoals de Autoriteit Persoonsgegevens of die in het land waar je woont. Heb je via een afsprakenpagina een afspraak met iemand gemaakt? Onder Afsprakenpagina’s staat wat je kunt doen.',
@@ -290,8 +299,9 @@ function bytesText(bytes, lang) {
 // (config.js, filesStorage). The statement mentions team chat only on a server that runs it, and link previews and
 // files only where the server makes or keeps them. web: Rukoo in the browser runs on this server's website (WEB_APP,
 // with team chat on), which the statement then covers too. codes: what the server sends codes by email for (codes.js,
-// codePurposes). With none, the statement says the server sends no mail.
-export function privacy({ operator, jurisdiction, chat = null, web = false, codes = [] }, lang = 'en') {
+// codePurposes). With none, the statement says the server sends no mail. expireDays: EXPIRE_UNUSED_DAYS, after which
+// accounts that are never used are deleted, which the statement says while it is set; 0 when it isn't.
+export function privacy({ operator, jurisdiction, chat = null, web = false, codes = [], expireDays = 0 }, lang = 'en') {
   const T = TEXT[lang] || TEXT.en;
   const who = operator.name ? T.whoText(link(operator.url, operator.name)) : escape(T.unnamed);
   const contact = operator.contact ? T.contact(contactLink(operator.contact)) : '';
@@ -362,7 +372,7 @@ ${dataItems.map((item) => `<li>${escape(item)}</li>`).join('\n')}
 <p>${escape(where)}</p>
 
 <h2>${escape(T.keep)}</h2>
-<p>${escape(T.keepText)}</p>
+<p>${escape(T.keepText(expireDays))}</p>
 
 <h2>${escape(T.rights)}</h2>
 <p>${escape(chat ? `${T.rightsText} ${T.rightsChat}` : T.rightsText)}</p>

@@ -1,5 +1,6 @@
-// Mail from the account server, sent through Resend (https://resend.com). The server sends one kind of mail: the codes
-// that check an email address (codes.js), to the address someone typed in, with text this server wrote. The API key is
+// Mail from the account server, sent through Resend (https://resend.com). The server sends the codes that check an
+// email address (codes.js), to the address someone typed in, with text this server wrote, and an alert to its operator
+// (signups.js, OPERATOR_EMAIL) when sign-ups need a look. The API key is
 // the RESEND_API_KEY secret and the sender the MAIL_FROM variable. Without both, the server sends no mail and offers
 // no codes.
 

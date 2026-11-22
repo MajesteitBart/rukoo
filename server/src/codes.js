@@ -18,13 +18,14 @@
 // address without one isn't sent at all.
 
 import { fromBase64url, hmac, randomBytes, sha256, toBase64url, utf8 } from './bytes.js';
-import { accountName, accountObject, emailCodesOn, limitRate, positive, registryObject, signups } from './config.js';
+import { accountName, accountObject, emailCodesOn, limit, limitRate, positive, registryObject, signups } from './config.js';
 import { codeMail } from './code-text.js';
 import { json } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { sendMail } from './mail.js';
 import { language } from './privacy.js';
+import { DOMAIN_LIMIT, verifiedSignup } from './signups.js';
 
 export const PURPOSES = ['signup', 'unlock'];
 export const DIGITS = 6;
@@ -36,9 +37,14 @@ export const ATTEMPTS = 5;
 // To one address, for each purpose: at least a minute apart, at most five in an hour and ten in a day.
 export const CODE_RULES = { ttl: CODE_TTL, tokenTtl: TOKEN_TTL, gap: 60 * 1000, hourly: 5, daily: 10 };
 // The most sign-up emails the whole server sends in an hour, unless EMAIL_CODES_PER_HOUR says otherwise. They are the
-// ones that reach addresses without an account. Unlock emails go only to accounts on this server, at most ten a day
-// each, so MAX_ACCOUNTS bounds them, and a limit for the whole server would only let a stranger use them up.
+// ones that reach addresses without an account.
 const PER_HOUR = 100;
+// Unlock emails go only to accounts on this server, at most ten a day to one mailbox, counted when they go out, so
+// deleting an account and making one again, or making accounts at tags of one mailbox, doesn't give it ten more. Each
+// mailbox's first unlock email in a day always goes; the ones after it count toward a budget for the whole server,
+// UNLOCK_EMAILS_PER_DAY unless that says otherwise (0 for none). A stranger who spends the budget stops nobody's
+// first email, and with it the long code that gets its owner in for a day (Registry.chargeUnlock).
+const UNLOCK_PER_DAY = 1000;
 
 // What this server sends codes for: nothing without mail and the registry, unlock wherever it sends mail, and signup
 // as well when sign-ups are verified.
@@ -72,8 +78,15 @@ export async function requestCode(request, env, ctx, max) {
     token: await tokenHash(token),
     sends: await sendsHash(env, email, purpose)
   };
-  const issued = await registryObject(env).issueCode(entry, { ...CODE_RULES, max: purpose === 'signup' ? max : 0 });
+  // A sign-up code for an address whose domain made its accounts for today would make no account, so none goes out.
+  // That says nothing about the address itself, so it is answered whether or not it has an account.
+  const signup = purpose === 'signup';
+  const rules = { ...CODE_RULES, max: signup ? max : 0, domain: signup ? await verifiedSignup(env, email) : null };
+  const issued = await registryObject(env).issueCode(entry, rules);
   if (issued.result === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
+  if (issued.result === 'domain') {
+    throw new HttpError(429, 'rate_limited', DOMAIN_LIMIT, { 'retry-after': String(issued.retryAfter) }, { limit: 'domain' });
+  }
   if (issued.result !== 'ok') {
     throw new HttpError(429, 'rate_limited', 'This address got too many codes. Try again later.', {
       'retry-after': String(issued.retryAfter)
@@ -89,8 +102,9 @@ export async function requestCode(request, env, ctx, max) {
 }
 
 // Whether the address has an account decides what goes out, so this runs after the answer. Sign-up emails count
-// toward the hourly limit, and one Resend refused is given back. A code whose long code didn't go out, because no
-// email or only the note went or Resend refused the email, is kept for its 10 minutes and not a day.
+// toward the hourly limit, and unlock emails toward their mailbox's ten a day and the daily budget; one Resend refused
+// is given back. A code whose long code didn't go out, because no email or only the note went, a limit held it back
+// or Resend refused the email, is kept for its 10 minutes and not a day.
 async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   const registry = registryObject(env);
   const exists = await accountObject(env, await accountName(env, email)).exists();
@@ -106,6 +120,21 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
       return;
     }
   }
+  let unlock = null;
+  if (kind === 'unlock') {
+    unlock = { box: await unlockHash(env, email) };
+    const charged = await registry.chargeUnlock(unlock.box, { daily: CODE_RULES.daily, budget: unlockBudget(env) });
+    if (!charged.ok) {
+      await registry.shortenCode(id);
+      console.error(
+        charged.reason === 'budget'
+          ? "An unlock email was not sent: today's are used up (UNLOCK_EMAILS_PER_DAY)."
+          : 'An unlock email was not sent: its mailbox had ten today.'
+      );
+      return;
+    }
+    unlock.ticket = charged;
+  }
   const operator = typeof env.OPERATOR_NAME === 'string' && env.OPERATOR_NAME.trim() ? env.OPERATOR_NAME.trim() : null;
   const codes = kind === 'exists' ? {} : { code, token };
   const sent = await sendMail(env, { to: email, ...codeMail(kind, { ...codes, host, operator, lang }) });
@@ -113,7 +142,13 @@ async function deliver(env, { email, purpose, code, token, lang, host, id }) {
   if (sent === 'refused') {
     await registry.shortenCode(id);
     if (slot !== null) await registry.refundMail('signup', slot);
+    if (unlock) await registry.refundUnlock(unlock.box, unlock.ticket);
   }
+}
+
+// UNLOCK_EMAILS_PER_DAY: the budget for unlock emails past each mailbox's first in a day, 0 for none.
+export function unlockBudget(env) {
+  return limit(env.UNLOCK_EMAILS_PER_DAY, UNLOCK_PER_DAY);
 }
 
 // emailCode in a sign-up, sign-in or recovery: null when it is absent, else { challenge, code } for the six digits or
@@ -155,6 +190,7 @@ export async function claimCode(env, email, purpose, emailCode) {
 }
 
 // held: what claimCode returned. outcome: 'used', 'failed' (a wrong password or recovery key with the code) or 'keep'.
+// The claim already counted a try (Registry.claimCode), so a request that ends before it settles keeps it used.
 export async function settleCode(env, held, outcome) {
   await registryObject(env)?.settleCode(held.id, held.claim, outcome, ATTEMPTS);
 }
@@ -224,6 +260,13 @@ export function mailbox(typed) {
 async function sendsHash(env, email, purpose) {
   const counted = purpose === 'signup' ? mailbox(email) : email;
   return toBase64url(await hmac(env.PEPPER, `email-code sends\n${purpose}\n${counted}`));
+}
+
+// What unlock emails that go out count under: the mailbox. Only emails to an account count there, so requests for
+// spellings without an account still can't use up an owner's, while the accounts at the tags of one mailbox, and the
+// accounts made again at an address, share its ten a day.
+async function unlockHash(env, email) {
+  return toBase64url(await hmac(env.PEPPER, `email-code unlock mail\n${mailbox(email)}`));
 }
 
 async function tokenHash(token) {

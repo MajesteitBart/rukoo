@@ -16,7 +16,8 @@ import { ON, invite, newWorkspace } from './workspace-helpers.js';
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-const VERIFIED = { ...MAIL_VARS, SIGNUPS: 'verified' };
+// Every test address is at example.com, so the limit per domain is off here; test/signup-guards.test.js tests it.
+const VERIFIED = { ...MAIL_VARS, SIGNUPS: 'verified', DOMAIN_SIGNUPS_PER_DAY: '0' };
 
 const resend = new FakeResend();
 let restore;
@@ -272,7 +273,7 @@ describe('POST /v1/email-code', () => {
     expect(resend.to(owner.email)).toHaveLength(1);
   });
 
-  it('sends at most EMAIL_CODES_PER_HOUR sign-up emails, counting only emails that go out, and no limit on unlock emails', async () => {
+  it('sends at most EMAIL_CODES_PER_HOUR sign-up emails, counting only emails that go out, and leaves unlock emails out of them', async () => {
     const slot = Math.floor(Date.now() / HOUR);
     const setCount = (count) =>
       registrySql((sql) =>
@@ -637,17 +638,21 @@ describe('signing in while the account is locked', () => {
       registrySql((sql) => sql.exec('SELECT failures FROM codes WHERE challenge = ?', first.id).toArray()[0]?.failures ?? null);
     const first = await registry.claimCode(entry, 5);
     expect(first.result).toBe('ok');
+    expect(await failures()).toBe(1);
     expect((await registry.claimCode(entry, 5)).result).toBe('busy');
+    // A request that ends well gives its try back.
     await registry.settleCode(first.id, first.claim, 'keep', 5);
+    expect(await failures()).toBe(0);
     const second = await registry.claimCode(entry, 5);
     expect(second.result).toBe('ok');
     // A request that never settles holds the code for a minute at most.
     later(61 * 1000);
     const third = await registry.claimCode(entry, 5);
     expect(third.result).toBe('ok');
-    // The lapsed claim settling late can't give back the newer claim, but its wrong password still counts.
+    // The lapsed claim settling late can't give back the newer claim, and its wrong password counts: its try and the
+    // try of the request now holding the code.
     await registry.settleCode(second.id, second.claim, 'failed', 5);
-    expect(await failures()).toBe(1);
+    expect(await failures()).toBe(2);
     expect((await registry.claimCode(entry, 5)).result).toBe('busy');
     await registry.settleCode(third.id, third.claim, 'used', 5);
     expect(await failures()).toBe(null);

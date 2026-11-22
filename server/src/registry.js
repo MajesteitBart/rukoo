@@ -6,7 +6,9 @@
 // one answering at the same address later (WORKSPACES.md, Conventions).
 //
 // It also keeps the codes sent by email (codes.js), the one thing here about people: hashes of their addresses, made
-// with PEPPER, for a day after a code was asked for. An alarm deletes them when that time is up.
+// with PEPPER, for a day after a code was asked for. An alarm deletes them when that time is up. The same goes for
+// what limits verified sign-ups and unlock emails (signups.js, codes.js) and for the lock on sign-ins (lock.js): each
+// is kept under a hash made with PEPPER, of a domain, a mailbox or an address, and goes when its day or lock is over.
 
 import { DurableObject } from 'cloudflare:workers';
 import { fromBase64url, randomBytes, sameBytes, toBase64url } from './bytes.js';
@@ -51,6 +53,28 @@ const CODE_TABLES = `
   CREATE TABLE IF NOT EXISTS code_mail (purpose TEXT PRIMARY KEY, hour INTEGER NOT NULL, count INTEGER NOT NULL);
 `;
 
+// signup_domains: how many accounts were made today with an emailed code at a domain (signups.js), by the hash of the
+// domain, for the day that started at day * DAY. tallies: counts for the whole server in the period that started at
+// slot times the period: 'verified', sign-ups with an emailed code this hour; 'unlock', unlock emails today past each
+// mailbox's first; 'alert', 1 for the day the operator was last mailed (signups.js). unlock_mail: when unlock emails
+// went out to a mailbox in the last day, newest last, by the hash of the mailbox (codes.js). locks: the lock on
+// sign-ins and recovery for an address (lock.js), by the hash of the address: the attempts since failedAt, wrong or
+// still running, and lockedUntil; until is when the row can go.
+const GUARD_TABLES = `
+  CREATE TABLE IF NOT EXISTS signup_domains (domain TEXT PRIMARY KEY, day INTEGER NOT NULL, count INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS tallies (name TEXT PRIMARY KEY, slot INTEGER NOT NULL, count INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS unlock_mail (mailbox TEXT PRIMARY KEY, times TEXT NOT NULL, until INTEGER NOT NULL);
+  CREATE INDEX IF NOT EXISTS unlock_mail_until ON unlock_mail (until);
+  CREATE TABLE IF NOT EXISTS locks (
+    address TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL,
+    failedAt INTEGER NOT NULL,
+    lockedUntil INTEGER NOT NULL,
+    until INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS locks_until ON locks (until);
+`;
+
 // A place taken for a workspace that was never confirmed made or called off is settled after this long, by asking
 // the workspace.
 const SETTLE_AFTER = 5 * 60 * 1000;
@@ -76,16 +100,19 @@ export class Registry extends DurableObject {
       this.sql.exec('ALTER TABLE workspace ADD COLUMN checked INTEGER NOT NULL DEFAULT 0');
     }
     this.sql.exec(CODE_TABLES);
+    this.sql.exec(GUARD_TABLES);
   }
 
-  // Keeps a new code, unless the server is full (for a sign-up code, max > 0) or the address had too many of this
-  // purpose: { result } is 'ok', 'full' or 'wait', with retryAfter in seconds for 'wait'. entry holds the hashes
-  // codes.js made; the limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the
-  // long code works; gap, hourly and daily, the limits per address and purpose.
-  async issueCode(entry, { ttl, tokenTtl, gap, hourly, daily, max = 0 }) {
+  // Keeps a new code, unless the server is full (for a sign-up code, max > 0), the address's domain made its accounts
+  // for today (domain, for a sign-up code) or the address had too many of this purpose: { result } is 'ok', 'full',
+  // 'domain' or 'wait', with retryAfter in seconds for 'domain' and 'wait'. entry holds the hashes codes.js made; the
+  // limits count under entry.sends. rules: ttl, how long the six digits work; tokenTtl, how long the long code works;
+  // gap, hourly and daily, the limits per address and purpose; domain, { domain, cap } from signups.js or null.
+  async issueCode(entry, { ttl, tokenTtl, gap, hourly, daily, max = 0, domain = null }) {
     const now = Date.now();
     this.#purgeCodes(now);
     if (max > 0 && this.count() >= max) return { result: 'full' };
+    if (this.#domainFull(domain, now)) return { result: 'domain', retryAfter: untilTomorrow(now) };
     const row = this.sql
       .exec('SELECT times FROM code_sends WHERE address = ? AND purpose = ?', entry.sends, entry.purpose)
       .toArray()[0];
@@ -143,6 +170,166 @@ export class Registry extends DurableObject {
     this.sql.exec('UPDATE code_mail SET count = MAX(0, count - 1) WHERE purpose = ? AND hour = ?', purpose, slot);
   }
 
+  // Counts an unlock email about to go out to a mailbox (codes.js). { ok: true, at, slot } lets it go: at is when it
+  // was counted, and slot the day of the server's budget it counted in, or null for the mailbox's first unlock email in
+  // a day, which the budget doesn't count. So however a stranger spends the budget, every locked owner still gets an
+  // email a day, with a long code that works for a day. { ok: false, reason } stops it: 'mailbox' when the mailbox had
+  // `daily` unlock emails in the last day, 'budget' when today's `budget` (0 for none) is used up.
+  async chargeUnlock(mailbox, { daily, budget }) {
+    const now = Date.now();
+    const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', mailbox).toArray()[0];
+    const times = sendTimes(row?.times).filter((t) => now - t < DAY);
+    if (times.length >= daily) return { ok: false, reason: 'mailbox' };
+    let slot = null;
+    if (times.length > 0) {
+      slot = this.#charge('unlock', DAY, budget, now);
+      if (slot === null) return { ok: false, reason: 'budget' };
+    }
+    times.push(now);
+    this.sql.exec(
+      `INSERT INTO unlock_mail (mailbox, times, until) VALUES (?, ?, ?)
+       ON CONFLICT (mailbox) DO UPDATE SET times = excluded.times, until = excluded.until`,
+      mailbox,
+      JSON.stringify(times.slice(-daily)),
+      now + DAY
+    );
+    await this.#armCodes(now + DAY);
+    return { ok: true, at: now, slot };
+  }
+
+  // Gives back what chargeUnlock counted, when Resend refused the email.
+  async refundUnlock(mailbox, { at, slot }) {
+    const row = this.sql.exec('SELECT times FROM unlock_mail WHERE mailbox = ?', mailbox).toArray()[0];
+    if (row) {
+      const times = sendTimes(row.times);
+      const i = times.lastIndexOf(at);
+      if (i >= 0) times.splice(i, 1);
+      this.sql.exec('UPDATE unlock_mail SET times = ? WHERE mailbox = ?', JSON.stringify(times), mailbox);
+    }
+    if (slot !== null) this.#refund('unlock', slot);
+  }
+
+  // A count for the whole server in the period that holds now: the slot it counted in, or null when limit (0 for none)
+  // is reached.
+  #charge(name, period, limit, now) {
+    const slot = Math.floor(now / period);
+    const row = this.sql.exec('SELECT slot, count FROM tallies WHERE name = ?', name).toArray()[0];
+    if (limit > 0 && row?.slot === slot && row.count >= limit) return null;
+    this.sql.exec(
+      `INSERT INTO tallies (name, slot, count) VALUES (?, ?, 1)
+       ON CONFLICT (name) DO UPDATE SET
+         count = CASE WHEN tallies.slot = excluded.slot THEN tallies.count + 1 ELSE 1 END, slot = excluded.slot`,
+      name,
+      slot
+    );
+    return slot;
+  }
+
+  #refund(name, slot) {
+    this.sql.exec('UPDATE tallies SET count = MAX(0, count - 1) WHERE name = ? AND slot = ?', name, slot);
+  }
+
+  #tally(name, period, now) {
+    const row = this.sql.exec('SELECT slot, count FROM tallies WHERE name = ?', name).toArray()[0];
+    return row?.slot === Math.floor(now / period) ? row.count : 0;
+  }
+
+  // Whether a domain made its accounts for today: domain is { domain, cap } from signups.js, or null for one that
+  // isn't counted.
+  #domainFull(domain, now) {
+    if (!domain?.domain || !(domain.cap > 0)) return false;
+    const row = this.sql.exec('SELECT day, count FROM signup_domains WHERE domain = ?', domain.domain).toArray()[0];
+    return row?.day === Math.floor(now / DAY) && row.count >= domain.cap;
+  }
+
+  // Counts an account made at a domain today, or gives one back (step -1).
+  #countDomain(domain, now, step) {
+    const day = Math.floor(now / DAY);
+    if (step > 0) {
+      this.sql.exec(
+        `INSERT INTO signup_domains (domain, day, count) VALUES (?, ?, 1)
+         ON CONFLICT (domain) DO UPDATE SET
+           count = CASE WHEN signup_domains.day = excluded.day THEN signup_domains.count + 1 ELSE 1 END, day = excluded.day`,
+        domain,
+        day
+      );
+    } else {
+      this.sql.exec('UPDATE signup_domains SET count = MAX(0, count - 1) WHERE domain = ? AND day = ?', domain, day);
+    }
+  }
+
+  // Whether to mail the operator now (signups.js), after a sign-up: 'signups' when this hour's sign-ups with an
+  // emailed code reached perHour, 'accounts' when the accounts reached 80% of max, else null. At most one a day:
+  // the reason it returns claims today's email, which alertFailed gives back when Resend refused it.
+  async alertDue({ perHour, max }) {
+    const now = Date.now();
+    const day = Math.floor(now / DAY);
+    if (this.#tally('alert', DAY, now) > 0) return null;
+    const signups = this.#tally('verified', HOUR, now);
+    const accounts = this.count();
+    let reason = null;
+    if (perHour > 0 && signups >= perHour) reason = 'signups';
+    else if (max > 0 && accounts * 5 >= max * 4) reason = 'accounts';
+    if (!reason) return null;
+    this.#charge('alert', DAY, 0, now);
+    return { reason, signups, accounts, day };
+  }
+
+  async alertFailed(day) {
+    this.#refund('alert', day);
+  }
+
+  // One attempt to sign in or recover with an address (lock.js), counted before the password or recovery key is
+  // compared, so a request that never finishes still counts. { result } is 'ok', or 'locked' with retryAfter in
+  // seconds: while the address is locked, and when `max` attempts since the first in `window` are already wrong or
+  // still running, which locks it for lockTime from then.
+  async lockAttempt(address, { max, window, lockTime }) {
+    const now = Date.now();
+    const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
+    if (row && row.lockedUntil > now) return { result: 'locked', retryAfter: seconds(row.lockedUntil - now) };
+    const fresh = !row || now - row.failedAt >= window;
+    const failures = fresh ? 0 : row.failures;
+    const failedAt = fresh ? now : row.failedAt;
+    if (failures >= max) {
+      await this.#setLock(address, 0, failedAt, now + lockTime);
+      return { result: 'locked', retryAfter: seconds(lockTime) };
+    }
+    await this.#setLock(address, failures + 1, failedAt, 0, failedAt + window);
+    return { result: 'ok' };
+  }
+
+  // How the attempt lockAttempt counted ended: right resets the count, as a success always did; a wrong one stays
+  // counted, and the one that makes `max` locks the address and answers 'locked', as the tenth wrong attempt always
+  // has. { result } is 'ok', 'wrong' or 'locked' with retryAfter.
+  async lockSettle(address, right, { max, lockTime }) {
+    const now = Date.now();
+    const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
+    if (right) {
+      if (row && row.lockedUntil <= now) this.sql.exec('DELETE FROM locks WHERE address = ?', address);
+      return { result: 'ok' };
+    }
+    if (row && row.lockedUntil > now) return { result: 'locked', retryAfter: seconds(row.lockedUntil - now) };
+    if (row && row.failures >= max) {
+      await this.#setLock(address, 0, row.failedAt, now + lockTime);
+      return { result: 'locked', retryAfter: seconds(lockTime) };
+    }
+    return { result: 'wrong' };
+  }
+
+  async #setLock(address, failures, failedAt, lockedUntil, until = lockedUntil) {
+    this.sql.exec(
+      `INSERT INTO locks (address, failures, failedAt, lockedUntil, until) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (address) DO UPDATE SET failures = excluded.failures, failedAt = excluded.failedAt,
+         lockedUntil = excluded.lockedUntil, until = excluded.until`,
+      address,
+      failures,
+      failedAt,
+      lockedUntil,
+      until
+    );
+    await this.#armCodes(until);
+  }
+
   // No email with the code's long code went out, so nobody can use it: the row goes when the six digits expire, and
   // not a day later.
   async shortenCode(challenge) {
@@ -156,7 +343,10 @@ export class Registry extends DurableObject {
   // six digits that don't match, 'busy' while another request holds the code, or 'expired' for a code that is
   // unknown, expired, used or out of tries. A wrong six digits costs only their own tries, so whoever holds the
   // challenge can't spend the long code in the email. A long code for another address or purpose counts as unknown.
-  // The claim holds the code until settleCode, so two requests never use one code at once.
+  // The claim holds the code until settleCode, so two requests never use one code at once. It also counts one of the
+  // code's tries for the password or recovery key, before the account compares it: a request that never settles,
+  // because its client went away or its Worker stopped, keeps that try, and settleCode gives it back only when the
+  // request didn't fail.
   async claimCode(entry, attempts) {
     const now = Date.now();
     const byToken = typeof entry.token === 'string';
@@ -178,19 +368,27 @@ export class Registry extends DurableObject {
     }
     if (row.claimedUntil > now) return { result: 'busy' };
     const claim = toBase64url(randomBytes(16));
-    this.sql.exec('UPDATE codes SET claim = ?, claimedUntil = ? WHERE challenge = ?', claim, now + CLAIM_TIME, row.challenge);
+    this.sql.exec(
+      'UPDATE codes SET claim = ?, claimedUntil = ?, failures = failures + 1 WHERE challenge = ?',
+      claim,
+      now + CLAIM_TIME,
+      row.challenge
+    );
     return { result: 'ok', id: row.challenge, claim };
   }
 
-  // Ends a claim: 'used' deletes the code, 'failed' (a wrong password or recovery key) costs it a try and gives it
-  // back, and 'keep' gives it back as it was. A claim that lapsed meanwhile gives back nothing, so it never ends a
-  // newer request's claim. What it did still counts: a use deletes the code and a wrong password costs a try.
+  // Ends a claim: 'used' deletes the code, 'failed' (a wrong password or recovery key) keeps the try claimCode counted
+  // and gives the code back, and 'keep' gives back the try and the code as they were. A claim that lapsed meanwhile
+  // gives back nothing, neither the code nor its try, so it never ends a newer request's claim. What it did still
+  // counts: a use deletes the code and a wrong password costs a try.
   async settleCode(id, claim, outcome, attempts) {
     if (outcome === 'used') {
       this.sql.exec('DELETE FROM codes WHERE challenge = ?', id);
       return;
     }
-    if (outcome === 'failed') this.sql.exec('UPDATE codes SET failures = failures + 1 WHERE challenge = ?', id);
+    if (outcome === 'keep') {
+      this.sql.exec('UPDATE codes SET failures = MAX(0, failures - 1) WHERE challenge = ? AND claim = ?', id, claim);
+    }
     this.sql.exec('UPDATE codes SET claim = NULL, claimedUntil = 0 WHERE challenge = ? AND claim = ?', id, claim);
     this.sql.exec('DELETE FROM codes WHERE challenge = ? AND failures >= ?', id, attempts);
   }
@@ -200,7 +398,13 @@ export class Registry extends DurableObject {
     const now = Date.now();
     this.#purgeCodes(now);
     const next = this.sql
-      .exec('SELECT MIN(t) AS t FROM (SELECT MIN(until) AS t FROM codes UNION ALL SELECT MIN(until) AS t FROM code_sends)')
+      .exec(
+        `SELECT MIN(t) AS t FROM (
+           SELECT MIN(until) AS t FROM codes UNION ALL SELECT MIN(until) AS t FROM code_sends
+           UNION ALL SELECT MIN(until) AS t FROM unlock_mail UNION ALL SELECT MIN(until) AS t FROM locks
+           UNION ALL SELECT (MIN(day) + 1) * ? AS t FROM signup_domains)`,
+        DAY
+      )
       .one().t;
     if (next !== null) await this.ctx.storage.setAlarm(Math.max(next, now + 1000));
   }
@@ -208,6 +412,9 @@ export class Registry extends DurableObject {
   #purgeCodes(now) {
     this.sql.exec('DELETE FROM codes WHERE until <= ?', now);
     this.sql.exec('DELETE FROM code_sends WHERE until <= ?', now);
+    this.sql.exec('DELETE FROM unlock_mail WHERE until <= ?', now);
+    this.sql.exec('DELETE FROM locks WHERE until <= ?', now);
+    this.sql.exec('DELETE FROM signup_domains WHERE day < ?', Math.floor(now / DAY));
   }
 
   // An alarm at the latest when this code goes. The alarm sets the next one itself.
@@ -302,29 +509,55 @@ export class Registry extends DurableObject {
     return this.sql.exec('SELECT accounts FROM counts WHERE id = 1').one().accounts;
   }
 
-  // Takes a place for a new account, and a use of its invite code (a hash) when it has one: 'ok', 'full' or 'used'.
-  // max 0 means no cap; uses 0 means a code works any number of times. usedFirst: a used code says so even when the
-  // server is full, as a workspace invitation that made its account must (WORKSPACES.md, Signing up with an invitation).
-  async reserve(max, code = null, uses = 0, usedFirst = false) {
+  // Takes a place for a new account, and a use of its invite code (a hash) when it has one: 'ok', 'full', 'used' or
+  // 'domain'. max 0 means no cap; uses 0 means a code works any number of times. usedFirst: a used code says so even
+  // when the server is full, as a workspace invitation that made its account must (WORKSPACES.md, Signing up with an
+  // invitation). verified: { domain, cap } from signups.js for a sign-up with an emailed code, which counts toward
+  // this hour's sign-ups and, with a domain, toward its domain's accounts of the day ('domain' once cap is reached).
+  async reserve(max, code = null, uses = 0, usedFirst = false, verified = null) {
     const used = () => code && uses > 0 && this.used(code) >= uses;
     if (usedFirst && used()) return 'used';
     if (max > 0 && this.count() >= max) return 'full';
     if (used()) return 'used';
+    const now = Date.now();
+    if (this.#domainFull(verified, now)) return 'domain';
     this.sql.exec('UPDATE counts SET accounts = accounts + 1 WHERE id = 1');
     if (code) this.sql.exec('INSERT INTO invites (code, used) VALUES (?, 1) ON CONFLICT (code) DO UPDATE SET used = used + 1', code);
+    if (verified) {
+      this.#charge('verified', HOUR, 0, now);
+      if (verified.domain && verified.cap > 0) {
+        this.#countDomain(verified.domain, now, 1);
+        await this.#armCodes((Math.floor(now / DAY) + 1) * DAY);
+      }
+    }
     return 'ok';
   }
 
-  // Gives a place back. With the code, the sign-up didn't happen after all, so its use comes back too; a deleted
-  // account gives back only its place, or a code could be used again and again.
-  async release(code = null) {
+  // Gives a place back. With the code, the sign-up didn't happen after all, so its use comes back too, and so do the
+  // counts of a sign-up with an emailed code (verified, as reserve got it). A deleted account gives back only its
+  // place, or a code could be used again and again, and the day's accounts at a domain again and again.
+  async release(code = null, verified = null) {
     this.sql.exec('UPDATE counts SET accounts = MAX(0, accounts - 1) WHERE id = 1');
     if (code) this.sql.exec('UPDATE invites SET used = MAX(0, used - 1) WHERE code = ?', code);
+    if (verified) {
+      const now = Date.now();
+      this.#refund('verified', Math.floor(now / HOUR));
+      if (verified.domain && verified.cap > 0) this.#countDomain(verified.domain, now, -1);
+    }
   }
 
   async accounts() {
     return this.count();
   }
+}
+
+// Seconds until the next day starts (UTC), when the counts per domain start again.
+function untilTomorrow(now) {
+  return seconds((Math.floor(now / DAY) + 1) * DAY - now);
+}
+
+function seconds(ms) {
+  return Math.max(1, Math.ceil(ms / 1000));
 }
 
 function sendTimes(json) {

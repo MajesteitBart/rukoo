@@ -20,6 +20,7 @@ import {
   checkConfig,
   config,
   filesStorage,
+  limit,
   limitRate,
   positive,
   previewsOn,
@@ -33,10 +34,12 @@ import { NOINDEX, READ_CORS, html, json, redirect, send } from './http.js';
 import * as input from './input.js';
 import { HttpError, invalid } from './input.js';
 import { joinPage } from './join.js';
+import { guarded } from './lock.js';
 import { meet } from './meet.js';
 import * as owner from './owner.js';
 import { page } from './page.js';
 import { privacy, privacyLanguage } from './privacy.js';
+import { DOMAIN_LIMIT, checkAlert, untilTomorrow, verifiedSignup } from './signups.js';
 import { inviteSignups, signupInvite, workspaceInfo, workspaces } from './workspaces.js';
 
 export { Account } from './account.js';
@@ -90,9 +93,14 @@ async function handle(request, env, ctx) {
     // Rukoo in the browser runs on the website in front of this server (website/cloudflare/web-app.js); the operator
     // says so with WEB_APP, which the statement then covers. Codes by email are covered while the server sends them,
     // for the purposes it sends them for (codes.js).
+    // Accounts that are never used are deleted after EXPIRE_UNUSED_DAYS, which the statement says while it is set.
     const codes = codePurposes(env);
+    const expireDays = expiryDays(env);
     return html(
-      privacy({ ...config(env, url), chat, web: webAppOn(env), codes }, privacyLanguage(url, request.headers.get('accept-language'))),
+      privacy(
+        { ...config(env, url), chat, web: webAppOn(env), codes, expireDays },
+        privacyLanguage(url, request.headers.get('accept-language'))
+      ),
       method
     );
   }
@@ -141,7 +149,7 @@ async function handle(request, env, ctx) {
     case 'POST /v1/email-code':
       return requestCode(request, env, ctx, maxAccounts(env));
     case 'POST /v1/signup':
-      return signup(request, env);
+      return signup(request, env, ctx);
     case 'POST /v1/login':
       return login(request, env);
     case 'POST /v1/recover/start':
@@ -203,7 +211,7 @@ async function prelogin(request, env) {
   return json(200, { kdf: input.DEFAULT_KDF, salt: toBase64url(salt) });
 }
 
-async function signup(request, env) {
+async function signup(request, env, ctx) {
   await limitRate(request, env.RATE_LIMITER);
   const body = await input.readJson(request);
   const mode = config(env, new URL(request.url)).signups;
@@ -243,27 +251,33 @@ async function signup(request, env) {
   const code = mode === 'verified' && (!invite || workspaceInvite) ? await signupCode(env, fields.email, body.emailCode) : null;
   let result;
   try {
-    result = await makeAccount(env, fields, invite, uses, workspaceInvite);
+    // A sign-up with an emailed code counts toward its domain's accounts of the day (signups.js).
+    const verified = code ? await verifiedSignup(env, fields.email) : null;
+    result = await makeAccount(env, fields, invite, uses, workspaceInvite, verified);
   } finally {
     if (code) await settleCode(env, code, result?.status === 201 ? 'used' : 'keep');
   }
+  if (result.status === 201) await checkAlert(env, ctx, new URL(request.url).host);
   return send(result);
 }
 
-async function makeAccount(env, fields, invite, uses, workspaceInvite) {
+async function makeAccount(env, fields, invite, uses, workspaceInvite, verified) {
   const name = await accountName(env, fields.email);
   // A place under MAX_ACCOUNTS first; given back when the sign-up fails, for one because the address has an account.
   const registry = registryObject(env);
   if (registry) {
-    const place = await registry.reserve(maxAccounts(env), invite, uses, workspaceInvite);
+    const place = await registry.reserve(maxAccounts(env), invite, uses, workspaceInvite, verified);
     if (place === 'full') throw new HttpError(403, 'signups_closed', 'This server has no room for new accounts.');
     if (place === 'used') throw new HttpError(403, 'invite_required', 'This invite code has been used.');
+    if (place === 'domain') {
+      throw new HttpError(429, 'rate_limited', DOMAIN_LIMIT, { 'retry-after': String(untilTomorrow()) }, { limit: 'domain' });
+    }
   }
   let result;
   try {
-    result = await stub(env, name).signup(name, fields, limits(env));
+    result = await stub(env, name).signup(name, fields, limits(env), { expireDays: expiryDays(env) });
   } finally {
-    if (registry && (!result || result.status !== 201)) await registry.release(invite);
+    if (registry && (!result || result.status !== 201)) await registry.release(invite, verified);
   }
   return result;
 }
@@ -274,11 +288,12 @@ async function login(request, env) {
   const email = input.email(body.email);
   const fields = { authKey: input.key(body.authKey, 'authKey', 32), device: input.device(body.device) };
   const name = await accountName(env, email);
-  // emailCode (optional): a code sent to the address for unlock, which lets this sign-in past the account's lock.
+  // emailCode (optional): a code sent to the address for unlock, which lets this sign-in past the address's lock.
+  // Without one, the attempt runs under that lock (lock.js).
   const code = emailCodeField(body.emailCode);
   const account = stub(env, name);
-  if (!code) return send(await account.login(name, fields, limits(env)));
-  return send(await unlocked(env, email, code, (options) => account.login(name, fields, limits(env), options)));
+  const attempt = (options) => account.login(name, fields, limits(env), options);
+  return send(code ? await unlocked(env, email, code, attempt) : await guarded(env, email, attempt));
 }
 
 async function recoverStart(request, env) {
@@ -288,9 +303,9 @@ async function recoverStart(request, env) {
   const fields = { recoveryAuth: input.key(body.recoveryAuth, 'recoveryAuth', 32) };
   const code = emailCodeField(body.emailCode);
   const account = stub(env, await accountName(env, email));
-  if (!code) return send(await account.recoverStart(fields));
+  const attempt = (options) => account.recoverStart(fields, options);
   // The code stays for recover/finish, which uses it up.
-  return send(await unlocked(env, email, code, (options) => account.recoverStart(fields, options), true));
+  return send(code ? await unlocked(env, email, code, attempt, true) : await guarded(env, email, attempt));
 }
 
 async function recoverFinish(request, env) {
@@ -308,8 +323,8 @@ async function recoverFinish(request, env) {
   const name = await accountName(env, email);
   const code = emailCodeField(body.emailCode);
   const account = stub(env, name);
-  if (!code) return send(await account.recoverFinish(name, fields, limits(env)));
-  return send(await unlocked(env, email, code, (options) => account.recoverFinish(name, fields, limits(env), options)));
+  const attempt = (options) => account.recoverFinish(name, fields, limits(env), options);
+  return send(code ? await unlocked(env, email, code, attempt) : await guarded(env, email, attempt));
 }
 
 async function changePassword(request, env) {
@@ -383,6 +398,12 @@ function session(request, env) {
 function maxAccounts(env) {
   const n = Number(env.MAX_ACCOUNTS);
   return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
+
+// EXPIRE_UNUSED_DAYS: days after which an account that was never used is deleted (account.js, expireUnused). 0, also
+// when unset, keeps every account.
+function expiryDays(env) {
+  return limit(env.EXPIRE_UNUSED_DAYS, 0);
 }
 
 function stub(env, name) {
