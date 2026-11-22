@@ -80,9 +80,10 @@ const CLEANUP_TABLE = `
 // the check itself, because each of them stays once it was there.
 const EXPIRY_TABLE = 'CREATE TABLE IF NOT EXISTS expiry (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)';
 // What is left of an account the check deleted, until its place under MAX_ACCOUNTS is back (#finishExpiry): the key
-// the registry gives it back under, and whether it did. No address and nothing else of the account.
+// the registry gives it back under, whether it did, and how often asking it failed, for the wait before the next try.
+// No address and nothing else of the account.
 const EXPIRED_TABLE =
-  'CREATE TABLE IF NOT EXISTS expired (id INTEGER PRIMARY KEY CHECK (id = 1), key TEXT NOT NULL, released INTEGER NOT NULL)';
+  'CREATE TABLE IF NOT EXISTS expired (id INTEGER PRIMARY KEY CHECK (id = 1), key TEXT NOT NULL, released INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)';
 const DAY = 24 * 60 * 60 * 1000;
 // Every table a living account can have. Deleting an account that was in workspaces drops these and keeps cleanup.
 const LIVE_TABLES = ['account', 'sessions', 'records', 'meta', 'booking', 'identity', 'workspaces', 'expiry'];
@@ -370,8 +371,9 @@ export class Account extends DurableObject {
       return 'kept';
     }
     days = Math.max(days, EXPIRE_MIN_DAYS);
-    // An earlier account at this address still has workspaces to tell; #cleanup sets the check's alarm again after.
-    if (this.#has('cleanup')) return 'waiting';
+    // An earlier account at this address still has workspaces to tell, or a place to give back; #cleanup and
+    // #finishExpiry set the check's alarm again after.
+    if (this.#has('cleanup') || this.#has('expired')) return 'waiting';
     const due = createdAt + days * DAY;
     if (now < due) {
       this.sql.exec('UPDATE expiry SET at = ? WHERE id = 1', due);
@@ -401,13 +403,25 @@ export class Account extends DurableObject {
 
   // What is left of an expired account: its place to give back, as DELETE /v1/account gives it back, and then the rest
   // to wipe. The registry gives back a place once per key (Registry.releaseOnce), a random key made with the decision,
-  // and this object notes that it did, so a run that fails halfway never gives it back twice. An account made at this
-  // address since, or the list of workspaces such an account left behind, keeps everything but this.
+  // and this object notes that it did, so a run that fails halfway never gives it back twice. When the registry can't
+  // be reached, the alarm tries again, waiting longer each time up to an hour, as #cleanup does: nobody may ever ask
+  // this address again, and the place would be lost for good. An account made at this address since, or the list of
+  // workspaces such an account left behind, keeps everything but this.
   async #finishExpiry() {
-    const row = this.#has('expired') ? this.sql.exec('SELECT key, released FROM expired WHERE id = 1').toArray()[0] : null;
+    const row = this.#has('expired') ? this.sql.exec('SELECT * FROM expired WHERE id = 1').toArray()[0] : null;
     if (!row) return;
     if (!row.released) {
-      await registryObject(this.env)?.releaseOnce(row.key);
+      try {
+        await registryObject(this.env)?.releaseOnce(row.key);
+      } catch (err) {
+        // A marker from before the column was added gets it now.
+        if (!('attempts' in row)) this.sql.exec('ALTER TABLE expired ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+        const attempts = (row.attempts ?? 0) + 1;
+        this.sql.exec('UPDATE expired SET attempts = ? WHERE id = 1', attempts);
+        await this.ctx.storage.setAlarm(Date.now() + Math.min(CLEANUP_RETRY * 2 ** Math.min(attempts - 1, 10), CLEANUP_RETRY_MAX));
+        console.error('Giving back the place of an expired account failed; its alarm tries again.', err?.message || err);
+        return;
+      }
       this.sql.exec('UPDATE expired SET released = 1 WHERE id = 1');
     }
     if (this.present || this.#has('cleanup')) this.sql.exec('DROP TABLE expired');
@@ -617,12 +631,14 @@ export class Account extends DurableObject {
       this.#withPassword(session, hash, now, () => {
         const { handle } = this.#booking();
         const references = this.#has('workspaces') ? this.sql.exec('SELECT id FROM workspaces').toArray() : [];
-        // Workspaces an earlier account at this address was in, which haven't all answered yet.
+        // Workspaces an earlier account at this address was in, which haven't all answered yet, and the place under
+        // MAX_ACCOUNTS of an earlier account that expired, which the registry hasn't taken back yet (#finishExpiry).
         const waiting = this.#has('cleanup') && this.sql.exec('SELECT COUNT(*) AS n FROM cleanup').one().n > 0;
-        const cleanup = references.length > 0 || waiting;
+        const cleanup = references.length > 0 || waiting || this.#has('expired');
         if (cleanup) {
           // An account that was in workspaces can't vanish in one step: each workspace still has to hear that its
           // incarnation is gone. Everything of the account goes now, in one transaction with the list of who to tell.
+          // What an expired account left stays the same way, for the alarm to finish.
           // The alarm that works through the list is set in the same stretch, with nothing awaited in between, which
           // is how the platform stores a series of writes as one. Its documentation doesn't name alarms there, so
           // the constructor is the second safeguard: a list without an alarm gets one when the object next starts.

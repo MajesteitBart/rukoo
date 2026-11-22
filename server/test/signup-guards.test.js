@@ -351,6 +351,67 @@ describe('accounts that are never used', () => {
     await registry.reserve(0);
   });
 
+  it('tries again, waiting longer each time, when the registry can’t take an expired account’s place back', async () => {
+    const registry = registryObject(env);
+    const email = newEmail();
+    const before = await registry.accounts();
+    await leaveExpired(email, toBase64url(random(16)));
+    const stub = await accountStub(email);
+    const unreachable = {
+      idFromName: (name) => name,
+      get: () => ({ releaseOnce: () => Promise.reject(new Error('The registry is unreachable.')) })
+    };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const [attempts, wait] of [
+        [1, MINUTE],
+        [2, 2 * MINUTE],
+        [3, 4 * MINUTE]
+      ]) {
+        const start = Date.now();
+        const state = await runInDurableObject(stub, async (instance, st) => {
+          const real = instance.env;
+          instance.env = { ...real, REGISTRY: unreachable };
+          try {
+            await instance.alarm();
+          } finally {
+            instance.env = real;
+          }
+          return { alarm: await st.storage.getAlarm(), row: st.storage.sql.exec('SELECT released, attempts FROM expired').one() };
+        });
+        expect(state.row).toEqual({ released: 0, attempts });
+        expect(state.alarm).toBeGreaterThanOrEqual(start + wait);
+        expect(state.alarm).toBeLessThanOrEqual(Date.now() + wait);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+    expect(await registry.accounts()).toBe(before);
+    // Once the registry answers, the alarm gives the place back and wipes the rest.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await tables(email)).toEqual([]);
+    expect(await registry.accounts()).toBe(before - 1);
+    await registry.reserve(0);
+  });
+
+  it('keeps what an expired account left when an account made at its address since is deleted', async () => {
+    const registry = registryObject(env);
+    const who = await signup();
+    await leaveExpired(who.email, toBase64url(random(16)));
+    const before = await registry.accounts();
+    expect((await call('DELETE', '/v1/account', { token: who.token, body: { authKey: who.authKey } })).status).toBe(204);
+    // The deleted account's own place is back, and the expired one's waits for the alarm.
+    expect(await registry.accounts()).toBe(before - 1);
+    expect(await tables(who.email)).toContain('expired');
+    expect(await tables(who.email)).not.toContain('account');
+    await runDurableObjectAlarm(await accountStub(who.email));
+    await runDurableObjectAlarm(await accountStub(who.email));
+    expect(await registry.accounts()).toBe(before - 2);
+    expect(await tables(who.email)).toEqual([]);
+    await registry.reserve(0);
+    await registry.reserve(0);
+  });
+
   it('leaves an account made at the address since alone when it finishes', async () => {
     const who = await signup();
     const before = await registryObject(env).accounts();
