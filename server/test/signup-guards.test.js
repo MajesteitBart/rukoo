@@ -211,6 +211,22 @@ describe('the limit on verified sign-ups per domain', () => {
     expect(resend.to(`a0@${full}`)).toHaveLength(1);
   });
 
+  it('counts a held-back code at a full domain toward the hour and the day, as a sent email', async () => {
+    freshDay();
+    const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
+    const full = newDomain();
+    for (let i = 0; i < 5; i++) expect((await verifiedAccount(`a${i}@${full}`, vars)).status).toBe(201);
+    const counted = async () =>
+      (await registrySql((sql) => sql.exec("SELECT count FROM code_mail WHERE purpose = 'signup'").toArray()))[0]?.count ?? 0;
+    // Otherwise anyone filling the hour's emails could tell from one more getting through that this domain is full.
+    for (const domain of [newDomain(), full]) {
+      const before = await counted();
+      expect((await askCode(`h@${domain}`, 'signup', vars)).status).toBe(202);
+      expect(await counted(), domain).toBe(before + 1);
+    }
+    expect(resend.to(`h@${full}`)).toHaveLength(0);
+  });
+
   it('counts only accounts that were made, so asking for codes uses up no domain', async () => {
     freshDay();
     const vars = { ...VERIFIED, DOMAIN_SIGNUPS_PER_DAY: '5' };
@@ -287,7 +303,10 @@ describe('the limit on verified sign-ups per domain', () => {
     const codes = await codeFor(`a@${domain}`);
     // Invisible characters, which a host name drops or refuses, and a domain that is no host name at all: each would
     // otherwise count apart from the domain it looks like.
-    for (const email of [`a@exa‌mple-${domain}`, `a­@${domain}`, `a@${domain.replace('.', '‍.')}`, `a@ex%zz-${domain}`]) {
+    // Variation selectors, the combining grapheme joiner and Mongolian variation selectors are ignorable too: a host
+    // name drops them, so x@gm\uFE0Fail.com would reach x@gmail.com with limits of its own.
+    const ignorable = [`a@gm\uFE0Fail.com`, `a@gm\u034Fail.com`, `a@gm\u{E0100}ail.com`, `a@${domain.replace('.', '\u180B.')}`];
+    for (const email of [`a@exa‌mple-${domain}`, `a­@${domain}`, `a@${domain.replace('.', '‍.')}`, `a@ex%zz-${domain}`, ...ignorable]) {
       const asked = await askCode(email);
       expect(asked.status, email).toBe(400);
       expect(asked.body.error).toBe('invalid');

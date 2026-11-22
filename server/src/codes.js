@@ -95,7 +95,16 @@ export async function requestCode(request, env, ctx, max) {
       'retry-after': String(issued.retryAfter)
     });
   }
-  if (issued.silent) return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
+  if (issued.silent) {
+    // Counted as a sent email would be, without one going out: the counters per hour and per day are shared, so a
+    // request that left them alone would show anyone filling them that this domain is full.
+    ctx.waitUntil(
+      registryObject(env)
+        .chargeMail('signup', positive(env.EMAIL_CODES_PER_HOUR, PER_HOUR), signupEmailsPerDay(env))
+        .catch((err) => console.error('Counting a held-back sign-up email failed:', err?.stack || err))
+    );
+    return json(202, { challenge, expiresIn: CODE_TTL / 1000 });
+  }
   const host = new URL(request.url).host;
   ctx.waitUntil(
     deliver(env, { email, purpose, code, token, lang, host, id: entry.challenge }).catch((err) =>
