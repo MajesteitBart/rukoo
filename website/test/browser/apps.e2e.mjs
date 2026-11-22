@@ -215,11 +215,18 @@ test('b3: at 480px tall the list keeps its first row, a wide short window keeps 
     await expect(notice(p)).toBeVisible();
     await apart(p, label);
     const rowEl = p.locator('.sidebar .ch-row', { hasText: 'general' }).first();
-    const hit = await rowEl.evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      return { whole: r.top >= 0 && r.bottom <= innerHeight, mine: Boolean(at && (at === el || el.contains(at))) };
-    });
+    // The notice slides in and the list makes room for it, so the row is checked once the layout has settled: up to two
+    // seconds, as a person would wait to see the list before tapping.
+    let hit;
+    for (let tries = 0; tries < 20; tries++) {
+      hit = await rowEl.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { whole: r.top >= 0 && r.bottom <= innerHeight, mine: Boolean(at && (at === el || el.contains(at))) };
+      });
+      if (hit.whole && hit.mine) break;
+      await p.waitForTimeout(100);
+    }
     assert.ok(hit.whole && hit.mine, `${label}: the first channel shows whole and takes a tap (${JSON.stringify(hit)})`);
     await shot(p, label);
     await rowEl.tap();
