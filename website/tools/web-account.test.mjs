@@ -905,3 +905,38 @@ test('codes by email on the real server: a sign-up with a workspace invitation n
   await web.accountSignIn({ email, password: PASSWORD, emailCode: unlock.code });
   assert.equal(web.status().signedIn, true);
 });
+
+test('codes by email: a used-up invite code gets a code instead, and the emailed code goes without it', async (t) => {
+  const srv = await fixture(t, { signups: 'verified', codes: true, usedInvites: ['spent'] });
+  const web = browser(srv.url);
+  await assert.rejects(web.accountSignUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent' }), { code: 'code_required' });
+  await web.accountEmailCode({ email: 'spent@example.com', purpose: 'signup' });
+  const code = srv.codeFor('spent@example.com');
+  const before = srv.calls.filter((c) => c.route === 'POST /v1/signup').length;
+  await web.accountSignUp({ email: 'spent@example.com', password: PASSWORD, invite: 'spent', emailCode: code });
+  assert.equal(web.status().signedIn, true);
+  const [withInvite, without] = srv.calls.filter((c) => c.route === 'POST /v1/signup').slice(before);
+  assert.equal(withInvite.body.invite, 'spent');
+  assert.equal('invite' in without.body, false);
+  assert.equal(without.body.emailCode.code, code);
+  // On an invite-only server the same answer stays what it was.
+  const only = await fixture(t, { signups: 'invite', codes: true, usedInvites: ['spent'] });
+  await assert.rejects(browser(only.url).accountSignUp({ email: 'old@example.com', password: PASSWORD, invite: 'spent' }), { code: 'invite_required' });
+});
+
+test("codes by email: an older code request answered late doesn't replace the newer one's challenge", async (t) => {
+  const srv = await fixture(t, { signups: 'verified', codes: true });
+  const web = browser(srv.url);
+  let letGo = null;
+  const gate = new Promise((r) => (letGo = r));
+  srv.hold = ({ route }) => (route === 'POST /v1/email-code' ? ((srv.hold = null), gate) : null);
+  const older = web.accountEmailCode({ email: 'order@example.com', purpose: 'signup' });
+  for (let i = 0; i < 200 && !srv.calls.some((c) => c.route === 'POST /v1/email-code'); i++) await new Promise((r) => setTimeout(r, 10));
+  srv.allowCode('order@example.com', 'signup');
+  await web.accountEmailCode({ email: 'order@example.com', purpose: 'signup' });
+  const newest = srv.codeFor('order@example.com');
+  letGo();
+  await older;
+  await web.accountSignUp({ email: 'order@example.com', password: PASSWORD, emailCode: newest });
+  assert.equal(web.status().signedIn, true);
+});

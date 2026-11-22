@@ -210,9 +210,11 @@ class WebAccountService extends Emitter {
     this.t = typeof t === 'function' ? t : null;
     // The page's language, for the email a code comes in.
     this.language = typeof language === 'function' ? language : () => 'en';
-    // The last code asked for, by purpose and address, as on desktop: { server, challenge, until }, in this page's
-    // memory only. A reload drops it; the long code in the email still works then.
+    // The last code asked for, by purpose and address, as on desktop: { server, challenge, until, seq }, in this
+    // page's memory only. A reload drops it; the long code in the email still works then. seq counts the requests, so
+    // an older one answered late can't replace a newer one's challenge.
     this.codes = new Map();
+    this.codeSeq = 0;
     const ua = userAgent !== undefined ? userAgent : globalThis.navigator && globalThis.navigator.userAgent;
     this.deviceName = String(deviceName || browserDevice(ua)).slice(0, 100);
     this.platform = PLATFORM;
@@ -420,14 +422,17 @@ class WebAccountService extends Emitter {
     if (!CODE_PURPOSES.includes(purpose)) throw fail('invalid');
     const at = this.server;
     if (!at) throw fail('no_server');
+    const seq = ++this.codeSeq;
     const lang = this.language() === 'nl' ? 'nl' : 'en';
     const res = await this.call('POST', '/v1/email-code', { email: address, purpose, lang });
     const challenge = res && typeof res.challenge === 'string' && CODE_TOKEN.test(res.challenge) ? res.challenge : null;
     if (!challenge) throw fail('server');
     const expiresIn = Number.isSafeInteger(res.expiresIn) && res.expiresIn > 0 ? Math.min(res.expiresIn, 3600) : 600;
     const key = codeKey(purpose, address);
+    const newer = this.codes.get(key);
+    if (newer && newer.seq > seq) return { email: address, expiresIn };
     this.codes.delete(key);
-    this.codes.set(key, { server: at, challenge, until: this.now() + expiresIn * 1000 });
+    this.codes.set(key, { server: at, challenge, until: this.now() + expiresIn * 1000, seq });
     while (this.codes.size > MAX_HELD_CODES) this.codes.delete(this.codes.keys().next().value);
     return { email: address, expiresIn };
   }
@@ -463,7 +468,9 @@ class WebAccountService extends Emitter {
   // invite code accepts in place of one (contract 2.12). Sent instead of invite. The account is made first; only
   // then does the recovery key come back to be shown, as on desktop. emailCode: what was typed of a signup code; a
   // server that checks addresses needs one without the operator's invite code, also with workspaceInvite, so this
-  // stops with code_required before the password's keys are made.
+  // stops with code_required before the password's keys are made. There, an invite code that has been used up gets
+  // invite_required, and the server doesn't look at the emailed code beside it: the sign-up goes once more without
+  // the invite code. Without an emailed code, that answer reads as code_required (desktop's signUp).
   async signUp({ email, password, invite, workspaceInvite, emailCode: typed }) {
     const address = normalizeEmail(email);
     this.checkNew(address, password);
@@ -485,7 +492,8 @@ class WebAccountService extends Emitter {
       if (!plain) throw err;
       unusable = err;
     }
-    if (!emailCode && !plain && codesFor(info, 'signup')) throw fail('code_required', 403);
+    const codes = codesFor(info, 'signup');
+    if (!emailCode && !plain && codes) throw fail('code_required', 403);
     const k = this.keys;
     const salt = k.randomBytes(16);
     const kdf = { ...DEFAULT_KDF };
@@ -510,12 +518,23 @@ class WebAccountService extends Emitter {
     } finally {
       for (const key of [dataKey, authKey, wrapKey, recoveryAuth, recoveryWrap]) key.fill(0);
     }
+    // The operator's invite code didn't work on a server that checks addresses: used up (invite_required) or wrong
+    // (code_required).
+    const inviteFailed = (err) => Boolean(codes && plain && err && (err.code === 'invite_required' || err.code === 'code_required'));
     let res;
     try {
-      res = await this.call('POST', '/v1/signup', body);
+      try {
+        res = await this.call('POST', '/v1/signup', body);
+      } catch (err) {
+        if (!emailCode || err.code !== 'invite_required' || !inviteFailed(err)) throw err;
+        const without = { ...body };
+        delete without.invite;
+        res = await this.call('POST', '/v1/signup', without);
+      }
     } catch (err) {
       this.settleCode('signup', address, emailCode, err);
-      throw unusable && err && err.code === 'code_required' ? unusable : err;
+      if (!inviteFailed(err)) throw unusable && err && err.code === 'code_required' ? unusable : err;
+      throw unusable || (err.code === 'code_required' ? err : fail('code_required', 403));
     }
     this.settleCode('signup', address, emailCode);
     await this.attach(address, res && res.token, at);
