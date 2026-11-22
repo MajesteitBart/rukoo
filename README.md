@@ -4,9 +4,7 @@
 
 Rukoo Mail is an open-source email client for Windows and Linux. A macOS build and an Android app are experimental. Mail, calendar and agent chat share one window. You connect your own mail accounts and your own agent: Hermes Agent, Claude Code, Codex, OpenClaw, or one of your own on Booper or another framework.
 
-The latest release is [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0). It shows meetings recorded with Rukoo Voice live next to your agent, with the voices on the call named and the screen recorded if you want, backs meetings up encrypted to a bucket you own, gives each agent chat a permission level and lets you steer or queue a message while the agent works. [2.1.2](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.2) answered calendar invitations from the email, opened .ics files and added a right-click menu for links, images and text in an email. [2.1.1](https://github.com/MajesteitBart/rukoo/releases/tag/v2.1.1) labeled each email with its category and let a category stay out of Inbox or stay quiet.
-
-The next version, 2.3.0, adds formatted meeting notes stored as Markdown, folds repeated screen frames and gives meeting chats the right agent context. Its Hermes bridge keeps desktop tools available when another device runs an older Rukoo.
+The latest release is [2.4.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.4.0). It adds team chat: workspaces with channels, direct messages and threads, with reactions, files and link cards, on rukoo.io or on a server you run yourself. Android 0.6.0 has the same workspaces and conversations, without reactions, files and link cards for now. It also adds your own agents on Booper, the Runs API or an OpenAI-compatible server, holds an email after Send so you can undo it, and works with Rukoo Voice 0.2.0. [2.3.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.3.0) added formatted meeting notes stored as Markdown and folded repeated screen frames. [2.2.0](https://github.com/MajesteitBart/rukoo/releases/tag/v2.2.0) showed meetings recorded with Rukoo Voice live next to your agent and gave each agent chat a permission level.
 
 ## Install
 
@@ -19,7 +17,7 @@ Download Rukoo from [GitHub Releases](https://github.com/MajesteitBart/rukoo/rel
 | macOS 13 or newer | Experimental | DMG or ZIP, `arm64` for Apple Silicon or `x64` for Intel |
 | Android 12 or newer | Experimental | `Rukoo-Android-<version>.apk`, built for the Galaxy Z Fold7 |
 
-Rukoo Voice, the companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` for Windows from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. A newer `voice-v` release can also carry `Rukoo-Voice-<version>-arm64.dmg` for Apple Silicon Macs; 0.1.0 has Windows packages only. Meetings need it next to Rukoo 2.2.0 or newer.
+Rukoo Voice, the companion app for dictation and meetings, has releases of its own: `Rukoo-Voice-Setup-<version>.exe` for Windows from [Rukoo Voice 0.1.0](https://github.com/MajesteitBart/rukoo/releases/tag/voice-v0.1.0) or a newer `voice-v` release. A newer `voice-v` release can also carry `Rukoo-Voice-<version>-arm64.dmg` for Apple Silicon Macs; 0.1.0 has Windows packages only. Meetings need it next to Rukoo: Voice 0.2.0 needs Rukoo 2.4.0 or newer, and Voice 0.1.0 works with Rukoo 2.2.0 or newer.
 
 The builds aren't signed yet, so Windows SmartScreen warns before the first start: choose "More info", then "Run anyway". `SHA256SUMS.txt` in each release has the checksums of the desktop packages, and the release notes give the APK's.
 
