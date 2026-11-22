@@ -11,7 +11,7 @@ The latest release is [2.4.0](https://github.com/MajesteitBart/rukoo/releases/ta
 Start in the browser, then add the apps you need, in this order. [rukoo.io](https://rukoo.io/#start) has the same steps with download buttons.
 
 1. **The browser.** Sign in at [rukoo.io/app](https://rukoo.io/app) to use team chat without installing anything.
-2. **The desktop app**, for mail, calendar and meetings, and team chat from 2.4.0. Download it from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases/latest):
+2. **The desktop app**, for mail, calendar and meetings, with team chat beside them. Download it from [GitHub Releases](https://github.com/MajesteitBart/rukoo/releases/latest):
 
    | Platform | Status | Download |
    | --- | --- | --- |
