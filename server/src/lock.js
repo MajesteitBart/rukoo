@@ -1,7 +1,9 @@
 // The lock on sign-ins and recovery (PROTOCOL.md, POST /v1/login): ten failed attempts with an address within 15
-// minutes of the first lock that address for 15 minutes. The registry keeps it (Registry.lockAttempt), under a hash of
-// the address made with PEPPER, whether or not the address has an account. A lock kept by the account itself would only
-// ever answer 429 for an address with an account, which told anyone who tried ten wrong passwords that it had one.
+// minutes of the first lock that address for 15 minutes. A registry object keeps it (Registry.lockAttempt), under a
+// hash of the address made with PEPPER, whether or not the address has an account. A lock kept by the account itself
+// would only ever answer 429 for an address with an account, which told anyone who tried ten wrong passwords that it
+// had one. The hashes spread over 64 registry objects by their first character (config.js, lockObject), so a flood of
+// attempts doesn't all queue at one object, nor at the one that keeps the server's counts and emailed codes.
 //
 // It counts what it locks the same as before: one address, as typed, which is also the one account it can hold. Each
 // attempt is let in before the account compares the password, and attempts still running count toward the ten, so
@@ -11,18 +13,23 @@
 // A server without the registry binding leaves the lock to the account, as before (account.js, #check).
 
 import { hmac, toBase64url } from './bytes.js';
-import { registryObject } from './config.js';
+import { lockObject } from './config.js';
 
 const MINUTE = 60 * 1000;
 export const LOCK_RULES = { max: 10, window: 15 * MINUTE, lockTime: 15 * MINUTE };
+
+// The hash the lock keeps an address under, which also picks its registry object.
+export async function lockHash(env, email) {
+  return toBase64url(await hmac(env.PEPPER, `sign-in lock\n${email}`));
+}
 
 // Runs a sign-in or recovery attempt under the lock. run gets the options the account object takes: unlocked, so it
 // leaves its own lock alone. Answers what run answered, or 429 locked while the address is locked and for the attempt
 // that locks it.
 export async function guarded(env, email, run) {
-  const registry = registryObject(env);
-  if (!registry) return run({});
-  const address = toBase64url(await hmac(env.PEPPER, `sign-in lock\n${email}`));
+  if (!env.REGISTRY) return run({});
+  const address = await lockHash(env, email);
+  const registry = lockObject(env, address);
   const attempt = await registry.lockAttempt(address, LOCK_RULES);
   if (attempt.result === 'locked') return locked(attempt.retryAfter);
   const result = await run({ unlocked: true });

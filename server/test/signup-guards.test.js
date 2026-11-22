@@ -7,8 +7,9 @@ import { createExecutionContext, runDurableObjectAlarm, runInDurableObject, wait
 import { env } from 'cloudflare:workers';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hmac, sha256, toBase64url, utf8 } from '../src/bytes.js';
-import { registryObject } from '../src/config.js';
+import { lockObject, registryObject } from '../src/config.js';
 import worker from '../src/index.js';
+import { lockHash as lockKey } from '../src/lock.js';
 import { registrableDomain } from '../src/signups.js';
 import { FakeResend, MAIL_VARS, installFakeResend } from './fixtures/fake-resend.js';
 import { host } from './booking-helpers.js';
@@ -87,8 +88,19 @@ function wrongLogin(email) {
   return call('POST', '/v1/login', { body: { email, authKey: key(), device: device() } });
 }
 
-function registrySql(fn) {
-  return runInDurableObject(registryObject(env), (instance, state) => fn(state.storage.sql));
+function registrySql(fn, object = registryObject(env)) {
+  return runInDurableObject(object, (instance, state) => fn(state.storage.sql));
+}
+
+// How long the code with this challenge is kept past its six digits: 0 when no email with its long code goes out.
+async function keptPast(challenge) {
+  const hash = toBase64url(await sha256(utf8(challenge)));
+  return registrySql((sql) => sql.exec('SELECT until - codeUntil AS extra FROM codes WHERE challenge = ?', hash).one().extra);
+}
+
+// A name for a mailbox at a provider, different each time.
+function boxName() {
+  return newEmail().split('@')[0].replace(/[^a-z0-9]/g, '');
 }
 
 async function tables(email) {
@@ -616,8 +628,13 @@ describe('tries of a code', () => {
 });
 
 describe('the lock on sign-ins', () => {
-  const lockHash = (email) => hmac(env.PEPPER, `sign-in lock\n${email}`).then(toBase64url);
   const RULES = { max: 10, window: 15 * MINUTE, lockTime: 15 * MINUTE };
+  // The hash an address is locked under, and the registry object that keeps its lock.
+  async function lockOf(email) {
+    const address = await lockKey(env, email);
+    return { address, object: lockObject(env, address) };
+  }
+  const rightLogin = (who) => call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } });
 
   it('locks an address without an account exactly as one with an account, and stores nothing in its object', async () => {
     const who = await signup();
@@ -640,13 +657,13 @@ describe('the lock on sign-ins', () => {
     }
     expect(await tables(nobody)).toEqual([]);
     // The registry keeps a hash, never the address, and lets it go when the lock ends.
-    const hash = await lockHash(nobody);
-    const rows = await registrySql((sql) => sql.exec('SELECT * FROM locks WHERE address = ?', hash).toArray());
+    const lock = await lockOf(nobody);
+    const rows = await registrySql((sql) => sql.exec('SELECT * FROM locks WHERE address = ?', lock.address).toArray(), lock.object);
     expect(rows).toHaveLength(1);
-    expect(JSON.stringify(await registrySql((sql) => sql.exec('SELECT * FROM locks').toArray()))).not.toContain(nobody);
+    expect(JSON.stringify(await registrySql((sql) => sql.exec('SELECT * FROM locks').toArray(), lock.object))).not.toContain(nobody);
     later(16 * MINUTE);
-    await runDurableObjectAlarm(registryObject(env));
-    expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', rows[0].address).one().n)).toBe(0);
+    await runDurableObjectAlarm(lock.object);
+    expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', lock.address).one().n, lock.object)).toBe(0);
     expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(200);
   });
 
@@ -660,8 +677,8 @@ describe('the lock on sign-ins', () => {
 
   it('holds attempts that never came back against the ten, and counts them as wrong after a minute', async () => {
     const who = await signup();
-    const address = await lockHash(who.email);
-    for (let i = 0; i < 10; i++) expect((await registryObject(env).lockAttempt(address, RULES)).result).toBe('ok');
+    const { address, object } = await lockOf(who.email);
+    for (let i = 0; i < 10; i++) expect((await object.lockAttempt(address, RULES)).result).toBe('ok');
     const signIn = () => call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } });
     const running = await signIn();
     expect(running.status).toBe(429);
@@ -675,11 +692,11 @@ describe('the lock on sign-ins', () => {
 
   it('carries attempts still running over into the next window', async () => {
     const who = await signup();
-    const address = await lockHash(who.email);
+    const { address, object } = await lockOf(who.email);
     // Nine attempts come in just before the window that the first wrong one started is over.
     expect((await wrongLogin(who.email)).status).toBe(401);
     later(15 * MINUTE - 5000);
-    for (let i = 0; i < 9; i++) expect((await registryObject(env).lockAttempt(address, RULES)).result).toBe('ok');
+    for (let i = 0; i < 9; i++) expect((await object.lockAttempt(address, RULES)).result).toBe('ok');
     later(10 * 1000);
     // A new window starts, and the nine still running hold nine of its ten.
     expect((await wrongLogin(who.email)).status).toBe(401);
@@ -688,18 +705,47 @@ describe('the lock on sign-ins', () => {
 
   it('never lets an owner’s right attempt that is still running help a stranger lock the address', async () => {
     const who = await signup();
-    const address = await lockHash(who.email);
+    const { address, object } = await lockOf(who.email);
     for (let i = 0; i < 9; i++) expect((await wrongLogin(who.email)).status).toBe(401);
     // The owner's right attempt is let in and still running when the stranger tries a tenth time.
-    const owner = await registryObject(env).lockAttempt(address, RULES);
+    const owner = await object.lockAttempt(address, RULES);
     expect(owner.result).toBe('ok');
     const tenth = await wrongLogin(who.email);
     expect(tenth.status).toBe(429);
     expect(Number(tenth.headers.get('retry-after'))).toBeLessThanOrEqual(60);
-    expect((await registryObject(env).lockSettle(address, owner.ticket, true, RULES)).result).toBe('ok');
+    expect((await object.lockSettle(address, owner.ticket, true, RULES)).result).toBe('ok');
     // Nothing locked the address, and the right attempt reset the count.
     for (let i = 0; i < 9; i++) expect((await wrongLogin(who.email)).status).toBe(401);
-    expect((await call('POST', '/v1/login', { body: { email: who.email, authKey: who.authKey, device: device() } })).status).toBe(200);
+    expect((await rightLogin(who)).status).toBe(200);
+  });
+
+  it('counts an attempt that never came back in the window it ran out in, not the one it came in with', async () => {
+    const who = await signup();
+    const { address, object } = await lockOf(who.email);
+    // Nine wrong attempts at minute 0, and one let in at 14:59 that never comes back.
+    for (let i = 0; i < 9; i++) expect((await wrongLogin(who.email)).status).toBe(401);
+    later(14 * MINUTE + 59 * 1000);
+    expect((await object.lockAttempt(address, RULES)).result).toBe('ok');
+    // It counts as wrong at 15:59, when the window of the nine was over: it starts a new one, and locks nothing.
+    later(61 * 1000);
+    expect((await rightLogin(who)).status).toBe(200);
+  });
+
+  it('keeps each lock in one of the registry objects its hash picks, and none in the server’s own', async () => {
+    const emails = Array.from({ length: 6 }, () => newEmail());
+    const objects = new Set();
+    for (const email of emails) {
+      expect((await wrongLogin(email)).status).toBe(401);
+      const lock = await lockOf(email);
+      objects.add(lock.address.slice(0, 1));
+      expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', lock.address).one().n, lock.object)).toBe(1);
+      expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', lock.address).one().n)).toBe(0);
+    }
+    // The same hash always picks the same object, and the first character of the hash names it.
+    const lock = await lockOf(emails[0]);
+    const same = lockObject(env, `${lock.address.slice(0, 1)}${'x'.repeat(42)}`);
+    expect(await registrySql((sql) => sql.exec('SELECT COUNT(*) AS n FROM locks WHERE address = ?', lock.address).one().n, same)).toBe(1);
+    expect(objects.size).toBeGreaterThan(1);
   });
 
   it('locks only the address tried, so other spellings of a mailbox keep signing in', async () => {

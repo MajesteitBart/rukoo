@@ -9,6 +9,8 @@
 // with PEPPER, for a day after a code was asked for. An alarm deletes them when that time is up. The same goes for
 // what limits verified sign-ups and unlock emails (signups.js, codes.js) and for the lock on sign-ins (lock.js): each
 // is kept under a hash made with PEPPER, of a domain, a mailbox or an address, and goes when its day or lock is over.
+// The lock lives in 64 more objects of this class, apart from the one for the whole server (config.js, lockObject);
+// their other tables go unused.
 
 import { DurableObject } from 'cloudflare:workers';
 import { fromBase64url, randomBytes, sameBytes, toBase64url } from './bytes.js';
@@ -384,8 +386,10 @@ export class Registry extends DurableObject {
   }
 
   // An address's lock as of now. Attempts running longer than IN_FLIGHT, apart from `keep`, count as wrong from the
-  // moment they ran out, oldest first, and the one that makes `max` locks the address from that moment, whenever this
-  // is asked. Then a window that started `window` ago starts again, with the attempts that are still running.
+  // moment they ran out, oldest first, each in the window that moment falls in: one that runs out when the window it
+  // came in with is over starts a new window, as a wrong attempt then would. The one that makes `max` in a window locks
+  // the address from that moment, whenever this is asked. Then a window that started `window` ago starts again, with
+  // the attempts that are still running.
   #lockState(address, now, { max, window, lockTime }, keep = null) {
     const row = this.sql.exec('SELECT * FROM locks WHERE address = ?', address).toArray()[0];
     if (!row) return { failures: 0, failedAt: now, pending: [], lockedUntil: 0 };
@@ -395,19 +399,24 @@ export class Registry extends DurableObject {
     } catch {
       pending = [];
     }
-    let { failures, lockedUntil } = row;
+    let { failures, failedAt, lockedUntil } = row;
     const lost = pending.filter(([t, at]) => t !== keep && now - at >= IN_FLIGHT).sort((a, b) => a[1] - b[1]);
     for (const [, at] of lost) {
-      if (lockedUntil > at + IN_FLIGHT) continue;
+      const out = at + IN_FLIGHT;
+      if (lockedUntil > out) continue;
+      if (out - failedAt >= window) {
+        failures = 0;
+        failedAt = out;
+      }
       failures += 1;
       if (failures >= max) {
-        lockedUntil = at + IN_FLIGHT + lockTime;
+        lockedUntil = out + lockTime;
         failures = 0;
       }
     }
     pending = pending.filter((p) => !lost.includes(p));
-    if (lockedUntil <= now && now - row.failedAt >= window) return { failures: 0, failedAt: now, pending, lockedUntil: 0 };
-    return { failures, failedAt: row.failedAt, pending, lockedUntil };
+    if (lockedUntil <= now && now - failedAt >= window) return { failures: 0, failedAt: now, pending, lockedUntil: 0 };
+    return { failures, failedAt, pending, lockedUntil };
   }
 
   // A row stays as long as its window, its lock, or the lock an attempt still running could start once it runs out.

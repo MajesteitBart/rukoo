@@ -66,6 +66,17 @@ export function registryObject(env) {
   return ns.get(ns.idFromName('registry'));
 }
 
+// The registry object that keeps the sign-in lock of an address (lock.js), by the lock's hash of the address: one of
+// 64, named by the hash's first character. Every attempt with every address goes through the lock, so a flood of them
+// from many networks, at addresses with an account or without, spreads over these and leaves the server's own
+// registry, which keeps the counts and the emailed codes, to everyone else. They are the same class, so they need no
+// migration of their own.
+export function lockObject(env, address) {
+  if (!env.REGISTRY) return null;
+  const ns = namespace(env, env.REGISTRY);
+  return ns.get(ns.idFromName(`lock\n${address.slice(0, 1)}`));
+}
+
 // The object of one workspace (workspace.js). An id nobody made leaves its object empty.
 export function workspaceObject(env, id) {
   const ns = namespace(env, env.WORKSPACES);
